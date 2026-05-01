@@ -274,7 +274,10 @@ export interface ProviderOverride {
 export interface AIProviderOverrides {
   /** Override default provider for this project */
   defaultProvider?: string;
-  /** Override the path to a custom Claude Code executable for this project (empty string = use no custom path) */
+  /** Override the path to a custom Claude Code executable for this project.
+   * Absent (undefined) means "inherit the global value"; any string set here is
+   * used as-is and overrides the global setting. To remove an existing override,
+   * delete the field rather than setting it to an empty string. */
   customClaudeCodePath?: string;
   /** Per-provider overrides */
   providers?: Record<string, ProviderOverride>;

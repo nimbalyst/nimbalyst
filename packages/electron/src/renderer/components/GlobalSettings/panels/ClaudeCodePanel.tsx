@@ -230,6 +230,15 @@ export function ClaudeCodePanel({
     const previousHasOverride = hasProjectPathOverride;
     setCustomClaudeCodePathState(newPath);
 
+    // Guard against a project-scoped edit accidentally falling through to the
+    // global save path when workspacePath has not been threaded in yet.
+    if (scope === 'project' && !workspacePath) {
+      console.error('[ClaudeCodePanel] Project scope requires workspacePath to save customClaudeCodePath; aborting.');
+      setCustomClaudeCodePathState(previousPath);
+      setHasProjectPathOverride(previousHasOverride);
+      return;
+    }
+
     try {
       if (scope === 'project' && workspacePath) {
         const current = await window.electronAPI.invoke('ai:getProjectSettings', workspacePath);
