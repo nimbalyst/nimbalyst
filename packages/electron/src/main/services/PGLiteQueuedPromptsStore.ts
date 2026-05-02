@@ -73,26 +73,16 @@ type PGliteLike = {
 
 type EnsureReadyFn = () => Promise<void>;
 
-/**
- * Convert a Date from PGLite to epoch milliseconds.
- * PGLite returns Date objects that are parsed as local time but represent UTC.
- */
 function toMillis(date: Date | string | null | undefined): number {
   if (!date) return 0;
-  if (typeof date === 'string') {
-    return new Date(date).getTime();
+  if (date instanceof Date) {
+    return date.getTime();
   }
-  // PGLite returns Date objects - extract components and treat as UTC
-  const d = date as Date;
-  return Date.UTC(
-    d.getFullYear(),
-    d.getMonth(),
-    d.getDate(),
-    d.getHours(),
-    d.getMinutes(),
-    d.getSeconds(),
-    d.getMilliseconds()
-  );
+  const str = String(date).trim();
+  const hasTimezone =
+    str.endsWith('Z') || str.includes('+') || /-\d{2}:\d{2}$/.test(str);
+  const parsed = new Date(hasTimezone ? str : str.replace(' ', 'T') + 'Z').getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function rowToQueuedPrompt(row: any): QueuedPrompt {
