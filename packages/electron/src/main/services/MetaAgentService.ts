@@ -21,6 +21,7 @@ import {
   shutdownMetaAgentServer,
 } from '../mcp/metaAgentServer';
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
+import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -882,7 +883,7 @@ export class MetaAgentService {
     }
 
     const messages = await AgentMessagesRepository.list(sessionId, { limit: 500 });
-    const userPrompts = this.extractUserPrompts(messages);
+    const userPrompts = extractUserPrompts(messages);
     const recentMessages = this.extractRecentMessages(messages, 3);
     const pendingPrompt = await this.getPendingInteractivePrompt(sessionId);
 
@@ -1116,27 +1117,11 @@ export class MetaAgentService {
     }
   }
 
-  private extractUserPrompts(messages: Array<{ direction: string; content: string }>): string[] {
-    const prompts: string[] = [];
-    for (const message of messages) {
-      if (message.direction !== 'input') continue;
-      try {
-        const parsed = JSON.parse(message.content);
-        if (typeof parsed.prompt === 'string' && parsed.prompt.trim()) {
-          prompts.push(parsed.prompt.trim());
-        }
-      } catch {
-        continue;
-      }
-    }
-    return prompts;
-  }
-
-  private extractLastAgentResponse(messages: Array<{ direction: string; content: string }>, maxLength: number = 500): string | null {
+  private extractLastAgentResponse(messages: Array<{ direction: string; content: string; metadata?: Record<string, unknown> | null }>, maxLength: number = 500): string | null {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
       if (message.direction !== 'output') continue;
-      const extracted = this.extractMessageText(message.content);
+      const extracted = extractMessageText(message.content, message.metadata);
       if (extracted) {
         return extracted.length > maxLength ? `${extracted.slice(0, maxLength)}...` : extracted;
       }
@@ -1145,13 +1130,13 @@ export class MetaAgentService {
   }
 
   private extractRecentMessages(
-    messages: Array<{ direction: string; content: string }>,
+    messages: Array<{ direction: string; content: string; metadata?: Record<string, unknown> | null }>,
     limit: number
   ): Array<{ direction: 'input' | 'output'; text: string }> {
     const collected: Array<{ direction: 'input' | 'output'; text: string }> = [];
     for (let index = messages.length - 1; index >= 0 && collected.length < limit; index -= 1) {
       const message = messages[index];
-      const text = this.extractMessageText(message.content);
+      const text = extractMessageText(message.content, message.metadata);
       if (!text) {
         continue;
       }
@@ -1161,44 +1146,6 @@ export class MetaAgentService {
       });
     }
     return collected.reverse();
-  }
-
-  private extractMessageText(rawContent: string): string | null {
-    try {
-      const parsed = JSON.parse(rawContent);
-
-      if (typeof parsed.prompt === 'string' && parsed.prompt.trim()) {
-        return parsed.prompt.trim();
-      }
-
-      if (parsed.type === 'text' && typeof parsed.content === 'string' && parsed.content.trim()) {
-        return parsed.content.trim();
-      }
-
-      if (parsed.type === 'assistant' && Array.isArray(parsed.message?.content)) {
-        const text = parsed.message.content
-          .filter((block: any) => block.type === 'text' && typeof block.text === 'string')
-          .map((block: any) => block.text.trim())
-          .filter(Boolean)
-          .join('\n');
-        return text || null;
-      }
-
-      if (parsed.type === 'nimbalyst_tool_use' && parsed.name === 'AskUserQuestion') {
-        return 'Interactive prompt: AskUserQuestion';
-      }
-
-      if (parsed.type === 'permission_request') {
-        return `Permission request: ${parsed.toolName || parsed.requestId || 'unknown tool'}`;
-      }
-
-      if (parsed.type === 'exit_plan_mode_request') {
-        return `Plan ready for review${parsed.planFilePath ? `: ${parsed.planFilePath}` : ''}`;
-      }
-    } catch {
-      return null;
-    }
-    return null;
   }
 
   private extractErrorMessage(messages: Array<{ direction: string; content: string }>): string | null {
