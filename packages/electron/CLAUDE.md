@@ -180,14 +180,15 @@ db.query('INSERT INTO ... VALUES ($1)', [new Date()])
 
 3. **DO**: Retrieve timestamps through `toMillis()` function
 ```typescript
-const createdAt = toMillis(row.created_at);  // Returns epoch milliseconds
+const createdAt = toMillis(row.created_at)!;              // Required timestamp
+const claimedAt = toMillis(row.claimed_at) ?? undefined;  // Nullable timestamp
 ```
 
 4. **DO**: Display with `toLocaleString()` for user's local timezone
 
 **Related files:**
 - `src/main/database/worker.js` - Database schema and comments
-- `src/main/services/PGLiteSessionStore.ts` - toMillis() implementation
+- `src/main/utils/timestampUtils.ts` - canonical toMillis() implementation
 
 ## Renderer State Architecture
 

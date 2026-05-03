@@ -8,6 +8,7 @@ import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { AISessionsRepository, AgentMessagesRepository, SessionFilesRepository } from '@nimbalyst/runtime';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { getDefaultAIModel } from '../utils/store';
+import { toMillis } from '../utils/timestampUtils';
 import { createWorktreeStore } from './WorktreeStore';
 import { GitWorktreeService } from './GitWorktreeService';
 import { database as databaseWorker } from '../database/PGLiteDatabaseWorker';
@@ -532,8 +533,8 @@ export class MetaAgentService {
       sessionId: row.id,
       title: row.title || 'Untitled Session',
       status,
-      lastActivity: row.last_activity ? new Date(row.last_activity).getTime() : null,
-      updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : null,
+      lastActivity: toMillis(row.last_activity),
+      updatedAt: toMillis(row.updated_at),
       provider: row.provider,
       model: row.model || null,
       createdBySessionId: row.created_by_session_id || null,
@@ -657,9 +658,9 @@ export class MetaAgentService {
         provider: row.provider,
         model: row.model || null,
         status: row.status || 'idle',
-        lastActivity: row.last_activity ? new Date(row.last_activity).getTime() : null,
-        createdAt: row.created_at instanceof Date ? row.created_at.getTime() : new Date(row.created_at).getTime(),
-        updatedAt: row.updated_at instanceof Date ? row.updated_at.getTime() : new Date(row.updated_at).getTime(),
+        lastActivity: toMillis(row.last_activity),
+        createdAt: toMillis(row.created_at)!,
+        updatedAt: toMillis(row.updated_at)!,
         worktreeId: row.worktree_id || null,
       });
       sessions.push({
@@ -832,7 +833,7 @@ export class MetaAgentService {
       sessionProvider = session.provider;
       sessionModel = session.model || null;
       sessionStatus = (statusRow?.status || 'idle') as SessionStatusValue;
-      sessionLastActivity = statusRow?.last_activity ? new Date(statusRow.last_activity).getTime() : null;
+      sessionLastActivity = toMillis(statusRow?.last_activity);
       sessionCreatedAt = session.createdAt;
       sessionUpdatedAt = session.updatedAt;
       sessionWorktreeId = session.worktreeId || null;
@@ -929,7 +930,7 @@ export class MetaAgentService {
               id: row.id,
               promptId,
               promptType: 'ask_user_question_request',
-              createdAt: row.created_at instanceof Date ? row.created_at.getTime() : new Date(row.created_at).getTime(),
+              createdAt: toMillis(row.created_at)!,
               content: {
                 ...content,
                 questions: content.input?.questions || [],
@@ -943,7 +944,7 @@ export class MetaAgentService {
               id: row.id,
               promptId: content.input?.requestId || promptId,
               promptType: 'permission_request',
-              createdAt: row.created_at instanceof Date ? row.created_at.getTime() : new Date(row.created_at).getTime(),
+              createdAt: toMillis(row.created_at)!,
               content: {
                 type: 'permission_request',
                 requestId: content.input?.requestId || promptId,
@@ -987,7 +988,7 @@ export class MetaAgentService {
             id: row.id,
             promptId,
             promptType: 'exit_plan_mode_request',
-            createdAt: row.created_at instanceof Date ? row.created_at.getTime() : new Date(row.created_at).getTime(),
+            createdAt: toMillis(row.created_at)!,
             content,
           };
         }

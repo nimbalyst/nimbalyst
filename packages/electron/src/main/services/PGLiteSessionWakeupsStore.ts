@@ -9,6 +9,8 @@
  * prior row in the same transaction.
  */
 
+import { toMillis } from '../utils/timestampUtils';
+
 export type SessionWakeupStatus =
   | 'pending'
   | 'firing'
@@ -79,18 +81,6 @@ type PGliteLike = {
 
 type EnsureReadyFn = () => Promise<void>;
 
-function toMillis(date: Date | string | null | undefined): number {
-  if (!date) return 0;
-  if (date instanceof Date) {
-    return date.getTime();
-  }
-  const str = String(date).trim();
-  const hasTimezone =
-    str.endsWith('Z') || str.includes('+') || /-\d{2}:\d{2}$/.test(str);
-  const parsed = new Date(hasTimezone ? str : str.replace(' ', 'T') + 'Z').getTime();
-  return Number.isNaN(parsed) ? 0 : parsed;
-}
-
 function rowToWakeup(row: any): SessionWakeup {
   return {
     id: row.id,
@@ -98,10 +88,10 @@ function rowToWakeup(row: any): SessionWakeup {
     workspaceId: row.workspace_id,
     prompt: row.prompt,
     reason: row.reason ?? null,
-    fireAt: toMillis(row.fire_at),
+    fireAt: toMillis(row.fire_at)!,
     status: row.status as SessionWakeupStatus,
-    createdAt: toMillis(row.created_at),
-    firedAt: row.fired_at ? toMillis(row.fired_at) : null,
+    createdAt: toMillis(row.created_at)!,
+    firedAt: toMillis(row.fired_at),
     error: row.error ?? null,
   };
 }

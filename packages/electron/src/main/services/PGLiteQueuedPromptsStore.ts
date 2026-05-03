@@ -5,6 +5,8 @@
  * Uses simple row-level atomic updates instead of JSONB array manipulation.
  */
 
+import { toMillis } from '../utils/timestampUtils';
+
 export interface QueuedPrompt {
   id: string;
   sessionId: string;
@@ -73,18 +75,6 @@ type PGliteLike = {
 
 type EnsureReadyFn = () => Promise<void>;
 
-function toMillis(date: Date | string | null | undefined): number {
-  if (!date) return 0;
-  if (date instanceof Date) {
-    return date.getTime();
-  }
-  const str = String(date).trim();
-  const hasTimezone =
-    str.endsWith('Z') || str.includes('+') || /-\d{2}:\d{2}$/.test(str);
-  const parsed = new Date(hasTimezone ? str : str.replace(' ', 'T') + 'Z').getTime();
-  return Number.isNaN(parsed) ? 0 : parsed;
-}
-
 function rowToQueuedPrompt(row: any): QueuedPrompt {
   // Parse JSONB fields
   let attachments = row.attachments;
@@ -112,9 +102,9 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     status: row.status,
     attachments,
     documentContext,
-    createdAt: toMillis(row.created_at),
-    claimedAt: row.claimed_at ? toMillis(row.claimed_at) : undefined,
-    completedAt: row.completed_at ? toMillis(row.completed_at) : undefined,
+    createdAt: toMillis(row.created_at)!,
+    claimedAt: toMillis(row.claimed_at) ?? undefined,
+    completedAt: toMillis(row.completed_at) ?? undefined,
     errorMessage: row.error_message || undefined,
   };
 }
