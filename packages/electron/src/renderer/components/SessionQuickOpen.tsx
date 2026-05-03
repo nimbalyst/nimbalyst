@@ -5,6 +5,7 @@ import { getRelativeTimeString } from '../utils/dateFormatting';
 import { sessionOrChildProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom } from '../store';
 import { fileMentionOptionsAtom, searchFileMentionAtom } from '../store/atoms/fileMention';
 import type { TypeaheadOption } from './Typeahead/GenericTypeahead';
+import { KeyboardShortcuts, getShortcutDisplay } from '../../shared/KeyboardShortcuts';
 
 import type { SessionMeta as SessionItem } from '../store';
 
@@ -525,7 +526,7 @@ export const SessionQuickOpen: React.FC<SessionQuickOpenProps> = ({
             </span>
           ) : (
             <span className="session-quick-open-hint text-[11px] text-[var(--nim-text-faint)] flex items-center gap-1">
-              <kbd className="py-0.5 px-1.5 rounded-[3px] font-mono text-[10px] bg-[var(--nim-bg)] border border-[var(--nim-border)] text-[var(--nim-text)]">⌘⇧L</kbd> Search prompts
+              <kbd className="py-0.5 px-1.5 rounded-[3px] font-mono text-[10px] bg-[var(--nim-bg)] border border-[var(--nim-border)] text-[var(--nim-text)]">{getShortcutDisplay(KeyboardShortcuts.window.promptQuickOpen)}</kbd> Search prompts
             </span>
           )}
         </div>

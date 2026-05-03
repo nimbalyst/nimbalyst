@@ -8,6 +8,7 @@ import {
 } from '../../hooks/useTabState';
 import { CommonFileActions } from '../CommonFileActions';
 import { historyDialogFileAtom } from '../../store';
+import { KeyboardShortcuts, getShortcutDisplay } from '../../../shared/KeyboardShortcuts';
 
 // Separate component for dirty indicator - subscribes to its own tab's dirty state
 // This allows only this component to re-render when dirty state changes
@@ -718,7 +719,7 @@ export const TabBar: React.FC<TabBarProps> = ({
               className="ai-chat-toggle-button flex items-center justify-center w-7 h-7 border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-primary)] cursor-pointer rounded p-0 transition-all duration-200 hover:bg-[var(--nim-bg-tertiary)] hover:scale-105 active:scale-95"
               data-testid="ai-sidebar-toggle"
               onClick={onToggleAIChat}
-              title={isAIChatCollapsed ? "Open AI Assistant (⌘⇧A)" : "Close AI Assistant (⌘⇧A)"}
+              title={`${isAIChatCollapsed ? 'Open' : 'Close'} AI Assistant (${getShortcutDisplay(KeyboardShortcuts.view.toggleAIChat)})`}
               aria-label={isAIChatCollapsed ? "Open AI Assistant" : "Close AI Assistant"}
             >
               <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
