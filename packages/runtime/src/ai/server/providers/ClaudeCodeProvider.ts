@@ -63,6 +63,7 @@ import {
   prepareClaudeCodeAttachments,
 } from './claudeCode/messagePreparation';
 import {
+  annotateStreamClosedToolResult,
   applyToolResultToToolCall,
   isSearchableAssistantChunk,
 } from './claudeCode/toolChunkUtils';
@@ -940,7 +941,11 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
               case 'tool_result': {
                 const toolCall = toolCallsById.get(item.toolUseId);
                 if (toolCall) {
-                  const { isDuplicate } = applyToolResultToToolCall(toolCall, item.content, item.isError);
+                  // Swap "Stream closed" for an operator-actionable message before
+                  // it reaches the UI. The original `item.content` is left untouched
+                  // so the diagnostic logging below still inspects the raw signal.
+                  const annotatedContent = annotateStreamClosedToolResult(item.content, item.isError);
+                  const { isDuplicate } = applyToolResultToToolCall(toolCall, annotatedContent, item.isError);
                   if (isDuplicate) break;
 
                   // Diagnostic: detect "Stream closed" errors from the native binary

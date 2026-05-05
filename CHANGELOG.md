@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- Surface a clearer error than `Stream closed` on Claude Code tool-call failures. The native binary's bare error string left operators chasing permission-mode or token issues, but the failure correlates with PGLite write-lock contention on the audit-log tables (`ai_agent_messages`, `ai_tool_call_file_edits`) under sustained tool-call traffic in `permissionMode: bypass-all`. `ClaudeCodeProvider` now passes tool-result content through a new `annotateStreamClosedToolResult` helper that prepends a diagnostic message identifying the audit-log-contention pattern and pointing at #163 for the full hypothesis and ranked deeper fixes. The original error text is preserved verbatim at the end. Existing `STREAM_CLOSED_DIAGNOSTIC` console logging is untouched (it reads the raw chunk content, not the toolCall result). References #163.
 
 ### Removed
 <!-- Removed features go here -->
