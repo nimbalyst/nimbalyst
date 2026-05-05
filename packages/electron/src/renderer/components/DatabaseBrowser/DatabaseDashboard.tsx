@@ -21,6 +21,15 @@ interface BackupStatus {
   lastSuccessfulBackup: string | null;
 }
 
+interface WalStats {
+  fileCount: number;
+  totalBytes: number;
+  totalSize: string;
+  minWalSize: string;
+  maxWalSize: string;
+  checkpointTimeout: string;
+}
+
 interface DashboardStats {
   tableStats: TableStat[];
   totalSize: string;
@@ -31,6 +40,7 @@ interface DashboardStats {
     database_size: string;
   };
   backupStatus: BackupStatus | null;
+  walStats: WalStats | null;
 }
 
 interface Props {
@@ -43,6 +53,18 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+// Parse a Postgres-style size string ("80MB", "1GB", "5kB") into bytes.
+// Used to render the WAL progress bar against min/max bounds.
+function parsePostgresSize(s: string | undefined): number {
+  if (!s) return 0;
+  const match = s.trim().match(/^(\d+(?:\.\d+)?)\s*(B|kB|MB|GB|TB)?$/i);
+  if (!match) return 0;
+  const value = parseFloat(match[1]);
+  const unit = (match[2] || 'B').toLowerCase();
+  const multipliers: Record<string, number> = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 };
+  return value * (multipliers[unit] ?? 1);
 }
 
 function formatRelativeTime(timestamp: string): string {
@@ -186,6 +208,48 @@ export function DatabaseDashboard({ onTableSelect }: Props) {
             </div>
           </div>
         )}
+
+        {/* WAL (Write-Ahead Log) */}
+        {stats.walStats && (() => {
+          const minBytes = parsePostgresSize(stats.walStats.minWalSize);
+          const maxBytes = parsePostgresSize(stats.walStats.maxWalSize);
+          const cur = stats.walStats.totalBytes;
+          // Bar shows position between min and max. min is the floor that Postgres
+          // always retains; growth beyond max triggers an inline checkpoint.
+          const range = Math.max(maxBytes - minBytes, 1);
+          const pct = Math.min(100, Math.max(0, ((cur - minBytes) / range) * 100));
+          const overFloor = cur > minBytes * 1.05;
+          return (
+            <div className="database-dashboard-wal p-4 rounded-lg border border-[var(--nim-border)] bg-nim-secondary">
+              <h3 className="text-sm font-semibold mb-3">Write-Ahead Log</h3>
+              <div className="space-y-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-[var(--nim-text-muted)]">Current size</span>
+                  <span data-testid="wal-current-size">
+                    {stats.walStats.totalSize} ({stats.walStats.fileCount} {stats.walStats.fileCount === 1 ? 'segment' : 'segments'})
+                  </span>
+                </div>
+                <div className="h-1.5 bg-[var(--nim-bg-tertiary)] rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${overFloor ? 'bg-[var(--nim-warning)]' : 'bg-[var(--nim-primary)]'}`}
+                    style={{ width: `${Math.max(pct, 1)}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-xs text-[var(--nim-text-faint)]">
+                  <span>min {stats.walStats.minWalSize}</span>
+                  <span>max {stats.walStats.maxWalSize}</span>
+                </div>
+                <div className="flex items-center justify-between pt-2">
+                  <span className="text-[var(--nim-text-muted)]">Checkpoint timeout</span>
+                  <span>{stats.walStats.checkpointTimeout}</span>
+                </div>
+                <div className="text-xs text-[var(--nim-text-faint)] pt-1">
+                  PGLite has no background checkpointer; WAL is trimmed by explicit CHECKPOINT after init, before close, and when size exceeds 200 MB.
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Table Statistics */}
         <div className="rounded-lg border border-[var(--nim-border)] bg-nim-secondary overflow-hidden">

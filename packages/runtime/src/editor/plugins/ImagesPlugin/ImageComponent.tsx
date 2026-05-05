@@ -347,8 +347,13 @@ export default function ImageComponent({
       const documentPath = getDocumentPathFromDOM(containerRef.current);
       if (!cancelled) {
         if (documentPath) {
-          const lastSlash = documentPath.lastIndexOf('/');
-          const documentDir = lastSlash >= 0 ? documentPath.substring(0, lastSlash) : '';
+          // Handle both POSIX and Windows separators -- on Windows the
+          // document path is "C:\\foo\\bar.md" with backslashes.
+          const lastSep = Math.max(
+            documentPath.lastIndexOf('/'),
+            documentPath.lastIndexOf('\\'),
+          );
+          const documentDir = lastSep >= 0 ? documentPath.substring(0, lastSep) : '';
           const absolutePath = documentDir + '/' + src;
           setResolvedSrc(localAssetUrl(absolutePath));
         } else {

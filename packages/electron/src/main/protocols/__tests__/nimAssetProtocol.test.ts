@@ -55,10 +55,16 @@ describe("nimAssetProtocol", () => {
     });
 
     it("rejects a path that uses .. to traverse out of an allowlisted root", () => {
-      // path.normalize would smooth this away; we explicitly reject inputs
-      // that don't already equal their normalized form so the traversal
-      // attempt is visible to callers.
       expect(validateNimAssetPath(`${ROOT}/../etc/passwd.png`, roots)).toBeNull();
+    });
+
+    it("rejects .. traversal expressed with backslash separators", () => {
+      // Defense must hold regardless of which separator the caller uses,
+      // because on Windows the renderer emits backslash-separated paths.
+      // The earlier `normalize() === input` guard happened to catch this
+      // on POSIX but is gone; this test pins the explicit `..` segment
+      // check that replaced it.
+      expect(validateNimAssetPath(`${ROOT}\\..\\etc\\passwd.png`, roots)).toBeNull();
     });
 
     it("rejects null-byte injection", () => {

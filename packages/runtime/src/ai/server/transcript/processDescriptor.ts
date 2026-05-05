@@ -49,13 +49,33 @@ export async function processDescriptor(
     }
 
     case 'tool_call_started': {
-      if (desc.providerToolCallId && !toolEventIds.has(desc.providerToolCallId)) {
-        const existing = await store.findByProviderToolCallId(desc.providerToolCallId, sessionId);
-        if (existing) {
-          const existingPayload = existing.payload as Record<string, unknown>;
-          if (existingPayload.toolName === desc.toolName) {
-            toolEventIds.set(desc.providerToolCallId, existing.id);
-            return null;
+      if (desc.providerToolCallId) {
+        // In-memory dedup: same provider id AND same toolName means the
+        // parser saw this tool call twice in one batch (genuine duplicate).
+        // A different toolName with the same id signals a new turn that
+        // reused the id (Codex resets item_1, item_2, ... per turn) -- fall
+        // through and create a fresh event so the later-turn tool widget
+        // renders correctly.
+        const existingId = toolEventIds.get(desc.providerToolCallId);
+        if (existingId !== undefined) {
+          const existing = await store.getEventById(existingId);
+          if (existing) {
+            const existingToolName = (existing.payload as Record<string, unknown>).toolName;
+            if (existingToolName === desc.toolName) {
+              return null;
+            }
+          }
+        } else {
+          // DB fallback for the desktop incremental path: the in-memory map
+          // is fresh per batch but the DB may already hold this id from an
+          // earlier batch.
+          const existing = await store.findByProviderToolCallId(desc.providerToolCallId, sessionId);
+          if (existing) {
+            const existingToolName = (existing.payload as Record<string, unknown>).toolName;
+            if (existingToolName === desc.toolName) {
+              toolEventIds.set(desc.providerToolCallId, existing.id);
+              return null;
+            }
           }
         }
       }
@@ -164,12 +184,17 @@ export async function processDescriptor(
   }
 }
 
-export function selectRawParser(provider: string): 'codex' | 'copilot' | 'claude-code' | 'opencode' {
+export function selectRawParser(
+  provider: string,
+): 'codex' | 'codex-acp' | 'copilot' | 'claude-code' | 'opencode' {
   if (provider === 'copilot-cli') {
     return 'copilot';
   }
   if (provider === 'openai-codex') {
     return 'codex';
+  }
+  if (provider === 'openai-codex-acp') {
+    return 'codex-acp';
   }
   if (provider === 'opencode') {
     return 'opencode';

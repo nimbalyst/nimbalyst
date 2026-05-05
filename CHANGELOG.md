@@ -20,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 <!-- Removed features go here -->
 
+## [0.58.21] - 2026-05-04
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+- CI: re-enable tag-triggered electron release builds. The OSS-launch force-push that repointed old `v0.58.5..v0.58.13` tags is finished, so the temporary tags-trigger disable is lifted. Pushing a `v*` tag once again auto-fires the electron-build workflow, so future `/release` runs no longer need a separate `gh workflow run` dispatch.
+
+### Fixed
+- Pasting images into markdown documents on Windows no longer fails with a `nim-asset` 403. `ImageComponent` was splitting the document path on `/` only and dropped the document directory on Windows where paths use `\`, and the protocol validator's `normalize === input` traversal guard over-rejected the resulting mixed-separator path. `ImageComponent` now splits on both separators and the validator switches to an explicit `..`-segment check that still blocks traversal in either separator style.
+- Reduce "Stream closed" tool permission errors on multi-result Claude Code turns (e.g. compaction). `ClaudeCodeProvider` now ends its persistent prompt `AsyncIterable` on a 5s grace timer that starts after the first `result` chunk and resets on every subsequent chunk, so late `can_use_tool` control requests can complete on the still-open stdin without leaving stdin open forever after idle/interrupted turns.
+- Restoring from history (and any other editor-driven save) on a gitignored markdown file no longer leaves the editor showing stale content until the tab is reopened. `OptimizedWorkspaceWatcher.onChange` was skipping bypassed gitignored files on the assumption that `SessionFileWatcher` would deliver editor notifications, but `SessionFileWatcher` filters out events from `markEditorSave` (restore, manual `Cmd+S`, autosave), so neither path delivered `file-changed-on-disk` to the renderer. Fixes NIM-426.
+
+### Removed
+<!-- Removed features go here -->
+
 ## [0.58.20] - 2026-05-04
 
 

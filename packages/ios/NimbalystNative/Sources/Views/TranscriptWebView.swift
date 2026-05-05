@@ -135,6 +135,19 @@ public struct TranscriptWebView: UIViewRepresentable {
             forMainFrameOnly: true
         )
         contentController.addUserScript(errorScript)
+
+        // DEBUG-only flag so the JS bundle can opt into diagnostic helpers
+        // (window.nimbalyst._debugRaw / _debugView). Release builds never set
+        // it, so the helpers are unreachable from a packaged app.
+        #if DEBUG
+        let debugFlagScript = WKUserScript(
+            source: "window.__nimbalystDebug = true;",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        contentController.addUserScript(debugFlagScript)
+        #endif
+
         config.userContentController = contentController
 
         // Allow inline media playback
@@ -144,6 +157,14 @@ public struct TranscriptWebView: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = UIColor(red: 0x1a/255, green: 0x1a/255, blue: 0x1a/255, alpha: 1)
         webView.scrollView.backgroundColor = UIColor(red: 0x1a/255, green: 0x1a/255, blue: 0x1a/255, alpha: 1)
+
+        // Allow Safari Web Inspector to attach in development builds. Without
+        // this the transcript WKWebView is invisible to Develop > [device].
+        #if DEBUG
+        if #available(iOS 16.4, *) {
+            webView.isInspectable = true
+        }
+        #endif
 
         // Disable bouncing for a more native feel within the scroll
         webView.scrollView.bounces = false

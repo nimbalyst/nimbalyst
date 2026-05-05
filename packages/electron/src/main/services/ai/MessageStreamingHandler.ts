@@ -74,6 +74,7 @@ import {
   isBinaryFile,
   getFileExtensionForAnalytics,
 } from './aiServiceUtils';
+import { disableParentNotificationsAfterDirectTakeover } from './childSessionTakeover';
 import type Store from 'electron-store';
 import type { AIService } from './AIService';
 import type { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
@@ -245,6 +246,11 @@ export class MessageStreamingHandler {
     if (session.id !== sessionId) {
       console.error(`[AIService] CRITICAL ERROR: Requested session ${sessionId} but got session ${session.id}!`);
       throw new Error(`Session mismatch: requested ${sessionId} but got ${session.id}`);
+    }
+
+    const inputType = (documentContext as any)?.inputType as string | undefined;
+    if (inputType === 'user' && !queuedPromptId) {
+      await this.disableParentNotificationsAfterDirectTakeover(session);
     }
 
     // CRITICAL: If session has a worktree, use its path instead of workspace path
@@ -2405,4 +2411,8 @@ export class MessageStreamingHandler {
       throw error;
     }
   };
+
+  private async disableParentNotificationsAfterDirectTakeover(session: SessionData): Promise<void> {
+    await disableParentNotificationsAfterDirectTakeover(session);
+  }
 }

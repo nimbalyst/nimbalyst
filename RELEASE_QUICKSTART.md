@@ -19,11 +19,11 @@ As you work, add changes to the `[Unreleased]` section:
 - Thing you updated
 ```
 
-## Step 2: Run the /release Command
+## Step 2: Run the /release-alpha Command
 
 In Claude Code, run:
 ```
-/release patch
+/release-alpha patch
 ```
 
 Choose:
@@ -38,7 +38,7 @@ git push origin main
 git push origin v0.42.61
 ```
 
-Done! GitHub Actions builds and publishes the release automatically.
+Done. The tag push publishes the GitHub alpha prerelease automatically. When it is ready to go public, run `/promote-public-release`.
 
 ---
 

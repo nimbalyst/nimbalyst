@@ -4,17 +4,19 @@ This document describes the release process for Nimbalyst.
 
 ## Overview
 
-Nimbalyst uses a streamlined release workflow with:
-- **CHANGELOG.md**: Single source of truth for all release notes
-- **Annotated Git Tags**: Tags include release notes for GitHub releases
-- **Automated Builds**: GitHub Actions builds and publishes releases
-- **Release Branches** (optional): For controlled releases and hotfixes
+Nimbalyst now uses a single GitHub Releases-based flow for both alpha and stable distribution:
+- **Tag push**: builds all platforms and publishes a visible GitHub **pre-release** for the alpha channel
+- **Stable promotion**: run `/promote-public-release` to rebuild cumulative public notes, let the user edit them, update the existing GitHub release notes, and flip that release from pre-release to stable
+- **CHANGELOG.md**: remains the source of truth for release notes
+- **Annotated Git Tags**: still carry the release notes snapshot
+
+During the migration away from Cloudflare R2, `.github/workflows/electron-build.yml` keeps a temporary `LEGACY_ALPHA_TRANSITION_R2_UPLOAD` switch enabled. Leave it on for exactly one transition release so older alpha installs that still point at R2 can update onto the GitHub-backed alpha feed, then turn it off.
 
 ## Standard Release Workflow
 
-The release process is divided into two phases to allow for internal testing before public release.
+The release process is divided into two phases so alpha users can test a published prerelease before it becomes the stable release.
 
-### Phase 1: Internal Release
+### Phase 1: Alpha Pre-release
 
 #### 1. Prepare Release Notes
 
@@ -33,14 +35,14 @@ As you work, add changes to the `[Unreleased]` section of `CHANGELOG.md`:
 - Updated behavior of A to B
 ```
 
-#### 2. Create Internal Release (Using /release Command)
+#### 2. Create Internal Release (Using /release-alpha)
 
-Run the `/release` slash command in Claude Code:
+Run the `/release-alpha` slash command in Claude Code:
 
 ```
-/release patch    # For bug fixes (0.42.60 → 0.42.61)
-/release minor    # For new features (0.42.60 → 0.43.0)
-/release major    # For breaking changes (0.42.60 → 1.0.0)
+/release-alpha patch    # For bug fixes (0.42.60 → 0.42.61)
+/release-alpha minor    # For new features (0.42.60 → 0.43.0)
+/release-alpha major    # For breaking changes (0.42.60 → 1.0.0)
 ```
 
 This command will:
@@ -60,92 +62,79 @@ After approving the release notes, the command will run `./scripts/release.sh` w
 4. Creates a commit with release notes
 5. Creates an annotated git tag with release notes
 
-#### 4. Push to Private Repo
+#### 4. Push the Release Commit and Tag
 
 ```bash
 # Review the changes
 git show HEAD
 git show v0.42.61
 
-# Push commit and tag to PRIVATE repo
+# Push commit and tag
 git push origin main
 git push origin v0.42.61
 ```
 
-#### 5. GitHub Actions Builds Internal Release
+#### 5. GitHub Actions Publishes the Alpha Release
 
 Pushing the tag triggers the GitHub Actions workflow which:
 1. Builds for macOS (arm64 + x64), Windows (x64 + arm64), and Linux (x64)
 2. Signs and notarizes macOS builds; signs Windows builds via DigiCert KeyLocker
-3. Creates release in `nimbalyst/nimbalyst` (private repo)
-4. Uploads build artifacts
+3. Publishes a visible GitHub **pre-release** for tag `vX.Y.Z`
+4. Uploads build artifacts and update manifests to that release
+5. Optionally uploads the same assets to the legacy R2 bucket when `LEGACY_ALPHA_TRANSITION_R2_UPLOAD` is still enabled
 
 **Windows artifacts:** Two installers ship per release. `Nimbalyst-Windows-x64.exe`
 and `Nimbalyst-Windows-arm64.exe` are the arch-specific installers referenced by
-`latest.yml` for auto-update. A third file, `Nimbalyst-Windows.exe`, is a copy of
+`latest.yml` / `alpha.yml` for auto-update. A third file, `Nimbalyst-Windows.exe`, is a copy of
 the signed x64 installer kept for backwards-compatible download links — it is not
 referenced by the updater metadata.
 
-#### 6. Test Internal Build
+#### 6. Test the Alpha Build
 
 Before proceeding to Phase 2:
-1. Download the build from the private repo release
+1. Download the build from the GitHub pre-release for that tag
 2. Test thoroughly on target platforms
 3. Verify all features work as expected
 4. Check for any critical issues
 
-### Phase 2: Public Release
+Alpha users in the app receive this release through the GitHub pre-release feed:
+- `releaseChannel=alpha` sets `autoUpdater.allowPrerelease = true`
+- `autoUpdater.channel = 'alpha'` makes electron-updater read `alpha*.yml` assets from the GitHub release
 
-Only proceed after successfully testing the internal build.
+### Phase 2: Stable Promotion
 
-#### 1. Verify Internal Build
+Only proceed after successfully testing the alpha pre-release.
+
+#### 1. Verify the Pre-release
 
 Ensure:
-- Internal build has been tested
+- The alpha pre-release has been tested
 - No critical issues found
 - Ready to release publicly
 
-#### 2. Publish to Public Repo (Using /release-public Command)
+#### 2. Promote the Same Tag to Stable
 
-Run the `/release-public` slash command in Claude Code:
+Run `/promote-public-release`.
 
-```
-/release-public
-```
+That command:
+- finds the current GitHub prerelease for the tag
+- finds the previous stable public release
+- rebuilds `PUBLIC_RELEASE_NOTES.md` cumulatively across releases since that stable release
+- pauses for user edits
+- commits the final `PUBLIC_RELEASE_NOTES.md`
+- updates the existing GitHub release notes from that file
+- clears the prerelease flag on the existing release
 
-This command will:
-1. Extract the current version from git tags
-2. Show the user-facing public release notes
-3. Provide instructions for publishing
+No second tag is created, and no separate release draft is involved.
 
-#### 3. Execute Public Release
-
-Follow the command's guidance to either:
-
-**Option A: GitHub Actions Workflow (Recommended)**
-1. Visit: https://github.com/nimbalyst/nimbalyst/actions/workflows/publish-public.yml
-2. Click "Run workflow"
-3. Enter the version tag (e.g., v0.42.61)
-4. Paste the public release notes from the `/release-public` command
-5. Click "Run workflow"
-
-The workflow will automatically:
-- Download artifacts from the private repo
-- Create the release on the public repo
-- Upload all build artifacts
-
-**Option B: Manual Publication**
-1. Visit: https://github.com/nimbalyst/nimbalyst/releases/new
-2. Create release with the public notes provided by the command
-3. Manually download and upload artifacts from the private repo
-
-#### 4. Verify Public Release
+#### 3. Verify Stable Release
 
 Check that:
 - Release appears on public repo: https://github.com/nimbalyst/nimbalyst/releases
 - Only user-facing changes are mentioned
 - No internal/technical details exposed
 - Build artifacts are available (if applicable)
+- The release is **not** marked as a pre-release
 
 ## Release Branch Workflow (Optional)
 
@@ -326,7 +315,8 @@ The build number (`CFBundleVersion`) auto-increments by 1 with each release. It 
 ### Electron
 - **CHANGELOG.md**: Release notes history
 - **scripts/release.sh**: Release automation script
-- **.claude/commands/release.md**: Claude Code slash command
+- **.claude/commands/release-alpha.md**: Claude Code slash command
+- **.claude/commands/promote-public-release.md**: Claude Code slash command
 - **.github/workflows/electron-build.yml**: CI/CD workflow
 - **packages/electron/package.json**: Version number
 

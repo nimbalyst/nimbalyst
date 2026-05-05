@@ -2093,9 +2093,13 @@ app.on('before-quit', async (event) => {
     isAppQuitting = true;
 
     // Setup force quit timer - allow enough time for database backup + close
-    // Database operations: backup (up to 5s) + close worker (up to 2s) + buffer (3s)
+    // Database operations: backup (up to 5s) + close worker (up to 5s) + buffer (5s/3s)
+    // The close budget is 5s instead of 2s because PGLite runs Postgres in --single
+    // mode (no background checkpointer), so close() now issues an explicit CHECKPOINT
+    // first; on a large WAL that can take several seconds. Force-quit total bumped
+    // accordingly so the new close budget isn't preempted.
     // This is CRITICAL for Windows where forced shutdowns need proper cleanup time
-    const forceQuitDelay = app.isPackaged ? 12000 : 10000;
+    const forceQuitDelay = app.isPackaged ? 15000 : 13000;
     setupForceQuit(forceQuitDelay);
 
     let debugLog: string | null = null;
@@ -2480,7 +2484,10 @@ app.on('before-quit', async (event) => {
 
             try {
                 const closePromise = db.close();
-                const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 2000));
+                // 5s instead of 2s: db.close() now issues an explicit CHECKPOINT first
+                // (PGLite --single mode has no background checkpointer), which can take
+                // several seconds when WAL is large.
+                const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 5000));
                 await Promise.race([closePromise, timeoutPromise]);
                 const t11d = Date.now();
                 console.log(`[QUIT] [${t11d}] Database worker closed (${t11d-t11c}ms)`);

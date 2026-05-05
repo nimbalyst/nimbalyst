@@ -81,6 +81,20 @@ public final class TranscriptWebViewPool {
             forMainFrameOnly: true
         )
         contentController.addUserScript(errorScript)
+
+        // DEBUG-only flag so the JS bundle can opt into diagnostic helpers
+        // (window.nimbalyst._debugRaw / _debugView). Mirrors the cold-start
+        // path in TranscriptWebView; both must inject it because either web
+        // view may end up serving the transcript.
+        #if DEBUG
+        let debugFlagScript = WKUserScript(
+            source: "window.__nimbalystDebug = true;",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        contentController.addUserScript(debugFlagScript)
+        #endif
+
         config.userContentController = contentController
         config.allowsInlineMediaPlayback = true
 
@@ -89,6 +103,15 @@ public final class TranscriptWebViewPool {
         webView.backgroundColor = UIColor(red: 0x1a/255, green: 0x1a/255, blue: 0x1a/255, alpha: 1)
         webView.scrollView.backgroundColor = UIColor(red: 0x1a/255, green: 0x1a/255, blue: 0x1a/255, alpha: 1)
         webView.scrollView.bounces = false
+
+        // Match TranscriptWebView: enable Safari Web Inspector in DEBUG. The
+        // pool path is used in nearly all cases, so without this the transcript
+        // shows up as "No inspectable contents" in Safari Develop menu.
+        #if DEBUG
+        if #available(iOS 16.4, *) {
+            webView.isInspectable = true
+        }
+        #endif
 
         // Set up navigation delegate to detect load completion
         let delegate = WarmupNavigationDelegate { [weak self] in

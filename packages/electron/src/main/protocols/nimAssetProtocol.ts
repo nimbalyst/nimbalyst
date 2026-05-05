@@ -22,7 +22,7 @@
  */
 import { protocol, app, net } from "electron";
 import { realpath } from "fs/promises";
-import { resolve, sep, extname, normalize } from "path";
+import { resolve, sep, extname } from "path";
 import { pathToFileURL } from "url";
 
 export const NIM_ASSET_SCHEME = "nim-asset";
@@ -100,10 +100,13 @@ export function validateNimAssetPath(
   if (!requestedAbsPath) return null;
   if (requestedAbsPath.includes("\0")) return null;
 
-  // Disallow `..` segments before `path.resolve` smooths them away. resolve()
-  // would normalize `/a/b/../etc/passwd` to `/a/etc/passwd`, but we want the
-  // explicit traversal attempt itself to be rejected.
-  if (normalize(requestedAbsPath) !== requestedAbsPath) return null;
+  // Reject `..` traversal explicitly. We split on both POSIX and Windows
+  // separators because the renderer may emit a mixed-separator path
+  // (e.g. on Windows, `C:\Users\me\doc/assets/img.png`) -- a
+  // `normalize() === input` check would over-reject those legitimate
+  // paths, so we look for `..` segments directly.
+  const segments = requestedAbsPath.split(/[/\\]+/);
+  if (segments.includes("..")) return null;
 
   const resolved = resolve(requestedAbsPath);
 

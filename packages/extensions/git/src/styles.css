@@ -635,6 +635,20 @@
   background: var(--nim-bg-active);
 }
 
+.git-hover-file-row--clickable {
+  cursor: pointer;
+}
+
+.git-hover-file-row--clickable:focus-visible {
+  outline: 1px solid var(--nim-primary);
+  outline-offset: -1px;
+}
+
+.git-hover-file-row--pinned {
+  background: var(--nim-bg-active);
+  box-shadow: inset 2px 0 0 var(--nim-primary);
+}
+
 .git-hover-file-row--dir {
   padding-top: 3px;
 }

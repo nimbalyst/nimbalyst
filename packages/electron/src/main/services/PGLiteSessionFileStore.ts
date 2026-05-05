@@ -4,20 +4,13 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type { SessionFileStore, FileLink, FileLinkType } from '@nimbalyst/runtime';
+import { toMillis } from '../utils/timestampUtils';
 
 type PGliteLike = {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
 };
 
 type EnsureReadyFn = () => Promise<void>;
-
-function toMillis(value: unknown): number {
-  if (!value) return Date.now();
-  if (typeof value === 'number') return value;
-  if (value instanceof Date) return value.getTime();
-  const parsed = new Date(value as any).getTime();
-  return Number.isNaN(parsed) ? Date.now() : parsed;
-}
 
 function rowToFileLink(row: any): FileLink {
   return {
@@ -26,7 +19,7 @@ function rowToFileLink(row: any): FileLink {
     workspaceId: row.workspace_id,
     filePath: row.file_path,
     linkType: row.link_type as FileLinkType,
-    timestamp: toMillis(row.timestamp),
+    timestamp: toMillis(row.timestamp)!,
     metadata: row.metadata || {}
   };
 }

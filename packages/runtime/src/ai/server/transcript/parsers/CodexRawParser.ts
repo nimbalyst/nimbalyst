@@ -244,27 +244,18 @@ export class CodexRawParser implements IRawMessageParser {
       }
     }
 
-    // If we've already created this tool call, just produce a completion if there's a result
-    if (context.hasToolCall(toolId)) {
-      if (hasResult) {
-        const { resultText, isError } = this.extractCodexToolResult(tc.result);
-        descriptors.push({
-          type: 'tool_call_completed',
-          providerToolCallId: toolId,
-          status: isError ? 'error' : 'completed',
-          result: resultText,
-          isError,
-        });
-      }
-      return descriptors;
-    }
-
     // Determine target file path
     let targetFilePath: string | null = null;
     if (typeof args.file_path === 'string') targetFilePath = args.file_path;
     else if (typeof args.path === 'string') targetFilePath = args.path;
 
-    // Create new tool call
+    // Always emit tool_call_started. processDescriptor is responsible for
+    // deduping against an existing tool call with the same id AND the same
+    // toolName -- not on id alone. Codex resets per-turn item ids, so the
+    // same id ('item_1') routinely refers to a different tool in a later
+    // turn. Short-circuiting on hasToolCall(id) here would silently drop
+    // those later-turn tool calls when reprocessing the full session
+    // (the path mobile clients use).
     descriptors.push({
       type: 'tool_call_started',
       toolName,

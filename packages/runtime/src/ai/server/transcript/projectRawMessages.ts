@@ -17,6 +17,8 @@ import { TranscriptProjector, type TranscriptViewMessage } from './TranscriptPro
 import { InMemoryTranscriptEventStore } from './InMemoryTranscriptEventStore';
 import { ClaudeCodeRawParser } from './parsers/ClaudeCodeRawParser';
 import { CodexRawParser } from './parsers/CodexRawParser';
+import { CodexACPRawParser } from './parsers/CodexACPRawParser';
+import { CopilotRawParser } from './parsers/CopilotRawParser';
 import { OpenCodeRawParser } from './parsers/OpenCodeRawParser';
 import type { IRawMessageParser, ParseContext } from './parsers/IRawMessageParser';
 import type { RawMessage } from './TranscriptTransformer';
@@ -26,6 +28,8 @@ import { processDescriptor, selectRawParser } from './processDescriptor';
 function createParser(provider: string): IRawMessageParser {
   const kind = selectRawParser(provider);
   if (kind === 'codex') return new CodexRawParser();
+  if (kind === 'codex-acp') return new CodexACPRawParser();
+  if (kind === 'copilot') return new CopilotRawParser();
   if (kind === 'opencode') return new OpenCodeRawParser();
   return new ClaudeCodeRawParser();
 }

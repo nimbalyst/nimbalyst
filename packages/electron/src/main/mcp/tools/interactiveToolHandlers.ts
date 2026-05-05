@@ -573,7 +573,10 @@ export async function handleGitCommitProposal(
           } catch {
             // May fail in fresh repo with no commits - that's OK
           }
-          await git.add(filePaths);
+          // Use --all so deletions are staged correctly. Plain `git add <path>`
+          // errors with "pathspec did not match any files" when the proposal
+          // includes deleted files (e.g., during renames).
+          await git.add(["--all", "--", ...filePaths]);
           return await git.commit(commitMessage);
         }
       );

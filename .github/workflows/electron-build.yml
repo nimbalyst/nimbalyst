@@ -20,7 +20,7 @@ on:
           - 'true'
           - 'false'
       create_github_release:
-        description: 'Create GitHub Release (for public promotion)'
+        description: 'Promote the published GitHub prerelease to stable'
         required: false
         default: 'false'
         type: choice
@@ -35,13 +35,18 @@ on:
         default: false
         type: boolean
       create_github_release:
-        description: 'Create GitHub Release'
+        description: 'Promote the published GitHub prerelease to stable'
         required: false
         default: false
         type: boolean
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Keep this enabled for exactly the transition build so existing alpha
+  # installs still hard-coded to the R2 feed can migrate to the new
+  # GitHub-backed alpha channel. After shipping that bridge release, flip
+  # this to "false" (or remove the R2 step entirely) to complete cutover.
+  LEGACY_ALPHA_TRANSITION_R2_UPLOAD: 'true'
 
 permissions:
   contents: write
@@ -424,9 +429,8 @@ jobs:
           # Windows signing is handled post-build by DigiCert KeyLocker
           # GH_TOKEN is intentionally unset: electron-builder is invoked with
           # --publish never on all platforms below, so GitHub Release creation
-          # does not happen at the build step. The dedicated `Create GitHub
-          # Release` step later in this workflow is the only path to public
-          # GitHub Releases, and it runs only when create_github_release=true.
+          # does not happen at the build step. The dedicated release step later
+          # in this workflow creates or updates the GitHub release explicitly.
           # Require notarization for release builds
           # Release builds require notarization (push to tag, or explicit release input)
           REQUIRE_NOTARIZE: ${{ github.ref_type == 'tag' || inputs.release == true || inputs.release == 'true' }}
@@ -437,9 +441,8 @@ jobs:
           BUILD_ARCH: ${{ matrix.arch }}
         working-directory: packages/electron
         run: |
-          # --publish never on every platform: artifacts are uploaded to R2
-          # for the alpha channel by a later step, and to GitHub Releases only
-          # when create_github_release=true (also a later step). electron-builder
+          # --publish never on every platform: alpha/stable distribution is
+          # handled explicitly later in this workflow, and electron-builder
           # must not create GitHub Releases on its own.
           if [ "${{ matrix.platform }}" == "mac" ]; then
             if [ "${{ github.ref_type }}" == "tag" ] || [ "${{ inputs.release }}" == "true" ]; then
@@ -739,8 +742,10 @@ jobs:
           echo "=== Internal GitHub Release Body (GITHUB_RELEASE_BODY.md) ==="
           cat release-files/GITHUB_RELEASE_BODY.md
 
-      # Upload to Cloudflare R2 (always happens for all releases)
+      # Transitional bridge for legacy alpha installs that still read the
+      # Cloudflare R2 feed. Disable after the one transition release ships.
       - name: Upload to Cloudflare R2
+        if: env.LEGACY_ALPHA_TRANSITION_R2_UPLOAD == 'true'
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -762,7 +767,7 @@ jobs:
             --include "RELEASE_NOTES.md" \
             --include "PUBLIC_RELEASE_NOTES.md"
 
-          echo "✅ Uploaded to R2 alpha channel (with release notes)"
+          echo "✅ Uploaded transition assets to the legacy R2 alpha channel"
 
       - name: Get version from tag
         id: get_version
@@ -776,36 +781,31 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
-      # GitHub Release creation is opt-in only. Tag pushes always build and
-      # upload to R2 (alpha channel); promotion to a public GitHub Release
-      # requires re-running this workflow via workflow_dispatch with
-      # create_github_release=true. Releases are created as drafts so they
-      # require an explicit Publish click in the GH UI before being visible.
-      - name: Create GitHub Release
-        if: inputs.create_github_release == true || inputs.create_github_release == 'true'
+      # Tag pushes publish a visible GitHub prerelease so alpha-channel clients
+      # can discover it through the public releases feed. Re-running the
+      # workflow with create_github_release=true updates that same release and
+      # clears the prerelease flag, making it the stable release.
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
           name: Release ${{ steps.get_version.outputs.VERSION }}
-          draft: true
-          prerelease: false
+          draft: false
+          prerelease: ${{ !(inputs.create_github_release == true || inputs.create_github_release == 'true') }}
           files: release-files/*
           generate_release_notes: false
           body_path: release-files/GITHUB_RELEASE_BODY.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # NOTE: All releases are uploaded to R2 for alpha channel testing
-      # GitHub Release creation is now MANUAL (set create_github_release=true)
-      # This allows testing alpha builds before promoting to stable/public
       - name: Release Complete
         run: |
           VERSION="${{ steps.get_version.outputs.VERSION }}"
           echo "✅ Release $VERSION complete!"
           echo ""
-          echo "📦 Alpha channel updated (R2):"
-          echo "   Bucket: nimbalyst-alpha-updates-a7592ff2"
-          echo "   URL: https://pub-4357a3345db7463580090984c0e4e2ba.r2.dev/"
+          echo "📦 Alpha channel published on GitHub Releases as a prerelease"
+          echo "   URL: https://github.com/nimbalyst/nimbalyst/releases/tag/$VERSION"
           echo ""
           echo "🧪 Testing instructions:"
           echo "   1. Open Nimbalyst Global Settings"
@@ -815,13 +815,18 @@ jobs:
           echo "   5. Save and restart the app"
           echo "   6. Check for updates (should find version $VERSION)"
           echo ""
+          if [[ "${LEGACY_ALPHA_TRANSITION_R2_UPLOAD}" == "true" ]]; then
+            echo "🔁 Legacy transition bridge also uploaded to R2:"
+            echo "   Bucket: nimbalyst-alpha-updates-a7592ff2"
+            echo "   URL: https://pub-4357a3345db7463580090984c0e4e2ba.r2.dev/"
+            echo ""
+          fi
           if [[ "${{ inputs.create_github_release }}" == "true" ]]; then
-            echo "📝 Draft GitHub Release created at:"
+            echo "🚀 GitHub release promoted from prerelease to stable:"
             echo "   https://github.com/nimbalyst/nimbalyst/releases/tag/$VERSION"
-            echo "   Click 'Publish release' in the GH UI to make it visible."
           else
-            echo "ℹ️  GitHub Release NOT created (alpha testing only)"
-            echo "   To promote to public, re-run workflow with create_github_release=true"
+            echo "ℹ️  The GitHub release is still marked as a prerelease"
+            echo "   To promote it to stable, re-run the workflow with create_github_release=true"
           fi
 
       - name: Notify Slack - Release Published
@@ -839,7 +844,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*Nimbalyst ${{ steps.get_version.outputs.VERSION }} alpha build published*\nPlatforms: macOS (arm64, x64), Linux, Windows (x64, arm64)\nR2 alpha channel updated"
+                    "text": "*Nimbalyst ${{ steps.get_version.outputs.VERSION }} alpha release published*\nPlatforms: macOS (arm64, x64), Linux, Windows (x64, arm64)\nGitHub prerelease updated"
                   }
                 },
                 {

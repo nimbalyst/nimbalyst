@@ -12,6 +12,11 @@ import { getDatabase } from '../database/initialize';
 
 // Reminder suppression duration: 24 hours
 const REMINDER_SUPPRESSION_DURATION_MS = 24 * 60 * 60 * 1000;
+const GITHUB_UPDATE_PROVIDER = {
+  provider: 'github' as const,
+  owner: 'nimbalyst',
+  repo: 'nimbalyst'
+};
 
 /**
  * Categorize download duration for analytics
@@ -85,21 +90,15 @@ export class AutoUpdaterService {
     const channel = getReleaseChannel();
 
     if (channel === 'alpha') {
-      // Alpha channel: Use Cloudflare R2 bucket
-      const alphaFeedURL = 'https://pub-4357a3345db7463580090984c0e4e2ba.r2.dev/';
-      log.info(`Configuring alpha channel updates from: ${alphaFeedURL}`);
-      autoUpdater.setFeedURL({
-        provider: 'generic',
-        url: alphaFeedURL
-      });
+      log.info('Configuring alpha channel updates from GitHub prereleases');
+      autoUpdater.allowPrerelease = true;
+      autoUpdater.channel = 'alpha';
+      autoUpdater.setFeedURL(GITHUB_UPDATE_PROVIDER);
     } else {
-      // Stable channel: Use GitHub releases (default)
-      log.info('Configuring stable channel updates from GitHub');
-      autoUpdater.setFeedURL({
-        provider: 'github',
-        owner: 'nimbalyst',
-        repo: 'nimbalyst'
-      });
+      log.info('Configuring stable channel updates from GitHub releases');
+      autoUpdater.allowPrerelease = false;
+      autoUpdater.channel = 'latest';
+      autoUpdater.setFeedURL(GITHUB_UPDATE_PROVIDER);
     }
   }
 
@@ -116,31 +115,9 @@ export class AutoUpdaterService {
       const wasManualCheck = this.isManualCheck;
       this.isManualCheck = false;
 
-      // Fetch release notes from R2 if using alpha channel
       let releaseNotes = info.releaseNotes as string | undefined;
       const channel = getReleaseChannel();
-      log.info(`Release channel: ${channel}, releaseNotes from info: "${releaseNotes}"`);
-
-      // Always fetch release notes from R2 for alpha channel
-      // The latest-mac.yml doesn't include releaseNotes, so we need to fetch it separately
-      if (channel === 'alpha') {
-        try {
-          const releaseNotesURL = 'https://pub-4357a3345db7463580090984c0e4e2ba.r2.dev/RELEASE_NOTES.md';
-          log.info(`Fetching release notes from: ${releaseNotesURL}`);
-          const response = await fetch(releaseNotesURL);
-          if (response.ok) {
-            releaseNotes = await response.text();
-            log.info('Successfully fetched release notes from R2');
-            log.info(`Release notes length: ${releaseNotes.length} characters`);
-          } else {
-            log.warn(`Failed to fetch release notes: ${response.status}`);
-          }
-        } catch (err) {
-          log.error('Error fetching release notes from R2:', err);
-        }
-      } else {
-        log.debug('Not fetching from R2 - either not alpha channel or releaseNotes already present');
-      }
+      log.info(`Release channel: ${channel}, releaseNotes present: ${Boolean(releaseNotes)}`);
 
       log.info(`Final releaseNotes being sent to window: "${releaseNotes?.substring(0, 100)}..."`);
 

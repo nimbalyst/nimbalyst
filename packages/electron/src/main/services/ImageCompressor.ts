@@ -9,13 +9,24 @@
  * 3. Ensures images can be sent to AI APIs without exceeding limits
  */
 
+import { createRequire } from 'module';
 import { Jimp } from 'jimp';
 
-// heic-decode doesn't have type declarations
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const decodeHeic = require('heic-decode') as (options: {
+type DecodeHeicFn = (options: {
   buffer: Buffer | ArrayBuffer;
 }) => Promise<{ width: number; height: number; data: Uint8ClampedArray }>;
+
+const require = createRequire(import.meta.url);
+let decodeHeic: DecodeHeicFn | null = null;
+
+function getHeicDecoder(): DecodeHeicFn {
+  if (!decodeHeic) {
+    // libheif-js eagerly boots its WASM runtime when heic-decode is required.
+    // Keep this behind the HEIC-only path so PNG/JPEG attachments never touch it.
+    decodeHeic = require('heic-decode') as DecodeHeicFn;
+  }
+  return decodeHeic;
+}
 
 /**
  * Custom error types for granular error handling
@@ -83,7 +94,7 @@ type JimpImage = Awaited<ReturnType<typeof Jimp.read>>;
  */
 async function decodeHeicToJimp(buffer: Buffer): Promise<JimpImage> {
   try {
-    const { data, width, height } = await decodeHeic({ buffer });
+    const { data, width, height } = await getHeicDecoder()({ buffer });
 
     // Create a new Jimp image from raw RGBA data
     const image = new Jimp({ width, height, color: 0x00000000 });

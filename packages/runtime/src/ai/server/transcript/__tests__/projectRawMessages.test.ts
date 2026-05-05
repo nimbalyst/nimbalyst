@@ -87,6 +87,101 @@ describe('projectRawMessagesToViewMessages', () => {
     });
   });
 
+  describe('Codex item ID reuse across turns', () => {
+    // Regression: Codex resets item IDs (item_1, item_2, ...) per turn within
+    // a single session. The mobile path runs all messages through the parser
+    // from scratch with a fresh in-memory event store, so the second turn's
+    // item_1 must still produce a fresh tool_call event when the toolName
+    // differs from the first turn's item_1. Without the fix, the parser's
+    // hasToolCall(id) short-circuit silently drops every later-turn tool call.
+    it('produces separate tool_call events when Codex reuses item_1 with a different toolName', async () => {
+      const messages: RawMessage[] = [
+        // Turn 1: item_1 is a command_execution
+        raw({
+          id: 1,
+          source: 'openai-codex',
+          content: JSON.stringify({
+            type: 'item.started',
+            item: {
+              id: 'item_1',
+              type: 'command_execution',
+              command: 'rg --files',
+              status: 'in_progress',
+            },
+          }),
+        }),
+        raw({
+          id: 2,
+          source: 'openai-codex',
+          content: JSON.stringify({
+            type: 'item.completed',
+            item: {
+              id: 'item_1',
+              type: 'command_execution',
+              command: 'rg --files',
+              aggregated_output: 'a.ts\nb.ts',
+              exit_code: 0,
+              status: 'completed',
+            },
+          }),
+        }),
+        // Turn 2 reuses item_1 for an MCP git commit proposal
+        raw({
+          id: 3,
+          source: 'openai-codex',
+          content: JSON.stringify({
+            type: 'item.started',
+            item: {
+              id: 'item_1',
+              type: 'mcp_tool_call',
+              server: 'nimbalyst-mcp',
+              tool: 'developer_git_commit_proposal',
+              arguments: { commitMessage: 'feat: x', filesToStage: ['a.ts'] },
+              status: 'in_progress',
+            },
+          }),
+        }),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'openai-codex');
+
+      const toolCalls = vms.filter((m) => m.type === 'tool_call');
+      expect(toolCalls).toHaveLength(2);
+      const names = toolCalls.map((m) => m.toolCall?.toolName).sort();
+      expect(names).toEqual([
+        'command_execution',
+        'mcp__nimbalyst-mcp__developer_git_commit_proposal',
+      ]);
+    });
+  });
+
+  describe('Codex ACP provider', () => {
+    // Regression: mobile parser-selection used to fall through to ClaudeCodeRawParser
+    // for openai-codex-acp sessions, silently dropping every ACP session/update
+    // envelope (including tool widgets like the git commit proposal).
+    it('routes openai-codex-acp messages through CodexACPRawParser', async () => {
+      const messages: RawMessage[] = [
+        raw({
+          id: 1,
+          source: 'openai-codex-acp',
+          content: JSON.stringify({
+            type: 'session/update',
+            sessionId: SESSION_ID,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'Hello from ACP' },
+            },
+          }),
+        }),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'openai-codex-acp');
+
+      expect(vms).toHaveLength(1);
+      expect(vms[0]).toMatchObject({ type: 'assistant_message', text: 'Hello from ACP' });
+    });
+  });
+
   describe('Claude Code provider', () => {
     it('projects a user prompt as a user_message', async () => {
       const messages: RawMessage[] = [

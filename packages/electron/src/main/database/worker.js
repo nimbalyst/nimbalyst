@@ -19,14 +19,70 @@ const { parentPort, workerData } = require('worker_threads');
 const { PGlite } = require('@electric-sql/pglite');
 const path = require('path');
 
+// WAL maintenance: total bytes across pg_wal/ that triggers an idle CHECKPOINT.
+// Why this number: PGLite's runtime settings are min_wal_size=80MB, max_wal_size=1GB
+// (verified via current_setting()). Postgres always keeps at least min_wal_size,
+// so any threshold below 80MB would fire on every check. Picked 200MB so the
+// trigger only fires once WAL has grown well past the floor but still well below
+// the 1GB cap, avoiding the multi-hundred-MB replay cost users were hitting.
+const WAL_CHECKPOINT_THRESHOLD_BYTES = 200 * 1024 * 1024;
+const WAL_CHECK_INTERVAL_MS = 60 * 1000;
+
 class PGLiteWorker {
   constructor() {
     this.db = null;
     this.dataDir = path.join(workerData.userDataPath, 'pglite-db');
     // Our own lock file with actual PID - separate from PGLite's postmaster.pid
     this.lockFilePath = path.join(workerData.userDataPath, 'nimbalyst-db.pid');
+    // Counter of in-flight query/exec calls; the WAL maintenance check skips
+    // when this is non-zero so a CHECKPOINT can never run during a user query
+    // (--single mode serializes them anyway, but skipping avoids visibly long blocks).
+    this.activeOps = 0;
+    this.walMaintenanceInterval = null;
     console.log('[PGLite Worker] Worker thread instantiated, dataDir:', this.dataDir);
     this.setupMessageHandler();
+  }
+
+  /**
+   * Periodic WAL maintenance. Runs only when no query/exec is in flight.
+   * Reads pg_wal/ size from disk; if it exceeds the threshold, issues CHECKPOINT.
+   */
+  async runWalMaintenance() {
+    if (!this.db) return;
+    if (this.activeOps > 0) return;
+
+    const walDir = path.join(this.dataDir, 'pg_wal');
+    let totalBytes = 0;
+    try {
+      const fs = require('fs');
+      const entries = fs.readdirSync(walDir);
+      for (const name of entries) {
+        try {
+          const stat = fs.statSync(path.join(walDir, name));
+          if (stat.isFile()) totalBytes += stat.size;
+        } catch {
+          // Entry vanished mid-scan; ignore.
+        }
+      }
+    } catch (err) {
+      console.warn('[PGLite Worker] WAL maintenance: could not read pg_wal/:', err?.message || err);
+      return;
+    }
+
+    if (totalBytes < WAL_CHECKPOINT_THRESHOLD_BYTES) return;
+
+    // Re-check activeOps right before issuing CHECKPOINT in case a request landed
+    // between the directory read and now.
+    if (this.activeOps > 0) return;
+
+    try {
+      const ckptStart = performance.now();
+      await this.db.exec('CHECKPOINT');
+      const elapsed = performance.now() - ckptStart;
+      console.log(`[PGLite Worker] WAL maintenance CHECKPOINT (was ${(totalBytes / 1024 / 1024).toFixed(1)}MB) took ${elapsed.toFixed(0)}ms`);
+    } catch (err) {
+      console.warn('[PGLite Worker] WAL maintenance CHECKPOINT failed:', err?.message || err);
+    }
   }
 
   /**
@@ -327,6 +383,36 @@ class PGLiteWorker {
       const schemaStartTime = performance.now();
       await this.createSchemas();
       console.log(`[PGLite Worker] Schema creation took ${(performance.now() - schemaStartTime).toFixed(0)}ms`);
+
+      // Start periodic WAL maintenance. Replaces the missing background checkpointer
+      // that --single mode does not run. Only fires when activeOps === 0.
+      if (this.walMaintenanceInterval) {
+        clearInterval(this.walMaintenanceInterval);
+      }
+      this.walMaintenanceInterval = setInterval(() => {
+        this.runWalMaintenance().catch((err) => {
+          console.warn('[PGLite Worker] WAL maintenance threw:', err?.message || err);
+        });
+      }, WAL_CHECK_INTERVAL_MS);
+      // Don't keep the worker alive for this timer alone.
+      if (typeof this.walMaintenanceInterval.unref === 'function') {
+        this.walMaintenanceInterval.unref();
+      }
+
+      // Force a CHECKPOINT after init.
+      // Why: PGLite runs Postgres in --single mode, so there is no checkpointer/bgwriter
+      // background process. WAL is only recycled by inline triggers, explicit CHECKPOINT,
+      // or smart-shutdown. If the previous run was force-killed (e.g. because of slow
+      // queries blocking shutdown), pg_wal can be huge on next launch and replay slows
+      // every subsequent query down. Issuing CHECKPOINT here flushes that backlog before
+      // the renderer starts hammering the DB. Non-fatal on failure.
+      try {
+        const ckptStart = performance.now();
+        await this.db.exec('CHECKPOINT');
+        console.log(`[PGLite Worker] Startup CHECKPOINT took ${(performance.now() - ckptStart).toFixed(0)}ms`);
+      } catch (ckptError) {
+        console.warn('[PGLite Worker] Startup CHECKPOINT failed (non-fatal):', ckptError?.message || ckptError);
+      }
 
       // Check if we recovered from corruption
       const recovered = initAttempt > 1;
@@ -1883,34 +1969,63 @@ class PGLiteWorker {
   async query(message) {
     if (!this.db) throw new Error('Database not initialized');
 
-    const execStart = performance.now();
-    const result = await this.db.query(message.payload.sql, message.payload.params);
-    const execMs = performance.now() - execStart;
-    return {
-      id: message.id,
-      success: true,
-      data: result,
-      execMs
-    };
+    this.activeOps++;
+    try {
+      const execStart = performance.now();
+      const result = await this.db.query(message.payload.sql, message.payload.params);
+      const execMs = performance.now() - execStart;
+      return {
+        id: message.id,
+        success: true,
+        data: result,
+        execMs
+      };
+    } finally {
+      this.activeOps--;
+    }
   }
 
   async exec(message) {
     if (!this.db) throw new Error('Database not initialized');
 
-    const execStart = performance.now();
-    await this.db.exec(message.payload.sql);
-    const execMs = performance.now() - execStart;
-    return {
-      id: message.id,
-      success: true,
-      execMs
-    };
+    this.activeOps++;
+    try {
+      const execStart = performance.now();
+      await this.db.exec(message.payload.sql);
+      const execMs = performance.now() - execStart;
+      return {
+        id: message.id,
+        success: true,
+        execMs
+      };
+    } finally {
+      this.activeOps--;
+    }
   }
 
   async close(message) {
+    if (this.walMaintenanceInterval) {
+      clearInterval(this.walMaintenanceInterval);
+      this.walMaintenanceInterval = null;
+    }
     if (this.db) {
       console.log('[PGLite Worker] Closing database...');
       try {
+        // Force a CHECKPOINT before close.
+        // Why: --single mode has no background checkpointer, so WAL only shrinks via
+        // explicit CHECKPOINT or the smart-shutdown sequence. If the caller's close
+        // budget (2-5s) gets preempted by force-quit before smart-shutdown's internal
+        // checkpoint runs, WAL stays large and the next launch is slow. Doing it
+        // explicitly here makes the cleanup happen even if the subsequent db.close()
+        // is killed mid-flight. Non-fatal on failure.
+        try {
+          const ckptStart = performance.now();
+          await this.db.exec('CHECKPOINT');
+          console.log(`[PGLite Worker] Pre-close CHECKPOINT took ${(performance.now() - ckptStart).toFixed(0)}ms`);
+        } catch (ckptError) {
+          console.warn('[PGLite Worker] Pre-close CHECKPOINT failed (non-fatal):', ckptError?.message || ckptError);
+        }
+
         // Close the database connection
         await this.db.close();
         console.log('[PGLite Worker] Database closed successfully');

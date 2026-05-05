@@ -2,6 +2,8 @@
  * PGLite implementation of SessionStore interface from runtime package
  */
 
+import { toMillis } from '../utils/timestampUtils';
+
 import type {
   SessionStore,
   SessionMeta,
@@ -18,25 +20,6 @@ type PGliteLike = {
 };
 
 type EnsureReadyFn = () => Promise<void>;
-
-function toMillis(value: unknown): number {
-  if (!value) return Date.now();
-  if (typeof value === 'number') return value;
-
-  // With TIMESTAMPTZ columns, PGLite returns Date objects that already represent
-  // the correct instant in time. Just call getTime() to get epoch milliseconds.
-  if (value instanceof Date) {
-    return value.getTime();
-  }
-
-  // Fallback for string timestamps (shouldn't happen with TIMESTAMPTZ, but just in case)
-  const str = String(value).trim();
-  // Detect timezone: ends with Z, contains +, or has negative offset like -05:00
-  const hasTimezone = str.endsWith('Z') || str.includes('+') || /-\d{2}:\d{2}$/.test(str);
-  const utcStr = hasTimezone ? str : str.replace(' ', 'T') + 'Z';
-  const parsed = new Date(utcStr).getTime();
-  return Number.isNaN(parsed) ? Date.now() : parsed;
-}
 
 
 // Module-level reference for standalone functions
@@ -95,16 +78,15 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
   const ensureTime = performance.now() - startTime;
 
   const queryStart = performance.now();
+  // The COUNT(m.id) projection used to live here, but the mapper below hardcodes
+  // messageCount: 0, so the LEFT JOIN + GROUP BY produced ~2.4s of wasted work
+  // on databases with ~1k sessions. Stripped down to an indexed SELECT.
   const { rows } = await moduleDb.query<any>(
     `SELECT s.id, s.provider, s.model, s.mode, s.session_type, s.parent_session_id, s.agent_role, s.created_by_session_id, s.title, s.workspace_id, s.draft_input,
             s.worktree_id, s.is_archived, s.is_pinned, s.branched_from_session_id, s.branch_point_message_id, s.branched_at,
-            s.created_at, s.updated_at, s.metadata, COUNT(m.id) as message_count
+            s.created_at, s.updated_at, s.metadata
      FROM ai_sessions s
-     LEFT JOIN ai_agent_messages m ON s.id = m.session_id AND m.direction = 'input' AND (m.hidden = FALSE OR m.hidden IS NULL)
      WHERE (s.is_archived = FALSE OR s.is_archived IS NULL)
-     GROUP BY s.id, s.provider, s.model, s.mode, s.session_type, s.parent_session_id, s.agent_role, s.created_by_session_id, s.title, s.workspace_id, s.draft_input,
-              s.worktree_id, s.is_archived, s.is_pinned, s.branched_from_session_id, s.branch_point_message_id, s.branched_at,
-              s.created_at, s.updated_at, s.metadata
      ORDER BY s.updated_at DESC`
   );
   const queryTime = performance.now() - queryStart;
@@ -135,15 +117,15 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
       isPinned: row.is_pinned ?? false,
       branchedFromSessionId: row.branched_from_session_id || undefined,
       branchPointMessageId: row.branch_point_message_id || undefined,
-      branchedAt: row.branched_at ? toMillis(row.branched_at) : undefined,
+      branchedAt: toMillis(row.branched_at) ?? undefined,
       // workspace_id is required - we filtered out sessions without it above
       workspaceId: row.workspace_id,
       workspacePath: row.workspace_id, // workspace_id is the path in this system
       // NOTE: Do NOT include draftInput in bulk sync - it should only sync when actually changed
       // Including it here causes spurious metadata_updated events for all sessions on startup
       messageCount: 0,
-      updatedAt: toMillis(row.updated_at),
-      createdAt: toMillis(row.created_at),
+      updatedAt: toMillis(row.updated_at)!,
+      createdAt: toMillis(row.created_at)!,
       metadata: row.metadata,
       messages: undefined as SyncedMessage[] | undefined,
     };
@@ -162,7 +144,7 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
       session.messages = msgRows.map((m: any): AgentMessage => ({
         id: m.id,
         sessionId: m.session_id,
-        createdAt: m.created_at instanceof Date ? m.created_at : new Date(toMillis(m.created_at)),
+        createdAt: m.created_at instanceof Date ? m.created_at : new Date(toMillis(m.created_at)!),
         source: m.source,
         direction: m.direction,
         content: m.content,
@@ -209,7 +191,7 @@ export async function getSessionMessagesForSync(
   return msgRows.map((m: any): AgentMessage => ({
     id: m.id,
     sessionId: m.session_id,
-    createdAt: m.created_at instanceof Date ? m.created_at : new Date(toMillis(m.created_at)),
+    createdAt: m.created_at instanceof Date ? m.created_at : new Date(toMillis(m.created_at)!),
     source: m.source,
     direction: m.direction,
     content: m.content,
@@ -262,7 +244,7 @@ export async function getSessionMessagesForSyncBatch(
 
   for (const m of msgRows) {
     const sessionSince = sinceMap.get(m.session_id) ?? 0;
-    const createdAt = m.created_at instanceof Date ? m.created_at : new Date(toMillis(m.created_at));
+    const createdAt = m.created_at instanceof Date ? m.created_at : new Date(toMillis(m.created_at)!);
     // Filter: only include messages newer than this session's sinceTimestamp
     if (createdAt.getTime() > sessionSince) {
       const arr = result.get(m.session_id);
@@ -474,8 +456,8 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         worktreeProjectPath: row.worktree_project_path ?? undefined,
         parentSessionId: row.parent_session_id ?? null,  // Hierarchical workstream support
         createdBySessionId: row.created_by_session_id ?? null,
-        createdAt: toMillis(row.created_at),
-        updatedAt: toMillis(row.updated_at),
+        createdAt: toMillis(row.created_at)!,
+        updatedAt: toMillis(row.updated_at)!,
         metadata,
         documentContext: row.document_context ?? undefined,
         providerConfig: row.provider_config ?? undefined,
@@ -487,7 +469,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         // Branch tracking fields - SEPARATE from hierarchical parentSessionId
         branchedFromSessionId: row.branched_from_session_id ?? undefined,
         branchPointMessageId: row.branch_point_message_id ? parseInt(row.branch_point_message_id) : undefined,
-        branchedAt: row.branched_at ? toMillis(row.branched_at) : undefined,
+        branchedAt: toMillis(row.branched_at) ?? undefined,
         branchedFromProviderSessionId: row.branched_from_provider_session_id ?? undefined,
         // Document context service state for transition detection
         lastDocumentState: row.last_document_state ?? undefined,
@@ -530,8 +512,8 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           worktreeProjectPath: row.worktree_project_path ?? undefined,
           parentSessionId: row.parent_session_id ?? null,
           createdBySessionId: row.created_by_session_id ?? null,
-          createdAt: toMillis(row.created_at),
-          updatedAt: toMillis(row.updated_at),
+          createdAt: toMillis(row.created_at)!,
+          updatedAt: toMillis(row.updated_at)!,
           metadata,
           documentContext: row.document_context ?? undefined,
           providerConfig: row.provider_config ?? undefined,
@@ -542,7 +524,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           isPinned: row.is_pinned ?? false,
           branchedFromSessionId: row.branched_from_session_id ?? undefined,
           branchPointMessageId: row.branch_point_message_id ? parseInt(row.branch_point_message_id) : undefined,
-          branchedAt: row.branched_at ? toMillis(row.branched_at) : undefined,
+          branchedAt: toMillis(row.branched_at) ?? undefined,
           branchedFromProviderSessionId: row.branched_from_provider_session_id ?? undefined,
         } satisfies ChatSession;
       });
@@ -588,10 +570,10 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       const totalTime = performance.now() - startTime;
       // console.log(`[PGLiteSessionStore] list() - ensureReady: ${ensureTime.toFixed(1)}ms, query: ${queryTime.toFixed(1)}ms, total: ${totalTime.toFixed(1)}ms, rows: ${rows.length}`);
       return rows.map(row => {
-        const createdAt = toMillis(row.created_at);
+        const createdAt = toMillis(row.created_at)!;
         // For workstream parents, use the effective timestamp that includes child activity
-        const updatedAt = toMillis(row.effective_updated_at ?? row.updated_at);
-        const branchedAt = row.branched_at ? toMillis(row.branched_at) : undefined;
+        const updatedAt = toMillis(row.effective_updated_at ?? row.updated_at)!;
+        const branchedAt = toMillis(row.branched_at) ?? undefined;
         const childCount = parseInt(row.child_count) || 0;
         const metadata = row.metadata ?? {};
         return {
@@ -803,9 +785,9 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         });
 
       return rows.map(row => {
-        const createdAt = toMillis(row.created_at);
-        const updatedAt = toMillis(row.updated_at);
-        const branchedAt = row.branched_at ? toMillis(row.branched_at) : undefined;
+        const createdAt = toMillis(row.created_at)!;
+        const updatedAt = toMillis(row.updated_at)!;
+        const branchedAt = toMillis(row.branched_at) ?? undefined;
         const childCount = parseInt(row.child_count) || 0;
         return {
           id: row.id,
@@ -846,9 +828,9 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         [sessionId]
       );
       return rows.map(row => {
-        const createdAt = toMillis(row.created_at);
-        const updatedAt = toMillis(row.updated_at);
-        const branchedAt = row.branched_at ? toMillis(row.branched_at) : undefined;
+        const createdAt = toMillis(row.created_at)!;
+        const updatedAt = toMillis(row.updated_at)!;
+        const branchedAt = toMillis(row.branched_at) ?? undefined;
         return {
           id: row.id,
           provider: row.provider,

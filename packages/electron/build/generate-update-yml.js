@@ -49,6 +49,18 @@ function getReleaseNotes() {
   }
 }
 
+function duplicateChannelFile(sourceName, targetName) {
+  const sourcePath = path.join(releaseDir, sourceName);
+  if (!fs.existsSync(sourcePath)) {
+    return false;
+  }
+
+  const targetPath = path.join(releaseDir, targetName);
+  fs.copyFileSync(sourcePath, targetPath);
+  console.log(`Generated ${targetPath} from ${sourceName}`);
+  return true;
+}
+
 // Function to generate latest-mac.yml
 function generateMacYml() {
   // Use standard electron-builder filenames with architecture suffixes.
@@ -296,12 +308,18 @@ console.log(`Generating update metadata files for version ${version}...`);
 const macSuccess = generateMacYml();
 const windowsSuccess = generateWindowsYml();
 const linuxSuccess = generateLinuxYml();
+const alphaMacSuccess = duplicateChannelFile('latest-mac.yml', 'alpha-mac.yml');
+const alphaWindowsSuccess = duplicateChannelFile('latest.yml', 'alpha.yml');
+const alphaLinuxSuccess = duplicateChannelFile('latest-linux.yml', 'alpha-linux.yml');
 
 console.log('');
 console.log('Generation results:');
 console.log(`  latest-mac.yml: ${macSuccess ? 'OK' : 'SKIPPED (no macOS files found)'}`);
 console.log(`  latest.yml (Windows): ${windowsSuccess ? 'OK' : 'SKIPPED (no Windows exe found)'}`);
 console.log(`  latest-linux.yml: ${linuxSuccess ? 'OK' : 'SKIPPED (no Linux AppImage found)'}`);
+console.log(`  alpha-mac.yml: ${alphaMacSuccess ? 'OK' : 'SKIPPED (no latest-mac.yml found)'}`);
+console.log(`  alpha.yml (Windows): ${alphaWindowsSuccess ? 'OK' : 'SKIPPED (no latest.yml found)'}`);
+console.log(`  alpha-linux.yml: ${alphaLinuxSuccess ? 'OK' : 'SKIPPED (no latest-linux.yml found)'}`);
 
 if (!macSuccess && !windowsSuccess && !linuxSuccess) {
   console.error('Failed to generate any update metadata files');

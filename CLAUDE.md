@@ -138,7 +138,7 @@ Worktrees already have separate source/build trees, so no `--outDir` is needed. 
 For detailed release instructions, see [RELEASING.md](./RELEASING.md).
 
 **Quick reference:**
-- Use the `/release [patch|minor|major]` command
+- Use the `/release-alpha [patch|minor|major]` command
 - All release notes go in the `[Unreleased]` section of `CHANGELOG.md`
 - The release script automatically creates versioned entries and annotated git tags
 
@@ -173,6 +173,33 @@ The `workspace:update-state` IPC handler uses a **deep merge** function (not sha
 
 This applies to all packages: collabv3 server, runtime sync client, Electron SyncManager, and iOS SyncProtocol. Never introduce snake_case into wire-format JSON even if it "looks more API-like" - this is a private protocol consumed only by our own TypeScript and Swift clients.
 
+### React DOM Markers
+
+**CRITICAL: Tailwind utilities do not replace semantic DOM markers.**
+
+When building or modifying React UI:
+
+1. **Use Tailwind for styling, semantic class names for structure.**
+   - Tailwind utility classes control visual presentation.
+   - Stable semantic class names make the DOM legible in browser developer tools and survive styling refactors.
+
+2. **Every meaningful exported component should mark its root DOM element.**
+   - Add one stable semantic class name on the topmost meaningful element.
+   - Use kebab-case derived from the component or feature name: `session-card`, `tracker-sidebar`, `settings-panel`.
+   - Do this even when all styling is expressed with Tailwind utilities.
+
+3. **Use `data-testid` for test targeting, not as a substitute for semantic DOM markers.**
+   - Add `data-testid` to important interactive elements, dialogs, and recurring test targets.
+   - If an element matters for both debugging and testing, give it both a semantic class and a `data-testid`.
+
+4. **Prefer explicit debug metadata in development-facing UI when practical.**
+   - `data-component` and `data-source` are appropriate for important component roots when they support DOM-to-source navigation or debugging workflows.
+   - These attributes complement semantic classes; they do not replace them.
+
+5. **Do not leave important UI rooted in utility-only class strings.**
+   - A root like `className="flex items-center gap-2 px-3 ..."` is not sufficient for major UI structure.
+   - Add a stable semantic token such as `className="session-toolbar flex items-center gap-2 px-3 ..."`.
+
 ## Documentation Reference
 
 **You MUST read the relevant documentation files when working on or investigating issues in the corresponding areas.**
@@ -196,6 +223,7 @@ Read the file **in its entirety** before making changes. These documents contain
 | [INTERACTIVE_PROMPTS.md](./docs/INTERACTIVE_PROMPTS.md) | Documents the durable prompts architecture for AskUserQuestion, ExitPlanMode, GitCommitProposal, and ToolPermission widgets. These prompts persist across page reloads and have special handling for user responses. | Working on interactive prompt widgets, adding new durable prompt types, or debugging why prompts aren't persisting or responding correctly. |
 | [WORKTREES.md](./docs/WORKTREES.md) | Covers git worktree integration for isolated AI coding sessions. Documents the database schema, IPC channels, branch naming conventions, and how worktrees relate to sessions (one-to-many). | Working on worktree features, session isolation, or understanding how AI sessions connect to git worktrees. |
 | [HELP_WALKTHROUGHS.md](./docs/HELP_WALKTHROUGHS.md) | Documents the HelpContent registry keyed by `data-testid`, HelpTooltip wrapper component, and walkthrough definitions for multi-step guides. Covers both hover tooltips and inline help icons. | Adding help tooltips to UI elements, creating new walkthrough guides, or modifying existing help content. |
+| [REACT_DOM_MARKERS.md](./docs/REACT_DOM_MARKERS.md) | Defines the required semantic classname, `data-testid`, and optional `data-component`/`data-source` conventions for React UI. Includes examples and anti-patterns intended for AI agents and human contributors. | Working on React UI, adding new components, refactoring rendered DOM structure, or improving testability/devtools navigation. |
 | [WALKTHROUGHS.md](./docs/WALKTHROUGHS.md) | Additional documentation on the walkthrough system including step definitions, positioning, and triggering conditions for multi-step floating guides. | Creating complex multi-step walkthroughs or debugging walkthrough flow issues. |
 | [E2E_TESTING.md](./docs/E2E_TESTING.md) | Covers E2E testing patterns including test structure, selectors, waiting strategies, and common pitfalls. Documents the test utilities and how to handle async operations in tests. Also includes AI agent guidelines for when to run tests in dev containers and how to run targeted tests. | Writing new E2E tests, debugging flaky tests, understanding why tests are failing, or running E2E tests as an AI agent (especially in git worktrees). |
 | [DIALOGS.md](./docs/DIALOGS.md) | Documents the DialogProvider system for modal dialogs including the dialog registry, opening/closing patterns, and how dialogs receive props and return results. | Adding new modal dialogs, modifying existing dialog behavior, or debugging dialog state issues. |
@@ -204,7 +232,7 @@ Read the file **in its entirety** before making changes. These documents contain
 | [POSTHOG_EVENTS.md](./docs/POSTHOG_EVENTS.md) | Canonical reference listing all PostHog events with their names, file locations, triggers, and properties. Must be kept in sync when adding, modifying, or removing events. | Adding, modifying, or removing any PostHog analytics event. Update this file whenever you change events. |
 | [POSTHOG_MCP_INTEGRATION.md](./docs/POSTHOG_MCP_INTEGRATION.md) | Documents the PostHog MCP server architecture, available tools, and how to query analytics data programmatically from AI sessions. | Using PostHog MCP tools to query analytics, debugging MCP integration issues, or extending PostHog functionality. |
 | [THEMING.md](./packages/electron/docs/THEMING.md) | Documents the theming system including theme definition format, color variables, and how themes are applied across the application. | Working on themes, adding new color schemes, or debugging theme-related styling issues. |
-| [RELEASING.md](./RELEASING.md) | Documents the release process including version bumping, changelog management, git tagging, and the `/release` command. Covers both local and notarized builds. | Preparing a release, understanding the release workflow, or debugging release script issues. |
+| [RELEASING.md](./RELEASING.md) | Documents the release process including version bumping, changelog management, git tagging, and the `/release-alpha` plus `/promote-public-release` commands. Covers both alpha prereleases and stable promotion. | Preparing a release, understanding the release workflow, or debugging release script issues. |
 | [MARKETING_SCREENSHOTS.md](./docs/MARKETING_SCREENSHOTS.md) | Documents the Playwright-based marketing screenshot and video capture system. Covers the fixture workspace, helper utilities, DOM cursor for video, output file inventory, and how to add new screenshots or video choreography. | Adding new marketing screenshots, modifying video choreography, updating the fixture workspace data, or importing output files into the marketing website. |
 | [FILE_WATCHING_AND_CHANGE_TRACKING.md](./docs/FILE_WATCHING_AND_CHANGE_TRACKING.md) | Documents the file watching infrastructure (ChokidarFileWatcher, OptimizedWorkspaceWatcher, GitRefWatcher, SessionFileWatcher), AI change tracking pipeline (SessionFileTracker, HistoryManager, ToolCallMatcher), IPC event flow, Jotai atoms for file state, and the red/green diff display system (DiffPreview, TextDiffViewer, MonacoDiffViewer, DiffPreviewEditor). | Working on file watchers, AI change detection, diff display, pending review flow, snapshot storage, file change conflict handling, or the FilesEditedSidebar. |
 | [WEEKLY_DASHBOARD.md](./docs/WEEKLY_DASHBOARD.md) | Rules for the PostHog "Weeklys" dashboard. All insights must query `WEEKLY_USERS_BASE_VIEW`, use stacked bar charts summing to 100%, and include all four user segments. Documents the new/returning split convention and example queries. | Adding or modifying insights on the Weeklys PostHog dashboard, or working with the `WEEKLY_USERS_BASE_VIEW` materialized view. |

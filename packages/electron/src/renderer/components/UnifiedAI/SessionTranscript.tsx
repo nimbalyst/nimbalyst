@@ -836,6 +836,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         ...serializeDocumentContext(effectiveContext),
         attachments: attachments.length > 0 ? attachments : undefined,
         mode: overrideMode,
+        inputType: 'user' as const,
       };
 
       await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
@@ -920,6 +921,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       const docContext = {
         ...serializeDocumentContext(effectiveContext),
         mode: aiMode,
+        inputType: 'user' as const,
       };
 
       await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
@@ -1386,7 +1388,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
           await window.electronAPI.invoke(
             'ai:sendMessage',
             feedbackMessage,
-            undefined,
+            { inputType: 'user' },
             sessionId,
             workspacePath
           );
