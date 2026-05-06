@@ -209,20 +209,13 @@ export function initSessionStateListeners(): () => void {
     const sessionMeta = registry.get(sessionId);
     const resolvedWorkspacePath = eventWorkspacePath || sessionMeta?.workspaceId || currentWorkspacePath || null;
 
-    // Ignore lifecycle events that don't belong to a workspace this window
-    // is hosting. In multi-project mode any of the rail's warm projects
-    // counts; otherwise we keep the legacy single-project filter.
-    if (currentWorkspacePath && resolvedWorkspacePath) {
-      const isMulti = store.get(multiProjectModeAtom);
-      if (isMulti) {
-        const openPaths = store.get(openProjectsAtom).map((p) => p.path);
-        if (openPaths.length > 0 && !openPaths.includes(resolvedWorkspacePath)) {
-          return;
-        }
-      } else if (resolvedWorkspacePath !== currentWorkspacePath) {
-        return;
-      }
-    }
+    // The main-process subscription is now scoped to the set of workspace
+    // paths this window actually hosts (single project or rail-warm),
+    // so any event that reaches us here is intended for us. We used to
+    // re-filter by `currentWorkspacePath` here, but that dropped lifecycle
+    // events for sessions in inactive rail projects — leaving the UI
+    // stuck on "Thinking…" after a session completed while its project
+    // was hidden.
 
     switch (type) {
       // Session is actively running
