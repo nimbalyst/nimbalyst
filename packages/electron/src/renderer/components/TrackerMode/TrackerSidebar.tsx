@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { AddFolderModal } from './AddFolderModal';
+import { TrackerTypeCreator } from '../Settings/panels/TrackerTypeCreator';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol, globalRegistry } from '@nimbalyst/runtime';
 import type { TrackerItemType } from '@nimbalyst/runtime';
@@ -16,6 +18,7 @@ import {
   reconcileLayout,
   moveEntry,
   setFolderCollapsed,
+  addFolder,
   EMPTY_LAYOUT,
   type TrackerSidebarLayout,
   type SidebarEntry,
@@ -190,6 +193,10 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
   const [layout, setLayout] = useState<TrackerSidebarLayout>(EMPTY_LAYOUT);
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
   const layoutRef = useRef<TrackerSidebarLayout>(EMPTY_LAYOUT);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [addFolderOpen, setAddFolderOpen] = useState(false);
+  const [addTypeOpen, setAddTypeOpen] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement>(null);
 
   const updateLayout = useCallback((next: TrackerSidebarLayout) => {
     layoutRef.current = next;
@@ -224,6 +231,19 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
       unsubscribe();
     };
   }, [workspacePath, loadAndReconcile, trackerTypes]);
+
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const handleMouseDown = (e: MouseEvent) => {
+      if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) {
+        setAddMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown);
+    };
+  }, [addMenuOpen]);
 
   // ============================================================================
   // Drag/drop helpers
@@ -463,8 +483,38 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
         />
       )}
 
-      <div className="px-3 py-1.5 border-b border-nim text-[11px] font-semibold text-nim-muted uppercase tracking-wider">
-        Trackers
+      <div className="px-3 py-1.5 border-b border-nim flex items-center justify-between">
+        <span className="text-[11px] font-semibold text-nim-muted uppercase tracking-wider">
+          Trackers
+        </span>
+        <div className="relative" ref={addMenuRef}>
+          <button
+            onClick={() => setAddMenuOpen((v) => !v)}
+            className="w-5 h-5 flex items-center justify-center rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary cursor-pointer transition-colors"
+            title="Add tracker type or folder"
+            data-testid="tracker-sidebar-add"
+          >
+            <MaterialSymbol icon="add" size={14} />
+          </button>
+          {addMenuOpen && (
+            <div className="absolute right-0 top-full mt-1 z-20 bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded-md shadow-lg py-1 min-w-[160px]">
+              <button
+                onClick={() => { setAddMenuOpen(false); setAddFolderOpen(true); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-nim hover:bg-nim-tertiary cursor-pointer text-left"
+              >
+                <MaterialSymbol icon="folder" size={14} />
+                Add Folder
+              </button>
+              <button
+                onClick={() => { setAddMenuOpen(false); setAddTypeOpen(true); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-nim hover:bg-nim-tertiary cursor-pointer text-left"
+              >
+                <MaterialSymbol icon="add_circle" size={14} />
+                Add Tracker Type
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -651,6 +701,28 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
           })}
         </div>
       </div>
+
+      {addFolderOpen && (
+        <AddFolderModal
+          existingFolderNames={layout.entries
+            .filter((e): e is Extract<SidebarEntry, { kind: 'folder' }> => e.kind === 'folder')
+            .map((e) => e.name)}
+          onCancel={() => setAddFolderOpen(false)}
+          onConfirm={async (name) => {
+            const next = addFolder(layout, name);
+            updateLayout(next);
+            if (workspacePath) await saveLayout(workspacePath, next);
+            setAddFolderOpen(false);
+          }}
+        />
+      )}
+      {addTypeOpen && workspacePath && (
+        <TrackerTypeCreator
+          workspacePath={workspacePath}
+          onClose={() => setAddTypeOpen(false)}
+          onCreated={() => setAddTypeOpen(false)}
+        />
+      )}
     </div>
   );
 };
