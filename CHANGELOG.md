@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- Wide walkthrough callouts no longer overflow the right viewport edge or sit clipped on tight layouts. `calculateCalloutPosition` was clamping with the 320px default callout width regardless of `step.wide`, but `WalkthroughCallout.tsx` renders wide steps at 420px (`w-[420px]` Tailwind class). The function now takes a `wide` parameter and binds a local `calloutWidth` (320 or 420) used consistently in fit checks, placement math, viewport clamp, and arrow-offset clamp. Adds `WalkthroughService.test.ts` with unit coverage for both widths.
 
 ### Removed
 <!-- Removed features go here -->
