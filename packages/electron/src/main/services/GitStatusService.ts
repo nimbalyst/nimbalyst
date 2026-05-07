@@ -803,10 +803,21 @@ export class GitStatusService {
    */
   clearCache(workspacePath?: string): void {
     if (workspacePath) {
-      // Clear cache entries for this workspace
+      // Clear cache entries for this workspace.
+      //
+      // Two key shapes coexist:
+      //   1) `${workspacePath}:uncommitted` and `${workspacePath}\0all-statuses`
+      //      and the legacy `${workspacePath}:${filePaths}` shape used by older
+      //      `getFileStatus` callers.
+      //   2) The new nested-repo `${workspacePath}\0${sortedRoots}\0${files}`
+      //      shape introduced for the multi-root grouping in `getFileStatus`.
+      //
+      // The colon-prefix predicate alone misses the new null-byte keys, so a
+      // git ref-watcher invalidation would leave per-file cache entries stale
+      // for up to the 5 second TTL. Match either separator here.
       const keysToDelete: string[] = [];
       for (const key of this.cache.keys()) {
-        if (key.startsWith(`${workspacePath}:`)) {
+        if (key.startsWith(`${workspacePath}:`) || key.startsWith(`${workspacePath}\0`)) {
           keysToDelete.push(key);
         }
       }
