@@ -239,8 +239,19 @@ export function initSessionStateListeners(): () => void {
 
       case 'session:streaming':
         store.set(sessionProcessingAtom(sessionId), true);
-        // AI resumed streaming - no longer waiting for user input
-        store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+        // Intentionally do NOT clear sessionHasPendingInteractivePromptAtom here.
+        // session:streaming fires for any token chunk produced by the provider,
+        // including tail-end chunks that arrive after the model emits a tool_use
+        // for AskUserQuestion / ExitPlanMode / ToolPermission / GitCommitProposal.
+        // The pending flag is the responsibility of the explicit resolve events
+        // (ai:askUserQuestionAnswered, ai:exitPlanModeResolved,
+        // ai:toolPermissionResolved, ai:gitCommitProposalResolved, ai:sessionCancelled)
+        // and the terminal lifecycle events (session:completed/error/interrupted)
+        // below. Letting "streaming" clear it caused the warning indicator to
+        // flip back to a generic spinner mid-prompt — particularly visible in
+        // multi-project rail mode, where this window receives streaming events
+        // for sessions in inactive projects whose transcripts are not mounted
+        // and thus cannot re-derive the flag from messages.
         store.set(markSessionStreamingAtom, { sessionId, workspacePath: resolvedWorkspacePath });
         break;
 

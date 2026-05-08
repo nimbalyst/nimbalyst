@@ -675,7 +675,7 @@ export class MessageStreamingHandler {
     // Listen for ExitPlanMode confirmation requests and forward to renderer
     const onExitPlanModeConfirm = async (data: { requestId: string; sessionId: string; planSummary: string; timestamp: number }) => {
       logger.main.info('[AIService] ExitPlanMode confirmation requested:', data.requestId);
-      safeSend(event, 'ai:exitPlanModeConfirm', data);
+      safeSend(event, 'ai:exitPlanModeConfirm', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, true);
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
@@ -702,7 +702,7 @@ export class MessageStreamingHandler {
     // Listen for AskUserQuestion requests and forward to renderer
     const onAskUserQuestion = async (data: { questionId: string; sessionId: string; questions: any[]; timestamp: number }) => {
       // logger.main.info('[AIService] AskUserQuestion requested:', data.questionId);
-      safeSend(event, 'ai:askUserQuestion', data);
+      safeSend(event, 'ai:askUserQuestion', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, true);
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
@@ -729,7 +729,7 @@ export class MessageStreamingHandler {
     // Listen for AskUserQuestion answers and forward to renderer to update tool call display
     const onAskUserQuestionAnswered = (data: { questionId: string; sessionId: string; questions: any[]; answers: Record<string, string>; timestamp: number }) => {
       // logger.main.info('[AIService] AskUserQuestion answered:', data.questionId);
-      safeSend(event, 'ai:askUserQuestionAnswered', data);
+      safeSend(event, 'ai:askUserQuestionAnswered', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, false);
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
@@ -777,7 +777,7 @@ export class MessageStreamingHandler {
     // Listen for tool permission resolved and forward to renderer
     const onToolPermissionResolved = (data: { requestId: string; sessionId: string; response: any; timestamp: number }) => {
       logger.main.info('[AIService] Tool permission resolved:', data.requestId);
-      safeSend(event, 'ai:toolPermissionResolved', data);
+      safeSend(event, 'ai:toolPermissionResolved', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, false);
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 

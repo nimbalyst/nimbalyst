@@ -523,6 +523,7 @@ export async function handleGitCommitProposal(
       commitWindow.webContents.send("ai:gitCommitProposal", {
         sessionId: targetSessionId,
         proposalId,
+        workspacePath,
       });
     } else {
       console.warn("[MCP Server] No commitWindow found to send IPC event");
@@ -640,6 +641,7 @@ export async function handleGitCommitProposal(
         commitWindow.webContents.send("ai:gitCommitProposalResolved", {
           sessionId: targetSessionId,
           proposalId,
+          workspacePath,
         });
         commitWindow.webContents.send("mcp:gitCommitProposal", {
           proposalId,
