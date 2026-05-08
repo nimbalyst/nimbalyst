@@ -822,6 +822,8 @@ export class MCPConfigService {
    * Process a server config for runtime use.
    * On Windows, converts npm/npx/etc commands to their .cmd equivalents.
    * Transparently wraps HTTP transport with mcp-remote.
+   * Routes bare `node` commands through Electron's bundled Node runtime so
+   * MCP servers do not require a system-wide Node install (see #197).
    */
   processServerConfigForRuntime(serverConfig: MCPServerConfig): MCPServerConfig {
     // First, convert HTTP to stdio with mcp-remote wrapper
@@ -832,6 +834,38 @@ export class MCPConfigService {
       return config;
     }
 
+    // Substitute bundled Electron Node runtime for bare `node` commands.
+    // Electron itself is a Node binary; setting `ELECTRON_RUN_AS_NODE=1`
+    // and pointing `command` at `process.execPath` makes the spawn behave
+    // exactly like invoking `node`. Costs zero extra installer size
+    // (Electron is already shipped) and unblocks fresh Windows / macOS /
+    // Linux installs that don't have Node.js on PATH. See #197.
+    //
+    // Substitution rules:
+    //   - Only triggers when running inside Electron (`process.versions.electron`).
+    //     Outside Electron (vitest, CI, mobile builds), behaviour is unchanged.
+    //   - Only matches the bare token `node` (or `node.exe` on Windows).
+    //     A user who specifies an absolute path (`/usr/local/bin/node`,
+    //     `/Users/me/.nvm/versions/node/...`) keeps their original choice.
+    //   - Does NOT touch `npx`, `npm`, `bun`, `deno`, etc. Those are separate
+    //     tools that the bundled Node runtime cannot stand in for.
+    if (
+      MCPConfigService.isBareNodeCommand(config.command) &&
+      typeof process !== 'undefined' &&
+      typeof process.versions === 'object' &&
+      typeof process.versions.electron === 'string' &&
+      process.versions.electron.length > 0
+    ) {
+      return {
+        ...config,
+        command: process.execPath,
+        env: {
+          ...(config.env || {}),
+          ELECTRON_RUN_AS_NODE: '1',
+        },
+      };
+    }
+
     // Resolve command for current platform
     const resolvedCommand = this.resolveCommandForPlatform(config.command);
 
@@ -840,6 +874,20 @@ export class MCPConfigService {
       ...config,
       command: resolvedCommand
     };
+  }
+
+  /**
+   * Whether `command` is a bare reference to the Node.js binary (i.e. relies
+   * on PATH lookup), as opposed to an absolute path or a different runtime.
+   * Static + exported for unit testing without instantiating the service.
+   *
+   * Matches `node`, `node.exe` (case-insensitive) - exactly what a user
+   * writes in `mcp.json` when they expect the system Node on PATH.
+   */
+  static isBareNodeCommand(command: string | undefined): boolean {
+    if (!command || typeof command !== 'string') return false;
+    const normalized = command.trim().toLowerCase();
+    return normalized === 'node' || normalized === 'node.exe';
   }
 
   /**

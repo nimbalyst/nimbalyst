@@ -63,8 +63,10 @@ import {
     clearPendingThemeFallback,
     updateWorkspaceState,
     runMigrations,
-    getAppSetting
+    getAppSetting,
+    store
 } from './utils/store';
+import { getAIProviderOverridesWithWorktreeFallback } from './utils/aiSettingsMerge';
 import { registerMCPConfigHandlers } from './ipc/MCPConfigHandlers';
 import { getOpenCodeConfigService, registerOpenCodeConfigHandlers } from './ipc/OpenCodeConfigHandlers';
 import { registerClaudeCodePluginHandlers } from './ipc/ClaudeCodePluginHandlers';
@@ -78,6 +80,17 @@ import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesF
 import { cliManager, initEnhancedPath, getEnhancedPath, getShellEnvironment } from './services/CLIManager';
 import { registerWorkspaceWindow, registerExtensionTools, shutdownHttpServer, startMcpHttpServer, updateDocumentState } from './mcp/httpServer';
 import { startSessionContextServer, cleanupSessionContextServer, shutdownSessionContextServer } from './mcp/sessionContextServer';
+import { generateMcpAuthToken, getMcpAuthToken } from './mcp/mcpAuth';
+import {
+  registerNimAssetSchemeAsPrivileged,
+  registerNimAssetProtocolHandler,
+  addNimAssetRoot,
+  removeNimAssetRoot,
+} from './protocols/nimAssetProtocol';
+import {
+  registerCollabAssetSchemeAsPrivileged,
+  installCollabAssetProtocolHandler,
+} from './protocols/collabAssetProtocol';
 import { SessionNamingService } from './services/SessionNamingService';
 import { SessionWakeupScheduler } from './services/SessionWakeupScheduler';
 import { getSessionWakeupsStore } from './services/RepositoryManager';
@@ -121,8 +134,8 @@ import { FeatureUsageService, FEATURES } from "./services/FeatureUsageService.ts
 import { shutdownStytchAuth, handleAuthCallback } from './services/StytchAuthService';
 import { registerTrackerSyncHandlers, initializeTrackerSync } from './services/TrackerSyncManager';
 import { initTrackerSchemaService, updateTrackerSchemaWorkspace } from './services/TrackerSchemaService';
-import { registerTeamHandlers, autoMatchTeamForWorkspace } from './services/TeamService';
-import { registerOrgKeyHandlers } from './services/OrgKeyService';
+import { registerTeamHandlers, autoMatchTeamForWorkspace, getOrgScopedJwt } from './services/TeamService';
+import { registerOrgKeyHandlers, getOrgKey } from './services/OrgKeyService';
 import { registerDocumentSyncHandlers } from './ipc/DocumentSyncHandlers';
 import { getPermissionService } from './services/PermissionService';
 import { ClaudeSettingsManager } from './services/ClaudeSettingsManager';
@@ -143,6 +156,13 @@ if (process.env.ELECTRON_RUN_AS_NODE === '1' && process.platform === 'darwin') {
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.nimbalyst.electron');
 }
+
+// Issue #146: register the `nim-asset://` scheme as standard/secure BEFORE
+// `app.whenReady` resolves. Per Electron docs, schemes must be marked as
+// privileged before the app is ready or the renderer treats them as opaque
+// origins. The actual request handler is wired up after whenReady.
+registerNimAssetSchemeAsPrivileged();
+registerCollabAssetSchemeAsPrivileged();
 
 // NOTE: User data directory configuration is handled in bootstrap.ts
 // which runs BEFORE this file is imported, ensuring electron-store
@@ -867,6 +887,27 @@ app.whenReady().then(async () => {
         session.defaultSession.setSpellCheckerEnabled(false);
     }
 
+    // Issue #146: wire up the `nim-asset://` request handler. Workspaces are
+    // added to its allowlist below, as windows register their workspace path.
+    registerNimAssetProtocolHandler();
+
+    // collab-asset:// E2E-encrypted document attachment handler.
+    // Same-origins the production worker request from Chromium's perspective,
+    // so we can keep webSecurity:true. The per-doc registry is populated by
+    // document-sync:open / torn down by document-sync:close-doc.
+    installCollabAssetProtocolHandler({
+        getOrgKey,
+        getOrgScopedJwt,
+        getCollabHttpUrl: () => {
+            const config = getSessionSyncConfig();
+            const isDev = process.env.NODE_ENV !== 'production';
+            const env = isDev ? config?.environment : undefined;
+            return env === 'development'
+                ? 'http://localhost:8790'
+                : 'https://sync.nimbalyst.com';
+        },
+    });
+
     // Show splash screen immediately so the user sees something while we initialize
     // Skip splash in Playwright tests - the splash window would be returned by firstWindow()
     // instead of the actual workspace window, causing tests to fail
@@ -1515,6 +1556,29 @@ app.whenReady().then(async () => {
 
     // Start MCP SSE server
     markStart('mcp-servers');
+
+    // Generate the per-launch bearer token before any MCP server starts.
+    // The same token is shared across all five internal MCP servers (they all
+    // run in this process). It is held in memory only -- never persisted.
+    // Issue #146: required so a malicious page in the user's browser can't
+    // invoke MCP tools against the localhost ports.
+    const mcpAuthToken = generateMcpAuthToken();
+    ClaudeCodeProvider.setMcpAuthToken(mcpAuthToken);
+    OpenAICodexProvider.setMcpAuthToken(mcpAuthToken);
+    OpenAICodexACPProvider.setMcpAuthToken(mcpAuthToken);
+    OpenCodeProvider.setMcpAuthToken(mcpAuthToken);
+    CopilotCLIProvider.setMcpAuthToken(mcpAuthToken);
+
+    // Test-only IPC handler: lets E2E tests verify the bearer token is
+    // enforced by the MCP servers. Mirrors the pattern used for
+    // `meta-agent:get-server-port`.
+    if (process.env.PLAYWRIGHT === '1' || process.env.PLAYWRIGHT_TEST === 'true' || process.env.NODE_ENV === 'test') {
+        safeHandle('mcp:get-auth-token', async () => {
+            const token = getMcpAuthToken();
+            return { success: token !== null, token };
+        });
+    }
+
     try {
         const result = await startMcpHttpServer(3456);
         mcpHttpServer = result.httpServer;
@@ -1618,6 +1682,9 @@ app.whenReady().then(async () => {
         if (state?.workspacePath && windowId) {
             // logger.mcp.info(`Registering workspace ${state.workspacePath} -> window ${windowId}`);
             registerWorkspaceWindow(state.workspacePath, windowId);
+            // Issue #146: also allow `nim-asset://` to serve images from the
+            // workspace. addNimAssetRoot is idempotent.
+            addNimAssetRoot(state.workspacePath);
         } else {
             logger.mcp.warn(`Cannot register workspace: workspacePath=${state?.workspacePath}, windowId=${windowId}`);
         }
@@ -1676,20 +1743,22 @@ app.whenReady().then(async () => {
     markEnd('session-restore');
 
     // Set up a loader that reads customClaudeCodePath fresh from the store on each query,
-    // so changes in the UI take effect without restarting the app. Project-level overrides
-    // take precedence over the global value when a workspace path is provided.
-    const { store } = await import('./utils/store');
-    const { getAIProviderOverridesWithWorktreeFallback } = await import('./utils/aiSettingsMerge');
-    ClaudeCodeProvider.setCustomClaudeCodePathLoader((workspacePath?: string) => {
-      const globalPath = (store.get('customClaudeCodePath', '') as string) || '';
+    // so changes in the UI take effect without restarting the app. The workspace path is
+    // required: getAIProviderOverridesWithWorktreeFallback handles direct overrides plus
+    // worktree-to-parent inheritance. Only fall through to the global setting when no
+    // project-level override exists at all (which is the intended fallback, not a routing
+    // failure). A missing workspacePath here would mean an upstream wiring bug, so throw.
+    ClaudeCodeProvider.setCustomClaudeCodePathLoader((workspacePath: string) => {
       if (!workspacePath) {
-        return globalPath;
+        throw new Error('[ClaudeCodeProvider] customClaudeCodePathLoader called without a workspacePath');
       }
-      const overrides = getAIProviderOverridesWithWorktreeFallback(workspacePath);
-      if (overrides?.customClaudeCodePath !== undefined) {
-        return overrides.customClaudeCodePath;
+
+      const projectOverride = getAIProviderOverridesWithWorktreeFallback(workspacePath)?.customClaudeCodePath;
+      if (projectOverride !== undefined) {
+        return projectOverride;
       }
-      return globalPath;
+
+      return (store.get('customClaudeCodePath', '') as string) || '';
     });
     logger.main.info('[ClaudeCodeProvider] Initialized customClaudeCodePath loader (workspace-aware)');
 
@@ -2046,9 +2115,13 @@ app.on('before-quit', async (event) => {
     isAppQuitting = true;
 
     // Setup force quit timer - allow enough time for database backup + close
-    // Database operations: backup (up to 5s) + close worker (up to 2s) + buffer (3s)
+    // Database operations: backup (up to 5s) + close worker (up to 5s) + buffer (5s/3s)
+    // The close budget is 5s instead of 2s because PGLite runs Postgres in --single
+    // mode (no background checkpointer), so close() now issues an explicit CHECKPOINT
+    // first; on a large WAL that can take several seconds. Force-quit total bumped
+    // accordingly so the new close budget isn't preempted.
     // This is CRITICAL for Windows where forced shutdowns need proper cleanup time
-    const forceQuitDelay = app.isPackaged ? 12000 : 10000;
+    const forceQuitDelay = app.isPackaged ? 15000 : 13000;
     setupForceQuit(forceQuitDelay);
 
     let debugLog: string | null = null;
@@ -2433,7 +2506,10 @@ app.on('before-quit', async (event) => {
 
             try {
                 const closePromise = db.close();
-                const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 2000));
+                // 5s instead of 2s: db.close() now issues an explicit CHECKPOINT first
+                // (PGLite --single mode has no background checkpointer), which can take
+                // several seconds when WAL is large.
+                const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 5000));
                 await Promise.race([closePromise, timeoutPromise]);
                 const t11d = Date.now();
                 console.log(`[QUIT] [${t11d}] Database worker closed (${t11d-t11c}ms)`);

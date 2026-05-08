@@ -2,6 +2,12 @@ import type { CreateAgentMessageInput, AgentMessage } from '../../ai/server/type
 
 export interface AgentMessagesStore {
   create(message: CreateAgentMessageInput): Promise<void>;
+  /**
+   * Batch insert multiple messages in a single transaction. Used by AgentMessageWriteQueue
+   * to coalesce streaming-chunk writes and relieve PGLite writer-lock contention.
+   * Stores that don't implement this fall back to per-message create() calls in the queue.
+   */
+  createMany?(messages: CreateAgentMessageInput[]): Promise<void>;
   list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]>;
   /** Get message counts for multiple sessions in a single query */
   getMessageCounts?(sessionIds: string[]): Promise<Map<string, number>>;
@@ -35,6 +41,20 @@ export const AgentMessagesRepository = {
 
   async create(message: CreateAgentMessageInput): Promise<void> {
     await requireStore().create(message);
+  },
+
+  async createMany(messages: CreateAgentMessageInput[]): Promise<void> {
+    if (messages.length === 0) return;
+    const store = requireStore();
+    if (store.createMany) {
+      await store.createMany(messages);
+      return;
+    }
+    // Fallback for stores that don't support batch insert (e.g. test stubs):
+    // serialize per-row creates so callers still get a single resolved promise.
+    for (const message of messages) {
+      await store.create(message);
+    }
   },
 
   async list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]> {

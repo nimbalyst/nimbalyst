@@ -65,6 +65,7 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | `file_created` | `FileHandlers.ts:399`<br/>`WorkspaceHandlers.ts:154` | User creates new file | `creationType` (new_file_menu/ai_tool)<br/>`fileType` (markdown/mockup/text/other) | v0.45.25 (2025-11-14) | v0.47.2 (2025-12-10): Added mockup fileType |
 | `file_renamed` | `WorkspaceHandlers.ts:592` | User renames file in workspace | None | v0.45.25 (2025-11-14) |  |
 | `file_deleted` | `WorkspaceHandlers.ts:618` | User deletes file from workspace | None | v0.45.25 (2025-11-14) |  |
+| `file_save_blocked_after_delete` | `FileHandlers.ts` (recently-deleted IPC branch + `telemetry:file-save-blocked-after-delete` forwarder) | A save was blocked because the file was previously deleted (and possibly recreated by an external process). Emitted by any of the four-layer defenses against autosave overwrite of recreated files. | `layer` (`recently-deleted` / `document-model-deleted` / `conflict-mismatch`)<br/>`fileType`<br/>`wasAutosave` | (pending release) |  |
 
 ### Workspace Operations
 

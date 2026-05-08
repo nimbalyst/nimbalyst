@@ -17,8 +17,10 @@ import React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { EditorHost, ExtensionStorage } from '@nimbalyst/runtime';
 import { getExtensionLoader, createExtensionStorage, registerEditorAPI, unregisterEditorAPI, hasExtensionEditorAPI } from '@nimbalyst/runtime';
+import { store } from '@nimbalyst/runtime/store';
 import { DocumentModelRegistry } from './document-model/DocumentModelRegistry';
 import type { DocumentModelEditorHandle } from './document-model/types';
+import { fileDeletedAtomFamily } from '../store/atoms/fileWatch';
 
 const LOG_PREFIX = '[HiddenTabManager]';
 const TTL_MS = 30_000; // 30 seconds after last release before cleanup
@@ -36,6 +38,8 @@ interface HiddenEditorInstance {
   extensionId: string;
   /** DocumentModel handle for coordinated save/dirty tracking */
   documentModelHandle: DocumentModelEditorHandle | null;
+  /** Cleanup for the file-deleted atom subscription */
+  fileDeletedUnsub: (() => void) | null;
 }
 
 class HiddenTabManager {
@@ -202,6 +206,15 @@ class HiddenTabManager {
     const EditorComponent = editorInfo.component as React.ComponentType<{ host: EditorHost }>;
     root.render(React.createElement(EditorComponent, { host }));
 
+    // Subscribe to file-deleted atom: when a delete is detected for this
+    // path, unmount immediately so no autosave can recreate the file.
+    const deletedAtom = fileDeletedAtomFamily(filePath);
+    const initialDeletedVersion = store.get(deletedAtom);
+    const fileDeletedUnsub = store.sub(deletedAtom, () => {
+      if (store.get(deletedAtom) === initialDeletedVersion) return;
+      this.unmountEditor(filePath);
+    });
+
     // Store instance
     this.editors.set(filePath, {
       filePath,
@@ -212,6 +225,7 @@ class HiddenTabManager {
       ttlTimer: null,
       extensionId: editorInfo.extensionId,
       documentModelHandle,
+      fileDeletedUnsub,
     });
 
     // Wait for the editor API to register, then move offscreen
@@ -245,6 +259,11 @@ class HiddenTabManager {
     // Release DocumentModel handle
     if (instance.documentModelHandle) {
       DocumentModelRegistry.release(filePath, instance.documentModelHandle);
+    }
+
+    // Unsubscribe from file-deleted atom
+    if (instance.fileDeletedUnsub) {
+      instance.fileDeletedUnsub();
     }
 
     if (instance.ttlTimer) {

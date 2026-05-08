@@ -11,6 +11,7 @@ import { FullscreenModal } from './FullscreenModal';
 import { MaterialSymbol } from '../../icons/MaterialSymbol';
 import { formatToolDisplayName } from '../utils/toolNameFormatter';
 import { isCommitRequestMessage, parseCommitRequest, CommitRequestCard } from './CommitRequestCard';
+import { localAssetUrl } from '../../../utils/localAssetUrl';
 
 interface MessageSegmentProps {
   message: TranscriptViewMessage;
@@ -411,7 +412,7 @@ export const MessageSegment: React.FC<MessageSegmentProps> = ({
           >
             {attachment.type === 'image' ? (
               <img
-                src={(attachment as any).thumbnail || `file://${attachment.filepath}`}
+                src={(attachment as any).thumbnail || localAssetUrl(attachment.filepath)}
                 alt={attachment.filename}
                 className="message-attachment-thumbnail w-12 h-12 object-cover rounded shrink-0"
               />
@@ -432,17 +433,20 @@ export const MessageSegment: React.FC<MessageSegmentProps> = ({
 
   // Render image lightbox modal
   const renderImageModal = () => {
-    // For enlarged view, use the full file path (not thumbnail)
-    // Convert file path to file:// URL for Electron
+    // For enlarged view, use the full file path (not thumbnail).
+    // Local file paths are routed through `localAssetUrl` so Electron can
+    // serve them via `nim-asset://` (the main window has `webSecurity: true`
+    // and cannot load `file://` directly).
     const getEnlargedSrc = () => {
       if (!enlargedImage) return '';
       if (enlargedImage.filepath) {
-        // If it's already a file:// URL or data URL, use as-is
-        if (enlargedImage.filepath.startsWith('file://') || enlargedImage.filepath.startsWith('data:')) {
+        if (enlargedImage.filepath.startsWith('data:')) {
           return enlargedImage.filepath;
         }
-        // Convert file path to file:// URL
-        return `file://${enlargedImage.filepath}`;
+        if (enlargedImage.filepath.startsWith('file://')) {
+          return localAssetUrl(enlargedImage.filepath.replace(/^file:\/\//, ''));
+        }
+        return localAssetUrl(enlargedImage.filepath);
       }
       // Fallback to thumbnail if no filepath
       return enlargedImage.thumbnail || '';

@@ -30,6 +30,7 @@ import { createHash } from 'crypto';
 import { setSleepPreventionMode, setSyncConnected, shutdownSleepPrevention, type PreventSleepMode } from './PowerSaveService';
 import { reconnectAllTrackerSyncs } from './TrackerSyncManager';
 import { BrowserWindow } from 'electron';
+import { timeStartupPhase } from '../utils/startupTiming';
 
 function loadSyncModule() {
   return syncModule;
@@ -521,7 +522,10 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         // logger.main.info('[SyncManager] Fetching server index...');
         let serverIndex: Awaited<ReturnType<NonNullable<typeof provider.fetchIndex>>>;
         try {
-          serverIndex = await provider.fetchIndex();
+          serverIndex = await timeStartupPhase(
+            'SyncManager.fetchIndex',
+            () => provider.fetchIndex!(),
+          );
           const fetchTime = performance.now() - fetchStart;
           // logger.main.info(`[SyncManager] Server has ${serverIndex.sessions.length} sessions (fetch took ${fetchTime.toFixed(1)}ms)`);
         } catch (fetchError) {
@@ -539,7 +543,10 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         // Step 2: Get local sessions (without messages first for comparison)
         const localStart = performance.now();
         const { getAllSessionsForSync } = await import('./PGLiteSessionStore');
-        const allLocalSessions = await getAllSessionsForSync(false); // No messages yet
+        const allLocalSessions = await timeStartupPhase(
+          'SyncManager.getAllSessionsForSync',
+          () => getAllSessionsForSync(false), // No messages yet
+        );
         const localTime = performance.now() - localStart;
         // logger.main.info(`[SyncManager] Local has ${allLocalSessions.length} sessions (query took ${localTime.toFixed(1)}ms)`);
 

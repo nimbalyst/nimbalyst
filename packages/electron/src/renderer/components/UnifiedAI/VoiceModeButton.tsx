@@ -13,8 +13,9 @@ import { AudioCapture } from '../../utils/audioCapture';
 import { AudioPlayback } from '../../utils/audioPlayback';
 import { voiceModeEnabledAtom } from '../../store/atoms/appSettings';
 import { activeSessionIdAtom } from '../../store/atoms/sessions';
-import { voiceTokenUsageAtom, voiceListenStateAtom, voiceErrorAtom, registerVoiceAudioCallback, registerVoiceInterruptCallback, registerVoiceSubmitPromptCallback, registerVoiceAgentTaskCompleteCallback, registerVoiceStoppedCallback } from '../../store/atoms/voiceModeState';
-import { setVoiceActiveSession, clearVoiceActiveSession, persistAndClearVoiceSession, onLinkedSessionChanged, wakeVoiceListening } from '../../store/listeners/voiceModeListeners';
+import { voiceTokenUsageAtom, voiceListenStateAtom, voiceErrorAtom, registerVoiceAudioCallback, registerVoiceInterruptCallback, registerVoiceSubmitPromptCallback, registerVoiceAgentTaskCompleteCallback, registerVoiceStoppedCallback, registerVoiceResponseDoneCallback, registerVoiceAudioActiveQuery } from '../../store/atoms/voiceModeState';
+import { setVoiceActiveSession, clearVoiceActiveSession, persistAndClearVoiceSession, onLinkedSessionChanged, wakeVoiceListening, notifyVoiceAudioPlaybackDrained } from '../../store/listeners/voiceModeListeners';
+import { openSettingsCommandAtom } from '../../store';
 import { HelpTooltip } from '../../help';
 import { store } from '@nimbalyst/runtime/store';
 
@@ -151,6 +152,16 @@ function registerVoiceCallbacks() {
     });
   });
 
+  // Voice agent finished a turn -- play a brief readiness cue when the mic
+  // came back from sleep with no audible agent response, so the user has a
+  // clear signal that the 15s response window has started.
+  registerVoiceResponseDoneCallback((wokeFromSleep) => {
+    if (activeVoiceSessionId === null) return;
+    if (wokeFromSleep) {
+      playReadyCue();
+    }
+  });
+
   // Programmatic stop (clean up audio resources)
   registerVoiceStoppedCallback(() => {
     if (globalAudioCapture) {
@@ -167,6 +178,11 @@ function registerVoiceCallbacks() {
 
 // Register callbacks immediately on module load
 registerVoiceCallbacks();
+
+// Let voiceModeListeners synchronously query whether the assistant's audio
+// is still playing in the user's speakers. Used to defer the post-turn
+// listen window until *audible* end-of-turn for long responses.
+registerVoiceAudioActiveQuery(() => globalAudioPlayback?.isPlaybackActive() ?? false);
 
 /**
  * Play a soft "bing" activation sound using the Web Audio API.
@@ -202,6 +218,46 @@ function playActivationSound(): void {
     osc2.stop(now + 0.25);
 
     // Clean up context after sounds finish
+    setTimeout(() => ctx.close(), 500);
+  } catch {
+    // Audio playback is best-effort
+  }
+}
+
+/**
+ * Play a soft "ready for input" cue when the mic wakes from sleep at the end
+ * of a voice-agent turn that produced no audible response. Two ascending notes
+ * so it's distinct from playActivationSound() but still unobtrusive.
+ */
+function playReadyCue(): void {
+  try {
+    const ctx = new AudioContext();
+    const now = ctx.currentTime;
+
+    // First note (A5 ~880Hz)
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(880, now);
+    gain1.gain.setValueAtTime(0, now);
+    gain1.gain.linearRampToValueAtTime(0.08, now + 0.01);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    osc1.connect(gain1).connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.18);
+
+    // Second note (E6 ~1319Hz) -- slightly later, ascending
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(1319, now + 0.12);
+    gain2.gain.setValueAtTime(0, now + 0.12);
+    gain2.gain.linearRampToValueAtTime(0.08, now + 0.13);
+    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+    osc2.connect(gain2).connect(ctx.destination);
+    osc2.start(now + 0.12);
+    osc2.stop(now + 0.32);
+
     setTimeout(() => ctx.close(), 500);
   } catch {
     // Audio playback is best-effort
@@ -319,6 +375,12 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
         }
 
         globalAudioPlayback = new AudioPlayback();
+        // When the assistant's audio queue drains in the user's speakers,
+        // notify the listener so it can start the 15s listen window from
+        // *audible* end-of-turn rather than server end-of-turn.
+        globalAudioPlayback.setOnDrained(() => {
+          notifyVoiceAudioPlaybackDrained();
+        });
         globalAudioCapture = new AudioCapture();
         await globalAudioCapture.start((pcm16Base64) => {
           // Use activeVoiceSessionId (module-level, updated on session switch)
@@ -350,6 +412,15 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
         setIsConnecting(false);
       }
     }
+  };
+
+  const handleOpenVoiceModeSettings = () => {
+    store.set(openSettingsCommandAtom, {
+      category: 'voice-mode',
+      scope: 'user',
+      timestamp: Date.now(),
+    });
+    setError(null);
   };
 
   // Context usage ring (wraps button when voice is active -- both listening and sleeping)
@@ -410,7 +481,7 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
 
   return (
     <HelpTooltip testId="voice-mode-toggle" placement="right" extraContent={contextExtraContent}>
-      <div className="relative">
+      <div className="voice-mode-button relative">
         <button
           onClick={handleToggleVoice}
           disabled={isDisabled}
@@ -470,15 +541,26 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
         </button>
         {error && (
           <div
-            className="absolute left-[calc(100%+8px)] top-1/2 -translate-y-1/2 bg-nim border border-nim-error rounded-lg p-3 min-w-[200px] max-w-[300px] shadow-[0_4px_12px_rgba(0,0,0,0.15)] z-[1000]"
+            className="voice-mode-error-popover absolute left-[calc(100%+8px)] top-1/2 -translate-y-1/2 bg-nim border border-nim-error rounded-lg p-3 min-w-[200px] max-w-[300px] shadow-[0_4px_12px_rgba(0,0,0,0.15)] z-[1000]"
           >
             <div className="flex items-start gap-2 text-nim">
               <MaterialSymbol icon="error" size={18} className="text-nim-error shrink-0" />
               <div className="text-[13px] leading-[1.4]">
                 <div className="font-semibold mb-1">Voice Mode Error</div>
                 <div className="text-nim-muted">{getErrorMessage(error)}</div>
+                {shouldShowVoiceModeSettingsLink(error) && (
+                  <button
+                    type="button"
+                    onClick={handleOpenVoiceModeSettings}
+                    data-testid="voice-mode-error-open-settings"
+                    className="voice-mode-error-settings-link mt-2 bg-transparent border-none cursor-pointer p-0 text-left text-[var(--nim-link)] hover:text-[var(--nim-link-hover)]"
+                  >
+                    Open Voice Mode Settings
+                  </button>
+                )}
               </div>
               <button
+                type="button"
                 onClick={(e) => { e.stopPropagation(); setError(null); }}
                 className="bg-transparent border-none cursor-pointer p-0 ml-auto text-nim-faint"
               >
@@ -508,4 +590,17 @@ function getErrorMessage(error: { type: string; message: string }): string {
     default:
       return error.message || 'An unexpected error occurred.';
   }
+}
+
+function shouldShowVoiceModeSettingsLink(error: { type: string; message: string }): boolean {
+  if (error.type === 'invalid_api_key') {
+    return true;
+  }
+
+  if (error.type !== 'connection_failed') {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return message.includes('api key') || message.includes('settings');
 }

@@ -242,6 +242,21 @@ export interface ITranscriptEventStore {
     providerToolCallId: string,
     sessionId: string,
   ): Promise<TranscriptEvent | null>;
+  /**
+   * Find the most recent active (running/pending) tool_call event whose
+   * canonical providerToolCallId is either:
+   *   1. equal to `rawProviderToolCallId` (legacy/raw-id sessions), or
+   *   2. a Codex synthetic edit-group ID of the form
+   *      `nimtc|<encodeURIComponent(rawProviderToolCallId)>|<timestamp>|<index>`
+   *
+   * Used by the Codex parser to correlate `item.completed` raw messages with
+   * a `tool_call_started` written in an earlier batch under a stable synthetic
+   * ID. Returns null if no active match exists.
+   */
+  findActiveToolCallByRawProviderId(
+    rawProviderToolCallId: string,
+    sessionId: string,
+  ): Promise<TranscriptEvent | null>;
   getEventById(id: number): Promise<TranscriptEvent | null>;
   getChildEvents(parentEventId: number): Promise<TranscriptEvent[]>;
   getSubagentEvents(subagentId: string, sessionId: string): Promise<TranscriptEvent[]>;

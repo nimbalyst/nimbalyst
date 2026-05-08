@@ -6,11 +6,12 @@ import { MessageSegment } from './MessageSegment';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ProviderIcon } from '../../icons/ProviderIcons';
 import { MaterialSymbol } from '../../icons/MaterialSymbol';
-import { formatMessageTime, formatDuration } from '../../../utils/dateUtils';
+import { formatMessageTime, formatDuration, formatTurnFinishedAt } from '../../../utils/dateUtils';
 import { copyToClipboard } from '../../../utils/clipboard';
 import { JSONViewer } from './JSONViewer';
 import { formatToolArguments, extractFilePathFromArgs } from '../utils/pathResolver';
 import { EditToolResultCard } from './EditToolResultCard';
+import { AsyncEditToolResultCard } from './AsyncEditToolResultCard';
 import { TranscriptSearchBar } from './TranscriptSearchBar';
 import { formatToolDisplayName } from '../utils/toolNameFormatter';
 import { isToolLikeMessage } from '../utils/messageTypeHelpers';
@@ -460,6 +461,10 @@ const defaultSettings: TranscriptSettings = {
 // 'applypatch'/'apply_patch' covers Codex ACP's apply_patch tool, which
 // emits its diff via a `changes: { [path]: { type, unified_diff } }` shape
 // (parsed in extractEditsFromToolMessage).
+// OpenAI Codex SDK's `file_change` tool is NOT in this set -- the raw
+// item.completed payload has no diff content, so its dispatch goes through
+// AsyncEditToolResultCard which fetches diffs via getToolCallDiffs (the synthetic
+// edit-group ID populates session_files.metadata.toolUseId via Phase 1-3 plumbing).
 const EDIT_TOOL_NAMES = new Set([
   'edit', 'write', 'multi-edit', 'multiedit', 'multi_edit',
   'applypatch', 'apply_patch',
@@ -684,6 +689,78 @@ const extractApplyPatchChanges = (changes: unknown): any[] => {
         replacements,
       });
     }
+  }
+  return out;
+};
+
+/**
+ * Map a `ToolCallDiffResult[]` (from getToolCallDiffs) into the edit-record
+ * shape EditToolResultCard expects. Used by the async dispatch path for tools
+ * (e.g. Codex `file_change`) whose raw canonical event carries no diff content
+ * and whose diffs must be fetched from local-history via the synthetic
+ * edit-group ID stored on session_files.metadata.toolUseId.
+ */
+export const toolCallDiffsToEdits = (diffs: any[]): any[] => {
+  const out: any[] = [];
+  for (const diff of diffs) {
+    if (!diff || typeof diff !== 'object') continue;
+    const filePath = typeof diff.filePath === 'string' ? diff.filePath : undefined;
+    if (!filePath) continue;
+    const operation = typeof diff.operation === 'string' ? diff.operation : 'edit';
+
+    if (operation === 'create') {
+      // Prefer the explicit `content` field when the matcher provided it
+      // (Write/Edit tools include the file body directly). For Codex
+      // `file_change` with kind='add', the matcher returns
+      // `diffs: [{ oldString: '', newString: <full body> }]` from its
+      // history-snapshot fallback because the SDK's FileChangeItem.changes
+      // doesn't carry content -- pull the body off newString in that case
+      // so NewFilePreview renders with the actual file contents instead
+      // of an empty preview.
+      let content = typeof diff.content === 'string' ? diff.content : '';
+      if (!content && Array.isArray(diff.diffs) && diff.diffs.length > 0) {
+        content = diff.diffs
+          .map((d: any) => (typeof d?.newString === 'string' ? d.newString : ''))
+          .join('');
+      }
+      out.push({
+        filePath,
+        type: 'add',
+        operation: 'create',
+        content,
+      });
+      continue;
+    }
+
+    const replacements = Array.isArray(diff.diffs)
+      ? diff.diffs
+          .filter((d: any) => d && typeof d === 'object')
+          .map((d: any) => ({
+            oldText: typeof d.oldString === 'string' ? d.oldString : '',
+            newText: typeof d.newString === 'string' ? d.newString : '',
+          }))
+      : [];
+
+    if (operation === 'delete') {
+      // ToolCallMatcher returns the file's last-known content as a single
+      // diff entry for delete. Render it as red-only by clearing newText.
+      const first = replacements[0] ?? { oldText: '', newText: '' };
+      out.push({
+        filePath,
+        type: 'delete',
+        operation: 'delete',
+        old_string: first.oldText,
+        new_string: '',
+      });
+      continue;
+    }
+
+    out.push({
+      filePath,
+      type: 'update',
+      operation: 'edit',
+      replacements: replacements.length > 0 ? replacements : undefined,
+    });
   }
   return out;
 };
@@ -1361,6 +1438,28 @@ export const RichTranscriptView = React.forwardRef<
       );
     }
 
+    // Codex SDK's `file_change` tool's raw item.completed payload only carries
+    // { id, type, changes:[{path,kind}], status } -- no diff content. Render via
+    // AsyncEditToolResultCard, which fetches red/green diffs from local-history
+    // using the synthetic edit-group ID (Phase 1-3 plumbing) and then renders
+    // through the same EditToolResultCard look as Claude's Edit tool.
+    if (tool.toolName === 'file_change' && getToolCallDiffs) {
+      return (
+        <div
+          key={`tool-${toolIndex}-${depth}`}
+          className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`}
+          style={{ marginLeft: depth > 0 ? '1rem' : '0' }}
+        >
+          <AsyncEditToolResultCard
+            toolMessage={toolMsg}
+            workspacePath={workspacePath}
+            onOpenFile={onOpenFile}
+            getToolCallDiffs={getToolCallDiffs}
+          />
+        </div>
+      );
+    }
+
     const editTool = isEditToolName(tool.toolName);
     const editEntries = editTool ? extractEditsFromToolMessage(toolMsg) : [];
     const toolDisplayName = formatToolDisplayName(tool.toolName || '') || tool.toolName || 'Tool';
@@ -1998,10 +2097,12 @@ export const RichTranscriptView = React.forwardRef<
                           const endTimestamp = message.createdAt?.getTime() ?? 0;
                           const duration = formatDuration(startTimestamp, endTimestamp);
                           if (!duration || duration === '0ms') return null;
+                          const finishedAt = formatTurnFinishedAt(endTimestamp);
                           const fileStats = computeTurnFileStats(messages, startIdx, index);
                           return (
                             <div className="rich-transcript-turn-elapsed text-xs text-[var(--nim-text-faint)] mt-2 ml-6">
                               Finished in {duration}
+                              {finishedAt && <span> {finishedAt}</span>}
                               {fileStats && (
                                 <span>
                                   {' · '}{fileStats.filesModified} file{fileStats.filesModified !== 1 ? 's' : ''}

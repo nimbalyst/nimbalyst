@@ -31,6 +31,7 @@ import { ExtensionLogService } from "../services/ExtensionLogService";
 import { database } from "../database/initialize";
 import { findWindowByWorkspace } from "../window/WindowManager";
 import { getRestartSignalPath, getPackageRoot } from "../utils/appPaths";
+import { requireMcpAuth } from "./mcpAuth";
 
 // ============================================================================
 // File Utilities
@@ -2754,22 +2755,32 @@ async function tryCreateExtensionDevServer(port: number): Promise<any> {
         const pathname = parsedUrl.pathname;
         const mcpSessionIdHeader = getMcpSessionIdHeader(req);
 
-        // Handle CORS preflight
+        // Handle CORS preflight.
+        // Issue #146: drop `Access-Control-Allow-Origin: *`; bearer token is
+        // the sole gate. SDK subprocesses don't care about CORS.
         if (req.method === "OPTIONS") {
           res.writeHead(200, {
-            "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
             "Access-Control-Allow-Headers":
-              "Content-Type, mcp-session-id, mcp-protocol-version",
+              "Authorization, Content-Type, mcp-session-id, mcp-protocol-version",
           });
           res.end();
           return;
         }
 
-        // Health check endpoint
+        // Health check endpoint (intentionally unauthenticated -- only returns
+        // a static {status:"ok"} payload, no side effects).
         if (pathname === "/health" && req.method === "GET") {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ status: "ok" }));
+          return;
+        }
+
+        // Issue #146: every non-OPTIONS request to /mcp must carry the
+        // per-launch bearer token.
+        if (pathname === "/mcp" && !requireMcpAuth(req)) {
+          res.writeHead(401);
+          res.end("Unauthorized");
           return;
         }
 

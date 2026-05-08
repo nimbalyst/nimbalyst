@@ -31,6 +31,8 @@ import {
   type SessionMeta,
 } from '../../store';
 import { alphaFeatureEnabledAtom, worktreesFeatureAvailableAtom } from '../../store/atoms/appSettings';
+import { worktreeDisplayNameUpdateAtom } from '../../store/atoms/worktrees';
+import { blitzCreatedAtom, blitzDisplayNameUpdateAtom } from '../../store/atoms/blitz';
 import { superLoopListAtom, upsertSuperLoopAtom, removeSuperLoopAtom } from '../../store/atoms/superLoop';
 import { useSuperLoopDialog } from '../../hooks/useSuperLoop';
 import type { SuperLoop } from '../../../shared/types/superLoop';
@@ -253,7 +255,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
   const showArchived = showArchivedAtom;
   const setShowArchived = setShowArchivedAtom;
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
-  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set()); // Format: "blitz:id", "worktree:id", "workstream:id", "superloop:id"
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set()); // Format: "blitz:id", "worktree:id", "workstream:id", "superloop:id", "meta-agent:id"
   const lastSelectedIdRef = useRef<string | null>(null); // For shift+click range selection
   const [worktreeCache, setWorktreeCache] = useState<Map<string, WorktreeWithStatus>>(new Map()); // Cache worktree data
   const [workstreamChildrenCache, setWorkstreamChildrenCache] = useState<Map<string, SessionItem[]>>(new Map()); // Cache workstream children
@@ -621,55 +623,45 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
     }
   }, [renamedWorktree]);
 
-  // Listen for worktree display name updates from main process
-  // This handles automatic worktree naming when first session in worktree is named
+  // React to worktree display-name updates broadcast by main. The IPC event
+  // is handled centrally in store/listeners/worktreeListeners.ts which writes
+  // worktreeDisplayNameUpdateAtom; we merge the update into our local cache
+  // when the worktree is one we know about, skipping the initial-mount value.
+  const worktreeDisplayNameUpdate = useAtomValue(worktreeDisplayNameUpdateAtom);
+  const initialWorktreeDisplayNameUpdateRef = useRef(worktreeDisplayNameUpdate);
   useEffect(() => {
     if (!workspacePath) return;
+    if (worktreeDisplayNameUpdate === initialWorktreeDisplayNameUpdateRef.current) return;
+    if (!worktreeDisplayNameUpdate) return;
+    const { worktreeId, displayName } = worktreeDisplayNameUpdate.payload;
+    setWorktreeCache(prev => {
+      const existing = prev.get(worktreeId);
+      if (!existing) return prev;
+      const updated = new Map(prev);
+      updated.set(worktreeId, { ...existing, displayName });
+      return updated;
+    });
+  }, [worktreeDisplayNameUpdate, workspacePath]);
 
-    const unsubscribe = window.electronAPI?.on?.('worktree:display-name-updated',
-      (data: { worktreeId: string; displayName: string }) => {
-        setWorktreeCache(prev => {
-          const existing = prev.get(data.worktreeId);
-          if (existing) {
-            const updated = new Map(prev);
-            updated.set(data.worktreeId, {
-              ...existing,
-              displayName: data.displayName
-            });
-            return updated;
-          }
-          return prev;
-        });
-      }
-    );
-
-    return () => unsubscribe?.();
-  }, [workspacePath]);
-
-  // Listen for blitz display name updates from main process
-  // This handles automatic blitz naming when first session in any blitz worktree is named
+  // React to blitz display-name updates broadcast by main. The IPC event is
+  // handled centrally in store/listeners/blitzListeners.ts which writes
+  // blitzDisplayNameUpdateAtom; we merge the update into our local cache when
+  // the blitz is one we know about, skipping the initial-mount value.
+  const blitzDisplayNameUpdate = useAtomValue(blitzDisplayNameUpdateAtom);
+  const initialBlitzDisplayNameUpdateRef = useRef(blitzDisplayNameUpdate);
   useEffect(() => {
     if (!workspacePath) return;
-
-    const unsubscribe = window.electronAPI?.on?.('blitz:display-name-updated',
-      (data: { blitzId: string; displayName: string }) => {
-        setBlitzCache(prev => {
-          const existing = prev.get(data.blitzId);
-          if (existing) {
-            const updated = new Map(prev);
-            updated.set(data.blitzId, {
-              ...existing,
-              displayName: data.displayName
-            });
-            return updated;
-          }
-          return prev;
-        });
-      }
-    );
-
-    return () => unsubscribe?.();
-  }, [workspacePath]);
+    if (blitzDisplayNameUpdate === initialBlitzDisplayNameUpdateRef.current) return;
+    if (!blitzDisplayNameUpdate) return;
+    const { blitzId, displayName } = blitzDisplayNameUpdate.payload;
+    setBlitzCache(prev => {
+      const existing = prev.get(blitzId);
+      if (!existing) return prev;
+      const updated = new Map(prev);
+      updated.set(blitzId, { ...existing, displayName });
+      return updated;
+    });
+  }, [blitzDisplayNameUpdate, workspacePath]);
 
   // Update session timestamp when updated (efficient update without database reload)
   useEffect(() => {
@@ -715,6 +707,31 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
       console.error('[SessionHistory] Failed to archive session:', err);
     }
   };
+
+  const getMetaAgentGroupSessionIds = useCallback((metaSessionId: string) => {
+    return [
+      metaSessionId,
+      ...sessions
+        .filter(session => session.createdBySessionId === metaSessionId)
+        .map(session => session.id),
+    ];
+  }, [sessions]);
+
+  const handleArchiveMetaAgentSession = useCallback(async (metaSessionId: string) => {
+    const sessionIds = getMetaAgentGroupSessionIds(metaSessionId);
+    try {
+      await Promise.all(
+        sessionIds.map(sessionId => window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true }))
+      );
+      sessionIds.forEach(sessionId => {
+        updateSessionStore({ sessionId, updates: { isArchived: true } });
+        onSessionArchive?.(sessionId);
+      });
+      setSessions(prev => prev.filter(session => !sessionIds.includes(session.id)));
+    } catch (err) {
+      console.error('[SessionHistory] Failed to archive meta-agent session:', err);
+    }
+  }, [getMetaAgentGroupSessionIds, onSessionArchive, updateSessionStore]);
 
   // Clean up UI state after a worktree archive (used by both auto-archive and dialog confirm paths)
   const cleanupAfterWorktreeArchive = useCallback((worktreeId: string) => {
@@ -807,6 +824,38 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
       console.error('[SessionHistory] Failed to unarchive session:', err);
     }
   };
+
+  const handleUnarchiveMetaAgentSession = useCallback(async (metaSessionId: string) => {
+    const sessionIds = getMetaAgentGroupSessionIds(metaSessionId);
+    try {
+      await Promise.all(
+        sessionIds.map(sessionId => window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: false }))
+      );
+      sessionIds.forEach(sessionId => {
+        updateSessionStore({ sessionId, updates: { isArchived: false } });
+      });
+      setSessions(prev => prev.map(session => (
+        sessionIds.includes(session.id)
+          ? { ...session, isArchived: false }
+          : session
+      )));
+    } catch (err) {
+      console.error('[SessionHistory] Failed to unarchive meta-agent session:', err);
+    }
+  }, [getMetaAgentGroupSessionIds, updateSessionStore]);
+
+  const handleDeleteMetaAgentSession = useCallback(async (metaSessionId: string) => {
+    if (!onSessionDelete) return;
+
+    const sessionIds = getMetaAgentGroupSessionIds(metaSessionId);
+    const childSessionIds = sessionIds.filter(sessionId => sessionId !== metaSessionId);
+
+    for (const sessionId of childSessionIds) {
+      await onSessionDelete(sessionId);
+    }
+    await onSessionDelete(metaSessionId);
+    await loadAllSessions();
+  }, [getMetaAgentGroupSessionIds, loadAllSessions, onSessionDelete]);
 
   const toggleShowArchived = async () => {
     const newValue = !showArchived;
@@ -1993,22 +2042,24 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
     }
   }, [workspacePath]);
 
-  // Initial fetch + re-fetch when blitz:created event fires
+  // Initial fetch on workspace change.
   useEffect(() => {
     if (!workspacePath) return;
-
     fetchBlitzes();
-
-    const unsubscribe = window.electronAPI?.on?.('blitz:created',
-      (data: { blitzId: string; workspacePath: string }) => {
-        if (data.workspacePath === workspacePath) {
-          fetchBlitzes();
-        }
-      }
-    );
-
-    return () => unsubscribe?.();
   }, [workspacePath, fetchBlitzes]);
+
+  // Re-fetch when a `blitz:created` event arrives for this workspace. The
+  // IPC event is handled centrally in store/listeners/blitzListeners.ts which
+  // writes blitzCreatedAtom; we skip the initial-mount value so we don't
+  // double-fetch alongside the effect above.
+  const blitzCreated = useAtomValue(blitzCreatedAtom);
+  const initialBlitzCreatedRef = useRef(blitzCreated);
+  useEffect(() => {
+    if (!workspacePath) return;
+    if (blitzCreated === initialBlitzCreatedRef.current) return;
+    if (!blitzCreated || blitzCreated.payload.workspacePath !== workspacePath) return;
+    fetchBlitzes();
+  }, [blitzCreated, workspacePath, fetchBlitzes]);
 
   // Fetch children for expanded workstreams
   useEffect(() => {
@@ -2204,12 +2255,25 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
         <div className="session-history-search px-3 py-2 border-b border-[var(--nim-border)] shrink-0 relative">
           <input
             type="text"
-            className="session-history-search-input nim-input w-full px-3 py-2 text-[13px] text-[var(--nim-text)] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded outline-none transition-colors duration-150 placeholder:text-[var(--nim-text-faint)] focus:border-[var(--nim-primary)] focus:bg-[var(--nim-bg)]"
+            className="session-history-search-input nim-input w-full pl-3 pr-9 py-2 text-[13px] text-[var(--nim-text)] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded outline-none transition-colors duration-150 placeholder:text-[var(--nim-text-faint)] focus:border-[var(--nim-primary)] focus:bg-[var(--nim-bg)]"
             placeholder="Search sessions..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             aria-label="Search sessions"
           />
+          {searchQuery && (
+            <button
+              type="button"
+              className="session-history-search-clear absolute right-5 top-1/2 -translate-y-1/2 flex items-center justify-center w-5 h-5 rounded text-[var(--nim-text-muted)] bg-transparent border-none cursor-pointer transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+              onClick={() => setSearchQuery('')}
+              aria-label="Clear search"
+              title="Clear search"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </button>
+          )}
         </div>
         <div className="session-history-filters flex items-center px-3 py-2 border-b border-[var(--nim-border)] gap-1.5 shrink-0">
           <div className="session-history-sort-dropdown ml-auto relative">
@@ -2448,7 +2512,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
       <div className="session-history-search px-3 py-2 border-b border-[var(--nim-border)] shrink-0 relative z-[101]">
         <input
           type="text"
-          className="session-history-search-input nim-input w-full px-3 py-2 pr-8 text-[13px] text-[var(--nim-text)] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded outline-none transition-colors duration-150 placeholder:text-[var(--nim-text-faint)] focus:border-[var(--nim-primary)] focus:bg-[var(--nim-bg)]"
+          className="session-history-search-input nim-input w-full px-3 py-2 pr-14 text-[13px] text-[var(--nim-text)] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded outline-none transition-colors duration-150 placeholder:text-[var(--nim-text-faint)] focus:border-[var(--nim-primary)] focus:bg-[var(--nim-bg)]"
           placeholder="Search sessions..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
@@ -2460,14 +2524,27 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
           }}
           aria-label="Search sessions"
         />
+        {searchQuery && (
+          <button
+            type="button"
+            className="session-history-search-clear absolute right-5 top-1/2 -translate-y-1/2 flex items-center justify-center w-5 h-5 rounded text-[var(--nim-text-muted)] bg-transparent border-none cursor-pointer transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+            onClick={() => setSearchQuery('')}
+            aria-label="Clear search"
+            title="Clear search"
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+        )}
         {isSearching && (
-          <div className="session-history-search-status absolute right-6 top-1/2 -translate-y-1/2 text-xs text-[var(--nim-text-faint)] pointer-events-none">
+          <div className="session-history-search-status absolute right-12 top-1/2 -translate-y-1/2 text-xs text-[var(--nim-text-faint)] pointer-events-none">
             {contentSearchTriggered ? 'Searching messages...' : 'Searching...'}
           </div>
         )}
         {!isSearching && searchQuery && !contentSearchTriggered && (
           <button
-            className="session-history-content-search-hint absolute right-6 top-1/2 -translate-y-1/2 text-xs text-[var(--nim-text-muted)] bg-transparent border-none cursor-pointer flex items-center gap-1 px-2 py-1 rounded transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-primary)]"
+            className="session-history-content-search-hint absolute right-12 top-1/2 -translate-y-1/2 text-xs text-[var(--nim-text-muted)] bg-transparent border-none cursor-pointer flex items-center gap-1 px-2 py-1 rounded transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-primary)]"
             onClick={searchMessageContents}
             title="Press Tab to search message contents"
           >
@@ -2476,7 +2553,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
         )}
         {/* Search filters dropdown - only visible when content search is active */}
         {contentSearchTriggered && searchQuery && (
-          <div className="absolute right-4 top-1/2 -translate-y-1/2" ref={searchFiltersRef}>
+          <div className="absolute right-12 top-1/2 -translate-y-1/2" ref={searchFiltersRef}>
             <button
               className={`flex items-center justify-center w-5 h-5 rounded transition-all duration-150 ${
                 showSearchFilters || searchFilters.timeRange !== '30d' || searchFilters.direction !== 'all'
@@ -2818,6 +2895,15 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
                       onMultiSelect={() => handleGroupMultiSelect(`meta-agent:${item.metaSession.id}`)}
                       activeSessionId={activeSessionId}
                       onSessionSelect={handleSessionClick}
+                      onSessionArchive={handleArchiveSession}
+                      onSessionUnarchive={handleUnarchiveSession}
+                      onSessionDelete={onSessionDelete ? handleDeleteSession : undefined}
+                      onMetaSessionArchive={handleArchiveMetaAgentSession}
+                      onMetaSessionUnarchive={handleUnarchiveMetaAgentSession}
+                      onMetaSessionDelete={onSessionDelete ? handleDeleteMetaAgentSession : undefined}
+                      onSessionPinToggle={handleSessionPinToggle}
+                      onSessionBranch={onSessionBranch}
+                      onWorktreeArchive={handleArchiveWorktree}
                     />
                   );
                 }

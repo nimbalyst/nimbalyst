@@ -139,7 +139,8 @@ export function initSessionListListeners(): () => void {
 
     // 1. Patch the parent's children list (deduped).
     const currentChildren = store.get(sessionChildrenAtom(parentSessionId));
-    if (!currentChildren.includes(childSessionId)) {
+    const isNewChild = !currentChildren.includes(childSessionId);
+    if (isNewChild) {
       store.set(sessionChildrenAtom(parentSessionId), [...currentChildren, childSessionId]);
     }
 
@@ -154,6 +155,24 @@ export function initSessionListListeners(): () => void {
         type: 'workstream',
         childSessionIds: [...workstreamState.childSessionIds, childSessionId],
       });
+    }
+
+    // 4. Bump the parent's childCount in the session registry. SessionHistory's
+    //    left-pane workstream tree decides whether to refetch its child cache by
+    //    comparing cachedChildren.length against parent.childCount, so without
+    //    this bump the new child stays invisible until something else mutates
+    //    the registry (or the user toggles the disclosure). Why: this listener
+    //    fires before the debounced sessions:refresh-list re-queries the DB,
+    //    and we cannot rely on that race winning.
+    const registry = new Map(store.get(sessionRegistryAtom));
+    const parentMeta = registry.get(parentSessionId);
+    if (parentMeta && isNewChild) {
+      registry.set(parentSessionId, {
+        ...parentMeta,
+        childCount: (parentMeta.childCount ?? 0) + 1,
+        sessionType: parentMeta.sessionType === 'session' ? 'workstream' : parentMeta.sessionType,
+      });
+      store.set(sessionRegistryAtom, registry);
     }
   };
 

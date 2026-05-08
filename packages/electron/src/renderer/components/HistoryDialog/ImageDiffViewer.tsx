@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { nimAssetUrl } from '../../utils/assetUrl';
 
 interface ImageDiffViewerProps {
   oldImagePath: string;
@@ -76,13 +77,13 @@ export function ImageDiffViewer({
             <div className="image-diff-panel flex-1 flex flex-col min-w-0">
               <div className="image-diff-label text-[13px] font-medium text-[var(--nim-text-muted)] mb-2 text-center">Old Version</div>
               <div className="image-diff-container flex-1 flex items-center justify-center bg-[var(--nim-bg-tertiary)] border border-[var(--nim-border)] rounded overflow-auto p-4 [&_img]:max-w-full [&_img]:max-h-full [&_img]:object-contain [&_img]:block">
-                <img src={`file://${oldImagePath}`} alt="Old version" />
+                <img src={nimAssetUrl(oldImagePath)} alt="Old version" />
               </div>
             </div>
             <div className="image-diff-panel flex-1 flex flex-col min-w-0">
               <div className="image-diff-label text-[13px] font-medium text-[var(--nim-text-muted)] mb-2 text-center">New Version</div>
               <div className="image-diff-container flex-1 flex items-center justify-center bg-[var(--nim-bg-tertiary)] border border-[var(--nim-border)] rounded overflow-auto p-4 [&_img]:max-w-full [&_img]:max-h-full [&_img]:object-contain [&_img]:block">
-                <img src={`file://${newImagePath}`} alt="New version" />
+                <img src={nimAssetUrl(newImagePath)} alt="New version" />
               </div>
             </div>
           </div>
@@ -92,7 +93,7 @@ export function ImageDiffViewer({
           <div className="image-diff-swipe w-full h-full flex items-center justify-center p-4">
             <div className="image-diff-swipe-container relative max-w-full max-h-full inline-block">
               <img
-                src={`file://${newImagePath}`}
+                src={nimAssetUrl(newImagePath)}
                 alt="New version"
                 className="image-diff-swipe-new block max-w-full max-h-[calc(100vh-300px)] object-contain"
               />
@@ -101,7 +102,7 @@ export function ImageDiffViewer({
                 style={{ clipPath: `inset(0 ${100 - swipePosition}% 0 0)` }}
               >
                 <img
-                  src={`file://${oldImagePath}`}
+                  src={nimAssetUrl(oldImagePath)}
                   alt="Old version"
                   className="image-diff-swipe-old block max-w-full max-h-[calc(100vh-300px)] object-contain"
                 />
@@ -118,12 +119,12 @@ export function ImageDiffViewer({
           <div className="image-diff-overlay w-full h-full flex items-center justify-center p-4">
             <div className="image-diff-overlay-container relative max-w-full max-h-full inline-block">
               <img
-                src={`file://${newImagePath}`}
+                src={nimAssetUrl(newImagePath)}
                 alt="New version"
                 className="image-diff-overlay-new block max-w-full max-h-[calc(100vh-300px)] object-contain"
               />
               <img
-                src={`file://${oldImagePath}`}
+                src={nimAssetUrl(oldImagePath)}
                 alt="Old version"
                 className="image-diff-overlay-old absolute top-0 left-0 block max-w-full max-h-[calc(100vh-300px)] object-contain mix-blend-difference"
                 style={{ opacity: opacity / 100 }}

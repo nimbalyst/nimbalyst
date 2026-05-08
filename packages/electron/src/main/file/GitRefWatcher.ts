@@ -148,18 +148,37 @@ export class GitRefWatcher {
 
       const git: SimpleGit = simpleGit(workspacePath);
 
-      // Get current branch
-      const status = await git.status();
-      const currentBranch = status.current;
-      if (!currentBranch) {
-        // Not on a branch (detached HEAD) - skip watching
-        logger.main.info('[GitRefWatcher] Skipping detached HEAD workspace:', workspacePath);
-        return;
-      }
+      // Pre-flight: get current branch + HEAD hash. Both can fail on a
+      // fresh-init repo with zero commits ("fatal: your current branch X
+      // does not have any commits yet"). Treat that as a known no-op rather
+      // than logging the full stack trace, mirroring the detached-HEAD
+      // short-circuit below.
+      let currentBranch: string;
+      let lastCommitHash: string;
+      try {
+        const status = await git.status();
+        if (!status.current) {
+          // Not on a branch (detached HEAD) - skip watching
+          logger.main.info('[GitRefWatcher] Skipping detached HEAD workspace:', workspacePath);
+          return;
+        }
+        currentBranch = status.current;
 
-      // Get current commit hash as baseline
-      const log = await git.log({ maxCount: 1 });
-      const lastCommitHash = log.latest?.hash || '';
+        const log = await git.log({ maxCount: 1 });
+        lastCommitHash = log.latest?.hash || '';
+      } catch (preflightError) {
+        const msg = preflightError instanceof Error
+          ? preflightError.message
+          : String(preflightError);
+        if (/does not have any commits yet/i.test(msg)) {
+          logger.main.info(
+            '[GitRefWatcher] Skipping workspace with no commits yet:',
+            path.basename(workspacePath),
+          );
+          return;
+        }
+        throw preflightError;
+      }
 
       // Watch refs/heads/<current-branch> for commit detection
       // Use commonDir for refs (in worktrees, refs are in the shared parent .git dir)

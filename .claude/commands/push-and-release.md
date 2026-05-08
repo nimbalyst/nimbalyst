@@ -3,7 +3,7 @@ description: Git pull, resolve conflicts, push, fix hook errors, then release
 ---
 **Arguments**: `{{arg1}}`
 - First word: release type (patch, minor, major) — defaults to "patch" if omitted
-- If second word is "auto": passed through to /release (skips approval prompts)
+- If second word is "auto": passed through to `/release-alpha` (skips approval prompts)
 
 Run the full push-and-release workflow:
 
@@ -33,7 +33,7 @@ Run the full push-and-release workflow:
 
 - Extract the release type from `{{arg1}}` (default: "patch")
 - Determine if "auto" was specified
-- Run `/release {{arg1}}` (or `/release patch` if no args given)
+- Run `/release-alpha {{arg1}}` (or `/release-alpha patch` if no args given)
 - This delegates to the full release workflow including changelog, version bump, tagging, and pushing the release
 
 ## Error Recovery

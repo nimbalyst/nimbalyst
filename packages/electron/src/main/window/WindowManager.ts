@@ -19,14 +19,72 @@ import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { FeatureTrackingService } from '../services/analytics/FeatureTrackingService';
 import { ExtensionLogService } from '../services/ExtensionLogService';
 import { getMcpConfigService } from '../index';
+import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
 import { windows, windowStates } from './windowState';
 
 // Window management
 export { windows, windowStates };
 export const savingWindows = new Set<number>();
-export const recentlyDeletedFiles = new Set<string>(); // Tracks files deleted via UI to prevent autosave from recreating them
 export const windowFocusOrder = new Map<number, number>(); // Track focus order for each window
 export const windowDevToolsState = new Map<number, boolean>(); // Track dev tools state for each window
+
+/**
+ * Lifecycle-bound deletion tracking.
+ *
+ * When a file is deleted (UI delete, rename, move, or watcher-detected
+ * deletion), an entry is added here. While an entry exists, the save-file
+ * IPC handler refuses to write to that path -- protecting against
+ * in-flight autosaves recreating the file with stale buffer content.
+ *
+ * Entries are cleared when the renderer signals via `editor:released-deleted-path`
+ * that no editor still holds the path AND a fresh load has been observed
+ * (DocumentModel.loadContent fires this notification on success). A 5-minute
+ * absolute fallback prevents the map from growing without bound in the face
+ * of a renderer bug or premature renderer process crash.
+ */
+interface RecentlyDeletedEntry {
+    addedAt: number;
+    fallbackTimer: ReturnType<typeof setTimeout>;
+}
+const recentlyDeletedEntries = new Map<string, RecentlyDeletedEntry>();
+const RECENTLY_DELETED_FALLBACK_MS = 5 * 60 * 1000;
+
+export function markRecentlyDeleted(filePath: string): void {
+    // If already tracked, refresh the fallback timer.
+    const existing = recentlyDeletedEntries.get(filePath);
+    if (existing) {
+        clearTimeout(existing.fallbackTimer);
+    }
+    const fallbackTimer = setTimeout(() => {
+        recentlyDeletedEntries.delete(filePath);
+    }, RECENTLY_DELETED_FALLBACK_MS);
+    recentlyDeletedEntries.set(filePath, {
+        addedAt: Date.now(),
+        fallbackTimer,
+    });
+}
+
+export function clearRecentlyDeleted(filePath: string): void {
+    const entry = recentlyDeletedEntries.get(filePath);
+    if (!entry) return;
+    clearTimeout(entry.fallbackTimer);
+    recentlyDeletedEntries.delete(filePath);
+}
+
+export function isRecentlyDeleted(filePath: string): boolean {
+    return recentlyDeletedEntries.has(filePath);
+}
+
+/**
+ * Backwards-compatible wrapper for callers that previously held a Set
+ * reference (`recentlyDeletedFiles.has(...)`, `.add(...)`, `.delete(...)`).
+ * New code should call the lifecycle helpers directly.
+ */
+export const recentlyDeletedFiles = {
+    has: (filePath: string): boolean => isRecentlyDeleted(filePath),
+    add: (filePath: string): void => markRecentlyDeleted(filePath),
+    delete: (filePath: string): void => clearRecentlyDeleted(filePath),
+};
 
 // Store document services for each workspace
 export const documentServices = new Map<string, ElectronDocumentService>();
@@ -183,7 +241,14 @@ export function createWindow(
                 nodeIntegration: false,
                 contextIsolation: true,
                 preload: preloadPath,
-                webSecurity: false,
+                // Issue #146: webSecurity enforces same-origin policy. We
+                // previously disabled it so the renderer could load workspace
+                // images via `<img src="file://...">`. Those four call sites
+                // (ImageViewer, ImageDiffViewer, HistoryDialog,
+                // AttachmentPreview) now go through the registered
+                // `nim-asset://` scheme (see protocols/nimAssetProtocol.ts),
+                // which is treated as same-origin by the renderer. Leaving
+                // webSecurity at its default (true).
                 webviewTag: false
             },
             show: false,
@@ -208,6 +273,14 @@ export function createWindow(
             workspacePath: isWorkspaceMode ? workspacePath : null,
             documentEdited: false
         });
+
+        // Issue #146: register the workspace path with the nim-asset protocol
+        // so the renderer can render workspace images via `nim-asset://`. This
+        // happens before the renderer mounts, so the allowlist is ready when
+        // image components first render.
+        if (isWorkspaceMode && workspacePath) {
+            addNimAssetRoot(workspacePath);
+        }
         if (isWorkspaceMode && workspacePath) {
             if (!documentServices.has(workspacePath)) {
                 const docService = new ElectronDocumentService(workspacePath);

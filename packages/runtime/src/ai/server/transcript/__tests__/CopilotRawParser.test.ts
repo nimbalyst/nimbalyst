@@ -30,6 +30,7 @@ function makeContext(overrides?: Partial<ParseContext>): ParseContext {
     hasToolCall: () => false,
     hasSubagent: () => false,
     findByProviderToolCallId: async () => null,
+    findActiveToolCallByRawProviderId: async () => null,
     ...overrides,
   };
 }

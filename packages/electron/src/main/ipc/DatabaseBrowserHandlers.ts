@@ -181,13 +181,58 @@ export function registerDatabaseBrowserHandlers() {
                 backupStatus = backupService.getBackupStatus();
             }
 
+            // Get WAL stats. PGLite runs Postgres in --single mode with no background
+            // checkpointer, so WAL only shrinks via explicit CHECKPOINT calls. Surfacing
+            // the current size (and the min/max bounds) here makes it possible to spot
+            // when the maintenance loop has fallen behind.
+            let walStats: {
+                fileCount: number;
+                totalBytes: number;
+                totalSize: string;
+                minWalSize: string;
+                maxWalSize: string;
+                checkpointTimeout: string;
+            } | null = null;
+            try {
+                const walResult = await database.query<{
+                    file_count: string;
+                    total_bytes: string;
+                    total_size: string;
+                    min_wal_size: string;
+                    max_wal_size: string;
+                    checkpoint_timeout: string;
+                }>(`
+                    SELECT
+                        (SELECT count(*) FROM pg_ls_waldir()) as file_count,
+                        (SELECT sum(size)::bigint FROM pg_ls_waldir()) as total_bytes,
+                        (SELECT pg_size_pretty(sum(size)::bigint) FROM pg_ls_waldir()) as total_size,
+                        current_setting('min_wal_size') as min_wal_size,
+                        current_setting('max_wal_size') as max_wal_size,
+                        current_setting('checkpoint_timeout') as checkpoint_timeout
+                `);
+                const row = walResult.rows[0];
+                if (row) {
+                    walStats = {
+                        fileCount: parseInt(row.file_count) || 0,
+                        totalBytes: parseInt(row.total_bytes) || 0,
+                        totalSize: row.total_size || '0 bytes',
+                        minWalSize: row.min_wal_size,
+                        maxWalSize: row.max_wal_size,
+                        checkpointTimeout: row.checkpoint_timeout,
+                    };
+                }
+            } catch (walErr) {
+                console.warn('[DatabaseBrowserHandlers] Failed to read WAL stats:', walErr);
+            }
+
             return {
                 success: true,
                 tableStats,
                 totalSize: dbSizeResult.rows[0]?.size || '0 bytes',
                 totalSizeBytes: parseInt(dbSizeResult.rows[0]?.size_bytes) || 0,
                 basicStats: basicStats,
-                backupStatus
+                backupStatus,
+                walStats
             };
         } catch (error) {
             console.error('[DatabaseBrowserHandlers] Error fetching dashboard stats:', error);

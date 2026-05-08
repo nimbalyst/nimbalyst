@@ -8,7 +8,7 @@
  * - Child session rows
  */
 
-import React, { memo, useMemo } from 'react';
+import React, { memo, useCallback, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
 import {
@@ -19,6 +19,7 @@ import {
   type SessionMeta,
 } from '../../store';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
+import { SessionContextMenu } from './SessionContextMenu';
 
 interface MetaAgentGroupProps {
   metaSession: SessionMeta;
@@ -30,6 +31,15 @@ interface MetaAgentGroupProps {
   onMultiSelect?: (e: React.MouseEvent) => void;
   activeSessionId: string | null;
   onSessionSelect: (sessionId: string, e: Pick<React.MouseEvent, 'metaKey' | 'ctrlKey' | 'shiftKey'>) => void;
+  onSessionArchive?: (sessionId: string) => void;
+  onSessionUnarchive?: (sessionId: string) => void;
+  onSessionDelete?: (sessionId: string) => void;
+  onMetaSessionArchive?: (sessionId: string) => void;
+  onMetaSessionUnarchive?: (sessionId: string) => void;
+  onMetaSessionDelete?: (sessionId: string) => void;
+  onSessionPinToggle?: (sessionId: string, isPinned: boolean) => void;
+  onSessionBranch?: (sessionId: string) => void;
+  onWorktreeArchive?: (worktreeId: string) => void;
 }
 
 /**
@@ -102,12 +112,14 @@ const MetaAgentChildRow: React.FC<{
   session: SessionMeta;
   isActive: boolean;
   onSelect: (e: Pick<React.MouseEvent, 'metaKey' | 'ctrlKey' | 'shiftKey'>) => void;
-}> = memo(({ session, isActive, onSelect }) => (
+  onContextMenu: (e: React.MouseEvent) => void;
+}> = memo(({ session, isActive, onSelect, onContextMenu }) => (
   <div
     className={`meta-agent-child-item flex items-center gap-2 py-1.5 px-3 mr-2 mb-0.5 cursor-pointer rounded transition-colors duration-150 select-none ${
       isActive ? 'bg-[var(--nim-bg-selected)]' : 'hover:bg-[var(--nim-bg-hover)]'
     } focus:outline-2 focus:outline-[var(--nim-border-focus)] focus:outline-offset-[-2px]`}
     onClick={onSelect}
+    onContextMenu={onContextMenu}
     role="button"
     tabIndex={0}
     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(e); } }}
@@ -143,11 +155,62 @@ export const MetaAgentGroup: React.FC<MetaAgentGroupProps> = memo(({
   onMultiSelect,
   activeSessionId,
   onSessionSelect,
+  onSessionArchive,
+  onSessionUnarchive,
+  onSessionDelete,
+  onMetaSessionArchive,
+  onMetaSessionUnarchive,
+  onMetaSessionDelete,
+  onSessionPinToggle,
+  onSessionBranch,
+  onWorktreeArchive,
 }) => {
+  const [contextMenuSession, setContextMenuSession] = useState<SessionMeta | null>(null);
+  const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 });
+
   const allSessionIds = useMemo(
     () => [metaSession.id, ...childSessions.map(s => s.id)],
     [metaSession.id, childSessions]
   );
+
+  const openContextMenu = useCallback((session: SessionMeta, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenuSession(session);
+    setContextMenuPosition({ x: e.clientX, y: e.clientY });
+  }, []);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenuSession(null);
+  }, []);
+
+  const handleArchive = useCallback((session: SessionMeta) => {
+    if (session.agentRole === 'meta-agent') {
+      onMetaSessionArchive?.(session.id);
+      return;
+    }
+    if (session.worktreeId && onWorktreeArchive) {
+      onWorktreeArchive(session.worktreeId);
+      return;
+    }
+    onSessionArchive?.(session.id);
+  }, [onMetaSessionArchive, onSessionArchive, onWorktreeArchive]);
+
+  const handleUnarchive = useCallback((session: SessionMeta) => {
+    if (session.agentRole === 'meta-agent') {
+      onMetaSessionUnarchive?.(session.id);
+      return;
+    }
+    onSessionUnarchive?.(session.id);
+  }, [onMetaSessionUnarchive, onSessionUnarchive]);
+
+  const handleDelete = useCallback((session: SessionMeta) => {
+    if (session.agentRole === 'meta-agent') {
+      onMetaSessionDelete?.(session.id);
+      return;
+    }
+    onSessionDelete?.(session.id);
+  }, [onMetaSessionDelete, onSessionDelete]);
 
   return (
     <div data-testid="meta-agent-group" data-meta-session-id={metaSession.id}>
@@ -163,7 +226,7 @@ export const MetaAgentGroup: React.FC<MetaAgentGroupProps> = memo(({
             onSessionSelect(metaSession.id, e);
           }
         }}
-        onContextMenu={(e) => e.preventDefault()}
+        onContextMenu={(e) => openContextMenu(metaSession, e)}
         role="button"
         tabIndex={0}
         onKeyDown={(e) => {
@@ -232,9 +295,33 @@ export const MetaAgentGroup: React.FC<MetaAgentGroupProps> = memo(({
               session={session}
               isActive={activeSessionId === session.id}
               onSelect={(e) => onSessionSelect(session.id, e)}
+              onContextMenu={(e) => openContextMenu(session, e)}
             />
           ))}
         </div>
+      )}
+
+      {contextMenuSession && (
+        <SessionContextMenu
+          sessionId={contextMenuSession.id}
+          title={contextMenuSession.title || 'Untitled Session'}
+          position={contextMenuPosition}
+          onClose={closeContextMenu}
+          isArchived={contextMenuSession.isArchived}
+          isPinned={contextMenuSession.isPinned}
+          phase={contextMenuSession.phase}
+          parentSessionId={contextMenuSession.parentSessionId}
+          onPinToggle={onSessionPinToggle ? (isPinned) => onSessionPinToggle(contextMenuSession.id, isPinned) : undefined}
+          onBranch={contextMenuSession.agentRole === 'meta-agent' ? undefined : onSessionBranch ? () => onSessionBranch(contextMenuSession.id) : undefined}
+          onArchive={!contextMenuSession.isArchived ? () => handleArchive(contextMenuSession) : undefined}
+          onUnarchive={contextMenuSession.isArchived ? () => handleUnarchive(contextMenuSession) : undefined}
+          onDelete={
+            (contextMenuSession.agentRole === 'meta-agent' && onMetaSessionDelete)
+            || (contextMenuSession.agentRole !== 'meta-agent' && onSessionDelete)
+              ? () => handleDelete(contextMenuSession)
+              : undefined
+          }
+        />
       )}
     </div>
   );

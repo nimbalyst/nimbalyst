@@ -520,9 +520,16 @@ export async function handleGitCommitProposal(
       `[MCP Server] Persisted git commit proposal: ${proposalId}, notifying renderer for session: ${targetSessionId}`
     );
     if (commitWindow) {
+      // Include proposal data in the IPC so renderer-side consumers (the
+      // GitCommit widget AND the voice forwarding path) can display the
+      // commit message and act on the file list without needing a separate
+      // round-trip to load the persisted proposal from the database.
       commitWindow.webContents.send("ai:gitCommitProposal", {
         sessionId: targetSessionId,
         proposalId,
+        commitMessage: proposalArgs.commitMessage,
+        filesToStage: proposalArgs.filesToStage,
+        workspacePath,
       });
     } else {
       console.warn("[MCP Server] No commitWindow found to send IPC event");
@@ -573,7 +580,10 @@ export async function handleGitCommitProposal(
           } catch {
             // May fail in fresh repo with no commits - that's OK
           }
-          await git.add(filePaths);
+          // Use --all so deletions are staged correctly. Plain `git add <path>`
+          // errors with "pathspec did not match any files" when the proposal
+          // includes deleted files (e.g., during renames).
+          await git.add(["--all", "--", ...filePaths]);
           return await git.commit(commitMessage);
         }
       );

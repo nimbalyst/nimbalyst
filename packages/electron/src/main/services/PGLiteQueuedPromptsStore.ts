@@ -5,6 +5,8 @@
  * Uses simple row-level atomic updates instead of JSONB array manipulation.
  */
 
+import { toMillis } from '../utils/timestampUtils';
+
 export interface QueuedPrompt {
   id: string;
   sessionId: string;
@@ -73,28 +75,6 @@ type PGliteLike = {
 
 type EnsureReadyFn = () => Promise<void>;
 
-/**
- * Convert a Date from PGLite to epoch milliseconds.
- * PGLite returns Date objects that are parsed as local time but represent UTC.
- */
-function toMillis(date: Date | string | null | undefined): number {
-  if (!date) return 0;
-  if (typeof date === 'string') {
-    return new Date(date).getTime();
-  }
-  // PGLite returns Date objects - extract components and treat as UTC
-  const d = date as Date;
-  return Date.UTC(
-    d.getFullYear(),
-    d.getMonth(),
-    d.getDate(),
-    d.getHours(),
-    d.getMinutes(),
-    d.getSeconds(),
-    d.getMilliseconds()
-  );
-}
-
 function rowToQueuedPrompt(row: any): QueuedPrompt {
   // Parse JSONB fields
   let attachments = row.attachments;
@@ -122,9 +102,9 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     status: row.status,
     attachments,
     documentContext,
-    createdAt: toMillis(row.created_at),
-    claimedAt: row.claimed_at ? toMillis(row.claimed_at) : undefined,
-    completedAt: row.completed_at ? toMillis(row.completed_at) : undefined,
+    createdAt: toMillis(row.created_at)!,
+    claimedAt: toMillis(row.claimed_at) ?? undefined,
+    completedAt: toMillis(row.completed_at) ?? undefined,
     errorMessage: row.error_message || undefined,
   };
 }

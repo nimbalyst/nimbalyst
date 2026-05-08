@@ -4,6 +4,7 @@ import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { getFileName, getRelativeDir } from '../utils/pathUtils';
 import { revealFolderAtom } from '../store';
+import { KeyboardShortcuts, getShortcutDisplay } from '../../shared/KeyboardShortcuts';
 
 interface FileItem {
   path: string;
@@ -649,7 +650,7 @@ export const QuickOpen: React.FC<QuickOpenProps> = ({
               <kbd
                 className="px-1.5 py-0.5 rounded font-mono text-[10px] bg-nim border border-nim text-nim"
               >
-                ⌘⇧F
+                {getShortcutDisplay(KeyboardShortcuts.window.contentSearch)}
               </kbd>
               Content search
             </span>

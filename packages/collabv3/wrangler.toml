@@ -84,9 +84,12 @@ binding = "ANALYTICS"
 dataset = "nimbalyst_sync"
 
 # Observability - enables logs, traces, and metrics in Cloudflare dashboard
+# Business metrics (auth, team joins, shares) go through Analytics Engine and
+# are unaffected by this sampling rate. This only samples per-invocation traces
+# used for debugging connection chatter.
 [observability]
 enabled = true
-head_sampling_rate = 1  # Sample 100% of requests
+head_sampling_rate = 0.05  # Sample 5% of requests
 
 # Build-time version injection (overridden by deploy script)
 [define]
@@ -104,6 +107,14 @@ name = "nimbalyst-collabv3-staging"
 COLLABV3_VERSION = '"0.0.0-dev"'
 [env.staging.vars]
 ENVIRONMENT = "staging"
+
+# Staging R2 bucket for document attachments. Without this binding every
+# PUT to /api/collab/docs/.../assets/... fails with "DOCUMENT_ASSETS is
+# undefined". Bucket must be created out-of-band:
+#   wrangler r2 bucket create nimbalyst-document-assets-staging
+[[env.staging.r2_buckets]]
+binding = "DOCUMENT_ASSETS"
+bucket_name = "nimbalyst-document-assets-staging"
 
 # Production environment
 [env.production]

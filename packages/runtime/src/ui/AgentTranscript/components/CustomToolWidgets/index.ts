@@ -119,7 +119,6 @@ import { BashWidget } from './BashWidget';
 import { GitCommitConfirmationWidget } from './GitCommitConfirmationWidget';
 import { ExitPlanModeWidget } from './ExitPlanModeWidget';
 import { ToolPermissionWidget } from './ToolPermissionWidget';
-import { FileChangeWidget } from './FileChangeWidget';
 import { SuperProgressSnapshotWidget } from './SuperProgressSnapshotWidget';
 import { SuperLoopProgressWidget } from './SuperLoopProgressWidget';
 import { UpdateSessionMetaWidget } from './UpdateSessionMetaWidget';
@@ -165,8 +164,9 @@ export const CUSTOM_TOOL_WIDGETS: CustomToolWidgetRegistry = {
   // Tool permission - interactive permission widget for tools requiring approval
   'ToolPermission': ToolPermissionWidget,
 
-  // File change tool - displays Codex file modifications with content snapshots
-  'file_change': FileChangeWidget,
+  // Note: Codex `file_change` is intentionally NOT registered here. It is handled by
+  // EditToolResultCard via the EDIT_TOOL_NAMES path in RichTranscriptView so it renders
+  // as an inline red/green diff instead of the older snapshot-only widget.
 
   // Super Loop progress snapshot - shows progress.json at iteration start/end
   'SuperProgressSnapshot': SuperProgressSnapshotWidget,

@@ -91,6 +91,10 @@ export interface TrackerPayloadSystem {
   authorIdentity?: TrackerIdentity | null;
   lastModifiedBy?: TrackerIdentity | null;
   createdByAgent?: boolean;
+  /**
+   * Legacy only. Session links are local-only per user and are intentionally
+   * omitted from new shared tracker sync payloads.
+   */
   linkedSessions?: string[];
   linkedCommitSha?: string;
   linkedCommits?: Array<{ sha: string; message: string; sessionId?: string; timestamp: string }>;
@@ -270,27 +274,28 @@ export function recordToPayload(record: TrackerRecord): TrackerItemPayload {
   const now = Date.now();
 
   // Build fieldUpdatedAt from record's fieldUpdatedAt, filling gaps with now
-  const fieldUpdatedAt: Record<string, number> = { ...record.fieldUpdatedAt };
+  const { linkedSessions: _linkedSessionsTs, ...fieldUpdatedAt } = record.fieldUpdatedAt;
+  const payloadFieldUpdatedAt: Record<string, number> = { ...fieldUpdatedAt };
   for (const key of Object.keys(record.fields)) {
-    if (!fieldUpdatedAt[key]) fieldUpdatedAt[key] = now;
+    if (!payloadFieldUpdatedAt[key]) payloadFieldUpdatedAt[key] = now;
   }
   // System field timestamps
   const systemKeys = [
     'authorIdentity', 'lastModifiedBy', 'createdByAgent',
-    'linkedSessions', 'linkedCommitSha', 'linkedCommits', 'documentId',
+    'linkedCommitSha', 'linkedCommits', 'documentId',
     'createdAt', 'updatedAt',
   ];
   for (const key of systemKeys) {
-    if (!fieldUpdatedAt[key]) fieldUpdatedAt[key] = now;
+    if (!payloadFieldUpdatedAt[key]) payloadFieldUpdatedAt[key] = now;
   }
   // Routing field timestamps
-  fieldUpdatedAt.issueNumber = fieldUpdatedAt.issueNumber ?? now;
-  fieldUpdatedAt.issueKey = fieldUpdatedAt.issueKey ?? now;
-  fieldUpdatedAt.archived = fieldUpdatedAt.archived ?? now;
-  fieldUpdatedAt.comments = fieldUpdatedAt.comments ?? now;
-  fieldUpdatedAt.activity = fieldUpdatedAt.activity ?? now;
+  payloadFieldUpdatedAt.issueNumber = payloadFieldUpdatedAt.issueNumber ?? now;
+  payloadFieldUpdatedAt.issueKey = payloadFieldUpdatedAt.issueKey ?? now;
+  payloadFieldUpdatedAt.archived = payloadFieldUpdatedAt.archived ?? now;
+  payloadFieldUpdatedAt.comments = payloadFieldUpdatedAt.comments ?? now;
+  payloadFieldUpdatedAt.activity = payloadFieldUpdatedAt.activity ?? now;
   if (record.content !== undefined) {
-    fieldUpdatedAt.content = fieldUpdatedAt.content ?? now;
+    payloadFieldUpdatedAt.content = payloadFieldUpdatedAt.content ?? now;
   }
 
   return {
@@ -303,7 +308,6 @@ export function recordToPayload(record: TrackerRecord): TrackerItemPayload {
       authorIdentity: record.system.authorIdentity,
       lastModifiedBy: record.system.lastModifiedBy,
       createdByAgent: record.system.createdByAgent,
-      linkedSessions: record.system.linkedSessions,
       linkedCommitSha: record.system.linkedCommitSha,
       linkedCommits: record.system.linkedCommits,
       documentId: record.system.documentId,
@@ -311,7 +315,7 @@ export function recordToPayload(record: TrackerRecord): TrackerItemPayload {
       updatedAt: record.system.updatedAt,
     },
     fields: { ...record.fields },
-    fieldUpdatedAt,
+    fieldUpdatedAt: payloadFieldUpdatedAt,
     comments: record.system.comments ?? [],
     activity: record.system.activity ?? [],
     content: record.content,
@@ -340,6 +344,8 @@ export function payloadToRecord(payload: TrackerItemPayload, workspace: string):
     }
   }
 
+  const { linkedSessions: _linkedSessionsTs, ...fieldUpdatedAt } = payload.fieldUpdatedAt;
+
   return {
     id: payload.itemId,
     primaryType: payload.primaryType ?? p.type ?? '',
@@ -357,7 +363,6 @@ export function payloadToRecord(payload: TrackerItemPayload, workspace: string):
       authorIdentity: sys.authorIdentity ?? p.authorIdentity,
       lastModifiedBy: sys.lastModifiedBy ?? p.lastModifiedBy,
       createdByAgent: sys.createdByAgent ?? p.createdByAgent,
-      linkedSessions: sys.linkedSessions ?? p.linkedSessions,
       linkedCommitSha: sys.linkedCommitSha ?? p.linkedCommitSha,
       linkedCommits: sys.linkedCommits ?? p.linkedCommits,
       documentId: sys.documentId ?? p.documentId,
@@ -366,7 +371,7 @@ export function payloadToRecord(payload: TrackerItemPayload, workspace: string):
     },
     content: payload.content,
     fields,
-    fieldUpdatedAt: { ...payload.fieldUpdatedAt },
+    fieldUpdatedAt: { ...fieldUpdatedAt },
   };
 }
 

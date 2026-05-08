@@ -11,6 +11,20 @@ import type { TranscriptWriter } from './TranscriptWriter';
 import type { ITranscriptEventStore, TranscriptEvent } from './types';
 import type { CanonicalEventDescriptor } from './parsers/IRawMessageParser';
 
+function isActiveToolCallEvent(event: TranscriptEvent): boolean {
+  const payload = event.payload as Record<string, unknown>;
+  const status = payload.status;
+  return status === 'running' || status === 'pending' || status == null;
+}
+
+function isDuplicateToolStart(
+  existing: TranscriptEvent,
+  toolName: string,
+): boolean {
+  const existingToolName = (existing.payload as Record<string, unknown>).toolName;
+  return existingToolName === toolName && isActiveToolCallEvent(existing);
+}
+
 export async function processDescriptor(
   writer: TranscriptWriter,
   store: ITranscriptEventStore,
@@ -49,11 +63,24 @@ export async function processDescriptor(
     }
 
     case 'tool_call_started': {
-      if (desc.providerToolCallId && !toolEventIds.has(desc.providerToolCallId)) {
-        const existing = await store.findByProviderToolCallId(desc.providerToolCallId, sessionId);
-        if (existing) {
-          const existingPayload = existing.payload as Record<string, unknown>;
-          if (existingPayload.toolName === desc.toolName) {
+      if (desc.providerToolCallId) {
+        // In-memory dedup: same provider id, same toolName, and still-active
+        // existing event means the parser saw this tool call twice in one
+        // batch (genuine duplicate). Once the older event is completed or
+        // errored, the same id/toolName pair may legitimately refer to a new
+        // later-turn Codex tool call and must create a fresh event/card.
+        const existingId = toolEventIds.get(desc.providerToolCallId);
+        if (existingId !== undefined) {
+          const existing = await store.getEventById(existingId);
+          if (existing && isDuplicateToolStart(existing, desc.toolName)) {
+            return null;
+          }
+        } else {
+          // DB fallback for the desktop incremental path: the in-memory map
+          // is fresh per batch but the DB may already hold this id from an
+          // earlier batch.
+          const existing = await store.findByProviderToolCallId(desc.providerToolCallId, sessionId);
+          if (existing && isDuplicateToolStart(existing, desc.toolName)) {
             toolEventIds.set(desc.providerToolCallId, existing.id);
             return null;
           }
@@ -164,12 +191,17 @@ export async function processDescriptor(
   }
 }
 
-export function selectRawParser(provider: string): 'codex' | 'copilot' | 'claude-code' | 'opencode' {
+export function selectRawParser(
+  provider: string,
+): 'codex' | 'codex-acp' | 'copilot' | 'claude-code' | 'opencode' {
   if (provider === 'copilot-cli') {
     return 'copilot';
   }
   if (provider === 'openai-codex') {
     return 'codex';
+  }
+  if (provider === 'openai-codex-acp') {
+    return 'codex-acp';
   }
   if (provider === 'opencode') {
     return 'opencode';

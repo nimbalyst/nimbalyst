@@ -1,7 +1,7 @@
 import { BrowserWindow } from 'electron';
 import { getFolderContents } from '../utils/FileTree';
 import { logger } from '../utils/logger';
-import { getWindowId } from '../window/WindowManager';
+import { getWindowId, markRecentlyDeleted } from '../window/WindowManager';
 import * as workspaceEventBus from './WorkspaceEventBus';
 
 /**
@@ -56,9 +56,12 @@ export class OptimizedWorkspaceWatcher {
         this.subscriberIds.set(windowId, subscriberId);
 
         await workspaceEventBus.subscribe(workspacePath, subscriberId, {
-            onChange: (filePath: string, gitignoreBypassed?: boolean) => {
-                if (gitignoreBypassed) return; // Don't notify editors about bypassed gitignored files
-                // Content modification -- notify editors, do NOT rebuild file tree
+            onChange: (filePath: string) => {
+                // Content modification -- notify editors, do NOT rebuild file tree.
+                // We send for bypassed (gitignored-but-tracked) files too: SessionFileWatcher
+                // skips events that pass through `markEditorSave` (restore from history,
+                // manual Cmd+S, autosave), so without this branch a gitignored .md file
+                // open in the editor would never reload after the user wrote to it.
                 if (!window.isDestroyed()) {
                     window.webContents.send('file-changed-on-disk', { path: filePath });
                 }
@@ -77,6 +80,12 @@ export class OptimizedWorkspaceWatcher {
                 // Always refresh file tree for deleted files
                 triggerUpdate();
                 if (gitignoreBypassed) return; // SessionFileWatcher handles editor notifications
+                // Track the deletion in the lifecycle-bound recentlyDeleted
+                // map so a stale autosave from any surviving editor cannot
+                // recreate the file with old content. Cleared by
+                // editor:released-deleted-path once the renderer has fully
+                // released the path AND observed a fresh load.
+                markRecentlyDeleted(filePath);
                 if (!window.isDestroyed()) {
                     window.webContents.send('file-changed-on-disk', { path: filePath });
                     window.webContents.send('file-deleted', { filePath });

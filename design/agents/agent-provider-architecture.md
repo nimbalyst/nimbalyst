@@ -225,10 +225,7 @@ When permission needs user input, providers emit an **interactive prompt** canon
 
 ## 7. MCP configuration
 
-A new agent provider gets MCP for free if it can accept a `mcpServers` map shaped like the Claude SDK's. Two services build that map:
-
-- `MCPConfigBuilder` (`packages/runtime/src/ai/server/mcp/MCPConfigBuilder.ts`) — pure builder, merges built-in + user + workspace + extension plugins, expands env vars, normalizes transports.
-- `McpConfigService` (`packages/runtime/src/ai/server/services/McpConfigService.ts`) — host wrapper that injects ports for internal MCP servers (nimbalyst-mcp, session-naming, extension-dev, super-loop-progress, session-context, meta-agent) and the loader functions for user/workspace config.
+A new agent provider gets MCP for free if it can accept a `mcpServers` map shaped like the Claude SDK's. `McpConfigService` (`packages/runtime/src/ai/server/services/McpConfigService.ts`) builds that map: it injects ports for internal MCP servers (nimbalyst-mcp, session-naming, extension-dev, super-loop-progress, session-context, meta-agent) and runs loader functions for user/workspace config. In Electron, the loader is overridden in `packages/electron/src/main/index.ts` (`setMCPConfigLoader`) to point at `packages/electron/src/main/services/MCPConfigService.ts`, which adds platform-specific command resolution (e.g. `npx → npx.cmd` on Windows) via `processServerConfigForRuntime`.
 
 Sources, in priority order (later wins):
 
@@ -330,7 +327,7 @@ Use this when implementing one in-tree.
 | Raw audit log repository | `packages/runtime/src/storage/repositories/AgentMessagesRepository.ts` |
 | Transcript pipeline | `packages/runtime/src/ai/server/transcript/` |
 | Per-provider parsers | `packages/runtime/src/ai/server/transcript/parsers/` |
-| MCP config | `packages/runtime/src/ai/server/services/McpConfigService.ts`, `mcp/MCPConfigBuilder.ts` |
+| MCP config | `packages/runtime/src/ai/server/services/McpConfigService.ts`, `packages/electron/src/main/services/MCPConfigService.ts` |
 | Permission service | `packages/runtime/src/ai/server/permissions/` |
 | File-edit tracking | `packages/electron/src/main/services/SessionFileTracker.ts`, `ToolCallMatcher.ts` |
 | Snapshots | `packages/electron/src/main/HistoryManager.ts` |

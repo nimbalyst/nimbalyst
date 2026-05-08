@@ -119,6 +119,8 @@ interface StoredAssetMetadata {
   metadataIv: string | null;
   createdAt: number;
   updatedAt: number;
+  keyFingerprint?: string | null;
+  rotatedAt?: number | null;
 }
 
 interface RotationProgress {
@@ -573,6 +575,9 @@ async function downloadAsset(
 
 /**
  * Upload a re-encrypted asset binary to the collab server.
+ *
+ * `newKeyFingerprint` and `rotatedAt` are stored in DocumentRoom so future
+ * rotations can skip assets already encrypted under the current key.
  */
 async function uploadReEncryptedAsset(
   serverUrl: string,
@@ -584,7 +589,9 @@ async function uploadReEncryptedAsset(
   newMetadataIv: string | null,
   mimeType: string | null,
   plaintextSize: number | null,
-  jwt: string
+  jwt: string,
+  newKeyFingerprint: string | null,
+  rotatedAt: number | null
 ): Promise<void> {
   const { net } = await import('electron');
   const url = `${serverUrl}/api/collab/docs/${documentId}/assets/${assetId}`;
@@ -596,6 +603,8 @@ async function uploadReEncryptedAsset(
   if (newMetadataIv) headers['X-Collab-Asset-Metadata-Iv'] = newMetadataIv;
   if (mimeType) headers['X-Collab-Asset-Mime-Type'] = mimeType;
   if (plaintextSize !== null) headers['X-Collab-Asset-Plaintext-Size'] = String(plaintextSize);
+  if (newKeyFingerprint) headers['X-Collab-Asset-Key-Fingerprint'] = newKeyFingerprint;
+  if (rotatedAt !== null) headers['X-Collab-Asset-Rotated-At'] = String(rotatedAt);
 
   const resp = await net.fetch(url, {
     method: 'PUT',
@@ -615,6 +624,7 @@ async function reEncryptAsset(
   assetId: string,
   oldKey: CryptoKey,
   newKey: CryptoKey,
+  newKeyFingerprint: string | null,
   jwt: string
 ): Promise<void> {
   // Download encrypted binary + metadata
@@ -656,7 +666,8 @@ async function reEncryptAsset(
     newMetadataIv = uint8ArrayToBase64(newMetaIvBytes);
   }
 
-  // Upload re-encrypted asset
+  // Upload re-encrypted asset, tagging it with the new key fingerprint so
+  // future rotations can skip it on resume.
   await uploadReEncryptedAsset(
     serverUrl,
     documentId,
@@ -667,7 +678,9 @@ async function reEncryptAsset(
     newMetadataIv,
     asset.mimeType,
     asset.plaintextSize,
-    jwt
+    jwt,
+    newKeyFingerprint,
+    Date.now()
   );
 }
 
@@ -1074,15 +1087,23 @@ export async function performKeyRotation(
       }
     }
 
-    // Re-encrypt document assets (binaries in R2 + metadata in DocumentRoom)
+    // Re-encrypt document assets (binaries in R2 + metadata in DocumentRoom).
+    // Assets already tagged with the new fingerprint (i.e. rotated by a
+    // previous attempt that failed mid-flight) are skipped -- this makes
+    // rotation safely resumable after partial failures.
     for (const entry of decryptedIndex) {
       try {
         const assets = await listDocumentAssets(serverUrl, entry.documentId, orgJwt);
-        if (assets.length > 0) {
-          logger.main.info('[KeyRotationService] Re-encrypting', assets.length, 'assets for document:', entry.documentId);
-          for (const asset of assets) {
+        const toRotate = assets.filter(a => (a.keyFingerprint ?? null) !== newFingerprint);
+        const skipped = assets.length - toRotate.length;
+        if (skipped > 0) {
+          logger.main.info('[KeyRotationService] Skipping', skipped, 'assets already rotated for document:', entry.documentId);
+        }
+        if (toRotate.length > 0) {
+          logger.main.info('[KeyRotationService] Re-encrypting', toRotate.length, 'assets for document:', entry.documentId);
+          for (const asset of toRotate) {
             try {
-              await reEncryptAsset(serverUrl, orgId, entry.documentId, asset.assetId, oldKey, newKey, orgJwt);
+              await reEncryptAsset(serverUrl, orgId, entry.documentId, asset.assetId, oldKey, newKey, newFingerprint ?? null, orgJwt);
               progress.assetsCompleted++;
             } catch (assetErr) {
               logger.main.error('[KeyRotationService] Failed to re-encrypt asset:', asset.assetId, 'in doc:', entry.documentId, assetErr);

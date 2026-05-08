@@ -156,11 +156,12 @@ export class HeadingDiffHandler implements DiffNodeHandler {
         ? targetNode.children
         : [];
 
-    // Use the unified inline text diff system
+    // Use the unified inline text diff system. The caller already marked
+    // liveNode as 'modified' before invoking this handler; we don't reapply
+    // it here because $applyInlineTextDiff may legitimately downgrade the
+    // state to 'removed' when it splits the heading into a removed-source /
+    // added-target sibling pair for near-complete rewrites.
     $applyInlineTextDiff(liveNode, sourceChildren, targetChildren);
-
-    // Mark the heading as modified
-    $setDiffState(liveNode, 'modified');
 
     return {handled: true, skipChildren: true};
   }

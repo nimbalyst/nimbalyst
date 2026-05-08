@@ -6,6 +6,20 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 
+// Defense-in-depth against KaTeX's history of XSS / DoS advisories. Agent-
+// supplied math is untrusted, so disable anything that can elevate it (\href,
+// \url, custom macros) and bound the work the renderer can be coerced into
+// doing on a single equation.
+const KATEX_SAFE_OPTIONS = {
+  trust: false,
+  strict: 'ignore' as const,
+  throwOnError: false,
+  output: 'html' as const,
+  maxSize: 25,
+  maxExpand: 100,
+  macros: {},
+};
+
 // Inject MarkdownRenderer styles once (for syntax highlighting, scrollbar, and overflow wrapper)
 const injectMarkdownRendererStyles = () => {
   const styleId = 'markdown-renderer-styles';
@@ -286,7 +300,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
+        rehypePlugins={[[rehypeKatex, KATEX_SAFE_OPTIONS]]}
         components={{
           // Code blocks with syntax highlighting
           code({ node, inline, className, children, ...props }: any) {

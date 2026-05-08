@@ -20,6 +20,8 @@ const KNOWN_SLASH_COMMAND_PREFIXES = [
   '/plan',
   '/implement',
   '/release',
+  '/release-alpha',
+  '/promote-public-release',
   '/e2e',
   '/restart',
   '/mychanges',

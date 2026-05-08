@@ -31,6 +31,14 @@ export interface McpConfigServiceDeps {
   /** Port for the meta-agent MCP server */
   metaAgentServerPort?: number | null;
 
+  /**
+   * Per-launch bearer token for the internal Nimbalyst MCP HTTP servers.
+   * When set, the service emits an `Authorization: Bearer <token>` header on
+   * each `nimbalyst-*` server config. When null, no auth header is sent
+   * (test/legacy compatibility).
+   */
+  mcpAuthToken?: string | null;
+
   /** Loader for user and workspace MCP server configs */
   mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, any>>) | null;
 
@@ -73,6 +81,14 @@ export class McpConfigService {
     const config: any = {};
     const isMetaAgent = profile === 'meta-agent';
 
+    // Authorization header for the internal Nimbalyst MCP HTTP servers.
+    // Issue #146: localhost MCP servers require a per-launch bearer token.
+    // Both the Claude Agent SDK and Codex SDK accept `headers` on remote MCP
+    // server configs and forward them on every request.
+    const authHeaders: Record<string, string> | undefined = this.deps.mcpAuthToken
+      ? { Authorization: `Bearer ${this.deps.mcpAuthToken}` }
+      : undefined;
+
     // Include shared MCP server if it's started (provides capture_editor_screenshot, display_to_user, etc.)
     // applyDiff and streamContent are NOT exposed via MCP - they're only for chat providers via IPC
     if (this.deps.mcpServerPort !== null && workspacePath) {
@@ -84,6 +100,7 @@ export class McpConfigService {
         type: 'sse',
         transport: 'sse',
         url: mcpUrl,
+        ...(authHeaders ? { headers: { ...authHeaders } } : {}),
         // Override default 60s tool timeout for Codex CLI.
         // Some tools (e.g. developer_git_commit_proposal) block indefinitely
         // waiting for user input — the user may leave and return hours or
@@ -97,7 +114,8 @@ export class McpConfigService {
       config['nimbalyst-session-naming'] = {
         type: 'sse',
         transport: 'sse',
-        url: `http://127.0.0.1:${this.deps.sessionNamingServerPort}/mcp?sessionId=${encodeURIComponent(sessionId)}`
+        url: `http://127.0.0.1:${this.deps.sessionNamingServerPort}/mcp?sessionId=${encodeURIComponent(sessionId)}`,
+        ...(authHeaders ? { headers: { ...authHeaders } } : {}),
       };
     }
 
@@ -107,7 +125,8 @@ export class McpConfigService {
       config['nimbalyst-extension-dev'] = {
         type: 'sse',
         transport: 'sse',
-        url: `http://127.0.0.1:${this.deps.extensionDevServerPort}/mcp${params}`
+        url: `http://127.0.0.1:${this.deps.extensionDevServerPort}/mcp${params}`,
+        ...(authHeaders ? { headers: { ...authHeaders } } : {}),
       };
     }
 
@@ -119,7 +138,8 @@ export class McpConfigService {
       config['nimbalyst-session-context'] = {
         type: 'sse',
         transport: 'sse',
-        url: `http://127.0.0.1:${this.deps.sessionContextServerPort}/mcp?sessionId=${encodeURIComponent(sessionId)}&workspaceId=${encodeURIComponent(workspacePath)}`
+        url: `http://127.0.0.1:${this.deps.sessionContextServerPort}/mcp?sessionId=${encodeURIComponent(sessionId)}&workspaceId=${encodeURIComponent(workspacePath)}`,
+        ...(authHeaders ? { headers: { ...authHeaders } } : {}),
       };
     }
 
@@ -127,7 +147,8 @@ export class McpConfigService {
       config['nimbalyst-meta-agent'] = {
         type: 'sse',
         transport: 'sse',
-        url: `http://127.0.0.1:${this.deps.metaAgentServerPort}/mcp?sessionId=${encodeURIComponent(sessionId)}&workspaceId=${encodeURIComponent(workspacePath)}`
+        url: `http://127.0.0.1:${this.deps.metaAgentServerPort}/mcp?sessionId=${encodeURIComponent(sessionId)}&workspaceId=${encodeURIComponent(workspacePath)}`,
+        ...(authHeaders ? { headers: { ...authHeaders } } : {}),
       };
     }
 

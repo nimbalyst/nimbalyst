@@ -147,7 +147,7 @@ Voice mode uses a three-state listening model managed by `voiceModeListeners.ts`
 ```
 
 **Timer management:**
-- `startListenWindowTimer()` starts a countdown (default 10s, configurable via `listenWindowMs`)
+- `startListenWindowTimer()` starts a countdown (default 15s, configurable via `listenWindowMs`)
 - Timer is paused during speech (speech_started clears timer)
 - Timer restarts after speech ends (speech_stopped) or after assistant finishes responding (token-usage)
 - Timer is cleared while assistant is speaking (audio chunks arriving)
@@ -217,6 +217,8 @@ The OpenAI Realtime API session is configured with these function-calling tools:
 | `get_session_summary` | Get a summary of the linked coding session |
 | `list_sessions` | List recent AI sessions in the workspace |
 | `navigate_to_session` | Switch the UI to a specific AI session |
+| `create_session` | Create a new coding session and switch to it. The voice agent's linked session updates automatically via `voiceModeListeners.syncLinkedSession`. |
+| `propose_commit` | Trigger the "Commit with AI" feature. Sends `voice-mode:propose-commit` to the renderer, which runs the same logic as the Smart Commit button in `GitOperationsPanel`: pre-fetches files via `git:get-commit-context`, then dispatches an `ai:sendMessage` with the canonical `Use the developer_git_commit_proposal tool to create a commit.` prefix so the `CommitRequestCard` widget appears in the transcript. The resulting `git_commit_proposal_request` interactive prompt flows back to the voice agent through the existing interactive-prompt forwarding for verbal approve/reject. |
 
 ## MCP Tools for Coding Agent
 
@@ -309,7 +311,7 @@ Voice mode settings are stored in `nimbalyst-settings` electron-store (not `ai-s
 | `voiceAgentPrompt` | `SystemPromptConfig` | `{}` | Custom prepend/append for voice agent system prompt |
 | `codingAgentPrompt` | `SystemPromptConfig` | `{}` | Custom prepend/append for coding agent when in voice mode |
 | `submitDelayMs` | `number` | `3000` | Delay before auto-submitting voice commands (0 = immediate) |
-| `listenWindowMs` | `number` | `10000` | How long to keep listening after speech ends before sleeping |
+| `listenWindowMs` | `number` | `15000` | How long to keep listening after speech ends before sleeping |
 
 ## Callback Registration Pattern
 

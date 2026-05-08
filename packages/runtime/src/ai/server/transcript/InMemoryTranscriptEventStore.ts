@@ -92,6 +92,26 @@ export class InMemoryTranscriptEventStore implements ITranscriptEventStore {
     return null;
   }
 
+  async findActiveToolCallByRawProviderId(
+    rawProviderToolCallId: string,
+    sessionId: string,
+  ): Promise<TranscriptEvent | null> {
+    const synthPrefix = `nimtc|${encodeURIComponent(rawProviderToolCallId)}|`;
+    for (let i = this.events.length - 1; i >= 0; i--) {
+      const event = this.events[i];
+      if (event.sessionId !== sessionId) continue;
+      if (event.eventType !== 'tool_call') continue;
+      const ptcid = event.providerToolCallId ?? '';
+      const matches = ptcid === rawProviderToolCallId || ptcid.startsWith(synthPrefix);
+      if (!matches) continue;
+      const status = (event.payload as Record<string, unknown> | undefined)?.status;
+      if (status === 'running' || status === 'pending' || status == null) {
+        return event;
+      }
+    }
+    return null;
+  }
+
   async getEventById(id: number): Promise<TranscriptEvent | null> {
     return this.events.find(e => e.id === id) ?? null;
   }

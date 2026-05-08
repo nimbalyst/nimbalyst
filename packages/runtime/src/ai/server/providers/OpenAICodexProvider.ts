@@ -27,6 +27,7 @@ import { MCPServerConfig } from '../../../types/MCPServerConfig';
 import { safeJSONSerialize } from '../../../utils/serialization';
 import { AskUserQuestionPrompt, AskUserQuestionPromptOption } from './shared/askUserQuestionTypes';
 import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
+import { buildCodexToolLookupId } from '../toolLookupIds';
 
 interface OpenAICodexProviderDeps {
   protocol?: CodexSDKProtocol;
@@ -85,11 +86,42 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   private static readonly MODEL_ID_CACHE_DURATION_MS = 5 * 60 * 1000;
   private static readonly MODEL_ID_CACHE_MAX_SIZE = 100;
   private static readonly MODEL_ID_CACHE = new Map<string, { fetchedAt: number; ids: Set<string> }>();
+  private static readonly KNOWN_SLASH_COMMANDS: ReadonlyArray<string> = [
+    'compact',
+    'diff',
+    'init',
+    'mcp',
+    'review',
+    'status',
+  ];
 
   private readonly protocol: CodexSDKProtocol;
   private readonly permissionService: ToolPermissionService;
   private readonly mcpConfigService: McpConfigService;
   private readonly pendingAskUserQuestions = new Map<string, PendingAskUserQuestionEntry>();
+
+  /**
+   * Per-session map of `rawItemId -> synthetic edit-group ID`. Used to
+   * stamp the same `nimtc|...` ID onto:
+   *   1. raw message metadata (`editGroupId`) so CodexRawParser produces
+   *      the same canonical providerToolCallId on later reparse, and
+   *   2. tool_call streaming chunks (`toolCall.toolUseId`) so
+   *      MessageStreamingHandler / SessionFileTracker dedupe and store
+   *      the same ID at streaming time.
+   *
+   * Entries are cleared on item.completed for the corresponding raw item id
+   * so a later turn that reuses `item_0` mints a fresh edit-group ID.
+   */
+  private readonly codexEditGroupIdsBySession = new Map<string, Map<string, string>>();
+  private codexEditGroupCounter = 0;
+
+  /**
+   * Tracks which Codex `file_change` raw item IDs we've already taken a
+   * pre-edit snapshot for, per session. The SDK emits `item.started` for
+   * `file_change` twice (second observation has post-edit content), so we
+   * dedupe and snapshot only on the first observation.
+   */
+  private readonly fileChangePreEditSnapshottedIds = new Map<string, Set<string>>();
 
   // Analytics initialization data, captured during first sendMessage call
   private _initData: {
@@ -117,6 +149,11 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
   // Meta-agent MCP server port (injected from electron main process)
   private static metaAgentServerPort: number | null = null;
+
+  // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers.
+  // Issue #146: required so a malicious page in the user's browser can't
+  // invoke MCP tools against the localhost ports.
+  private static mcpAuthToken: string | null = null;
 
   // MCP config loader (injected from electron main process)
   // Returns merged user + workspace MCP servers
@@ -193,6 +230,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       superLoopProgressServerPort: null, // Disabled - was leaking into non-super-loop sessions
       sessionContextServerPort: OpenAICodexProvider.sessionContextServerPort,
       metaAgentServerPort: OpenAICodexProvider.metaAgentServerPort,
+      mcpAuthToken: OpenAICodexProvider.mcpAuthToken,
       mcpConfigLoader: OpenAICodexProvider.mcpConfigLoader,
       extensionPluginsLoader: null,
       claudeSettingsEnvLoader: OpenAICodexProvider.claudeSettingsEnvLoader,
@@ -242,6 +280,10 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
   public static setMetaAgentServerPort(port: number | null): void {
     OpenAICodexProvider.metaAgentServerPort = port;
+  }
+
+  public static setMcpAuthToken(token: string | null): void {
+    OpenAICodexProvider.mcpAuthToken = token;
   }
 
   public static setMCPConfigLoader(loader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null): void {
@@ -651,6 +693,10 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     return this.DEFAULT_MODEL;
   }
 
+  static getKnownSlashCommands(): string[] {
+    return [...OpenAICodexProvider.KNOWN_SLASH_COMMANDS];
+  }
+
   getName(): string {
     return 'openai-codex';
   }
@@ -661,6 +707,10 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
   getDescription(): string {
     return 'OpenAI Codex SDK agent provider with tool and streaming support';
+  }
+
+  getSlashCommands(): string[] {
+    return OpenAICodexProvider.getKnownSlashCommands();
   }
 
   getProviderSessionData(sessionId: string): any {
@@ -886,6 +936,47 @@ export class OpenAICodexProvider extends BaseAgentProvider {
           throw new Error('Operation cancelled');
         }
 
+        // The codex-sdk numbers items per-turn (`item_0`, `item_1`, ...
+        // restarting each turn). `codexEditGroupIdsBySession` /
+        // `fileChangePreEditSnapshottedIds` are keyed on `(sessionId,
+        // rawItemId)` and are normally cleared on the terminal tool_call
+        // by `case 'tool_call'` below. Side paths that bypass the main
+        // loop -- notably `sendSessionNamingReminder`, which runs its own
+        // `for await` over `protocol.sendMessage` and never reaches case
+        // 'tool_call' -- can leave stale entries from earlier turns.
+        // Drop any prior-turn entry on `item.started` BEFORE the per-event
+        // handlers below run; otherwise the next turn's `item.started`
+        // would reuse the stale `editGroupId`, causing two tool calls in
+        // different turns to share a `providerToolCallId` (the transcript
+        // renderer dedupes them, hiding the later one) and the
+        // `fileChangePreEditSnapshottedIds` dedup would falsely skip the
+        // pre-edit snapshot for the new turn's file_change.
+        if (sessionId && event.type === 'raw_event' && event.metadata?.rawEvent) {
+          const startedItemId = this.extractCodexRawItemId(event.metadata.rawEvent);
+          if (startedItemId && this.getRawEventType(event.metadata.rawEvent) === 'item.started') {
+            this.clearCodexEditGroupForItem(sessionId, startedItemId);
+          }
+        }
+
+        // Pre-edit snapshot for `file_change`. The codex-sdk emits
+        // `item.started` BEFORE applying the patch on disk, which gives us
+        // the only deterministic moment to capture the real pre-edit
+        // baseline -- no watcher, no FileSnapshotCache, no
+        // recoverBaselineFromHistory fallback (those all break for
+        // gitignored or post-boot-created files). Dedup by itemId per
+        // session protects against the SDK ever emitting item.started
+        // twice; combined with the cross-turn clear above, this also
+        // ensures distinct turns reusing the same raw item id each get
+        // their own snapshot.
+        try {
+          const preEditChunk = await this.maybeBuildFileChangePreEditSnapshot(event, sessionId);
+          if (preEditChunk) {
+            yield preEditChunk;
+          }
+        } catch {
+          // never let snapshot work break the stream
+        }
+
         // Store EACH raw event immediately as a separate database row
         if (sessionId) {
           try {
@@ -911,6 +1002,21 @@ export class OpenAICodexProvider extends BaseAgentProvider {
                 usedSessionNamingToolThisTurn = true;
               }
               this.handleAskUserQuestionToolCall(item.toolCall, sessionId);
+              // Stamp the synthetic edit-group ID minted when the corresponding
+              // raw_event was logged so MessageStreamingHandler /
+              // SessionFileTracker dedupe and persist the same `nimtc|...` ID
+              // CodexRawParser will mint when reparsing the raw log.
+              if (sessionId && typeof item.toolCall.id === 'string' && item.toolCall.id) {
+                const editGroupId = this.lookupCodexEditGroupId(sessionId, item.toolCall.id);
+                if (editGroupId) {
+                  (item.toolCall as { toolUseId?: string }).toolUseId = editGroupId;
+                }
+                // A tool_call carrying a result is terminal -- allow a later
+                // turn that reuses `item_0` to mint a fresh edit-group ID.
+                if (item.toolCall.result !== undefined && item.toolCall.result !== null) {
+                  this.clearCodexEditGroupForItem(sessionId, item.toolCall.id);
+                }
+              }
               // AIService still needs tool_call yields for file tracking / worktree detection
               yield { type: 'tool_call', toolCall: item.toolCall };
               break;
@@ -1692,16 +1798,32 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     const { content, usedFallback } = this.serializeRawCodexEvent(event.metadata.rawEvent);
     const rawEventType = this.getRawEventType(event.metadata.rawEvent);
 
+    // Mint or look up the synthetic edit-group ID for this raw event's tool
+    // item (if any). Stamping it onto the message metadata makes it the
+    // canonical source of the providerToolCallId for both the parser
+    // (CodexRawParser.resolveEditGroupId reads msg.metadata.editGroupId) and
+    // SessionFileTracker (the chunk yielded a few lines later carries the
+    // same ID so both writers store the same toolUseId).
+    const rawItemId = this.extractCodexRawItemId(event.metadata.rawEvent);
+    const editGroupId = rawItemId
+      ? this.getOrMintCodexEditGroupId(sessionId, rawItemId)
+      : undefined;
+
+    const metadata: Record<string, unknown> = {
+      eventType: rawEventType,
+      codexProvider: true,
+      rawEventSerializationFallback: usedFallback,
+    };
+    if (editGroupId) {
+      metadata.editGroupId = editGroupId;
+    }
+
     await this.logAgentMessage(
       sessionId,
       this.getProviderName(),
       'output',
       content,
-      {
-        eventType: rawEventType,
-        codexProvider: true,
-        rawEventSerializationFallback: usedFallback,
-      },
+      metadata,
       false, // not hidden
       undefined, // no provider message ID
       false // not searchable - raw events are not for search
@@ -1709,6 +1831,152 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
     // Detect todo_list items and update session metadata so sidebar widgets display them
     this.handleTodoListEvent(event.metadata.rawEvent, sessionId);
+  }
+
+  /**
+   * Extract the raw Codex item id (e.g. `item_0`) from a raw SDK event, if
+   * present. Returns null for events that don't carry a tool item (text,
+   * thread.started, token_count, etc.).
+   */
+  private extractCodexRawItemId(rawEvent: unknown): string | null {
+    if (!rawEvent || typeof rawEvent !== 'object') return null;
+    const record = rawEvent as Record<string, unknown>;
+    const item = record.item;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const id = (item as Record<string, unknown>).id;
+    return typeof id === 'string' && id ? id : null;
+  }
+
+  /**
+   * Look up the synthetic edit-group ID for a raw Codex item id without
+   * minting a new one. Used by the streaming yield path to attach the same
+   * `nimtc|...` ID minted by storeRawEventIfPresent (which always runs first
+   * for the corresponding raw_event in the protocol stream) onto the
+   * tool_call chunk.
+   */
+  private lookupCodexEditGroupId(sessionId: string, rawItemId: string): string | undefined {
+    return this.codexEditGroupIdsBySession.get(sessionId)?.get(rawItemId);
+  }
+
+  /**
+   * Get the synthetic edit-group ID for the given (sessionId, rawItemId),
+   * minting a fresh `nimtc|<encoded>|<Date.now()>|<counter>` ID if no entry
+   * exists. The counter is per-provider-instance and ensures distinct IDs
+   * even when two raw items log in the same millisecond.
+   */
+  private getOrMintCodexEditGroupId(sessionId: string, rawItemId: string): string {
+    let sessionMap = this.codexEditGroupIdsBySession.get(sessionId);
+    if (!sessionMap) {
+      sessionMap = new Map<string, string>();
+      this.codexEditGroupIdsBySession.set(sessionId, sessionMap);
+    }
+    const existing = sessionMap.get(rawItemId);
+    if (existing) return existing;
+    const minted = buildCodexToolLookupId(
+      rawItemId,
+      Date.now(),
+      ++this.codexEditGroupCounter,
+    );
+    sessionMap.set(rawItemId, minted);
+    return minted;
+  }
+
+  /**
+   * Drop the (sessionId, rawItemId) -> syntheticId entry so a later turn
+   * that reuses the same raw item id (e.g. `item_0`) mints a fresh ID.
+   * Called after the tool_call carrying a result is yielded.
+   */
+  private clearCodexEditGroupForItem(sessionId: string, rawItemId: string): void {
+    const sessionMap = this.codexEditGroupIdsBySession.get(sessionId);
+    if (sessionMap) {
+      sessionMap.delete(rawItemId);
+      if (sessionMap.size === 0) {
+        this.codexEditGroupIdsBySession.delete(sessionId);
+      }
+    }
+    const seen = this.fileChangePreEditSnapshottedIds.get(sessionId);
+    if (seen) {
+      seen.delete(rawItemId);
+      if (seen.size === 0) {
+        this.fileChangePreEditSnapshottedIds.delete(sessionId);
+      }
+    }
+  }
+
+  /**
+   * Build a `pre_edit_snapshot` StreamChunk from a Codex SDK event when it
+   * is the FIRST `item.started` observation of a `file_change` for this
+   * session. Reads each affected path from disk RIGHT NOW so the host can
+   * write a local-history pre-edit tag with the real baseline -- before
+   * Codex applies the patch.
+   *
+   * Returns null when the event is not a first-observation file_change
+   * item.started (every other event type, every other tool, and every
+   * subsequent observation of the same itemId within this turn).
+   *
+   * The dedup is defensive against the SDK ever emitting item.started
+   * twice; the per-(sessionId, rawItemId) entry is cleared at the top of
+   * the main `for await` loop on every `item.started`, so distinct turns
+   * that reuse the same raw item id each get their own snapshot.
+   */
+  private async maybeBuildFileChangePreEditSnapshot(
+    event: ProtocolEvent,
+    sessionId: string | undefined,
+  ): Promise<StreamChunk | null> {
+    if (!sessionId) return null;
+    const rawAny = (event as { metadata?: { rawEvent?: unknown } })?.metadata?.rawEvent as
+      | { type?: string; item?: { type?: string; id?: string; status?: string; changes?: Array<{ path?: string; kind?: string }> } }
+      | undefined;
+    if (rawAny?.type !== 'item.started') return null;
+    const rawItem = rawAny.item;
+    if (rawItem?.type !== 'file_change') return null;
+    if (!Array.isArray(rawItem.changes) || rawItem.changes.length === 0) return null;
+    const itemId = rawItem.id;
+    if (typeof itemId !== 'string' || !itemId) return null;
+
+    let seen = this.fileChangePreEditSnapshottedIds.get(sessionId);
+    if (!seen) {
+      seen = new Set<string>();
+      this.fileChangePreEditSnapshottedIds.set(sessionId, seen);
+    }
+    if (seen.has(itemId)) return null;
+    seen.add(itemId);
+
+    const fs = await import('fs');
+    const editGroupId = this.getOrMintCodexEditGroupId(sessionId, itemId);
+    const entries: Array<{ path: string; content: string | null; kind?: string }> = [];
+    for (const change of rawItem.changes) {
+      const filePath = change?.path;
+      if (typeof filePath !== 'string' || !filePath) continue;
+      const kind = change?.kind;
+      let content: string | null = null;
+      // For new-file creation (kind='add'), Codex writes the file BEFORE
+      // emitting item.started -- the opposite of kind='update'. Reading
+      // disk now would capture the post-edit body and the diff would come
+      // back empty. Force empty baseline for adds; for updates, read the
+      // real pre-edit content from disk.
+      if (kind === 'add' || kind === 'create' || kind === 'new') {
+        content = '';
+      } else {
+        try {
+          content = fs.readFileSync(filePath, 'utf8');
+        } catch {
+          // ENOENT for an update means the path was relocated or never
+          // existed; fall back to empty baseline so the diff still renders.
+          content = '';
+        }
+      }
+      entries.push({ path: filePath, content, kind });
+    }
+    if (entries.length === 0) return null;
+
+    return {
+      type: 'pre_edit_snapshot',
+      preEditSnapshot: {
+        toolUseId: editGroupId,
+        entries,
+      },
+    };
   }
 
   /**

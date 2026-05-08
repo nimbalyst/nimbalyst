@@ -1,8 +1,12 @@
 # Centralized IPC Listener Architecture
 
-**CRITICAL: Components NEVER subscribe to IPC events directly.**
+**CRITICAL: Never call `window.electronAPI.on(...)` from inside a React lifecycle.**
 
-All IPC event handling follows this architecture:
+The forbidden pattern is reaching `electronAPI.on` from a `useEffect`, custom hook, render path, or anywhere else that runs more than once per app lifetime. That is what causes stale closures, double-registration on remount, `MaxListenersExceededWarning`, and state loss on unmount.
+
+A subscription installed exactly once -- at module load or via an install-once guard -- has none of those problems. Such "singleton subscriptions" are allowed in `store/listeners/`, `store/atoms/`, `store/sessionStateListeners.ts`, `services/`, `plugins/`, and `extensions/panels/` (see "Sanctioned singleton subscriptions" below). They are NOT allowed inside component files, even at module scope -- a component file gets imported because someone renders the component, which re-blurs the line between "component-level" and "module-level" subscription. Put singletons in one of the sanctioned directories.
+
+All non-singleton IPC event handling follows this architecture:
 
 1. **Central listeners** subscribe to IPC events ONCE at app startup
 2. **Listeners update atoms** when events fire (with debouncing where appropriate)
@@ -144,14 +148,17 @@ packages/electron/src/renderer/store/
   sessionStateListeners.ts
 ```
 
-## Approved exceptions
+## Sanctioned singleton subscriptions
 
-These remain `electronAPI.on(...)` callers because they are infrastructure, not state-replicating UI:
+These call `electronAPI.on(...)` outside `store/listeners/` and are fine because they install exactly once and never react to React lifecycle:
 
-- `plugins/registerExtensionSystem.ts` -- request/response RPC handlers (`screenshot:capture`, `editor:capture-screenshot`, `extension:get-status`, `renderer:eval`, `extension-test:open-file`, `extension-test:ai-tool`)
-- `services/RendererDocumentService.ts` -- singleton document service with its own lifecycle
+- `plugins/registerExtensionSystem.ts` -- request/response RPC handlers (`screenshot:capture`, `editor:capture-screenshot`, `extension:get-status`, `renderer:eval`, `extension-test:open-file`, `extension-test:ai-tool`); registered at module load
+- `services/RendererDocumentService.ts` -- singleton document service; registers its three `document-service:*` listeners in its constructor
 - `extensions/panels/PanelHostImpl.ts` -- generic event pass-through exposed to extensions; the channel is supplied by the extension at runtime, so it cannot be enumerated up front
-- `store/atoms/terminals.ts` -- module-level init that runs once
+- `store/atoms/terminals.ts` -- module-level init that runs once for `terminal:list-changed`
+- `store/atoms/appSettings.ts` -- `debug-flags:changed` registered once via an `installed` flag inside `initDebugFlags()`
+
+When you add another singleton subscription, put it in one of these directories (`store/listeners/`, `store/atoms/`, `store/sessionStateListeners.ts`, `services/`, `plugins/`, `extensions/panels/`) and either run it at module top level or guard it with an install-once flag. Do **not** put a "module-level" subscription inside a component file -- the component file gets re-imported in test contexts, HMR, and lazy-loaded routes, and the subscription leaks through.
 
 ## Anti-Patterns
 
@@ -162,3 +169,4 @@ These remain `electronAPI.on(...)` callers because they are infrastructure, not 
 | Component-local state from IPC | State lost on unmount | Store in atom |
 | No debouncing on rapid events | Performance issues | Debounce in listener |
 | Reacting to a counter/request atom without skipping the initial mount value | Side effect runs on every refresh, not just on the IPC event | Capture the initial value in a ref and bail out when it matches |
+| Module-level `electronAPI.on()` inside a component file (even outside any hook) | Component files get re-imported (HMR, lazy routes, tests) and the subscription quietly multiplies | Move the singleton into `store/listeners/`, `store/atoms/`, or one of the other sanctioned directories above |

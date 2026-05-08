@@ -204,6 +204,54 @@ describe('McpConfigService', () => {
       });
     });
 
+    describe('Bearer-token plumbing (Issue #146)', () => {
+      it('emits Authorization header on every nimbalyst-* server when mcpAuthToken is set', async () => {
+        mockDeps.sessionContextServerPort = 3003;
+        mockDeps.metaAgentServerPort = 3004;
+        mockDeps.mcpAuthToken = 'token-abc123';
+
+        service = new McpConfigService(mockDeps);
+        const config = await service.getMcpServersConfig({
+          sessionId: 'session123',
+          workspacePath: '/test/workspace',
+        });
+
+        expect(config['nimbalyst-mcp'].headers).toEqual({
+          Authorization: 'Bearer token-abc123',
+        });
+        expect(config['nimbalyst-session-naming'].headers).toEqual({
+          Authorization: 'Bearer token-abc123',
+        });
+        expect(config['nimbalyst-extension-dev'].headers).toEqual({
+          Authorization: 'Bearer token-abc123',
+        });
+        expect(config['nimbalyst-session-context'].headers).toEqual({
+          Authorization: 'Bearer token-abc123',
+        });
+        expect(config['nimbalyst-meta-agent'].headers).toEqual({
+          Authorization: 'Bearer token-abc123',
+        });
+      });
+
+      it('emits no Authorization header when mcpAuthToken is unset (legacy/test compatibility)', async () => {
+        mockDeps.sessionContextServerPort = 3003;
+        mockDeps.metaAgentServerPort = 3004;
+        // mcpAuthToken intentionally omitted
+
+        service = new McpConfigService(mockDeps);
+        const config = await service.getMcpServersConfig({
+          sessionId: 'session123',
+          workspacePath: '/test/workspace',
+        });
+
+        expect(config['nimbalyst-mcp'].headers).toBeUndefined();
+        expect(config['nimbalyst-session-naming'].headers).toBeUndefined();
+        expect(config['nimbalyst-extension-dev'].headers).toBeUndefined();
+        expect(config['nimbalyst-session-context'].headers).toBeUndefined();
+        expect(config['nimbalyst-meta-agent'].headers).toBeUndefined();
+      });
+    });
+
     it('should not include servers when ports are null', async () => {
       mockDeps.mcpServerPort = null;
       mockDeps.sessionNamingServerPort = null;

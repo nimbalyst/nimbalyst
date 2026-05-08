@@ -5,7 +5,10 @@ import type { DocumentBackingStore, ExternalChangeCallback, DiffState } from '..
 // -- Mock BackingStore -------------------------------------------------------
 
 function createMockStore(initialContent = 'hello world'): {
-  store: DocumentBackingStore & { triggerExternalChange: (content: string, timestamp?: number) => void; dispose: () => void };
+  store: DocumentBackingStore & {
+    triggerExternalChange: (content: string, timestamp?: number, checkPendingTags?: boolean) => void;
+    dispose: () => void;
+  };
   saved: (string | ArrayBuffer)[];
 } {
   const saved: (string | ArrayBuffer)[] = [];
@@ -20,9 +23,9 @@ function createMockStore(initialContent = 'hello world'): {
       changeCallbacks.add(cb);
       return () => { changeCallbacks.delete(cb); };
     }),
-    triggerExternalChange: (content: string, timestamp = Date.now()) => {
+    triggerExternalChange: (content: string, timestamp = Date.now(), checkPendingTags?: boolean) => {
       for (const cb of changeCallbacks) {
-        cb({ content, timestamp });
+        cb({ content, timestamp, checkPendingTags });
       }
     },
     dispose: vi.fn(),
@@ -383,6 +386,96 @@ describe('DocumentModel', () => {
 
       expect(resolvedCb2).toHaveBeenCalledWith(true);
       expect(diffModel.getDiffState()).toBeNull();
+    });
+
+    it('clearDiffState fans out diffResolved to sibling attachments', async () => {
+      // Reproduces the dual-attachment bug: when one tab dispatches the
+      // Lexical CLEAR_DIFF_TAG_COMMAND flow (which calls clearDiffState
+      // directly rather than resolveDiff), the *other* attachment must still
+      // be told to exit diff mode. Without this fan-out, a Files-mode tab
+      // stays stuck in diff mode after Agent-mode hits Approve All.
+      const h1 = diffModel.attach();
+      const h2 = diffModel.attach();
+      const h3 = diffModel.attach();
+      const diffCb1 = vi.fn();
+      const resolvedCb1 = vi.fn();
+      const resolvedCb2 = vi.fn();
+      const resolvedCb3 = vi.fn();
+      h1.onDiffRequested(diffCb1);
+      h1.onDiffResolved(resolvedCb1);
+      h2.onDiffResolved(resolvedCb2);
+      h3.onDiffResolved(resolvedCb3);
+
+      diffStore.triggerExternalChange('ai edit');
+      await vi.waitFor(() => expect(diffCb1).toHaveBeenCalled());
+
+      // Editor 1 cleans up via clearDiffState (mirrors the Lexical
+      // CLEAR_DIFF_TAG_COMMAND path) and excludes itself from the fan-out.
+      diffModel.clearDiffState(h1.id, true);
+
+      expect(resolvedCb1).not.toHaveBeenCalled(); // self excluded
+      expect(resolvedCb2).toHaveBeenCalledWith(true);
+      expect(resolvedCb3).toHaveBeenCalledWith(true);
+      expect(diffModel.getDiffState()).toBeNull();
+    });
+
+    it('skips empty-diff session when pre-edit tag fires before the agent has written', async () => {
+      // Reproduces the bug where Claude's AgentToolHooks (and Codex's pre-edit
+      // attribution) fires `history:pending-tag-created` BEFORE the actual disk
+      // write completes. The renderer reads disk on that signal and sees the OLD
+      // content. Without a guard, DocumentModel would create a DiffSession with
+      // appliedContent === baselineContent and lock the editor into an empty
+      // 'applying' phase, causing the real disk-write event that arrives a moment
+      // later to be queued (never visibly applied) -- the editor stays frozen on
+      // old content while disk has the new content.
+      const baseline = 'original content'; // matches mock's initialContent
+      const racingDiffModel = new DocumentModel('/test/race.md', diffStore, {
+        autosaveInterval: 0,
+        getPendingTags: async () => [{ id: 'tag-race', sessionId: 'sess-race', createdAt: '2026-01-01T00:00:00Z' }],
+        updateTagStatus: vi.fn(async () => {}),
+        getDiffBaseline: async () => ({ content: baseline }),
+      });
+      try {
+        await racingDiffModel.loadContent();
+
+        const handle = racingDiffModel.attach();
+        const diffCb = vi.fn();
+        handle.onDiffRequested(diffCb);
+
+        // Step 1: pre-edit tag fires; renderer reads disk; agent has not written yet.
+        diffStore.triggerExternalChange(baseline, Date.now(), true);
+        await vi.advanceTimersByTimeAsync(10);
+        // Race guard: no DiffSession should be created, no diff should be requested.
+        expect(diffCb).not.toHaveBeenCalled();
+        expect(racingDiffModel.getDiffSessionSnapshot()).toBeNull();
+
+        // Step 2: real disk-write event arrives with the actual new content.
+        diffStore.triggerExternalChange('ai modified content', Date.now() + 100, false);
+        await vi.waitFor(() => expect(diffCb).toHaveBeenCalledTimes(1));
+
+        const diffState: DiffState = diffCb.mock.calls[0][0];
+        expect(diffState.tagId).toBe('tag-race');
+        expect(diffState.oldContent).toBe(baseline);
+        expect(diffState.newContent).toBe('ai modified content');
+      } finally {
+        racingDiffModel.dispose();
+      }
+    });
+
+    it('clearDiffState propagates rejection to siblings', async () => {
+      const h1 = diffModel.attach();
+      const h2 = diffModel.attach();
+      const diffCb1 = vi.fn();
+      const resolvedCb2 = vi.fn();
+      h1.onDiffRequested(diffCb1);
+      h2.onDiffResolved(resolvedCb2);
+
+      diffStore.triggerExternalChange('ai edit');
+      await vi.waitFor(() => expect(diffCb1).toHaveBeenCalled());
+
+      diffModel.clearDiffState(h1.id, false);
+
+      expect(resolvedCb2).toHaveBeenCalledWith(false);
     });
 
     it('does not fire onDiffRequested for a duplicate payload after markDiffApplied', async () => {

@@ -1,5 +1,10 @@
 import { SessionManager, ProviderFactory } from '@nimbalyst/runtime/ai/server';
 import { AISessionsRepository, TranscriptMigrationRepository } from '@nimbalyst/runtime';
+import {
+    parseCodexToolLookupId,
+    resolveGitCommitProposalLookup,
+    type GitCommitProposalLookupCandidate,
+} from '@nimbalyst/runtime/ai/server/toolLookupIds';
 import { TranscriptProjector } from '@nimbalyst/runtime/ai/server/transcript';
 import {
     ModelIdentifier,
@@ -49,10 +54,6 @@ interface SessionFilesCache {
 const sessionFilesCache = new Map<string, SessionFilesCache>();
 const SESSION_FILES_CACHE_TTL_MS = 5000; // 5 second cache
 
-interface ParsedCodexToolLookupId {
-    itemId: string;
-}
-
 function trackCreateAISession(provider: AIProviderType, options?: {
     worktreeId?: string | null;
     parentSessionId?: string | null;
@@ -64,42 +65,6 @@ function trackCreateAISession(provider: AIProviderType, options?: {
         is_workstream_child: !!options?.parentSessionId,
         is_meta_agent_session: options?.agentRole === 'meta-agent',
     });
-}
-
-/**
- * Parse a Codex synthetic tool-call lookup ID (nimtc format).
- * Format: nimtc|<encodeURIComponent(rawItemId)>|<timestamp>|<index>
- */
-function parseCodexToolLookupId(promptId: string): ParsedCodexToolLookupId | null {
-    if (!promptId || !promptId.startsWith('nimtc|')) {
-        return null;
-    }
-
-    const parts = promptId.split('|');
-    if (parts.length !== 4) {
-        return null;
-    }
-
-    const encodedItemId = parts[1];
-    if (!encodedItemId) {
-        return null;
-    }
-
-    const timestamp = Number(parts[2]);
-    const index = Number(parts[3]);
-    if (!Number.isFinite(timestamp) || !Number.isFinite(index)) {
-        return null;
-    }
-
-    try {
-        const itemId = decodeURIComponent(encodedItemId);
-        if (!itemId) {
-            return null;
-        }
-        return { itemId };
-    } catch {
-        return null;
-    }
 }
 
 function getGitCommitProposalResponseChannel(
@@ -127,8 +92,8 @@ async function resolveGitCommitProposalPromptId(
     try {
         const { database } = await import('../database/PGLiteDatabaseWorker');
 
-        const { rows: proposalRows } = await database.query<{ content: string }>(
-            `SELECT content
+        const { rows: proposalRows } = await database.query<{ content: string; created_at: Date }>(
+            `SELECT content, created_at
              FROM ai_agent_messages
              WHERE session_id = $1
                AND (hidden = FALSE OR hidden IS NULL)
@@ -138,7 +103,7 @@ async function resolveGitCommitProposalPromptId(
             [sessionId]
         );
 
-        const proposals: Array<{ proposalId: string; toolUseId?: string }> = [];
+        const proposals: GitCommitProposalLookupCandidate[] = [];
         for (const row of proposalRows) {
             try {
                 const content = JSON.parse(row.content);
@@ -147,19 +112,14 @@ async function resolveGitCommitProposalPromptId(
                 }
                 proposals.push({
                     proposalId: content.proposalId,
+                    createdAtMs: row.created_at instanceof Date
+                        ? row.created_at.getTime()
+                        : new Date(row.created_at).getTime(),
                     toolUseId: typeof content.toolUseId === 'string' ? content.toolUseId : undefined,
                 });
             } catch {
                 // Ignore malformed rows
             }
-        }
-
-        // Direct match by proposalId or stored toolUseId
-        const directMatch = proposals.find((proposal) =>
-            proposal.proposalId === promptId || proposal.toolUseId === promptId
-        );
-        if (directMatch) {
-            return directMatch.proposalId;
         }
 
         // Fallback: if exactly one unresolved proposal exists, map to it
@@ -186,6 +146,16 @@ async function resolveGitCommitProposalPromptId(
         const unresolvedProposals = proposals.filter(
             (proposal) => !respondedProposalIds.has(proposal.proposalId)
         );
+
+        const resolvedUnresolved = resolveGitCommitProposalLookup(promptId, unresolvedProposals);
+        if (resolvedUnresolved) {
+            return resolvedUnresolved;
+        }
+
+        const resolvedAny = resolveGitCommitProposalLookup(promptId, proposals);
+        if (resolvedAny) {
+            return resolvedAny;
+        }
 
         if (unresolvedProposals.length === 1) {
             const resolvedId = unresolvedProposals[0].proposalId;

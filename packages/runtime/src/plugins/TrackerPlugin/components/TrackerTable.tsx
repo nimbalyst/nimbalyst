@@ -11,6 +11,7 @@ import type {
 } from '../../../core/DocumentService';
 import type { TrackerRecord } from '../../../core/TrackerRecord';
 import { trackerItemsByTypeAtom, trackerDataLoadedAtom } from '../trackerDataAtoms';
+import { EXTENSION_OWNED_KEYS } from '../documentHeader/frontmatterUtils';
 import { getRecordTitle, getRecordStatus, getRecordPriority, getFieldByRole, resolveRoleFieldName } from '../trackerRecordAccessors';
 import { globalRegistry, parseDate } from '../models';
 import {usePostHog} from "posthog-js/react";
@@ -321,9 +322,28 @@ function formatObjectForStringField(value: Record<string, any>): string {
  * Resolve the tracker frontmatter data for a given document and tracker type.
  * Returns merged data with top-level fields as canonical and embedded fields as fallback.
  * Returns null if the document doesn't match this tracker type.
+ *
+ * Mirrors `detectTrackerFromFrontmatter` in `frontmatterUtils.ts`: extension-owned
+ * keys (e.g. `automationStatus` for the automations extension) are checked before
+ * `trackerStatus` so that documents written by an extension's flow without a
+ * sibling `trackerStatus` block still surface in the Tracker view. Without this
+ * mirror, automations created via the `/automation` command stayed invisible in
+ * the Tracker even though `detectTrackerFromFrontmatter` already classified them
+ * correctly elsewhere. See nimbalyst#67.
  */
 export function resolveTrackerFrontmatter(frontmatter: Record<string, any> | undefined, trackerType: string): Record<string, any> | null {
   if (!frontmatter) return null;
+
+  // Extension-owned key takes priority -- the extension owns the nested block,
+  // so its presence is enough to classify the doc as that tracker type.
+  for (const [extKey, extType] of Object.entries(EXTENSION_OWNED_KEYS)) {
+    if (extType !== trackerType) continue;
+    if (frontmatter[extKey] && typeof frontmatter[extKey] === 'object') {
+      const extData = frontmatter[extKey] as Record<string, any>;
+      const { [extKey]: _ext, trackerStatus: _ts, ...topLevel } = frontmatter;
+      return { ...topLevel, ...extData };
+    }
+  }
 
   // Check trackerStatus with nested type field (canonical format)
   if (frontmatter.trackerStatus && typeof frontmatter.trackerStatus === 'object') {

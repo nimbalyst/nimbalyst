@@ -149,8 +149,28 @@ export interface ClaudeCodeEntry {
 }
 
 /**
- * Normalize escaped workspace path to absolute path
- * Example: -Users-user-sources-project → /Users/user/sources/project
+ * Encode an absolute workspace path the same way Claude Code does when
+ * choosing a directory under `~/.claude/projects/`.
+ *
+ * Claude Code replaces every non-ASCII-alphanumeric character with `-` (see
+ * `@anthropic-ai/claude-code/cli.js`: `A.replace(/[^a-zA-Z0-9]/g, "-")`).
+ * That means slashes, spaces, apostrophes, dots, underscores, and accented
+ * letters all collapse to dashes. We must match that exactly or the
+ * workspace-filtered scan will silently return zero sessions for any path
+ * containing such characters (e.g. `/Users/x/Test Project`,
+ * `/Users/x/Lenny's Podcast`).
+ */
+export function encodeWorkspaceDir(workspacePath: string): string {
+  return workspacePath.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+/**
+ * Normalize escaped workspace path to absolute path.
+ *
+ * NOTE: Claude Code's encoding is lossy (every non-alphanumeric becomes `-`),
+ * so this inverse is best-effort -- a directory like `-Users-foo-my-repo`
+ * could decode to `/Users/foo/my-repo` or `/Users/foo/my repo`. Prefer the
+ * `cwd` field from the JSONL itself when available.
  */
 export function normalizeWorkspacePath(escapedPath: string): string {
   // Remove leading dash and replace dashes with slashes
@@ -528,10 +548,10 @@ export async function scanAllSessions(workspacePath?: string): Promise<SessionMe
   let workspaceDirs: string[];
 
   if (workspacePath) {
-    // Only scan the specified workspace
-    // Convert absolute path to escaped directory name format
-    // /Users/foo/bar -> -Users-foo-bar
-    const escapedPath = workspacePath.replace(/\//g, '-');
+    // Only scan the specified workspace. Mirror Claude Code's encoder so
+    // paths containing spaces, apostrophes, dots, underscores, etc. resolve
+    // to the same directory Claude Code wrote.
+    const escapedPath = encodeWorkspaceDir(workspacePath);
     workspaceDirs = [escapedPath];
     log.info(`Scanning sessions for workspace: ${workspacePath} -> ${escapedPath}`);
   } else {

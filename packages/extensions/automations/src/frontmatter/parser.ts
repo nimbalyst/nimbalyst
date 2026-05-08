@@ -5,7 +5,11 @@
 import jsyaml from 'js-yaml';
 import type { AutomationStatus } from './types';
 
-const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---/;
+// Tolerate CRLF on Windows where git core.autocrlf delivers files with `\r\n`.
+// Without `\r?\n` the regex fails on a `---\r\n` opener and the file looks
+// frontmatter-less to every consumer of these helpers (Tracker view,
+// automations daemon, etc.). See nimbalyst#68.
+const FRONTMATTER_REGEX = /^---\r?\n([\s\S]*?)\r?\n---/;
 
 /**
  * Extract the automationStatus from a markdown file's frontmatter.

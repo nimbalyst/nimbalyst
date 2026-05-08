@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAICodexProvider } from '../OpenAICodexProvider';
 import * as codexBinaryPath from '../codex/codexBinaryPath';
 import * as codexSdkLoader from '../codex/codexSdkLoader';
+import { AISessionsRepository } from '../../../../storage/repositories/AISessionsRepository';
 
 function createAsyncEventStream(events: any[]): AsyncIterable<any> {
   return {
@@ -938,6 +939,74 @@ describe('OpenAICodexProvider', () => {
       command: 'npx',
       args: ['-y', '@supabase/mcp'],
     });
+  });
+
+  it('allows internal MCP tools for meta-agent Codex sessions', async () => {
+    const runStreamed = vi.fn(async () => ({
+      threadId: 'thread-meta-agent',
+      events: createAsyncEventStream([
+        {
+          type: 'item.completed',
+          item: {
+            type: 'agent_message',
+            text: 'meta-agent ready',
+          },
+        },
+      ]),
+    }));
+    const startThread = vi.fn((options?: Record<string, unknown>) => ({
+      id: 'thread-meta-agent',
+      options,
+      runStreamed,
+    }));
+
+    vi.spyOn(AISessionsRepository, 'get').mockResolvedValue({
+      agentRole: 'meta-agent',
+    } as any);
+
+    OpenAICodexProvider.setMcpServerPort(41001);
+    OpenAICodexProvider.setSessionNamingServerPort(41002);
+    OpenAICodexProvider.setSessionContextServerPort(41003);
+    OpenAICodexProvider.setMetaAgentServerPort(41004);
+
+    const provider = new OpenAICodexProvider(
+      { apiKey: 'test-key' },
+      {
+        loadSdkModule: async () =>
+          ({
+            Codex: class {
+              startThread = startThread;
+              resumeThread = startThread;
+            },
+          }) as any,
+      }
+    );
+
+    await provider.initialize({
+      apiKey: 'test-key',
+      model: 'openai-codex:gpt-5.5',
+    });
+
+    for await (const _chunk of provider.sendMessage('delegate work', undefined, 'session-meta-agent', [], process.cwd())) {
+      // drain
+    }
+
+    expect(startThread).toHaveBeenCalledWith(expect.objectContaining({
+      allowedTools: expect.arrayContaining([
+        'mcp__nimbalyst-meta-agent__create_session',
+        'mcp__nimbalyst-meta-agent__get_session_result',
+        'mcp__nimbalyst-session-naming__update_session_meta',
+        'mcp__nimbalyst-session-context__get_workstream_overview',
+        'TaskCreate',
+        'TodoWrite',
+      ]),
+      disallowedTools: expect.arrayContaining([
+        'Read',
+        'Write',
+        'Edit',
+        'Bash',
+      ]),
+    }));
   });
 
   it('resumes an existing provider thread when provider session data is restored', async () => {

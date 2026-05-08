@@ -248,11 +248,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     filters?: Array<{ name: string; extensions: string[] }>;
     defaultPath?: string;
   }) => ipcRenderer.invoke('dialog:openFile', options),
-  saveFile: (content: string, filePath: string) => {
+  saveFile: (content: string, filePath: string, lastKnownContent?: string) => {
     if (!filePath) {
       throw new Error('saveFile requires a filePath parameter. Use saveFileAs for save dialogs.');
     }
-    return ipcRenderer.invoke('save-file', content, filePath);
+    return ipcRenderer.invoke('save-file', content, filePath, lastKnownContent);
   },
   saveFileAs: (content: string) => ipcRenderer.invoke('save-file-as', content),
   showErrorDialog: (title: string, message: string) => ipcRenderer.invoke('show-error-dialog', title, message),
@@ -265,6 +265,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     outputPath: string;
     pageSize?: 'A4' | 'Letter' | 'Legal';
     landscape?: boolean;
+    generateDocumentOutline?: boolean;
+    generateTaggedPDF?: boolean;
     margins?: { top?: number; bottom?: number; left?: number; right?: number };
   }) => ipcRenderer.invoke('export:htmlToPdf', options) as Promise<{ success: boolean; error?: string }>,
   exportSessionToHtml: (options: { sessionId: string }) =>
@@ -902,6 +904,39 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('document-sync:get-personal-jwt') as Promise<{
         success: boolean;
         jwt?: string;
+        error?: string;
+      }>,
+
+    // Collaborative document attachments
+    closeDoc: (documentId: string) =>
+      ipcRenderer.invoke('document-sync:close-doc', { documentId }) as Promise<{
+        success: boolean;
+        error?: string;
+      }>,
+    uploadAsset: (payload: {
+      orgId: string;
+      documentId: string;
+      fileBytes: ArrayBuffer;
+      mimeType: string;
+      fileName: string;
+    }) =>
+      ipcRenderer.invoke('document-sync:upload-asset', payload) as Promise<{
+        success: boolean;
+        assetId?: string;
+        uri?: string;
+        error?: string;
+      }>,
+    gcAssets: (payload: {
+      orgId: string;
+      documentId: string;
+      removedUris: string[];
+    }) =>
+      ipcRenderer.invoke('document-sync:gc-assets', payload) as Promise<{
+        success: boolean;
+        requested?: number;
+        deleted?: number;
+        failed?: number;
+        skipped?: number;
         error?: string;
       }>,
   },

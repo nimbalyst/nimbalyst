@@ -35,9 +35,10 @@ export const ClaudeCodeDeps = {
 
   // Loader that reads the custom Claude Code executable path fresh from the settings store.
   // Re-read on each query so changes in the UI take effect without restart.
-  // Receives the active workspace path so a project-level override can take precedence
-  // over the global setting; pass `undefined` to read the global value.
-  customClaudeCodePathLoader: null as ((workspacePath?: string) => string) | null,
+  // The workspace path is required: this provider only runs in the context of an open
+  // workspace, and the loader uses it to resolve project-level overrides (with worktree
+  // inheritance) before falling through to the global setting.
+  customClaudeCodePathLoader: null as ((workspacePath: string) => string) | null,
 
   // ---- MCP Server Ports ----
 
@@ -59,6 +60,12 @@ export const ClaudeCodeDeps = {
 
   // Meta-agent MCP server port
   metaAgentServerPort: null as number | null,
+
+  // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers.
+  // Issue #146: required so a malicious page in the user's browser can't
+  // invoke MCP tools against the localhost ports. Plumbed to the SDK
+  // subprocesses through the `headers` field on each MCP server config.
+  mcpAuthToken: null as string | null,
 
   // ---- Loaders ----
 
@@ -120,7 +127,7 @@ export const ClaudeCodeDeps = {
   // ---- Setters ----
   // Called from electron main process at startup
 
-  setCustomClaudeCodePathLoader(loader: ((workspacePath?: string) => string) | null): void {
+  setCustomClaudeCodePathLoader(loader: ((workspacePath: string) => string) | null): void {
     this.customClaudeCodePathLoader = loader;
   },
 
@@ -146,6 +153,10 @@ export const ClaudeCodeDeps = {
 
   setMetaAgentServerPort(port: number | null): void {
     this.metaAgentServerPort = port;
+  },
+
+  setMcpAuthToken(token: string | null): void {
+    this.mcpAuthToken = token;
   },
 
   setMCPConfigLoader(loader: McpConfigLoader | null): void {

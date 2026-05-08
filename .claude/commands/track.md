@@ -57,5 +57,5 @@ tracker_create({
 
 ## Notes
 
-- `tracker_create` automatically links the new item to the current AI session (bidirectional link) -- no need to call `tracker_link_session` separately
-- Use `tracker_link_session` only when linking to an **existing** tracker item that wasn't just created
+- `tracker_create` does NOT auto-link the new item to the current session. Pass `linkSession: true` to opt in, or call `tracker_link_session` afterward.
+- Use `tracker_link_session` to link an existing tracker item to the current session.

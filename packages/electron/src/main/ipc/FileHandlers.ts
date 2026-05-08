@@ -58,6 +58,23 @@ function hasFrontmatter(content: string): boolean {
 export function registerFileHandlers() {
     const analytics = AnalyticsService.getInstance();
 
+    // Renderer-side telemetry forwarder: the DocumentModel and TabEditor
+    // emit save-blocked-after-delete events through this channel. We funnel
+    // them through the same `file_save_blocked_after_delete` event the
+    // recently-deleted IPC branch uses, with a `layer` discriminator.
+    safeOn('telemetry:file-save-blocked-after-delete', (
+        _event,
+        payload: { layer?: string; filePath?: string; wasAutosave?: boolean },
+    ) => {
+        if (!payload || typeof payload.layer !== 'string') return;
+        const fileType = typeof payload.filePath === 'string' ? getFileType(payload.filePath) : 'other';
+        analytics.sendEvent('file_save_blocked_after_delete', {
+            layer: payload.layer,
+            fileType,
+            wasAutosave: !!payload.wasAutosave,
+        });
+    });
+
     // Generic file dialog for extensions to select files
     // Returns the file path (not content) so extensions can load files themselves
     safeHandle('dialog:openFile', async (event, options?: {
@@ -130,11 +147,43 @@ export function registerFileHandlers() {
                 return null;
             }
 
-            // Don't save to files that were just deleted via the UI
-            // This prevents a race condition where autosave recreates a deleted file
+            // Don't save to files that were just deleted via the UI or
+            // detected-deleted by the watcher. While the path is tracked in
+            // recentlyDeletedFiles, we refuse to write -- this protects
+            // against autosave from a stale buffer overwriting a file that
+            // the user deleted (or that was deleted then recreated by an AI
+            // session). The lifecycle entry is cleared once the renderer
+            // signals (via editor:released-deleted-path) that it has fully
+            // released the path AND observed a fresh load.
             if (recentlyDeletedFiles.has(filePath)) {
-                console.log('[SAVE] Skipping save to recently deleted file:', filePath);
-                return { success: true, filePath };
+                console.log('[SAVE] Refusing save to recently-deleted file:', filePath);
+                analytics.sendEvent('file_save_blocked_after_delete', {
+                    layer: 'recently-deleted',
+                    fileType: getFileType(filePath),
+                    wasAutosave: lastKnownContent !== undefined,
+                });
+                // If the file exists on disk (e.g. AI recreated it after the
+                // delete), surface its current contents as a conflict so the
+                // renderer can show a non-blocking banner and preserve the
+                // user's in-memory buffer. The renderer must NOT treat this
+                // as success and clear its dirty flag.
+                if (existsSync(filePath)) {
+                    let diskContent = '';
+                    try {
+                        diskContent = readFileSync(filePath, 'utf-8');
+                    } catch (err) {
+                        console.error('[SAVE] Failed to read recently-deleted file:', err);
+                    }
+                    return {
+                        success: false,
+                        conflict: true,
+                        filePath,
+                        diskContent,
+                    };
+                }
+                // File was deleted and not recreated. Tell the renderer the
+                // save was blocked due to deletion so it can keep dirty state.
+                return { success: false, deleted: true, filePath };
             }
 
             // Check for conflicts with external changes before saving

@@ -75,12 +75,24 @@ export async function recoverBaselineFromHistory(
 
       // Skip snapshots from before the last review — they represent
       // pre-acceptance state and would cause baseline drift.
+      // Also skip the reviewed pre-edit tag itself (timestamp ===
+      // lastReviewedAt with type 'pre-edit'): its content is the BEFORE
+      // state of an already-accepted edit, not a valid baseline for a new
+      // edit. Returning it would produce a phantom diff for read-only
+      // commands like `sed -n '1,200p' file` (the bash flow detects
+      // "candidate != current" and creates a pending-review tag for a
+      // command that didn't write anything), which then masks the real
+      // pre_edit_snapshot's tag attribution because createTag dedupes by
+      // (file, session) and keeps the speculative tag.
       if (lastReviewedAt !== null) {
         const snapshotTs = typeof snapshot.timestamp === 'string'
           ? parseInt(snapshot.timestamp, 10)
           : snapshot.timestamp;
-        if (snapshotTs < lastReviewedAt) {
-          continue;
+        if (snapshotTs <= lastReviewedAt) {
+          const snapshotType = String(snapshot.metadata?.type ?? snapshot.type ?? '').toLowerCase();
+          if (snapshotTs < lastReviewedAt || snapshotType === 'pre-edit' || snapshotType === 'incremental-approval') {
+            continue;
+          }
         }
       }
 

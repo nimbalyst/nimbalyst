@@ -35,6 +35,7 @@ import type { TranscriptViewMessage } from '../../../../ai/server/transcript/Tra
 type ToolCall = NonNullable<TranscriptViewMessage['toolCall']>;
 import { isDarkThemeAtom } from '../../../../store/atoms/theme';
 import { GifPlayer } from './GifPlayer';
+import { localAssetUrl } from '../../../../utils/localAssetUrl';
 
 // Theme-aware color palettes
 const LIGHT_COLORS = [
@@ -566,9 +567,11 @@ const ImageDisplay: React.FC<{
           }
         }
 
-        // Fall back to file:// protocol for local Electron images
-        // Note: This requires proper webSecurity settings in Electron
-        setImageData(`file://${image.path}`);
+        // Fall back to a renderer-loadable URL for local Electron images.
+        // `localAssetUrl` returns `nim-asset://` in Electron (the main window
+        // runs with `webSecurity: true` and cannot load `file://`) and
+        // `file://` for non-Electron consumers.
+        setImageData(localAssetUrl(image.path));
         setLoading(false);
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Unknown error';

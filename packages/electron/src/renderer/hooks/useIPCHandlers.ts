@@ -359,23 +359,14 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     // menu:find / menu:find-next / menu:find-previous are handled below via
     // counter atoms updated by store/listeners/menuCommandListeners.ts.
 
+    // NOTE: file-deleted is now centrally tracked by store/listeners/fileChangeListeners.ts
+    // and dispatched via fileDeletedAtomFamily(path). Each tab system that owns
+    // a TabsProvider (EditorMode, WorkstreamEditorTabs, HiddenTabManager) is
+    // responsible for subscribing to that atom and closing its own tabs. We
+    // still need to clear the single-file fallback path here, in case the
+    // current document is deleted and there's no tabs context.
     cleanupFns.push(window.electronAPI.onFileDeleted((data) => {
-      // console.log('[FILE_DELETED] File deleted event received:', data.filePath);
-      // console.log('[FILE_DELETED] Tabs object:', editorModeRef.current?.tabs);
-
-      // Find and close the tab for this file
-      if (editorModeRef.current?.tabs) {
-        const tabToClose = editorModeRef.current.tabs.findTabByPath(data.filePath);
-        if (tabToClose) {
-          // If this is the active tab, clear the file path to prevent autosave
-          if (editorModeRef.current.tabs.activeTabId === tabToClose.id) {
-            currentFilePathRef.current = null;
-          }
-
-          editorModeRef.current.tabs.removeTab(tabToClose.id);
-        }
-      } else if (currentFilePathRef.current === data.filePath) {
-        // In single-file mode, current file was deleted, clear the file path
+      if (!editorModeRef.current?.tabs && currentFilePathRef.current === data.filePath) {
         currentFilePathRef.current = null;
       }
     }));
@@ -797,7 +788,8 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
           const normalizedUpdates: Record<string, unknown> = { ...updates };
           const mergedData = mergeFrontmatterData(existingData ?? {}, normalizedUpdates as Partial<FrontmatterData>);
 
-          const frontmatterMatch = currentContent.match(/^---\n([\s\S]*?)\n---\n?/);
+          // `\r?\n` tolerates Windows CRLF (nimbalyst#68).
+          const frontmatterMatch = currentContent.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
           const newFrontmatterBlockBase = serializeWithFrontmatter('', mergedData);
 
           let replacements: Array<{ oldText: string; newText: string }>;

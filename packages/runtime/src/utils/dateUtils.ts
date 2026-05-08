@@ -131,16 +131,48 @@ export function safeTimestamp(timestamp: number | string | Date | undefined | nu
   return date ? date.getTime() : Date.now();
 }
 
+function isSameCalendarDay(date: Date, reference: Date): boolean {
+  return (
+    date.getDate() === reference.getDate() &&
+    date.getMonth() === reference.getMonth() &&
+    date.getFullYear() === reference.getFullYear()
+  );
+}
+
+function formatLowercaseMeridiemTime(date: Date): string {
+  const hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const meridiem = hours >= 12 ? 'pm' : 'am';
+  const displayHour = hours % 12 || 12;
+  return `${displayHour}:${minutes} ${meridiem}`;
+}
+
+function formatOrdinalDay(day: number): string {
+  const remainder = day % 100;
+  if (remainder >= 11 && remainder <= 13) {
+    return `${day}th`;
+  }
+  switch (day % 10) {
+    case 1:
+      return `${day}st`;
+    case 2:
+      return `${day}nd`;
+    case 3:
+      return `${day}rd`;
+    default:
+      return `${day}th`;
+  }
+}
+
+const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const TURN_FINISHED_AT_THRESHOLD_MS = 5 * 60 * 1000;
+
 /**
  * Check if a date is today
  */
-export function isToday(date: Date): boolean {
-  const today = new Date();
-  return (
-    date.getDate() === today.getDate() &&
-    date.getMonth() === today.getMonth() &&
-    date.getFullYear() === today.getFullYear()
-  );
+export function isToday(date: Date, reference: Date = new Date()): boolean {
+  return isSameCalendarDay(date, reference);
 }
 
 /**
@@ -184,4 +216,31 @@ export function formatShortTime(timestamp: number | string | Date | undefined | 
   } catch {
     return '';
   }
+}
+
+/**
+ * Format a turn-end timestamp for transcript summaries.
+ * Returns empty string when the turn finished within the last 5 minutes.
+ */
+export function formatTurnFinishedAt(
+  timestamp: number | string | Date | undefined | null,
+  reference: number | string | Date | undefined | null = new Date(),
+): string {
+  const date = parseTimestamp(timestamp);
+  const now = parseTimestamp(reference);
+  if (!date || !now) return '';
+
+  if ((now.getTime() - date.getTime()) <= TURN_FINISHED_AT_THRESHOLD_MS) {
+    return '';
+  }
+
+  const timeLabel = formatLowercaseMeridiemTime(date);
+  if (isToday(date, now)) {
+    return `at ${timeLabel}`;
+  }
+
+  const weekday = WEEKDAY_NAMES[date.getDay()];
+  const month = MONTH_NAMES[date.getMonth()];
+  const day = formatOrdinalDay(date.getDate());
+  return `at ${timeLabel}, ${weekday} ${month} ${day}, ${date.getFullYear()}`;
 }

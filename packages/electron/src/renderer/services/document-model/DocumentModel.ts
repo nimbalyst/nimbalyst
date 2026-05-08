@@ -30,6 +30,43 @@ import { DiffSession } from './DiffSession';
 
 let nextAttachmentId = 0;
 
+/**
+ * Thrown by `saveFromEditor` when the model is in the deleted state.
+ * Callers (TabEditor.saveWithHistory, etc.) treat this as a non-fatal block:
+ * the user's buffer is preserved; the disk file is not overwritten.
+ */
+export class FileDeletedError extends Error {
+  readonly filePath: string;
+  constructor(filePath: string) {
+    super(`Cannot save: file was deleted (${filePath}). Reload to re-establish baseline.`);
+    this.name = 'FileDeletedError';
+    this.filePath = filePath;
+  }
+}
+
+/**
+ * Forward a save-blocked-after-delete telemetry signal to the main process.
+ * Best effort; failure to emit telemetry must never affect save behavior.
+ */
+function reportSaveBlockedAfterDelete(
+  layer: 'recently-deleted' | 'document-model-deleted' | 'conflict-mismatch',
+  filePath: string,
+  wasAutosave?: boolean,
+): void {
+  try {
+    const api = (window as {
+      electronAPI?: { send?: (channel: string, payload: unknown) => void };
+    }).electronAPI;
+    api?.send?.('telemetry:file-save-blocked-after-delete', {
+      layer,
+      filePath,
+      wasAutosave: wasAutosave ?? false,
+    });
+  } catch {
+    // No-op. Telemetry must never affect program behavior.
+  }
+}
+
 interface EditorAttachment {
   id: string;
   isDirty: boolean;
@@ -103,10 +140,21 @@ export class DocumentModel {
   // -- File watcher ---------------------------------------------------------
 
   private externalChangeCleanup: (() => void) | null = null;
+  private fileDeletedCleanup: (() => void) | null = null;
 
   // -- Disposed flag --------------------------------------------------------
 
   private disposed = false;
+
+  // -- Deleted flag ---------------------------------------------------------
+  /**
+   * True when the file has been observed deleted (file-deleted IPC) and a
+   * fresh `loadContent()` has not yet been observed. While deleted is true,
+   * `saveFromEditor` rejects without writing and the autosave timer no-ops.
+   * This is the model-side defense in depth: even if a tab system fails to
+   * close its tab, the model refuses to silently overwrite a recreated file.
+   */
+  private deleted = false;
 
   constructor(
     filePath: string,
@@ -127,6 +175,12 @@ export class DocumentModel {
     this.externalChangeCleanup = backingStore.onExternalChange(
       this.handleExternalChange.bind(this),
     );
+
+    // Subscribe to deletion notifications. Backing stores that don't support
+    // deletion (e.g. collab) leave onDeletion undefined.
+    if (typeof backingStore.onDeletion === 'function') {
+      this.fileDeletedCleanup = backingStore.onDeletion(this.markDeleted.bind(this));
+    }
 
     // Start autosave timer
     this.startAutosaveTimer();
@@ -304,15 +358,58 @@ export class DocumentModel {
   }
 
   /**
+   * Whether the file backing this model has been observed deleted and not
+   * yet reloaded via `loadContent()`. While true, saves are refused.
+   */
+  isDeleted(): boolean {
+    return this.deleted;
+  }
+
+  /**
+   * Mark the model as deleted. While set, `saveFromEditor` rejects without
+   * writing and the autosave timer skips this model. Cleared automatically
+   * on a successful `loadContent()` (which establishes a fresh baseline).
+   */
+  markDeleted(): void {
+    if (this.deleted) return;
+    this.deleted = true;
+    // Don't preserve a stale lastPersistedContent baseline -- if a recreated
+    // file later arrives via the watcher, echo suppression must NOT compare
+    // against the pre-deletion content.
+    this.lastPersistedContent = null;
+  }
+
+  /**
    * Clear diff state without triggering a save.
    * Used when the editor resolves diffs through its own save path
    * (e.g. Lexical's CLEAR_DIFF_TAG_COMMAND flow).
+   *
+   * `excludeEditorId` lets the resolving editor opt itself out of the
+   * diff-resolved fan-out. Sibling attachments still receive the callback so
+   * they can dismiss their own diff UI (clear pendingAIEditTagRef, repaint
+   * editor content) -- without this, a file open in both Files mode and Agent
+   * mode stays stuck in diff mode on whichever side did not click Approve.
+   * `accepted` defaults to `true` since Lexical's CLEAR_DIFF_TAG_COMMAND only
+   * fires after the resolving editor has approved (or has manually deleted
+   * all diff content, which is functionally the same outcome for siblings).
    */
-  clearDiffState(): void {
+  clearDiffState(excludeEditorId?: string, accepted: boolean = true): void {
     if (this.diffState || this.currentSession) {
       this.diffState = null;
       this.currentSession = null;
       this.emit('diff-state-changed');
+
+      // Fan out to siblings so they exit diff mode too.
+      for (const [attId, att] of this.attachments) {
+        if (attId === excludeEditorId) continue;
+        for (const cb of att.diffResolvedCallbacks) {
+          try {
+            cb(accepted);
+          } catch (err) {
+            console.error('[DocumentModel] Error in diff resolved callback:', err);
+          }
+        }
+      }
     }
   }
 
@@ -335,12 +432,32 @@ export class DocumentModel {
 
   /**
    * Load content from the backing store and cache it as lastPersistedContent.
-   * Typically called once when the model is first created.
+   * Also clears the `deleted` flag and notifies main process that this
+   * editor instance has observed a fresh load (so the recently-deleted-files
+   * lifecycle entry can be released).
    */
   async loadContent(): Promise<string | ArrayBuffer> {
     const content = await this.backingStore.load();
     this.lastPersistedContent = content;
+
+    // A successful load means the file is back. Reopen for saves and let
+    // the main process know we've observed the recreation (for lifecycle
+    // bookkeeping of recentlyDeletedFiles).
+    if (this.deleted) {
+      this.deleted = false;
+      this.notifyMainEditorReleasedDeletedPath();
+    }
+
     return content;
+  }
+
+  private notifyMainEditorReleasedDeletedPath(): void {
+    try {
+      const api = (window as { electronAPI?: { send?: (channel: string, ...args: unknown[]) => void } }).electronAPI;
+      api?.send?.('editor:released-deleted-path', this.filePath);
+    } catch {
+      // Best effort -- main process is canonical owner of the lifecycle map.
+    }
   }
 
   // -- Save handling --------------------------------------------------------
@@ -350,6 +467,14 @@ export class DocumentModel {
    * Updates lastPersistedContent and notifies all OTHER attached editors.
    */
   private async saveFromEditor(editorId: string, content: string | ArrayBuffer): Promise<void> {
+    if (this.deleted) {
+      // The file was deleted. Refuse to save until the user explicitly
+      // reloads (which calls loadContent and clears the flag). This is the
+      // model-side guard against autosave overwriting an AI-recreated file.
+      reportSaveBlockedAfterDelete('document-model-deleted', this.filePath);
+      throw new FileDeletedError(this.filePath);
+    }
+
     if (this.isSaving) {
       // Queue this save -- it will run after the current save completes.
       // Only the latest content matters. If a previous save was already queued,
@@ -475,6 +600,27 @@ export class DocumentModel {
         oldContent = typeof this.lastPersistedContent === 'string' ? this.lastPersistedContent : '';
       }
 
+      // Race guard: when the renderer reads disk on the `history:pending-tag-created`
+      // signal, the agent may not yet have written. Claude's AgentToolHooks fires the
+      // pre-edit tag BEFORE its own write; Codex's chokidar event can outrun the
+      // OS-level write completion. In both cases we land here with info.content equal
+      // to the baseline. Creating an empty-diff DiffSession would lock the editor into
+      // an `applying` phase with appliedContent === baselineContent; the real
+      // disk-write event that arrives a moment later then either gets queued (and
+      // sometimes never drains) or applies an "X -> Y" transition over an editor that
+      // never visibly entered diff mode. Defer instead -- the next file-changed-on-disk
+      // event will arrive with the actual new content and create the session correctly.
+      if (!this.currentSession && newContentString === oldContent) {
+        diffTrace('DocumentModel.handleExternalChange skip empty-diff session', {
+          path: this.filePath,
+          tagId: tag.id,
+          contentLen: newContentString.length,
+          checkPendingTags: info.checkPendingTags,
+          t: performance.now(),
+        });
+        return;
+      }
+
       // Drive the DiffSession state machine. It owns duplicate-suppression and
       // baseline-rotation logic; only `apply` / `fresh` outcomes notify editors.
       // `queued` payloads sit in the session and are drained when the editor reports
@@ -529,6 +675,13 @@ export class DocumentModel {
         t: performance.now(),
       });
       this.lastPersistedContent = info.content;
+      // A successful external read means the file is back. Clear the deleted
+      // flag so saves can resume against the fresh baseline. Also notify the
+      // main process so the recentlyDeleted entry can be released.
+      if (this.deleted) {
+        this.deleted = false;
+        this.notifyMainEditorReleasedDeletedPath();
+      }
       this.notifyFileChanged(info.content);
     }
   }
@@ -678,6 +831,11 @@ export class DocumentModel {
     this.autosaveTimer = setInterval(() => {
       if (this.disposed) return;
 
+      // Skip when the file is in the deleted state. saveFromEditor would
+      // throw FileDeletedError anyway; short-circuiting here avoids firing
+      // the editor's save callback for a save we know cannot succeed.
+      if (this.deleted) return;
+
       // NOTE: We do NOT skip when in diff mode. The editor callback handles
       // diff-mode checks (e.g. checking $hasDiffNodes to auto-clear resolved diffs).
       // Skipping here would prevent the editor from detecting manually resolved diffs.
@@ -767,6 +925,9 @@ export class DocumentModel {
 
     this.externalChangeCleanup?.();
     this.externalChangeCleanup = null;
+
+    this.fileDeletedCleanup?.();
+    this.fileDeletedCleanup = null;
 
     // Clear all attachments
     for (const att of this.attachments.values()) {

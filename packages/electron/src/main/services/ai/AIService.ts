@@ -7,7 +7,17 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { safeHandle } from '../../utils/ipcRegistry';
 import Store from 'electron-store';
-import { SessionManager, ProviderFactory, ModelRegistry, AIProvider, isAskUserQuestionProvider, isAgentProvider, ClaudeCodeProvider, OpenAICodexProvider } from '@nimbalyst/runtime/ai/server';
+import {
+  SessionManager,
+  ProviderFactory,
+  ModelRegistry,
+  AIProvider,
+  isAskUserQuestionProvider,
+  isAgentProvider,
+  isSlashCommandCatalogProvider,
+  ClaudeCodeProvider,
+  OpenAICodexProvider,
+} from '@nimbalyst/runtime/ai/server';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
@@ -2905,19 +2915,36 @@ export class AIService {
       return { success: true };
     });
 
-    // Get slash commands from active claude-code provider
-    safeHandle('ai:getSlashCommands', async (event, sessionId?: string) => {
+    safeHandle('ai:getSlashCommands', async (
+      _event,
+      payload?: string | { sessionId?: string; provider?: string | null }
+    ) => {
       try {
-        // Try the specific session's provider first
+        const request = typeof payload === 'string'
+          ? { sessionId: payload, provider: undefined }
+          : payload ?? {};
+        const providerCandidates = request.provider
+          ? [request.provider]
+          : ['claude-code', 'openai-codex'];
+
         let provider: AIProvider | undefined;
-        if (sessionId) {
-          provider = ProviderFactory.getProvider('claude-code', sessionId) ?? undefined;
+        for (const providerType of providerCandidates) {
+          if (!request.sessionId) {
+            break;
+          }
+
+          provider = ProviderFactory.getProvider(providerType as AIProviderType, request.sessionId) ?? undefined;
+          if (provider) {
+            break;
+          }
         }
 
-        if (provider && 'getSlashCommands' in provider && typeof (provider as any).getSlashCommands === 'function') {
-          const commands = (provider as any).getSlashCommands();
-          const skills = 'getSkills' in provider && typeof (provider as any).getSkills === 'function'
-            ? (provider as any).getSkills()
+        if (isSlashCommandCatalogProvider(provider)) {
+          const commands = typeof provider.getSlashCommands === 'function'
+            ? provider.getSlashCommands()
+            : [];
+          const skills = typeof provider.getSkills === 'function'
+            ? provider.getSkills()
             : [];
 
           if (commands.length > 0 || skills.length > 0) {
@@ -2925,10 +2952,17 @@ export class AIService {
           }
         }
 
-        // Fall back to static cache (populated by any previous session's init chunk)
-        const cachedCommands = ClaudeCodeProvider.getCachedSdkSlashCommands();
-        const cachedSkills = ClaudeCodeProvider.getCachedSdkSkills();
-        return { success: true, commands: cachedCommands, skills: cachedSkills };
+        if (request.provider === 'claude-code' || !request.provider) {
+          const cachedCommands = ClaudeCodeProvider.getCachedSdkSlashCommands();
+          const cachedSkills = ClaudeCodeProvider.getCachedSdkSkills();
+          return { success: true, commands: cachedCommands, skills: cachedSkills };
+        }
+
+        if (request.provider === 'openai-codex') {
+          return { success: true, commands: OpenAICodexProvider.getKnownSlashCommands(), skills: [] };
+        }
+
+        return { success: true, commands: [], skills: [] };
       } catch (error) {
         console.error('[AIService] Error getting slash commands:', error);
         return { success: false, commands: [], skills: [], error: error instanceof Error ? error.message : 'Unknown error' };

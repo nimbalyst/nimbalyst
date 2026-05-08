@@ -56,6 +56,8 @@ export function registerExportHandlers() {
         outputPath: string;
         pageSize?: 'A4' | 'Letter' | 'Legal';
         landscape?: boolean;
+        generateDocumentOutline?: boolean;
+        generateTaggedPDF?: boolean;
         margins?: {
           top?: number;
           bottom?: number;
@@ -64,7 +66,15 @@ export function registerExportHandlers() {
         };
       }
     ): Promise<{ success: boolean; error?: string }> => {
-      const { html, outputPath, pageSize = 'Letter', landscape = false, margins } = options;
+      const {
+        html,
+        outputPath,
+        pageSize = 'Letter',
+        landscape = false,
+        generateDocumentOutline = false,
+        generateTaggedPDF = false,
+        margins,
+      } = options;
 
       let hiddenWindow: BrowserWindow | null = null;
 
@@ -95,6 +105,8 @@ export function registerExportHandlers() {
           printBackground: true,
           pageSize: pageSize,
           landscape: landscape,
+          generateDocumentOutline,
+          generateTaggedPDF,
           margins: margins
             ? {
                 marginType: 'custom',

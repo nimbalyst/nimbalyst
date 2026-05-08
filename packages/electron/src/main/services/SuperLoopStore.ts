@@ -75,8 +75,8 @@ function rowToSuperLoop(row: SuperLoopRow): SuperLoop {
     completionReason: row.completion_reason ?? undefined,
     isArchived: row.is_archived ?? false,
     isPinned: row.is_pinned ?? false,
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    createdAt: toMillis(row.created_at)!,
+    updatedAt: toMillis(row.updated_at)!,
   };
 }
 
@@ -91,8 +91,8 @@ function rowToSuperIteration(row: SuperIterationRow): SuperIteration {
     iterationNumber: row.iteration_number,
     status: row.status as SuperIterationStatus,
     exitReason: row.exit_reason ?? undefined,
-    createdAt: toMillis(row.created_at),
-    completedAt: row.completed_at ? toMillis(row.completed_at) : undefined,
+    createdAt: toMillis(row.created_at)!,
+    completedAt: toMillis(row.completed_at) ?? undefined,
   };
 }
 

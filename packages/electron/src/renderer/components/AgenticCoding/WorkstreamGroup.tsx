@@ -257,6 +257,11 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
   const [worktreeRenameValue, setWorktreeRenameValue] = useState('');
   const worktreeRenameInputRef = useRef<HTMLInputElement>(null);
 
+  // Workstream parent rename state
+  const [isRenamingWorkstream, setIsRenamingWorkstream] = useState(false);
+  const [workstreamRenameValue, setWorkstreamRenameValue] = useState('');
+  const workstreamRenameInputRef = useRef<HTMLInputElement>(null);
+
   // Sort sessions: pinned first, then by sortBy field (respecting parent sort preference)
   const sortedSessions = React.useMemo(() => {
     return [...sessions].sort((a, b) => {
@@ -343,8 +348,11 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
     if (type === 'worktree' && worktree) {
       setWorktreeRenameValue(worktree.displayName || worktree.name || '');
       setIsRenamingWorktree(true);
+    } else if (type === 'workstream') {
+      setWorkstreamRenameValue(title);
+      setIsRenamingWorkstream(true);
     }
-  }, [type, worktree]);
+  }, [type, worktree, title]);
 
   const handleWorktreeRenameSubmit = useCallback(() => {
     const trimmedValue = worktreeRenameValue.trim();
@@ -373,6 +381,33 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
       worktreeRenameInputRef.current.select();
     }
   }, [isRenamingWorktree]);
+
+  const handleWorkstreamRenameSubmit = useCallback(() => {
+    const trimmedValue = workstreamRenameValue.trim();
+    if (trimmedValue && trimmedValue !== title && onSessionRename) {
+      onSessionRename(id, trimmedValue);
+    }
+    setIsRenamingWorkstream(false);
+  }, [workstreamRenameValue, title, id, onSessionRename]);
+
+  const handleWorkstreamRenameKeyDown = useCallback((e: React.KeyboardEvent) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleWorkstreamRenameSubmit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setIsRenamingWorkstream(false);
+    }
+  }, [handleWorkstreamRenameSubmit]);
+
+  // Focus and select input when entering workstream rename mode
+  useEffect(() => {
+    if (isRenamingWorkstream && workstreamRenameInputRef.current) {
+      workstreamRenameInputRef.current.focus();
+      workstreamRenameInputRef.current.select();
+    }
+  }, [isRenamingWorkstream]);
 
   const handleAddSuperLoop = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -599,6 +634,17 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
                   onBlur={handleWorktreeRenameSubmit}
                   onClick={(e) => e.stopPropagation()}
                 />
+              ) : isRenamingWorkstream && type === 'workstream' ? (
+                <input
+                  ref={workstreamRenameInputRef}
+                  type="text"
+                  className="workstream-group-rename-input flex-1 min-w-0 px-1 py-0 text-[0.8125rem] font-medium border border-[var(--nim-primary)] rounded bg-[var(--nim-bg)] text-[var(--nim-text)] outline-none"
+                  value={workstreamRenameValue}
+                  onChange={(e) => setWorkstreamRenameValue(e.target.value)}
+                  onKeyDown={handleWorkstreamRenameKeyDown}
+                  onBlur={handleWorkstreamRenameSubmit}
+                  onClick={(e) => e.stopPropagation()}
+                />
               ) : (
                 <span className="workstream-group-name font-medium text-[var(--nim-text)] whitespace-nowrap overflow-hidden text-ellipsis">{displayTitle}</span>
               )}
@@ -793,6 +839,15 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
           )}
 
           {/* Workstream menu items */}
+          {type === 'workstream' && onSessionRename && (
+            <button
+              className="workstream-group-context-menu-item flex items-center gap-2 w-full py-2 px-3 bg-transparent border-none cursor-pointer text-[0.8125rem] text-[var(--nim-text)] text-left rounded transition-colors duration-150 hover:bg-[var(--nim-bg-hover)]"
+              onClick={handleRenameClick}
+            >
+              <MaterialSymbol icon="edit" size={14} />
+              Rename
+            </button>
+          )}
           {type === 'workstream' && onWorkstreamPinToggle && (
             <button
               className="workstream-group-context-menu-item flex items-center gap-2 w-full py-2 px-3 bg-transparent border-none cursor-pointer text-[0.8125rem] text-[var(--nim-text)] text-left rounded transition-colors duration-150 hover:bg-[var(--nim-bg-hover)]"

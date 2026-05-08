@@ -74,6 +74,79 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
       }
     },
 
+    async createMany(messages: CreateAgentMessageInput[]): Promise<void> {
+      if (messages.length === 0) return;
+      await ensureReady();
+
+      // Build a single multi-row INSERT plus one UPDATE per affected session, all
+      // inside one transaction. This is the writer-lock-friendly path used by
+      // AgentMessageWriteQueue to coalesce the chunk firehose. See plan
+      // `nimbalyst-local/plans/agent-message-write-coalescing.md`.
+
+      const rowPlaceholders: string[] = [];
+      const rowValues: any[] = [];
+      let paramIdx = 1;
+
+      // Track the latest timestamp per session so we can UPDATE ai_sessions.updated_at
+      // to the most recent message's timestamp (matching the single-row create() semantics).
+      const latestPerSession = new Map<string, Date>();
+
+      for (const message of messages) {
+        if (!message.createdAt) {
+          throw new Error('message.createdAt is required - timestamp must originate from message source');
+        }
+        const timestamp = message.createdAt instanceof Date
+          ? message.createdAt
+          : new Date(message.createdAt);
+
+        rowPlaceholders.push(
+          `($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}, $${paramIdx + 6}, $${paramIdx + 7}, $${paramIdx + 8})`
+        );
+        rowValues.push(
+          message.sessionId,
+          message.source,
+          message.direction,
+          message.content,
+          message.metadata ? JSON.stringify(message.metadata) : null,
+          message.hidden ?? false,
+          timestamp,
+          message.providerMessageId ?? null,
+          message.searchable ?? false,
+        );
+        paramIdx += 9;
+
+        const prev = latestPerSession.get(message.sessionId);
+        if (!prev || timestamp.getTime() > prev.getTime()) {
+          latestPerSession.set(message.sessionId, timestamp);
+        }
+      }
+
+      await db.query('BEGIN', []);
+
+      try {
+        await db.query(
+          `INSERT INTO ai_agent_messages (
+            session_id, source, direction, content, metadata, hidden, created_at, provider_message_id, searchable
+          ) VALUES ${rowPlaceholders.join(', ')}`,
+          rowValues
+        );
+
+        // One UPDATE per affected session. Six concurrent sessions => six UPDATEs,
+        // not 200. The transaction is single-acquire on the writer lock.
+        for (const [sessionId, timestamp] of latestPerSession) {
+          await db.query(
+            `UPDATE ai_sessions SET updated_at = $2, is_archived = FALSE WHERE id = $1`,
+            [sessionId, timestamp]
+          );
+        }
+
+        await db.query('COMMIT', []);
+      } catch (error) {
+        await db.query('ROLLBACK', []);
+        throw error;
+      }
+    },
+
     async list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]> {
       await ensureReady();
 

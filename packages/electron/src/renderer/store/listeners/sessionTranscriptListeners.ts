@@ -26,6 +26,7 @@ import {
   sessionErrorAtom,
   sessionQueuedPromptsAtom,
   streamCompletionSignalAtom,
+  transcriptEventSignalAtom,
 } from '../atoms/sessionTranscript';
 
 /**
@@ -135,6 +136,19 @@ export function initSessionTranscriptListeners(): () => void {
         timestamp,
         messageIndex: lastUserIdx,
       });
+    })
+  );
+
+  // =========================================================================
+  // Transcript Event (per-session activity signal)
+  // Bumps a per-session signal atom so components (e.g. the kanban transcript
+  // peek) can react to new turns without subscribing to IPC themselves.
+  // =========================================================================
+  cleanups.push(
+    window.electronAPI.on('transcript:event', (event: { sessionId?: string }) => {
+      const sessionId = event?.sessionId;
+      if (!sessionId) return;
+      store.set(transcriptEventSignalAtom(sessionId), (prev) => prev + 1);
     })
   );
 

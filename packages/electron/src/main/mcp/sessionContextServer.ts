@@ -15,6 +15,7 @@ import {
   SessionFilesRepository,
 } from "@nimbalyst/runtime";
 import type { SessionMeta } from "@nimbalyst/runtime";
+import { requireMcpAuth } from "./mcpAuth";
 
 // ─── Transport tracking ─────────────────────────────────────────────
 
@@ -1062,14 +1063,23 @@ async function tryCreateSessionContextServer(port: number): Promise<any> {
         const pathname = parsedUrl.pathname;
         const mcpSessionIdHeader = getMcpSessionIdHeader(req);
 
+        // Issue #146: drop `Access-Control-Allow-Origin: *`; bearer token is
+        // the sole gate. SDK subprocesses don't care about CORS.
         if (req.method === "OPTIONS") {
           res.writeHead(200, {
-            "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
             "Access-Control-Allow-Headers":
-              "Content-Type, mcp-session-id, mcp-protocol-version",
+              "Authorization, Content-Type, mcp-session-id, mcp-protocol-version",
           });
           res.end();
+          return;
+        }
+
+        // Issue #146: every non-OPTIONS request to /mcp must carry the
+        // per-launch bearer token.
+        if (pathname === "/mcp" && !requireMcpAuth(req)) {
+          res.writeHead(401);
+          res.end("Unauthorized");
           return;
         }
 

@@ -122,6 +122,57 @@ describe('ToolCallMatcher', () => {
       expect(windows[0].argsText).toContain('b.ts');
     });
 
+    it('should prefer synthetic Codex editGroupId from raw message metadata', () => {
+      const content = JSON.stringify({
+        type: 'item.completed',
+        item: {
+          type: 'file_change',
+          id: 'item_3',
+          changes: [
+            { path: '/workspace/src/a.ts', kind: 'update' },
+          ],
+        },
+      });
+
+      const windows = parseToolCallWindows(
+        12,
+        content,
+        baseDate,
+        SESSION_ID,
+        '/workspace',
+        { editGroupId: 'nimtc|item_3|1700000000000|9' },
+      );
+
+      expect(windows).toHaveLength(1);
+      expect(windows[0].toolCallItemId).toBe('item_3');
+      expect(windows[0].toolUseId).toBe('nimtc|item_3|1700000000000|9');
+    });
+
+    it('should ignore non-synthetic editGroupId metadata', () => {
+      const content = JSON.stringify({
+        type: 'item.completed',
+        item: {
+          type: 'file_change',
+          id: 'item_7',
+          changes: [
+            { path: '/workspace/src/a.ts', kind: 'update' },
+          ],
+        },
+      });
+
+      const windows = parseToolCallWindows(
+        13,
+        content,
+        baseDate,
+        SESSION_ID,
+        '/workspace',
+        { editGroupId: 'item_7' },
+      );
+
+      expect(windows).toHaveLength(1);
+      expect(windows[0].toolUseId).toBe('item_7');
+    });
+
     it('should include output text from tool results', () => {
       const content = JSON.stringify({
         type: 'item.completed',
@@ -797,6 +848,60 @@ describe('ToolCallMatcher', () => {
       expect(result.winner).toBeNull();
       expect(result.reason).toBe('ambiguous');
       expect(result.candidates.length).toBe(2);
+    });
+  });
+
+  describe('getDiffsForToolCall (Codex synthetic ID lookup)', () => {
+    it('queries session_files using both the synthetic and raw lookup forms', async () => {
+      const SESSION_ID = 'codex-session';
+      const SYNTHETIC = 'nimtc|item_0|1700000000000|7';
+      const RAW = 'item_0';
+
+      const queryMock = database.query as ReturnType<typeof vi.fn>;
+
+      // First call: workspace_id lookup inside getDiffsFromToolCallContent.
+      queryMock.mockImplementationOnce(async (sql: string) => {
+        expect(sql).toContain('workspace_id');
+        expect(sql).toContain('FROM ai_sessions');
+        return { rows: [{ workspace_id: '/ws' }] };
+      });
+
+      // Second call: session_files lookup. The new code uses ANY($2) with both
+      // synthetic (primary) and raw (fallback) forms so legacy data still
+      // resolves while new data also resolves.
+      queryMock.mockImplementationOnce(async (sql: string, params: unknown[]) => {
+        expect(sql).toContain('FROM session_files');
+        expect(sql).toContain("metadata->>'toolUseId' = ANY($2)");
+        const lookupIds = params[1] as string[];
+        expect(lookupIds).toContain(SYNTHETIC);
+        expect(lookupIds).toContain(RAW);
+        return { rows: [] }; // empty so the function returns [] early
+      });
+
+      const diffs = await toolCallMatcher.getDiffsForToolCall(
+        SESSION_ID,
+        SYNTHETIC,
+      );
+      expect(diffs).toEqual([]);
+    });
+
+    it('passes a single id when synthetic and raw collapse to the same value', async () => {
+      const SESSION_ID = 'claude-session';
+      const RAW = 'toolu_abc'; // not a synthetic ID
+
+      const queryMock = database.query as ReturnType<typeof vi.fn>;
+
+      // workspace_id lookup
+      queryMock.mockImplementationOnce(async () => ({ rows: [{ workspace_id: '/ws' }] }));
+      // session_files lookup -- both forms equal, expect single-element ANY array
+      queryMock.mockImplementationOnce(async (_sql: string, params: unknown[]) => {
+        const lookupIds = params[1] as string[];
+        expect(lookupIds).toEqual([RAW]);
+        return { rows: [] };
+      });
+
+      const diffs = await toolCallMatcher.getDiffsForToolCall(SESSION_ID, RAW);
+      expect(diffs).toEqual([]);
     });
   });
 });

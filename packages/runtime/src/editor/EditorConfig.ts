@@ -136,7 +136,15 @@ export interface EditorConfig {
   onImageDragStart?: (src: string, event: DragEvent) => void;
   onUploadAsset?: (file: File) => Promise<UploadedEditorAsset>;
   resolveImageSrc?: (src: string) => Promise<string | null>;
-  onOpenAssetLink?: (href: string) => Promise<void> | void;
+  /**
+   * Fired (debounced) with the list of `collab-asset://` URIs that have
+   * disappeared from the live editor state since the previous scan. Used
+   * by the collab editor to garbage-collect orphaned attachments. The
+   * callback receives only what was *removed*, never the full referenced
+   * set, so it cannot delete still-live attachments referenced only by
+   * other peers.
+   */
+  onAssetReferencesRemoved?: (removedUris: string[]) => void;
 
   // Document header - renders at the top of the editor scroll pane
   documentHeader?: ReactNode;

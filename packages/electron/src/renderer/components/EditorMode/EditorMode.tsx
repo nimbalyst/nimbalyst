@@ -3,6 +3,7 @@ import { useSetAtom, useAtomValue } from 'jotai';
 import type { ConfigTheme } from '@nimbalyst/runtime';
 import { useTabsActions, type TabData } from '../../contexts/TabsContext';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
+import { fileDeletedAtomFamily } from '../../store/atoms/fileWatch';
 import { pushNavigationEntryAtom, isRestoringNavigationAtom, historyDialogFileAtom } from '../../store';
 import { newMockupRequestAtom, toggleAIChatPanelRequestAtom } from '../../store/atoms/appCommands';
 import { useTabNavigation } from '../../hooks/useTabNavigation';
@@ -180,6 +181,59 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
     // Subscribe to future changes
     const unsubscribe = tabsActions.subscribe(updateActiveTabForContext);
     return unsubscribe;
+  }, [tabsActions]);
+
+  // Subscribe to file-deleted atoms for every currently-open tab path so the
+  // EditorMode tab is closed on delete. Routes through the central atom
+  // (updated by store/listeners/fileChangeListeners.ts) to keep all tab
+  // systems in sync. Without this, autosave can resurrect deleted files.
+  useEffect(() => {
+    const subscriptions = new Map<string, () => void>();
+
+    const refreshSubscriptions = () => {
+      const snapshot = tabsActions.getSnapshot();
+      const currentPaths = new Set<string>();
+      for (const tab of snapshot.tabs.values()) {
+        if (tab.filePath) currentPaths.add(tab.filePath);
+      }
+
+      // Drop subscriptions for tabs that closed
+      for (const [path, unsub] of subscriptions) {
+        if (!currentPaths.has(path)) {
+          unsub();
+          subscriptions.delete(path);
+        }
+      }
+
+      // Add subscriptions for newly-opened tabs
+      for (const path of currentPaths) {
+        if (subscriptions.has(path)) continue;
+        const deletedAtom = fileDeletedAtomFamily(path);
+        const initial = store.get(deletedAtom);
+        const unsub = store.sub(deletedAtom, () => {
+          if (store.get(deletedAtom) === initial) return;
+          const tab = tabsActions.findTabByPath(path);
+          if (tab) {
+            tabsActions.removeTab(tab.id);
+          }
+        });
+        subscriptions.set(path, unsub);
+      }
+    };
+
+    // Initial set up
+    refreshSubscriptions();
+
+    // Re-evaluate whenever tabs change
+    const unsubscribeChanges = tabsActions.subscribe(refreshSubscriptions);
+
+    return () => {
+      unsubscribeChanges();
+      for (const unsub of subscriptions.values()) {
+        unsub();
+      }
+      subscriptions.clear();
+    };
   }, [tabsActions]);
 
   // Push navigation entry when active tab changes (unified cross-mode navigation)

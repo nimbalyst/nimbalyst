@@ -613,6 +613,119 @@ FilesEditedSidebar provides toggle-staging UI via `worktree:stage-file` IPC. The
 
 ---
 
+## 11. Deletion Lifecycle and Four-Layer Autosave Defense
+
+A real data-loss bug motivated this design: a file the user deleted, that an AI session later recreated with new content, was silently overwritten by an autosave from a stale editor buffer. The new content was lost.
+
+The defense lands four independent guards. Any one missed pathway is still caught by the others.
+
+### Layer A: Centralized `file-deleted` listener + atom family
+
+`file-deleted` IPC events route through a single listener in `store/listeners/fileChangeListeners.ts`, which increments `fileDeletedAtomFamily(path)` (counter atom). Every tab system subscribes:
+
+- `EditorMode` (Files mode) — closes any tab whose `filePath` matches
+- `WorkstreamEditorTabsInner` (Agent mode) — closes its workstream tabs
+- `HiddenTabManager` — unmounts hidden editors holding the deleted path
+
+This is what eliminates the original bug: previously only `EditorMode` heard the deletion, leaving Agent Mode workstream tabs alive with stale buffers that could autosave a recreated file.
+
+### Layer B: DocumentModel `deleted` flag
+
+Each `DocumentModel` subscribes (via `DiskBackedStore.onDeletion`) to deletion events for its path. While `deleted === true`:
+
+- `saveFromEditor` throws `FileDeletedError` without touching disk
+- The autosave timer no-ops
+- `lastPersistedContent` is set to `null` so a recreated file's `notifyFileChanged` does not get echo-suppressed against the pre-deletion content
+
+The flag clears automatically on `loadContent()` or on `handleExternalChange` reading fresh content from disk. Both clear paths fire `editor:released-deleted-path` IPC so the main process can release the lifecycle entry (Layer C).
+
+### Layer C: Lifecycle-bound `recentlyDeleted` map (no TTL)
+
+`WindowManager` exposes `markRecentlyDeleted` / `clearRecentlyDeleted` / `isRecentlyDeleted`. The map is populated from three sources:
+
+- `WorkspaceHandlers` `delete-file`, `rename-file`, and `move-file` IPC handlers
+- `OptimizedWorkspaceWatcher.onUnlink` (covers external deletions discovered by the watcher, not just UI-initiated ones)
+
+Entries are removed when the renderer fires `editor:released-deleted-path` after `loadContent` or `handleExternalChange` establishes a fresh baseline. A 5-minute absolute fallback prevents the map from growing without bound on a renderer crash. **No 10-second TTL** — that was the original (insufficient) approach.
+
+### Layer D: Autosave `lastKnownContent` conflict detection
+
+`TabEditor.saveWithHistory` captures `lastSavedContentRef.current` BEFORE the optimistic update and passes it to `electronAPI.saveFile(content, filePath, lastKnownContent)`. `FileHandlers.save-file` does:
+
+1. If `recentlyDeletedFiles.has(filePath)` and the file exists on disk, return `{ success: false, conflict: true, diskContent }`. (File was deleted then recreated by something else.)
+2. If `recentlyDeletedFiles.has(filePath)` and file does not exist, return `{ success: false, deleted: true }`.
+3. Otherwise, if `lastKnownContent !== diskContent`, return a conflict.
+
+For autosaves, the renderer never auto-overwrites on conflict. It surfaces a non-blocking banner: `"File changed on disk. Reload to see new content (your unsaved edits are preserved)."` with Reload / Dismiss buttons. The buffer stays dirty. Manual save retains the original prompt path.
+
+### Telemetry
+
+`file_save_blocked_after_delete` PostHog event fires whenever any layer blocks a save. Properties:
+
+- `layer`: `recently-deleted` | `document-model-deleted` | `conflict-mismatch`
+- `fileType`: extension classification
+- `wasAutosave`: boolean
+
+Documented in `docs/POSTHOG_EVENTS.md`. Zero blocked saves over a multi-day window would suggest the layered defense is silently bypassed.
+
+### Deletion Sequence (ASCII)
+
+```
+User deletes file F (or external process / watcher detects unlink)
+  |
+  +-- WorkspaceHandlers / Watcher: markRecentlyDeleted(F)            <-- Layer C
+  |
+  +-- IPC file-deleted broadcast to renderer
+       |
+       +-- fileChangeListeners increments fileDeletedAtomFamily(F)   <-- Layer A
+            |
+            +-- EditorMode subscription -> tabsActions.removeTab     <-- Layer A
+            +-- WorkstreamEditorTabsInner -> tabsActions.removeTab   <-- Layer A
+            +-- HiddenTabManager -> unmountEditor                    <-- Layer A
+            +-- DocumentModel via DiskBackedStore.onDeletion         <-- Layer B
+                 |
+                 +-- markDeleted(): sets deleted=true,
+                                    clears lastPersistedContent
+                 +-- saveFromEditor now throws FileDeletedError
+                 +-- autosaveTimer ticks no-op while deleted
+```
+
+### Recreation / Reload Sequence (ASCII)
+
+```
+File reappears on disk (AI recreates, user reverts, etc.)
+  |
+  +-- Watcher onAdd / onChange -> file-changed-on-disk IPC
+       |
+       +-- DocumentModel.handleExternalChange reads fresh content
+            |
+            +-- if deleted: deleted=false; emit editor:released-deleted-path
+                 |
+                 +-- WorkspaceHandlers clears recentlyDeleted entry (Layer C)
+            +-- notifyFileChanged(content) to all attachments
+       |
+       +-- TabEditor reload path picks up new content
+
+OR (explicit user reload):
+  User clicks Reload on the autosave-conflict-banner
+  |
+  +-- DocumentModel.loadContent
+       |
+       +-- deleted=false; editor:released-deleted-path
+       +-- lastPersistedContent = freshContent
+```
+
+### Why all four layers
+
+- **A alone** doesn't help if a future tab system forgets to subscribe.
+- **B alone** doesn't help if a save bypass path skips DocumentModel (extension-defined editors writing directly).
+- **C alone** doesn't help if the original 10-second TTL races a recreation more than 10 seconds later.
+- **D alone** doesn't help if `lastKnownContent` is forgotten by a future caller.
+
+Defense in depth: a missed pathway anywhere is still caught somewhere else, with telemetry visibility on which layer caught it.
+
+---
+
 ## Key Files Reference
 
 ### Main Process - Watchers

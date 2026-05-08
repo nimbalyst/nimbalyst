@@ -1,6 +1,5 @@
 /**
- * Service for discovering and managing Claude Code slash commands
- * Scans .claude/commands/ and .claude/skills/ directories for custom entries
+ * Service for discovering workspace slash commands and skills for supported providers.
  */
 
 import * as fs from 'fs';
@@ -10,6 +9,18 @@ import { parseCommandFile, parseSkillFile, SlashCommand, validateCommand } from 
 
 // Re-export SlashCommand type for use by handlers
 export type { SlashCommand };
+
+export interface SlashCommandDiscoveryOptions {
+  provider?: string | null;
+  sdkCommands?: string[];
+  sdkSkills?: string[];
+  pluginPaths?: string[];
+}
+
+interface CachedSlashCommands {
+  commands: SlashCommand[];
+  cacheTime: number;
+}
 
 /**
  * Check if a directory entry is a directory, following symlinks.
@@ -45,19 +56,31 @@ function isFileEntry(entry: fs.Dirent, fullPath: string): boolean {
 
 export class SlashCommandService {
   private workspacePath: string;
-  private commandsCache: SlashCommand[] | null = null;
-  private cacheTime: number = 0;
+  private userHomePath: string;
+  private commandsCache = new Map<string, CachedSlashCommands>();
   private readonly CACHE_TTL = 5000; // 5 seconds
 
-  constructor(workspacePath: string) {
+  constructor(workspacePath: string, options?: { userHomePath?: string }) {
     this.workspacePath = workspacePath;
+    this.userHomePath = options?.userHomePath ?? homedir();
   }
 
   /**
-   * Get the known built-in Claude Code commands
-   * These are used as a fallback when the SDK hasn't initialized yet
+   * Get the known built-in slash commands for a provider.
+   * These are used as a fallback when the provider has no dynamic catalog.
    */
-  private getKnownBuiltinCommands(): string[] {
+  private getKnownBuiltinCommands(provider: string): string[] {
+    if (provider === 'openai-codex') {
+      return [
+        'compact',
+        'diff',
+        'init',
+        'mcp',
+        'review',
+        'status',
+      ];
+    }
+
     return [
       'compact',
       'clear',
@@ -74,54 +97,62 @@ export class SlashCommandService {
   }
 
   /**
-   * List all available slash commands from all sources
-   * @param sdkCommands Built-in commands from Claude Code SDK
-   * @returns Combined list of all commands
+   * List all available slash commands from provider-specific workspace sources.
    */
-  async listCommands(sdkCommands: string[] = [], sdkSkills: string[] = [], pluginPaths: string[] = []): Promise<SlashCommand[]> {
+  async listCommands(options: SlashCommandDiscoveryOptions = {}): Promise<SlashCommand[]> {
+    const {
+      provider,
+      sdkCommands = [],
+      sdkSkills = [],
+      pluginPaths = [],
+    } = options;
+    const resolvedProvider = provider ?? 'claude-code';
+
     // Check cache
     const now = Date.now();
-    if (this.commandsCache && (now - this.cacheTime) < this.CACHE_TTL) {
-      return this.mergeWithSdkEntries(this.commandsCache, sdkCommands, sdkSkills);
+    const cached = this.commandsCache.get(resolvedProvider);
+    if (cached && (now - cached.cacheTime) < this.CACHE_TTL) {
+      return this.mergeWithSdkEntries(cached.commands, resolvedProvider, sdkCommands, sdkSkills);
     }
 
-    // console.log('[SlashCommandService] Scanning for custom slash commands...');
-
     const commands: SlashCommand[] = [];
+    if (resolvedProvider === 'openai-codex') {
+      const projectSkills = await this.scanSkillsDirectory(
+        path.join(this.workspacePath, '.agents', 'skills'),
+        'project'
+      );
+      commands.push(...projectSkills);
+    } else {
+      const projectCommands = await this.scanCommandsDirectory(
+        path.join(this.workspacePath, '.claude', 'commands'),
+        'project'
+      );
+      commands.push(...projectCommands);
 
-    // Scan project commands
-    const projectCommands = await this.scanCommandsDirectory(
-      path.join(this.workspacePath, '.claude', 'commands'),
-      'project'
-    );
-    commands.push(...projectCommands);
+      const projectSkills = await this.scanSkillsDirectory(
+        path.join(this.workspacePath, '.claude', 'skills'),
+        'project'
+      );
+      commands.push(...projectSkills);
 
-    const projectSkills = await this.scanSkillsDirectory(
-      path.join(this.workspacePath, '.claude', 'skills'),
-      'project'
-    );
-    commands.push(...projectSkills);
+      const userCommandsPath = path.join(this.userHomePath, '.claude', 'commands');
+      const userCommands = await this.scanCommandsDirectory(userCommandsPath, 'user');
+      commands.push(...userCommands);
 
-    // Scan user commands
-    const userCommandsPath = path.join(homedir(), '.claude', 'commands');
-    const userCommands = await this.scanCommandsDirectory(userCommandsPath, 'user');
-    commands.push(...userCommands);
+      const userSkillsPath = path.join(this.userHomePath, '.claude', 'skills');
+      const userSkills = await this.scanSkillsDirectory(userSkillsPath, 'user');
+      commands.push(...userSkills);
 
-    const userSkillsPath = path.join(homedir(), '.claude', 'skills');
-    const userSkills = await this.scanSkillsDirectory(userSkillsPath, 'user');
-    commands.push(...userSkills);
+      const pluginSkillRoots = pluginPaths.length > 0
+        ? pluginPaths
+        : [path.join(this.userHomePath, '.claude', 'plugins')];
+      const pluginSkills = await this.scanPluginSkillsDirectories(pluginSkillRoots);
+      commands.push(...pluginSkills);
+    }
 
-    const pluginSkillRoots = pluginPaths.length > 0
-      ? pluginPaths
-      : [path.join(homedir(), '.claude', 'plugins')];
-    const pluginSkills = await this.scanPluginSkillsDirectories(pluginSkillRoots);
-    commands.push(...pluginSkills);
+    this.commandsCache.set(resolvedProvider, { commands, cacheTime: now });
 
-    // Update cache
-    this.commandsCache = commands;
-    this.cacheTime = now;
-
-    return this.mergeWithSdkEntries(commands, sdkCommands, sdkSkills);
+    return this.mergeWithSdkEntries(commands, resolvedProvider, sdkCommands, sdkSkills);
   }
 
   /**
@@ -132,14 +163,17 @@ export class SlashCommandService {
    */
   private mergeWithSdkEntries(
     customCommands: SlashCommand[],
+    provider: string,
     sdkCommands: string[],
     sdkSkills: string[]
   ): SlashCommand[] {
-    const builtinCommandNames = sdkCommands.length > 0 ? sdkCommands : this.getKnownBuiltinCommands();
+    const builtinCommandNames = sdkCommands.length > 0
+      ? sdkCommands
+      : this.getKnownBuiltinCommands(provider);
 
     const builtinCommands: SlashCommand[] = builtinCommandNames.map(name => ({
       name,
-      description: this.getBuiltinCommandDescription(name),
+      description: this.getBuiltinCommandDescription(name, provider),
       source: 'builtin' as const,
       kind: 'command' as const,
     }));
@@ -173,11 +207,21 @@ export class SlashCommandService {
   }
 
   /**
-   * Get description for built-in commands
-   * @param name Command name
-   * @returns Description string
+   * Get description for provider-native commands.
    */
-  private getBuiltinCommandDescription(name: string): string {
+  private getBuiltinCommandDescription(name: string, provider: string): string {
+    if (provider === 'openai-codex') {
+      const descriptions: Record<string, string> = {
+        'compact': 'Summarize the current conversation to free context while preserving key points',
+        'diff': 'Show the current Git diff, including untracked files',
+        'init': 'Generate an AGENTS.md scaffold for the current directory',
+        'mcp': 'List the configured MCP tools available in this Codex session',
+        'review': 'Ask Codex to review the current working tree',
+        'status': 'Display active model, sandbox, and session token usage information',
+      };
+      return descriptions[name] || `Execute ${name} command`;
+    }
+
     const descriptions: Record<string, string> = {
       'compact': 'Reduces conversation history by summarizing older messages',
       'clear': 'Start a new conversation session (in agent mode, stays attached to current workstream/worktree)',
@@ -380,18 +424,16 @@ export class SlashCommandService {
    * Clear the commands cache
    */
   clearCache(): void {
-    this.commandsCache = null;
-    this.cacheTime = 0;
+    this.commandsCache.clear();
   }
 
   /**
    * Get a specific command by name
    * @param name Command name (without "/")
-   * @param sdkCommands Built-in commands from SDK
    * @returns Command or null if not found
    */
-  async getCommand(name: string, sdkCommands: string[] = [], sdkSkills: string[] = [], pluginPaths: string[] = []): Promise<SlashCommand | null> {
-    const commands = await this.listCommands(sdkCommands, sdkSkills, pluginPaths);
+  async getCommand(name: string, options: SlashCommandDiscoveryOptions = {}): Promise<SlashCommand | null> {
+    const commands = await this.listCommands(options);
     return commands.find(cmd => cmd.name === name) || null;
   }
 }

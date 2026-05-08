@@ -147,7 +147,8 @@ export interface FrontmatterParseResult {
  * Extract YAML frontmatter from markdown content with error details
  */
 export function extractFrontmatterWithError(content: string): FrontmatterParseResult {
-  const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
+  // `\r?\n` tolerates Windows CRLF (nimbalyst#68).
+  const frontmatterRegex = /^---\r?\n([\s\S]*?)\r?\n---/;
   const match = content.match(frontmatterRegex);
 
   if (!match) {
@@ -345,7 +346,8 @@ export function updateFieldInFrontmatter(
     noRefs: true,
   });
 
-  const frontmatterRegex = /^---\n[\s\S]*?\n---\n?/;
+  // `\r?\n` tolerates Windows CRLF (nimbalyst#68).
+  const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
   const hasFrontmatter = frontmatterRegex.test(content);
 
   if (hasFrontmatter) {

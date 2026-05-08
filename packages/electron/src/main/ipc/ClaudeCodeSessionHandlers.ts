@@ -185,6 +185,21 @@ export function initializeClaudeCodeSessionHandlers() {
         sessionsRequested: sessionIds.length,
       });
 
+      // If every session failed, surface that as a failed call so the
+      // renderer's error path renders something instead of silently closing
+      // the dialog. Reuse the first sync error so the user sees the actual
+      // cause (e.g. ENOENT for an encoder mismatch).
+      if (successCount === 0 && failureCount > 0) {
+        const firstError = results.find(r => !r.success)?.error ?? 'All sessions failed to sync';
+        return {
+          success: false,
+          error: `Import failed: ${firstError}`,
+          results,
+          successCount,
+          failureCount,
+        };
+      }
+
       return {
         success: true,
         results,

@@ -26,6 +26,7 @@ import { windows as windowMap, windowStates } from '../window/windowState';
 import { removeInlineTrackerItem } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
 import type { TrackerSyncStatus, TrackerItemPayload } from '@nimbalyst/runtime/sync';
 import * as syncModule from '@nimbalyst/runtime/sync';
+import { DEFAULT_SLOW_STARTUP_MS } from '../utils/startupTiming';
 
 function loadSyncModule() {
   return syncModule;
@@ -84,15 +85,22 @@ function buildPayloadsFromRows(
       assigneeId: data.assigneeId,
       reporterId: data.reporterId,
       labels: data.labels,
-      linkedSessions: data.linkedSessions,
       linkedCommitSha: data.linkedCommitSha,
       documentId: data.documentId,
       content: row.content != null ? row.content : undefined,
+      // Thread persisted per-field LWW timestamps through to the upload payload.
+      // Without this, trackerItemToRecord stamps every field with Date.now(),
+      // making field-level merge non-deterministic for items uploaded from PGLite.
+      fieldUpdatedAt: data._fieldUpdatedAt || undefined,
     };
     const itemKeys = new Set(Object.keys(item));
     const extra: Record<string, any> = {};
     if (data) {
       for (const [k, v] of Object.entries(data)) {
+        // Skip _fieldUpdatedAt: it is consumed via item.fieldUpdatedAt above
+        // and is not a user field. linkedSessions remains local-only and must
+        // never be promoted back into shared tracker payloads as a custom field.
+        if (k === '_fieldUpdatedAt' || k === 'linkedSessions') continue;
         if (!itemKeys.has(k) && v !== undefined) extra[k] = v;
       }
     }
@@ -348,6 +356,11 @@ export async function initializeTrackerSync(workspacePath: string): Promise<void
     // (we return early if re-fetch fails)
     const validatedKey = encryptionKey!;
 
+    // Track wall-clock from connect() until hasMore:false so we can warn in
+    // user logs when the initial websocket+decrypt loop is dragging. Set just
+    // before provider.connect() below.
+    let initialSyncStart: number | null = null;
+
     let provider: import('@nimbalyst/runtime/sync').TrackerSyncProvider;
     provider = new TrackerSyncProvider({
       serverUrl,
@@ -409,6 +422,18 @@ export async function initializeTrackerSync(workspacePath: string): Promise<void
       },
 
       onInitialSyncComplete: async (summary) => {
+        if (initialSyncStart !== null) {
+          const duration = Date.now() - initialSyncStart;
+          if (duration >= DEFAULT_SLOW_STARTUP_MS) {
+            logger.main.info(
+              `[StartupSlow] TrackerSync.initialSync(${projectId}) took ${duration}ms ` +
+              `(threshold ${DEFAULT_SLOW_STARTUP_MS}ms, ${summary.remoteItemCount} items, ` +
+              `${summary.remoteDeletedCount} deletions, sequence ${summary.sequence})`
+            );
+          }
+          initialSyncStart = null;
+        }
+
         if (
           summary.remoteItemCount !== 0 ||
           summary.remoteDeletedCount !== 0 ||
@@ -438,6 +463,7 @@ export async function initializeTrackerSync(workspacePath: string): Promise<void
 
     // Connect
     // logger.main.info('[TrackerSyncManager] Connecting tracker sync', { serverUrl, orgId, projectId });
+    initialSyncStart = Date.now();
     await provider.connect();
 
     // Push shareable unsynced items to the server.
@@ -538,7 +564,6 @@ async function hydrateTrackerItem(
     assigneeId: item.assigneeId,
     reporterId: item.reporterId,
     labels: item.labels,
-    linkedSessions: item.linkedSessions,
     linkedCommitSha: item.linkedCommitSha,
     documentId: item.documentId,
     // Spread customFields at the top level so generated columns (e.g. kanban_sort_order)
@@ -561,6 +586,9 @@ async function hydrateTrackerItem(
       // Carry forward local-only fields not present in the incoming data
       if (existingData?.kanbanSortOrder && !data.kanbanSortOrder) {
         data.kanbanSortOrder = existingData.kanbanSortOrder;
+      }
+      if (existingData?.linkedSessions && !data.linkedSessions) {
+        data.linkedSessions = existingData.linkedSessions;
       }
 
       // Merge comments (union by ID, keep newer version per comment)

@@ -13,6 +13,7 @@ import { DatabaseBackupService } from '../services/database/DatabaseBackupServic
 import { checkWorktreeArchiveConsistency, createWorktreeStore } from '../services/WorktreeStore';
 import { archiveProgressManager } from '../services/ArchiveProgressManager';
 import { GitWorktreeService } from '../services/GitWorktreeService';
+import { timeStartupPhase } from '../utils/startupTiming';
 
 // Backup service instance
 let backupService: DatabaseBackupService | null = null;
@@ -40,18 +41,18 @@ export async function initializeDatabase(): Promise<SessionStore> {
 
     // Initialize backup service
     backupService = new DatabaseBackupService(dbPath, database);
-    await backupService.initialize();
+    await timeStartupPhase('BackupService.initialize', () => backupService!.initialize());
     logger.main.info('[Database] Backup service initialized');
 
     // Set backup service on database instance
     database.setBackupService(backupService);
 
     // Initialize PGLite database
-    await database.initialize();
+    await timeStartupPhase('PGLite.initialize', () => database.initialize());
     logger.main.info('[Database] PGLite initialized successfully');
 
     // Initialize all repositories
-    await repositoryManager.initialize();
+    await timeStartupPhase('RepositoryManager.initialize', () => repositoryManager.initialize());
     const sessionStore = repositoryManager.getSessionStore();
     logger.main.info('[Database] All repositories initialized');
 
@@ -114,7 +115,7 @@ export async function initializeDatabase(): Promise<SessionStore> {
     }
 
     // Get database stats
-    const stats = await database.getStats();
+    const stats = await timeStartupPhase('Database.getStats', () => database.getStats());
     logger.main.info('[Database] Database stats:', stats);
 
     // Start periodic backup timer (only in production, not in tests)

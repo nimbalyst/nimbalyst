@@ -13,6 +13,11 @@ final class WebSocketClient: @unchecked Sendable {
     private let session: URLSession
     private var reconnectDelay: TimeInterval = 5.0
     private var deviceAnnounceTimer: Timer?
+    private var pingTimer: Timer?
+    /// Counter incremented each time `performConnect` runs. Used to invalidate
+    /// in-flight ping callbacks from prior connections so a late pong from a
+    /// dead socket can't be mistaken for liveness on the new socket.
+    private var connectionGeneration: Int = 0
     private var isIntentionallyClosed = false
 
     /// The server URL and auth token needed to (re)connect.
@@ -97,6 +102,13 @@ final class WebSocketClient: @unchecked Sendable {
     /// Only the index room client should send these.
     var sendsDeviceAnnounce = false
 
+    /// Interval between ping frames when pings are enabled via `startPings()`.
+    /// 20s is short enough to surface a silently-dead socket within one ping
+    /// cycle while the AI is executing, and short enough to stay well under
+    /// typical NAT/proxy idle timeouts (usually 30-60s) so the connection
+    /// isn't pruned mid-turn.
+    private static let pingInterval: TimeInterval = 20.0
+
     /// Connect to a WebSocket room.
     /// URL format: wss://<host>/sync/<roomId>?token=<jwt>
     func connect(serverUrl: String, roomId: String, authToken: String) {
@@ -112,6 +124,7 @@ final class WebSocketClient: @unchecked Sendable {
     func disconnect() {
         isIntentionallyClosed = true
         stopDeviceAnnounceTimer()
+        stopPings()
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         onConnectionStateChanged?(false)
@@ -127,6 +140,8 @@ final class WebSocketClient: @unchecked Sendable {
         // Clean up existing connection
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        stopPings()
+        connectionGeneration &+= 1
 
         guard let serverUrl = serverUrl,
               let roomId = roomId,
@@ -160,6 +175,12 @@ final class WebSocketClient: @unchecked Sendable {
         if sendsDeviceAnnounce {
             startDeviceAnnounceTimer()
         }
+        // Pings are NOT auto-started on connect. The owner (SyncManager) calls
+        // `startPings()` / `stopPings()` based on whether the active session is
+        // currently executing -- pings only matter while the AI is producing
+        // output, since outside an active turn there are no broadcasts to
+        // miss. Keeping a 20s timer running on an idle session caused the
+        // device to stay awake on real hardware.
     }
 
     // MARK: - Send
@@ -243,6 +264,7 @@ final class WebSocketClient: @unchecked Sendable {
             guard self.task === wsTask else { return }
             self.task = nil
             self.stopDeviceAnnounceTimer()
+            self.stopPings()
             self.onConnectionStateChanged?(false)
 
             guard !self.isIntentionallyClosed else { return }
@@ -270,6 +292,53 @@ final class WebSocketClient: @unchecked Sendable {
     private func stopDeviceAnnounceTimer() {
         deviceAnnounceTimer?.invalidate()
         deviceAnnounceTimer = nil
+    }
+
+    // MARK: - Ping Timer (liveness)
+
+    /// Begin sending periodic ping frames to detect a silently-dead socket.
+    /// Idempotent. The owner (SyncManager) is responsible for calling
+    /// `stopPings()` when the liveness check is no longer needed -- e.g.,
+    /// when the active session is no longer executing -- because a 20s
+    /// repeating timer kept the device awake on real hardware.
+    func startPings() {
+        stopPings()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: Self.pingInterval, repeats: true) { [weak self] _ in
+            self?.sendPing()
+        }
+    }
+
+    /// Stop sending periodic ping frames. Called by the owner when the
+    /// gating condition becomes false, and by `disconnect`/`handleDisconnect`
+    /// automatically when the connection itself goes away.
+    func stopPings() {
+        pingTimer?.invalidate()
+        pingTimer = nil
+    }
+
+    /// Send a WebSocket ping frame. If the pong doesn't come back (or the send
+    /// itself fails), assume the connection is dead and force a reconnect.
+    /// `URLSessionWebSocketTask.sendPing` reports the pong via its completion
+    /// handler; if the underlying TCP connection is dead, that callback fires
+    /// with an error rather than completing successfully.
+    private func sendPing() {
+        guard let task = task else { return }
+        let generation = connectionGeneration
+        task.sendPing { [weak self] error in
+            guard let self = self else { return }
+            // Ignore late callbacks from a prior connection generation -- those
+            // would cause us to tear down a healthy new connection or, worse,
+            // mistake a stale pong for proof of life on the new one.
+            DispatchQueue.main.async {
+                guard generation == self.connectionGeneration else { return }
+                if let error = error {
+                    self.logger.warning("Ping failed -- treating connection as dead: \(error.localizedDescription)")
+                    if let deadTask = self.task {
+                        self.handleDisconnect(for: deadTask)
+                    }
+                }
+            }
+        }
     }
 
     private func sendDeviceAnnounce() {

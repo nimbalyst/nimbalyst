@@ -28,6 +28,21 @@ import { AgentMessagesRepository } from '../../../storage/repositories/AgentMess
 
 export abstract class BaseAgentProvider extends BaseAIProvider {
   protected static readonly META_AGENT_ALLOWED_TOOLS: string[] = [
+    'mcp__nimbalyst-meta-agent__list_spawned_sessions',
+    'mcp__nimbalyst-meta-agent__list_worktrees',
+    'mcp__nimbalyst-meta-agent__create_session',
+    'mcp__nimbalyst-meta-agent__get_session_status',
+    'mcp__nimbalyst-meta-agent__get_session_result',
+    'mcp__nimbalyst-meta-agent__send_prompt',
+    'mcp__nimbalyst-meta-agent__respond_to_prompt',
+    'mcp__nimbalyst-session-naming__update_session_meta',
+    'mcp__nimbalyst-mcp__capture_editor_screenshot',
+    'mcp__nimbalyst-mcp__display_to_user',
+    'mcp__nimbalyst-mcp__voice_agent_speak',
+    'mcp__nimbalyst-session-context__get_session_summary',
+    'mcp__nimbalyst-session-context__get_workstream_overview',
+    'mcp__nimbalyst-session-context__list_recent_sessions',
+    'mcp__nimbalyst-session-context__get_workstream_edited_files',
     'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList',
     'TodoRead', 'TodoWrite',
   ];

@@ -268,6 +268,7 @@ function TranscriptApp() {
   const [rawMessages, setRawMessages] = useState<BridgeMessage[]>([]);
   const [metadata, setMetadata] = useState<BridgeMetadataUpdate>({});
   const rawMessagesRef = useRef<BridgeMessage[]>([]);
+  const viewMessagesRef = useRef<TranscriptViewMessage[]>([]);
   const transcriptRef = useRef<{ scrollToMessage: (index: number) => void; scrollToTop: () => void }>(null);
   const sessionDataRef = useRef<SessionData | null>(null);
 
@@ -276,7 +277,12 @@ function TranscriptApp() {
 
   // Set up the bridge on window.nimbalyst - runs once on mount, never re-runs
   useEffect(() => {
-    const nimbalyst = {
+    // Swift sets window.__nimbalystDebug = true via WKUserScript in DEBUG
+    // builds. Release builds leave it unset, so the diagnostic methods below
+    // are stripped from the bridge.
+    const isDebugBuild = (window as any).__nimbalystDebug === true;
+
+    const nimbalyst: Record<string, unknown> = {
       loadSession(data: BridgeSessionData) {
         try {
           // Clean up previous session's widget host
@@ -354,6 +360,42 @@ function TranscriptApp() {
       },
     };
 
+    if (isDebugBuild) {
+      // Diagnostics for Safari Web Inspector console. Only attached in DEBUG
+      // builds (Swift sets window.__nimbalystDebug via WKUserScript).
+      nimbalyst._debugRaw = () => {
+        return rawMessagesRef.current.map((m) => {
+          let parsedType: string | undefined;
+          let itemType: string | undefined;
+          let toolName: string | undefined;
+          try {
+            const env = JSON.parse(m.contentDecrypted || '');
+            const inner = typeof env?.content === 'string' ? JSON.parse(env.content) : env?.content;
+            parsedType = inner?.type;
+            itemType = inner?.item?.type;
+            toolName = inner?.item?.tool || inner?.item?.name;
+          } catch { /* ignore */ }
+          return {
+            id: m.id,
+            seq: m.sequence,
+            source: m.source,
+            direction: m.direction,
+            type: parsedType,
+            itemType,
+            toolName,
+            len: (m.contentDecrypted || '').length,
+          };
+        });
+      };
+      nimbalyst._debugView = () => {
+        return viewMessagesRef.current.map((m) => ({
+          type: m.type,
+          toolName: (m as any).toolCall?.toolName,
+          textPreview: m.text ? m.text.slice(0, 60) : undefined,
+        }));
+      };
+    }
+
     (window as any).nimbalyst = nimbalyst;
 
     // Signal to Swift that the bridge is ready
@@ -387,6 +429,7 @@ function TranscriptApp() {
         .then((vms) => {
           if (cancelled) return;
           try {
+            viewMessagesRef.current = vms;
             setViewMessages(vms);
           } catch (e) {
             postErrorToNative('projectRawMessages:setState', e);

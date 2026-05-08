@@ -122,18 +122,21 @@ import {
   $convertFromEnhancedMarkdownString,
   $convertToEnhancedMarkdownString,
 } from '../../../markdown';
-import type {LexicalEditor, SerializedLexicalNode} from 'lexical';
+import type {LexicalEditor, SerializedLexicalNode, TextNode} from 'lexical';
 import {
   type ElementNode,
   type LexicalNode,
+  $createTextNode,
   $getNodeByKey,
   $getRoot,
   $isDecoratorNode,
   $isElementNode,
+  $isTextNode,
   createState,
   $getState,
   $setState,
 } from 'lexical';
+import {$createAutoLinkNode, $isAutoLinkNode, $isLinkNode} from '@lexical/link';
 
 import {createHeadlessEditor} from '@lexical/headless';
 import {createNodeFromSerialized} from './createNodeFromSerialized';
@@ -181,6 +184,153 @@ export function initializeHandlers() {
 // Add escapeRegExp function near the top of the file
 function escapeRegExp(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Mirrors the URL/email matchers in packages/runtime/src/editor/plugins/AutoLinkPlugin/index.tsx.
+// Kept in lockstep so the diff system normalizes plain-text URLs into AutoLinkNodes
+// before tree matching. Without this, diff source (cloned from a live editor where
+// AutoLinkPlugin already wrapped URLs) and diff target (parsed fresh into a headless
+// editor that doesn't run AutoLinkPlugin) end up with structurally-different children
+// for an unchanged sub-bullet -- one has [text, autolink], the other has [text-with-URL] --
+// and TreeMatcher emits a false UPDATE that recursion turns into duplicated content.
+const DIFF_AUTOLINK_URL_REGEX =
+  /((https?:\/\/(www\.)?)|(www\.))[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}([-a-zA-Z0-9()@:%_+.~#?&//=]*)(?<![-.+:%])/;
+const DIFF_AUTOLINK_EMAIL_REGEX =
+  /(([^<>()[\]\\.,;:\s@"]+(\.[^<>()[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))/;
+const DIFF_AUTOLINK_MAX_URL_LENGTH = 500;
+
+function $wrapTextRangeInAutoLink(
+  textNode: TextNode,
+  startIndex: number,
+  endIndex: number,
+  matchText: string,
+  url: string,
+): TextNode | null {
+  const fullText = textNode.getTextContent();
+  let beforeNode: TextNode | null = null;
+  let matchNode: TextNode;
+  let afterNode: TextNode | null = null;
+
+  if (startIndex === 0 && endIndex === fullText.length) {
+    matchNode = textNode;
+  } else if (startIndex === 0) {
+    [matchNode, afterNode] = textNode.splitText(endIndex);
+  } else if (endIndex === fullText.length) {
+    [beforeNode, matchNode] = textNode.splitText(startIndex);
+  } else {
+    [beforeNode, matchNode, afterNode] = textNode.splitText(startIndex, endIndex);
+  }
+
+  const autoLinkNode = $createAutoLinkNode(url);
+  const linkText = $createTextNode(matchText);
+  linkText.setFormat(matchNode.getFormat());
+  autoLinkNode.append(linkText);
+  matchNode.replace(autoLinkNode);
+
+  return afterNode;
+}
+
+function $autoLinkifyTextNode(textNode: TextNode): void {
+  // Walk a text node, peeling off URL/email matches one at a time. After
+  // wrapping a match in an AutoLinkNode, recurse into the trailing remainder
+  // so multiple URLs in the same text node are all converted.
+  let current: TextNode | null = textNode;
+  // Limit defensively against pathological recursion.
+  for (let i = 0; i < 32 && current !== null; i++) {
+    const text = current.getTextContent();
+    if (!text) return;
+    const urlMatch = DIFF_AUTOLINK_URL_REGEX.exec(text);
+    let matchIdx = -1;
+    let matchText = '';
+    let url = '';
+    if (urlMatch && urlMatch[0].length <= DIFF_AUTOLINK_MAX_URL_LENGTH) {
+      matchIdx = urlMatch.index;
+      matchText = urlMatch[0];
+      url = matchText.startsWith('http') ? matchText : `https://${matchText}`;
+      if (url.startsWith('data:')) {
+        // Skip data URLs to mirror AutoLinkPlugin behavior
+        return;
+      }
+    } else {
+      const emailMatch = DIFF_AUTOLINK_EMAIL_REGEX.exec(text);
+      if (!emailMatch || emailMatch[0].length > DIFF_AUTOLINK_MAX_URL_LENGTH) {
+        return;
+      }
+      matchIdx = emailMatch.index;
+      matchText = emailMatch[0];
+      url = `mailto:${matchText}`;
+    }
+
+    current = $wrapTextRangeInAutoLink(
+      current,
+      matchIdx,
+      matchIdx + matchText.length,
+      matchText,
+      url,
+    );
+  }
+}
+
+function $autoLinkifyTree(node: LexicalNode): void {
+  if (!$isElementNode(node)) return;
+  // Don't recurse INTO an existing link/autolink -- the URL inside it is
+  // already structured and re-wrapping would corrupt it.
+  if ($isAutoLinkNode(node) || $isLinkNode(node)) return;
+
+  const children = [...node.getChildren()];
+  for (const child of children) {
+    if ($isTextNode(child)) {
+      $autoLinkifyTextNode(child);
+    } else if ($isElementNode(child)) {
+      $autoLinkifyTree(child);
+    }
+  }
+}
+
+function $editorHasAutoLinks(editor: LexicalEditor): boolean {
+  let found = false;
+  editor.getEditorState().read(() => {
+    const root = $getRoot();
+    const visit = (node: LexicalNode) => {
+      if (found) return;
+      if ($isAutoLinkNode(node)) {
+        found = true;
+        return;
+      }
+      if ($isElementNode(node)) {
+        for (const child of node.getChildren()) {
+          visit(child);
+          if (found) return;
+        }
+      }
+    };
+    visit(root);
+  });
+  return found;
+}
+
+/**
+ * Walk the editor's tree and wrap any URL/email-shaped text into AutoLinkNode,
+ * mirroring what the live editor's AutoLinkPlugin would have done.
+ *
+ * Apply this to the headless target editor BEFORE tree matching whenever the
+ * source clone (live editor state) contains autolinks. Without this, a sub-
+ * bullet containing a bare URL is structurally different between source
+ * (`[strong "URL", text ": ", autolink "https://..."]`) and target
+ * (`[strong "URL", text ": https://..."]`), even when the rendered text is
+ * identical. TreeMatcher then emits a false UPDATE that recursion turns into
+ * one removed source bullet plus a duplicated added target bullet under the
+ * unchanged parent. See packages/electron/e2e/ai/diff-small-md-mixed-children.spec.ts
+ * for the reproduction.
+ */
+function $applyAutoLinksToHeadlessEditor(editor: LexicalEditor): void {
+  editor.update(
+    () => {
+      const root = $getRoot();
+      $autoLinkifyTree(root);
+    },
+    {discrete: true},
+  );
 }
 
 // Type for text replacement edits (internal use after resolution)
@@ -814,6 +964,20 @@ export function applyMarkdownDiffToDocument(
         },
         {discrete: true},
       );
+
+      // If the source clone has AutoLinkNodes, the live editor must have an
+      // AutoLinkPlugin running. The headless target editor does NOT run plugins,
+      // so its bare URLs parse as plain text. That structural mismatch --
+      // source has `[text ": ", autolink "URL"]` while target has
+      // `[text ": URL"]` -- makes TreeMatcher classify unchanged sub-bullets
+      // as 'similar' UPDATE, and the recursion duplicates the target bullet.
+      // Pre-process target so both sides have the same autolink shape. We
+      // don't re-apply to source because LiveNodeKeyState parallel traversal
+      // has already run against its existing structure.
+      if ($editorHasAutoLinks(sourceEditor)) {
+        $applyAutoLinksToHeadlessEditor(targetEditor);
+      }
+
 
       // DEBUG: Show what target editor contains
       // targetEditor.getEditorState().read(() => {

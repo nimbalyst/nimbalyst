@@ -54,6 +54,7 @@ enum SessionLoadError {
 public struct SessionDetailView: View {
     @EnvironmentObject var appState: AppState
     let session: Session
+    private let logger = Logger(subsystem: "com.nimbalyst.app", category: "SessionDetailView")
 
     /// Live session data from GRDB observation.
     @State private var liveSession: Session?

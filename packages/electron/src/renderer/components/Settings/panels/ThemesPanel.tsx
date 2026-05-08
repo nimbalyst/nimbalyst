@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import type { ThemeManifest } from '@nimbalyst/extension-sdk';
 import { useTheme } from '../../../hooks/useTheme';
 import { pendingThemeFallbackAtom } from '../../../store/atoms/themeFallback';
+import { themeListChangedVersionAtom } from '../../../store/atoms/themeList';
 
 interface ThemesPanelProps {
   scope: 'user' | 'project';
@@ -55,15 +56,17 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ scope, workspacePath }
     loadThemes();
   }, [loadThemes]);
 
-  // Refresh when extensions register/unregister themes (main broadcasts).
+  // Refresh when extensions register/unregister themes. The IPC event is
+  // handled centrally in store/listeners/themeListeners.ts which bumps
+  // themeListChangedVersionAtom; we only react to *new* bumps (skip the
+  // initial-mount value) so the side effect doesn't double-fire alongside
+  // the loadThemes() effect above.
+  const themeListVersion = useAtomValue(themeListChangedVersionAtom);
+  const initialThemeListVersionRef = useRef(themeListVersion);
   useEffect(() => {
-    const unsubscribe = window.electronAPI?.on?.('theme:list-changed', () => {
-      void loadThemes();
-    });
-    return () => {
-      if (typeof unsubscribe === 'function') unsubscribe();
-    };
-  }, [loadThemes]);
+    if (themeListVersion === initialThemeListVersionRef.current) return;
+    void loadThemes();
+  }, [themeListVersion, loadThemes]);
 
   const handleDismissFallback = useCallback(() => {
     if (window.electronAPI?.send) {

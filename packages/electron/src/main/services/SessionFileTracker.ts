@@ -118,7 +118,21 @@ function extractEditMetadata(toolName: string, args: any, result: any, filePath?
       metadata.bashCommand = args.command.slice(0, 200); // Store first 200 chars
     }
   } else if (toolName === 'file_change') {
-    metadata.operation = 'edit';
+    // Honor the per-change `kind` field so new-file creations and deletes
+    // route to the correct renderer branch (NewFilePreview vs DiffViewer).
+    // Codex's FileChangeItem carries `changes: [{ path, kind: 'add'|'update'|'delete' }]`.
+    const changes = Array.isArray(args?.changes) ? args.changes : null;
+    const matchingChange = changes && filePath
+      ? changes.find((c: any) => c?.path === filePath) ?? changes[0]
+      : changes?.[0];
+    const kind = typeof matchingChange?.kind === 'string' ? matchingChange.kind : null;
+    if (kind === 'add' || kind === 'create' || kind === 'new') {
+      metadata.operation = 'create';
+    } else if (kind === 'delete') {
+      metadata.operation = 'delete';
+    } else {
+      metadata.operation = 'edit';
+    }
   }
 
   // Try to extract line counts from result

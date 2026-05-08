@@ -87,14 +87,28 @@ const isOfficialBuild = process.env.OFFICIAL_BUILD === 'true';
 // IS_DEV_MODE is true only when running `npm run dev`, not for any packaged builds
 const isDevMode = isDev;
 
-// Read Claude Agent SDK version at build time for display in settings
+// Read Claude Agent SDK version at build time for display in settings.
+//
+// The bundled SDK may live in packages/electron/node_modules/ (when not
+// hoisted) OR in the workspace-root node_modules/ (when npm workspace dedup
+// hoists it). Hardcoding the local path to the package was silently falling
+// through to 'unknown' on builds where the install hoisted, so the Settings
+// panel always read 'Version: unknown' on those builds. Try the local path
+// first, then the workspace-root fallback. Closes #60.
 const claudeAgentSdkVersion = (() => {
-  try {
-    const pkgPath = resolve(__dirname, 'node_modules/@anthropic-ai/claude-agent-sdk/package.json');
-    return JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
-  } catch {
-    return 'unknown';
+  const candidates = [
+    resolve(__dirname, 'node_modules/@anthropic-ai/claude-agent-sdk/package.json'),
+    resolve(__dirname, '../../node_modules/@anthropic-ai/claude-agent-sdk/package.json'),
+  ];
+  for (const pkgPath of candidates) {
+    try {
+      const version = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
+      if (version) return version;
+    } catch {
+      // try next candidate
+    }
   }
+  return 'unknown';
 })();
 const runtimeSrcDir = resolve(__dirname, '../runtime/src');
 const runtimeDistDir = resolve(__dirname, '../runtime/dist');

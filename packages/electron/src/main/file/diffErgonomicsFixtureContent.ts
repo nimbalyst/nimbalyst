@@ -50,6 +50,14 @@ _URL change, link text change, and a plain phrase being turned into a link._
 
 Visit [Anthropic's homepage](https://example.com/old) for more information. Read the [Claude documentation](https://docs.anthropic.com) to get started. The Lexical project is great.
 
+## Sub-bullet with link -- URL changed
+
+_A nested bullet that mixes plain text ("URL: ") with a link, where only the link's URL changes. The "URL: " prefix and unchanged sibling sub-bullets must stay plain; only the changed link should flash, ideally as a paired remove/add side-by-side -- not as a whole-bullet block fallback._
+
+- Test Links
+  - URL: [https://example.com/test-link](https://example.com/test-link)
+  - URL: [https://example.com/test-link2](https://example.com/test-link2)
+
 ## Inline code and code block
 
 _Inline backtick swap, plus a multi-line code block where one line in the middle changes._
@@ -191,6 +199,18 @@ _A whole paragraph is rewritten while keeping the same general topic. Tests whet
 
 The migration script reads the old database, transforms each row using a configurable pipeline, and writes the result to the new database. It logs progress to stdout every 1000 rows. If a row fails to transform, the script aborts and prints the error.
 
+## Near-complete paragraph rewrite
+
+_Marketing copy rewritten almost end-to-end. Old and new share only a few short tokens ("the", " is ", "you", " on ") so a word-level diff produces tightly interleaved red/green fragments that are unreadable. Expect the whole old paragraph to appear as one removed block followed by the new paragraph as one added block, not interleaved word-by-word._
+
+We're hosting it with Jellyfish dev tools VC starting tonight before BosTech Tech Week, and the premise is simple. Stop buying them, not waiting for vendors to ship a vendor roadmap. Build it yourself, build on them. That shift has a name: malleable software, with agents doing the heavy lifting.
+
+## Middle sentence rewritten in a multi-sentence paragraph
+
+_Three sentences in one paragraph. The first and last sentences are identical before and after; only the middle sentence is heavily rewritten. The ideal rendering shows the first and last sentences cleanly unchanged, with the middle sentence appearing as one removed block followed by one added block at the sentence boundary -- not as word-level interleaving across the middle, and not as a whole-paragraph replacement that drags the unchanged sentences with it._
+
+The team meets every Monday at 9am to review last week's work. Bob spent the past three days untangling the legacy authentication module so it would finally pass the new compliance audit our security team has been demanding. The next sprint kicks off on Wednesday with a fresh set of priorities.
+
 ## Trailing content unchanged
 
 _The very last section is identical before and after. Use this as a control to confirm unchanged content does not show diff styling._
@@ -239,6 +259,14 @@ This sentence has *no emphasis at all*. This sentence already has some bold word
 _URL change, link text change, and a plain phrase being turned into a link._
 
 Visit [Anthropic's homepage](https://anthropic.com) for more information. Read the [official Claude docs](https://docs.anthropic.com) to get started. The [Lexical project](https://lexical.dev) is great.
+
+## Sub-bullet with link -- URL changed
+
+_A nested bullet that mixes plain text ("URL: ") with a link, where only the link's URL changes. The "URL: " prefix and unchanged sibling sub-bullets must stay plain; only the changed link should flash, ideally as a paired remove/add side-by-side -- not as a whole-bullet block fallback._
+
+- Test Links
+  - URL: [https://example.com/test-link](https://example.com/test-link)
+  - URL: [https://example.com/test-link3](https://example.com/test-link3)
 
 ## Inline code and code block
 
@@ -381,6 +409,18 @@ _The image alt text is rewritten and the src URL is updated. The image element i
 _A whole paragraph is rewritten while keeping the same general topic. Tests whether the diff system stays line-aligned or fragments into many small inline edits._
 
 The migration script streams rows from the source database, applies a user-supplied transform to each one, and bulk-writes batches of 500 rows into the destination. Progress is logged every 10 seconds. On failure, the script records the offending row, skips it, and continues — never aborting the run.
+
+## Near-complete paragraph rewrite
+
+_Marketing copy rewritten almost end-to-end. Old and new share only a few short tokens ("the", " is ", "you", " on ") so a word-level diff produces tightly interleaved red/green fragments that are unreadable. Expect the whole old paragraph to appear as one removed block followed by the new paragraph as one added block, not interleaved word-by-word._
+
+Malleable software: The teams using Pillar are starting the build before Tech Week. Stop waiting for vendors to ship the workflow you need. Build it yourself, on top of an open visual workspace, with agents doing the heavy lifting.
+
+## Middle sentence rewritten in a multi-sentence paragraph
+
+_Three sentences in one paragraph. The first and last sentences are identical before and after; only the middle sentence is heavily rewritten. The ideal rendering shows the first and last sentences cleanly unchanged, with the middle sentence appearing as one removed block followed by one added block at the sentence boundary -- not as word-level interleaving across the middle, and not as a whole-paragraph replacement that drags the unchanged sentences with it._
+
+The team meets every Monday at 9am to review last week's work. Carol drafted a one-page redesign of the onboarding flow after watching a half-dozen new users get stuck on the second screen during yesterday's user testing. The next sprint kicks off on Wednesday with a fresh set of priorities.
 
 ## Trailing content unchanged
 

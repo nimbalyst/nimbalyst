@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, KeyboardEvent, useState, useCallback } from 'react';
 import { GenericTypeahead, TypeaheadOption } from '../Typeahead/GenericTypeahead';
 import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type SlashTypeaheadScope, TriggerMatch } from '../Typeahead/typeaheadUtils';
+import { buildSlashCommandOptions, fetchSlashCommandEntries, type SlashCommandEntry } from '../Typeahead/slashCommandAutocomplete';
 import type { ChatAttachment } from '@nimbalyst/runtime';
 import { AttachmentPreviewList } from './AttachmentPreviewList';
 
@@ -14,6 +15,7 @@ interface AgenticInputProps {
   placeholder?: string;
   workspacePath?: string;
   sessionId?: string; // Used to trigger command refresh when session changes
+  provider?: string | null;
 
   // File mention support
   fileMentionOptions?: TypeaheadOption[];
@@ -36,6 +38,7 @@ export function AgenticInput({
   placeholder = "Type your message... (Enter to send, Shift+Enter for new line, @ for files, @@ for sessions, / for commands)",
   workspacePath,
   sessionId,
+  provider,
   fileMentionOptions = [],
   onFileMentionSearch,
   onFileMentionSelect,
@@ -50,7 +53,7 @@ export function AgenticInput({
   const [selectedOption, setSelectedOption] = useState<TypeaheadOption | null>(null);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [slashCommandOptions, setSlashCommandOptions] = useState<TypeaheadOption[]>([]);
-  const [allSlashCommands, setAllSlashCommands] = useState<any[]>([]);
+  const [allSlashCommands, setAllSlashCommands] = useState<SlashCommandEntry[]>([]);
   const [dragActive, setDragActive] = useState(false);
 
   // Track attachments that are being processed (e.g., compressed)
@@ -68,129 +71,27 @@ export function AgenticInput({
   const fetchSlashCommands = useCallback(async () => {
     if (!workspacePath) return;
     try {
-      // Get SDK commands from ClaudeCodeProvider if available
-      let sdkCommands: string[] = [];
-      let sdkSkills: string[] = [];
-      try {
-        const sdkResult = await window.electronAPI.invoke('ai:getSlashCommands', sessionId);
-        if (sdkResult?.success && Array.isArray(sdkResult.commands)) {
-          sdkCommands = sdkResult.commands;
-          sdkSkills = Array.isArray(sdkResult.skills) ? sdkResult.skills : [];
-          // console.log('[AgenticInput] Got SDK commands from provider:', sdkCommands);
-        }
-      } catch (sdkError) {
-        console.warn('[AgenticInput] Failed to get SDK commands:', sdkError);
-      }
-
-      // Fetch all commands (built-in + custom)
-      const commands = await window.electronAPI.invoke('slash-command:list', {
+      const commands = await fetchSlashCommandEntries({
         workspacePath,
-        sdkCommands,
-        sdkSkills,
+        sessionId,
+        provider,
       });
 
-      setAllSlashCommands(commands || []);
-      // console.log('[AgenticInput] Loaded slash commands:', commands?.length, 'kinds:', [...new Set(commands?.map((c: any) => `${c.kind}:${c.source}`) || [])]);
+      setAllSlashCommands(commands);
     } catch (error) {
       console.error('[AgenticInput] Failed to load slash commands:', error);
       setAllSlashCommands([]);
     }
-  }, [workspacePath, sessionId]);
+  }, [workspacePath, sessionId, provider]);
 
   // Fetch on mount and when workspace/session changes
   useEffect(() => {
     fetchSlashCommands();
   }, [fetchSlashCommands]);
 
-  // Get icon for command based on name and source
-  const getCommandIcon = (cmd: any): string => {
-    if (cmd.kind === 'skill') {
-      return 'psychology';
-    }
-    if (cmd.source === 'builtin') {
-      // Built-in command icons
-      const builtinIcons: Record<string, string> = {
-        'compact': 'compress',
-        'clear': 'delete_sweep',
-        'context': 'info',
-        'cost': 'payments',
-        'init': 'restart_alt',
-        'output-style:new': 'palette',
-        'pr-comments': 'comment',
-        'release-notes': 'description',
-        'todos': 'checklist',
-        'review': 'rate_review',
-        'security-review': 'security'
-      };
-      return builtinIcons[cmd.name] || 'bolt';
-    }
-    // Custom command icon
-    return 'code';
-  };
-
-  // Score a command name against a query for relevance ranking
-  // Higher score = better match
-  const scoreCommand = (name: string, query: string): number => {
-    const lowerName = name.toLowerCase();
-    const lowerQuery = query.toLowerCase();
-
-    // Exact match
-    if (lowerName === lowerQuery) return 100;
-
-    // Name starts with query (prefix match)
-    if (lowerName.startsWith(lowerQuery)) return 80;
-
-    // Name contains query at word boundary (e.g., "prepare-commit" matches at "-commit")
-    const wordBoundaryRegex = new RegExp(`(?:^|[\\s_-])${lowerQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i');
-    if (wordBoundaryRegex.test(lowerName)) return 60;
-
-    // Name contains query anywhere
-    if (lowerName.includes(lowerQuery)) return 40;
-
-    // No match
-    return 0;
-  };
-
   // Filter and sort slash commands based on query
   const filterSlashCommands = useCallback((query: string, scope: SlashTypeaheadScope) => {
-    // console.log('[AgenticInput] filterSlashCommands scope:', scope, 'query:', query, 'total:', allSlashCommands.length);
-    const filtered = allSlashCommands
-      .filter(cmd => {
-        if (scope === 'commands') {
-          // At position 0: show built-in commands and project/user commands, not skills
-          return cmd.kind !== 'skill';
-        }
-        // Mid-prompt skills scope: show skills AND project/user commands
-        // (the SDK treats .claude/commands/ entries as invocable skills too)
-        return cmd.source !== 'builtin';
-      })
-      .map(cmd => ({
-        cmd,
-        score: scoreCommand(cmd.name, query)
-      }))
-      .filter(({ score }) => score > 0)
-      .sort((a, b) => b.score - a.score)
-      .map(({ cmd }) => {
-        // Build label with argument hint if available (e.g., "/fix-issue [issue-number]")
-        const label = cmd.argumentHint
-          ? `/${cmd.name} ${cmd.argumentHint}`
-          : `/${cmd.name}`;
-        return {
-          id: cmd.name,
-          label,
-          description: cmd.description || `Execute ${cmd.name} command`,
-          icon: getCommandIcon(cmd),
-          section: cmd.kind === 'skill'
-            ? (cmd.source === 'project' ? 'Project Skills' :
-               cmd.source === 'plugin' ? 'Plugin Skills' : 'User Skills')
-            : (cmd.source === 'builtin' ? 'Built-in Commands' :
-               cmd.source === 'project' ? 'Project Commands' :
-               cmd.source === 'plugin' ? 'Extension Commands' : 'User Commands'),
-          data: cmd
-        };
-      });
-
-    setSlashCommandOptions(filtered);
+    setSlashCommandOptions(buildSlashCommandOptions(allSlashCommands, query, scope));
   }, [allSlashCommands]);
 
   // Check for typeahead trigger when value or cursor changes

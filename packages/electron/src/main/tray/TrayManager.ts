@@ -87,12 +87,6 @@ export class TrayManager {
       return;
     }
 
-    // macOS only for initial implementation
-    if (process.platform !== 'darwin') {
-      logger.main.info('[TrayManager] Skipping initialization on non-macOS platform');
-      return;
-    }
-
     const manager = getSessionStateManager();
     if (!manager) {
       throw new Error('[TrayManager] SessionStateManager is not initialized -- cannot create tray without session data source');
@@ -104,18 +98,26 @@ export class TrayManager {
     });
 
     // Re-render icon when system appearance changes (needed for non-template icons with blue dots).
-    // nativeTheme 'updated' fires when the app's themeSource changes or when the system
-    // appearance changes AND themeSource is 'system'. Since the app may force dark mode,
-    // also listen to systemPreferences for actual macOS appearance changes.
+    // `nativeTheme.on('updated', ...)` is cross-platform and remains the primary signal on
+    // every OS. `systemPreferences.subscribeNotification` is macOS-only (it wraps
+    // NSDistributedNotificationCenter and throws on Linux/Windows), so guard it. Without the
+    // guard, this method threw at startup on non-darwin and the tray never initialised.
+    // See nimbalyst#39.
     const onThemeUpdated = () => this.updateIcon();
     nativeTheme.on('updated', onThemeUpdated);
-    const appearanceSubId = systemPreferences.subscribeNotification(
-      'AppleInterfaceThemeChangedNotification',
-      onThemeUpdated,
-    );
+
+    let appearanceSubId: number | null = null;
+    if (process.platform === 'darwin') {
+      appearanceSubId = systemPreferences.subscribeNotification(
+        'AppleInterfaceThemeChangedNotification',
+        onThemeUpdated,
+      );
+    }
     this.themeListener = () => {
       nativeTheme.removeListener('updated', onThemeUpdated);
-      systemPreferences.unsubscribeNotification(appearanceSubId);
+      if (appearanceSubId !== null) {
+        systemPreferences.unsubscribeNotification(appearanceSubId);
+      }
     };
 
     // Seed the cache with sessions that are already unread in the database.
@@ -516,15 +518,20 @@ export class TrayManager {
     const icon = this.getIconForState(state);
     this.tray.setImage(icon);
 
-    // Update title text on macOS (shown next to the icon)
-    const runningCount = this.getRunningCount();
-    const attentionCount = this.getAttentionCount();
-    if (attentionCount > 0) {
-      this.tray.setTitle(` ${attentionCount}`);
-    } else if (runningCount > 0) {
-      this.tray.setTitle(` ${runningCount}`);
-    } else {
-      this.tray.setTitle('');
+    // Update title text on macOS (shown next to the icon). `setTitle` is a
+    // macOS-only Tray method; calling it on Linux/Windows is documented as a
+    // no-op but the API is officially `darwin` only. Guard it to keep the
+    // intent explicit and avoid future Electron versions throwing here.
+    if (process.platform === 'darwin') {
+      const runningCount = this.getRunningCount();
+      const attentionCount = this.getAttentionCount();
+      if (attentionCount > 0) {
+        this.tray.setTitle(` ${attentionCount}`);
+      } else if (runningCount > 0) {
+        this.tray.setTitle(` ${runningCount}`);
+      } else {
+        this.tray.setTitle('');
+      }
     }
   }
 

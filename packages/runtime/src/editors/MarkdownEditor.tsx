@@ -54,8 +54,11 @@ export interface MarkdownEditorConfig {
   /** Resolve editor image sources to browser-openable URLs. */
   resolveImageSrc?: (src: string) => Promise<string | null>;
 
-  /** Open an attachment link rendered in the editor. */
-  onOpenAssetLink?: (href: string) => Promise<void> | void;
+  /**
+   * Notified (debounced) with the URIs that have *disappeared* from the
+   * live editor state since the previous scan. Wires through to AssetGCPlugin.
+   */
+  onAssetReferencesRemoved?: (removedUris: string[]) => void;
 
   /** Callback to rename document */
   onRenameDocument?: () => void;
@@ -271,7 +274,7 @@ export function MarkdownEditor({
       onImageDragStart: config.onImageDragStart,
       onUploadAsset: config.onUploadAsset,
       resolveImageSrc: config.resolveImageSrc,
-      onOpenAssetLink: config.onOpenAssetLink,
+      onAssetReferencesRemoved: config.onAssetReferencesRemoved,
       onViewHistory: handleViewHistory,
       onRenameDocument: config.onRenameDocument,
       onSwitchToAgentMode: config.onSwitchToAgentMode,
@@ -322,7 +325,7 @@ export function MarkdownEditor({
       config.onImageDragStart,
       config.onUploadAsset,
       config.resolveImageSrc,
-      config.onOpenAssetLink,
+      config.onAssetReferencesRemoved,
       config.onRenameDocument,
       config.onSwitchToAgentMode,
       config.onOpenSessionInChat,

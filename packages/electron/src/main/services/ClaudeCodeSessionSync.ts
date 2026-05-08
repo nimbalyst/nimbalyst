@@ -11,7 +11,7 @@ import { homedir } from 'os';
 import type { SessionStore } from '@nimbalyst/runtime';
 import type { AgentMessagesStore } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
 import { logger } from '../utils/logger';
-import { extractSessionMetadata, type ClaudeCodeEntry, type SessionMetadata } from './ClaudeCodeSessionScanner';
+import { encodeWorkspaceDir, extractSessionMetadata, type ClaudeCodeEntry, type SessionMetadata } from './ClaudeCodeSessionScanner';
 
 const log = logger.aiSession;
 
@@ -35,11 +35,12 @@ function projectsDir(): string {
 }
 
 /**
- * Get the full path to a session JSONL file
+ * Get the full path to a session JSONL file. Must use the same encoder as
+ * the scanner -- otherwise the importer reads from a different directory
+ * than the one the scanner found and every sync fails with ENOENT.
  */
 function getSessionFilePath(workspacePath: string, sessionId: string): string {
-  const escapedPath = workspacePath.replace(/\//g, '-');
-  return path.join(projectsDir(), escapedPath, `${sessionId}.jsonl`);
+  return path.join(projectsDir(), encodeWorkspaceDir(workspacePath), `${sessionId}.jsonl`);
 }
 
 /**
@@ -47,8 +48,7 @@ function getSessionFilePath(workspacePath: string, sessionId: string): string {
  * tool results. Lives next to the main `<sessionId>.jsonl`.
  */
 function getSessionSidecarDir(workspacePath: string, sessionId: string): string {
-  const escapedPath = workspacePath.replace(/\//g, '-');
-  return path.join(projectsDir(), escapedPath, sessionId);
+  return path.join(projectsDir(), encodeWorkspaceDir(workspacePath), sessionId);
 }
 
 interface SubagentSidecar {

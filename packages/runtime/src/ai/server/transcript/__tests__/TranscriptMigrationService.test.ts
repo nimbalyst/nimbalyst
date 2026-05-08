@@ -55,6 +55,22 @@ function createMockTranscriptStore(): ITranscriptEventStore {
         ) ?? null
       );
     },
+    async findActiveToolCallByRawProviderId(rawProviderToolCallId, sessionId) {
+      const synthPrefix = `nimtc|${encodeURIComponent(rawProviderToolCallId)}|`;
+      for (let i = events.length - 1; i >= 0; i--) {
+        const event = events[i];
+        if (event.sessionId !== sessionId) continue;
+        if (event.eventType !== 'tool_call') continue;
+        const ptcid = event.providerToolCallId ?? '';
+        const matches = ptcid === rawProviderToolCallId || ptcid.startsWith(synthPrefix);
+        if (!matches) continue;
+        const status = (event.payload as Record<string, unknown> | undefined)?.status;
+        if (status === 'running' || status === 'pending' || status == null) {
+          return event;
+        }
+      }
+      return null;
+    },
     async getEventById(id) {
       return events.find((e) => e.id === id) ?? null;
     },

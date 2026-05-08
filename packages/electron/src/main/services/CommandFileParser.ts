@@ -1,6 +1,5 @@
 /**
- * Parser for Claude Code slash command markdown files
- * Parses markdown files with YAML frontmatter from .claude/commands/ directories
+ * Parser for workspace slash-command and skill markdown files.
  */
 
 import * as fs from 'fs';
@@ -40,6 +39,27 @@ interface CommandFrontmatter {
   [key: string]: any;
 }
 
+function normalizeAllowedTools(value: unknown): string[] | undefined {
+  if (!value) return undefined;
+
+  if (typeof value === 'string') {
+    const tools = value
+      .split(',')
+      .map(tool => tool.trim())
+      .filter(Boolean);
+    return tools.length > 0 ? tools : undefined;
+  }
+
+  if (Array.isArray(value)) {
+    const tools = value
+      .map(tool => String(tool).trim())
+      .filter(Boolean);
+    return tools.length > 0 ? tools : undefined;
+  }
+
+  return undefined;
+}
+
 function normalizeArgumentHint(value: unknown): string | undefined {
   if (value == null) return undefined;
   if (Array.isArray(value)) {
@@ -57,6 +77,67 @@ function normalizeArgumentHint(value: unknown): string | undefined {
 
   const text = String(value).trim();
   return text || undefined;
+}
+
+function extractBodyDescription(body: string): string | undefined {
+  const lines = body.replace(/\r\n/g, '\n').split('\n');
+  const descriptionLines: string[] = [];
+  let inCodeFence = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('```')) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+
+    if (inCodeFence) {
+      continue;
+    }
+
+    if (!trimmed) {
+      if (descriptionLines.length > 0) {
+        break;
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith('#')) {
+      if (descriptionLines.length > 0) {
+        break;
+      }
+      continue;
+    }
+
+    descriptionLines.push(trimmed);
+  }
+
+  if (descriptionLines.length === 0) {
+    return undefined;
+  }
+
+  return descriptionLines.join(' ').replace(/\s+/g, ' ').trim() || undefined;
+}
+
+function deriveSkillFallbackName(filePath: string, relativePath?: string): string {
+  if (!relativePath) {
+    return path.basename(path.dirname(filePath)).trim();
+  }
+
+  const segments = relativePath
+    .replace(/\/SKILL\.md$/i, '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .map(segment => segment.trim())
+    .filter(Boolean);
+
+  const visibleSegments = segments.filter(segment => !segment.startsWith('.'));
+  if (visibleSegments.length > 0) {
+    return visibleSegments.join(':');
+  }
+
+  return path.basename(path.dirname(filePath)).trim();
 }
 
 /**
@@ -97,21 +178,6 @@ export function parseCommandFile(
     // Parse frontmatter and content
     const { frontmatter, body } = parseFrontmatter(content);
 
-    // Parse allowed-tools field (can be comma-separated string or array)
-    let allowedTools: string[] | undefined;
-    if (frontmatter['allowed-tools']) {
-      if (typeof frontmatter['allowed-tools'] === 'string') {
-        allowedTools = frontmatter['allowed-tools']
-          .split(',')
-          .map(tool => tool.trim())
-          .filter(Boolean);
-      } else if (Array.isArray(frontmatter['allowed-tools'])) {
-        allowedTools = frontmatter['allowed-tools']
-          .map(tool => String(tool).trim())
-          .filter(Boolean);
-      }
-    }
-
     return {
       name: commandName,
       description: frontmatter.description,
@@ -122,7 +188,7 @@ export function parseCommandFile(
       source,
       kind: 'command',
       filePath,
-      allowedTools,
+      allowedTools: normalizeAllowedTools(frontmatter['allowed-tools']),
       content: body.trim()
     };
   } catch (error) {
@@ -132,8 +198,7 @@ export function parseCommandFile(
 }
 
 /**
- * Parse a Claude Code skill file from a `skills/<name>/SKILL.md` directory.
- * Claude exposes user-invocable skills as `/skill-name` entries in its slash menu.
+ * Parse a skill file from a `skills/<name>/SKILL.md` directory.
  */
 export function parseSkillFile(
   filePath: string,
@@ -145,13 +210,7 @@ export function parseSkillFile(
     const { frontmatter, body } = parseFrontmatter(content);
 
     // Prefer explicit skill name from frontmatter, then fall back to the skill directory path.
-    const fallbackName = relativePath
-      ? relativePath
-        .replace(/\/SKILL\.md$/i, '')
-        .replace(/\\/g, '/')
-        .replace(/\//g, ':')
-        .trim()
-      : path.basename(path.dirname(filePath)).trim();
+    const fallbackName = deriveSkillFallbackName(filePath, relativePath);
 
     const rawName = typeof frontmatter.name === 'string' || typeof frontmatter.name === 'number'
       ? String(frontmatter.name).trim()
@@ -162,33 +221,19 @@ export function parseSkillFile(
       return null;
     }
 
-    let allowedTools: string[] | undefined;
-    if (frontmatter['allowed-tools']) {
-      if (typeof frontmatter['allowed-tools'] === 'string') {
-        allowedTools = frontmatter['allowed-tools']
-          .split(',')
-          .map(tool => tool.trim())
-          .filter(Boolean);
-      } else if (Array.isArray(frontmatter['allowed-tools'])) {
-        allowedTools = frontmatter['allowed-tools']
-          .map(tool => String(tool).trim())
-          .filter(Boolean);
-      }
-    }
-
     const userInvocable = frontmatter['user-invocable'] !== false;
 
     return {
       name: rawName,
       description: typeof frontmatter.description === 'string' || typeof frontmatter.description === 'number'
         ? String(frontmatter.description)
-        : undefined,
+        : extractBodyDescription(body),
       argumentHint: normalizeArgumentHint(frontmatter['argument-hint']),
       tools: frontmatter.tools,
       source,
       kind: 'skill',
       filePath,
-      allowedTools,
+      allowedTools: normalizeAllowedTools(frontmatter['allowed-tools']),
       content: body.trim(),
       userInvocable,
     };

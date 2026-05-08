@@ -10,13 +10,16 @@ import { diffTrace } from '@nimbalyst/runtime/utils/debugFlags';
 import type { DocumentBackingStore, ExternalChangeCallback, ExternalChangeInfo } from './types';
 import {
   fileChangedOnDiskAtomFamily,
+  fileDeletedAtomFamily,
   historyPendingTagCreatedAtomFamily,
 } from '../../store/atoms/fileWatch';
 
 export class DiskBackedStore implements DocumentBackingStore {
   private readonly filePath: string;
   private changeCallbacks = new Set<ExternalChangeCallback>();
+  private deletionCallbacks = new Set<() => void>();
   private ipcCleanup: (() => void) | null = null;
+  private deletionCleanup: (() => void) | null = null;
 
   /**
    * Timestamps of recent saves made through this store.
@@ -28,6 +31,7 @@ export class DiskBackedStore implements DocumentBackingStore {
   constructor(filePath: string) {
     this.filePath = filePath;
     this.setupFileWatcher();
+    this.setupDeletionWatcher();
   }
 
   async load(): Promise<string | ArrayBuffer> {
@@ -63,6 +67,13 @@ export class DiskBackedStore implements DocumentBackingStore {
     this.changeCallbacks.add(callback);
     return () => {
       this.changeCallbacks.delete(callback);
+    };
+  }
+
+  onDeletion(callback: () => void): () => void {
+    this.deletionCallbacks.add(callback);
+    return () => {
+      this.deletionCallbacks.delete(callback);
     };
   }
 
@@ -132,12 +143,38 @@ export class DiskBackedStore implements DocumentBackingStore {
   }
 
   /**
+   * Subscribe to per-path file-deleted atom updated by
+   * store/listeners/fileChangeListeners.ts. When a delete is observed,
+   * notify the DocumentModel so it can refuse subsequent saves until a
+   * fresh load re-establishes the baseline.
+   */
+  private setupDeletionWatcher(): void {
+    const deletedAtom = fileDeletedAtomFamily(this.filePath);
+    const initial = store.get(deletedAtom);
+    const unsub = store.sub(deletedAtom, () => {
+      if (store.get(deletedAtom) === initial) return;
+      diffTrace('DiskBackedStore.deletion observed', { path: this.filePath, t: performance.now() });
+      for (const cb of this.deletionCallbacks) {
+        try {
+          cb();
+        } catch (err) {
+          console.error('[DiskBackedStore] Error in deletion callback:', err);
+        }
+      }
+    });
+    this.deletionCleanup = unsub;
+  }
+
+  /**
    * Clean up IPC listeners. Called when the DocumentModel is disposed.
    */
   dispose(): void {
     this.ipcCleanup?.();
     this.ipcCleanup = null;
+    this.deletionCleanup?.();
+    this.deletionCleanup = null;
     this.changeCallbacks.clear();
+    this.deletionCallbacks.clear();
     this.recentSaveTimestamps.clear();
   }
 }

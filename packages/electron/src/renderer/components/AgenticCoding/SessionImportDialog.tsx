@@ -43,6 +43,7 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scopeNotice, setScopeNotice] = useState<string | null>(null);
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -56,12 +57,29 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
   const loadSessions = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setScopeNotice(null);
 
     try {
-      // Pass workspacePath to only scan sessions for current workspace when filtering
-      const result = await window.electronAPI.invoke('claude-code:scan-sessions', {
-        workspacePath: filterByWorkspace ? currentWorkspacePath : undefined
-      });
+      const scanSessions = async (workspacePath?: string) => {
+        return window.electronAPI.invoke('claude-code:scan-sessions', { workspacePath });
+      };
+
+      // Prefer the current workspace for performance, but do not fail closed if
+      // Claude stored the sessions under a sibling worktree, nested package
+      // workspace, or a differently-resolved path.
+      let result = await scanSessions(filterByWorkspace ? currentWorkspacePath : undefined);
+
+      if (
+        filterByWorkspace &&
+        result.success &&
+        Array.isArray(result.sessions) &&
+        result.sessions.length === 0
+      ) {
+        result = await scanSessions();
+        if (result.success && Array.isArray(result.sessions) && result.sessions.length > 0) {
+          setScopeNotice('No sessions matched this exact workspace path. Showing all Claude Agent sessions instead.');
+        }
+      }
 
       if (result.success && Array.isArray(result.sessions)) {
         // Auto-select new and needs-update sessions
@@ -71,8 +89,18 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
         }));
         setSessions(sessionsWithSelection);
 
-        // Auto-expand current workspace
-        setExpandedWorkspaces(new Set([currentWorkspacePath]));
+        const workspacePaths: string[] = Array.from(
+          new Set(
+            sessionsWithSelection.map((session: SessionToImport) => session.workspacePath)
+          )
+        );
+        const initialExpanded = new Set<string>();
+        if (workspacePaths.includes(currentWorkspacePath)) {
+          initialExpanded.add(currentWorkspacePath);
+        } else if (workspacePaths.length > 0) {
+          initialExpanded.add(workspacePaths[0]);
+        }
+        setExpandedWorkspaces(initialExpanded);
       } else {
         setError(result.error || 'Failed to load sessions');
       }
@@ -241,6 +269,12 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
             </div>
+
+            {scopeNotice && (
+              <div className="session-import-scope-notice px-5 py-2.5 border-b border-[var(--nim-border)] bg-[rgba(59,130,246,0.08)] text-[13px] text-[var(--nim-text-muted)]">
+                {scopeNotice}
+              </div>
+            )}
 
             <div className="session-import-dialog-actions flex gap-2 px-5 py-3 border-b border-[var(--nim-border)]">
               <button

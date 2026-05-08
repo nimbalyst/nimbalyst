@@ -54,10 +54,67 @@ export interface BuildSdkOptionsParams {
   isMetaAgent?: boolean;
 }
 
+/**
+ * Controls the lifetime of the prompt AsyncIterable so the SDK keeps the
+ * binary's stdin pipe open for the duration of the turn. Calling end() lets
+ * the generator return, which in turn lets the SDK call transport.endInput()
+ * and close stdin normally.
+ *
+ * We always use an AsyncIterable prompt (never a bare string) so the SDK
+ * sets isSingleUserTurn=false and does NOT preemptively close stdin when
+ * `type: 'result'` arrives -- that forced close is the root cause of the
+ * "Tool permission request failed: Error: Stream closed" errors on turns
+ * where the binary emits a late can_use_tool after result.
+ *
+ * See nimbalyst-local/plans/stream-closed-native-binary-investigation.md
+ * for full root cause and history of the previous reverted attempt.
+ */
+export interface PromptStreamController {
+  end(reason: string): void;
+  isEnded(): boolean;
+}
+
 export interface BuildSdkOptionsResult {
   options: any;
-  promptInput: string | AsyncIterable<SDKUserMessage>;
+  promptInput: AsyncIterable<SDKUserMessage>;
+  promptController: PromptStreamController;
   helperMethod: 'native' | 'custom';
+}
+
+export function createPersistentPromptStream(
+  initialMessage: SDKUserMessage,
+): { iterable: AsyncIterable<SDKUserMessage>; controller: PromptStreamController } {
+  let ended = false;
+  let endResolve: (() => void) | null = null;
+  const endPromise = new Promise<void>((resolve) => {
+    endResolve = () => {
+      ended = true;
+      resolve();
+    };
+  });
+
+  async function* generator(): AsyncGenerator<SDKUserMessage> {
+    yield initialMessage;
+    // Block here so the SDK's streamInput() doesn't finish iterating and
+    // doesn't call transport.endInput() to close the binary's stdin. The
+    // ClaudeCodeProvider arms a grace-period timer on the first `result`
+    // chunk and calls controller.end() to release us; safety nets in
+    // sendMessage's finally block and abort() ensure we always exit.
+    await endPromise;
+  }
+
+  return {
+    iterable: generator(),
+    controller: {
+      end: (reason: string) => {
+        if (!ended && endResolve) {
+          console.log(`[CLAUDE-CODE] PromptStreamController.end(reason="${reason}")`);
+          endResolve();
+        }
+      },
+      isEnded: () => ended,
+    },
+  };
 }
 
 export async function buildSdkOptions(
@@ -207,6 +264,16 @@ export async function buildSdkOptions(
     // ~112K baseline usage on new sessions. `auto:2` (20K on 1M, 4K on 200K)
     // matches the previous lazy-loading behavior we had under Sonnet 4.6.
     ENABLE_TOOL_SEARCH: 'auto:2',
+    // The bundled SDK at assistant.mjs sets CLAUDE_CODE_ENTRYPOINT to "sdk-ts"
+    // when not already set in the environment. Anthropic's backend treats
+    // `cli` traffic as first-party and `sdk-ts` traffic as third-party,
+    // which puts the latter into a deprioritized lane that gets throttled
+    // first under load. Users on Pro/Max OAuth report rate-limit errors when
+    // running Nimbalyst alongside the standalone Claude Code CLI even at low
+    // usage; setting this to `cli` aligns Nimbalyst's classification with
+    // the official CLI and removes that asymmetry. The user can still
+    // override via their own env var if they want the original sdk-ts label.
+    ...(process.env.CLAUDE_CODE_ENTRYPOINT == null && { CLAUDE_CODE_ENTRYPOINT: 'cli' }),
     // Explicitly force-clear in case the SDK overlays its own process.env view.
     // These will be re-set from config.apiKey below if the user has configured one.
     ANTHROPIC_API_KEY: '',
@@ -309,29 +376,27 @@ export async function buildSdkOptions(
     }
   }
 
-  // Build prompt input
-  let promptInput: string | AsyncIterable<SDKUserMessage>;
+  // Build prompt input. Always use a persistent AsyncIterable (never a bare
+  // string) so isSingleUserTurn=false in the SDK -- this prevents the SDK
+  // from closing the binary's stdin pipe on `type: 'result'` and avoids the
+  // "Stream closed" tool permission errors on long turns.
   const hasAttachmentBlocks = imageContentBlocks.length > 0 || documentContentBlocks.length > 0;
+  const userContent: string | ContentBlockParam[] = hasAttachmentBlocks
+    ? [
+        ...imageContentBlocks,
+        ...documentContentBlocks,
+        { type: 'text', text: message } as TextBlockParam,
+      ]
+    : message;
 
-  if (hasAttachmentBlocks) {
-    const contentBlocks: ContentBlockParam[] = [
-      ...imageContentBlocks,
-      ...documentContentBlocks,
-      { type: 'text', text: message } as TextBlockParam
-    ];
+  const initialMessage: SDKUserMessage = {
+    type: 'user',
+    message: { role: 'user', content: userContent as any },
+    parent_tool_use_id: null,
+  };
 
-    async function* createStreamingInput(): AsyncGenerator<SDKUserMessage> {
-      yield {
-        type: 'user',
-        message: { role: 'user', content: contentBlocks },
-        parent_tool_use_id: null
-      };
-    }
+  const { iterable: promptInput, controller: promptController } =
+    createPersistentPromptStream(initialMessage);
 
-    promptInput = createStreamingInput();
-  } else {
-    promptInput = message;
-  }
-
-  return { options, promptInput, helperMethod };
+  return { options, promptInput, promptController, helperMethod };
 }

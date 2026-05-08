@@ -1,6 +1,6 @@
 import { execSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
-import { join, resolve } from 'path';
+import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { isGitAvailable, logEbadfDiagnostic } from '../utils/gitUtils';
 import { getAllFilesInDirectory } from '../utils/fileUtils';
 
@@ -12,6 +12,57 @@ export interface FileGitStatus {
 
 export interface GitStatusResult {
   [filePath: string]: FileGitStatus;
+}
+
+/**
+ * Find the git repository root that owns a file path.
+ *
+ * Walks up from the file's parent directory looking for a `.git` entry
+ * (directory or worktree-link file). Stops at `boundary` so a file outside
+ * the workspace cannot be matched against an unrelated repo somewhere
+ * higher up the filesystem.
+ *
+ * Returns the absolute path of the owning git root, or null if the file
+ * is not inside any git repo within `boundary`. The returned root may be
+ * `boundary` itself (when the workspace IS a git repo) or a nested
+ * subdirectory (workspace contains nested repos but is not itself one).
+ *
+ * Exported for unit testing.
+ */
+export function findGitRootForFile(filePath: string, boundary: string): string | null {
+  const boundaryAbs = resolve(boundary);
+  const fileAbs = isAbsolute(filePath) ? filePath : resolve(boundaryAbs, filePath);
+
+  // The file must live inside the boundary. resolve normalizes separators
+  // so we can compare prefix-wise. Add a separator on the right side to
+  // avoid matching siblings like `/foo/bar2` against boundary `/foo/bar`.
+  const boundaryWithSep = boundaryAbs.endsWith('/') || boundaryAbs.endsWith('\\')
+    ? boundaryAbs
+    : boundaryAbs + (process.platform === 'win32' ? '\\' : '/');
+  if (fileAbs !== boundaryAbs && !fileAbs.startsWith(boundaryWithSep)) {
+    return null;
+  }
+
+  let dir = dirname(fileAbs);
+  // Walk up until we leave the boundary, hit fs root, or find `.git`.
+  while (true) {
+    try {
+      if (existsSync(join(dir, '.git'))) {
+        return dir;
+      }
+    } catch {
+      // ignore - keep walking
+    }
+    if (dir === boundaryAbs) break;
+    const parent = dirname(dir);
+    if (parent === dir) break; // hit filesystem root
+    // If walking up would take us out of the boundary, stop after one
+    // last check at boundary (handled by the `dir === boundaryAbs` break).
+    if (!parent.startsWith(boundaryWithSep) && parent !== boundaryAbs) break;
+    dir = parent;
+  }
+
+  return null;
 }
 
 /**
@@ -41,30 +92,77 @@ export class GitStatusService {
       return this.createEmptyResult(filePaths);
     }
 
-    // Check if this is a git repository
-    if (!this.isGitRepository(workspacePath)) {
-      // Not a git repo, return all as unchanged
+    // Group requested files by their owning git root.
+    // - Files whose owning root is the workspace root (the original case).
+    // - Files inside a nested git repo when the workspace root is not itself
+    //   a git repo, or when the file lives in a sub-repo of a git workspace.
+    // - Files outside any git repo within the workspace bounds.
+    //
+    // This is the core of the nested-repo fix (#122). Without grouping by
+    // owning root, `git status --porcelain` runs against the workspace root
+    // and either returns nothing (workspace not a repo) or returns paths
+    // relative to the wrong root (workspace IS a repo but the file lives in
+    // a nested submodule-style repo with its own .git).
+    const filesByRoot = new Map<string, string[]>();
+    const filesWithoutRoot: string[] = [];
+    for (const filePath of filePaths) {
+      const root = findGitRootForFile(filePath, workspacePath);
+      if (!root) {
+        filesWithoutRoot.push(filePath);
+        continue;
+      }
+      const list = filesByRoot.get(root);
+      if (list) {
+        list.push(filePath);
+      } else {
+        filesByRoot.set(root, [filePath]);
+      }
+    }
+
+    // No git repo anywhere in the picture - preserve old behavior.
+    if (filesByRoot.size === 0) {
       return this.createEmptyResult(filePaths);
     }
 
-    // Check cache
-    const cacheKey = `${workspacePath}:${filePaths.sort().join(',')}`;
+    // Cache key includes every owning root we are about to query, so a
+    // call mixing files from two different nested repos is cached
+    // separately from a call that hits only one of them.
+    const sortedRoots = Array.from(filesByRoot.keys()).sort();
+    const sortedFiles = [...filePaths].sort().join(',');
+    const cacheKey = `${workspacePath}\0${sortedRoots.join('\0')}\0${sortedFiles}`;
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
       return cached.status;
     }
 
-    try {
-      // Get git status for the entire repository using porcelain format
-      const statusOutput = this.executeGitStatus(workspacePath);
+    const result: GitStatusResult = {};
 
-      // Parse status output
-      const statusMap = this.parseGitStatus(statusOutput);
+    for (const [rootPath, rootFiles] of filesByRoot) {
+      let statusMap: Map<string, FileGitStatus>;
+      try {
+        const statusOutput = this.executeGitStatus(rootPath);
+        statusMap = this.parseGitStatus(statusOutput);
+      } catch (error) {
+        logEbadfDiagnostic('GitStatusService', error);
+        console.error('[GitStatusService] Error getting git status for root', rootPath, error);
+        // On error for this root only, treat its files as unchanged. Don't
+        // poison the cache - other roots may still succeed below.
+        for (const fp of rootFiles) {
+          result[fp] = { filePath: fp, status: 'unchanged' };
+        }
+        continue;
+      }
 
-      // Build result for requested files
-      const result: GitStatusResult = {};
-      for (const filePath of filePaths) {
-        const normalizedPath = this.normalizePath(filePath);
+      for (const filePath of rootFiles) {
+        // git status --porcelain prints paths relative to the repo root.
+        // Convert the requested filePath (may be absolute, may be relative
+        // to the workspace) to the same relative-to-root form before
+        // looking it up.
+        const fileAbs = isAbsolute(filePath)
+          ? filePath
+          : resolve(workspacePath, filePath);
+        const relToRoot = relative(rootPath, fileAbs).replace(/\\/g, '/');
+        const normalizedPath = this.normalizePath(relToRoot);
         let status = statusMap.get(normalizedPath);
 
         // If file not found directly, check if it's inside an untracked directory
@@ -88,22 +186,22 @@ export class GitStatusService {
           }
         }
 
-        result[filePath] = status || {
-          filePath,
-          status: 'unchanged'
-        };
+        result[filePath] = status
+          ? { ...status, filePath }
+          : { filePath, status: 'unchanged' };
       }
-
-      // Cache the result
-      this.cache.set(cacheKey, { status: result, timestamp: Date.now() });
-
-      return result;
-    } catch (error) {
-      logEbadfDiagnostic('GitStatusService', error);
-      console.error('[GitStatusService] Error getting git status:', error);
-      // On error, return empty status (treat as unchanged)
-      return this.createEmptyResult(filePaths);
     }
+
+    // Files outside any git root - mirror the old non-git-workspace behavior
+    // by marking them untracked so they still show in the edited-files UI.
+    for (const fp of filesWithoutRoot) {
+      result[fp] = { filePath: fp, status: 'untracked' };
+    }
+
+    // Cache the result
+    this.cache.set(cacheKey, { status: result, timestamp: Date.now() });
+
+    return result;
   }
 
   /**
@@ -705,10 +803,21 @@ export class GitStatusService {
    */
   clearCache(workspacePath?: string): void {
     if (workspacePath) {
-      // Clear cache entries for this workspace
+      // Clear cache entries for this workspace.
+      //
+      // Two key shapes coexist:
+      //   1) `${workspacePath}:uncommitted` and `${workspacePath}\0all-statuses`
+      //      and the legacy `${workspacePath}:${filePaths}` shape used by older
+      //      `getFileStatus` callers.
+      //   2) The new nested-repo `${workspacePath}\0${sortedRoots}\0${files}`
+      //      shape introduced for the multi-root grouping in `getFileStatus`.
+      //
+      // The colon-prefix predicate alone misses the new null-byte keys, so a
+      // git ref-watcher invalidation would leave per-file cache entries stale
+      // for up to the 5 second TTL. Match either separator here.
       const keysToDelete: string[] = [];
       for (const key of this.cache.keys()) {
-        if (key.startsWith(`${workspacePath}:`)) {
+        if (key.startsWith(`${workspacePath}:`) || key.startsWith(`${workspacePath}\0`)) {
           keysToDelete.push(key);
         }
       }

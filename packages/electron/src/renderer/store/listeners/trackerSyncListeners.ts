@@ -33,6 +33,7 @@ import {
   convertFullDocumentToTrackerItems,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { trackerItemToRecord, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
+import { trackerSyncConfigChangeAtom } from '../atoms/trackerSync';
 
 /**
  * Load full-document tracker items from frontmatter metadata.
@@ -114,6 +115,27 @@ export function initTrackerSyncListeners(): () => void {
   const cleanups: Array<() => void> = [];
   let disposed = false;
   let initialScanTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // `tracker-sync:config-changed` is broadcast by the main process whenever a
+  // tracker-sync subscription updates its config (e.g. issueKeyPrefix) -- can
+  // happen on any workspace. Bumped into a request atom so the Settings >
+  // Tracker Config panel can mirror the change without subscribing to IPC
+  // itself. Registered outside the workspace-mode block below because this
+  // event is workspace-tagged in the payload.
+  let configChangeVersion = 0;
+  cleanups.push(
+    window.electronAPI.on(
+      'tracker-sync:config-changed',
+      (data: { workspacePath: string; config: { issueKeyPrefix: string } }) => {
+        if (!data?.workspacePath || !data.config) return;
+        configChangeVersion += 1;
+        store.set(trackerSyncConfigChangeAtom, {
+          version: configChangeVersion,
+          payload: data,
+        });
+      },
+    ),
+  );
 
   // console.log('[trackerSyncListeners] Initializing tracker data listeners');
 

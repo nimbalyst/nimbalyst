@@ -354,7 +354,7 @@ export class PersonalSessionRoom implements DurableObject {
     connState.synced = true;
 
     // Analytics: track session sync activity
-    track(this.env, 'session_sync', [connState.auth.userId, '', metadata?.provider ?? ''], [messages.length]);
+    track(this.env, 'session_sync', [connState.auth.userId, this.state.id.toString(), metadata?.provider ?? ''], [messages.length]);
   }
 
   /**
@@ -409,7 +409,7 @@ export class PersonalSessionRoom implements DurableObject {
     this.setMetadataValue('updated_at', String(Date.now()));
 
     // Analytics: track message appended
-    track(this.env, 'message_append', [connState.auth.userId, storedMessage.id], [storedMessage.encryptedContent.length]);
+    track(this.env, 'message_append', [connState.auth.userId, this.state.id.toString()], [storedMessage.encryptedContent.length]);
 
     // Broadcast to other connections
     this.broadcast(

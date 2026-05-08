@@ -10,6 +10,8 @@ const HEADER_METADATA = 'X-Collab-Asset-Metadata';
 const HEADER_METADATA_IV = 'X-Collab-Asset-Metadata-Iv';
 const HEADER_MIME = 'X-Collab-Asset-Mime-Type';
 const HEADER_PLAINTEXT_SIZE = 'X-Collab-Asset-Plaintext-Size';
+const HEADER_KEY_FINGERPRINT = 'X-Collab-Asset-Key-Fingerprint';
+const HEADER_ROTATED_AT = 'X-Collab-Asset-Rotated-At';
 
 interface StoredAssetMetadata {
   assetId: string;
@@ -21,6 +23,8 @@ interface StoredAssetMetadata {
   metadataIv: string | null;
   createdAt: number;
   updatedAt: number;
+  keyFingerprint?: string | null;
+  rotatedAt?: number | null;
 }
 
 function getDocumentRoomStub(env: Env, orgId: string, documentId: string): DurableObjectStub {
@@ -129,6 +133,8 @@ export async function handleUploadDocumentAsset(
   const metadataIv = request.headers.get(HEADER_METADATA_IV);
   const mimeType = request.headers.get(HEADER_MIME);
   const plaintextSize = parsePositiveInt(request.headers.get(HEADER_PLAINTEXT_SIZE));
+  const keyFingerprint = request.headers.get(HEADER_KEY_FINGERPRINT);
+  const rotatedAt = parsePositiveInt(request.headers.get(HEADER_ROTATED_AT));
 
   if (!iv) {
     return new Response(JSON.stringify({ error: `Missing ${HEADER_IV}` }), { status: 400, headers: jsonHeaders });
@@ -169,6 +175,8 @@ export async function handleUploadDocumentAsset(
           mimeType,
           encryptedMetadata,
           metadataIv,
+          keyFingerprint,
+          rotatedAt,
         }),
       })
     );

@@ -13,6 +13,7 @@
 import type { RawMessage } from '../TranscriptTransformer';
 import { parseCodexEvent, type ParsedCodexToolCall } from '../../providers/codex/codexEventParser';
 import { parseMcpToolName } from '../utils';
+import { buildCodexToolLookupId } from '../../toolLookupIds';
 import type {
   IRawMessageParser,
   ParseContext,
@@ -21,6 +22,15 @@ import type {
 
 export class CodexRawParser implements IRawMessageParser {
   private toolIdCounter = 0;
+  /**
+   * Maps the raw Codex item id (e.g. `item_0`) to the synthetic edit-group ID
+   * minted for the currently in-flight tool call. Cleared on completion so a
+   * later turn that reuses the same item id mints a fresh synthetic ID.
+   *
+   * In-batch only -- cross-batch correlation goes through
+   * ParseContext.findActiveToolCallByRawProviderId.
+   */
+  private inFlightSyntheticIds: Map<string, string> = new Map();
 
   async parseMessage(
     msg: RawMessage,
@@ -168,7 +178,7 @@ export class CodexRawParser implements IRawMessageParser {
         }
 
         if (ce.toolCall) {
-          const toolDescriptors = this.parseCodexToolCall(msg, ce.toolCall, context);
+          const toolDescriptors = await this.parseCodexToolCall(msg, ce.toolCall, context);
           descriptors.push(...toolDescriptors);
         }
 
@@ -222,14 +232,15 @@ export class CodexRawParser implements IRawMessageParser {
   // Tool call handling
   // ---------------------------------------------------------------------------
 
-  private parseCodexToolCall(
+  private async parseCodexToolCall(
     msg: RawMessage,
     tc: ParsedCodexToolCall,
     context: ParseContext,
-  ): CanonicalEventDescriptor[] {
+  ): Promise<CanonicalEventDescriptor[]> {
     const descriptors: CanonicalEventDescriptor[] = [];
     const toolName = tc.name;
-    const toolId = tc.id ?? `codex-tool-${++this.toolIdCounter}`;
+    const rawItemId = tc.id ?? `codex-tool-${++this.toolIdCounter}`;
+    const editGroupId = await this.resolveEditGroupId(msg, rawItemId, context);
     const args = (tc.arguments ?? {}) as Record<string, unknown>;
     const hasResult = tc.result !== undefined && tc.result !== null;
 
@@ -244,27 +255,18 @@ export class CodexRawParser implements IRawMessageParser {
       }
     }
 
-    // If we've already created this tool call, just produce a completion if there's a result
-    if (context.hasToolCall(toolId)) {
-      if (hasResult) {
-        const { resultText, isError } = this.extractCodexToolResult(tc.result);
-        descriptors.push({
-          type: 'tool_call_completed',
-          providerToolCallId: toolId,
-          status: isError ? 'error' : 'completed',
-          result: resultText,
-          isError,
-        });
-      }
-      return descriptors;
-    }
-
     // Determine target file path
     let targetFilePath: string | null = null;
     if (typeof args.file_path === 'string') targetFilePath = args.file_path;
     else if (typeof args.path === 'string') targetFilePath = args.path;
 
-    // Create new tool call
+    // Always emit tool_call_started. processDescriptor is responsible for
+    // deduping against an existing tool call with the same id AND the same
+    // toolName -- not on id alone. Codex resets per-turn item ids, so the
+    // same id ('item_1') routinely refers to a different tool in a later
+    // turn. Short-circuiting on hasToolCall(id) here would silently drop
+    // those later-turn tool calls when reprocessing the full session
+    // (the path mobile clients use).
     descriptors.push({
       type: 'tool_call_started',
       toolName,
@@ -273,7 +275,7 @@ export class CodexRawParser implements IRawMessageParser {
       targetFilePath,
       mcpServer,
       mcpTool,
-      providerToolCallId: toolId,
+      providerToolCallId: editGroupId,
       createdAt: msg.createdAt,
     });
 
@@ -282,14 +284,67 @@ export class CodexRawParser implements IRawMessageParser {
       const { resultText, isError } = this.extractCodexToolResult(tc.result);
       descriptors.push({
         type: 'tool_call_completed',
-        providerToolCallId: toolId,
+        providerToolCallId: editGroupId,
         status: isError ? 'error' : 'completed',
         result: resultText,
         isError,
       });
+      // The tool call is now terminal; allow a future reuse of the same raw
+      // item id (e.g. `item_0` in a later turn) to mint a fresh edit-group ID.
+      this.inFlightSyntheticIds.delete(rawItemId);
     }
 
     return descriptors;
+  }
+
+  /**
+   * Resolve (or mint) the synthetic edit-group ID for a Codex raw item id.
+   *
+   * Order of preference:
+   *   1. `editGroupId` already stamped onto the raw message metadata by the
+   *      provider streaming layer. This is the durable canonical source --
+   *      both started and completed raw messages carry it, so the parser and
+   *      the streaming-time SessionFileTracker call see the same ID.
+   *   2. In-batch in-flight map (started+completed in same transformer run).
+   *   3. Active canonical event already on disk (cross-batch correlation
+   *      where started was written in an earlier batch).
+   *   4. Mint a fresh `nimtc|<encoded>|<msg.createdAt>|<msg.id>` ID.
+   */
+  private async resolveEditGroupId(
+    msg: RawMessage,
+    rawItemId: string,
+    context: ParseContext,
+  ): Promise<string> {
+    const fromMetadata = msg.metadata?.editGroupId;
+    if (typeof fromMetadata === 'string' && fromMetadata.startsWith('nimtc|')) {
+      this.inFlightSyntheticIds.set(rawItemId, fromMetadata);
+      return fromMetadata;
+    }
+
+    const inBatch = this.inFlightSyntheticIds.get(rawItemId);
+    if (inBatch) {
+      return inBatch;
+    }
+
+    try {
+      const existing = await context.findActiveToolCallByRawProviderId(rawItemId);
+      if (existing && typeof existing.providerToolCallId === 'string' && existing.providerToolCallId) {
+        this.inFlightSyntheticIds.set(rawItemId, existing.providerToolCallId);
+        return existing.providerToolCallId;
+      }
+    } catch {
+      // Lookup failures fall through to minting a new ID. The worst case is
+      // an orphaned in-flight tool call event, which the existing dedup logic
+      // already tolerates.
+    }
+
+    const minted = buildCodexToolLookupId(
+      rawItemId,
+      msg.createdAt.getTime(),
+      msg.id,
+    );
+    this.inFlightSyntheticIds.set(rawItemId, minted);
+    return minted;
   }
 
   private extractCodexToolResult(result: unknown): { resultText: string; isError: boolean } {

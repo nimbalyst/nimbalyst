@@ -34,6 +34,15 @@ export interface DocumentBackingStore {
    * Returns an unsubscribe function.
    */
   onExternalChange(callback: ExternalChangeCallback): () => void;
+
+  /**
+   * Subscribe to deletion notifications (file-deleted IPC).
+   * The DocumentModel uses this to flip into a deleted state and refuse
+   * saves until a fresh `loadContent()` re-establishes the baseline.
+   * Optional -- backing stores that don't support deletion (e.g. collab) can
+   * omit it. Returns an unsubscribe function.
+   */
+  onDeletion?(callback: () => void): () => void;
 }
 
 export interface ExternalChangeInfo {

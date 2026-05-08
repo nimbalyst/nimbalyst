@@ -1,4 +1,13 @@
+import * as path from 'path';
+import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel';
 import { getCurrentIdentity } from '../../services/TrackerIdentityService';
+import {
+  deleteWorkspaceTrackerSchema,
+  getAllTrackerSchemas,
+  getTrackerRoleField,
+  isBuiltinTrackerSchema,
+  upsertWorkspaceTrackerSchema,
+} from '../../services/TrackerSchemaService';
 import {
   getEffectiveTrackerSyncPolicy,
   getInitialTrackerSyncStatus,
@@ -6,6 +15,7 @@ import {
 } from '../../services/TrackerPolicyService';
 import { isTrackerSyncActive, syncTrackerItem } from '../../services/TrackerSyncManager';
 import { getWorkspaceState } from '../../utils/store';
+import { getVisibleTrackerLinkedSessions, shouldPersistTrackerLinkedSessions } from '../../../shared/trackerSessionLinks';
 
 type McpToolResult = {
   content: Array<{ type: string; text?: string }>;
@@ -35,6 +45,74 @@ async function resolveTrackerRowByReference(
   );
 
   return result.rows[0] || null;
+}
+
+function buildTrackerSchemaValidationError(
+  toolName: 'tracker_create' | 'tracker_update',
+  type: string,
+  errors: Array<{ field: string; message: string }>,
+): McpToolResult {
+  const summaryLines = [
+    `${toolName} rejected by tracker schema '${type}':`,
+    ...errors.map((error) => `- ${error.field}: ${error.message}`),
+  ];
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          structured: {
+            action: 'validationFailed' as const,
+            tool: toolName,
+            type,
+            errors,
+          },
+          summary: summaryLines.join('\n'),
+        }),
+      },
+    ],
+    isError: true,
+  };
+}
+
+/**
+ * Determine whether a tracker item's body content lives in a Y.Doc rather than
+ * in the PGLite `content` column.
+ *
+ * Why this matters: for team-synced native tracker items, the renderer's
+ * TrackerItemDetail panel mounts a CollabLexicalProvider for
+ * `tracker-content/{itemId}`, and the live Y.Doc becomes the source of truth.
+ * The PGLite `content` column is only a snapshot rewritten on every save from
+ * the Y.Doc state. An MCP write straight into PGLite would be silently
+ * clobbered the next time anyone (or anything) saves the editor, because the
+ * renderer never sees the MCP edit -- it reads from Y.Doc. See NIM-436.
+ *
+ * Conditions for "body is collaborative":
+ *  1. Item is native (no document_path) -- only natives use Y.Doc bodies.
+ *     Inline / frontmatter / file-backed items keep their body in the
+ *     source file and never touch Y.Doc.
+ *  2. Tracker type's sync policy is shared / hybrid.
+ *  3. Tracker sync is active for the workspace -- proxy for "this user has
+ *     a team connected for this workspace". When sync is inactive there is
+ *     no team plumbing in this process and the renderer would also fall
+ *     back to the local-PGLite editor (see TrackerItemDetail.contentMode),
+ *     so direct PGLite writes are safe.
+ */
+function isTrackerItemBodyCollaborative(
+  workspacePath: string | undefined,
+  trackerType: string,
+  source: string | null,
+  documentPath: string | null,
+  modelSyncMode: string | undefined,
+): boolean {
+  if (!workspacePath) return false;
+  // Native = no source file. Inline/frontmatter/import/file items have no Y.Doc body.
+  const isNative = (source === 'native' || source == null) && !documentPath;
+  if (!isNative) return false;
+  const policy = getEffectiveTrackerSyncPolicy(workspacePath, trackerType, modelSyncMode);
+  if (!shouldSyncTrackerPolicy(policy)) return false;
+  return isTrackerSyncActive(workspacePath);
 }
 
 /** Append an activity entry to a tracker item's data.activity array */
@@ -76,18 +154,27 @@ export async function createBidirectionalLink(
   const db = getDatabase();
   let changed = false;
 
-  // 1. Add session to tracker item's linkedSessions
+  // 1. Add session to tracker item's linkedSessions only for local trackers.
   const trackerResult = await db.query<any>(
-    `SELECT data FROM tracker_items WHERE id = $1`,
+    `SELECT workspace, type, sync_status, data FROM tracker_items WHERE id = $1`,
     [trackerId]
   );
   if (trackerResult.rows.length > 0) {
     const row = trackerResult.rows[0];
     const data = typeof row.data === "string" ? JSON.parse(row.data) : row.data || {};
-    const linkedSessions: string[] = data.linkedSessions || [];
-    if (!linkedSessions.includes(sessionId)) {
-      linkedSessions.push(sessionId);
-      data.linkedSessions = linkedSessions;
+    if (shouldPersistTrackerLinkedSessions(row)) {
+      const linkedSessions: string[] = Array.isArray(data.linkedSessions) ? data.linkedSessions : [];
+      if (!linkedSessions.includes(sessionId)) {
+        linkedSessions.push(sessionId);
+        data.linkedSessions = linkedSessions;
+        await db.query(
+          `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
+          [JSON.stringify(data), trackerId]
+        );
+        changed = true;
+      }
+    } else if (data.linkedSessions !== undefined) {
+      delete data.linkedSessions;
       await db.query(
         `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
         [JSON.stringify(data), trackerId]
@@ -109,6 +196,80 @@ export async function createBidirectionalLink(
       await db.query(
         `UPDATE ai_sessions SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb WHERE id = $2`,
         [JSON.stringify({ linkedTrackerItemIds }), sessionId]
+      );
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+/**
+ * Remove a bidirectional link between a tracker item and an AI session.
+ * - Removes sessionId from tracker item's data.linkedSessions[]
+ * - Removes trackerId from session's metadata.linkedTrackerItemIds[]
+ * Returns true if any link was actually removed.
+ */
+export async function removeBidirectionalLink(
+  trackerId: string,
+  sessionId: string,
+): Promise<boolean> {
+  const { getDatabase } = await import("../../database/initialize");
+  const db = getDatabase();
+  let changed = false;
+
+  // 1. Remove session from tracker item's linkedSessions only for local trackers.
+  const trackerResult = await db.query<any>(
+    `SELECT workspace, type, sync_status, data FROM tracker_items WHERE id = $1`,
+    [trackerId]
+  );
+  if (trackerResult.rows.length > 0) {
+    const row = trackerResult.rows[0];
+    const data = typeof row.data === "string" ? JSON.parse(row.data) : row.data || {};
+    if (shouldPersistTrackerLinkedSessions(row)) {
+      const linkedSessions: string[] = Array.isArray(data.linkedSessions) ? data.linkedSessions : [];
+      const nextLinkedSessions = linkedSessions.filter((linkedSessionId) => linkedSessionId !== sessionId);
+      if (nextLinkedSessions.length !== linkedSessions.length) {
+        if (nextLinkedSessions.length > 0) {
+          data.linkedSessions = nextLinkedSessions;
+        } else {
+          delete data.linkedSessions;
+        }
+        await db.query(
+          `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
+          [JSON.stringify(data), trackerId]
+        );
+        changed = true;
+      }
+    } else if (data.linkedSessions !== undefined) {
+      delete data.linkedSessions;
+      await db.query(
+        `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
+        [JSON.stringify(data), trackerId]
+      );
+      changed = true;
+    }
+  }
+
+  // 2. Remove tracker item ID from session's metadata.linkedTrackerItemIds
+  const sessionResult = await db.query<any>(
+    `SELECT metadata FROM ai_sessions WHERE id = $1`,
+    [sessionId]
+  );
+  if (sessionResult.rows.length > 0) {
+    const metadata = sessionResult.rows[0].metadata ?? {};
+    const linkedTrackerItemIds: string[] = Array.isArray(metadata.linkedTrackerItemIds)
+      ? metadata.linkedTrackerItemIds
+      : [];
+    const nextLinkedTrackerItemIds = linkedTrackerItemIds.filter((linkedTrackerId) => linkedTrackerId !== trackerId);
+    if (nextLinkedTrackerItemIds.length !== linkedTrackerItemIds.length) {
+      const nextMetadata =
+        nextLinkedTrackerItemIds.length > 0 ? { linkedTrackerItemIds: nextLinkedTrackerItemIds } : {};
+      await db.query(
+        `UPDATE ai_sessions
+         SET metadata = (COALESCE(metadata, '{}'::jsonb) - 'linkedTrackerItemIds') || $1::jsonb
+         WHERE id = $2`,
+        [JSON.stringify(nextMetadata), sessionId]
       );
       changed = true;
     }
@@ -158,7 +319,10 @@ function rowToTrackerItem(row: any): any {
     assigneeId: data.assigneeId || undefined,
     reporterId: data.reporterId || undefined,
     labels: data.labels || undefined,
-    linkedSessions: data.linkedSessions || undefined,
+    linkedSessions: (() => {
+      const linkedSessions = getVisibleTrackerLinkedSessions(row, data.linkedSessions);
+      return linkedSessions.length > 0 ? linkedSessions : undefined;
+    })(),
     linkedCommitSha: data.linkedCommitSha || undefined,
     linkedCommits: data.linkedCommits || undefined,
     documentId: data.documentId || undefined,
@@ -175,6 +339,34 @@ function rowToTrackerItem(row: any): any {
   }
   if (Object.keys(extra).length > 0) result.customFields = extra;
   return result;
+}
+
+async function countLinkedSessionsFromSessionMetadata(
+  db: { query: <T = any>(sql: string, params?: any[]) => Promise<{ rows: T[] }> },
+  trackerId: string,
+): Promise<number> {
+  const result = await db.query<any>(`SELECT metadata FROM ai_sessions WHERE metadata IS NOT NULL`);
+  let count = 0;
+  for (const row of result.rows) {
+    const metadata =
+      typeof row.metadata === 'string'
+        ? JSON.parse(row.metadata)
+        : row.metadata || {};
+    const linkedTrackerItemIds: string[] = Array.isArray(metadata.linkedTrackerItemIds)
+      ? metadata.linkedTrackerItemIds
+      : [];
+    if (linkedTrackerItemIds.includes(trackerId)) count += 1;
+  }
+  return count;
+}
+
+function buildTrackerSchemaFromArgs(args: any): any {
+  if (args?.schema && typeof args.schema === 'object' && !Array.isArray(args.schema)) {
+    return args.schema;
+  }
+
+  const { fileName: _fileName, ...rest } = args ?? {};
+  return rest;
 }
 
 /**
@@ -313,7 +505,7 @@ export const trackerToolSchemas = [
   {
     name: "tracker_create",
     description:
-      "Create a new tracker item (bug, task, plan, idea, decision, or any custom type).\n\nIMPORTANT: Never set status to 'done' or 'completed'. Use 'in-review' or 'in-progress' instead. Only the user can mark items as done.",
+      "Create a new tracker item (bug, task, plan, idea, decision, or any custom type).\n\nBy default, the new item is NOT linked to the current session. Pass linkSession: true to link it, or call tracker_link_session afterward.\n\nIMPORTANT: Never set status to 'done' or 'completed'. Use 'in-review' or 'in-progress' instead. Only the user can mark items as done.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -390,6 +582,10 @@ export const trackerToolSchemas = [
         fields: {
           type: "object",
           description: "Generic field bag for setting any schema-defined field. Values here override fixed arguments above. Use this for custom fields or when you want to set fields by their schema name.",
+        },
+        linkSession: {
+          type: "boolean",
+          description: "If true, link the current AI session to the newly created item. Defaults to false -- creation does NOT auto-link the session.",
         },
       },
       required: ["type", "title"],
@@ -487,15 +683,94 @@ export const trackerToolSchemas = [
     },
   },
   {
+    name: "tracker_list_types",
+    description:
+      "List available tracker types and their schemas. Returns built-in and custom tracker types unless filtered.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        includeBuiltin: {
+          type: "boolean",
+          description: "Include built-in tracker types (default: true).",
+        },
+        includeCustom: {
+          type: "boolean",
+          description: "Include custom workspace tracker types (default: true).",
+        },
+        search: {
+          type: "string",
+          description: "Optional case-insensitive search over type names and display names.",
+        },
+      },
+    },
+  },
+  {
+    name: "tracker_define_type",
+    description:
+      "Define or update a custom tracker type schema in the current workspace. The schema is persisted to .nimbalyst/trackers and becomes available in the tracker UI and MCP validation.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        schema: {
+          type: "object",
+          description: "Full tracker type schema object to persist.",
+        },
+        fileName: {
+          type: "string",
+          description: "Optional YAML filename to use within .nimbalyst/trackers.",
+        },
+      },
+      required: ["schema"],
+    },
+  },
+  {
+    name: "tracker_delete_type",
+    description:
+      "Delete a custom tracker type schema from the current workspace. Built-in types cannot be deleted.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        type: {
+          type: "string",
+          description: "The tracker type key to delete.",
+        },
+      },
+      required: ["type"],
+    },
+  },
+  {
     name: "tracker_link_session",
     description:
-      "Link the current AI session to a tracker item. This creates a bidirectional reference between the session and the work item.",
+      "Link an AI session to a tracker item. This creates a bidirectional reference between the session and the work item.\n\nBy default the link targets the current AI session. Pass sessionId to link a different session (e.g., a session id surfaced from tracker_get or tracker_list).",
     inputSchema: {
       type: "object" as const,
       properties: {
         trackerId: {
           type: "string",
-          description: "The tracker item ID or issue key to link to this session",
+          description: "The tracker item ID or issue key to link",
+        },
+        sessionId: {
+          type: "string",
+          description: "Optional. The AI session ID to link to the tracker item. Defaults to the current session if omitted.",
+        },
+      },
+      required: ["trackerId"],
+    },
+  },
+  {
+    name: "tracker_unlink_session",
+    description:
+      "Unlink an AI session from a tracker item. This removes the bidirectional reference from both the session and the work item.\n\nBy default the unlink targets the current AI session. Pass sessionId to unlink a different session.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        trackerId: {
+          type: "string",
+          description: "The tracker item ID or issue key to unlink",
+        },
+        sessionId: {
+          type: "string",
+          description: "Optional. The AI session ID to unlink from the tracker item. Defaults to the current session if omitted.",
         },
       },
       required: ["trackerId"],
@@ -577,9 +852,11 @@ export async function handleTrackerList(
     // Resolve role-based field names for filters.
     // When a type is specified, use the schema to find the actual field name.
     // When no type is specified, fall back to conventional names.
-    const resolveFieldForFilter = (role: string, fallback: string): string => {
+    const resolveFieldForFilter = (
+      role: Parameters<typeof getTrackerRoleField>[1],
+      fallback: string,
+    ): string => {
       if (args.type) {
-        const { getTrackerRoleField } = require('../../services/TrackerSchemaService');
         return getTrackerRoleField(args.type, role) ?? fallback;
       }
       return fallback;
@@ -743,6 +1020,219 @@ export async function handleTrackerList(
   }
 }
 
+export async function handleTrackerListTypes(
+  args: any,
+): Promise<McpToolResult> {
+  try {
+    const includeBuiltin = args?.includeBuiltin !== false;
+    const includeCustom = args?.includeCustom !== false;
+    const search = typeof args?.search === 'string' ? args.search.trim().toLowerCase() : '';
+
+    const items = getAllTrackerSchemas()
+      .filter((model) => {
+        const builtin = isBuiltinTrackerSchema(model.type);
+        if (builtin && !includeBuiltin) return false;
+        if (!builtin && !includeCustom) return false;
+        if (!search) return true;
+        return model.type.toLowerCase().includes(search)
+          || model.displayName.toLowerCase().includes(search)
+          || model.displayNamePlural.toLowerCase().includes(search);
+      })
+      .sort((a, b) => a.type.localeCompare(b.type));
+
+    const structured = {
+      action: "listed-types" as const,
+      count: items.length,
+      items: items.map((model) => ({
+        ...model,
+        builtin: isBuiltinTrackerSchema(model.type),
+      })),
+    };
+
+    const summary = items.length > 0
+      ? items.map((model) => {
+          const builtin = isBuiltinTrackerSchema(model.type) ? 'builtin' : 'custom';
+          return `- ${model.type} (${builtin}, ${model.fields.length} fields)`;
+        }).join('\n')
+      : 'No tracker types found matching the filters.';
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            structured,
+            summary,
+          }),
+        },
+      ],
+      isError: false,
+    };
+  } catch (error) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error listing tracker types: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
+export async function handleTrackerDefineType(
+  args: any,
+  workspacePath: string | undefined,
+): Promise<McpToolResult> {
+  try {
+    if (!workspacePath) {
+      return {
+        content: [{ type: "text", text: "Error: No workspace path available. Cannot define tracker type." }],
+        isError: true,
+      };
+    }
+
+    const schema = buildTrackerSchemaFromArgs(args);
+    if (typeof schema.type === 'string' && isBuiltinTrackerSchema(schema.type)) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Cannot redefine built-in tracker type '${schema.type}'. Use a new custom type instead.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    const { model, filePath } = await upsertWorkspaceTrackerSchema(workspacePath, schema, {
+      fileName: args?.fileName,
+    });
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            structured: {
+              action: "defined-type" as const,
+              type: model.type,
+              model,
+              fileName: path.basename(filePath),
+            },
+            summary: `Defined tracker type '${model.type}' in .nimbalyst/trackers/${path.basename(filePath)}.`,
+          }),
+        },
+      ],
+      isError: false,
+    };
+  } catch (error) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error defining tracker type: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
+export async function handleTrackerDeleteType(
+  args: any,
+  workspacePath: string | undefined,
+): Promise<McpToolResult> {
+  try {
+    if (!workspacePath) {
+      return {
+        content: [{ type: "text", text: "Error: No workspace path available. Cannot delete tracker type." }],
+        isError: true,
+      };
+    }
+
+    if (typeof args.type !== 'string' || args.type.trim().length === 0) {
+      return {
+        content: [{ type: "text", text: "Error: tracker_delete_type requires a tracker type." }],
+        isError: true,
+      };
+    }
+
+    if (isBuiltinTrackerSchema(args.type)) {
+      return {
+        content: [{ type: "text", text: `Cannot delete built-in tracker type '${args.type}'.` }],
+        isError: true,
+      };
+    }
+
+    const { getDatabase } = await import("../../database/initialize");
+    const db = getDatabase();
+    const usage = await db.query<{ count: number | string }>(
+      `SELECT COUNT(*)::int AS count
+       FROM tracker_items
+       WHERE workspace = $1
+         AND (type = $2 OR $2 = ANY(type_tags))`,
+      [workspacePath, args.type]
+    );
+    const count = Number(usage.rows[0]?.count ?? 0);
+    if (count > 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Cannot delete tracker type '${args.type}': ${count} tracker item` +
+              `${count === 1 ? '' : 's'} still reference this type.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const result = await deleteWorkspaceTrackerSchema(workspacePath, args.type);
+    if (!result.deleted) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Custom tracker schema not found for type '${args.type}'.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            structured: {
+              action: "deleted-type" as const,
+              type: args.type,
+              fileName: result.filePath ? path.basename(result.filePath) : undefined,
+            },
+            summary:
+              `Deleted tracker type '${args.type}' from .nimbalyst/trackers/` +
+              `${result.filePath ? path.basename(result.filePath) : ''}.`,
+          }),
+        },
+      ],
+      isError: false,
+    };
+  } catch (error) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error deleting tracker type: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
 export async function handleTrackerGet(
   args: any,
   workspacePath?: string,
@@ -884,7 +1374,6 @@ export async function handleTrackerCreate(
     }
 
     // Check if this type allows creation
-    const { globalRegistry } = await import("@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel");
     const model = globalRegistry.get(args.type);
     if (model && model.creatable === false) {
       return {
@@ -912,13 +1401,15 @@ export async function handleTrackerCreate(
     // (title, status, priority, etc.) are placed at the correct field name
     // for the target schema. E.g., a schema with roles: { title: 'name' }
     // will store args.title in data.name.
-    const { getTrackerRoleField } = await import('../../services/TrackerSchemaService');
     const rf = (role: string, fallback: string) => getTrackerRoleField(args.type, role as any) ?? fallback;
+    const titleField = rf('title', 'title');
+    const statusField = rf('workflowStatus', 'status');
+    const priorityField = rf('priority', 'priority');
 
     const data: Record<string, any> = {
-      [rf('title', 'title')]: args.title,
-      [rf('workflowStatus', 'status')]: args.status || "to-do",
-      [rf('priority', 'priority')]: args.priority || "medium",
+      [titleField]: args.title,
+      [statusField]: args.status || "to-do",
+      [priorityField]: args.priority || "medium",
       created: new Date().toISOString().split("T")[0],
       authorIdentity,
       createdByAgent: true,
@@ -945,6 +1436,11 @@ export async function handleTrackerCreate(
           data[key] = value;
         }
       }
+    }
+
+    const validationResult = globalRegistry.validate(args.type, data);
+    if (!validationResult.valid) {
+      return buildTrackerSchemaValidationError('tracker_create', args.type, validationResult.errors);
     }
 
     // Record creation activity
@@ -1016,10 +1512,13 @@ export async function handleTrackerCreate(
       }
     }
 
-    // Auto-link session to the newly created tracker item
-    if (sessionId) {
+    // Link the current session only when explicitly requested.
+    // Why: auto-linking on every create polluted sessions with unrelated tracker
+    // items (the agent often creates a tracker item as a side effect, not as the
+    // session's subject). Linking is now opt-in via args.linkSession; agents that
+    // really do want a link can pass linkSession: true or call tracker_link_session.
+    if (sessionId && args.linkSession === true) {
       await createBidirectionalLink(id, sessionId);
-      // Notify session linked tracker changed
       const sessionResult = await db.query<any>(
         `SELECT metadata FROM ai_sessions WHERE id = $1`,
         [sessionId]
@@ -1039,9 +1538,9 @@ export async function handleTrackerCreate(
         issueKey: createdItem?.issueKey,
         type: args.type,
         typeTags,
-        title: args.title,
-        status: data.status,
-        priority: data.priority,
+        title: data[titleField],
+        status: data[statusField],
+        priority: data[priorityField],
         tags: data.tags || [],
       },
     };
@@ -1052,7 +1551,7 @@ export async function handleTrackerCreate(
           type: "text",
           text: JSON.stringify({
             structured,
-            summary: `Created tracker item:\n- **Type**: ${args.type}\n- **Title**: ${args.title}\n- **Status**: ${data.status}\n- **Ref**: ${getTrackerDisplayRef(createdItem || { id })}\n- **ID**: ${id}`,
+            summary: `Created tracker item:\n- **Type**: ${args.type}\n- **Title**: ${data[titleField]}\n- **Status**: ${data[statusField]}\n- **Ref**: ${getTrackerDisplayRef(createdItem || { id })}\n- **ID**: ${id}`,
           }),
         },
       ],
@@ -1104,8 +1603,36 @@ export async function handleTrackerUpdate(
     // getCurrentIdentity imported statically at top of file
     data.lastModifiedBy = getCurrentIdentity(workspacePath);
 
+    // For collaborative tracker items the rich body lives in a Yjs document
+    // (`tracker-content/{itemId}` collab room), not in PGLite. Writing the
+    // description straight into PGLite would silently lose the edit when the
+    // renderer's next debounced save serialises the unchanged Y.Doc back over
+    // it (NIM-436). Refuse the description write and surface a structured
+    // skip so the caller can decide what to do (e.g., post a comment, or ask
+    // the user to make the body edit interactively). All other field updates
+    // (status, priority, etc.) still flow through normally because they sync
+    // via the tracker JSONB / field-level LWW path, not Y.Doc.
+    const itemModel = globalRegistry.get(row.type);
+    const bodyIsCollab = isTrackerItemBodyCollaborative(
+      workspacePath,
+      row.type,
+      row.source ?? null,
+      row.document_path ?? null,
+      itemModel?.sync?.mode,
+    );
+    let descriptionSkipped: { reason: string } | null = null;
+    if (bodyIsCollab && args.description !== undefined) {
+      descriptionSkipped = {
+        reason:
+          "This tracker item's body lives in a collaborative Y.Doc, not the local database. " +
+          "Writing the description through MCP would be silently overwritten by the next " +
+          "renderer save. Skip-applied; use tracker_add_comment, or have the user edit the " +
+          "body in the tracker detail panel instead.",
+      };
+      delete args.description;
+    }
+
     // Resolve role-based field names for the item's type
-    const { getTrackerRoleField } = await import('../../services/TrackerSchemaService');
     const rf = (role: string, fallback: string) => getTrackerRoleField(row.type, role as any) ?? fallback;
 
     // Map fixed MCP args to role-resolved field names, then merge into data
@@ -1163,13 +1690,29 @@ export async function handleTrackerUpdate(
     // Merge generic fields bag (overrides role-resolved args above)
     if (args.fields && typeof args.fields === 'object') {
       for (const [key, value] of Object.entries(args.fields)) {
-        if (value !== undefined) {
-          const oldVal = data[key];
-          if (oldVal !== value) {
-            changes[key] = { from: oldVal, to: value };
+        if (value === undefined) continue;
+        // Same Y.Doc-vs-PGLite hazard as args.description above: a generic
+        // `fields.description` write on a collab item would create a divergent
+        // JSONB snapshot that the renderer never picks up. Skip it here so
+        // there is no path -- explicit arg or generic bag -- that bypasses
+        // the collab body authority.
+        if (bodyIsCollab && key === 'description') {
+          if (!descriptionSkipped) {
+            descriptionSkipped = {
+              reason:
+                "This tracker item's body lives in a collaborative Y.Doc, not the local database. " +
+                "Writing the description through MCP would be silently overwritten by the next " +
+                "renderer save. Skip-applied; use tracker_add_comment, or have the user edit the " +
+                "body in the tracker detail panel instead.",
+            };
           }
-          data[key] = value;
+          continue;
         }
+        const oldVal = data[key];
+        if (oldVal !== value) {
+          changes[key] = { from: oldVal, to: value };
+        }
+        data[key] = value;
       }
     }
 
@@ -1181,6 +1724,11 @@ export async function handleTrackerUpdate(
           delete data[key];
         }
       }
+    }
+
+    const validationResult = globalRegistry.validate(row.type, data);
+    if (!validationResult.valid) {
+      return buildTrackerSchemaValidationError('tracker_update', row.type, validationResult.errors);
     }
 
     // Record activity for each changed field
@@ -1263,8 +1811,7 @@ export async function handleTrackerUpdate(
     const refreshedRow = await resolveTrackerRowByReference(db, row.id, workspacePath);
     const effectiveWorkspacePath = refreshedRow?.workspace || workspacePath;
     if (refreshedRow && effectiveWorkspacePath) {
-      const { globalRegistry: reg } = await import("@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel");
-      const updateModel = reg.get(refreshedRow.type);
+      const updateModel = globalRegistry.get(refreshedRow.type);
       const syncPolicy = getEffectiveTrackerSyncPolicy(effectiveWorkspacePath, refreshedRow.type, updateModel?.sync?.mode);
       if (shouldSyncTrackerPolicy(syncPolicy)) {
         if (isTrackerSyncActive(effectiveWorkspacePath)) {
@@ -1299,16 +1846,27 @@ export async function handleTrackerUpdate(
       ? updatedRow.rows[0].type_tags
       : [row.type];
 
-    const structured = {
+    const structured: Record<string, any> = {
       action: "updated" as const,
       id: row.id,
       issueNumber: postSyncRow?.issue_number ?? refreshedRow?.issue_number ?? row.issue_number ?? undefined,
       issueKey: postSyncRow?.issue_key ?? refreshedRow?.issue_key ?? row.issue_key ?? undefined,
       type: row.type,
       typeTags: currentTypeTags,
-      title: data.title,
+      title: data[rf('title', 'title')],
       changes,
     };
+    if (descriptionSkipped) {
+      structured.skippedFields = { description: descriptionSkipped.reason };
+    }
+
+    const summaryLines = [
+      `Updated tracker item ${getTrackerDisplayRef({ id: row.id, issueKey: postSyncRow?.issue_key ?? refreshedRow?.issue_key ?? row.issue_key ?? undefined })}:`,
+      ...updateSummaryParts,
+    ];
+    if (descriptionSkipped) {
+      summaryLines.push(`- **Description**: NOT applied -- ${descriptionSkipped.reason}`);
+    }
 
     return {
       content: [
@@ -1316,7 +1874,7 @@ export async function handleTrackerUpdate(
           type: "text",
           text: JSON.stringify({
             structured,
-            summary: `Updated tracker item ${getTrackerDisplayRef({ id: row.id, issueKey: postSyncRow?.issue_key ?? refreshedRow?.issue_key ?? row.issue_key ?? undefined })}:\n${updateSummaryParts.join("\n")}`,
+            summary: summaryLines.join("\n"),
           }),
         },
       ],
@@ -1342,12 +1900,22 @@ export async function handleTrackerLinkSession(
   workspacePath: string | undefined
 ): Promise<McpToolResult> {
   try {
-    if (!sessionId) {
+    // Prefer an explicit target sessionId from the caller; fall back to the
+    // ambient AI session this tool is being invoked from.
+    // Why: agents often need to link a tracker item to a session other than
+    // the current one (e.g., a session surfaced by tracker_get). The IPC layer
+    // already supports this; the MCP tool needs to expose it.
+    const targetSessionId =
+      typeof args.sessionId === "string" && args.sessionId.length > 0
+        ? args.sessionId
+        : sessionId;
+
+    if (!targetSessionId) {
       return {
         content: [
           {
             type: "text",
-            text: "Error: No session ID available. This tool is only available during an active AI session.",
+            text: "Error: No session ID available. Pass sessionId or invoke this tool during an active AI session.",
           },
         ],
         isError: true,
@@ -1371,8 +1939,28 @@ export async function handleTrackerLinkSession(
       };
     }
 
+    // When the caller specified an explicit sessionId, verify it exists so we
+    // fail loudly instead of silently no-op'ing the session-side write.
+    if (typeof args.sessionId === "string" && args.sessionId.length > 0) {
+      const sessionExists = await db.query<any>(
+        `SELECT 1 FROM ai_sessions WHERE id = $1`,
+        [targetSessionId]
+      );
+      if (sessionExists.rows.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Session not found: ${targetSessionId}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+
     // Create bidirectional link
-    await createBidirectionalLink(existing.id, sessionId);
+    await createBidirectionalLink(existing.id, targetSessionId);
 
     // Get updated counts for the response
     const trackerResult = await db.query<any>(
@@ -1388,10 +1976,10 @@ export async function handleTrackerLinkSession(
     await notifyTrackerItemUpdated(workspacePath, existing.id);
     const sessionResult = await db.query<any>(
       `SELECT metadata FROM ai_sessions WHERE id = $1`,
-      [sessionId]
+      [targetSessionId]
     );
     const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
-    await notifySessionLinkedTrackerChanged(sessionId, linkedIds);
+    await notifySessionLinkedTrackerChanged(targetSessionId, linkedIds);
 
     const structured = {
       action: "linked" as const,
@@ -1401,6 +1989,7 @@ export async function handleTrackerLinkSession(
       type: existing.type || "",
       title: trackerData.title || "",
       linkedCount: linkedSessions.length,
+      sessionId: targetSessionId,
     };
 
     return {
@@ -1409,7 +1998,7 @@ export async function handleTrackerLinkSession(
           type: "text",
           text: JSON.stringify({
             structured,
-            summary: `Linked session ${sessionId} to tracker item ${getTrackerDisplayRef({ id: existing.id, issueKey: existing.issue_key ?? undefined })}. Total linked sessions: ${linkedSessions.length}`,
+            summary: `Linked session ${targetSessionId} to tracker item ${getTrackerDisplayRef({ id: existing.id, issueKey: existing.issue_key ?? undefined })}. Total linked sessions: ${linkedSessions.length}`,
           }),
         },
       ],
@@ -1425,6 +2014,112 @@ export async function handleTrackerLinkSession(
         {
           type: "text",
           text: `Error linking session: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
+export async function handleTrackerUnlinkSession(
+  args: any,
+  sessionId: string | undefined,
+  workspacePath: string | undefined
+): Promise<McpToolResult> {
+  try {
+    const targetSessionId =
+      typeof args.sessionId === "string" && args.sessionId.length > 0
+        ? args.sessionId
+        : sessionId;
+
+    if (!targetSessionId) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Error: No session ID available. Pass sessionId or invoke this tool during an active AI session.",
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const { getDatabase } = await import("../../database/initialize");
+    const db = getDatabase();
+
+    const existing = await resolveTrackerRowByReference(db, args.trackerId, workspacePath);
+    if (!existing) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Tracker item not found: ${args.trackerId}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const removed = await removeBidirectionalLink(existing.id, targetSessionId);
+
+    const trackerResult = await db.query<any>(
+      `SELECT data FROM tracker_items WHERE id = $1`,
+      [existing.id]
+    );
+    const trackerData = typeof trackerResult.rows[0]?.data === "string"
+      ? JSON.parse(trackerResult.rows[0].data)
+      : trackerResult.rows[0]?.data || {};
+    const linkedSessions: string[] = trackerData.linkedSessions || [];
+
+    await notifyTrackerItemUpdated(workspacePath, existing.id);
+    const sessionResult = await db.query<any>(
+      `SELECT metadata FROM ai_sessions WHERE id = $1`,
+      [targetSessionId]
+    );
+    if (sessionResult.rows.length > 0) {
+      const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
+      await notifySessionLinkedTrackerChanged(targetSessionId, linkedIds);
+    }
+
+    const structured = {
+      action: "unlinked" as const,
+      trackerId: existing.id,
+      issueNumber: existing.issue_number ?? undefined,
+      issueKey: existing.issue_key ?? undefined,
+      type: existing.type || "",
+      title: trackerData.title || "",
+      linkedCount: linkedSessions.length,
+      sessionId: targetSessionId,
+      removed,
+    };
+
+    const displayRef = getTrackerDisplayRef({ id: existing.id, issueKey: existing.issue_key ?? undefined });
+    const summary = removed
+      ? `Unlinked session ${targetSessionId} from tracker item ${displayRef}. Total linked sessions: ${linkedSessions.length}`
+      : `Session ${targetSessionId} was not linked to tracker item ${displayRef}. Total linked sessions: ${linkedSessions.length}`;
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            structured,
+            summary,
+          }),
+        },
+      ],
+      isError: false,
+    };
+  } catch (error) {
+    console.error(
+      "[MCP Server] tracker_unlink_session failed:",
+      error
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error unlinking session: ${error instanceof Error ? error.message : String(error)}`,
         },
       ],
       isError: true,

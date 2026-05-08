@@ -16,7 +16,7 @@ const { writeFile, mkdir, rename, unlink, rmdir, copyFile, readFile, rm, stat, c
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
-import { windowStates, getWindowId, createWindow, recentlyDeletedFiles } from '../window/WindowManager';
+import { windowStates, getWindowId, createWindow, markRecentlyDeleted, clearRecentlyDeleted } from '../window/WindowManager';
 import { startFileWatcher, stopFileWatcher } from '../file/FileWatcher';
 import { getFolderContents } from '../utils/FileTree';
 import { RIPGREP_EXCLUDE_ARGS_ARRAY, QUICKOPEN_FILE_TYPE_ARGS } from '../utils/fileFilters';
@@ -103,6 +103,8 @@ const BINARY_EXTENSIONS = new Set([
     '.node', '.wasm',
 ]);
 
+const NIMBALYST_LOCAL_DIRNAME = 'nimbalyst-local';
+
 // Get the ripgrep binary path for the current platform.
 // Resolves the rg bundled by the @vscode/ripgrep package at
 // node_modules/@vscode/ripgrep/bin/rg(.exe).
@@ -158,17 +160,14 @@ function getRipgrepPath(): string {
     return 'rg';
 }
 
-// Cross-platform file finder using ripgrep --files
-// Finds all files and filters out binary extensions
-async function findWorkspaceFiles(dir: string): Promise<string[]> {
+async function runRipgrepFiles(rootPath: string, options?: { noIgnore?: boolean }): Promise<string[]> {
     const rgPath = getRipgrepPath();
-
-    // Find ALL files, only exclude directories (no file type filtering)
     const rgArgs = [
         '--files',
         '--hidden',  // Include dotfiles like .gitignore
+        ...(options?.noIgnore ? ['--no-ignore'] : []),
         ...RIPGREP_EXCLUDE_ARGS_ARRAY,
-        dir
+        rootPath
     ];
 
     let stdout = '';
@@ -189,7 +188,20 @@ async function findWorkspaceFiles(dir: string): Promise<string[]> {
     return stdout
         .split('\n')
         .filter(line => line.trim())
-        .map(file => path.normalize(file))
+        .map(file => path.normalize(file));
+}
+
+// Cross-platform file finder using ripgrep --files.
+// Respects .gitignore for the general workspace scan, but explicitly includes
+// nimbalyst-local/ so local plan files remain mentionable in @ typeahead.
+async function findWorkspaceFiles(dir: string): Promise<string[]> {
+    const baseFiles = await runRipgrepFiles(dir);
+    const nimbalystLocalPath = path.join(dir, NIMBALYST_LOCAL_DIRNAME);
+    const extraFiles = existsSync(nimbalystLocalPath)
+      ? await runRipgrepFiles(nimbalystLocalPath, { noIgnore: true })
+      : [];
+
+    return Array.from(new Set([...baseFiles, ...extraFiles]))
         .filter(file => {
             // Filter out binary files by extension
             const ext = path.extname(file).toLowerCase();
@@ -696,9 +708,11 @@ export function registerWorkspaceHandlers() {
 
             await rename(oldPath, newPath);
 
-            // Prevent autosave from recreating the file at the old path
-            recentlyDeletedFiles.add(oldPath);
-            setTimeout(() => recentlyDeletedFiles.delete(oldPath), 10000);
+            // Prevent autosave from recreating the file at the old path.
+            // Lifecycle-bound: cleared via editor:released-deleted-path IPC
+            // when no editor still holds the path AND a fresh load has been
+            // observed. A 5-minute absolute fallback runs in WindowManager.
+            markRecentlyDeleted(oldPath);
 
             // Update windows that have this file open
             for (const [windowId, state] of windowStates) {
@@ -756,9 +770,11 @@ export function registerWorkspaceHandlers() {
             await shell.trashItem(filePath);
 
             if (!isDirectory) {
-                // Prevent autosave from recreating the file (race condition with in-flight save timers)
-                recentlyDeletedFiles.add(filePath);
-                setTimeout(() => recentlyDeletedFiles.delete(filePath), 10000);
+                // Prevent autosave from recreating the file. Lifecycle-bound:
+                // cleared via editor:released-deleted-path IPC when no editor
+                // still holds the path AND a fresh load has been observed.
+                // A 5-minute absolute fallback runs in WindowManager.
+                markRecentlyDeleted(filePath);
 
                 // Remove from file index if it had a syncId
                 if (deletedSyncId) {
@@ -798,6 +814,15 @@ export function registerWorkspaceHandlers() {
         }
     });
 
+    // Renderer signals that an editor has fully released a previously-deleted
+    // path AND observed a fresh `loadContent()` (so the path is "live" again).
+    // We can safely drop the recentlyDeleted entry.
+    safeOn('editor:released-deleted-path', (_event, filePath: string) => {
+        if (typeof filePath === 'string' && filePath.length > 0) {
+            clearRecentlyDeleted(filePath);
+        }
+    });
+
     // Move file/folder
     safeHandle('move-file', async (event, sourcePath: string, targetPath: string) => {
 
@@ -832,10 +857,10 @@ export function registerWorkspaceHandlers() {
             // Perform the move
             await rename(sourcePath, destinationPath);
 
-            // Prevent autosave from recreating the file at the old path
+            // Prevent autosave from recreating the file at the old path.
+            // Lifecycle-bound; see comment above markRecentlyDeleted.
             if (!sourceStats.isDirectory()) {
-                recentlyDeletedFiles.add(sourcePath);
-                setTimeout(() => recentlyDeletedFiles.delete(sourcePath), 10000);
+                markRecentlyDeleted(sourcePath);
             }
 
             // Update windows that have this file open - AFTER the move

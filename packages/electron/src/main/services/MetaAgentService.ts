@@ -8,6 +8,7 @@ import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { AISessionsRepository, AgentMessagesRepository, SessionFilesRepository } from '@nimbalyst/runtime';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { getDefaultAIModel } from '../utils/store';
+import { toMillis } from '../utils/timestampUtils';
 import { createWorktreeStore } from './WorktreeStore';
 import { GitWorktreeService } from './GitWorktreeService';
 import { database as databaseWorker } from '../database/PGLiteDatabaseWorker';
@@ -19,6 +20,8 @@ import {
   setMetaAgentToolFns,
   shutdownMetaAgentServer,
 } from '../mcp/metaAgentServer';
+import { computeNotificationSignature } from './metaAgentNotificationSignature';
+import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -89,7 +92,6 @@ export class MetaAgentService {
   private sessionManager: SessionManager | null = null;
   private unsubscribeStateListener: (() => void) | null = null;
   private notificationSignatures = new Map<string, string>();
-  private notificationCounter = 0;
   private ipcHandlersRegistered = false;
 
   private constructor() {}
@@ -167,6 +169,14 @@ export class MetaAgentService {
       OpenAICodexACPProvider.setMetaAgentServerPort(result.port);
 
       this.unsubscribeStateListener = getSessionStateManager().subscribe((event) => {
+        // NIM-6 follow-up: dedup signatures only describe one turn; clear them
+        // when a child becomes active again so two distinct turns whose final
+        // text happens to match (e.g. "done", "ok") still each notify the
+        // parent.
+        if (event.type === 'session:started' || event.type === 'session:streaming') {
+          this.notificationSignatures.delete(event.sessionId);
+          return;
+        }
         if (event.type === 'session:completed' || event.type === 'session:error' || event.type === 'session:waiting' || event.type === 'session:interrupted') {
           void this.handleChildSessionEvent(event.sessionId, event.type);
         }
@@ -191,7 +201,6 @@ export class MetaAgentService {
     this.unsubscribeStateListener?.();
     this.unsubscribeStateListener = null;
     this.notificationSignatures.clear();
-    this.notificationCounter = 0;
     await shutdownMetaAgentServer();
     ClaudeCodeProvider.setMetaAgentServerPort(null);
     OpenAICodexProvider.setMetaAgentServerPort(null);
@@ -532,8 +541,8 @@ export class MetaAgentService {
       sessionId: row.id,
       title: row.title || 'Untitled Session',
       status,
-      lastActivity: row.last_activity ? new Date(row.last_activity).getTime() : null,
-      updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : null,
+      lastActivity: toMillis(row.last_activity),
+      updatedAt: toMillis(row.updated_at),
       provider: row.provider,
       model: row.model || null,
       createdBySessionId: row.created_by_session_id || null,
@@ -657,9 +666,9 @@ export class MetaAgentService {
         provider: row.provider,
         model: row.model || null,
         status: row.status || 'idle',
-        lastActivity: row.last_activity ? new Date(row.last_activity).getTime() : null,
-        createdAt: row.created_at instanceof Date ? row.created_at.getTime() : new Date(row.created_at).getTime(),
-        updatedAt: row.updated_at instanceof Date ? row.updated_at.getTime() : new Date(row.updated_at).getTime(),
+        lastActivity: toMillis(row.last_activity),
+        createdAt: toMillis(row.created_at)!,
+        updatedAt: toMillis(row.updated_at)!,
         worktreeId: row.worktree_id || null,
       });
       sessions.push({
@@ -706,12 +715,47 @@ export class MetaAgentService {
         return;
       }
 
+      // NIM-6: session:completed fires on every turn idle, not only on terminal
+      // completion. If the child still has more prompts queued AFTER the one
+      // that just finished, this idle is a between-turn pause -- another
+      // session:completed will follow once the queue drains. Suppress it; the
+      // parent will be notified on the genuinely terminal idle (queue empty).
+      //
+      // The just-finished prompt is still in `executing` status at the moment
+      // session:completed fires (MessageStreamingHandler marks it `completed`
+      // only after endSession returns). So we count only `pending` rows --
+      // counting `executing` would include the current turn itself and
+      // suppress every notification, including the final terminal one.
+      //
+      // The other event types (error/waiting/interrupted) are always
+      // meaningful and pass through.
+      if (eventType === 'session:completed') {
+        const { rows: pendingRows } = await databaseWorker.query<{ count: string }>(
+          `SELECT COUNT(*)::text AS count FROM queued_prompts
+           WHERE session_id = $1 AND status = 'pending'`,
+          [sessionId]
+        );
+        const pendingCount = Number(pendingRows[0]?.count ?? '0');
+        if (pendingCount > 0) {
+          return;
+        }
+      }
+
       const metaStatusRow = await this.getSessionStatusRow(metaSession.id, metaSession.workspacePath);
       const metaStatus = (metaStatusRow?.status || 'idle') as SessionStatusValue;
 
       const result = await this.buildSessionResultData(sessionId, session.workspacePath);
-      this.notificationCounter += 1;
-      const signature = `${eventType}:${result.status}:${result.lastActivity || 0}:${result.pendingPrompt?.promptId || ''}:${this.notificationCounter}`;
+
+      // NIM-6: real dedup gate. Drop notifications whose semantic content is
+      // identical to the last one delivered for this child. The previous code
+      // mixed in an always-incrementing counter, which made every signature
+      // unique and the dedup useless. The signature is reset on
+      // session:started/session:streaming (see start()), so it only collapses
+      // duplicates within a single child turn -- not across turns.
+      const signature = computeNotificationSignature(eventType, result);
+      if (this.notificationSignatures.get(sessionId) === signature) {
+        return;
+      }
       this.notificationSignatures.set(sessionId, signature);
 
       if (result.pendingPrompt?.promptType === 'exit_plan_mode_request') {
@@ -832,14 +876,14 @@ export class MetaAgentService {
       sessionProvider = session.provider;
       sessionModel = session.model || null;
       sessionStatus = (statusRow?.status || 'idle') as SessionStatusValue;
-      sessionLastActivity = statusRow?.last_activity ? new Date(statusRow.last_activity).getTime() : null;
+      sessionLastActivity = toMillis(statusRow?.last_activity);
       sessionCreatedAt = session.createdAt;
       sessionUpdatedAt = session.updatedAt;
       sessionWorktreeId = session.worktreeId || null;
     }
 
     const messages = await AgentMessagesRepository.list(sessionId, { limit: 500 });
-    const userPrompts = this.extractUserPrompts(messages);
+    const userPrompts = extractUserPrompts(messages);
     const recentMessages = this.extractRecentMessages(messages, 3);
     const pendingPrompt = await this.getPendingInteractivePrompt(sessionId);
 
@@ -929,7 +973,7 @@ export class MetaAgentService {
               id: row.id,
               promptId,
               promptType: 'ask_user_question_request',
-              createdAt: row.created_at instanceof Date ? row.created_at.getTime() : new Date(row.created_at).getTime(),
+              createdAt: toMillis(row.created_at)!,
               content: {
                 ...content,
                 questions: content.input?.questions || [],
@@ -943,7 +987,7 @@ export class MetaAgentService {
               id: row.id,
               promptId: content.input?.requestId || promptId,
               promptType: 'permission_request',
-              createdAt: row.created_at instanceof Date ? row.created_at.getTime() : new Date(row.created_at).getTime(),
+              createdAt: toMillis(row.created_at)!,
               content: {
                 type: 'permission_request',
                 requestId: content.input?.requestId || promptId,
@@ -987,7 +1031,7 @@ export class MetaAgentService {
             id: row.id,
             promptId,
             promptType: 'exit_plan_mode_request',
-            createdAt: row.created_at instanceof Date ? row.created_at.getTime() : new Date(row.created_at).getTime(),
+            createdAt: toMillis(row.created_at)!,
             content,
           };
         }
@@ -1073,27 +1117,11 @@ export class MetaAgentService {
     }
   }
 
-  private extractUserPrompts(messages: Array<{ direction: string; content: string }>): string[] {
-    const prompts: string[] = [];
-    for (const message of messages) {
-      if (message.direction !== 'input') continue;
-      try {
-        const parsed = JSON.parse(message.content);
-        if (typeof parsed.prompt === 'string' && parsed.prompt.trim()) {
-          prompts.push(parsed.prompt.trim());
-        }
-      } catch {
-        continue;
-      }
-    }
-    return prompts;
-  }
-
-  private extractLastAgentResponse(messages: Array<{ direction: string; content: string }>, maxLength: number = 500): string | null {
+  private extractLastAgentResponse(messages: Array<{ direction: string; content: string; metadata?: Record<string, unknown> | null }>, maxLength: number = 500): string | null {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
       if (message.direction !== 'output') continue;
-      const extracted = this.extractMessageText(message.content);
+      const extracted = extractMessageText(message.content, message.metadata);
       if (extracted) {
         return extracted.length > maxLength ? `${extracted.slice(0, maxLength)}...` : extracted;
       }
@@ -1102,13 +1130,13 @@ export class MetaAgentService {
   }
 
   private extractRecentMessages(
-    messages: Array<{ direction: string; content: string }>,
+    messages: Array<{ direction: string; content: string; metadata?: Record<string, unknown> | null }>,
     limit: number
   ): Array<{ direction: 'input' | 'output'; text: string }> {
     const collected: Array<{ direction: 'input' | 'output'; text: string }> = [];
     for (let index = messages.length - 1; index >= 0 && collected.length < limit; index -= 1) {
       const message = messages[index];
-      const text = this.extractMessageText(message.content);
+      const text = extractMessageText(message.content, message.metadata);
       if (!text) {
         continue;
       }
@@ -1118,44 +1146,6 @@ export class MetaAgentService {
       });
     }
     return collected.reverse();
-  }
-
-  private extractMessageText(rawContent: string): string | null {
-    try {
-      const parsed = JSON.parse(rawContent);
-
-      if (typeof parsed.prompt === 'string' && parsed.prompt.trim()) {
-        return parsed.prompt.trim();
-      }
-
-      if (parsed.type === 'text' && typeof parsed.content === 'string' && parsed.content.trim()) {
-        return parsed.content.trim();
-      }
-
-      if (parsed.type === 'assistant' && Array.isArray(parsed.message?.content)) {
-        const text = parsed.message.content
-          .filter((block: any) => block.type === 'text' && typeof block.text === 'string')
-          .map((block: any) => block.text.trim())
-          .filter(Boolean)
-          .join('\n');
-        return text || null;
-      }
-
-      if (parsed.type === 'nimbalyst_tool_use' && parsed.name === 'AskUserQuestion') {
-        return 'Interactive prompt: AskUserQuestion';
-      }
-
-      if (parsed.type === 'permission_request') {
-        return `Permission request: ${parsed.toolName || parsed.requestId || 'unknown tool'}`;
-      }
-
-      if (parsed.type === 'exit_plan_mode_request') {
-        return `Plan ready for review${parsed.planFilePath ? `: ${parsed.planFilePath}` : ''}`;
-      }
-    } catch {
-      return null;
-    }
-    return null;
   }
 
   private extractErrorMessage(messages: Array<{ direction: string; content: string }>): string | null {

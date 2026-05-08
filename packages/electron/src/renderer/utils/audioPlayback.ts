@@ -21,6 +21,11 @@ export class AudioPlayback {
   private scheduledSources: AudioBufferSourceNode[] = [];
   private nextStartTime: number = 0;
   private instanceId: number;
+  private onDrainedCallback: (() => void) | null = null;
+  // True while stop() is tearing down the queue. Suppresses the natural
+  // onended -> onDrained chain so a user interrupt doesn't fire the
+  // "playback finished" signal that the listen-window timer is waiting for.
+  private suppressDrainedCallback: boolean = false;
 
   constructor() {
     this.instanceId = ++instanceCounter;
@@ -124,6 +129,9 @@ export class AudioPlayback {
 
         if (this.audioQueue.length === 0 && this.scheduledSources.length === 0) {
           this.isPlaying = false;
+          if (this.onDrainedCallback && !this.suppressDrainedCallback) {
+            this.onDrainedCallback();
+          }
         }
       };
     }
@@ -133,6 +141,11 @@ export class AudioPlayback {
    * Stop all audio playback
    */
   stop(): void {
+    // Suppress the drained callback for sources that fire onended after stop().
+    // The closure read of this flag happens when onended actually fires, not when
+    // stop() runs, so the flag stays true until we explicitly reset it.
+    this.suppressDrainedCallback = true;
+
     // Stop ALL scheduled sources, not just the current one
     for (const source of this.scheduledSources) {
       try {
@@ -146,6 +159,22 @@ export class AudioPlayback {
     this.audioQueue = [];
     this.isPlaying = false;
     this.nextStartTime = 0;
+
+    // Re-enable the drained callback for the next play() cycle.
+    // queueMicrotask defers past any onended fired in this tick by stopped sources.
+    queueMicrotask(() => {
+      this.suppressDrainedCallback = false;
+    });
+  }
+
+  /**
+   * Register a callback that fires when the playback queue fully drains
+   * (every queued buffer has finished playing in the user's speakers).
+   * Used by voice mode to start the listen-window timer at *audible* end of
+   * turn rather than when the server finished streaming chunks.
+   */
+  setOnDrained(callback: (() => void) | null): void {
+    this.onDrainedCallback = callback;
   }
 
   /**

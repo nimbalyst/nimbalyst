@@ -2,7 +2,8 @@ import { LexicalEditor } from "lexical";
 import { ReplacementLike, resolveReplacementTexts } from "../../DiffPlugin/core/diffUtils";
 import { $setFrontmatter, FrontmatterData, parseFrontmatter } from "../../../markdown/FrontmatterUtils";
 
-const FRONTMATTER_BLOCK_REGEX = /^---\n[\s\S]*?\n---\n?/;
+// `\r?\n` tolerates Windows CRLF (nimbalyst#68).
+const FRONTMATTER_BLOCK_REGEX = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
 
 function extractFrontmatterBlock(markdown: string): { block: string; start: number; end: number } | null {
   const match = markdown.match(FRONTMATTER_BLOCK_REGEX);

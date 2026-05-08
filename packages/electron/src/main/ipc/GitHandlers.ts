@@ -846,6 +846,38 @@ export function registerGitHandlers(): void {
   );
 
   /**
+   * Get the unified diff for a single file in a specific commit.
+   * Uses `git show --format=` so the output contains only the per-file diff
+   * (no commit metadata header). Works for the initial commit too --
+   * git show synthesizes a diff against /dev/null in that case.
+   */
+  safeHandle(
+    'git:commit-file-diff',
+    async (
+      _event,
+      workspacePath: string,
+      hash: string,
+      filePath: string
+    ): Promise<{ unifiedDiff: string; isBinary: boolean }> => {
+      if (!workspacePath) throw new Error('workspacePath is required');
+      if (!hash) throw new Error('hash is required');
+      if (!filePath) throw new Error('filePath is required');
+      if (!isGitRepository(workspacePath)) {
+        return { unifiedDiff: '', isBinary: false };
+      }
+
+      try {
+        const git: SimpleGit = simpleGit(workspacePath);
+        const diff = await git.raw(['show', '--no-color', '--format=', hash, '--', filePath]);
+        return { unifiedDiff: diff, isBinary: /\bBinary files\b/.test(diff) };
+      } catch (error) {
+        log.error(`[git:commit-file-diff] Failed for ${hash}/${filePath}:`, error);
+        throw error;
+      }
+    }
+  );
+
+  /**
    * Execute git commit
    */
   ipcMain.handle(
@@ -952,7 +984,10 @@ export function registerGitHandlers(): void {
               log.warn(`[git:commit] Files missing on disk: ${missingOnDisk.map((f) => f.path).join(', ')}`);
             }
 
-            await git.add(filesToStage);
+            // Use --all so deletions are staged correctly. Plain `git add <path>`
+            // errors with "pathspec did not match any files" when the proposal
+            // includes deleted files (e.g., during renames).
+            await git.add(['--all', '--', ...filesToStage]);
 
             // Verify only the selected files are staged
             const status = await git.status();

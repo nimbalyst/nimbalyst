@@ -39,10 +39,14 @@ function resolveFieldData(type: string, data: Record<string, any>): Record<strin
 }
 
 /**
- * Extract YAML frontmatter from markdown content
+ * Extract YAML frontmatter from markdown content.
+ *
+ * `\r?\n` tolerates Windows `\r\n` line endings (e.g. files checked out
+ * with `git config core.autocrlf=true`). Without it, frontmatter on
+ * Windows-newline files is silently undetectable. See nimbalyst#68.
  */
 export function extractFrontmatter(content: string): Record<string, any> | null {
-  const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
+  const frontmatterRegex = /^---\r?\n([\s\S]*?)\r?\n---/;
   const match = content.match(frontmatterRegex);
 
   if (!match) {
@@ -74,8 +78,12 @@ const LEGACY_KEY_TO_TYPE: Record<string, string> = {
 /**
  * Extension-owned frontmatter keys that the tracker should detect but never flatten or rewrite.
  * The owning extension manages these blocks; the tracker only reads `type` from their presence.
+ *
+ * Exported so consumers like `TrackerTable.resolveTrackerFrontmatter` can use the same map
+ * and stay in sync with `detectTrackerFromFrontmatter` instead of duplicating it. See
+ * nimbalyst#67 for the consequences of having two diverging copies.
  */
-const EXTENSION_OWNED_KEYS: Record<string, string> = {
+export const EXTENSION_OWNED_KEYS: Record<string, string> = {
   automationStatus: 'automation',
 };
 
@@ -93,12 +101,16 @@ export function detectTrackerFromFrontmatter(content: string): TrackerFrontmatte
   }
 
   // Extension-owned keys take priority -- their extension manages the nested block,
-  // so always read from it rather than stale top-level fields.
+  // so always read from it rather than stale top-level fields. Top-level fields
+  // are still surfaced when they don't shadow a nested field (e.g. tracker
+  // workflow `status` and `tags`, which the nested AutomationStatus block does
+  // not own). The nested block wins on overlap to defeat any stale duplicates
+  // left over by previous flattening.
   for (const [extKey, trackerType] of Object.entries(EXTENSION_OWNED_KEYS)) {
     if (frontmatter[extKey] && typeof frontmatter[extKey] === 'object') {
       const extData = frontmatter[extKey] as Record<string, any>;
       const { [extKey]: _, trackerStatus: _ts, ...otherTopLevel } = frontmatter;
-      const merged = { ...extData, ...otherTopLevel, type: trackerType };
+      const merged = { ...otherTopLevel, ...extData, type: trackerType };
       return {
         type: trackerType,
         data: resolveFieldData(trackerType, merged),
@@ -153,7 +165,8 @@ export function updateFrontmatter(
     noRefs: true,
   });
 
-  const frontmatterRegex = /^---\n[\s\S]*?\n---\n?/;
+  // `\r?\n` matches both LF and CRLF openers (nimbalyst#68).
+  const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
   const hasFrontmatter = frontmatterRegex.test(content);
 
   if (hasFrontmatter) {
@@ -176,35 +189,52 @@ export function updateTrackerInFrontmatter(
 ): string {
   const frontmatter = extractFrontmatter(content) || {};
 
-  // Extension-owned keys are managed by their respective extensions -- don't touch them.
-  // Write only trackerStatus.type and timestamps; leave the nested block intact.
-  // Also clean up stale top-level duplicates of fields that belong in the nested block.
+  // Extension-owned keys are managed by their respective extensions -- never
+  // flatten or rewrite the nested block. Only mutate top-level fields the
+  // extension does not own (e.g. tracker workflow `status`, `tags`, timestamps),
+  // and clean up any stale top-level duplicates of nested fields that previous
+  // tracker code may have written before this fix landed.
   const extensionOwnedKey = Object.keys(EXTENSION_OWNED_KEYS).find(
     key => frontmatter[key] && typeof frontmatter[key] === 'object'
   );
   if (extensionOwnedKey) {
     const nestedData = frontmatter[extensionOwnedKey] as Record<string, any>;
-    const cleanedFrontmatter = { ...frontmatter };
-    for (const field of Object.keys(nestedData)) {
-      if (field in cleanedFrontmatter && field !== extensionOwnedKey) {
-        delete cleanedFrontmatter[field];
-      }
+    const nestedFieldNames = new Set(Object.keys(nestedData));
+
+    const topLevel: Record<string, any> = {};
+    for (const [key, value] of Object.entries(frontmatter)) {
+      if (key === extensionOwnedKey) continue;
+      if (key === 'trackerStatus') continue;
+      if (nestedFieldNames.has(key)) continue; // drop stale duplicate
+      topLevel[key] = value;
     }
+
+    // Apply caller updates targeting top-level tracker fields. Updates aimed at
+    // fields the nested block owns are dropped here -- the owning extension is
+    // the only writer for those fields.
+    for (const [key, value] of Object.entries(updates)) {
+      if (key === 'type') continue;
+      if (nestedFieldNames.has(key)) continue;
+      topLevel[key] = value;
+    }
+
     const now = formatLocalDateOnly(new Date());
-    const mergedUpdates: Record<string, any> = {};
-    for (const [key, value] of Object.entries(cleanedFrontmatter)) {
-      mergedUpdates[key] = value;
-    }
-    mergedUpdates.trackerStatus = { type: trackerType };
-    if (!cleanedFrontmatter.created) mergedUpdates.created = now;
-    mergedUpdates.updated = now;
+    if (!topLevel.created) topLevel.created = now;
+    topLevel.updated = now;
+
+    const mergedUpdates: Record<string, any> = {
+      ...topLevel,
+      [extensionOwnedKey]: nestedData,
+      trackerStatus: { type: trackerType },
+    };
 
     const yamlContent = jsyaml.dump(mergedUpdates, {
       indent: 2,
       lineWidth: -1,
       noRefs: true,
     });
-    const frontmatterRegex = /^---\n[\s\S]*?\n---\n?/;
+    // `\r?\n` matches both LF and CRLF openers (nimbalyst#68).
+    const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
     if (frontmatterRegex.test(content)) {
       return content.replace(frontmatterRegex, `---\n${yamlContent}---\n`);
     }

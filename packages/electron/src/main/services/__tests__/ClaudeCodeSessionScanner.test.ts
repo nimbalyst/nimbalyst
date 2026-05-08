@@ -7,9 +7,46 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { homedir } from 'os';
-import { extractSessionMetadata } from '../ClaudeCodeSessionScanner';
+import { encodeWorkspaceDir, extractSessionMetadata } from '../ClaudeCodeSessionScanner';
 
 describe('ClaudeCodeSessionScanner', () => {
+  describe('encodeWorkspaceDir', () => {
+    // Mirrors `A.replace(/[^a-zA-Z0-9]/g, '-')` from the upstream Claude Code
+    // CLI. Any drift here silently breaks workspace-filtered session imports
+    // for users whose paths contain spaces, apostrophes, accented chars, etc.
+    it('replaces forward slashes with dashes', () => {
+      expect(encodeWorkspaceDir('/Users/foo/bar')).toBe('-Users-foo-bar');
+    });
+
+    it('replaces spaces with dashes', () => {
+      expect(encodeWorkspaceDir('/Users/karlwirth/GitHub/Test Project')).toBe(
+        '-Users-karlwirth-GitHub-Test-Project',
+      );
+    });
+
+    it('replaces apostrophes with dashes', () => {
+      expect(encodeWorkspaceDir("/Users/x/Lenny's Podcast")).toBe(
+        '-Users-x-Lenny-s-Podcast',
+      );
+    });
+
+    it('replaces accented characters with dashes', () => {
+      expect(encodeWorkspaceDir('/tmp/Café/project')).toBe('-tmp-Caf--project');
+    });
+
+    it('replaces dots and underscores with dashes', () => {
+      expect(encodeWorkspaceDir('/Users/foo/v2.0_alpha')).toBe(
+        '-Users-foo-v2-0-alpha',
+      );
+    });
+
+    it('preserves alphanumerics and existing dashes', () => {
+      expect(encodeWorkspaceDir('/Users/foo/my-repo-2')).toBe(
+        '-Users-foo-my-repo-2',
+      );
+    });
+  });
+
   describe('extractSessionMetadata', () => {
     it('should extract token usage from actual Claude Code JSONL files', async () => {
       // Find a Claude Code session file with actual token usage (non-zero)

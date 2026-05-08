@@ -174,19 +174,22 @@ continues in next paragraph** end.`;
   });
 
   describe('Link Edge Cases', () => {
+    // These cases used to assert that the in-diff editor's markdown matched
+    // the target as a single line. That assertion only held by accident:
+    // a bug in the inline-diff identical-check ignored link URL/children
+    // changes, silently applying the new link with no diff markers, so the
+    // editor effectively showed only the target. After fixing that bug
+    // (URL/children changes now produce a removed + added link pair inline),
+    // the diff editor's markdown legitimately contains both old and new link
+    // content side-by-side. The meaningful assertion is the round-trip:
+    // approve must produce the target, reject must produce the original.
     test('Links with special characters in URLs', () => {
       const original = `Check [this link](https://example.com/path?query=value&other=test#fragment).`;
       const target = `Check [this modified link](https://example.com/path?query=value&other=test&new=param#fragment).`;
 
       const result = setupMarkdownDiffTest(original, target);
-      const actualMarkdown = result.diffEditor.getEditorState().read(() => {
-        return $convertToMarkdownString(
-          MARKDOWN_TEST_TRANSFORMERS,
-          undefined,
-          true,
-        );
-      });
-      expectMarkdownEquivalent(actualMarkdown, result.expectedMarkdown);
+      expect(result.getApprovedMarkdown()).toBe(result.targetMarkdown);
+      expect(result.getRejectedMarkdown()).toBe(result.originalMarkdown);
     });
 
     test('Links with markdown formatting in the text', () => {
@@ -194,14 +197,8 @@ continues in next paragraph** end.`;
       const target = `Click [**bold** and *italic* link](https://example.com).`;
 
       const result = setupMarkdownDiffTest(original, target);
-      const actualMarkdown = result.diffEditor.getEditorState().read(() => {
-        return $convertToMarkdownString(
-          MARKDOWN_TEST_TRANSFORMERS,
-          undefined,
-          true,
-        );
-      });
-      expectMarkdownEquivalent(actualMarkdown, result.expectedMarkdown);
+      expect(result.getApprovedMarkdown()).toBe(result.targetMarkdown);
+      expect(result.getRejectedMarkdown()).toBe(result.originalMarkdown);
     });
 
     test('Multiple identical links in the same paragraph', () => {
@@ -209,14 +206,8 @@ continues in next paragraph** end.`;
       const target = `Visit [site](https://example.com) and also check [site](https://different.com) again.`;
 
       const result = setupMarkdownDiffTest(original, target);
-      const actualMarkdown = result.diffEditor.getEditorState().read(() => {
-        return $convertToMarkdownString(
-          MARKDOWN_TEST_TRANSFORMERS,
-          undefined,
-          true,
-        );
-      });
-      expectMarkdownEquivalent(actualMarkdown, result.expectedMarkdown);
+      expect(result.getApprovedMarkdown()).toBe(result.targetMarkdown);
+      expect(result.getRejectedMarkdown()).toBe(result.originalMarkdown);
     });
   });
 

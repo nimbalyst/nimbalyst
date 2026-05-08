@@ -189,11 +189,78 @@ When invoking IPC from the renderer:
 - Always `await` invoke calls and handle failures gracefully (`try/catch`).
 - Debounce high-frequency sends (like resizing) before sending to the main process.
 
+## Workspace-Scoped IPC: `workspacePath` is Required
+
+**CRITICAL: Workspace-scoped IPC handlers MUST take `workspacePath` as a required parameter.**
+
+Nimbalyst is multi-window: every workspace runs in its own `BrowserWindow`. Any IPC channel that operates on workspace-scoped data (sessions, files, trackers, worktrees, project state, etc.) MUST receive `workspacePath` from the renderer as an explicit argument. The renderer always knows its window's workspace — pass it.
+
+Main-process handlers and services MUST NOT fall back to module-level "current workspace" state (e.g. a `currentWorkspacePath` field on a singleton service). That state is shared across all windows and last-write-wins between them: whichever window most recently set it wins, and other windows silently get the wrong workspace context. Symptoms include:
+
+- Cross-window session/data pollution
+- Validator warnings like `[SessionManager] Rejecting session ...: belongs to /path/A, not /path/B`
+- Tabs in window A briefly showing data from window B
+- "Works fine until I open a second window" bugs
+
+**Carve-out:** genuinely app-global channels (theme, app settings, app version, analytics consent, update checks) don't need a workspace.
+
+**If you can't decide whether a channel is workspace-scoped, it is.** The default must be "scoped + required parameter."
+
+### Pattern
+
+```ts
+// preload
+contextBridge.exposeInMainWorld('electronAPI', {
+  doWorkspaceThing: (workspacePath: string, ...args: unknown[]) =>
+    ipcRenderer.invoke('feature:do-thing', workspacePath, ...args),
+});
+
+// main handler -- workspacePath is required and validated up-front
+safeHandle('feature:do-thing', async (event, workspacePath: string, ...args) => {
+  if (!workspacePath) {
+    throw new Error('feature:do-thing requires workspacePath');
+  }
+  return await service.doThing(workspacePath, ...args);
+});
+
+// service -- never falls back to a stored "current" workspace
+async doThing(workspacePath: string, ...args: unknown[]) {
+  // workspace is the parameter, full stop
+}
+```
+
+### Anti-pattern
+
+```ts
+// WRONG: handler doesn't carry workspace
+safeHandle('session:load', async (event, sessionId) => {
+  return await sessionManager.loadSession(sessionId);
+  // falls back to a module-level currentWorkspacePath that any other
+  // window may have just clobbered. Cross-window pollution waiting to happen.
+});
+
+// WRONG: service caches "current workspace" and uses it as a fallback
+class SessionManager {
+  private currentWorkspacePath: string | null = null;
+
+  async loadSession(sessionId: string, workspacePath?: string) {
+    const ws = workspacePath || this.currentWorkspacePath; // BUG
+    // ...
+  }
+}
+```
+
+Existing handlers that omit `workspacePath` are bugs to fix incrementally -- not patterns to copy. When you touch a workspace-scoped handler that lacks it, add it.
+
+### Resolving from `event.sender` is a fallback, not the rule
+
+For legacy channels where the preload signature is locked, you can resolve the workspace from the calling window via `BrowserWindow.fromWebContents(event.sender)` -> `getWindowId(...)` -> `windowStates.get(windowId).workspacePath`. But prefer making it an explicit parameter -- explicit beats implicit, and renderer code that has the path on hand should send it.
+
 ## Adding a New IPC Flow
 
 ### Request/Response (Renderer → Main → Renderer)
 
-1. **Define the main handler.** Choose the file that owns the feature (create a new module under `src/main/ipc/` if necessary). Use `ipcMain.handle` for request/response. Validate inputs and prefer returning structured objects (`{ success, data?, error? }`).
+1. **Define the main handler.** Choose the file that owns the feature (create a new module under `src/main/ipc/` if necessary). Use `ipcMain.handle` for request/response. Validate inputs and prefer returning structured objects (`{ success, data?, error? }`). If the channel is workspace-scoped, take `workspacePath` as a required parameter (see [Workspace-Scoped IPC](#workspace-scoped-ipc-workspacepath-is-required) above).
 2. **Expose it through the preload bridge.** Add a function in `src/preload/index.ts` that invokes the new channel.
 3. **Type it.** Update `src/renderer/electron.d.ts` so `window.electronAPI` reflects the new capability.
 4. **Call it from the renderer.** Use the bridge helper inside your React code or service layer.

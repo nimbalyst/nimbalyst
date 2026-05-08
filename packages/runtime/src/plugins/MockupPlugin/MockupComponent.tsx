@@ -32,6 +32,7 @@ import {
 } from './MockupPlatformService';
 import { $isMockupNode } from './MockupNode';
 import { useDocumentPath } from '../../DocumentPathContext';
+import { localAssetUrl } from '../../utils/localAssetUrl';
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -350,15 +351,19 @@ export default function MockupComponent({
       return null;
     }
 
-    // If it's already an absolute URL, use as-is
-    if (screenshotPath.match(/^(https?|file|data):/)) {
+    // file:// needs to be re-routed through `localAssetUrl` so Electron can
+    // serve it via `nim-asset://`. Other URL schemes pass through untouched.
+    if (screenshotPath.startsWith('file://')) {
+      return localAssetUrl(screenshotPath.replace(/^file:\/\//, ''));
+    }
+    if (screenshotPath.match(/^(https?|data):/)) {
       return screenshotPath;
     }
 
     // Resolve relative path using document directory from context
     if (documentDir) {
       const absolutePath = documentDir + '/' + screenshotPath;
-      return 'file://' + absolutePath;
+      return localAssetUrl(absolutePath);
     }
 
     // No document path available yet

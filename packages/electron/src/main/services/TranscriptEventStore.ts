@@ -220,6 +220,45 @@ export function createTranscriptEventStore(
       return rows.length > 0 ? rowToEvent(rows[0]) : null;
     },
 
+    async findActiveToolCallByRawProviderId(rawProviderToolCallId, sessionId): Promise<TranscriptEvent | null> {
+      await ensureReady();
+
+      // Match either a legacy event whose provider_tool_call_id equals the
+      // raw id directly, or a new event whose provider_tool_call_id is a
+      // Codex synthetic edit-group ID derived from the raw id. The synthetic
+      // format is `nimtc|<encodeURIComponent(rawId)>|<ts>|<idx>`, so we LIKE
+      // against `nimtc|<escapedEncodedRawId>|%`.
+      //
+      // Status filtering is performed in JS since the payload column is
+      // stored as JSON text in some environments.
+      const encoded = encodeURIComponent(rawProviderToolCallId);
+      const escaped = encoded
+        .replace(/\\/g, '\\\\')
+        .replace(/%/g, '\\%')
+        .replace(/_/g, '\\_');
+      const synthPattern = `nimtc|${escaped}|%`;
+
+      const { rows } = await db.query<TranscriptEventRow>(
+        `SELECT ${SELECT_COLS}
+          FROM ai_transcript_events
+          WHERE session_id = $1
+            AND event_type = 'tool_call'
+            AND (provider_tool_call_id = $2 OR provider_tool_call_id LIKE $3 ESCAPE '\\')
+          ORDER BY id DESC
+          LIMIT 10`,
+        [sessionId, rawProviderToolCallId, synthPattern],
+      );
+
+      for (const row of rows) {
+        const event = rowToEvent(row);
+        const status = (event.payload as Record<string, unknown> | undefined)?.status;
+        if (status === 'running' || status === 'pending' || status == null) {
+          return event;
+        }
+      }
+      return null;
+    },
+
     async getMultiSessionEvents(sessionIds, options): Promise<TranscriptEvent[]> {
       await ensureReady();
 

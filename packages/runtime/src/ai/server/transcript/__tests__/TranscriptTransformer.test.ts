@@ -69,6 +69,23 @@ function createMockTranscriptStore(): ITranscriptEventStore & { getAll(): Transc
       );
     },
 
+    async findActiveToolCallByRawProviderId(rawProviderToolCallId, sessionId) {
+      const synthPrefix = `nimtc|${encodeURIComponent(rawProviderToolCallId)}|`;
+      for (let i = events.length - 1; i >= 0; i--) {
+        const event = events[i];
+        if (event.sessionId !== sessionId) continue;
+        if (event.eventType !== 'tool_call') continue;
+        const ptcid = event.providerToolCallId ?? '';
+        const matches = ptcid === rawProviderToolCallId || ptcid.startsWith(synthPrefix);
+        if (!matches) continue;
+        const status = (event.payload as Record<string, unknown> | undefined)?.status;
+        if (status === 'running' || status === 'pending' || status == null) {
+          return event;
+        }
+      }
+      return null;
+    },
+
     async getEventById(id) {
       return events.find((e) => e.id === id) ?? null;
     },
@@ -1470,6 +1487,107 @@ describe('TranscriptTransformer', () => {
       expect(toolA[0].id).not.toBe(toolB[0].id);
       expect(toolA[0].sessionId).toBe(SESSION_A);
       expect(toolB[0].sessionId).toBe(SESSION_B);
+    });
+
+    it('creates separate tool_call events when Codex reuses item_0 for the same MCP tool in later turns', async () => {
+      const rawStore = createMockRawStore([
+        makeRawMessage({
+          id: 1,
+          sessionId: SESSION_ID,
+          source: 'openai-codex',
+          direction: 'output',
+          content: JSON.stringify({
+            type: 'item.started',
+            item: {
+              id: 'item_0',
+              type: 'mcp_tool_call',
+              server: 'nimbalyst-mcp',
+              tool: 'developer_git_commit_proposal',
+              arguments: { commitMessage: 'first commit', filesToStage: ['a.ts'] },
+              status: 'in_progress',
+            },
+          }),
+        }),
+        makeRawMessage({
+          id: 2,
+          sessionId: SESSION_ID,
+          source: 'openai-codex',
+          direction: 'output',
+          content: JSON.stringify({
+            type: 'item.completed',
+            item: {
+              id: 'item_0',
+              type: 'mcp_tool_call',
+              server: 'nimbalyst-mcp',
+              tool: 'developer_git_commit_proposal',
+              result: {
+                content: [{ type: 'text', text: 'Auto-committed 1 file(s).\nCommit hash: first123' }],
+              },
+              error: null,
+              status: 'completed',
+            },
+          }),
+        }),
+        makeRawMessage({
+          id: 3,
+          sessionId: SESSION_ID,
+          source: 'openai-codex',
+          direction: 'output',
+          content: JSON.stringify({
+            type: 'item.started',
+            item: {
+              id: 'item_0',
+              type: 'mcp_tool_call',
+              server: 'nimbalyst-mcp',
+              tool: 'developer_git_commit_proposal',
+              arguments: { commitMessage: 'second commit', filesToStage: ['b.ts'] },
+              status: 'in_progress',
+            },
+          }),
+        }),
+        makeRawMessage({
+          id: 4,
+          sessionId: SESSION_ID,
+          source: 'openai-codex',
+          direction: 'output',
+          content: JSON.stringify({
+            type: 'item.completed',
+            item: {
+              id: 'item_0',
+              type: 'mcp_tool_call',
+              server: 'nimbalyst-mcp',
+              tool: 'developer_git_commit_proposal',
+              result: {
+                content: [{ type: 'text', text: 'Auto-committed 1 file(s).\nCommit hash: second456' }],
+              },
+              error: null,
+              status: 'completed',
+            },
+          }),
+        }),
+      ]);
+      const transformer = new TranscriptTransformer(rawStore, transcriptStore, metadataStore);
+
+      await transformer.ensureTransformed(SESSION_ID, CODEX_PROVIDER);
+
+      const events = await transcriptStore.getSessionEvents(SESSION_ID);
+      const toolEvents = events.filter((e) => e.eventType === 'tool_call');
+
+      expect(toolEvents).toHaveLength(2);
+      // CodexRawParser now mints a synthetic edit-group ID for each tool call
+      // so reuses of the same raw item id (e.g. `item_0` across turns) get
+      // distinct, durable canonical IDs. Both must wrap `item_0` in the
+      // `nimtc|<rawId>|<ts>|<idx>` form.
+      const firstId = toolEvents[0].providerToolCallId ?? '';
+      const secondId = toolEvents[1].providerToolCallId ?? '';
+      expect(firstId.startsWith('nimtc|item_0|')).toBe(true);
+      expect(secondId.startsWith('nimtc|item_0|')).toBe(true);
+      expect(firstId).not.toBe(secondId);
+      expect(toolEvents[0].id).not.toBe(toolEvents[1].id);
+      expect((toolEvents[0].payload as any).arguments.commitMessage).toBe('first commit');
+      expect((toolEvents[1].payload as any).arguments.commitMessage).toBe('second commit');
+      expect((toolEvents[0].payload as any).result).toContain('first123');
+      expect((toolEvents[1].payload as any).result).toContain('second456');
     });
 
     it('preserves non-MCP Codex tool results as-is', async () => {

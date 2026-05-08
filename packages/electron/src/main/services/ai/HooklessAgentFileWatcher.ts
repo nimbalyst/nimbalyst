@@ -282,7 +282,25 @@ export class HooklessAgentFileWatcher {
         }
       }
 
-      const resolvedBeforeContent = beforeContent ?? '';
+      // If we have NO real baseline (cache, history, and git HEAD all
+      // came up empty), do not fabricate one. A pre-edit tag with empty
+      // content for a non-create operation is always wrong: the renderer
+      // diffs the editor (showing actual file content) against the empty
+      // baseline and shows the entire file as a green addition, then bails
+      // out as "empty diff" when a real tag arrives later. Better to skip
+      // the bash-watcher tag entirely and let an authoritative writer
+      // (file_change pre_edit_snapshot, OpenCode/Codex-ACP edit tools)
+      // create the tag with a real disk-read baseline.
+      if (beforeContent === null) {
+        logger.main.debug('[HooklessAgentFileWatcher] Skipping bash tag — no real baseline available:', {
+          sessionId: session.id,
+          filePath,
+        });
+        watcherEntry?.cache.updateSnapshot(filePath, currentContent);
+        continue;
+      }
+
+      const resolvedBeforeContent = beforeContent;
 
       // If baseline equals current content, command did not materially change this file.
       if (resolvedBeforeContent === currentContent) {

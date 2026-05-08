@@ -29,6 +29,16 @@ export interface ParseContext {
    * (e.g. Codex `item_1`) don't collide with events from other sessions.
    */
   findByProviderToolCallId(id: string): Promise<TranscriptEvent | null>;
+  /**
+   * Find the most recent active (running/pending) tool_call event whose
+   * canonical providerToolCallId is either the raw id directly or a Codex
+   * synthetic edit-group ID derived from it (`nimtc|<encoded>|<ts>|<idx>`).
+   *
+   * Used by the Codex parser so a `tool_call_completed` raw message can map
+   * back to the synthetic ID minted when the matching `tool_call_started` was
+   * processed in an earlier batch.
+   */
+  findActiveToolCallByRawProviderId(rawId: string): Promise<TranscriptEvent | null>;
 }
 
 // ---------------------------------------------------------------------------

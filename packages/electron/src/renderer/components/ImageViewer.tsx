@@ -6,6 +6,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { nimAssetUrl } from '../utils/assetUrl';
 
 interface ImageViewerProps {
   filePath: string;
@@ -20,9 +21,12 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ filePath, fileName }) 
   useEffect(() => {
     const loadImage = async () => {
       try {
-        // Convert file path to file:// URL for display
-        const fileUrl = filePath.startsWith('file://') ? filePath : `file://${filePath}`;
-        setImageSrc(fileUrl);
+        // Issue #146: route through `nim-asset://` so the renderer stays
+        // same-origin (lets `webSecurity: true` stay on the main window).
+        // The main-process handler validates the path against allowlisted
+        // workspace + userData roots.
+        const absolute = filePath.startsWith('file://') ? filePath.replace(/^file:\/\//, '') : filePath;
+        setImageSrc(nimAssetUrl(absolute));
         setError(null);
       } catch (err) {
         setError('Failed to load image');

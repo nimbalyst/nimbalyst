@@ -394,8 +394,8 @@ export class RuntimeToolExecutor {
       // Get current document content
       const content = getDocumentContent();
 
-      // Find frontmatter
-      const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      // Find frontmatter (`\r?\n` tolerates Windows CRLF; nimbalyst#68)
+      const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       if (!frontmatterMatch) {
         // If no frontmatter exists, create one at the beginning
         const newFrontmatter = `---\n${Object.entries(args.updates)

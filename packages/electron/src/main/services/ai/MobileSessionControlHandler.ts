@@ -502,7 +502,11 @@ async function handleGitCommitResponse(
       } catch {
         // May fail in fresh repo with no commits - that's OK
       }
-      await git.add(response.files!);
+      // Use --all so deletions are staged correctly. Plain `git add <path>`
+      // errors with "pathspec did not match any files" when the proposal
+      // includes deleted files (e.g., during renames where one path was
+      // removed and a new one added).
+      await git.add(['--all', '--', ...response.files!]);
 
       // Commit
       const result = await git.commit(response.message!);

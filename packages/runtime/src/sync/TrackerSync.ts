@@ -124,7 +124,7 @@ export function mergeTrackerItems(
   // Merge system fields
   const systemKeys = [
     'authorIdentity', 'lastModifiedBy', 'createdByAgent',
-    'linkedSessions', 'linkedCommitSha', 'documentId',
+    'linkedCommitSha', 'documentId',
     'createdAt', 'updatedAt',
   ] as const;
   for (const key of systemKeys) {

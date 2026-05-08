@@ -9,6 +9,7 @@ import {
   sessionHasTabsAtom,
   worktreeGitStatusAtom,
 } from '../../store';
+import { worktreeDisplayNameUpdateAtom } from '../../store/atoms/worktrees';
 import { LayoutControls } from '../UnifiedAI/LayoutControls';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
 import type { ShareDialogData } from '../../dialogs';
@@ -123,34 +124,25 @@ export const AgentSessionHeader: React.FC<AgentSessionHeaderProps> = ({
     });
   }, [worktreeId, fetchWorktreeMetadata]);
 
-  // Listen for worktree display name updates from main process
-  // This handles automatic worktree naming when first session in worktree is named
+  // React to worktree display-name updates broadcast by main. The IPC event
+  // is handled centrally in store/listeners/worktreeListeners.ts which writes
+  // to worktreeDisplayNameUpdateAtom; we apply the update only when its
+  // worktreeId matches ours and skip the initial-mount value so we don't
+  // re-apply the most recent update from before this component mounted.
+  const displayNameUpdate = useAtomValue(worktreeDisplayNameUpdateAtom);
+  const initialDisplayNameUpdateRef = useRef(displayNameUpdate);
   useEffect(() => {
     if (!worktreeId) return;
+    if (displayNameUpdate === initialDisplayNameUpdateRef.current) return;
+    if (!displayNameUpdate || displayNameUpdate.payload.worktreeId !== worktreeId) return;
 
-    const unsubscribe = window.electronAPI?.on?.('worktree:display-name-updated',
-      (data: { worktreeId: string; displayName: string }) => {
-        if (data.worktreeId === worktreeId) {
-          // Update local state
-          setWorktreeMetadata(prev => prev ? {
-            ...prev,
-            displayName: data.displayName
-          } : null);
-
-          // Update module-level cache
-          if (worktreeMetadataCache.has(data.worktreeId)) {
-            const cached = worktreeMetadataCache.get(data.worktreeId)!;
-            worktreeMetadataCache.set(data.worktreeId, {
-              ...cached,
-              displayName: data.displayName
-            });
-          }
-        }
-      }
-    );
-
-    return () => unsubscribe?.();
-  }, [worktreeId]);
+    const { displayName } = displayNameUpdate.payload;
+    setWorktreeMetadata(prev => prev ? { ...prev, displayName } : null);
+    if (worktreeMetadataCache.has(worktreeId)) {
+      const cached = worktreeMetadataCache.get(worktreeId)!;
+      worktreeMetadataCache.set(worktreeId, { ...cached, displayName });
+    }
+  }, [displayNameUpdate, worktreeId]);
 
   const handleShareLink = useCallback(() => {
     if (!sessionData) return;

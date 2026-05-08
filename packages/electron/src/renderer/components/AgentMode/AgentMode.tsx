@@ -53,6 +53,7 @@ import {
 } from '../../store';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { initWorkstreamState, loadWorkstreamStates, workstreamStateAtom, workstreamActiveChildAtom, setWorkstreamActiveChildAtom, setWorktreeActiveSessionAtom } from '../../store/atoms/workstreamState';
+import { blitzAnalysisCreatedAtom } from '../../store/atoms/blitz';
 import { initSessionStateListeners, updateSessionStateListenerWorkspace } from '../../store/sessionStateListeners';
 import { initFileStateListeners } from '../../store/listeners/fileStateListeners';
 import { initFileTreeListeners } from '../../store/listeners/fileTreeListeners';
@@ -611,48 +612,45 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
     }
   }, [workspacePath, addSession, setSelectedWorkstream, defaultModel, refreshSessions]);
 
-  // Listen for blitz analysis session creation events.
-  // When all blitz children complete, the main process creates an analysis session
-  // and emits this event so we can register it and trigger queue processing.
+  // React to `blitz:analysis-created` events broadcast by main when all blitz
+  // children complete. The IPC event is handled centrally in
+  // store/listeners/blitzListeners.ts which writes blitzAnalysisCreatedAtom;
+  // we register the analysis session and trigger queue processing only for
+  // events matching our workspacePath, skipping the initial-mount value.
+  const blitzAnalysisCreated = useAtomValue(blitzAnalysisCreatedAtom);
+  const initialBlitzAnalysisCreatedRef = useRef(blitzAnalysisCreated);
   useEffect(() => {
-    const cleanup = window.electronAPI?.on?.('blitz:analysis-created', (data: {
-      blitzId: string;
-      analysisSessionId: string;
-      analysisProvider?: string;
-      analysisModel?: string;
-      workspacePath: string;
-    }) => {
-      if (data.workspacePath !== workspacePath) return;
+    if (blitzAnalysisCreated === initialBlitzAnalysisCreatedRef.current) return;
+    if (!blitzAnalysisCreated) return;
+    const data = blitzAnalysisCreated.payload;
+    if (data.workspacePath !== workspacePath) return;
 
-      addSession({
-        id: data.analysisSessionId,
-        title: 'Analysis',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        provider: data.analysisProvider || 'claude-code',
-        model: data.analysisModel || 'claude-code:opus',
-        sessionType: 'session',
-        messageCount: 0,
-        workspaceId: workspacePath,
-        isArchived: false,
-        isPinned: false,
-        worktreeId: null,
-        parentSessionId: data.blitzId,
-        childCount: 0,
-        uncommittedCount: 0,
-      });
-
-      // Trigger queue processing to start the analysis
-      window.electronAPI.invoke('ai:triggerQueueProcessing', data.analysisSessionId, workspacePath)
-        .catch((error: Error) => {
-          console.error('[AgentMode] Failed to trigger analysis session queue processing:', error);
-        });
-
-      refreshSessions();
+    addSession({
+      id: data.analysisSessionId,
+      title: 'Analysis',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      provider: data.analysisProvider || 'claude-code',
+      model: data.analysisModel || 'claude-code:opus',
+      sessionType: 'session',
+      messageCount: 0,
+      workspaceId: workspacePath,
+      isArchived: false,
+      isPinned: false,
+      worktreeId: null,
+      parentSessionId: data.blitzId,
+      childCount: 0,
+      uncommittedCount: 0,
     });
 
-    return () => cleanup?.();
-  }, [workspacePath, addSession, refreshSessions]);
+    // Trigger queue processing to start the analysis
+    window.electronAPI.invoke('ai:triggerQueueProcessing', data.analysisSessionId, workspacePath)
+      .catch((error: Error) => {
+        console.error('[AgentMode] Failed to trigger analysis session queue processing:', error);
+      });
+
+    refreshSessions();
+  }, [blitzAnalysisCreated, workspacePath, addSession, refreshSessions]);
 
   // Open session by ID
   const openSessionInTab = useCallback(async (sessionId: string) => {
@@ -941,12 +939,17 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
   }, [updateSessionStore, selectedWorkstream, workspacePath, setSelectedWorkstream]);
 
   // Rename a session
+  const [renamedSession, setRenamedSession] = useState<{ id: string; title: string } | null>(null);
   const handleSessionRename = useCallback(async (sessionId: string, newName: string) => {
     try {
       const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, { title: newName });
       if (result.success) {
         // Update in atom store (syncs both sessionStoreAtom and sessionRegistryAtom)
         updateSessionStore({ sessionId, updates: { title: newName, updatedAt: Date.now() } });
+        // Sub-sessions render from SessionHistory's workstreamChildrenCache, not from
+        // sessionRegistryAtom. The cache only patches when its `renamedSession` prop
+        // changes, so trigger that here.
+        setRenamedSession({ id: sessionId, title: newName });
       } else {
         console.error('[AgentMode] Failed to rename session:', result.error);
       }
@@ -1036,6 +1039,7 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
       onSessionDelete={handleSessionDelete}
       onSessionArchive={handleSessionArchive}
       onSessionRename={handleSessionRename}
+      renamedSession={renamedSession}
       onSessionBranch={handleSessionBranch}
       onNewSession={createNewSession}
       onNewWorktreeSession={isWorktreesAvailable ? createNewWorktreeSession : undefined}

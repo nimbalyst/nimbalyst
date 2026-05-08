@@ -48,7 +48,7 @@ export interface VoiceModeSettings {
   voiceAgentPrompt: SystemPromptConfig;
   codingAgentPrompt: SystemPromptConfig;
   submitDelayMs: number;
-  /** How long (ms) to keep listening after speech ends before sleeping. Default 10000. */
+  /** How long (ms) to keep listening after speech ends before sleeping. Default 15000. */
   listenWindowMs: number;
 }
 
@@ -67,7 +67,7 @@ const defaultVoiceModeSettings: VoiceModeSettings = {
   voiceAgentPrompt: {},
   codingAgentPrompt: {},
   submitDelayMs: 3000,
-  listenWindowMs: 10000,
+  listenWindowMs: 15000,
 };
 
 /**
@@ -192,7 +192,7 @@ export async function initVoiceModeSettings(): Promise<VoiceModeSettings> {
         voiceAgentPrompt: settings.voiceAgentPrompt || {},
         codingAgentPrompt: settings.codingAgentPrompt || {},
         submitDelayMs: settings.submitDelayMs ?? 3000,
-        listenWindowMs: settings.listenWindowMs ?? 10000,
+        listenWindowMs: settings.listenWindowMs ?? 15000,
       };
     }
   } catch (error) {

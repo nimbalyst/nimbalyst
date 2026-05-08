@@ -84,6 +84,8 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
   private static superLoopProgressServerPort: number | null = null;
   private static sessionContextServerPort: number | null = null;
   private static metaAgentServerPort: number | null = null;
+  // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers (Issue #146)
+  private static mcpAuthToken: string | null = null;
   private static mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null = null;
   private static claudeSettingsEnvLoader: (() => Promise<Record<string, string>>) | null = null;
   private static shellEnvironmentLoader: (() => Record<string, string> | null) | null = null;
@@ -142,6 +144,7 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
       superLoopProgressServerPort: null,
       sessionContextServerPort: OpenAICodexACPProvider.sessionContextServerPort,
       metaAgentServerPort: OpenAICodexACPProvider.metaAgentServerPort,
+      mcpAuthToken: OpenAICodexACPProvider.mcpAuthToken,
       mcpConfigLoader: OpenAICodexACPProvider.mcpConfigLoader,
       extensionPluginsLoader: null,
       claudeSettingsEnvLoader: OpenAICodexACPProvider.claudeSettingsEnvLoader,
@@ -219,6 +222,9 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
   }
   public static setMetaAgentServerPort(port: number | null): void {
     OpenAICodexACPProvider.metaAgentServerPort = port;
+  }
+  public static setMcpAuthToken(token: string | null): void {
+    OpenAICodexACPProvider.mcpAuthToken = token;
   }
   public static setMCPConfigLoader(loader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null): void {
     OpenAICodexACPProvider.mcpConfigLoader = loader;

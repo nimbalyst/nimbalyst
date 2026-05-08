@@ -393,7 +393,8 @@ export class HistoryManager {
     tagId: string,
     content: string,
     sessionId: string,
-    toolUseId: string
+    toolUseId: string,
+    options?: { replaceSpeculative?: boolean }
   ): Promise<void> {
     try {
       // Ensure database is initialized
@@ -435,9 +436,63 @@ export class HistoryManager {
           }
         }
 
+        const existingTagId = existing.rows[0].tag_id;
+        const replaceSpeculative = options?.replaceSpeculative === true;
+
+        // Authoritative attribution override: when an explicitly
+        // authoritative caller (file_change `pre_edit_snapshot`, OpenCode
+        // / Codex-ACP edit tool handlers) calls with a different tagId
+        // than the existing tag, replace tagId, toolUseId, AND content in
+        // place. The flag is required -- a heuristic on the toolUseId
+        // string is not sufficient, because watcher-attribution callers
+        // (HooklessAgentFileWatcher's trackBashEditsFromCommand, the
+        // workspace-edit watcher) ALSO mint `nimtc|`-prefixed IDs by
+        // attributing to a recent Bash tool call's editGroupId, and a
+        // stale `sed` command can outscore a still-being-stored file_change
+        // in the same chokidar tick. Without an explicit caller signal we
+        // can't tell speculative `nimtc|` IDs from authoritative ones.
+        // Run BEFORE the upgrade-empty branch so an authoritative caller
+        // always wins -- otherwise an existing-empty + authoritative-new
+        // combo would only update content (not toolUseId) and the diff
+        // would still mis-attribute via ToolCallMatcher.computeHistoryDiff.
+        if (replaceSpeculative && existingTagId !== tagId) {
+          logger.main.info('[HistoryManager] Replacing speculative pre-edit tag with authoritative attribution:', {
+            filePath,
+            sessionId,
+            previousTagId: existingTagId,
+            newTagId: tagId,
+            newToolUseId: toolUseId,
+            existingWasEmpty: existingIsEmpty,
+            replaceSpeculative,
+          });
+          await database.query(`
+            UPDATE document_history
+            SET content = $1,
+                size_bytes = $2,
+                timestamp = $3,
+                metadata = jsonb_set(
+                  jsonb_set(
+                    jsonb_set(metadata, '{tagId}', to_jsonb($4::text)),
+                    '{toolUseId}', to_jsonb($5::text)
+                  ),
+                  '{updatedAt}', to_jsonb($6::bigint)
+                )
+            WHERE file_path = $7
+              AND metadata->>'tagId' = $8
+          `, [compressed, compressed.length, now, tagId, toolUseId, now, filePath, existingTagId]);
+
+          const windows = BrowserWindow.getAllWindows();
+          for (const window of windows) {
+            if (!window.isDestroyed()) {
+              window.webContents.send('history:pending-tag-created', { path: filePath });
+              window.webContents.send('file-changed-on-disk', { path: filePath });
+            }
+          }
+          return;
+        }
+
         if (existingIsEmpty && content.length > 0) {
           // Upgrade the empty tag with real baseline content
-          const existingTagId = existing.rows[0].tag_id;
           logger.main.info('[HistoryManager] Upgrading empty pre-edit tag with real baseline:', {
             filePath,
             sessionId,

@@ -19,6 +19,7 @@ import { useAtomValue } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '../../../icons/MaterialSymbol';
 import type { CustomToolWidgetProps } from './index';
+import { buildCodexToolLookupId } from '../../../../ai/server/toolLookupIds';
 import { interactiveWidgetHostAtom } from '../../../../store/atoms/interactiveWidgetHost';
 import { useDiffPeek } from '../../../git/useDiffPeek';
 
@@ -496,9 +497,26 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
     };
   }, [isCompleted, toolResult, structuredResult]);
 
-  // The proposalId is simply the tool call ID - no need for a separate atom
-  // The MCP server uses toolUseId (which equals toolCall.providerToolCallId) as the proposalId
-  const proposalId = toolCall.providerToolCallId || '';
+  // Claude-style tool IDs are durable enough to send back directly. Codex
+  // canonical events now arrive with synthetic edit-group IDs of the form
+  // `nimtc|<item_n>|<ts>|<idx>` minted by CodexRawParser, so they also pass
+  // through unchanged. The fallback below wraps a bare `item_N` for legacy
+  // canonical events written before the synthetic-ID change so the
+  // main-process resolver can still map them to the correct proposal row.
+  const proposalId = useMemo(() => {
+    const providerToolCallId = toolCall.providerToolCallId || '';
+    if (!providerToolCallId) {
+      return '';
+    }
+    if (/^item_\d+$/.test(providerToolCallId)) {
+      return buildCodexToolLookupId(
+        providerToolCallId,
+        message.createdAt.getTime(),
+        message.id,
+      );
+    }
+    return providerToolCallId;
+  }, [message.createdAt, message.id, toolCall.providerToolCallId]);
 
   // If no proposal ID, cannot proceed
   if (!proposalId) {
@@ -520,6 +538,10 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
     commitDate?: string;
     error?: string;
   } | null>(null);
+  // Latch when the widget has rendered as auto-committed. This must persist
+  // even if the user later disables auto-commit -- the commit has already
+  // happened, so the widget should stay in the success state.
+  const [wasAutoCommitted, setWasAutoCommitted] = useState(false);
 
   // Diff peek state — encapsulated by useDiffPeek hook (shared with FilesEditedSidebar).
   const { peekSupported, registerRowEl, togglePeek, isActive, popoverElement } = useDiffPeek({
@@ -539,6 +561,15 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
     const allPaths = getAllFolderPaths(directoryTree);
     setExpandedFolders(new Set(allPaths));
   }, [directoryTree]);
+
+  // Latch wasAutoCommitted once the auto-commit success branch fires. Without
+  // this, toggling auto-commit off after a successful auto-commit would re-render
+  // the widget into the pending interactive UI even though the commit happened.
+  useEffect(() => {
+    if (host?.autoCommitEnabled && !isCommitting && !wasAutoCommitted) {
+      setWasAutoCommitted(true);
+    }
+  }, [host?.autoCommitEnabled, isCommitting, wasAutoCommitted]);
 
   // Determine which result to show (tool result wins once available; local is only for pending UI)
   const displayResult = completedState ? {
@@ -952,7 +983,9 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
   // committed success state directly. If isCommitting is true, the user just
   // toggled auto-commit on and handleConfirm is running — let the normal commit
   // flow handle the UI (shows "Committing..." then completed state).
-  if (host?.autoCommitEnabled && !isCommitting) {
+  // wasAutoCommitted latches once we've shown the auto-commit success UI so
+  // toggling auto-commit off afterwards doesn't revert the widget to "pending".
+  if ((host?.autoCommitEnabled || wasAutoCommitted) && !isCommitting) {
     return (
       <div
         data-testid="git-commit-widget"
@@ -984,15 +1017,21 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
             </div>
           </div>
           <div className="mt-2 pt-2 border-t border-[var(--nim-border)]">
-            <button
-              className="text-[0.75rem] text-[var(--nim-text-muted)] hover:text-[var(--nim-text)] underline cursor-pointer bg-transparent border-none p-0 transition-colors"
-              onClick={() => {
-                host.setAutoCommitEnabled(false);
-                host.trackEvent('auto_commit_disabled', { source: 'commit_success_widget' });
-              }}
-            >
-              Disable auto-approve
-            </button>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={host?.autoCommitEnabled ?? false}
+                onChange={(e) => {
+                  host?.setAutoCommitEnabled(e.target.checked);
+                  host?.trackEvent(
+                    e.target.checked ? 'auto_commit_enabled' : 'auto_commit_disabled',
+                    { source: 'commit_success_widget' }
+                  );
+                }}
+                className="accent-[var(--nim-primary)] w-3.5 h-3.5 cursor-pointer"
+              />
+              <span className="text-[0.75rem] text-[var(--nim-text-muted)]">Auto-approve future commits</span>
+            </label>
           </div>
         </div>
       </div>

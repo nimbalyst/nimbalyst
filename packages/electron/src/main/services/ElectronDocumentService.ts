@@ -16,7 +16,7 @@ import crypto from 'crypto';
 import { getCurrentIdentity } from './TrackerIdentityService';
 import { extractFrontmatter, extractCommonFields } from '../utils/frontmatterReader';
 import { VIRTUAL_DOCS, isVirtualPath } from '@nimbalyst/runtime';
-import { updateTrackerInFrontmatter, updateInlineTrackerItem, removeInlineTrackerItem } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
+import { updateTrackerInFrontmatter, updateInlineTrackerItem, removeInlineTrackerItem, EXTENSION_OWNED_KEYS } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { shouldExcludeDir } from '../utils/fileFilters';
 import { isPathInWorkspace, getRelativeWorkspacePath } from '../utils/workspaceDetection';
@@ -1028,6 +1028,9 @@ export class ElectronDocumentService implements DocumentService {
           'created', 'updated', 'dueDate', 'assigneeEmail', 'reporterEmail',
           'authorIdentity', 'lastModifiedBy', 'createdByAgent', 'assigneeId',
           'reporterId', 'labels', 'linkedSessions', 'linkedCommitSha', 'documentId',
+          // _fieldUpdatedAt is the per-field LWW timestamp map, surfaced via the
+          // top-level fieldUpdatedAt property -- not a user-visible custom field.
+          '_fieldUpdatedAt',
         ]);
         const extra: Record<string, any> = {};
         if (data) {
@@ -1419,11 +1422,28 @@ export class ElectronDocumentService implements DocumentService {
       return { item: null, skipped: false, error: 'No valid frontmatter found' };
     }
 
-    // Resolve tracker frontmatter: check trackerStatus (canonical format)
+    // Resolve tracker frontmatter. Check extension-owned keys (e.g.
+    // `automationStatus` for the automations extension) first - the same
+    // priority order `detectTrackerFromFrontmatter` and
+    // `resolveTrackerFrontmatter` already use. Without this, an automation
+    // document imported through this path (file-system import via the
+    // `document-service:*` IPC channels) would be silently rejected as "no
+    // tracker frontmatter" even though every other code path classifies it
+    // correctly. See nimbalyst#67.
     let trackerData: Record<string, any> | null = null;
     let trackerType = 'plan'; // default
 
-    if (frontmatter.trackerStatus && typeof frontmatter.trackerStatus === 'object') {
+    for (const [extKey, extType] of Object.entries(EXTENSION_OWNED_KEYS)) {
+      if (frontmatter[extKey] && typeof frontmatter[extKey] === 'object') {
+        const extData = frontmatter[extKey] as Record<string, any>;
+        const { [extKey]: _ext, trackerStatus: _ts, ...topLevel } = frontmatter;
+        trackerType = extType;
+        trackerData = { ...topLevel, ...extData };
+        break;
+      }
+    }
+
+    if (!trackerData && frontmatter.trackerStatus && typeof frontmatter.trackerStatus === 'object') {
       const ts = frontmatter.trackerStatus as Record<string, any>;
       trackerType = (ts.type as string) || 'plan';
       // Top-level fields are canonical, trackerStatus holds only type

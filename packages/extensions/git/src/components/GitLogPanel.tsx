@@ -804,6 +804,8 @@ export function GitLogPanel({ host }: PanelHostProps) {
                 author={commits[selectedIndex].author}
                 date={commits[selectedIndex].date}
                 layout="vertical"
+                workspacePath={workspacePath}
+                commitHash={commits[selectedIndex].hash}
               />
             </div>
           )}

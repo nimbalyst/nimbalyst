@@ -72,6 +72,54 @@ export function createSyncedAgentMessagesStore(
       }
     },
 
+    async createMany(messages: CreateAgentMessageInput[]): Promise<void> {
+      if (messages.length === 0) return;
+
+      for (const message of messages) {
+        if (!message.createdAt) {
+          throw new Error('message.createdAt is required for sync consistency');
+        }
+      }
+
+      // Insert all rows through the base store's batched path. This is the
+      // writer-lock-relief path: a single transaction holds the lock briefly,
+      // not once per chunk. See AgentMessageWriteQueue.
+      if (baseStore.createMany) {
+        await baseStore.createMany(messages);
+      } else {
+        for (const message of messages) {
+          await baseStore.create(message);
+        }
+      }
+
+      const messageSyncHandler = getMessageSyncHandler();
+      if (!messageSyncHandler) return;
+
+      // Push each message to sync individually after the batch persists. Sync
+      // already debounces its own index push (see scheduleIndexSync below).
+      try {
+        for (const message of messages) {
+          const timestamp = message.createdAt instanceof Date
+            ? message.createdAt
+            : new Date(message.createdAt!);
+          const syncMessage: AgentMessage = {
+            id: 0,
+            sessionId: message.sessionId,
+            createdAt: timestamp,
+            source: message.source,
+            direction: message.direction,
+            content: message.content,
+            metadata: message.metadata,
+            hidden: message.hidden ?? false,
+          };
+          messageSyncHandler.onMessageCreated(syncMessage, timestamp.getTime());
+        }
+        scheduleIndexSync();
+      } catch (error) {
+        logger.main.warn('[SyncedAgentMessagesStore] Failed to sync batched messages:', error);
+      }
+    },
+
     async list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]> {
       return baseStore.list(sessionId, options);
     },

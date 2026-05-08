@@ -14,6 +14,7 @@ import { BrowserWindow } from "electron";
 import { getMostRecentlyFocusedWorkspaceWindow, windowStates, windowFocusOrder } from "../window/WindowManager";
 import { windows } from "../window/windowState";
 import { workspaceToWindowMap } from "./mcpWorkspaceResolver";
+import { requireMcpAuth } from "./mcpAuth";
 
 // Extracted modules
 import {
@@ -39,9 +40,13 @@ import {
 import {
   handleTrackerList,
   handleTrackerGet,
+  handleTrackerListTypes,
+  handleTrackerDefineType,
+  handleTrackerDeleteType,
   handleTrackerCreate,
   handleTrackerUpdate,
   handleTrackerLinkSession,
+  handleTrackerUnlinkSession,
   handleTrackerLinkFile,
   handleTrackerAddComment,
   trackerToolSchemas,
@@ -392,6 +397,15 @@ function createSharedMcpServer(
         case "tracker_get":
           return handleTrackerGet(args, workspacePath);
 
+        case "tracker_list_types":
+          return handleTrackerListTypes(args);
+
+        case "tracker_define_type":
+          return handleTrackerDefineType(args, workspacePath);
+
+        case "tracker_delete_type":
+          return handleTrackerDeleteType(args, workspacePath);
+
         case "tracker_create":
           return handleTrackerCreate(args, workspacePath, sessionId);
 
@@ -400,6 +414,9 @@ function createSharedMcpServer(
 
         case "tracker_link_session":
           return handleTrackerLinkSession(args, sessionId, workspacePath);
+
+        case "tracker_unlink_session":
+          return handleTrackerUnlinkSession(args, sessionId, workspacePath);
 
         case "tracker_link_file":
           return handleTrackerLinkFile(args, sessionId, workspacePath);
@@ -487,15 +504,34 @@ async function tryCreateServer(port: number): Promise<any> {
         const pathname = parsedUrl.pathname;
         const mcpSessionIdHeader = getMcpSessionIdHeader(req);
 
-        // Handle CORS preflight
+        // Handle CORS preflight.
+        // Issue #146: do not echo `Access-Control-Allow-Origin: *` on /mcp;
+        // bearer token is the sole gate. /clip keeps its CORS-open shape so
+        // the browser-extension web clipper can keep posting clips.
         if (req.method === "OPTIONS") {
-          res.writeHead(200, {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers":
-              "Content-Type, mcp-session-id, mcp-protocol-version",
-          });
+          if (pathname === "/clip") {
+            res.writeHead(200, {
+              "Access-Control-Allow-Origin": "*",
+              "Access-Control-Allow-Methods": "POST, OPTIONS",
+              "Access-Control-Allow-Headers": "Content-Type",
+            });
+          } else {
+            res.writeHead(200, {
+              "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+              "Access-Control-Allow-Headers":
+                "Authorization, Content-Type, mcp-session-id, mcp-protocol-version",
+            });
+          }
           res.end();
+          return;
+        }
+
+        // Issue #146: every non-OPTIONS request to /mcp must carry the
+        // per-launch bearer token. /clip stays open below (intentional, per
+        // plan: web-clipper extension fires from the user's browser).
+        if (pathname === "/mcp" && !requireMcpAuth(req)) {
+          res.writeHead(401);
+          res.end("Unauthorized");
           return;
         }
 

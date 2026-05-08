@@ -82,6 +82,8 @@ export class OpenCodeProvider extends BaseAgentProvider {
   private static extensionDevServerPort: number | null = null;
   private static superLoopProgressServerPort: number | null = null;
   private static sessionContextServerPort: number | null = null;
+  // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers (Issue #146)
+  private static mcpAuthToken: string | null = null;
 
   // MCP config loader (injected from electron main process)
   private static mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null = null;
@@ -110,6 +112,7 @@ export class OpenCodeProvider extends BaseAgentProvider {
       extensionDevServerPort: OpenCodeProvider.extensionDevServerPort,
       superLoopProgressServerPort: OpenCodeProvider.superLoopProgressServerPort,
       sessionContextServerPort: OpenCodeProvider.sessionContextServerPort,
+      mcpAuthToken: OpenCodeProvider.mcpAuthToken,
       mcpConfigLoader: OpenCodeProvider.mcpConfigLoader,
       extensionPluginsLoader: null,
       claudeSettingsEnvLoader: null,
@@ -144,6 +147,10 @@ export class OpenCodeProvider extends BaseAgentProvider {
 
   public static setSessionContextServerPort(port: number | null): void {
     OpenCodeProvider.sessionContextServerPort = port;
+  }
+
+  public static setMcpAuthToken(token: string | null): void {
+    OpenCodeProvider.mcpAuthToken = token;
   }
 
   public static setMcpConfigLoader(loader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null): void {

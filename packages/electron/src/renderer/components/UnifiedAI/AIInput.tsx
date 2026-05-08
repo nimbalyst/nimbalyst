@@ -2,6 +2,7 @@ import React, { useRef, useEffect, KeyboardEvent, useState, useCallback, forward
 import { useAtomValue, useSetAtom } from 'jotai';
 import { GenericTypeahead, TypeaheadOption } from '../Typeahead/GenericTypeahead';
 import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type SlashTypeaheadScope, TriggerMatch } from '../Typeahead/typeaheadUtils';
+import { buildSlashCommandOptions, fetchSlashCommandEntries, type SlashCommandEntry } from '../Typeahead/slashCommandAutocomplete';
 import { readClipboard, type ChatAttachment } from '@nimbalyst/runtime';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
 import type { EffortLevel } from '../../utils/modelUtils';
@@ -157,7 +158,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     const [selectedOption, setSelectedOption] = useState<TypeaheadOption | null>(null);
     const [cursorPosition, setCursorPosition] = useState(0);
     const [slashCommandOptions, setSlashCommandOptions] = useState<TypeaheadOption[]>([]);
-    const [allSlashCommands, setAllSlashCommands] = useState<any[]>([]);
+    const [allSlashCommands, setAllSlashCommands] = useState<SlashCommandEntry[]>([]);
     const [dragActive, setDragActive] = useState(false);
     const [isFocused, setIsFocused] = useState(false);
 
@@ -411,132 +412,26 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     const fetchSlashCommands = useCallback(async () => {
       if (!enableSlashCommands || !workspacePath) return;
       try {
-        // Get SDK commands from ClaudeCodeProvider if available
-        let sdkCommands: string[] = [];
-        let sdkSkills: string[] = [];
-        try {
-          const sdkResult = await window.electronAPI.invoke('ai:getSlashCommands', sessionId);
-          if (sdkResult?.success && Array.isArray(sdkResult.commands)) {
-            sdkCommands = sdkResult.commands;
-            sdkSkills = Array.isArray(sdkResult.skills) ? sdkResult.skills : [];
-          }
-        } catch (sdkError) {
-          console.warn('[AIInput] Failed to get SDK commands:', sdkError);
-        }
-
-        // Fetch all commands (built-in + custom)
-        const commands = await window.electronAPI.invoke('slash-command:list', {
+        const commands = await fetchSlashCommandEntries({
           workspacePath,
-          sdkCommands,
-          sdkSkills,
+          sessionId,
+          provider: currentProvider ?? provider ?? null,
         });
-
-        setAllSlashCommands(commands || []);
+        setAllSlashCommands(commands);
       } catch (error) {
         console.error('[AIInput] Failed to load slash commands:', error);
         setAllSlashCommands([]);
       }
-    }, [workspacePath, sessionId, enableSlashCommands]);
+    }, [workspacePath, sessionId, enableSlashCommands, currentProvider, provider]);
 
     // Fetch on mount and when workspace/session changes
     useEffect(() => {
       fetchSlashCommands();
     }, [fetchSlashCommands]);
 
-    // Get icon for command based on name and source
-    const getCommandIcon = (cmd: any): string => {
-      if (cmd.kind === 'skill') {
-        return 'psychology';
-      }
-      if (cmd.source === 'builtin') {
-        const builtinIcons: Record<string, string> = {
-          'compact': 'compress',
-          'clear': 'delete_sweep',
-          'context': 'info',
-          'cost': 'payments',
-          'init': 'restart_alt',
-          'output-style:new': 'palette',
-          'pr-comments': 'comment',
-          'release-notes': 'description',
-          'todos': 'checklist',
-          'review': 'rate_review',
-          'security-review': 'security'
-        };
-        return builtinIcons[cmd.name] || 'bolt';
-      }
-      if (cmd.source === 'plugin') {
-        return 'extension';
-      }
-      return 'code';
-    };
-
-    // Score a command name against a query for relevance ranking
-    // Higher score = better match
-    const scoreCommand = (name: string, query: string): number => {
-      const lowerName = name.toLowerCase();
-      const lowerQuery = query.toLowerCase();
-
-      // Exact match
-      if (lowerName === lowerQuery) return 100;
-
-      // Name starts with query (prefix match)
-      if (lowerName.startsWith(lowerQuery)) return 80;
-
-      // Name contains query at word boundary (e.g., "prepare-commit" matches at "-commit")
-      const wordBoundaryRegex = new RegExp(`(?:^|[\\s_-])${lowerQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i');
-      if (wordBoundaryRegex.test(lowerName)) return 60;
-
-      // Name contains query anywhere
-      if (lowerName.includes(lowerQuery)) return 40;
-
-      // No match
-      return 0;
-    };
-
     // Filter and sort slash commands based on query
     const filterSlashCommands = useCallback((query: string, scope: SlashTypeaheadScope) => {
-      const hasQuery = query.length > 0;
-      const filtered = allSlashCommands
-        .filter(cmd => {
-          if (scope === 'commands') {
-            // At position 0: show everything (commands + skills)
-            return true;
-          }
-          // Mid-prompt skills scope: show skills AND project/user commands, not built-in commands
-          // (the SDK treats .claude/commands/ entries as invocable skills too)
-          return cmd.source !== 'builtin';
-        })
-        .map(cmd => ({
-          cmd,
-          score: scoreCommand(cmd.name, query)
-        }))
-        .filter(({ score }) => score > 0)
-        .sort((a, b) => b.score - a.score)
-        .map(({ cmd }) => {
-          // Build label with argument hint if available (e.g., "/fix-issue [issue-number]")
-          const label = cmd.argumentHint
-            ? `/${cmd.name} ${cmd.argumentHint}`
-            : `/${cmd.name}`;
-          return {
-            id: cmd.name,
-            label,
-            description: cmd.description || `Execute ${cmd.name} command`,
-            icon: getCommandIcon(cmd),
-            // Only show sections when there's no filter query (full list)
-            // When filtering, we want pure relevance-based ordering without section grouping
-            section: hasQuery ? undefined : (
-              cmd.kind === 'skill'
-                ? (cmd.source === 'project' ? 'Project Skills' :
-                   cmd.source === 'plugin' ? 'Plugin Skills' : 'User Skills')
-                : (cmd.source === 'builtin' ? 'Built-in Commands' :
-                   cmd.source === 'project' ? 'Project Commands' :
-                   cmd.source === 'plugin' ? 'Extension Commands' : 'User Commands')
-            ),
-            data: cmd
-          };
-        });
-
-      setSlashCommandOptions(filtered);
+      setSlashCommandOptions(buildSlashCommandOptions(allSlashCommands, query, scope));
     }, [allSlashCommands]);
 
     // Check for typeahead trigger when value changes (debounced for performance)
@@ -881,7 +776,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
       }
 
       // Handle Cmd+Shift+V for force-paste (bypass large paste → attachment conversion)
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'v') {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'v') {
         e.preventDefault();
         readClipboard().then(text => {
           if (!text || !textareaRef.current) return;

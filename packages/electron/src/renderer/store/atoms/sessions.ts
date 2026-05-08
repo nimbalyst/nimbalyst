@@ -193,12 +193,17 @@ export const sessionPromptAdditionsAtom = atomFamily((_sessionId: string) =>
 
 /**
  * Pending interactive prompt from the database.
- * Represents either a permission_request or ask_user_question_request.
+ * Represents one of: permission_request, ask_user_question_request,
+ * exit_plan_mode_request, or git_commit_proposal_request.
  */
 export interface PendingPrompt {
   id: string;
   sessionId: string;
-  promptType: 'permission_request' | 'ask_user_question_request';
+  promptType:
+    | 'permission_request'
+    | 'ask_user_question_request'
+    | 'exit_plan_mode_request'
+    | 'git_commit_proposal_request';
   promptId: string;  // requestId or questionId
   data: any;         // The full prompt content
   createdAt: number;
@@ -1084,10 +1089,16 @@ export const createChildSessionAtom = atom(
           childId: result.sessionId,
         });
 
-        // Update the parent's child count in the session list so the UI updates
+        // Update the parent's child count in the session list so the UI updates.
+        // Why max-with-existing: sessionChildrenAtom(parent) may not have been
+        // hydrated yet (e.g. user clicked "+" before loadSessionChildrenAtom
+        // populated it), in which case newChildren.length is 1 even though the
+        // DB has many siblings. Lowering the registry's existing childCount
+        // would mask the new child from SessionHistory's refresh check.
+        const existingChildCount = get(sessionRegistryAtom).get(parentSessionId)?.childCount ?? 0;
         set(updateSessionFullAtom, {
           id: parentSessionId,
-          childCount: newChildren.length,
+          childCount: Math.max(newChildren.length, existingChildCount + 1),
         });
 
         return result.sessionId;

@@ -13,6 +13,7 @@
 import { MockupEditor } from './components/MockupEditor';
 import { MockupProjectEditor } from './components/MockupProjectEditor';
 import type { ExtensionFileSystemService } from '@nimbalyst/extension-sdk';
+import './styles.css';
 
 // Module-level filesystem service, set during activation
 let _filesystem: ExtensionFileSystemService | null = null;

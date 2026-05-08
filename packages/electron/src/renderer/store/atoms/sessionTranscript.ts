@@ -52,3 +52,14 @@ export const streamCompletionSignalAtom = atomFamily((_sessionId: string) =>
   atom<number>(0)
 );
 
+/**
+ * Per-session transcript-event signal.
+ * Incremented whenever a `transcript:event` IPC event fires for this session.
+ * Components that want to react to transcript activity (e.g. the kanban
+ * transcript peek refetching on new turns) subscribe via useAtomValue rather
+ * than calling window.electronAPI.on directly.
+ */
+export const transcriptEventSignalAtom = atomFamily((_sessionId: string) =>
+  atom<number>(0)
+);
+

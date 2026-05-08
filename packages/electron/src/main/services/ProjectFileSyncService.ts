@@ -17,6 +17,7 @@ import { createHash } from 'crypto';
 import { logger } from '../utils/logger';
 import { ProjectSyncProvider, type ProjectSyncManifestFile, type ProjectSyncResponse, type ProjectSyncFileUpdate } from '@nimbalyst/runtime/sync';
 import { getPersonalDocSyncConfig } from './SyncManager';
+import { timeStartupPhase } from '../utils/startupTiming';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -85,57 +86,71 @@ export class ProjectFileSyncService {
   async syncProject(workspacePath: string, encryptedProjectId: string): Promise<void> {
     if (!this.provider) return;
 
-    logger.main.info(`[ProjectFileSync] Starting sync for ${path.basename(workspacePath)}`);
+    const projectName = path.basename(workspacePath);
+    logger.main.info(`[ProjectFileSync] Starting sync for ${projectName}`);
 
     try {
       // Scan all .md files
-      const mdFiles = await this.scanMarkdownFiles(workspacePath);
+      const mdFiles = await timeStartupPhase(
+        `ProjectFileSync.scan(${projectName})`,
+        () => this.scanMarkdownFiles(workspacePath),
+      );
       logger.main.info(`[ProjectFileSync] Found ${mdFiles.length} .md files`);
 
-      // Build manifest from local files
+      // Build manifest from local files. Reads + hashes every file sequentially,
+      // which dominates startup time on large projects -- timed separately so the
+      // user log shows whether the freeze is in scan, hash, or the network connect.
       const manifest: ProjectSyncManifestFile[] = [];
       const fileMap = new Map<string, string>(); // syncId -> absolutePath
 
-      for (const filePath of mdFiles) {
-        try {
-          const relativePath = path.relative(workspacePath, filePath);
-          const syncId = this.syncIdFromPath(relativePath);
-          const content = await fs.readFile(filePath, 'utf-8');
-          const stat = await fs.stat(filePath);
-          const contentHash = this.sha256(content);
+      await timeStartupPhase(
+        `ProjectFileSync.buildManifest(${projectName}, ${mdFiles.length} files)`,
+        async () => {
+          for (const filePath of mdFiles) {
+            try {
+              const relativePath = path.relative(workspacePath, filePath);
+              const syncId = this.syncIdFromPath(relativePath);
+              const content = await fs.readFile(filePath, 'utf-8');
+              const stat = await fs.stat(filePath);
+              const contentHash = this.sha256(content);
 
-          manifest.push({
-            syncId,
-            contentHash,
-            lastModifiedAt: Math.floor(stat.mtimeMs),
-            hasYjs: false,
-            yjsSeq: 0,
-          });
+              manifest.push({
+                syncId,
+                contentHash,
+                lastModifiedAt: Math.floor(stat.mtimeMs),
+                hasYjs: false,
+                yjsSeq: 0,
+              });
 
-          fileMap.set(syncId, filePath);
+              fileMap.set(syncId, filePath);
 
-          // Track local state
-          let projectState = this.projectStates.get(encryptedProjectId);
-          if (!projectState) {
-            projectState = new Map();
-            this.projectStates.set(encryptedProjectId, projectState);
+              // Track local state
+              let projectState = this.projectStates.get(encryptedProjectId);
+              if (!projectState) {
+                projectState = new Map();
+                this.projectStates.set(encryptedProjectId, projectState);
+              }
+              projectState.set(syncId, {
+                syncId,
+                contentHash,
+                lastSyncedMtime: Math.floor(stat.mtimeMs),
+              });
+            } catch (err) {
+              logger.main.error(`[ProjectFileSync] Failed to process ${filePath}:`, err);
+            }
           }
-          projectState.set(syncId, {
-            syncId,
-            contentHash,
-            lastSyncedMtime: Math.floor(stat.mtimeMs),
-          });
-        } catch (err) {
-          logger.main.error(`[ProjectFileSync] Failed to process ${filePath}:`, err);
-        }
-      }
+        },
+      );
 
       // Store the file map for handling sync response
       (this as any)._fileMapCache = (this as any)._fileMapCache || new Map();
       (this as any)._fileMapCache.set(encryptedProjectId, { fileMap, workspacePath });
 
       // Connect and send manifest
-      await this.provider.connect(encryptedProjectId, manifest);
+      await timeStartupPhase(
+        `ProjectFileSync.connect(${projectName})`,
+        () => this.provider!.connect(encryptedProjectId, manifest),
+      );
     } catch (err) {
       logger.main.error(`[ProjectFileSync] Failed to sync project:`, err);
     }

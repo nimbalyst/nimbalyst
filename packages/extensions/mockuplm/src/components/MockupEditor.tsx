@@ -25,6 +25,7 @@ import '@nimbalyst/runtime';
 
 export const MockupEditor = forwardRef<any, EditorHostProps>(function MockupEditor({ host }, ref) {
   const { filePath, fileName, isActive } = host;
+  const isReadOnlyViewer = host.readOnly === true;
 
   // Refs for clearAllAnnotations (defined early so hook can reference)
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -87,7 +88,7 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(function MockupEdit
   // Additional UI state
   const [isCapturing, setIsCapturing] = useState(false);
   const [isDrawingMode, setIsDrawingMode] = useState(false);
-  const [isInteractive, setIsInteractive] = useState(false);
+  const [isInteractive, setIsInteractive] = useState(isReadOnlyViewer);
   const [mockupTheme, setMockupTheme] = useState<MockupTheme>('dark');
   const [drawingColor, setDrawingColor] = useState('#FF0000');
   const [scrollOffset, setScrollOffset] = useState({ x: 0, y: 0 });
@@ -172,6 +173,24 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(function MockupEdit
       });
     }
   }, []);
+
+  useEffect(() => {
+    if (!isReadOnlyViewer) {
+      return;
+    }
+
+    setIsInteractive(true);
+    setIsDrawingMode(false);
+    handleDeselectElement();
+  }, [isReadOnlyViewer, handleDeselectElement]);
+
+  useEffect(() => {
+    if (!isReadOnlyViewer) {
+      return;
+    }
+
+    setMockupTheme(theme === 'light' ? 'light' : 'dark');
+  }, [isReadOnlyViewer, theme]);
 
   // Update iframe when content changes or when exiting diff mode
   useEffect(() => {
@@ -477,6 +496,11 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(function MockupEdit
 
   // Handle MCP screenshot requests
   useEffect(() => {
+    const electronAPI = window.electronAPI;
+    if (!electronAPI?.on || !electronAPI?.invoke) {
+      return;
+    }
+
     const handleCaptureRequest = async (data: { requestId: string; filePath: string }) => {
       if (data.filePath !== filePath) return;
 
@@ -490,7 +514,7 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(function MockupEdit
         const paths = drawingPathsRef.current.length > 0 ? drawingPathsRef.current : undefined;
         const base64Data = await captureMockupComposite(iframeRef.current, null, paths);
 
-        await window.electronAPI.invoke('mockup:screenshot-result', {
+        await electronAPI.invoke('mockup:screenshot-result', {
           requestId: data.requestId,
           success: true,
           imageBase64: base64Data,
@@ -498,7 +522,7 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(function MockupEdit
         });
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
-        await window.electronAPI.invoke('mockup:screenshot-result', {
+        await electronAPI.invoke('mockup:screenshot-result', {
           requestId: data.requestId,
           success: false,
           error: errorMessage,
@@ -506,7 +530,7 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(function MockupEdit
       }
     };
 
-    const cleanup = window.electronAPI.on('mockup:capture-screenshot', handleCaptureRequest);
+    const cleanup = electronAPI.on('mockup:capture-screenshot', handleCaptureRequest);
     return cleanup;
   }, [filePath]);
 
@@ -633,6 +657,19 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(function MockupEdit
         updatedHtml={diffState.modified}
         fileName={fileName}
       />
+    );
+  }
+
+  if (isReadOnlyViewer) {
+    return (
+      <div className="h-full overflow-hidden bg-white relative">
+        <iframe
+          ref={iframeRef}
+          className="w-full h-full border-none absolute top-0 left-0"
+          sandbox="allow-scripts allow-same-origin"
+          title={`Mockup: ${fileName}`}
+        />
+      </div>
     );
   }
 

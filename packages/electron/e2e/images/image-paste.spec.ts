@@ -39,6 +39,12 @@ test.beforeAll(async () => {
     'utf8'
   );
 
+  await fsp.writeFile(
+    path.join(workspace, 'test-render.md'),
+    '# Render Test\n\nPaste image here.\n',
+    'utf8'
+  );
+
   electronApp = await launchElectronApp({ workspace });
   page = await electronApp.firstWindow();
   await waitForAppReady(page);
@@ -115,6 +121,41 @@ test('should store pasted image as content-addressed asset', async () => {
   expect(hasImage?.count).toBeGreaterThan(0);
   expect(hasImage?.src).toContain('.nimbalyst/assets/');
   expect(hasImage?.src).not.toContain('data:image');
+});
+
+test('renders pasted image via nim-asset:// so it loads under webSecurity:true', async () => {
+  // Regression for issue #146 follow-up: webSecurity hardening blocks
+  // <img src="file://..."> in the main window, so the markdown editor
+  // must route pasted-image URLs through the nim-asset:// custom
+  // protocol. If this asserts file:// (or fails to load), localAssetUrl
+  // is not registered or ImageComponent is bypassing it.
+  await openFileFromTree(page, 'test-render.md');
+  await page.waitForTimeout(500);
+
+  const editor = page.locator(ACTIVE_EDITOR_SELECTOR);
+  await editor.click();
+
+  const svgContent = '<svg width="40" height="40" xmlns="http://www.w3.org/2000/svg"><rect width="40" height="40" fill="green"/></svg>';
+  await pasteImage(page, svgContent);
+
+  // Poll until ImageComponent has resolved the src to a nim-asset URL and
+  // the image has actually loaded (browsers only set naturalWidth > 0 on
+  // success, so this catches a 403 from the protocol handler too).
+  await expect
+    .poll(
+      async () =>
+        await page.evaluate(() => {
+          const editorEl = document.querySelector('.editor [contenteditable="true"]');
+          const img = editorEl?.querySelector<HTMLImageElement>('img');
+          if (!img) return null;
+          return {
+            scheme: img.src.split('://')[0],
+            loaded: img.naturalWidth > 0,
+          };
+        }),
+      { timeout: 3000 },
+    )
+    .toEqual({ scheme: 'nim-asset', loaded: true });
 });
 
 test('should deduplicate identical pasted images', async () => {

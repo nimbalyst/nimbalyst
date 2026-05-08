@@ -50,6 +50,7 @@ import ContentEditable from '../../ui/ContentEditable';
 import ImageResizer from '../../ui/ImageResizer';
 import {$isImageNode} from './ImageNode';
 import {getImagePluginCallbacks} from './index';
+import {localAssetUrl} from '../../../utils/localAssetUrl';
 
 const imageCache = new Map<string, Promise<boolean> | boolean>();
 
@@ -272,13 +273,28 @@ export default function ImageComponent({
     setIsLoadError(false);
   }, [src]);
 
-  // Resolve image paths to absolute file:// URLs
-  // Uses DOM traversal to find document path (stable per-editor instance)
+  // Resolve image paths to renderer-loadable URLs.
+  // Uses DOM traversal to find document path (stable per-editor instance).
+  // Local-file URLs go through `localAssetUrl` so the platform layer can
+  // route them through a custom protocol (Electron uses `nim-asset://`
+  // because `webSecurity: true` blocks `<img src="file://...">`).
   useEffect(() => {
     let cancelled = false;
 
     const resolveSrc = async () => {
+      // collab-asset:// is a registered standard+secure scheme -- the main
+      // process handles fetch+decrypt and hands the bytes to Chromium. The
+      // renderer must pass these URLs through untouched so we don't double-
+      // resolve to a stale blob URL or mistake them for a relative path.
+      if (src.startsWith('collab-asset://')) {
+        if (!cancelled) {
+          setResolvedSrc(src);
+        }
+        return;
+      }
+
       const callbacks = getImagePluginCallbacks();
+
       if (callbacks.resolveImageSrc) {
         try {
           const resolved = await callbacks.resolveImageSrc(src);
@@ -294,8 +310,17 @@ export default function ImageComponent({
         }
       }
 
-      // If it's already an absolute URL, use as-is
-      if (src.match(/^(https?|file|data|blob):/)) {
+      // file:// needs to be re-routed through the platform's local-asset URL
+      // (nim-asset:// in Electron). Other absolute URL schemes pass through.
+      if (src.startsWith('file://')) {
+        const absolutePath = src.replace(/^file:\/\//, '');
+        if (!cancelled) {
+          imageCache.delete(src);
+          setResolvedSrc(localAssetUrl(absolutePath));
+        }
+        return;
+      }
+      if (src.match(/^(https?|data|blob):/)) {
         if (!cancelled) {
           setResolvedSrc(src);
         }
@@ -312,7 +337,7 @@ export default function ImageComponent({
             if (!cancelled) {
               if (absolutePath) {
                 imageCache.delete(src);
-                setResolvedSrc(`file://${absolutePath}`);
+                setResolvedSrc(localAssetUrl(absolutePath));
               } else {
                 setResolvedSrc(src);
               }
@@ -333,10 +358,15 @@ export default function ImageComponent({
       const documentPath = getDocumentPathFromDOM(containerRef.current);
       if (!cancelled) {
         if (documentPath) {
-          const lastSlash = documentPath.lastIndexOf('/');
-          const documentDir = lastSlash >= 0 ? documentPath.substring(0, lastSlash) : '';
+          // Handle both POSIX and Windows separators -- on Windows the
+          // document path is "C:\\foo\\bar.md" with backslashes.
+          const lastSep = Math.max(
+            documentPath.lastIndexOf('/'),
+            documentPath.lastIndexOf('\\'),
+          );
+          const documentDir = lastSep >= 0 ? documentPath.substring(0, lastSep) : '';
           const absolutePath = documentDir + '/' + src;
-          setResolvedSrc('file://' + absolutePath);
+          setResolvedSrc(localAssetUrl(absolutePath));
         } else {
           setResolvedSrc(src);
         }

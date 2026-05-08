@@ -18,6 +18,7 @@ import {
   type TurnDetectionConfig,
   type SystemPromptConfig,
 } from '../../store/atoms/appSettings';
+import { voiceModePreviewAudioAtom } from '../../store/atoms/voiceModeState';
 import { AlphaBadge } from '../common/AlphaBadge';
 
 interface VoiceModePanelProps {
@@ -167,39 +168,46 @@ export const VoiceModePanel: React.FC<VoiceModePanelProps> = ({
   };
 
   // Listen for preview audio from main process
+  // Stop any playing audio on unmount.
   React.useEffect(() => {
-    const handlePreviewAudio = (payload: { voiceId: string; audioBase64: string; format: string }) => {
-      // Create audio element and play
-      const audio = new Audio(`data:audio/${payload.format};base64,${payload.audioBase64}`);
-      audioRef.current = audio;
-      setIsPreviewPlaying(true);
-
-      audio.onended = () => {
-        setIsPreviewPlaying(false);
-        audioRef.current = null;
-      };
-
-      audio.onerror = () => {
-        setIsPreviewPlaying(false);
-        audioRef.current = null;
-      };
-
-      audio.play().catch(() => {
-        setIsPreviewPlaying(false);
-        audioRef.current = null;
-      });
-    };
-
-    window.electronAPI?.on('voice-mode:preview-audio', handlePreviewAudio);
-
     return () => {
-      // Stop any playing audio on unmount
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
       }
     };
   }, []);
+
+  // Play preview audio when main process broadcasts a `voice-mode:preview-audio`
+  // event. The IPC event is handled centrally in
+  // store/listeners/voiceModeListeners.ts which writes voiceModePreviewAudioAtom;
+  // we play only on *new* bumps so any audio that was queued up before this
+  // panel mounted doesn't replay on open.
+  const previewAudio = useAtomValue(voiceModePreviewAudioAtom);
+  const initialPreviewAudioRef = React.useRef(previewAudio);
+  React.useEffect(() => {
+    if (previewAudio === initialPreviewAudioRef.current) return;
+    if (!previewAudio) return;
+    const { audioBase64, format } = previewAudio.payload;
+    const audio = new Audio(`data:audio/${format};base64,${audioBase64}`);
+    audioRef.current = audio;
+    setIsPreviewPlaying(true);
+
+    audio.onended = () => {
+      setIsPreviewPlaying(false);
+      audioRef.current = null;
+    };
+
+    audio.onerror = () => {
+      setIsPreviewPlaying(false);
+      audioRef.current = null;
+    };
+
+    audio.play().catch(() => {
+      setIsPreviewPlaying(false);
+      audioRef.current = null;
+    });
+  }, [previewAudio]);
 
   // Use defaults for turn detection
   const currentTurnDetection = { ...DEFAULT_TURN_DETECTION, ...turnDetection };
@@ -450,13 +458,13 @@ export const VoiceModePanel: React.FC<VoiceModePanelProps> = ({
                   min="5000"
                   max="30000"
                   step="1000"
-                  value={listenWindowMs ?? 10000}
+                  value={listenWindowMs ?? 15000}
                   onChange={(e) => handleSettingChange({ listenWindowMs: parseInt(e.target.value) })}
                   className="flex-1"
                 />
                 <span className="text-xs text-[var(--nim-text-muted)]">30s</span>
                 <span className="text-xs text-[var(--nim-text)] min-w-[36px]">
-                  {Math.round((listenWindowMs ?? 10000) / 1000)}s
+                  {Math.round((listenWindowMs ?? 15000) / 1000)}s
                 </span>
               </div>
             </div>

@@ -429,6 +429,7 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
           fileType: undefined,
           attachments: undefined,
           mode: 'agent',
+          inputType: 'user' as const,
         };
         await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
       } catch (error) {

@@ -35,7 +35,8 @@ export function getBuiltInFullDocumentTrackerTypes(): TrackerTypeInfo[] {
  * Get the current tracker type from markdown content
  */
 export function getCurrentTrackerTypeFromMarkdown(markdown: string): string | null {
-  const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
+  // `\r?\n` tolerates Windows CRLF (nimbalyst#68).
+  const frontmatterRegex = /^---\r?\n([\s\S]*?)\r?\n---/;
   const match = markdown.match(frontmatterRegex);
 
   if (!match) {
@@ -149,7 +150,8 @@ export function applyTrackerTypeToMarkdown(
 
   const yamlContent = yamlLines.join('\n');
 
-  const frontmatterRegex = /^---\n[\s\S]*?\n---\n?/;
+  // `\r?\n` tolerates Windows CRLF (nimbalyst#68).
+  const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
   const hasFrontmatter = frontmatterRegex.test(markdown);
 
   if (hasFrontmatter) {
@@ -194,6 +196,7 @@ export function getModelDefaults(trackerType: string): Record<string, any> {
  * Remove tracker type from markdown content
  */
 export function removeTrackerTypeFromMarkdown(markdown: string): string {
-  const frontmatterRegex = /^---\n[\s\S]*?\n---\n?/;
+  // `\r?\n` tolerates Windows CRLF (nimbalyst#68).
+  const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
   return markdown.replace(frontmatterRegex, '');
 }

@@ -102,7 +102,7 @@ describe('trackerItemToPayload', () => {
     expect(payload.comments).toEqual([]);
   });
 
-  it('should preserve collaborative fields in system', () => {
+  it('should omit local-only linkedSessions from shared payloads', () => {
     const item = makeTrackerItem({
       id: 'bug-006',
       labels: ['critical', 'auth'],
@@ -114,7 +114,8 @@ describe('trackerItemToPayload', () => {
     const payload = trackerItemToPayload(item, 'user-123');
 
     expect(payload.fields.labels).toEqual(['critical', 'auth']);
-    expect(payload.system.linkedSessions).toEqual(['session-1', 'session-2']);
+    expect(payload.system.linkedSessions).toBeUndefined();
+    expect(payload.fieldUpdatedAt.linkedSessions).toBeUndefined();
     expect(payload.system.linkedCommitSha).toBe('abc123');
     expect(payload.system.documentId).toBe('doc-1');
   });
@@ -199,7 +200,7 @@ describe('payloadToTrackerItem', () => {
     expect(item.module).toBe('');
   });
 
-  it('should preserve system fields', () => {
+  it('should ignore local-only linkedSessions from sync payloads', () => {
     const payload = makePayload({
       itemId: 'bug-105',
       system: {
@@ -217,7 +218,7 @@ describe('payloadToTrackerItem', () => {
     const item = payloadToTrackerItem(payload, '/workspace');
 
     expect(item.labels).toEqual(['ui', 'regression']);
-    expect(item.linkedSessions).toEqual(['sess-1']);
+    expect(item.linkedSessions).toBeUndefined();
     expect(item.linkedCommitSha).toBe('def456');
     expect(item.documentId).toBe('doc-2');
   });
@@ -281,7 +282,8 @@ describe('recordToPayload', () => {
     const payload = recordToPayload(record);
 
     expect(payload.system.authorIdentity?.email).toBe('a@b.com');
-    expect(payload.system.linkedSessions).toEqual(['s-1']);
+    expect(payload.system.linkedSessions).toBeUndefined();
+    expect(payload.fieldUpdatedAt.linkedSessions).toBeUndefined();
     expect(payload.system.createdAt).toBe('2026-01-01');
   });
 });
@@ -301,7 +303,8 @@ describe('payloadToRecord', () => {
     expect(record.primaryType).toBe('task');
     expect(record.fields.title).toBe('Do thing');
     expect(record.fields.customField).toBe(42);
-    expect(record.system.linkedSessions).toEqual(['s-1']);
+    expect(record.system.linkedSessions).toBeUndefined();
+    expect(record.fieldUpdatedAt.linkedSessions).toBeUndefined();
     expect(record.system.workspace).toBe('/workspace');
     expect(record.syncStatus).toBe('synced');
   });
@@ -340,7 +343,7 @@ describe('payload round-trip', () => {
     expect(roundTripped.status).toBe(original.status);
     expect(roundTripped.priority).toBe(original.priority);
     expect(roundTripped.labels).toEqual(original.labels);
-    expect(roundTripped.linkedSessions).toEqual(original.linkedSessions);
+    expect(roundTripped.linkedSessions).toBeUndefined();
     expect(roundTripped.linkedCommitSha).toBe(original.linkedCommitSha);
     expect(roundTripped.documentId).toBe(original.documentId);
     expect(roundTripped.customFields).toEqual(original.customFields);
@@ -566,7 +569,7 @@ describe('mergeTrackerItems', () => {
     expect(merged.fields.severity).toBe('low');
   });
 
-  it('should merge system fields independently', () => {
+  it('should keep linkedSessions local while still merging shared system fields', () => {
     const now = Date.now();
 
     const local = makePayload({

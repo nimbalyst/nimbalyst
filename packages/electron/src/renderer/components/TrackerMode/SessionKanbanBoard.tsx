@@ -55,6 +55,7 @@ import {
   sessionRegistryAtom,
   sessionListWorkspaceAtom,
 } from '../../store/atoms/sessions';
+import { transcriptEventSignalAtom } from '../../store/atoms/sessionTranscript';
 import { SessionContextMenu } from '../AgenticCoding/SessionContextMenu';
 import { ArchiveWorktreeDialog } from '../AgentMode/ArchiveWorktreeDialog';
 import { useArchiveWorktreeDialog } from '../../hooks/useArchiveWorktreeDialog';
@@ -254,18 +255,10 @@ function CardStatusBadge({ info }: { info: CardStateInfo }) {
 // ============================================================
 
 /** Global cache for fetched tail messages to avoid refetching on re-hover.
- * Entries are invalidated when new transcript events arrive for that session
- * so the peek reflects the latest assistant turn instead of a stale snapshot
- * from the first hover. */
+ * Entries are invalidated by the open peek when transcriptEventSignalAtom
+ * bumps for the active session; if no peek is open, the next mount-time fetch
+ * overwrites whatever is cached, so a stale entry can't be observed. */
 const tailMessageCache = new Map<string, TranscriptViewMessage[]>();
-
-if (typeof window !== 'undefined' && window.electronAPI?.on) {
-  window.electronAPI.on('transcript:event', (event: { sessionId?: string }) => {
-    if (event?.sessionId) {
-      tailMessageCache.delete(event.sessionId);
-    }
-  });
-}
 
 const PEEK_SETTINGS = {
   showToolCalls: true,
@@ -315,21 +308,13 @@ function TranscriptPeek({ sessionId, anchorRef, onClose }: TranscriptPeekProps) 
   // one canonical event per streaming token before the writer started
   // coalescing -- a small tail would only show the last few tokens of those
   // sessions.
-  useEffect(() => {
-    const cached = tailMessageCache.get(resolvedSessionId);
-    if (cached) {
-      setMessages(cached);
-      setLoading(false);
-    } else {
-      setLoading(true);
-    }
-
+  const fetchMessages = useCallback((id: string) => {
     let cancelled = false;
     window.electronAPI.ai
-      .getTailMessages(resolvedSessionId, 100)
+      .getTailMessages(id, 100)
       .then((msgs: TranscriptViewMessage[]) => {
         if (!cancelled) {
-          tailMessageCache.set(resolvedSessionId, msgs);
+          tailMessageCache.set(id, msgs);
           setMessages(msgs);
           setLoading(false);
         }
@@ -340,9 +325,38 @@ function TranscriptPeek({ sessionId, anchorRef, onClose }: TranscriptPeekProps) 
           setLoading(false);
         }
       });
-
     return () => { cancelled = true; };
-  }, [resolvedSessionId]);
+  }, []);
+
+  useEffect(() => {
+    const cached = tailMessageCache.get(resolvedSessionId);
+    if (cached) {
+      setMessages(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+    return fetchMessages(resolvedSessionId);
+  }, [resolvedSessionId, fetchMessages]);
+
+  // While the peek is open, re-fetch when new transcript events arrive for
+  // this session. Debounced to 1.5 s so rapid streaming chunks don't hammer
+  // the IPC channel. Drives off transcriptEventSignalAtom (bumped by
+  // sessionTranscriptListeners on every transcript:event) instead of
+  // subscribing to IPC directly -- per docs/IPC_LISTENERS.md, components must
+  // not call window.electronAPI.on inside React lifecycles.
+  const transcriptSignal = useAtomValue(transcriptEventSignalAtom(resolvedSessionId));
+  const initialTranscriptSignalRef = useRef(transcriptSignal);
+  useEffect(() => {
+    // Skip the initial mount: we already kicked off a fetch above. Only react
+    // to *new* transcript events that arrive while the peek is open.
+    if (transcriptSignal === initialTranscriptSignalRef.current) return;
+    const debounceTimer = setTimeout(() => {
+      tailMessageCache.delete(resolvedSessionId);
+      fetchMessages(resolvedSessionId);
+    }, 1500);
+    return () => clearTimeout(debounceTimer);
+  }, [transcriptSignal, resolvedSessionId, fetchMessages]);
 
   // Position relative to anchor element
   useEffect(() => {

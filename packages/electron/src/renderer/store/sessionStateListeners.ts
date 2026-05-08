@@ -168,12 +168,23 @@ export function initSessionStateListeners(): () => void {
     const currentWorkspacePath = store.get(sessionListWorkspaceAtom);
     const registry = store.get(sessionRegistryAtom);
     const sessionMeta = registry.get(sessionId);
-    const resolvedWorkspacePath = eventWorkspacePath || sessionMeta?.workspaceId || currentWorkspacePath || null;
+    const ownedWorkspacePath = eventWorkspacePath || sessionMeta?.workspaceId || null;
 
-    // Ignore lifecycle events for sessions owned by a different workspace window.
-    if (currentWorkspacePath && resolvedWorkspacePath && resolvedWorkspacePath !== currentWorkspacePath) {
+    // Ignore lifecycle events that aren't attributable to this window's workspace.
+    // Without an event-carried workspacePath or a registry hit, we can't safely
+    // assume the event belongs here -- defaulting to currentWorkspacePath would
+    // silently process events for other windows' sessions (the bug that caused
+    // [SessionManager] Rejecting session ... noise during streaming in another
+    // window). Source emitters should attach workspacePath to every event;
+    // see docs/IPC_GUIDE.md.
+    if (!ownedWorkspacePath) {
       return;
     }
+    if (currentWorkspacePath && ownedWorkspacePath !== currentWorkspacePath) {
+      return;
+    }
+
+    const resolvedWorkspacePath = ownedWorkspacePath;
 
     switch (type) {
       // Session is actively running
@@ -331,21 +342,29 @@ export function initSessionStateListeners(): () => void {
    * Also marks sessions as unread when they receive output messages while not being
    * the currently viewed session.
    */
-  const handleMessageLogged = (data: { sessionId: string; direction: string }) => {
-    const { sessionId, direction } = data;
+  const handleMessageLogged = (data: { sessionId: string; direction: string; workspacePath?: string }) => {
+    const { sessionId, direction, workspacePath: eventWorkspacePath } = data;
+    if (!sessionId) return;
+
     const currentWorkspacePath = store.get(sessionListWorkspaceAtom);
     const registry = store.get(sessionRegistryAtom);
     const sessionMeta = registry.get(sessionId);
-    const workspacePath = sessionMeta?.workspaceId || currentWorkspacePath;
+    const ownedWorkspacePath = eventWorkspacePath || sessionMeta?.workspaceId || null;
 
-    // Guard against any cross-window leakage: only process events for this window's workspace.
-    if (currentWorkspacePath && sessionMeta?.workspaceId && sessionMeta.workspaceId !== currentWorkspacePath) {
+    // Drop events that aren't attributable to this window's workspace.
+    // Falling back to currentWorkspacePath when neither the event nor the
+    // registry tells us who owns the session causes cross-window pollution
+    // (the markdowntests window reloading stravu-editor sessions and producing
+    // [SessionManager] Rejecting session ... noise). Source emitters should
+    // attach workspacePath; see docs/IPC_GUIDE.md.
+    if (!ownedWorkspacePath) {
+      return;
+    }
+    if (currentWorkspacePath && ownedWorkspacePath !== currentWorkspacePath) {
       return;
     }
 
-    if (!workspacePath || !sessionId) {
-      return;
-    }
+    const workspacePath = ownedWorkspacePath;
 
     // Throttle session data reload per session (leading + trailing edge).
     // During active streaming, message-logged fires on every chunk which would
@@ -433,6 +452,35 @@ export function initSessionStateListeners(): () => void {
   };
 
   /**
+   * Handle coalesced batch-write events from AgentMessageWriteQueue.
+   *
+   * The queue emits one event per affected session per flush, replacing the
+   * per-chunk `ai:message-logged` events that used to fire from
+   * `logAgentMessageNonBlocking`. Adapt the batch payload to the existing
+   * per-row handler so the same throttled reload + unread-marking logic
+   * applies. A 'mixed' direction (input + output rows in the same flush)
+   * is treated as 'output' for unread purposes since it always contains at
+   * least one output row.
+   *
+   * Hidden rows are already excluded from the batch's count by the queue,
+   * so we don't need to filter again here.
+   */
+  const handleMessagesLoggedBatch = (data: {
+    sessionId: string;
+    count: number;
+    direction: 'input' | 'output' | 'mixed';
+    workspacePath?: string;
+  }) => {
+    if (!data?.sessionId || !data.count) return;
+    const effectiveDirection = data.direction === 'input' ? 'input' : 'output';
+    handleMessageLogged({
+      sessionId: data.sessionId,
+      direction: effectiveDirection,
+      workspacePath: data.workspacePath,
+    });
+  };
+
+  /**
    * Handle session title updates globally.
    * This ensures the session list updates when the agent names a session via MCP tool.
    */
@@ -499,7 +547,7 @@ export function initSessionStateListeners(): () => void {
     const prompt: PendingPrompt = {
       id: requestId,
       sessionId,
-      promptType: 'ask_user_question_request', // reuse type for voice forwarding
+      promptType: 'exit_plan_mode_request',
       promptId: requestId,
       data: { type: 'exit_plan_mode_request', requestId },
       createdAt: Date.now(),
@@ -568,16 +616,28 @@ export function initSessionStateListeners(): () => void {
    * Handle GitCommitProposal events globally.
    * Sets pending interactive prompt indicator for the sidebar.
    */
-  const handleGitCommitProposal = (data: { sessionId: string; proposalId: string; commitMessage?: string }) => {
+  const handleGitCommitProposal = (data: {
+    sessionId: string;
+    proposalId: string;
+    commitMessage?: string;
+    filesToStage?: Array<string | { path: string; status?: string }>;
+    workspacePath?: string;
+  }) => {
     const { sessionId, proposalId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
     const prompt: PendingPrompt = {
       id: proposalId,
       sessionId,
-      promptType: 'ask_user_question_request', // reuse type for voice forwarding
+      promptType: 'git_commit_proposal_request',
       promptId: proposalId,
-      data: { type: 'git_commit_proposal_request', proposalId, commitMessage: data.commitMessage },
+      data: {
+        type: 'git_commit_proposal_request',
+        proposalId,
+        commitMessage: data.commitMessage,
+        filesToStage: data.filesToStage,
+        workspacePath: data.workspacePath,
+      },
       createdAt: Date.now(),
     };
     const current = store.get(sessionPendingPromptsAtom(sessionId));
@@ -737,9 +797,11 @@ export function initSessionStateListeners(): () => void {
   let cleanupSyncReadState: (() => void) | undefined;
   let cleanupSyncDraftInput: (() => void) | undefined;
   let cleanupTranscriptEvent: (() => void) | undefined;
+  let cleanupMessagesLoggedBatch: (() => void) | undefined;
   if (window.electronAPI?.on) {
     cleanupTranscriptEvent = window.electronAPI.on('transcript:event', handleTranscriptEvent);
     cleanupMessageLogged = window.electronAPI.on('ai:message-logged', handleMessageLogged);
+    cleanupMessagesLoggedBatch = window.electronAPI.on('ai:messages-logged-batch', handleMessagesLoggedBatch);
     cleanupTitleUpdated = window.electronAPI.on('session:title-updated', handleTitleUpdated);
     cleanupAskUserQuestion = window.electronAPI.on('ai:askUserQuestion', handleAskUserQuestion);
     cleanupAskUserQuestionAnswered = window.electronAPI.on('ai:askUserQuestionAnswered', handleAskUserQuestionResolved);
@@ -780,6 +842,7 @@ export function initSessionStateListeners(): () => void {
     window.electronAPI.sessionState?.unsubscribe?.();
     subscribedWorkspacePath = undefined;
     cleanupMessageLogged?.();
+    cleanupMessagesLoggedBatch?.();
     cleanupTitleUpdated?.();
     cleanupAskUserQuestion?.();
     cleanupAskUserQuestionAnswered?.();

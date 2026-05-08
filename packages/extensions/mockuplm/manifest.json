@@ -39,7 +39,8 @@
         "filePatterns": ["*.mockup.html"],
         "displayName": "Mockup Editor",
         "component": "MockupEditor",
-        "supportsSourceMode": true
+        "supportsSourceMode": true,
+        "supportsDiffMode": true
       },
       {
         "filePatterns": ["*.mockupproject"],

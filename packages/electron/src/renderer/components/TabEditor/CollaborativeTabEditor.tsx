@@ -327,8 +327,14 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
 
   const markdownConfig = useMemo(() => ({
     onUploadAsset: (file: File) => assetService.uploadFile(file),
-    resolveImageSrc: (src: string) => assetService.resolveImageSrc(src),
-    onOpenAssetLink: (href: string) => assetService.openAssetLink(href),
+    onAssetReferencesRemoved: (removedUris: string[]) => {
+      // Fire-and-forget; main deletes exactly the URIs the plugin saw
+      // disappear (never the full server set), so we can't accidentally
+      // delete a peer's still-live attachment.
+      void assetService.notifyAssetReferencesRemoved(removedUris).catch(err => {
+        console.warn('[CollaborativeTabEditor] gc-assets failed', err);
+      });
+    },
   }), [assetService]);
 
   // Create a minimal EditorHost for collaboration mode
@@ -412,11 +418,18 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     }
   }, [onManualSaveReady]);
 
+  // Decrement the main-side collab-asset:// registry refcount on unmount
+  // and on every activeConfig swap (key rotation re-resolves config, which
+  // re-calls document-sync:open and bumps the refcount). Pairing the
+  // close with each activeConfig assignment keeps the counter balanced.
   useEffect(() => {
+    const documentId = activeConfig.documentId;
     return () => {
-      assetService.dispose();
+      void window.electronAPI.documentSync.closeDoc(documentId).catch(err => {
+        console.warn('[CollaborativeTabEditor] close-doc failed', err);
+      });
     };
-  }, [assetService]);
+  }, [activeConfig]);
 
   return (
     <div className="collaborative-tab-editor" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>

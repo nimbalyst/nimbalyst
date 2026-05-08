@@ -6,6 +6,8 @@
  * services so the renderer can open collab:// tabs.
  */
 
+import { net } from 'electron';
+import { randomUUID } from 'crypto';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { isAuthenticated, getStytchUserId, getUserEmail, getAuthState, getPersonalSessionJwt, refreshPersonalSession } from '../services/StytchAuthService';
@@ -14,6 +16,13 @@ import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIden
 import { getSessionSyncConfig, getWorkspaceState, updateWorkspaceState } from '../utils/store';
 import { getPersonalDocSyncConfig, isSyncEnabled } from '../services/SyncManager';
 import { getSyncId } from '../services/DocSyncService';
+import {
+  registerCollabAssetDocument,
+  unregisterCollabAssetDocument,
+  isCollabAssetDocumentRegisteredForSender,
+  clearCollabAssetSender,
+} from '../protocols/collabAssetProtocol';
+import { deleteRemovedAssets } from '../services/CollabAssetGC';
 import WebSocket from 'ws';
 
 // WebSocket proxy: browser WebSocket to sync.nimbalyst.com fails due to
@@ -28,6 +37,13 @@ const DEVELOPMENT_SYNC_URL = 'ws://localhost:8790';
 function getCollabPendingKey(orgId: string, documentId: string): string {
   return `org:${orgId}:doc:${documentId}`;
 }
+
+/**
+ * Track WebContents we've already attached a destroyed listener to, so
+ * opening multiple docs in the same window doesn't stack N listeners
+ * (and trigger Node's MaxListenersExceededWarning at 10+ docs).
+ */
+const senderDestroyedHooked = new Set<number>();
 
 function getSyncWsUrl(): string {
   const config = getSessionSyncConfig();
@@ -58,7 +74,7 @@ export function registerDocumentSyncHandlers(): void {
    * Returns: { success: true, config: { orgId, documentId, title, orgKeyBase64, serverUrl, userId } }
    *       | { success: false, error: string }
    */
-  safeHandle('document-sync:open', async (_event, payload: {
+  safeHandle('document-sync:open', async (event, payload: {
     workspacePath: string;
     documentId: string;
     title?: string;
@@ -143,6 +159,26 @@ export function registerDocumentSyncHandlers(): void {
 
     const orgKeyFp = getOrgKeyFingerprint(orgId) ?? undefined;
 
+    // Authorize THIS renderer (webContents) to load this doc's encrypted
+    // assets via collab-asset:// and to invoke upload-asset / gc-assets
+    // for this doc. Refcounted per-sender -- close-doc on tab unmount
+    // decrements. The sender scoping prevents window B from operating on
+    // a doc only window A has opened.
+    const senderId = event.sender.id;
+    registerCollabAssetDocument(orgId, payload.documentId, senderId);
+
+    // Drop all of this sender's registrations when the WebContents goes
+    // away (window close, crash, navigation away). Attach the listener
+    // once per WebContents -- otherwise opening many docs in the same
+    // window stacks N identical listeners.
+    if (!event.sender.isDestroyed() && !senderDestroyedHooked.has(senderId)) {
+      senderDestroyedHooked.add(senderId);
+      event.sender.once('destroyed', () => {
+        senderDestroyedHooked.delete(senderId);
+        clearCollabAssetSender(senderId);
+      });
+    }
+
     return {
       success: true,
       config: {
@@ -158,6 +194,149 @@ export function registerDocumentSyncHandlers(): void {
         pendingUpdateBase64,
       },
     };
+  });
+
+  /**
+   * Renderer signals that a collab tab is unmounting. Decrement THIS
+   * sender's collab-asset:// registry refcount.
+   */
+  safeHandle('document-sync:close-doc', async (event, payload: { documentId: string }) => {
+    if (!payload?.documentId) {
+      return { success: false, error: 'documentId required' };
+    }
+    unregisterCollabAssetDocument(payload.documentId, event.sender.id);
+    return { success: true };
+  });
+
+  /**
+   * Encrypt a file and PUT it to the collab worker as a new asset.
+   * Routed through main because the renderer's origin is blocked by the
+   * worker's CORS allowlist. Authorized per-sender: a renderer can only
+   * upload for a doc that THIS WebContents has opened, even if another
+   * window in the same process has it open too.
+   */
+  safeHandle('document-sync:upload-asset', async (event, payload: {
+    orgId: string;
+    documentId: string;
+    fileBytes: ArrayBuffer;
+    mimeType: string;
+    fileName: string;
+  }) => {
+    if (!isAuthenticated()) {
+      return { success: false, error: 'Not authenticated' };
+    }
+    if (!payload?.orgId || !payload?.documentId || !payload.fileBytes) {
+      return { success: false, error: 'orgId, documentId, and fileBytes required' };
+    }
+    if (!isCollabAssetDocumentRegisteredForSender(event.sender.id, payload.orgId, payload.documentId)) {
+      return { success: false, error: 'Document not open in this window' };
+    }
+
+    try {
+      const orgKey = await getOrgKey(payload.orgId);
+      if (!orgKey) {
+        return { success: false, error: 'No org encryption key cached' };
+      }
+
+      const orgJwt = await getOrgScopedJwt(payload.orgId);
+      const assetId = randomUUID();
+
+      // Encrypt body
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        orgKey,
+        payload.fileBytes
+      );
+
+      // Encrypt metadata (filename only, for now)
+      const metaIv = crypto.getRandomValues(new Uint8Array(12));
+      const metaPlain = new TextEncoder().encode(JSON.stringify({ name: payload.fileName }));
+      const metaCipher = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: metaIv },
+        orgKey,
+        metaPlain as BufferSource
+      );
+
+      const fingerprint = getOrgKeyFingerprint(payload.orgId);
+
+      const httpUrl = getSyncHttpUrl();
+      const url =
+        `${httpUrl}/api/collab/docs/${encodeURIComponent(payload.documentId)}` +
+        `/assets/${encodeURIComponent(assetId)}`;
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${orgJwt}`,
+        'X-Collab-Asset-Iv': Buffer.from(iv).toString('base64'),
+        'X-Collab-Asset-Metadata': Buffer.from(metaCipher).toString('base64'),
+        'X-Collab-Asset-Metadata-Iv': Buffer.from(metaIv).toString('base64'),
+        'X-Collab-Asset-Mime-Type': payload.mimeType || 'application/octet-stream',
+        'X-Collab-Asset-Plaintext-Size': String(payload.fileBytes.byteLength),
+      };
+      if (fingerprint) {
+        headers['X-Collab-Asset-Key-Fingerprint'] = fingerprint;
+      }
+
+      const resp = await net.fetch(url, {
+        method: 'PUT',
+        headers,
+        body: ciphertext,
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        logger.main.warn('[DocumentSyncHandlers] upload-asset failed', resp.status, errText);
+        return { success: false, error: errText || `Upload failed (${resp.status})` };
+      }
+
+      return {
+        success: true,
+        assetId,
+        uri: `collab-asset://doc/${payload.documentId}/asset/${assetId}`,
+      };
+    } catch (err) {
+      logger.main.error('[DocumentSyncHandlers] upload-asset threw', err);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  /**
+   * Delete the specific list of `collab-asset://` URIs reported by the
+   * renderer's AssetGCPlugin as having disappeared from the live Yjs
+   * state since the previous scan. Diff-only: we never delete an asset
+   * the client never observed, so concurrent inserts on other peers
+   * (which we may not have received yet) are safe.
+   */
+  safeHandle('document-sync:gc-assets', async (event, payload: {
+    orgId: string;
+    documentId: string;
+    removedUris: string[];
+  }) => {
+    if (!isAuthenticated()) {
+      return { success: false, error: 'Not authenticated' };
+    }
+    if (!payload?.orgId || !payload?.documentId) {
+      return { success: false, error: 'orgId and documentId required' };
+    }
+    if (!isCollabAssetDocumentRegisteredForSender(event.sender.id, payload.orgId, payload.documentId)) {
+      return { success: false, error: 'Document not open in this window' };
+    }
+    if (!payload.removedUris || payload.removedUris.length === 0) {
+      return { success: true, requested: 0, deleted: 0, failed: 0, skipped: 0 };
+    }
+
+    try {
+      const orgJwt = await getOrgScopedJwt(payload.orgId);
+      const result = await deleteRemovedAssets(
+        getSyncHttpUrl(),
+        orgJwt,
+        payload.documentId,
+        payload.removedUris
+      );
+      return { success: true, ...result };
+    } catch (err) {
+      logger.main.error('[DocumentSyncHandlers] gc-assets threw', err);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
   });
 
 

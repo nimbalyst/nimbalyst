@@ -1,0 +1,20 @@
+# Cloudflare Pages config for the CollabV3 sync metrics dashboard.
+#
+# Deploys a static dashboard at metrics.nimbalyst.com that visualizes the
+# `nimbalyst_sync` Analytics Engine dataset captured by the collabv3 Worker.
+#
+# Secrets are NOT defined here. Set them via:
+#   npx wrangler pages secret put CF_API_TOKEN --project-name nimbalyst-collabv3-metrics
+# or via the Cloudflare dashboard (Pages -> Settings -> Environment variables).
+
+name = "nimbalyst-collabv3-metrics"
+pages_build_output_dir = "public"
+compatibility_date = "2024-11-01"
+
+[vars]
+# Cloudflare account ID hosting the nimbalyst_sync dataset. Not secret, but
+# kept here so the Pages Function can read it without an extra dashboard step.
+CF_ACCOUNT_ID = "454b0e55f2d7f9abc0d52d4217ecdc3c"
+
+# CF_API_TOKEN is set as a secret -- never commit it.
+# Required scope: Account.Account Analytics:Read on the Nimbalyst account only.

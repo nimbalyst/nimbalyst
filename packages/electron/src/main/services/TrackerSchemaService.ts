@@ -7,6 +7,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import chokidar from 'chokidar';
 import { BrowserWindow } from 'electron';
 import { safeHandle } from '../utils/ipcRegistry';
@@ -14,6 +15,7 @@ import {
   globalRegistry,
   loadBuiltinTrackers,
   parseTrackerYAML,
+  serializeTrackerYAML,
   type TrackerDataModel,
   type TrackerSchemaRole,
   getRoleField,
@@ -231,8 +233,102 @@ export function getAllTrackerSchemas(): TrackerDataModel[] {
   return globalRegistry.getAll();
 }
 
+export function isBuiltinTrackerSchema(type: string): boolean {
+  return globalRegistry.isBuiltin(type);
+}
+
 export function getTrackerRoleField(type: string, role: TrackerSchemaRole): string | undefined {
   const model = globalRegistry.get(type);
   if (!model) return undefined;
   return getRoleField(model, role);
+}
+
+async function findWorkspaceSchemaFileByType(workspacePath: string, type: string): Promise<string | null> {
+  const trackersDir = path.join(workspacePath, '.nimbalyst', 'trackers');
+  let files: string[];
+  try {
+    files = await fsPromises.readdir(trackersDir);
+  } catch {
+    return null;
+  }
+
+  for (const file of files) {
+    if (!file.endsWith('.yaml') && !file.endsWith('.yml')) continue;
+    const filePath = path.join(trackersDir, file);
+    try {
+      const content = await fsPromises.readFile(filePath, 'utf-8');
+      const model = parseTrackerYAML(content);
+      if (model.type === type) return filePath;
+    } catch {
+      // Ignore invalid YAML here; it will be surfaced when that file is loaded.
+    }
+  }
+
+  return null;
+}
+
+function normalizeSchemaFileName(type: string, fileName?: string): string {
+  const candidate = (fileName?.trim() || `${type}.yaml`);
+  if (path.basename(candidate) !== candidate) {
+    throw new Error('fileName must be a plain file name within .nimbalyst/trackers');
+  }
+  if (!candidate.endsWith('.yaml') && !candidate.endsWith('.yml')) {
+    return `${candidate}.yaml`;
+  }
+  return candidate;
+}
+
+function refreshWorkspaceSchemasIfCurrent(workspacePath: string): void {
+  if (workspacePath !== currentWorkspacePath) return;
+  loadWorkspaceSchemas(workspacePath);
+  watchSchemaDirectory(workspacePath);
+  notifySchemaChanged();
+}
+
+export async function upsertWorkspaceTrackerSchema(
+  workspacePath: string,
+  schema: TrackerDataModel | string,
+  options?: { fileName?: string },
+): Promise<{ model: TrackerDataModel; filePath: string }> {
+  if (!workspacePath) throw new Error('workspacePath is required');
+
+  const yamlContent = typeof schema === 'string' ? schema : serializeTrackerYAML(schema);
+  const model = parseTrackerYAML(yamlContent);
+
+  if (globalRegistry.isBuiltin(model.type)) {
+    throw new Error(`Cannot redefine built-in tracker type '${model.type}'`);
+  }
+
+  const trackersDir = path.join(workspacePath, '.nimbalyst', 'trackers');
+  await fsPromises.mkdir(trackersDir, { recursive: true });
+
+  const existingFilePath = await findWorkspaceSchemaFileByType(workspacePath, model.type);
+  const filePath = existingFilePath ?? path.join(
+    trackersDir,
+    normalizeSchemaFileName(model.type, options?.fileName),
+  );
+
+  await fsPromises.writeFile(filePath, yamlContent, 'utf-8');
+  refreshWorkspaceSchemasIfCurrent(workspacePath);
+
+  return { model, filePath };
+}
+
+export async function deleteWorkspaceTrackerSchema(
+  workspacePath: string,
+  type: string,
+): Promise<{ deleted: boolean; filePath?: string }> {
+  if (!workspacePath) throw new Error('workspacePath is required');
+  if (!type) throw new Error('type is required');
+  if (globalRegistry.isBuiltin(type)) {
+    throw new Error(`Cannot delete built-in tracker type '${type}'`);
+  }
+
+  const filePath = await findWorkspaceSchemaFileByType(workspacePath, type);
+  if (!filePath) return { deleted: false };
+
+  await fsPromises.unlink(filePath);
+  refreshWorkspaceSchemasIfCurrent(workspacePath);
+
+  return { deleted: true, filePath };
 }

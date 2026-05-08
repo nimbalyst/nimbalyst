@@ -120,18 +120,36 @@ public final class SyncManager: ObservableObject {
         indexClient.setAppInForeground(inForeground)
         if inForeground {
             reconnectIfNeeded()
+            // Defense in depth: even if the reconnect's onConnectionStateChanged
+            // callback fires the sync request, also trigger one explicitly
+            // here. Two sync requests are harmless (database appends are
+            // idempotent on message ID), and this guarantees a catch-up
+            // happens even if the reconnect callback chain ever changes.
+            if activeSessionId != nil {
+                requestSessionSync()
+            }
         }
     }
 
     /// Reconnect the index WebSocket if it was dropped (e.g., by iOS suspending the app).
     /// Also reconnects the active session room if one was open.
+    ///
+    /// The session client is reconnected unconditionally (not gated on
+    /// `isConnected`) because URLSessionWebSocketTask can hold a backgrounded
+    /// task in `.running` state long after the underlying TCP connection has
+    /// died, so `isConnected` would lie and the user would be left with a
+    /// silently-dead transcript channel until they navigate away and back.
+    /// Forcing a fresh socket here is cheap; missing transcript broadcasts
+    /// is not. The session client also re-issues `requestSessionSync` on
+    /// reconnect (via `onConnectionStateChanged`), so any broadcasts dropped
+    /// while we were backgrounded are caught up via the syncResponse cursor.
     private func reconnectIfNeeded() {
         if !indexClient.isConnected {
             logger.info("[Reconnect] Index client disconnected, reconnecting...")
             indexClient.reconnect()
         }
-        if activeSessionId != nil && !sessionClient.isConnected {
-            logger.info("[Reconnect] Session client disconnected, reconnecting...")
+        if let sessionId = activeSessionId {
+            logger.info("[Reconnect] Forcing session client reconnect for \(sessionId)")
             sessionClient.reconnect()
         }
     }
@@ -189,6 +207,14 @@ public final class SyncManager: ObservableObject {
 
         let roomId = "org:\(orgId ?? ""):user:\(effectiveUserId):session:\(sessionId)"
         sessionClient.connect(serverUrl: serverUrl, roomId: roomId, authToken: authToken)
+
+        // If the session is already mid-turn when we join, start pings now.
+        // The normal start path is the !executing -> executing transition in
+        // handleMetadataBroadcast, but that only fires on a state change --
+        // joining a session that's already running wouldn't trigger it.
+        if let session = try? database.session(byId: sessionId), session.isExecuting {
+            sessionClient.startPings()
+        }
     }
 
     /// Leave the current session room.
@@ -1159,6 +1185,19 @@ public final class SyncManager: ObservableObject {
                 // change the sort timestamp. Only index sync and message appends
                 // set updatedAt, ensuring the session list stays correctly sorted.
                 try database.upsertSession(session)
+
+                // Gate the session-client ping heartbeat on whether the AI is
+                // currently producing output. Pings only matter while we're
+                // expecting `messageBroadcast` events; running a 20s repeating
+                // timer on an idle session kept the device awake on real
+                // hardware. The transitions are:
+                //   !executing -> executing : startPings (turn just began)
+                //   executing -> !executing : stopPings  (turn just ended)
+                if !wasExecuting && session.isExecuting {
+                    sessionClient.startPings()
+                } else if wasExecuting && !session.isExecuting {
+                    sessionClient.stopPings()
+                }
 
                 // Detect execution completion (isExecuting: true -> false)
                 if wasExecuting && !session.isExecuting {

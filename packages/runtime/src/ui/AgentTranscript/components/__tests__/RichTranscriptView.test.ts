@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { TranscriptViewMessage } from '../../../../ai/server/transcript/TranscriptProjector';
-import { extractEditsFromToolMessage, parseUnifiedDiffToReplacements } from '../RichTranscriptView';
+import {
+  extractEditsFromToolMessage,
+  parseUnifiedDiffToReplacements,
+  toolCallDiffsToEdits,
+} from '../RichTranscriptView';
 
 function makeTestMessage(overrides: Partial<TranscriptViewMessage> = {}): TranscriptViewMessage {
   return {
@@ -152,6 +156,186 @@ describe('extractEditsFromToolMessage', () => {
     expect(edits).toHaveLength(1);
     expect(edits[0].operation).toBe('create');
     expect(edits[0].content).toBe("import { describe } from 'vitest';\n\ndescribe('x', () => {});\n");
+  });
+
+  describe('Codex file_change shape (legacy synchronous adapter, removed)', () => {
+    // The synchronous extractFileChangeEdits adapter was removed because the raw
+    // canonical event for Codex file_change carries no diff content. Diff rendering
+    // is now handled by AsyncEditToolResultCard via getToolCallDiffs (the async
+    // path). The mapping that AsyncEditToolResultCard uses is `toolCallDiffsToEdits`
+    // -- see the dedicated describe block below.
+    it('extractEditsFromToolMessage returns [] for a file_change tool', () => {
+      const message = makeTestMessage({
+        toolCall: {
+          toolName: 'file_change',
+          toolDisplayName: 'File Change',
+          status: 'completed',
+          description: null,
+          arguments: { changes: [{ path: '/repo/x.ts', kind: 'update' }] },
+          targetFilePath: null,
+          mcpServer: null,
+          mcpTool: null,
+          providerToolCallId: 'nimtc|item_0|1730000000000|42',
+          progress: [],
+          result: JSON.stringify({
+            success: true,
+            status: 'completed',
+            changes: [{ path: '/repo/x.ts', kind: 'update' }],
+          }),
+        },
+      });
+
+      // No diff content on the canonical event => the synchronous extractor must
+      // not synthesize a fake edit. The async dispatch path takes over.
+      expect(extractEditsFromToolMessage(message)).toEqual([]);
+    });
+  });
+
+  describe('toolCallDiffsToEdits', () => {
+    // Adapter from the workstream's getToolCallDiffs IPC result shape into the
+    // edit-record shape EditToolResultCard expects. Used by AsyncEditToolResultCard
+    // for Codex file_change, whose raw item.completed payload has no diff content.
+
+    it('maps an edit-operation diff to a replacements-style update edit', () => {
+      const edits = toolCallDiffsToEdits([
+        {
+          filePath: '/repo/src/app.ts',
+          operation: 'edit',
+          diffs: [
+            { oldString: 'export const x = 1;\n', newString: 'export const x = 2;\n' },
+          ],
+          linesAdded: 1,
+          linesRemoved: 1,
+        },
+      ]);
+
+      expect(edits).toHaveLength(1);
+      expect(edits[0]).toEqual({
+        filePath: '/repo/src/app.ts',
+        type: 'update',
+        operation: 'edit',
+        replacements: [
+          { oldText: 'export const x = 1;\n', newText: 'export const x = 2;\n' },
+        ],
+      });
+    });
+
+    it('maps a multi-replacement edit into one update edit with all replacements', () => {
+      const edits = toolCallDiffsToEdits([
+        {
+          filePath: '/repo/src/util.ts',
+          operation: 'edit',
+          diffs: [
+            { oldString: 'A', newString: 'a' },
+            { oldString: 'B', newString: 'b' },
+          ],
+          linesAdded: 2,
+          linesRemoved: 2,
+        },
+      ]);
+
+      expect(edits).toHaveLength(1);
+      expect(edits[0].replacements).toEqual([
+        { oldText: 'A', newText: 'a' },
+        { oldText: 'B', newText: 'b' },
+      ]);
+    });
+
+    it('maps a create-operation diff to a NewFilePreview-shaped edit', () => {
+      const newContent = "import { describe } from 'vitest';\n\ndescribe('x', () => {});\n";
+      const edits = toolCallDiffsToEdits([
+        {
+          filePath: '/repo/foo.test.ts',
+          operation: 'create',
+          diffs: [],
+          content: newContent,
+          linesAdded: 3,
+          linesRemoved: 0,
+        },
+      ]);
+
+      expect(edits).toHaveLength(1);
+      expect(edits[0]).toEqual({
+        filePath: '/repo/foo.test.ts',
+        type: 'add',
+        operation: 'create',
+        content: newContent,
+      });
+      // No old_string/new_string -- isNewFileEdit() in EditToolResultCard returns true
+      // so this routes through NewFilePreview rather than DiffViewer.
+      expect(edits[0].old_string).toBeUndefined();
+      expect(edits[0].new_string).toBeUndefined();
+    });
+
+    it('maps a delete-operation diff to a red-only edit (new_string empty)', () => {
+      const edits = toolCallDiffsToEdits([
+        {
+          filePath: '/repo/old.ts',
+          operation: 'delete',
+          diffs: [
+            { oldString: 'export const removed = true;\n', newString: '' },
+          ],
+          linesAdded: 0,
+          linesRemoved: 1,
+        },
+      ]);
+
+      expect(edits).toHaveLength(1);
+      expect(edits[0]).toEqual({
+        filePath: '/repo/old.ts',
+        type: 'delete',
+        operation: 'delete',
+        old_string: 'export const removed = true;\n',
+        new_string: '',
+      });
+    });
+
+    it('emits one edit per file when the matcher returns multiple files for a single tool call', () => {
+      const edits = toolCallDiffsToEdits([
+        {
+          filePath: '/repo/a.ts',
+          operation: 'create',
+          diffs: [],
+          content: 'a-after\n',
+        },
+        {
+          filePath: '/repo/b.ts',
+          operation: 'edit',
+          diffs: [{ oldString: 'b-before\n', newString: 'b-after\n' }],
+        },
+        {
+          filePath: '/repo/c.ts',
+          operation: 'delete',
+          diffs: [{ oldString: 'c-before\n', newString: '' }],
+        },
+      ]);
+
+      expect(edits).toHaveLength(3);
+      expect(edits[0].operation).toBe('create');
+      expect(edits[1].operation).toBe('edit');
+      expect(edits[1].replacements[0]).toEqual({ oldText: 'b-before\n', newText: 'b-after\n' });
+      expect(edits[2].operation).toBe('delete');
+      expect(edits[2].old_string).toBe('c-before\n');
+      expect(edits[2].new_string).toBe('');
+    });
+
+    it('drops entries without a filePath and tolerates empty diff arrays', () => {
+      const edits = toolCallDiffsToEdits([
+        { operation: 'edit', diffs: [] } as any,
+        { filePath: '/repo/no-diffs.ts', operation: 'edit', diffs: [] },
+      ]);
+
+      // Missing filePath -> dropped. Empty diffs -> still emits an update edit, but
+      // with replacements undefined so EditToolResultCard's DiffViewer falls
+      // through to its own fallback rather than rendering an empty diff card.
+      expect(edits).toHaveLength(1);
+      expect(edits[0].filePath).toBe('/repo/no-diffs.ts');
+      expect(edits[0].replacements).toBeUndefined();
+    });
+
+    it('returns [] for an empty input', () => {
+      expect(toolCallDiffsToEdits([])).toEqual([]);
+    });
   });
 
   describe('parseUnifiedDiffToReplacements', () => {

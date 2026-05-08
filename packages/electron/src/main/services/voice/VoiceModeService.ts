@@ -9,6 +9,8 @@ import Store from 'electron-store';
 import { AnalyticsService } from '../analytics/AnalyticsService';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { getDatabase } from '../../database/initialize';
+import { getDefaultAIModel } from '../../utils/store';
+import { randomUUID } from 'crypto';
 
 // Store active voice session info
 interface VoiceSession {
@@ -160,9 +162,11 @@ export async function getSessionSummary(): Promise<{
       return { success: false, error: 'Session not found' };
     }
 
-    const messages = session.messages || [];
-    const userMessages = messages.filter((m: any) => m.role === 'user');
-    const assistantMessages = messages.filter((m: any) => m.role === 'assistant');
+    // session.messages is TranscriptViewMessage[] from the canonical
+    // ai_transcript_events table -- discriminated by `type`, not `role`.
+    const messages = (session.messages || []) as Array<any>;
+    const userMessages = messages.filter(m => m.type === 'user_message');
+    const assistantMessages = messages.filter(m => m.type === 'assistant_message');
     const sessionName = session.title || session.name || 'Untitled';
 
     // Calculate session duration
@@ -171,24 +175,46 @@ export async function getSessionSummary(): Promise<{
 
     // Extract recent topics from user messages (last 5)
     const recentUserMessages = userMessages.slice(-5);
-    const recentTopics = recentUserMessages.map((m: any) => {
-      const content = typeof m.content === 'string' ? m.content : '';
-      // Truncate to first 50 chars
-      return content.length > 50 ? content.substring(0, 50) + '...' : content;
-    });
+    const recentTopics = recentUserMessages.map(m => {
+      const text = typeof m.text === 'string' ? m.text : '';
+      return text.length > 80 ? text.substring(0, 80) + '...' : text;
+    }).filter((t: string) => t.trim().length > 0);
+
+    // Tail of the conversation (user + assistant text), useful so the voice
+    // agent can answer "what did we just talk about" with real content.
+    const conversationEvents = messages.filter(
+      m => m.type === 'user_message' || m.type === 'assistant_message'
+    );
+    const conversationTail = conversationEvents.slice(-8).map(m => {
+      const role = m.type === 'user_message' ? 'User' : 'Agent';
+      const text = typeof m.text === 'string' ? m.text : '';
+      if (!text.trim()) return null;
+      const truncated = text.length > 400 ? text.substring(0, 400) + '...' : text;
+      return `${role}: ${truncated}`;
+    }).filter(Boolean) as string[];
 
     const details = {
       sessionId,
       sessionName,
-      messageCount: messages.length,
+      messageCount: conversationEvents.length,
       userMessageCount: userMessages.length,
       assistantMessageCount: assistantMessages.length,
       sessionDurationMinutes,
       recentTopics,
     };
 
-    // Generate a human-readable summary
-    const summary = `Session "${sessionName}" has ${userMessages.length} user messages and ${assistantMessages.length} assistant responses over ${sessionDurationMinutes} minutes. ${recentTopics.length > 0 ? `Recent topics: ${recentTopics.join('; ')}` : 'No messages yet.'}`;
+    // Generate a human-readable summary that includes the actual conversation tail
+    const summaryParts: string[] = [];
+    summaryParts.push(`Session "${sessionName}" has ${userMessages.length} user messages and ${assistantMessages.length} assistant responses over ${sessionDurationMinutes} minutes.`);
+    if (recentTopics.length > 0) {
+      summaryParts.push(`Recent topics: ${recentTopics.join('; ')}`);
+    } else if (conversationEvents.length === 0) {
+      summaryParts.push('No messages yet.');
+    }
+    if (conversationTail.length > 0) {
+      summaryParts.push(`Recent conversation:\n${conversationTail.join('\n')}`);
+    }
+    const summary = summaryParts.join('\n\n');
 
     return { success: true, summary, details };
   } catch (error) {
@@ -263,11 +289,21 @@ export function initVoiceModeService() {
         `);
 
         if (session) {
-          const messageCount = session.messages?.length || 0;
+          // session.messages is TranscriptViewMessage[] from the canonical
+          // ai_transcript_events table -- discriminated by `type`, not `role`.
+          const allEvents = (session.messages || []) as Array<any>;
+          const userEvents = allEvents.filter(m => m.type === 'user_message');
+          const assistantEvents = allEvents.filter(m => m.type === 'assistant_message');
+          const toolEvents = allEvents.filter(m => m.type === 'tool_call');
+          const conversationEvents = allEvents.filter(
+            m => m.type === 'user_message' || m.type === 'assistant_message'
+          );
+
+          const messageCount = conversationEvents.length;
           hasExistingSession = messageCount > 0;
           // Session name is stored in the 'title' field, not 'name'
           const sessionName = session.title || session.name || 'Untitled';
-          const userMessageCount = session.messages?.filter((m: any) => m.role === 'user').length || 0;
+          const userMessageCount = userEvents.length;
           const sessionMode = session.mode || 'agent'; // 'agent' or 'planning'
 
           // Build context parts
@@ -278,42 +314,38 @@ export function initVoiceModeService() {
           if (messageCount === 0) {
             contextParts.push('Status: New session with no messages yet.');
           } else {
-            contextParts.push(`Activity: ${userMessageCount} user ${userMessageCount === 1 ? 'prompt' : 'prompts'}, ${messageCount} total messages.`);
+            contextParts.push(`Activity: ${userMessageCount} user ${userMessageCount === 1 ? 'prompt' : 'prompts'}, ${assistantEvents.length} assistant responses.`);
 
-            // Extract recent activity from messages (last few tool calls or key actions)
-            const recentMessages = (session.messages || []).slice(-10);
-            const recentToolCalls = recentMessages
-              .filter((m: any) => m.role === 'assistant' && m.toolCalls?.length > 0)
-              .flatMap((m: any) => m.toolCalls || [])
-              .slice(-5);
+            // Extract recent activity (last few tool calls)
+            const recentToolCalls = toolEvents.slice(-5).map(m => m.toolCall).filter(Boolean);
 
             if (recentToolCalls.length > 0) {
               const toolSummary = recentToolCalls.map((tc: any) => {
-                if (tc.name === 'Edit' || tc.name === 'Write') {
-                  const filePath = tc.arguments?.file_path || tc.arguments?.filePath;
-                  return filePath ? `edited ${filePath.split('/').pop()}` : 'edited a file';
-                } else if (tc.name === 'Read') {
-                  const filePath = tc.arguments?.file_path || tc.arguments?.filePath;
-                  return filePath ? `read ${filePath.split('/').pop()}` : 'read a file';
-                } else if (tc.name === 'Bash') {
+                const name = tc.toolName;
+                if (name === 'Edit' || name === 'Write') {
+                  const filePath = tc.arguments?.file_path || tc.arguments?.filePath || tc.targetFilePath;
+                  return filePath ? `edited ${String(filePath).split('/').pop()}` : 'edited a file';
+                } else if (name === 'Read') {
+                  const filePath = tc.arguments?.file_path || tc.arguments?.filePath || tc.targetFilePath;
+                  return filePath ? `read ${String(filePath).split('/').pop()}` : 'read a file';
+                } else if (name === 'Bash') {
                   return 'ran a command';
-                } else if (tc.name === 'Grep' || tc.name === 'Glob') {
+                } else if (name === 'Grep' || name === 'Glob') {
                   return 'searched files';
                 }
-                return tc.name?.toLowerCase() || 'used a tool';
+                return name?.toLowerCase?.() || 'used a tool';
               }).join(', ');
               contextParts.push(`Recent tools: ${toolSummary}`);
             }
 
             // Include the tail of the actual conversation so the voice agent
             // knows what has been discussed. Extract the last few user prompts
-            // and assistant text responses (skip tool messages).
-            const conversationTail = (session.messages || [])
-              .filter((m: any) => m.role === 'user' || m.role === 'assistant')
+            // and assistant text responses (skip tool/system events).
+            const conversationTail = conversationEvents
               .slice(-6)
-              .map((m: any) => {
-                const role = m.role === 'user' ? 'User' : 'Agent';
-                const text = typeof m.content === 'string' ? m.content : '';
+              .map(m => {
+                const role = m.type === 'user_message' ? 'User' : 'Agent';
+                const text = typeof m.text === 'string' ? m.text : '';
                 if (!text.trim()) return null;
                 // Truncate each message to keep total size manageable
                 const truncated = text.length > 500
@@ -583,6 +615,78 @@ export function initVoiceModeService() {
           return { success: true, sessions: results };
         } catch (error) {
           return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      });
+
+      // Create a new coding session and switch to it
+      poc.setOnCreateSession(async (title?: string) => {
+        try {
+          const wp = activeVoiceSession?.workspacePath ?? workspacePath;
+          if (!wp) {
+            return { success: false, error: 'No workspace path available' };
+          }
+
+          const newSessionId = randomUUID();
+          const provider = 'claude-code';
+          const model = getDefaultAIModel() || 'claude-code:opus-1m';
+          const newTitle = title?.trim() || 'New Session';
+
+          await AISessionsRepository.create({
+            id: newSessionId,
+            provider,
+            model,
+            title: newTitle,
+            workspaceId: wp,
+          });
+
+          // Refresh the renderer's session registry so the new session appears
+          // in the sidebar, then navigate to it. The active-session change will
+          // be picked up by voiceModeListeners.syncLinkedSession, which updates
+          // the linked session ID for subsequent voice commands automatically.
+          if (window && !window.isDestroyed()) {
+            window.show();
+            window.focus();
+            window.webContents.send('sessions:refresh-list', {
+              workspacePath: wp,
+              sessionId: newSessionId,
+            });
+            window.webContents.send('tray:navigate-to-session', {
+              sessionId: newSessionId,
+              workspacePath: wp,
+            });
+          }
+
+          return { success: true, sessionId: newSessionId, title: newTitle };
+        } catch (error) {
+          console.error('[VoiceModeService] Failed to create session:', error);
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      });
+
+      // Propose a commit via the "Commit with AI" path. The voice agent
+      // calls this when the user says "propose a commit". We forward to
+      // the renderer so it can run the SAME logic as the Smart Commit
+      // button in GitOperationsPanel (git:get-commit-context +
+      // ai:sendMessage with the COMMIT_REQUEST_PREFIX message). That makes
+      // the "Requesting commit proposal" widget appear in the transcript
+      // and the coding agent invoke developer_git_commit_proposal, which
+      // returns through the existing interactive-prompt forwarding.
+      poc.setOnProposeCommit(async () => {
+        try {
+          if (!window || window.isDestroyed()) {
+            return { success: false, error: 'Window not available' };
+          }
+          window.webContents.send('voice-mode:propose-commit', {
+            sessionId: currentSessionId(),
+            workspacePath,
+          });
+          return { success: true };
+        } catch (error) {
+          console.error('[VoiceModeService] Failed to propose commit:', error);
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
         }
       });
 

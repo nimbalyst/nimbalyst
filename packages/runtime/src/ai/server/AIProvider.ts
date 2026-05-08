@@ -13,7 +13,10 @@ import {
 } from './types';
 import { toolRegistry, toAnthropicTools, toOpenAITools } from '../tools';
 import { buildSystemPrompt } from '../prompt';
-import { AgentMessagesRepository } from '../../storage/repositories/AgentMessagesRepository';
+import {
+  AgentMessageWriteQueue,
+  type MessagesLoggedBatchEvent,
+} from '../../storage/repositories/AgentMessageWriteQueue';
 
 /**
  * Interface for providers that support the AskUserQuestion tool
@@ -42,6 +45,20 @@ export interface AskUserQuestionProvider {
  */
 export function isAskUserQuestionProvider(provider: AIProvider): provider is AIProvider & AskUserQuestionProvider {
   return !!provider && typeof (provider as any).resolveAskUserQuestion === 'function';
+}
+
+export interface SlashCommandCatalogProvider {
+  getSlashCommands?(): string[];
+  getSkills?(): string[];
+}
+
+export function isSlashCommandCatalogProvider(
+  provider: AIProvider | null | undefined
+): provider is AIProvider & SlashCommandCatalogProvider {
+  return !!provider && (
+    typeof (provider as any).getSlashCommands === 'function' ||
+    typeof (provider as any).getSkills === 'function'
+  );
 }
 
 export interface AIProvider extends EventEmitter {
@@ -101,6 +118,33 @@ export interface AIProvider extends EventEmitter {
 }
 
 /**
+ * Process-wide write queue shared across providers. The queue coalesces
+ * non-blocking chunk writes into multi-row INSERTs so synchronous
+ * `logAgentMessage` awaits (user prompts, final outputs, `can_use_tool`
+ * permission audits) don't get starved behind the firehose. Provider
+ * instances forward their flush calls into this single queue.
+ *
+ * See `AgentMessageWriteQueue` for design details and the plan at
+ * `nimbalyst-local/plans/agent-message-write-coalescing.md`.
+ */
+const sharedAgentMessageQueue = new AgentMessageWriteQueue();
+
+/**
+ * Subscribe to per-flush batch events from the shared queue. Used by the
+ * Electron streaming handler to forward `messages:logged-batch` events to
+ * renderer processes alongside the existing `message:logged` per-row event.
+ */
+export function onAgentMessageBatch(
+  listener: (event: MessagesLoggedBatchEvent) => void
+): () => void {
+  return sharedAgentMessageQueue.onBatch(listener);
+}
+
+function getSharedAgentMessageQueue(): AgentMessageWriteQueue {
+  return sharedAgentMessageQueue;
+}
+
+/**
  * Base class with common functionality for AI providers
  */
 export abstract class BaseAIProvider extends EventEmitter implements AIProvider {
@@ -109,10 +153,12 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
   protected correlationId: string | null = null;
 
   /**
-   * Set of in-flight non-blocking write promises.
-   * Each logAgentMessageNonBlocking call adds its promise here;
-   * the promise self-removes on settle. flushPendingWrites() awaits them all
-   * so callers (e.g. the completion path) can ensure DB consistency.
+   * Set of in-flight non-blocking write promises owned by this provider
+   * instance. Each enqueue from `logAgentMessageNonBlocking` adds its promise
+   * here and self-removes on settle. `flushPendingWrites()` first drains the
+   * shared queue (so all coalesced rows hit the DB), then awaits these
+   * promises so callers (e.g. the completion path) can ensure DB consistency
+   * before the UI reloads.
    */
   private pendingWritePromises = new Set<Promise<void>>();
 
@@ -226,14 +272,20 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
   }
 
   /**
-   * Log an agent message to the audit table
-   * This should be called for both input (user/system to AI) and output (AI response) messages
+   * Log an agent message to the audit table.
    *
-   * IMPORTANT: This method MUST be awaited for critical messages (user input and final output)
-   * to ensure they are persisted before continuing. Fire-and-forget usage can cause message loss.
+   * Both this awaited path and the non-blocking variant route through the
+   * shared `AgentMessageWriteQueue`. The queue holds a single FIFO buffer
+   * that flushes on a 200ms idle window, a 200-row threshold, or an explicit
+   * `flushAll()`. Per-session order is preserved by enqueue order.
    *
-   * Returns a Promise that resolves when the message is saved.
-   * Emits 'message:logged' event after successful write to trigger UI updates.
+   * 200ms of worst-case persistence latency is well inside the SDK's 5s
+   * grace timer for `can_use_tool`, so awaited writes (user prompts, final
+   * outputs, permission audits in `AgentToolHooks`) don't need a separate
+   * priority lane.
+   *
+   * Emits 'message:logged' after the row is persisted to keep the existing
+   * per-row UI refresh signal alive.
    *
    * @throws Error if the database write fails - callers must handle this appropriately
    */
@@ -258,7 +310,7 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
     const isSearchable = searchable && content.length < 500000;
 
     try {
-      await AgentMessagesRepository.create({
+      await getSharedAgentMessageQueue().enqueue({
         sessionId,
         source,
         direction,
@@ -285,9 +337,12 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
    * Use this ONLY for streaming chunks where some loss is acceptable.
    * NEVER use this for user input messages or final output messages.
    *
-   * The write promise is tracked so flushPendingWrites() can await all
-   * outstanding writes before session completion, preventing race conditions
-   * where the UI reloads before the DB has committed the final messages.
+   * Routes the row to the shared queue. Coalesced into a multi-row INSERT
+   * with up to 200ms of persistence latency (or sooner if the row threshold
+   * trips).
+   *
+   * The enqueue promise is tracked so flushPendingWrites() can await all
+   * outstanding writes before session completion.
    *
    * Errors are logged but not propagated.
    */
@@ -301,10 +356,27 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
     providerMessageId?: string,
     searchable?: boolean
   ): void {
-    const writePromise = this.logAgentMessage(sessionId, source, direction, content, metadata, hidden, providerMessageId, searchable)
-      .catch(error => {
-        // For non-blocking calls, we've already logged the error in logAgentMessage
-        // Just suppress the unhandled rejection
+    if (this.config.skipLogging) return;
+
+    const createdAt = new Date();
+    const isSearchable = searchable && content.length < 500000;
+
+    const writePromise = getSharedAgentMessageQueue().enqueue({
+      sessionId,
+      source,
+      direction,
+      content,
+      metadata,
+      hidden,
+      createdAt,
+      providerMessageId,
+      searchable: isSearchable,
+    })
+      .catch((error) => {
+        // Don't log per-row failures here — the queue's per-row fallback path
+        // already surfaces the original batched-INSERT failure once. Suppress
+        // the unhandled rejection.
+        void error;
       })
       .finally(() => {
         this.pendingWritePromises.delete(writePromise);
@@ -313,13 +385,23 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
   }
 
   /**
-   * Await all in-flight non-blocking message writes.
-   * Call this before yielding the completion event to ensure all messages
-   * are committed to the database before the UI reloads.
+   * Await this provider's in-flight message writes.
+   *
+   * Per-provider promises are tracked in `pendingWritePromises` and resolve
+   * when their row's flush completes. Awaiting them here gives turn-end
+   * "this provider's rows are persisted" semantics WITHOUT also waiting for
+   * unrelated traffic from other concurrent providers/sessions to drain
+   * through the shared queue.
+   *
+   * The natural flush triggers (200ms idle / 200-row threshold) bound how
+   * long this can take; under steady firehose the row threshold trips well
+   * before idle, and under a quiet trailing burst the idle timer fires
+   * within 200ms.
    */
   protected async flushPendingWrites(): Promise<void> {
-    if (this.pendingWritePromises.size === 0) return;
-    await Promise.all(this.pendingWritePromises);
+    if (this.pendingWritePromises.size > 0) {
+      await Promise.all(this.pendingWritePromises);
+    }
   }
 
   /**

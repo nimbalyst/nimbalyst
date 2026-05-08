@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { ChatAttachment } from '@nimbalyst/runtime';
 import { getFileIcon } from '@nimbalyst/runtime';
+import { nimAssetUrl } from '../../utils/assetUrl';
 
 interface ProcessingAttachmentPreviewProps {
   filename: string;
@@ -116,7 +117,7 @@ export function AttachmentPreview({ attachment, onRemove, onConvertToText }: Att
         >
           {attachment.type === 'image' ? (
             <img
-              src={`file://${attachment.filepath}`}
+              src={nimAssetUrl(attachment.filepath)}
               alt={attachment.filename}
               className="attachment-preview-image w-full h-full object-cover"
             />
@@ -168,7 +169,7 @@ export function AttachmentPreview({ attachment, onRemove, onConvertToText }: Att
               </svg>
             </button>
             <img
-              src={`file://${attachment.filepath}`}
+              src={nimAssetUrl(attachment.filepath)}
               alt={attachment.filename}
               className="attachment-preview-modal-image max-w-[90vw] max-h-[80vh] object-contain rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.3)]"
             />

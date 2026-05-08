@@ -129,8 +129,8 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
         branch: row.branch,
         baseBranch: row.base_branch,
         projectPath: row.workspace_id,
-        createdAt: toMillis(row.created_at),
-        updatedAt: toMillis(row.updated_at),
+        createdAt: toMillis(row.created_at)!,
+        updatedAt: toMillis(row.updated_at)!,
         isPinned: row.is_pinned ?? false,
         isArchived: row.is_archived ?? false,
       };
@@ -165,8 +165,8 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
           branch: row.branch,
           baseBranch: row.base_branch,
           projectPath: row.workspace_id,
-          createdAt: toMillis(row.created_at),
-          updatedAt: toMillis(row.updated_at),
+          createdAt: toMillis(row.created_at)!,
+          updatedAt: toMillis(row.updated_at)!,
           isPinned: row.is_pinned ?? false,
           isArchived: row.is_archived ?? false,
         });
@@ -202,8 +202,8 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
         branch: row.branch,
         baseBranch: row.base_branch,
         projectPath: row.workspace_id,
-        createdAt: toMillis(row.created_at),
-        updatedAt: toMillis(row.updated_at),
+        createdAt: toMillis(row.created_at)!,
+        updatedAt: toMillis(row.updated_at)!,
         isPinned: row.is_pinned ?? false,
         isArchived: row.is_archived ?? false,
       };
@@ -236,8 +236,8 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
         branch: row.branch,
         baseBranch: row.base_branch,
         projectPath: row.workspace_id,
-        createdAt: toMillis(row.created_at),
-        updatedAt: toMillis(row.updated_at),
+        createdAt: toMillis(row.created_at)!,
+        updatedAt: toMillis(row.updated_at)!,
         isPinned: row.is_pinned ?? false,
         isArchived: row.is_archived ?? false,
       }));

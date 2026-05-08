@@ -2,7 +2,6 @@ import Store from "electron-store";
 import {PostHog} from "posthog-node";
 import {ulid} from "ulid";
 import {logger} from "../../utils/logger";
-import {beforePosthogSendNodeJS} from "./analytics-utils";
 import {app} from "electron";
 import {isAnalyticsEnabled, setAnalyticsEnabled} from "../../utils/store";
 import {isGitAvailable} from "../../utils/gitUtils";
@@ -254,7 +253,7 @@ export class AnalyticsService {
         },
         disableGeoip: false,
         enableExceptionAutocapture: false,
-        before_send: beforePosthogSendNodeJS
+        before_send: (event) => process.env.PLAYWRIGHT_TEST ? null : event
       }
     );
   }

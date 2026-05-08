@@ -218,6 +218,13 @@ export interface CalloutPosition {
 }
 
 const CALLOUT_WIDTH = 320;
+/**
+ * Width of the wide variant. Must match the `w-[420px]` Tailwind class applied
+ * in `WalkthroughCallout.tsx` when `step.wide` is true. If you change one, change
+ * both. Otherwise viewport-clamp arithmetic here disagrees with the rendered
+ * width and the callout will overflow the viewport edge on wide steps.
+ */
+const CALLOUT_WIDE_WIDTH = 420;
 const CALLOUT_HEIGHT_ESTIMATE = 200; // Will vary based on content
 const ARROW_SIZE = 12;
 const VIEWPORT_MARGIN = 16;
@@ -226,8 +233,10 @@ const ARROW_MAX_OFFSET_FROM_EDGE = 24; // Maximum distance arrow can be from cal
 
 export function calculateCalloutPosition(
   target: HTMLElement,
-  preferredPlacement: WalkthroughStep['placement']
+  preferredPlacement: WalkthroughStep['placement'],
+  wide: boolean = false,
 ): CalloutPosition {
+  const calloutWidth = wide ? CALLOUT_WIDE_WIDTH : CALLOUT_WIDTH;
   const rect = target.getBoundingClientRect();
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
@@ -246,8 +255,8 @@ export function calculateCalloutPosition(
   let placement = preferredPlacement;
 
   // Check if preferred placement actually fits, otherwise find the best alternative
-  const fitsRight = spaceRight >= CALLOUT_WIDTH + ARROW_SIZE + VIEWPORT_MARGIN;
-  const fitsLeft = spaceLeft >= CALLOUT_WIDTH + ARROW_SIZE + VIEWPORT_MARGIN;
+  const fitsRight = spaceRight >= calloutWidth + ARROW_SIZE + VIEWPORT_MARGIN;
+  const fitsLeft = spaceLeft >= calloutWidth + ARROW_SIZE + VIEWPORT_MARGIN;
   const fitsBelow = spaceBelow >= CALLOUT_HEIGHT_ESTIMATE + ARROW_SIZE + VIEWPORT_MARGIN;
   const fitsAbove = spaceAbove >= CALLOUT_HEIGHT_ESTIMATE + ARROW_SIZE + VIEWPORT_MARGIN;
 
@@ -286,17 +295,17 @@ export function calculateCalloutPosition(
   switch (placement) {
     case 'top':
       top = rect.top - CALLOUT_HEIGHT_ESTIMATE - ARROW_SIZE;
-      left = targetCenterX - CALLOUT_WIDTH / 2;
+      left = targetCenterX - calloutWidth / 2;
       arrowPosition = 'bottom';
       break;
     case 'bottom':
       top = rect.bottom + ARROW_SIZE;
-      left = targetCenterX - CALLOUT_WIDTH / 2;
+      left = targetCenterX - calloutWidth / 2;
       arrowPosition = 'top';
       break;
     case 'left':
       top = targetCenterY - CALLOUT_HEIGHT_ESTIMATE / 2;
-      left = rect.left - CALLOUT_WIDTH - ARROW_SIZE;
+      left = rect.left - calloutWidth - ARROW_SIZE;
       arrowPosition = 'right';
       break;
     case 'right':
@@ -307,12 +316,12 @@ export function calculateCalloutPosition(
     default:
       // Fallback to bottom
       top = rect.bottom + ARROW_SIZE;
-      left = targetCenterX - CALLOUT_WIDTH / 2;
+      left = targetCenterX - calloutWidth / 2;
       arrowPosition = 'top';
   }
 
   // Clamp to viewport bounds
-  left = Math.max(VIEWPORT_MARGIN, Math.min(left, viewportWidth - CALLOUT_WIDTH - VIEWPORT_MARGIN));
+  left = Math.max(VIEWPORT_MARGIN, Math.min(left, viewportWidth - calloutWidth - VIEWPORT_MARGIN));
   top = Math.max(VIEWPORT_MARGIN, Math.min(top, viewportHeight - CALLOUT_HEIGHT_ESTIMATE - VIEWPORT_MARGIN));
 
   // Calculate arrow offset - where the arrow should point to hit the target
@@ -327,7 +336,7 @@ export function calculateCalloutPosition(
     // Arrow should point at target center horizontally
     arrowOffset = targetCenterX - left;
     // Clamp arrow to stay within callout bounds with padding
-    arrowOffset = Math.max(ARROW_MIN_OFFSET, Math.min(arrowOffset, CALLOUT_WIDTH - ARROW_MIN_OFFSET));
+    arrowOffset = Math.max(ARROW_MIN_OFFSET, Math.min(arrowOffset, calloutWidth - ARROW_MIN_OFFSET));
   }
 
   return { top, left, arrowPosition, arrowOffset };

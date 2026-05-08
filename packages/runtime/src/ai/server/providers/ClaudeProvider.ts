@@ -284,11 +284,21 @@ export class ClaudeProvider extends BaseAIProvider {
       const apiRequest: any = {
         model: modelId,
         max_tokens: this.config.maxTokens || 4000,
-        temperature: this.config.temperature || 0,
         system: systemPrompt,
         messages: apiMessages,
         ...(tools.length > 0 ? { tools } : {}),
       };
+
+      // Anthropic deprecated `temperature` for `claude-opus-4-7` and is
+      // expected to do so on future reasoning Opus releases. Sending it
+      // returns HTTP 400 `"temperature is deprecated for this model"`,
+      // which surfaces in Nimbalyst as a misleading "Test Connection:
+      // Failed" against valid API keys -- users blame their key. The
+      // default model on a fresh install is Opus 4.7, so every new user
+      // hits this until they switch to Sonnet. See nimbalyst#199.
+      if (ClaudeProvider.supportsTemperature(modelId)) {
+        apiRequest.temperature = this.config.temperature || 0;
+      }
 
       // Apply response format if specified (extension chat completions)
       if (this.config.responseFormat && this.config.responseFormat.type !== 'text') {
@@ -305,7 +315,7 @@ export class ClaudeProvider extends BaseAIProvider {
       console.group('🚀 [ClaudeProvider] Final API Request');
       console.log('Model:', apiRequest.model);
       console.log('Max tokens:', apiRequest.max_tokens);
-      console.log('Temperature:', apiRequest.temperature);
+      console.log('Temperature:', 'temperature' in apiRequest ? apiRequest.temperature : '(omitted - not supported by model)');
       console.log('Has tools:', !!apiRequest.tools);
       console.log('Number of tools:', apiRequest.tools?.length || 0);
       console.log('System prompt length:', apiRequest.system.length);
@@ -912,5 +922,48 @@ export class ClaudeProvider extends BaseAIProvider {
   static isModelAllowed(modelId: string): boolean {
     const cleanId = modelId.replace('claude:', '');
     return CLAUDE_MODELS.some(m => m.id === cleanId);
+  }
+
+  /**
+   * Whether the given Claude model accepts the `temperature` parameter.
+   *
+   * Anthropic deprecated `temperature` starting with `claude-opus-4-7` --
+   * any non-default value (including the explicit `0` we send today) returns
+   * HTTP 400 `"temperature is deprecated for this model"`. The expectation
+   * is that future reasoning Opus releases (4.8, 4.9, ...) will follow the
+   * same pattern.
+   *
+   * Strategy: denylist of known-rejecting prefixes. Today that is
+   * `claude-opus-4-N` for N >= 7. Everything else -- all Sonnet variants
+   * (3.x and 4.x), all Haiku variants, Opus 4 / 4.1 / 4.5 / 4.6, and any
+   * `claude-3-*` Opus model -- still accepts `temperature`.
+   *
+   * The denylist is intentionally narrow. The fail-open default preserves
+   * user-configured `temperature` for new Claude models; if Anthropic
+   * deprecates it on a future model the denylist is updated in a follow-up
+   * PR (the failure mode is a loud HTTP 400 with a clear message, not
+   * silent loss of a sampling parameter). See nimbalyst#199.
+   *
+   * Static + exported for unit testing without instantiating the provider.
+   *
+   * @param modelId - The Anthropic model ID (without the `claude:` prefix)
+   * @returns true if `temperature` should be sent, false if it must be omitted
+   */
+  static supportsTemperature(modelId: string | undefined): boolean {
+    if (!modelId || typeof modelId !== 'string') return true;
+    const id = modelId.trim().toLowerCase();
+    if (!id) return true;
+
+    // Match `claude-opus-4-N` where N is a one or two-digit minor version.
+    // The trailing `(?:-|$)` anchor avoids matching the 8-digit date suffix
+    // on Opus 4.0 (`claude-opus-4-20250514`) -- without the anchor, the
+    // regex would capture `2` from the date and misclassify Opus 4.0.
+    const opusMinor = id.match(/^claude-opus-4-(\d{1,2})(?:-|$)/);
+    if (opusMinor) {
+      const minor = parseInt(opusMinor[1], 10);
+      return minor < 7;
+    }
+
+    return true;
   }
 }

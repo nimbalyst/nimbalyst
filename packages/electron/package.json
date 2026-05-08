@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.58.17",
+  "version": "0.59.2",
   "private": true,
   "license": "MIT",
   "description": "Electron app for Nimbalyst",
@@ -49,7 +49,7 @@
     "marketing:screenshots:grep": "playwright test --config=marketing/playwright.marketing.config.ts --grep"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.117",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.126",
     "@anthropic-ai/sdk": "^0.81.0",
     "@electric-sql/pglite": "0.3.14",
     "@electron-toolkit/utils": "^4.0.0",
@@ -58,7 +58,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@monaco-editor/react": "^4.7.0",
     "@nimbalyst/runtime": "*",
-    "@openai/codex-sdk": "^0.121.0",
+    "@openai/codex-sdk": "^0.128.0",
     "@stytch/vanilla-js": "^5.42.0",
     "@types/glob": "^8.1.0",
     "@types/js-yaml": "^4.0.9",

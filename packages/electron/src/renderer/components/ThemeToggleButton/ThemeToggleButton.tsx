@@ -5,6 +5,7 @@ import { themeIdAtom } from '@nimbalyst/runtime/store';
 import {
   getAllAvailableThemesAsync,
 } from '../../hooks/useTheme';
+import { themeListChangedVersionAtom } from '../../store/atoms/themeList';
 import { HelpTooltip } from '../../help';
 
 type BuiltInTheme = 'light' | 'dark';
@@ -26,7 +27,12 @@ export const ThemeToggleButton: React.FC<ThemeToggleButtonProps> = ({ className 
   const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
-  // Load available themes; refresh when extensions register/unregister themes.
+  // Load available themes; refresh when extensions register/unregister
+  // themes. The IPC event is handled centrally in
+  // store/listeners/themeListeners.ts and surfaced via
+  // themeListChangedVersionAtom -- using it as a dep re-runs this effect on
+  // every bump.
+  const themeListVersion = useAtomValue(themeListChangedVersionAtom);
   useEffect(() => {
     let cancelled = false;
     const loadThemes = async () => {
@@ -36,15 +42,10 @@ export const ThemeToggleButton: React.FC<ThemeToggleButtonProps> = ({ className 
 
     loadThemes();
 
-    const unsubscribe = window.electronAPI?.on?.('theme:list-changed', () => {
-      void loadThemes();
-    });
-
     return () => {
       cancelled = true;
-      if (typeof unsubscribe === 'function') unsubscribe();
     };
-  }, []);
+  }, [themeListVersion]);
 
   // Close menu when clicking outside
   useEffect(() => {

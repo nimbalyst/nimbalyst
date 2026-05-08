@@ -109,9 +109,28 @@ async function getMetaAgentServerPort(page: Page): Promise<number> {
   return result.port;
 }
 
-async function initializeMetaAgentMcp(port: number, sessionId: string, workspaceId: string): Promise<MetaAgentMcpClient> {
+async function getMcpAuthToken(page: Page): Promise<string> {
+  const result = await invokeElectron<{ success: boolean; token: string | null }>(
+    page,
+    'mcp:get-auth-token'
+  );
+  if (!result.success || !result.token) {
+    throw new Error(`MCP auth token unavailable: ${JSON.stringify(result)}`);
+  }
+  return result.token;
+}
+
+async function initializeMetaAgentMcp(port: number, sessionId: string, workspaceId: string, authToken: string): Promise<MetaAgentMcpClient> {
+  // Issue #146: the meta-agent server now requires a bearer token. Forward
+  // it on every request via requestInit.headers, which streamableHttp.ts
+  // merges into both the POST and the GET (SSE) calls.
   const transport = new StreamableHTTPClientTransport(
-    new URL(`http://127.0.0.1:${port}/mcp?sessionId=${encodeURIComponent(sessionId)}&workspaceId=${encodeURIComponent(workspaceId)}`)
+    new URL(`http://127.0.0.1:${port}/mcp?sessionId=${encodeURIComponent(sessionId)}&workspaceId=${encodeURIComponent(workspaceId)}`),
+    {
+      requestInit: {
+        headers: { Authorization: `Bearer ${authToken}` },
+      },
+    }
   );
   const client = new Client(
     {
@@ -134,7 +153,8 @@ async function reconnectMetaAgentClient(sessionId: string): Promise<void> {
   }
 
   const port = await getMetaAgentServerPort(page);
-  metaAgentClient = await initializeMetaAgentMcp(port, sessionId, workspacePath);
+  const token = await getMcpAuthToken(page);
+  metaAgentClient = await initializeMetaAgentMcp(port, sessionId, workspacePath, token);
 }
 
 async function listMcpTools(client: MetaAgentMcpClient): Promise<string[]> {
@@ -281,7 +301,8 @@ test.beforeAll(async () => {
 
   metaSessionId = await createMetaAgentSession(page, workspacePath);
   const port = await getMetaAgentServerPort(page);
-  metaAgentClient = await initializeMetaAgentMcp(port, metaSessionId, workspacePath);
+  const token = await getMcpAuthToken(page);
+  metaAgentClient = await initializeMetaAgentMcp(port, metaSessionId, workspacePath, token);
 });
 
 test.afterAll(async () => {

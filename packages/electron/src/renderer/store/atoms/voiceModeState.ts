@@ -149,6 +149,21 @@ export const voiceLastReportedFileAtom = atom<string | null>(null);
  */
 export const voiceErrorAtom = atom<{ type: string; message: string } | null>(null);
 
+/**
+ * Latest `voice-mode:preview-audio` event from main.
+ *
+ * Request-atom shape: each event bumps `version` and replaces `payload`.
+ * The Settings > Voice Mode panel uses this to play the preview audio
+ * returned by `voice-mode:preview-voice` invocations. Consumers must apply
+ * the skip-initial-mount idiom so the side effect only fires on real bumps.
+ */
+export interface VoiceModePreviewAudio {
+  version: number;
+  payload: { voiceId: string; audioBase64: string; format: string };
+}
+
+export const voiceModePreviewAudioAtom = atom<VoiceModePreviewAudio | null>(null);
+
 // =========================================================================
 // Voice Callbacks (registered by components, invoked by centralized listeners)
 // =========================================================================
@@ -171,8 +186,14 @@ let _onSubmitPrompt: ((payload: {
 let _onAgentTaskComplete: ((data: { sessionId: string; isComplete: boolean; content?: string }) => void) | null = null;
 /** Callback when voice session is programmatically stopped. Set by VoiceModeButton. */
 let _onVoiceStopped: (() => void) | null = null;
-/** Callback when voice agent response is done (token-usage received). Set by VoiceModeButton. */
-let _onResponseDone: (() => void) | null = null;
+/** Callback when voice agent response is done (token-usage received). Set by VoiceModeButton.
+ * `wokeFromSleep` is true when the listen state was 'sleeping' at turn end (e.g. the
+ * agent's turn was a function-call only, no audio) and the mic has just been woken. */
+let _onResponseDone: ((wokeFromSleep: boolean) => void) | null = null;
+/** Synchronous query: is the voice agent's audio still playing through the user's speakers?
+ * Used by the post-turn timer logic to defer the 15s listen window until audible end-of-turn,
+ * not server end-of-turn (long responses can stream into a queue that plays for many more seconds). */
+let _voiceAudioActiveQuery: (() => boolean) | null = null;
 
 export function registerVoiceAudioCallback(cb: ((audioBase64: string) => void) | null): void {
   _onAudioReceived = cb;
@@ -194,8 +215,11 @@ export function registerVoiceAgentTaskCompleteCallback(cb: ((data: { sessionId: 
 export function registerVoiceStoppedCallback(cb: (() => void) | null): void {
   _onVoiceStopped = cb;
 }
-export function registerVoiceResponseDoneCallback(cb: (() => void) | null): void {
+export function registerVoiceResponseDoneCallback(cb: ((wokeFromSleep: boolean) => void) | null): void {
   _onResponseDone = cb;
+}
+export function registerVoiceAudioActiveQuery(query: (() => boolean) | null): void {
+  _voiceAudioActiveQuery = query;
 }
 
 // Getters for centralized listeners to invoke
@@ -205,3 +229,4 @@ export function getVoiceSubmitPromptCallback() { return _onSubmitPrompt; }
 export function getVoiceAgentTaskCompleteCallback() { return _onAgentTaskComplete; }
 export function getVoiceStoppedCallback() { return _onVoiceStopped; }
 export function getVoiceResponseDoneCallback() { return _onResponseDone; }
+export function getVoiceAudioActiveQuery() { return _voiceAudioActiveQuery; }

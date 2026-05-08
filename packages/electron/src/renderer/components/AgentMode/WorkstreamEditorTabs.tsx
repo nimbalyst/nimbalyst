@@ -12,11 +12,13 @@
 
 import React, { useCallback, useRef, forwardRef, useImperativeHandle, useEffect } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
+import { store } from '@nimbalyst/runtime/store';
 import { TabsProvider, useTabs, useTabsActions } from '../../contexts/TabsContext';
 import { TabManager } from '../TabManager/TabManager';
 import { TabContent } from '../TabContent/TabContent';
 import { setSessionTabCountAtom } from '../../store';
-import { workstreamStateAtom } from '../../store/atoms/workstreamState';
+import { workstreamStateAtom, workstreamStatesLoadedAtom } from '../../store/atoms/workstreamState';
+import { fileDeletedAtomFamily } from '../../store/atoms/fileWatch';
 
 // Current tab state - always kept up to date for sync flush on unmount
 const currentTabState = new Map<string, {
@@ -217,14 +219,40 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
     const setTabCount = useSetAtom(setSessionTabCountAtom);
     const workstreamState = useAtomValue(workstreamStateAtom(workstreamId));
     const setWorkstreamState = useSetAtom(workstreamStateAtom(workstreamId));
+    const workstreamStatesLoaded = useAtomValue(workstreamStatesLoadedAtom);
     const prevTabCountRef = useRef(tabs.length);
     // Track restore state: 'pending' -> 'restoring' -> 'done'
     const restoreStateRef = useRef<'pending' | 'restoring' | 'done'>('pending');
+    // Defense-in-depth: only allow `[]` writes to disk after we've observed
+    // a non-empty tab state at least once. This prevents data loss on the
+    // failure paths the `workstreamStatesLoaded` gate doesn't fully cover:
+    //   1) `loadWorkstreamStates` IPC throws and the catch block flips the
+    //      loaded flag to true with an empty map - the gate passes, restore
+    //      reads empty, transitions to 'done', and persist writes [] over
+    //      the saved tabs.
+    //   2) The per-workstream `loadWorkstreamState(id)` call (fired async by
+    //      `AgentWorkstreamPanel`) loses the race against this component's
+    //      mount when the global flag is already true from a prior bulk load.
+    // Until we see at least one tab in scope, treat an empty `tabs` array as
+    // "load not complete" and skip the IPC write. New workstreams legitimately
+    // have nothing to save until the user opens a file, so the deferred write
+    // is harmless there.
+    const hasEverHadTabsRef = useRef(false);
 
-    // Restore tabs from workstream state on mount
+    // Restore tabs from workstream state on mount.
+    // Wait for workstream states to finish loading from IPC before reading
+    // openFilePaths. Without this gate the restore effect can read the
+    // initial empty default, mark itself done, and let the persist effect
+    // overwrite the saved tab list with []. See nimbalyst#169.
     useEffect(() => {
       if (restoreStateRef.current !== 'pending') {
         // console.log('[WorkstreamEditorTabs] Skipping restore, state:', restoreStateRef.current);
+        return;
+      }
+      if (!workstreamStatesLoaded) {
+        // Hydration from disk hasn't finished yet. Don't read openFilePaths
+        // until it has, otherwise we restore 0 tabs and trigger the persist
+        // effect to overwrite the saved list with [].
         return;
       }
       restoreStateRef.current = 'restoring';
@@ -253,7 +281,7 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
       // Mark restore complete - now we can persist changes
       restoreStateRef.current = 'done';
       // console.log('[WorkstreamEditorTabs] Restore complete');
-    }, [workstreamId, workstreamState, tabsActions]);
+    }, [workstreamId, workstreamState, tabsActions, workstreamStatesLoaded]);
 
     // Sync tab count to Jotai atom and persist tabs when they change
     useEffect(() => {
@@ -272,8 +300,21 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
       });
       // console.log('[WorkstreamEditorTabs] Synced workstream state:', tabs.length, 'tabs');
 
+      // Latch: once we observe non-empty tabs, all subsequent writes are
+      // legitimate user edits (including closing all tabs). Before that
+      // first observation, treat empty as "not yet hydrated" and skip IPC.
+      if (tabs.length > 0) {
+        hasEverHadTabsRef.current = true;
+      }
+
       // Only persist to IPC after restore is complete to avoid overwriting saved state
       if (restoreStateRef.current === 'done') {
+        if (tabs.length === 0 && !hasEverHadTabsRef.current) {
+          // Skip the first empty write so a load failure or post-bulk on-demand
+          // load race can't clobber the saved tab list. The user opening any
+          // tab flips the latch and unblocks future writes.
+          return;
+        }
         // console.log('[WorkstreamEditorTabs] Persisting tabs to workspace state:', tabs.map(t => t.filePath), 'active:', activeTabId);
         updateTabState(workstreamId, workspacePath, tabs, activeTabId);
       } else {
@@ -288,6 +329,33 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
         flushToSessionStorage(workstreamId);
       };
     }, [workstreamId]);
+
+    // Subscribe to file-deletion atoms for every currently-open tab path so
+    // the workstream tab is closed when a file is deleted on disk. Without
+    // this, the workstream tab survives, autosave fires from a stale buffer,
+    // and the AI-recreated content can be silently overwritten.
+    useEffect(() => {
+      if (tabs.length === 0) return;
+      const cleanups: Array<() => void> = [];
+      for (const tab of tabs) {
+        const filePath = tab.filePath;
+        if (!filePath) continue;
+        const deletedAtom = fileDeletedAtomFamily(filePath);
+        const initial = store.get(deletedAtom);
+        const unsub = store.sub(deletedAtom, () => {
+          if (store.get(deletedAtom) === initial) return;
+          // Close the tab in this workstream
+          const stillOpen = tabsActions.findTabByPath(filePath);
+          if (stillOpen) {
+            tabsActions.removeTab(stillOpen.id);
+          }
+        });
+        cleanups.push(unsub);
+      }
+      return () => {
+        cleanups.forEach((c) => c());
+      };
+    }, [tabs, tabsActions]);
 
     // Expose current document path and workspace path to window for plugins (e.g., MockupPlatformService)
     // This mirrors what EditorMode does, but for workstream editor tabs

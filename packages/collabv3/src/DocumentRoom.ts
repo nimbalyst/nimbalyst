@@ -47,6 +47,10 @@ interface StoredDocumentAsset {
   createdBy: string;
   createdAt: number;
   updatedAt: number;
+  /** Org-key fingerprint the bytes are currently encrypted under. */
+  keyFingerprint: string | null;
+  /** Most recent rotation timestamp (ms); null = never rotated. */
+  rotatedAt: number | null;
 }
 
 // WebSocket tag prefixes for hibernation recovery
@@ -150,6 +154,21 @@ export class TeamDocumentRoom implements DurableObject {
       CREATE INDEX IF NOT EXISTS idx_document_assets_updated_at ON document_assets(updated_at);
     `);
 
+    // Key-rotation columns (added later than the bootstrap above). SQLite
+    // ADD COLUMN is not idempotent against CREATE TABLE IF NOT EXISTS, so
+    // guard against re-add via a PRAGMA inspection. Tracking the org-key
+    // fingerprint per-asset lets rotation skip already-rotated entries
+    // and resume cleanly after a partial failure.
+    const assetCols = sql.exec<{ name: string }>(`PRAGMA table_info(document_assets)`).toArray();
+    const haveCol = (n: string) => assetCols.some(c => c.name === n);
+    if (!haveCol('key_fingerprint')) {
+      sql.exec(`ALTER TABLE document_assets ADD COLUMN key_fingerprint TEXT`);
+    }
+    if (!haveCol('rotated_at')) {
+      sql.exec(`ALTER TABLE document_assets ADD COLUMN rotated_at INTEGER`);
+    }
+    sql.exec(`CREATE INDEX IF NOT EXISTS idx_document_assets_key_fingerprint ON document_assets(key_fingerprint)`);
+
     // Bootstrap TTL alarm for existing documents without one
     const existingAlarm = await this.state.storage.getAlarm();
     if (!existingAlarm) {
@@ -248,9 +267,12 @@ export class TeamDocumentRoom implements DurableObject {
       created_by: string;
       created_at: number;
       updated_at: number;
+      key_fingerprint: string | null;
+      rotated_at: number | null;
     }>(
       `SELECT asset_id, r2_key, ciphertext_size, plaintext_size, mime_type,
-              encrypted_metadata, metadata_iv, created_by, created_at, updated_at
+              encrypted_metadata, metadata_iv, created_by, created_at, updated_at,
+              key_fingerprint, rotated_at
        FROM document_assets
        ORDER BY created_at ASC`
     ).toArray();
@@ -266,6 +288,8 @@ export class TeamDocumentRoom implements DurableObject {
       createdBy: row.created_by,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      keyFingerprint: row.key_fingerprint,
+      rotatedAt: row.rotated_at,
     }));
 
     return new Response(JSON.stringify({ assets }), {
@@ -286,9 +310,12 @@ export class TeamDocumentRoom implements DurableObject {
       created_by: string;
       created_at: number;
       updated_at: number;
+      key_fingerprint: string | null;
+      rotated_at: number | null;
     }>(
       `SELECT asset_id, r2_key, ciphertext_size, plaintext_size, mime_type,
-              encrypted_metadata, metadata_iv, created_by, created_at, updated_at
+              encrypted_metadata, metadata_iv, created_by, created_at, updated_at,
+              key_fingerprint, rotated_at
        FROM document_assets
        WHERE asset_id = ?`,
       assetId
@@ -309,6 +336,8 @@ export class TeamDocumentRoom implements DurableObject {
       createdBy: row.created_by,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      keyFingerprint: row.key_fingerprint,
+      rotatedAt: row.rotated_at,
     };
 
     return new Response(JSON.stringify(payload), {
@@ -329,6 +358,8 @@ export class TeamDocumentRoom implements DurableObject {
       mimeType?: string | null;
       encryptedMetadata?: string | null;
       metadataIv?: string | null;
+      keyFingerprint?: string | null;
+      rotatedAt?: number | null;
     };
 
     if (!body.r2Key || !Number.isFinite(body.ciphertextSize)) {
@@ -345,8 +376,9 @@ export class TeamDocumentRoom implements DurableObject {
     sql.exec(
       `INSERT OR REPLACE INTO document_assets
        (asset_id, r2_key, ciphertext_size, plaintext_size, mime_type,
-        encrypted_metadata, metadata_iv, created_by, created_at, updated_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready')`,
+        encrypted_metadata, metadata_iv, created_by, created_at, updated_at, status,
+        key_fingerprint, rotated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`,
       assetId,
       body.r2Key,
       body.ciphertextSize,
@@ -356,7 +388,9 @@ export class TeamDocumentRoom implements DurableObject {
       body.metadataIv ?? null,
       existing?.created_by ?? auth.userId,
       existing?.created_at ?? now,
-      now
+      now,
+      body.keyFingerprint ?? null,
+      body.rotatedAt ?? null
     );
 
     this.setMetadataValue('updated_at', String(now));

@@ -410,15 +410,35 @@ test('should update file tree when new files are created by external process', a
   // macOS FSEvents can have variable delivery latency for new files in temp dirs.
   // If the watcher doesn't fire within 5s, reload the page which re-fetches
   // the full file tree from disk on initialization.
+  //
+  // The file tree is virtualized (react-virtuoso) -- items below the visible
+  // viewport are NOT rendered in the DOM. With this workspace's many fixture
+  // dirs/files, watch-new.md is below the fold, so we scroll the container to
+  // the bottom before asserting visibility.
   const fileLocator = page.locator('.file-tree-name', { hasText: 'watch-new.md' });
+  const scrollContainer = page.locator('.file-tree-container [data-testid="virtuoso-scroller"]').first();
 
-  const watcherDetected = await fileLocator.isVisible({ timeout: 5000 }).catch(() => false);
+  const scrollToBottomAndCheck = async (timeoutMs: number): Promise<boolean> => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      await scrollContainer.evaluate((el: HTMLElement) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      if (await fileLocator.isVisible({ timeout: 250 }).catch(() => false)) return true;
+    }
+    return false;
+  };
+
+  const watcherDetected = await scrollToBottomAndCheck(5000);
   if (!watcherDetected) {
     await page.reload();
     await waitForAppReady(page);
+    const reloadDetected = await scrollToBottomAndCheck(3000);
+    expect(reloadDetected, 'watch-new.md should appear in tree after reload').toBe(true);
+    return;
   }
 
-  await expect(fileLocator).toBeVisible({ timeout: 3000 });
+  await expect(fileLocator).toBeVisible();
 });
 
 // Skip: Lexical editor doesn't reliably reload multiple rapid external changes

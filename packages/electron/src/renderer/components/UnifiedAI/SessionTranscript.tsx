@@ -31,6 +31,7 @@ import { WakeupBanner } from '../AIChat/WakeupBanner';
 import type { AIMode } from './ModeTag';
 // Note: ExitPlanMode, AskUserQuestion, and ToolPermission use inline widgets via InteractiveWidgetHost (in runtime package)
 import { SlashCommandSuggestions } from './SlashCommandSuggestions';
+import { supportsWorkspaceSlashCommands } from '../Typeahead/slashCommandAutocomplete';
 import type { TextSelection } from './TextSelectionIndicator';
 import { type SerializableDocumentContext } from '../../hooks/useDocumentContext';
 import { diffTreeGroupByDirectoryAtom, setDiffTreeGroupByDirectoryAtom } from '../../store/atoms/projectState';
@@ -836,6 +837,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         ...serializeDocumentContext(effectiveContext),
         attachments: attachments.length > 0 ? attachments : undefined,
         mode: overrideMode,
+        inputType: 'user' as const,
       };
 
       await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
@@ -920,6 +922,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       const docContext = {
         ...serializeDocumentContext(effectiveContext),
         mode: aiMode,
+        inputType: 'user' as const,
       };
 
       await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
@@ -1386,7 +1389,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
           await window.electronAPI.invoke(
             'ai:sendMessage',
             feedbackMessage,
-            undefined,
+            { inputType: 'user' },
             sessionId,
             workspacePath
           );
@@ -1455,7 +1458,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   ]);
 
   // Feature flags
-  const enableSlashCommands = sessionData?.provider === 'claude-code';
+  const enableSlashCommands = supportsWorkspaceSlashCommands(sessionData?.provider);
   const enableAttachments = true;
   const enableHistoryNavigation = true;
 

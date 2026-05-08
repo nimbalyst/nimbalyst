@@ -37,6 +37,7 @@ import {
   switchToAgentMode,
   switchToFilesMode,
 } from '../utils/testHelpers';
+import { simulateApplyDiff } from '../utils/aiToolSimulator';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -99,6 +100,16 @@ test.beforeAll(async () => {
   await fs.writeFile(
     path.join(workspaceDir, 'multi-editor-test.md'),
     '# Multi Editor Test\n\nOriginal content for multi-editor scenario.\n',
+    'utf8'
+  );
+  await fs.writeFile(
+    path.join(workspaceDir, 'source-mode-test.md'),
+    '# Source Mode Test\n\nOriginal content.\n',
+    'utf8'
+  );
+  await fs.writeFile(
+    path.join(workspaceDir, 'dual-attach-diff.md'),
+    '# Dual Attach Diff\n\nFirst paragraph baseline content.\n\nSecond paragraph baseline content.\n',
     'utf8'
   );
 
@@ -701,10 +712,15 @@ test('should show relative path from workspace root in breadcrumb', async () => 
 });
 
 test('dirty editor content is not overwritten by external file write', async () => {
-  // When a dirty editor has unsaved edits, an external file write (e.g. from
-  // another editor, AI tool, or terminal) must NOT overwrite the user's edits.
+  // When a dirty editor has unsaved edits and the file is concurrently
+  // overwritten on disk (another editor, AI tool, terminal, git pull), the
+  // user's in-memory buffer must be preserved AND autosave must NOT silently
+  // clobber the external write. Layer D conflict detection in the save IPC
+  // surfaces an autosave-conflict banner instead. The user resolves the
+  // conflict explicitly via the banner.
   const mdPath = path.join(workspaceDir, 'multi-editor-test.md');
   const userEdit = 'USER_TYPED_CONTENT_SHOULD_SURVIVE';
+  const externalContent = '# Multi Editor Test\n\nContent from OTHER editor.\n';
 
   // Reset file content
   await fs.writeFile(mdPath, '# Multi Editor Test\n\nOriginal content.\n', 'utf8');
@@ -727,20 +743,91 @@ test('dirty editor content is not overwritten by external file write', async () 
     .toBeVisible({ timeout: 2000 });
 
   // Write different content to disk externally
-  await fs.writeFile(mdPath, '# Multi Editor Test\n\nContent from OTHER editor.\n', 'utf8');
+  await fs.writeFile(mdPath, externalContent, 'utf8');
   await page.waitForTimeout(1500);
 
-  // Editor should STILL show user's typed content
+  // Editor should STILL show user's typed content (buffer preserved)
   await expect(editor).toContainText(userEdit);
 
-  // Wait for autosave to persist user's edits
+  // Wait past the autosave cycle so the conflict-aware save runs
   await page.waitForTimeout(3500);
 
-  // Disk should have the user's content
+  // Disk must STILL hold the external write -- Layer D refused the autosave
   const finalDiskContent = await fs.readFile(mdPath, 'utf-8');
-  expect(finalDiskContent).toContain(userEdit);
+  expect(finalDiskContent).toBe(externalContent);
+
+  // Autosave conflict banner is visible so the user can resolve explicitly
+  await expect(page.locator('[data-testid="autosave-conflict-banner"]'))
+    .toBeVisible({ timeout: 2000 });
+
+  // Reload from disk to clear the dirty buffer for clean teardown
+  await page.locator('[data-testid="autosave-conflict-banner-reload"]').click();
+  await page.waitForTimeout(200);
 
   await closeTabByFileName(page, 'multi-editor-test.md');
+});
+
+test('source-mode toggle does not silently overwrite external disk changes', async () => {
+  // Source-mode toggle (rich Lexical <-> Monaco source) flushes the dirty
+  // buffer to disk and then reloads from disk. Without Layer D it would
+  // silently clobber an external write. Verify the toggle aborts on conflict
+  // and surfaces the autosave-conflict banner instead.
+  const mdPath = path.join(workspaceDir, 'source-mode-test.md');
+  const userEdit = 'USER_EDIT_FROM_RICH_MODE';
+  const externalContent = '# Source Mode Test\n\nForeign content from another writer.\n';
+
+  // Reset
+  await fs.writeFile(mdPath, '# Source Mode Test\n\nOriginal content.\n', 'utf8');
+
+  // Open in rich Lexical mode (default for .md)
+  await openFileFromTree(page, 'source-mode-test.md');
+  await page.waitForSelector(ACTIVE_EDITOR_SELECTOR, { timeout: TEST_TIMEOUTS.EDITOR_LOAD });
+  await page.waitForTimeout(500);
+
+  // Type to make it dirty
+  const editor = page.locator(ACTIVE_EDITOR_SELECTOR);
+  await editor.click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(`\n\n${userEdit}`);
+  await page.waitForTimeout(200);
+
+  // Verify dirty
+  const tabElement = getTabByFileName(page, 'source-mode-test.md');
+  await expect(tabElement.locator(PLAYWRIGHT_TEST_SELECTORS.tabDirtyIndicator))
+    .toBeVisible({ timeout: 2000 });
+
+  // Concurrent external write to disk
+  await fs.writeFile(mdPath, externalContent, 'utf8');
+  await page.waitForTimeout(300);
+
+  // User toggles source mode via the unified header "More actions" menu.
+  // The pre-toggle save must hit Layer D and abort the toggle. Scope the menu
+  // trigger to this file's tab editor since other open tabs render their own
+  // (hidden) header bars.
+  const tabEditor = page.locator(`.tab-editor[data-file-path$="source-mode-test.md"]`);
+  await tabEditor.locator('button[title="More actions"]').click();
+  await page.waitForTimeout(150);
+  await page.locator('button.dropdown-item', { hasText: 'Toggle Source Mode' }).click();
+  await page.waitForTimeout(500);
+
+  // Disk must STILL hold the external write -- toggle's pre-save was refused
+  const finalDiskContent = await fs.readFile(mdPath, 'utf-8');
+  expect(finalDiskContent).toBe(externalContent);
+
+  // Conflict banner is visible
+  await expect(page.locator('[data-testid="autosave-conflict-banner"]'))
+    .toBeVisible({ timeout: 2000 });
+
+  // The toggle aborted: the rich Lexical editor is still showing (Monaco
+  // source-mode toolbar should not have rendered). User's edit is preserved.
+  await expect(page.locator('.monaco-markdown-toolbar')).toHaveCount(0);
+  await expect(editor).toContainText(userEdit);
+
+  // Reload from disk to clear the dirty buffer for clean teardown
+  await page.locator('[data-testid="autosave-conflict-banner-reload"]').click();
+  await page.waitForTimeout(200);
+
+  await closeTabByFileName(page, 'source-mode-test.md');
 });
 
 test('clean editor picks up content saved by sibling editor via DocumentModel', async () => {
@@ -944,6 +1031,114 @@ test('autosave does not hijack cursor when same file is open in FilesMode and Ag
     .locator(PLAYWRIGHT_TEST_SELECTORS.fileTabsContainer)
     .locator(PLAYWRIGHT_TEST_SELECTORS.tab, {
       has: page.locator('[data-filename="multi-editor-test.md"]'),
+    });
+  await filesModeTab.locator(PLAYWRIGHT_TEST_SELECTORS.tabCloseButton).click();
+  await expect(filesModeTab).not.toBeVisible({ timeout: 3000 });
+  await page.waitForTimeout(300);
+});
+
+test('approving diff in AgentMode also exits diff mode in FilesMode sibling', async () => {
+  // Reproduces a reported bug: with the same file open in both FilesMode and
+  // AgentMode (two real DocumentModel attachments), clicking Approve All in
+  // the AgentMode editor exits diff mode there but the FilesMode tab stays
+  // stuck in diff mode. The fix is the diffResolved fan-out from
+  // DocumentModel.clearDiffState; this test exercises it end-to-end.
+  const mdPath = path.join(workspaceDir, 'dual-attach-diff.md');
+  const baseline = '# Dual Attach Diff\n\nFirst paragraph baseline content.\n\nSecond paragraph baseline content.\n';
+  const aiContent = '# Dual Attach Diff\n\nFirst paragraph UPDATED.\n\nSecond paragraph UPDATED.\n';
+
+  // Reset
+  await fs.writeFile(mdPath, baseline, 'utf8');
+
+  // Open in FilesMode -- attachment A
+  await openFileFromTree(page, 'dual-attach-diff.md');
+  await page.waitForSelector(ACTIVE_EDITOR_SELECTOR, { timeout: TEST_TIMEOUTS.EDITOR_LOAD });
+  await page.waitForTimeout(500);
+
+  // Open same file in AgentMode -- attachment B (real second TabEditor)
+  await switchToAgentMode(page);
+  await page.evaluate(async ({ workspacePath, filePath }) => {
+    const helpers = (window as any).__testHelpers;
+    if (!helpers?.openFileInAgentMode) {
+      throw new Error('openFileInAgentMode test helper not exposed');
+    }
+    return helpers.openFileInAgentMode(workspacePath, filePath);
+  }, { workspacePath: workspaceDir, filePath: mdPath });
+
+  // Wait for the AgentMode TabEditor to mount for this file
+  await page.waitForFunction((fp) => {
+    const instances = document.querySelectorAll(`[data-file-path="${fp}"].multi-editor-instance`);
+    return instances.length >= 2;
+  }, mdPath, { timeout: 10000 });
+
+  // Pre-edit tag so the file watcher can correlate the AI write to a session
+  // and route the change through DocumentModel's diff session (which fans out
+  // to ALL attachments via onDiffRequested).
+  await page.evaluate(async ({ workspacePath, filePath, content }) => {
+    await window.electronAPI.history.createTag(
+      workspacePath,
+      filePath,
+      `test-tag-dual-attach-${Date.now()}`,
+      content,
+      'test-session-dual-attach',
+      'tool-dual-attach',
+    );
+  }, { workspacePath: workspaceDir, filePath: mdPath, content: baseline });
+  await page.waitForTimeout(200);
+
+  // Simulate the AI write: change disk content directly. The file watcher
+  // notifies DocumentModel, which dispatches onDiffRequested to BOTH
+  // attachments because diff state is shared.
+  await fs.writeFile(mdPath, aiContent, 'utf8');
+  await page.waitForTimeout(1500);
+
+  // Both attachments should now show the unified diff header
+  const diffHeaderCount = await page.locator('.unified-diff-header').count();
+  expect(diffHeaderCount).toBeGreaterThanOrEqual(2);
+
+  // Click Approve All in the AgentMode diff header. Scope to the agent-mode
+  // wrapper so we hit B's button, not A's. We dispatch the click via DOM
+  // (not Playwright's positional click) because the FilesEditedSidebar can
+  // overlay the diff header at this viewport size and intercept pointer
+  // events; what we're testing is the behavior when the button's onClick
+  // handler runs, not the layout of the agent-mode chrome.
+  const agentDiffHeader = page
+    .locator('[data-layout="agent-mode-wrapper"] .unified-diff-header')
+    .first();
+  await expect(agentDiffHeader).toBeVisible();
+  await page.evaluate(() => {
+    const btn = document.querySelector(
+      '[data-layout="agent-mode-wrapper"] .unified-diff-header [data-testid="diff-keep-all"]'
+    ) as HTMLButtonElement | null;
+    if (!btn) throw new Error('Agent-mode Accept All button not found');
+    btn.click();
+  });
+  await page.waitForTimeout(1000);
+
+  // AgentMode should have exited diff mode
+  await expect(page.locator('[data-layout="agent-mode-wrapper"] .unified-diff-header'))
+    .toHaveCount(0, { timeout: 2000 });
+
+  // Switch to FilesMode and confirm the sibling tab is no longer in diff mode
+  await switchToFilesMode(page);
+  await page.waitForTimeout(500);
+
+  // Scope to the FilesMode tab container so we don't re-pick up an AgentMode bar
+  const filesModeDiffHeader = page
+    .locator(PLAYWRIGHT_TEST_SELECTORS.fileTabsContainer)
+    .locator('.unified-diff-header');
+  await expect(filesModeDiffHeader).toHaveCount(0, { timeout: 3000 });
+
+  // FilesMode editor content should reflect the approved state
+  const filesModeEditor = page.locator(ACTIVE_EDITOR_SELECTOR);
+  await expect(filesModeEditor).toContainText('First paragraph UPDATED', { timeout: 3000 });
+  await expect(filesModeEditor).toContainText('Second paragraph UPDATED');
+
+  // Cleanup: close FilesMode tab
+  const filesModeTab = page
+    .locator(PLAYWRIGHT_TEST_SELECTORS.fileTabsContainer)
+    .locator(PLAYWRIGHT_TEST_SELECTORS.tab, {
+      has: page.locator('[data-filename="dual-attach-diff.md"]'),
     });
   await filesModeTab.locator(PLAYWRIGHT_TEST_SELECTORS.tabCloseButton).click();
   await expect(filesModeTab).not.toBeVisible({ timeout: 3000 });

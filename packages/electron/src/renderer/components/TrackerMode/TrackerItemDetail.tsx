@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { NimbalystEditor, MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
 import type { EditorConfig } from '@nimbalyst/runtime/editor';
 import { $convertFromEnhancedMarkdownString, getEditorTransformers } from '@nimbalyst/runtime/editor';
@@ -20,7 +20,7 @@ import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordField } fr
 import { TrackerFieldEditor, type TeamMemberOption } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
 import { UserAvatar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/UserAvatar';
 import { trackerItemByIdAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
-import { sessionRegistryAtom, type SessionMeta } from '../../store/atoms/sessions';
+import { refreshSessionListAtom, sessionRegistryAtom, type SessionMeta } from '../../store/atoms/sessions';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { useTrackerContentCollab } from '../../hooks/useTrackerContentCollab';
 
@@ -182,6 +182,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // not when any other item in the workspace updates.
   const item = useAtomValue(trackerItemByIdAtom(itemId));
   const sessionRegistry = useAtomValue(sessionRegistryAtom);
+  const refreshSessionList = useSetAtom(refreshSessionListAtom);
 
   const model = useMemo(() => globalRegistry.get(item?.primaryType ?? ''), [item?.primaryType]);
 
@@ -258,6 +259,35 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       .filter((s): s is SessionMeta => s != null)
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }, [item, sessionRegistry]);
+  const linkedSessionIds = useMemo(() => new Set(linkedSessions.map((session) => session.id)), [linkedSessions]);
+  const canLinkExistingSession = Boolean(item && workspacePath);
+  const [isLinkingExistingSession, setIsLinkingExistingSession] = useState(false);
+  const [sessionSearchQuery, setSessionSearchQuery] = useState('');
+  const [linkingSessionId, setLinkingSessionId] = useState<string | null>(null);
+  const [linkSessionError, setLinkSessionError] = useState<string | null>(null);
+  const availableSessions = useMemo(() => {
+    if (!workspacePath) return [] as SessionMeta[];
+    return Array.from(sessionRegistry.values())
+      .filter((session) => {
+        if (session.workspaceId !== workspacePath) return false;
+        if (session.isArchived) return false;
+        return !linkedSessionIds.has(session.id);
+      })
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }, [linkedSessionIds, sessionRegistry, workspacePath]);
+  const filteredAvailableSessions = useMemo(() => {
+    if (!sessionSearchQuery.trim()) {
+      return availableSessions.slice(0, 8);
+    }
+    const query = sessionSearchQuery.trim().toLowerCase();
+    return availableSessions
+      .filter((session) =>
+        session.title.toLowerCase().includes(query)
+        || session.provider.toLowerCase().includes(query)
+        || session.id.toLowerCase().includes(query)
+      )
+      .slice(0, 8);
+  }, [availableSessions, sessionSearchQuery]);
 
   // Local state for text fields (debounced save)
   const [localTitle, setLocalTitle] = useState(item ? getRecordTitle(item) : '');
@@ -270,14 +300,23 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // Rich content editor state
   const [contentMarkdown, setContentMarkdown] = useState<string | null>(null);
   const [contentLoaded, setContentLoaded] = useState(false);
+  // Bumped when an external writer (MCP, sync) changes the body content
+  // out from under us, so the Lexical editor remounts with the new value.
+  // Lexical only consumes `initialContent` at mount, so a key change is
+  // the only way to surface fresh content without an in-place editor API.
+  const [externalContentEpoch, setExternalContentEpoch] = useState(0);
   const getContentFnRef = useRef<(() => string) | null>(null);
   const contentSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const contentSaveInFlightRef = useRef(false);
   // Baseline of what was last persisted to PGLite for THIS item. Used as a
   // safety rail: if the collab editor mounts empty (e.g., because Lexical's
   // `main` binding is empty while the server Y.Doc only has legacy bytes
   // under `root`), onDirtyChange would otherwise save "" and clobber the
   // real content in PGLite. We refuse any save that would shrink a
   // known-non-empty baseline to empty.
+  // Also acts as the comparator for detecting external content updates --
+  // if the atom's content diverges from this baseline, the change came
+  // from somewhere other than this panel's own save path.
   const loadedBaselineRef = useRef<string | null>(null);
 
   // Reset local editing state when navigating to a different item.
@@ -294,6 +333,10 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;
     }
+    setIsLinkingExistingSession(false);
+    setSessionSearchQuery('');
+    setLinkingSessionId(null);
+    setLinkSessionError(null);
   }, [itemId]); // itemId only -- not item fields
 
   // Load rich content from PGLite once when navigating to a new item.
@@ -336,6 +379,42 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
 
     return () => { cancelled = true; };
   }, [item?.id, hasRichContent]);
+
+  // External content update detection.
+  // The atom's `content` is refreshed by trackerSyncListeners whenever a
+  // tracker-items-changed event arrives -- including MCP writes, sync
+  // pushes, comment additions, and our own field saves. Our own content
+  // saves are recognized because saveContent advances the baseline before
+  // the IPC round-trip, so when the broadcast echo arrives the atom value
+  // already matches. Any other divergence means an external writer changed
+  // the body, and Lexical can only adopt that by remounting -- bump the
+  // epoch in the editor key so it picks up the fresh initialContent.
+  const atomContentString = useMemo<string | null>(() => {
+    if (!hasRichContent) return null;
+    const c = item?.content;
+    if (c == null) return null;
+    return typeof c === 'string' ? c : (c as any)?.markdown ?? null;
+  }, [item?.content, hasRichContent]);
+
+  useEffect(() => {
+    if (!hasRichContent) return;
+    if (atomContentString == null) return;
+    const baseline = loadedBaselineRef.current;
+    // Initial load hasn't completed yet -- the load effect owns this state
+    if (baseline === null) return;
+    if (atomContentString === baseline) return;
+    // Local typing wins over a racing external write. If this panel already
+    // has a pending or in-flight body save, remounting Lexical here would
+    // discard the user's unsaved characters. Let the local save finish and
+    // intentionally keep the editor on the locally-authored content.
+    if (contentSaveTimerRef.current || contentSaveInFlightRef.current) {
+      return;
+    }
+    // External update detected: refresh the editor.
+    loadedBaselineRef.current = atomContentString;
+    setContentMarkdown(atomContentString);
+    setExternalContentEpoch((e) => e + 1);
+  }, [atomContentString, hasRichContent]);
 
   // Escape to close
   useEffect(() => {
@@ -452,14 +531,26 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     }
     if (contentSaveTimerRef.current) clearTimeout(contentSaveTimerRef.current);
     contentSaveTimerRef.current = setTimeout(async () => {
+      contentSaveTimerRef.current = null;
+      // Update the baseline before the IPC round-trip. The main-process
+      // updateTrackerItemContent path also broadcasts tracker-items-changed,
+      // which races with the invoke result -- if the broadcast arrives first
+      // and we haven't moved the baseline forward yet, the external-update
+      // detector below would mistake our own echo for a remote change and
+      // remount the editor mid-typing. On save failure the editor still
+      // owns the live value and the next dirty event will retry, so a
+      // briefly-optimistic baseline is safe.
+      loadedBaselineRef.current = markdown;
+      contentSaveInFlightRef.current = true;
       try {
         await window.electronAPI.documentService.updateTrackerItemContent({
           itemId: item!.id,
           content: markdown,
         });
-        loadedBaselineRef.current = markdown;
       } catch (err) {
         console.error('[TrackerItemDetail] Failed to save content:', err);
+      } finally {
+        contentSaveInFlightRef.current = false;
       }
     }, 800);
   }, [item?.id]);
@@ -527,6 +618,31 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       }
     });
   }, [item?.system.documentPath, onSwitchToFilesMode]);
+
+  const handleLinkExistingSession = useCallback(async (sessionId: string) => {
+    if (!item) return;
+    setLinkSessionError(null);
+    setLinkingSessionId(sessionId);
+    try {
+      const trackerId = item.system.documentPath
+        ? `file:${item.system.documentPath}`
+        : item.id;
+      const result = await window.electronAPI.invoke('tracker:link-session', {
+        trackerId,
+        sessionId,
+      });
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to link session');
+      }
+      await refreshSessionList();
+      setIsLinkingExistingSession(false);
+      setSessionSearchQuery('');
+    } catch (err) {
+      setLinkSessionError(err instanceof Error ? err.message : 'Failed to link session');
+    } finally {
+      setLinkingSessionId(null);
+    }
+  }, [item, refreshSessionList]);
 
   // Separate fields into categories for layout
   const { primaryFields, customFields } = useMemo(() => {
@@ -841,7 +957,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
               className="tracker-content-editor border border-nim rounded bg-nim min-h-[200px] overflow-hidden"
               data-testid="tracker-detail-content-editor"
             >
-              <NimbalystEditor key={item.id} config={localEditorConfig} />
+              <NimbalystEditor key={`${item.id}-${externalContentEpoch}`} config={localEditorConfig} />
             </div>
           ) : contentMode === 'collaborative' && collabEditorConfig ? (
             <div
@@ -907,23 +1023,83 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         </div>
 
         {/* Linked Sessions */}
-        {(linkedSessions.length > 0 || onLaunchSession) && (
+        {(linkedSessions.length > 0 || onLaunchSession || canLinkExistingSession || isLinkingExistingSession) && (
           <div className="pt-1 border-t border-nim">
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px]">
                 Sessions{linkedSessions.length > 0 ? ` (${linkedSessions.length})` : ''}
               </label>
-              {onLaunchSession && (
-                <button
-                  className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
-                  onClick={() => onLaunchSession(item.id)}
-                  title="Launch a new AI session for this item"
-                >
-                  <MaterialSymbol icon="add" size={14} />
-                  Launch Session
-                </button>
-              )}
+              <div className="flex items-center gap-1">
+                {canLinkExistingSession && (
+                  <button
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
+                    onClick={() => {
+                      setLinkSessionError(null);
+                      setSessionSearchQuery('');
+                      void refreshSessionList();
+                      setIsLinkingExistingSession((prev) => !prev);
+                    }}
+                    title="Link an existing AI session to this item"
+                  >
+                    <MaterialSymbol icon="link" size={14} />
+                    {isLinkingExistingSession ? 'Cancel' : 'Link Existing'}
+                  </button>
+                )}
+                {onLaunchSession && (
+                  <button
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
+                    onClick={() => onLaunchSession(item.id)}
+                    title="Launch a new AI session for this item"
+                  >
+                    <MaterialSymbol icon="add" size={14} />
+                    Launch Session
+                  </button>
+                )}
+              </div>
             </div>
+            {isLinkingExistingSession && (
+              <div className="tracker-session-linker mb-2 rounded border border-nim bg-nim-tertiary p-2">
+                <input
+                  className="w-full rounded border border-nim bg-nim px-2 py-1.5 text-xs text-nim outline-none focus:border-nim-focus"
+                  type="text"
+                  value={sessionSearchQuery}
+                  onChange={(e) => setSessionSearchQuery(e.target.value)}
+                  placeholder={`Search ${availableSessions.length} existing session${availableSessions.length === 1 ? '' : 's'}`}
+                />
+                <div className="mt-2 space-y-1">
+                  {filteredAvailableSessions.length > 0 ? (
+                    filteredAvailableSessions.map((session) => (
+                      <button
+                        key={session.id}
+                        className="tracker-session-linker-option w-full rounded px-2 py-1.5 text-left hover:bg-nim-hover transition-colors disabled:opacity-60"
+                        onClick={() => handleLinkExistingSession(session.id)}
+                        disabled={linkingSessionId !== null}
+                        title={`Link session: ${session.title || 'Untitled session'}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <ProviderIcon provider={session.provider || 'claude'} size={14} />
+                          <span className="flex-1 truncate text-xs text-nim">
+                            {session.title || 'Untitled session'}
+                          </span>
+                          <span className="shrink-0 text-[10px] text-nim-faint">
+                            {linkingSessionId === session.id ? 'Linking...' : getRelativeTimeString(session.updatedAt)}
+                          </span>
+                        </div>
+                      </button>
+                    ))
+                  ) : (
+                    <p className="m-0 text-[11px] text-nim-faint">
+                      {availableSessions.length === 0
+                        ? 'No unlinked sessions available.'
+                        : 'No sessions match that search.'}
+                    </p>
+                  )}
+                </div>
+                {linkSessionError && (
+                  <p className="mt-2 mb-0 text-[11px] text-nim-error">{linkSessionError}</p>
+                )}
+              </div>
+            )}
             {linkedSessions.length > 0 ? (
               <div className="space-y-1">
                 {linkedSessions.map((session) => (

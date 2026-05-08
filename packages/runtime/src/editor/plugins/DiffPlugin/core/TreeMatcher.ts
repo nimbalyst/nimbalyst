@@ -407,6 +407,20 @@ export class WindowedTreeMatcher {
     const targetMatched = new Set<number>();
     const targetToSource = new Map<number, number>();
 
+    // Tracks which source/target indices have already been consumed by an
+    // equal/replace iteration. Without this, a forced guidepost equal AND a
+    // TOPT equal/replace can both target the same (sourceIdx, targetIdx) pair,
+    // both create UPDATE diffs, and the duplicate UPDATE drives the recursion
+    // through $applySubTreeDiff a second time -- producing visible content
+    // duplication (e.g. one removed source bullet plus TWO added target
+    // bullets for an unchanged sub-bullet, when the live editor's autolink
+    // plugin had already converted text URLs in source while the target
+    // headless editor still has them as plain text). See
+    // packages/electron/e2e/ai/diff-small-md-mixed-children.spec.ts for the
+    // regression covering this.
+    const consumedSourceForUpdate = new Set<number>();
+    const consumedTargetForUpdate = new Set<number>();
+
     // FORCE EXACT MATCHES using text-based guideposts
     // Guideposts identify content that's identical but shifted in position
     // Override TOPT's decisions and force these to match as EQUAL operations
@@ -459,6 +473,20 @@ export class WindowedTreeMatcher {
         const targetIdx = op.bPath[0];
 
         if (sourceIdx >= sourceNodes.length || targetIdx >= targetNodes.length) continue;
+
+        // Dedupe equal/replace ops by (sourceIdx, targetIdx) pair. Forced
+        // guidepost ops are prepended to TOPT's own ops, and they often
+        // collide on the same pair -- without this skip we end up creating
+        // two UPDATE diffs for the same source/target, which then runs
+        // $applySubTreeDiff twice and duplicates content on each recursion.
+        if (
+          consumedSourceForUpdate.has(sourceIdx) ||
+          consumedTargetForUpdate.has(targetIdx)
+        ) {
+          continue;
+        }
+        consumedSourceForUpdate.add(sourceIdx);
+        consumedTargetForUpdate.add(targetIdx);
 
         const similarity = calculateSimilarity(sourceNodes[sourceIdx], targetNodes[targetIdx]);
 

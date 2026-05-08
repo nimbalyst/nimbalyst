@@ -1221,13 +1221,37 @@ export async function deleteAccount(serverUrl?: string): Promise<{ success: bool
 }
 
 /**
+ * In-flight refresh promise for the primary account.
+ *
+ * Why: Stytch's /auth/refresh consumes the session_token and returns a new one.
+ * Concurrent callers using the same token would each fire a refresh; the first
+ * succeeds and invalidates the token, the rest get 401s and trigger MORE refreshes
+ * (TeamService 401-retry path), producing a stampede that has been observed to
+ * stall workspace cold-start for minutes. Single-flight makes concurrent callers
+ * share the result of one in-flight call.
+ */
+let inflightRefreshSession: Promise<boolean> | null = null;
+
+/**
  * Refresh the current session to get a fresh JWT.
  * Calls the collabv3 server's /auth/refresh endpoint.
+ *
+ * Concurrent callers share a single in-flight /auth/refresh request.
  *
  * @param serverUrl - The sync server URL (e.g., 'https://sync.nimbalyst.com')
  * @returns true if refresh succeeded, false if session expired or failed
  */
-export async function refreshSession(serverUrl?: string): Promise<boolean> {
+export function refreshSession(serverUrl?: string): Promise<boolean> {
+  if (inflightRefreshSession) {
+    return inflightRefreshSession;
+  }
+  inflightRefreshSession = doRefreshSession(serverUrl).finally(() => {
+    inflightRefreshSession = null;
+  });
+  return inflightRefreshSession;
+}
+
+async function doRefreshSession(serverUrl?: string): Promise<boolean> {
   const creds = loadStytchCredentials();
   if (!creds?.sessionToken) {
     logger.main.warn('[StytchAuthService] Cannot refresh - no session token');
@@ -1358,11 +1382,34 @@ export async function refreshSession(serverUrl?: string): Promise<boolean> {
 }
 
 /**
+ * In-flight refresh promises for secondary accounts, keyed by personalOrgId.
+ *
+ * Why: Same single-flight rationale as inflightRefreshSession, but per-account.
+ * Each Stytch session_token is single-use; concurrent callers for the same
+ * account would stampede the token and cascade into 401-retry storms.
+ */
+const inflightRefreshForAccount = new Map<string, Promise<string | null>>();
+
+/**
  * Refresh a specific account's session by personalOrgId.
  * Works for both primary and secondary accounts.
  * Returns the fresh JWT on success, null on failure.
+ *
+ * Concurrent callers for the same personalOrgId share a single in-flight refresh.
  */
-export async function refreshSessionForAccount(personalOrgId: string): Promise<string | null> {
+export function refreshSessionForAccount(personalOrgId: string): Promise<string | null> {
+  const inflight = inflightRefreshForAccount.get(personalOrgId);
+  if (inflight) {
+    return inflight;
+  }
+  const promise = doRefreshSessionForAccount(personalOrgId).finally(() => {
+    inflightRefreshForAccount.delete(personalOrgId);
+  });
+  inflightRefreshForAccount.set(personalOrgId, promise);
+  return promise;
+}
+
+async function doRefreshSessionForAccount(personalOrgId: string): Promise<string | null> {
   // For primary account, delegate to refreshSession which updates global authState
   if (personalOrgId === primaryAccountId) {
     try {

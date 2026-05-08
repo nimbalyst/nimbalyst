@@ -342,22 +342,43 @@ export class ListDiffHandler implements DiffNodeHandler {
       $setDiffState(liveNode, 'modified');
       return {handled: true, skipChildren: false}; // Let the system recurse into children
     } else {
-      // For regular list items (text, links, formatting), use the inline text diff system
+      // For regular list items (text, links, formatting), use the inline
+      // text diff system. The caller already marked liveNode as 'modified';
+      // we don't reapply it here because $applyInlineTextDiff may
+      // legitimately downgrade the state to 'removed' when it splits the
+      // list item into a removed-source / added-target sibling pair for
+      // near-complete rewrites.
       $applyInlineTextDiff(liveNode, sourceChildren, targetChildren);
-      $setDiffState(liveNode, 'modified');
       return {handled: true, skipChildren: true};
     }
   }
 
   /**
-   * Process approval for lists and list items
+   * Process approval for lists and list items.
+   *
+   * Children are scanned twice: first non-removal updates (clear-state +
+   * recursion) in original order, then nodes-to-remove in REVERSE order.
+   *
+   * The reverse order matters because @lexical/list's ListItemNode.remove()
+   * auto-merges when BOTH neighbors are nested-list-wrapper listitems --
+   * see `mergeLists` in @lexical/list. AI edits that append a new outer
+   * bullet plus its nested URL bullet (e.g. "- California\n  - URL: ...")
+   * land as two adjacent added listitems: a text wrapper and a nested-list
+   * wrapper. If we remove them left-to-right, removing the text listitem
+   * triggers the merge between its left wrapper neighbor (which we still
+   * need) and its right wrapper neighbor (the added one we're about to
+   * remove). The merge moves the added wrapper's nested children into the
+   * surviving wrapper, leaving stray content after the rejection completes.
+   * Removing right-to-left removes the rightmost added wrapper first, so by
+   * the time we touch the text listitem its right neighbor is gone (or no
+   * longer a wrapper) and the merge condition doesn't fire.
    */
   private processListApproval(element: ElementNode): void {
     // Clear any diff state on the element itself
     $clearDiffState(element);
 
-    // Process children
     const children = [...element.getChildren()];
+    const toRemove: LexicalNode[] = [];
 
     for (const child of children) {
       const diffState = $getDiffState(child);
@@ -366,8 +387,8 @@ export class ListDiffHandler implements DiffNodeHandler {
         // Approve addition - clear diff state
         $clearDiffState(child);
       } else if (diffState === 'removed') {
-        // Approve removal - remove the node
-        child.remove();
+        // Approve removal - defer the remove to a reverse-order pass below
+        toRemove.push(child);
         continue;
       } else if (diffState === 'modified') {
         // Approve modification - clear diff state and handle text nodes
@@ -382,29 +403,34 @@ export class ListDiffHandler implements DiffNodeHandler {
         }
       }
 
-      // Recursively process if it's an element
+      // Recursively process if it's an element (kept-alive children only)
       if ($isElementNode(child)) {
         this.processListApproval(child);
       }
     }
+
+    for (let i = toRemove.length - 1; i >= 0; i--) {
+      toRemove[i].remove();
+    }
   }
 
   /**
-   * Process rejection for lists and list items
+   * Process rejection for lists and list items. See {@link processListApproval}
+   * for why removals run in reverse order.
    */
   private processListRejection(element: ElementNode): void {
     // Clear any diff state on the element itself
     $clearDiffState(element);
 
-    // Process children
     const children = [...element.getChildren()];
+    const toRemove: LexicalNode[] = [];
 
     for (const child of children) {
       const diffState = $getDiffState(child);
 
       if (diffState === 'added') {
-        // Reject addition - remove the node
-        child.remove();
+        // Reject addition - defer the remove to a reverse-order pass below
+        toRemove.push(child);
         continue;
       } else if (diffState === 'removed') {
         // Reject removal - clear diff state
@@ -426,10 +452,14 @@ export class ListDiffHandler implements DiffNodeHandler {
         }
       }
 
-      // Recursively process if it's an element
+      // Recursively process if it's an element (kept-alive children only)
       if ($isElementNode(child)) {
         this.processListRejection(child);
       }
+    }
+
+    for (let i = toRemove.length - 1; i >= 0; i--) {
+      toRemove[i].remove();
     }
   }
 

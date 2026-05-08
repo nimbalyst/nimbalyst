@@ -513,12 +513,21 @@ body {
  * @param content - The HTML content from $generateHtmlFromNodes
  * @returns Complete HTML document ready for PDF generation
  */
-export function wrapWithPrintStyles(content: string): string {
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+export function wrapWithPrintStyles(content: string, title: string = 'Document'): string {
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)}</title>
   <style>${PRINT_STYLESHEET}</style>
 </head>
 <body class="pdf-export">

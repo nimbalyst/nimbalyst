@@ -97,9 +97,21 @@ interface ElectronAPI {
     filters?: Array<{ name: string; extensions: string[] }>;
     defaultPath?: string;
   }) => Promise<{ canceled: boolean; filePaths: string[] }>;
-  saveFile: (content: string, filePath: string) => Promise<{ success: boolean; filePath: string; conflict?: boolean; diskContent?: string } | null>;
+  saveFile: (content: string, filePath: string, lastKnownContent?: string) => Promise<{ success: boolean; filePath: string; conflict?: boolean; diskContent?: string } | null>;
   saveFileAs: (content: string) => Promise<{ success: boolean; filePath: string } | null>;
   showErrorDialog: (title: string, message: string) => Promise<void>;
+  showSaveDialogPdf: (options: { defaultPath?: string }) => Promise<string | null>;
+  exportHtmlToPdf: (options: {
+    html: string;
+    outputPath: string;
+    pageSize?: 'A4' | 'Letter' | 'Legal';
+    landscape?: boolean;
+    generateDocumentOutline?: boolean;
+    generateTaggedPDF?: boolean;
+    margins?: { top?: number; bottom?: number; left?: number; right?: number };
+  }) => Promise<{ success: boolean; error?: string }>;
+  exportSessionToHtml: (options: { sessionId: string }) => Promise<{ success: boolean; filePath?: string; error?: string }>;
+  exportSessionToClipboard: (options: { sessionId: string }) => Promise<{ success: boolean; error?: string }>;
 
   // Share operations
   shareSessionAsLink: (options: { sessionId: string; expirationDays?: number }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>;
@@ -704,6 +716,28 @@ interface ElectronAPI {
       error?: string;
     }>;
     getPersonalJwt: () => Promise<{ success: boolean; jwt?: string; error?: string }>;
+
+    // Collaborative document attachments
+    closeDoc: (documentId: string) => Promise<{ success: boolean; error?: string }>;
+    uploadAsset: (payload: {
+      orgId: string;
+      documentId: string;
+      fileBytes: ArrayBuffer;
+      mimeType: string;
+      fileName: string;
+    }) => Promise<{ success: boolean; assetId?: string; uri?: string; error?: string }>;
+    gcAssets: (payload: {
+      orgId: string;
+      documentId: string;
+      removedUris: string[];
+    }) => Promise<{
+      success: boolean;
+      requested?: number;
+      deleted?: number;
+      failed?: number;
+      skipped?: number;
+      error?: string;
+    }>;
   };
 
   // Worktree operations

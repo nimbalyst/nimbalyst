@@ -116,6 +116,7 @@ export * from './utils/clipboard';
 export * from './utils/dateUtils';
 export * from './utils/fuzzyMatch';
 export * from './utils/documentDiff';
+export * from './utils/localAssetUrl';
 // Mockup types - shared across packages
 export type {
   DrawingPath,

@@ -387,3 +387,152 @@ describe('trackerItemToRecord comments/activity via customFields', () => {
     expect(record.system.activity![0].action).toBe('created');
   });
 });
+
+// Regression coverage for NIM-246: field-level LWW must round-trip through PGLite.
+describe('fieldUpdatedAt persistence round-trip', () => {
+  it('recordToDbParams writes _fieldUpdatedAt into the JSONB data column', () => {
+    const record: TrackerRecord = {
+      id: 'lww-1',
+      primaryType: 'bug',
+      typeTags: ['bug'],
+      source: 'native',
+      archived: false,
+      syncStatus: 'local',
+      system: { workspace: '/ws', createdAt: '2026-01-01', updatedAt: '2026-01-02' },
+      fields: { title: 'A', status: 'to-do' },
+      fieldUpdatedAt: { title: 1700000000000, status: 1700000000500 },
+    };
+
+    const params = recordToDbParams(record);
+    const data = JSON.parse(params.data);
+
+    expect(data._fieldUpdatedAt).toEqual({
+      title: 1700000000000,
+      status: 1700000000500,
+    });
+  });
+
+  it('dbRowToRecord reads persisted timestamps instead of stamping "now"', () => {
+    const row = {
+      id: 'lww-2',
+      type: 'bug',
+      type_tags: ['bug'],
+      data: {
+        title: 'A',
+        status: 'in-progress',
+        _fieldUpdatedAt: { title: 1700000000000, status: 1700000000500 },
+      },
+      workspace: '/ws',
+      document_path: '',
+      line_number: null,
+      created: new Date('2026-01-01'),
+      updated: new Date('2026-01-02'),
+      last_indexed: new Date('2026-01-02'),
+      issue_number: null,
+      issue_key: null,
+      content: null,
+      archived: false,
+      source: 'native',
+      source_ref: null,
+      sync_status: 'synced',
+    };
+
+    const record = dbRowToRecord(row);
+
+    expect(record.fieldUpdatedAt.title).toBe(1700000000000);
+    expect(record.fieldUpdatedAt.status).toBe(1700000000500);
+    // _fieldUpdatedAt itself must not leak into user fields
+    expect(record.fields._fieldUpdatedAt).toBeUndefined();
+  });
+
+  it('falls back to "now" for fields with no persisted timestamp (back-compat)', () => {
+    const before = Date.now();
+    const row = {
+      id: 'lww-3',
+      type: 'bug',
+      type_tags: ['bug'],
+      data: { title: 'A', status: 'to-do' }, // no _fieldUpdatedAt -- legacy row
+      workspace: '/ws',
+      document_path: '',
+      line_number: null,
+      created: new Date(),
+      updated: new Date(),
+      last_indexed: new Date(),
+      issue_number: null,
+      issue_key: null,
+      content: null,
+      archived: false,
+      source: 'native',
+      source_ref: null,
+      sync_status: 'local',
+    };
+
+    const record = dbRowToRecord(row);
+
+    expect(record.fieldUpdatedAt.title).toBeGreaterThanOrEqual(before);
+    expect(record.fieldUpdatedAt.status).toBeGreaterThanOrEqual(before);
+  });
+
+  it('full PGLite round-trip preserves fieldUpdatedAt across write+read', () => {
+    const original: TrackerRecord = {
+      id: 'lww-4',
+      primaryType: 'task',
+      typeTags: ['task'],
+      source: 'native',
+      archived: false,
+      syncStatus: 'local',
+      system: { workspace: '/ws', createdAt: '2026-01-01', updatedAt: '2026-01-02' },
+      fields: { title: 'Round trip', priority: 'high' },
+      fieldUpdatedAt: { title: 1700000000000, priority: 1700000000500 },
+    };
+
+    const params = recordToDbParams(original);
+    const persistedRow = {
+      id: params.id,
+      type: params.type,
+      type_tags: params.typeTags,
+      data: params.data, // string -- exercise the stringified branch too
+      workspace: params.workspace,
+      document_path: params.documentPath,
+      line_number: params.lineNumber,
+      created: new Date('2026-01-01'),
+      updated: new Date('2026-01-02'),
+      last_indexed: new Date('2026-01-02'),
+      issue_number: null,
+      issue_key: null,
+      content: params.content,
+      archived: params.archived,
+      source: params.source,
+      source_ref: params.sourceRef,
+      sync_status: params.syncStatus,
+    };
+
+    const restored = dbRowToRecord(persistedRow);
+
+    expect(restored.fieldUpdatedAt.title).toBe(1700000000000);
+    expect(restored.fieldUpdatedAt.priority).toBe(1700000000500);
+    expect(restored.fields.title).toBe('Round trip');
+    expect(restored.fields.priority).toBe('high');
+  });
+
+  it('trackerItemToRecord honors persisted item.fieldUpdatedAt instead of stamping "now"', () => {
+    const item: TrackerItem = {
+      id: 'lww-5',
+      type: 'bug',
+      title: 'A',
+      status: 'to-do',
+      priority: 'high',
+      module: '',
+      workspace: '/ws',
+      lastIndexed: new Date(),
+      fieldUpdatedAt: { title: 1700000000000, status: 1700000000500 },
+    };
+
+    const record = trackerItemToRecord(item);
+
+    expect(record.fieldUpdatedAt.title).toBe(1700000000000);
+    expect(record.fieldUpdatedAt.status).toBe(1700000000500);
+    // Fields not in fieldUpdatedAt fall back to "now" -- just verify they exist
+    expect(record.fieldUpdatedAt.priority).toBeTypeOf('number');
+  });
+});

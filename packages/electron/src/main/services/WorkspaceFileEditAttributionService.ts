@@ -6,6 +6,7 @@ import { historyManager } from '../HistoryManager';
 import { getSubscriberIds } from '../file/WorkspaceEventBus';
 import { logger } from '../utils/logger';
 import { toolCallMatcher } from './ToolCallMatcher';
+import { codexEditWindowRegistry } from './CodexEditWindowRegistry';
 
 export interface WorkspaceFileEditEvent {
   workspacePath: string;
@@ -24,6 +25,7 @@ interface WorkspaceQueueState {
 const EVENT_DEDUPE_WINDOW_MS = 250;
 const EVENT_TTL_MS = 30_000;
 const MAX_QUEUE_SIZE = 500;
+const CODEX_WINDOW_SETTLE_MS = 40;
 
 /** Per-workspace attribution counters for observability. */
 interface AttributionCounters {
@@ -167,6 +169,27 @@ class WorkspaceFileEditAttributionServiceImpl {
     return `watcher-${hash}`;
   }
 
+  private findCodexWindowMatch(
+    candidateSessionIds: string[],
+    event: WorkspaceFileEditEvent,
+  ): { sessionId: string; editGroupId: string; toolName: string } | null {
+    for (const sessionId of candidateSessionIds) {
+      const window = codexEditWindowRegistry.findWindowForEdit({
+        sessionId,
+        workspacePath: event.workspacePath,
+        fileTimestamp: event.timestamp,
+      });
+      if (window) {
+        return {
+          sessionId: window.sessionId,
+          editGroupId: window.editGroupId,
+          toolName: window.toolName,
+        };
+      }
+    }
+    return null;
+  }
+
   private async processQueue(workspacePath: string): Promise<void> {
     const state = this.stateByWorkspace.get(workspacePath);
     if (!state || state.processing) return;
@@ -195,28 +218,57 @@ class WorkspaceFileEditAttributionServiceImpl {
         return;
       }
 
-      const matchResult = await toolCallMatcher.matchWorkspaceFileEdit({
-        workspacePath: event.workspacePath,
-        filePath: event.filePath,
-        fileTimestamp: event.timestamp,
-        candidateSessionIds,
-      });
+      // Codex edit windows take precedence over the fuzzy time-based matcher.
+      // If a write-capable Codex tool call is open (or recently closed within
+      // the grace window) for one of the candidate sessions and its window
+      // covers `event.timestamp`, attribute to that canonical synthetic
+      // edit-group ID directly. This guarantees the same `nimtc|...` ID lands
+      // on the session_files row, the pre-edit history tag, and the canonical
+      // tool_call event.
+      let codexWindowMatch = this.findCodexWindowMatch(candidateSessionIds, event);
+      if (!codexWindowMatch) {
+        // Codex writes can hit disk a few milliseconds before the parsed
+        // file_change tool_call opens its edit window. Give that exact-match
+        // path a brief chance before we fall back to the fuzzy matcher, which
+        // can otherwise steal the edit for a nearby Bash command.
+        await new Promise((resolve) => setTimeout(resolve, CODEX_WINDOW_SETTLE_MS));
+        codexWindowMatch = this.findCodexWindowMatch(candidateSessionIds, event);
+      }
+
+      const matchResult = codexWindowMatch
+        ? null
+        : await toolCallMatcher.matchWorkspaceFileEdit({
+            workspacePath: event.workspacePath,
+            filePath: event.filePath,
+            fileTimestamp: event.timestamp,
+            candidateSessionIds,
+          });
 
       const counters = this.getCounters(event.workspacePath);
 
-      if (!matchResult.winner) {
+      if (!codexWindowMatch && (!matchResult || !matchResult.winner)) {
         counters.unattributedEdits++;
         logger.main.debug('[WorkspaceFileEditAttributionService] No attribution winner for event:', {
           workspacePath: event.workspacePath,
           filePath: event.filePath,
           timestamp: event.timestamp,
-          candidateCount: matchResult.candidates.length,
-          reason: matchResult.reason,
+          candidateCount: matchResult?.candidates.length ?? 0,
+          reason: matchResult?.reason ?? 'no-codex-window',
         });
         return;
       }
 
-      const winner = matchResult.winner;
+      const winner = codexWindowMatch
+        ? {
+            sessionId: codexWindowMatch.sessionId,
+            toolUseId: codexWindowMatch.editGroupId,
+            toolName: codexWindowMatch.toolName,
+            score: 1,
+            reasons: ['codex-edit-window'],
+            messageId: null as number | null,
+            toolCallItemId: null as string | null,
+          }
+        : matchResult!.winner!;
       const eventKey = this.makeEventKey(event, winner.sessionId);
       if (state.processedEventKeys.has(eventKey)) {
         logger.main.debug('[WorkspaceFileEditAttributionService] Skipping already-processed event key:', {
@@ -230,25 +282,43 @@ class WorkspaceFileEditAttributionServiceImpl {
 
       const toolUseId = winner.toolUseId || this.makeWatcherToolUseId(event);
 
-      await SessionFilesRepository.addFileLink({
-        sessionId: winner.sessionId,
-        workspaceId: event.workspacePath,
-        filePath: event.filePath,
-        linkType: 'edited',
-        timestamp: event.timestamp,
-        metadata: {
-          toolName: winner.toolName,
-          operation: winner.toolName === 'Bash' ? 'bash' : 'edit',
-          toolUseId,
-          watcherAttribution: {
-            score: winner.score,
-            reasons: winner.reasons,
-            messageId: winner.messageId,
-            toolCallItemId: winner.toolCallItemId,
-            fileTimestamp: event.timestamp,
+      if (codexWindowMatch) {
+        codexEditWindowRegistry.recordObservation(codexWindowMatch.editGroupId, event.filePath);
+      }
+
+      // Skip the watcher-attribution session_files insert when the matched
+      // tool already has its own pre-edit hook that writes a session_files
+      // row with the correct operation (`create` / `edit` / `delete`).
+      // OpenAICodexProvider emits a `pre_edit_snapshot` chunk on
+      // item.started for `file_change`, which routes through
+      // sessionFileTracker.trackToolExecution -- BEFORE the file is written
+      // and well before chokidar fires. A redundant watcher-attribution row
+      // here would clobber the create/delete kind with a hardcoded
+      // `operation: 'edit'` (different signature -> new row), and the
+      // ai_tool_call_file_edits matcher would then link against the wrong
+      // row in the renderer.
+      const skipWatcherAttribution = winner.toolName === 'file_change';
+      if (!skipWatcherAttribution) {
+        await SessionFilesRepository.addFileLink({
+          sessionId: winner.sessionId,
+          workspaceId: event.workspacePath,
+          filePath: event.filePath,
+          linkType: 'edited',
+          timestamp: event.timestamp,
+          metadata: {
+            toolName: winner.toolName,
+            operation: winner.toolName === 'Bash' ? 'bash' : 'edit',
+            toolUseId,
+            watcherAttribution: {
+              score: winner.score,
+              reasons: winner.reasons,
+              messageId: winner.messageId,
+              toolCallItemId: winner.toolCallItemId,
+              fileTimestamp: event.timestamp,
+            },
           },
-        },
-      });
+        });
+      }
 
       counters.attributedEdits++;
 

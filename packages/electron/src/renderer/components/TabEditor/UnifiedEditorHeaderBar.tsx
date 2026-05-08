@@ -397,7 +397,7 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
         // Cast to LexicalEditor for $generateHtmlFromNodes
         const editorAsLexical = lexicalEditor as unknown as import('lexical').LexicalEditor;
         const content = $generateHtmlFromNodes(editorAsLexical);
-        html = wrapWithPrintStyles(content);
+        html = wrapWithPrintStyles(content, fileName);
       });
 
       // Export to PDF via main process
@@ -405,6 +405,8 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
         html,
         outputPath,
         pageSize: 'Letter',
+        generateDocumentOutline: true,
+        generateTaggedPDF: true,
       });
 
       if (result.success) {

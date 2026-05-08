@@ -24,12 +24,14 @@ import {
   voiceLastReportedFileAtom,
   voiceListenStateAtom,
   voiceErrorAtom,
+  voiceModePreviewAudioAtom,
   getVoiceAudioCallback,
   getVoiceInterruptCallback,
   getVoiceSubmitPromptCallback,
   getVoiceAgentTaskCompleteCallback,
   getVoiceStoppedCallback,
   getVoiceResponseDoneCallback,
+  getVoiceAudioActiveQuery,
   type VoiceTranscriptEntry,
   type VoiceTokenUsage,
 } from '../atoms/voiceModeState';
@@ -61,7 +63,7 @@ export function onLinkedSessionChanged(callback: ((newSessionId: string) => void
 let _listenWindowTimer: ReturnType<typeof setTimeout> | null = null;
 
 function getListenWindowMs(): number {
-  return store.get(voiceModeSettingsAtom).listenWindowMs ?? 10000;
+  return store.get(voiceModeSettingsAtom).listenWindowMs ?? 15000;
 }
 
 function clearListenWindowTimer(): void {
@@ -83,6 +85,48 @@ function startListenWindowTimer(): void {
       sleepVoiceListening();
     }
   }, ms);
+}
+
+// =========================================================================
+// Post-Turn Listen Window
+// =========================================================================
+// When the assistant finishes a turn (token-usage), we want to start the
+// 15s listen window from the moment the user *stops hearing* the assistant,
+// not from when the server finished generating audio chunks. Long responses
+// stream chunks fast (~3s) but play back slowly (~30s), so starting the
+// timer at server-done used to expire it mid-playback and gate the mic.
+
+let _pendingPostTurnTimer = false;
+let _postTurnFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Wake from sleep if needed, start the 15s listen timer, fire ready cue. */
+function startListenWindowForPostTurn(): void {
+  const wokeFromSleep = store.get(voiceListenStateAtom) === 'sleeping';
+  if (wokeFromSleep) {
+    wakeVoiceListening(false);
+  }
+  startListenWindowTimer();
+  const responseDoneCb = getVoiceResponseDoneCallback();
+  if (responseDoneCb) responseDoneCb(wokeFromSleep);
+}
+
+function clearPostTurnPending(): void {
+  _pendingPostTurnTimer = false;
+  if (_postTurnFallbackTimer) {
+    clearTimeout(_postTurnFallbackTimer);
+    _postTurnFallbackTimer = null;
+  }
+}
+
+/**
+ * Called by AudioPlayback (via VoiceModeButton) when the assistant's audio
+ * queue has fully drained -- i.e. the user has actually finished hearing the
+ * agent. If we deferred the post-turn listen window earlier, fire it now.
+ */
+export function notifyVoiceAudioPlaybackDrained(): void {
+  if (!_pendingPostTurnTimer) return;
+  clearPostTurnPending();
+  startListenWindowForPostTurn();
 }
 
 /**
@@ -193,6 +237,7 @@ async function updateSessionMetadata(tokenUsage?: VoiceTokenUsage | null): Promi
  */
 function resetVoiceAtoms(): void {
   clearListenWindowTimer();
+  clearPostTurnPending();
   store.set(voiceListenStateAtom, 'off');
   store.set(voiceActiveSessionIdAtom, null);
   store.set(voiceTranscriptEntriesAtom, []);
@@ -224,8 +269,16 @@ function formatPromptForVoice(prompt: { promptType: string; promptId: string; da
   }
 
   if (prompt.promptType === 'git_commit_proposal_request') {
-    const message = prompt.data?.commitMessage || '';
-    return `The coding agent wants to commit changes. Commit message: "${message}". Say "approve" to commit or "reject" to cancel.`;
+    // Multi-line commit messages are too long for voice -- read the title only.
+    // Body paragraphs (after the first blank line) belong in the widget, not aloud.
+    const fullMessage: string = prompt.data?.commitMessage || '';
+    const titleLine = fullMessage.split('\n')[0]?.trim() || '';
+    const files = Array.isArray(prompt.data?.filesToStage) ? prompt.data.filesToStage : [];
+    const fileCount = files.length;
+    const fileSummary = fileCount === 0
+      ? ''
+      : ` Across ${fileCount} file${fileCount === 1 ? '' : 's'}.`;
+    return `Commit proposal:${fileSummary} Commit message: "${titleLine}". Say "approve" to commit or "reject" to cancel.`;
   }
 
   return 'The coding agent needs your input.';
@@ -250,6 +303,28 @@ export function initVoiceModeListeners(): () => void {
   cleanups.push(
     window.electronAPI.on('voice-mode:settings-changed', (settings: VoiceModeSettings) => {
       store.set(voiceModeSettingsAtom, settings);
+    })
+  );
+
+  // =========================================================================
+  // Preview Audio (response to voice-mode:preview-voice invoke)
+  // =========================================================================
+  // The Settings > Voice Mode panel triggers a preview via invoke; main
+  // streams the audio back via this event. We bump a request atom so the
+  // panel can play it without subscribing to IPC directly.
+  let previewAudioVersion = 0;
+  cleanups.push(
+    window.electronAPI.on('voice-mode:preview-audio', (payload: {
+      voiceId: string;
+      audioBase64: string;
+      format: string;
+    }) => {
+      if (!payload?.audioBase64) return;
+      previewAudioVersion += 1;
+      store.set(voiceModePreviewAudioAtom, {
+        version: previewAudioVersion,
+        payload,
+      });
     })
   );
 
@@ -294,6 +369,12 @@ export function initVoiceModeListeners(): () => void {
       // console.log('[voiceModeListeners] speech_started -> pausing listen window timer');
       clearListenWindowTimer();
 
+      // Discard any pending post-turn timer: the user is now driving the
+      // turn. If we left it pending, the AudioPlayback.stop() below would
+      // synthesize a drain via onended-after-stop and we'd start a 15s
+      // window mid-utterance.
+      clearPostTurnPending();
+
       // Stop audio playback (user is interrupting the assistant)
       const cb = getVoiceInterruptCallback();
       if (cb) cb();
@@ -330,6 +411,73 @@ export function initVoiceModeListeners(): () => void {
       if (!isVoiceActive()) return;
       const cb = getVoiceSubmitPromptCallback();
       if (cb) cb(payload);
+    })
+  );
+
+  // =========================================================================
+  // Propose Commit (voice agent triggered the "Commit with AI" feature)
+  // =========================================================================
+  // Mirrors handleSmartCommit() in GitOperationsPanel.tsx exactly: pre-fetch
+  // the file list via git:get-commit-context, build the message that
+  // CommitRequestCard recognizes (so the "Requesting commit proposal"
+  // widget appears in the transcript), and dispatch via ai:sendMessage so
+  // it lands in the session as a regular user message. The coding agent
+  // then invokes developer_git_commit_proposal, and the resulting widget +
+  // git_commit_proposal_request interactive prompt flow back through the
+  // existing forwarding pipeline.
+  cleanups.push(
+    window.electronAPI.on('voice-mode:propose-commit', async (payload: {
+      sessionId: string;
+      workspacePath: string | null;
+    }) => {
+      if (!isVoiceActive()) return;
+      const { sessionId, workspacePath } = payload;
+      if (!sessionId || !workspacePath) {
+        console.warn('[voiceModeListeners] propose-commit missing sessionId or workspacePath');
+        return;
+      }
+
+      try {
+        const commitContext = await window.electronAPI.invoke(
+          'git:get-commit-context',
+          workspacePath,
+          sessionId,
+          undefined,
+        ) as {
+          success: boolean;
+          files: Array<{ path: string; status: 'added' | 'modified' | 'deleted' }>;
+          scenario: 'single' | 'workstream';
+          error?: string;
+        };
+
+        let message = 'Use the developer_git_commit_proposal tool to create a commit.';
+
+        if (commitContext.success && commitContext.files.length > 0) {
+          const fileList = commitContext.files
+            .map(f => `- ${f.path} (${f.status})`)
+            .join('\n');
+          message += `\n\nHere are the files edited in this session that have uncommitted changes:\n${fileList}`;
+          message += '\n\nCall developer_git_commit_proposal immediately with these files.';
+          message += '\nDo NOT call get_session_edited_files, get_workstream_edited_files, or git diff -- the data is already provided above.';
+        } else if (commitContext.success && commitContext.files.length === 0) {
+          message += '\n\nNo session-edited files have uncommitted changes. Check git status to see if there are any other uncommitted changes to commit.';
+        } else {
+          message += '\n\nFirst call get_session_edited_files to find all files edited, ' +
+            'then cross-reference with git status to include all session-edited files that have uncommitted changes.';
+        }
+
+        const docContext = {
+          filePath: undefined,
+          content: undefined,
+          fileType: undefined,
+          attachments: undefined,
+          mode: 'agent',
+          inputType: 'user' as const,
+        };
+        await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
+      } catch (error) {
+        console.error('[voiceModeListeners] propose-commit failed:', error);
+      }
     })
   );
 
@@ -470,13 +618,30 @@ export function initVoiceModeListeners(): () => void {
         pendingAssistantEntry = null;
       }
 
-      // Assistant finished responding. Start the idle countdown from NOW.
-      // console.log('[voiceModeListeners] token-usage -> starting listen window timer');
-      startListenWindowTimer();
+      // Assistant finished a turn server-side. Decide when to start the 15s
+      // listen window: if audio is still playing in the user's speakers,
+      // wait for the playback queue to drain. Otherwise (function-call-only
+      // turn or text-only response), start it now.
+      const audioActiveQuery = getVoiceAudioActiveQuery();
+      const audioStillPlaying = audioActiveQuery ? audioActiveQuery() : false;
 
-      // Notify VoiceModeButton to unmute mic (assistant done speaking)
-      const responseDoneCb = getVoiceResponseDoneCallback();
-      if (responseDoneCb) responseDoneCb();
+      if (audioStillPlaying) {
+        // Defer until AudioPlayback fires onDrained (then notifyVoiceAudioPlaybackDrained).
+        _pendingPostTurnTimer = true;
+        // Fallback: if the drain notification never arrives (e.g. AudioPlayback
+        // is destroyed or the callback wiring breaks), start the timer after a
+        // generous max-playback duration so the mic doesn't stay open forever.
+        if (_postTurnFallbackTimer) clearTimeout(_postTurnFallbackTimer);
+        _postTurnFallbackTimer = setTimeout(() => {
+          if (!_pendingPostTurnTimer) return;
+          clearPostTurnPending();
+          startListenWindowForPostTurn();
+        }, 60000);
+      } else {
+        // No audio playing -- start the timer immediately.
+        clearPostTurnPending();
+        startListenWindowForPostTurn();
+      }
     })
   );
 
@@ -572,6 +737,70 @@ export function initVoiceModeListeners(): () => void {
           response = { ...response, answers: rebuiltAnswers };
           // console.log('[voiceModeListeners] Rebuilt voice answer with question key:', questions[0].question);
         }
+      }
+
+      // GitCommitProposal: the widget click flow invokes git:commit and then
+      // sends messages:respond-to-prompt with { action: 'committed' | 'cancelled' }.
+      // The voice agent's "approve"/"reject" answer arrives here as
+      // { approved: true|false } -- mirror the widget flow so the voice path
+      // produces the same end state.
+      if (payload.promptType === 'git_commit_proposal_request') {
+        const approved = response?.approved === true;
+        const pendingPrompts = store.get(sessionPendingPromptsAtom(payload.sessionId));
+        const prompt = pendingPrompts.find(p => p.promptId === payload.promptId);
+        const data = prompt?.data || {};
+        const filesToStage: Array<string | { path: string }> = Array.isArray(data.filesToStage)
+          ? data.filesToStage
+          : [];
+        const filePaths = filesToStage.map(f => (typeof f === 'string' ? f : f.path));
+        const commitMessage: string = data.commitMessage || '';
+        const commitWorkspacePath: string =
+          data.workspacePath || store.get(voiceWorkspacePathAtom) || '';
+
+        if (approved && commitWorkspacePath && filePaths.length > 0 && commitMessage) {
+          // Run the actual commit, then forward the result so the durable
+          // prompt is resolved with the same shape the widget produces.
+          window.electronAPI
+            .invoke('git:commit', commitWorkspacePath, commitMessage, filePaths)
+            .then((result: any) => {
+              window.electronAPI.invoke('messages:respond-to-prompt', {
+                sessionId: payload.sessionId,
+                promptId: payload.promptId,
+                promptType: 'git_commit_proposal_request',
+                response: {
+                  action: result?.success ? 'committed' : 'cancelled',
+                  commitHash: result?.commitHash,
+                  commitDate: result?.commitDate,
+                  error: result?.error,
+                  filesCommitted: result?.success ? filePaths : undefined,
+                  commitMessage: result?.success ? commitMessage : undefined,
+                },
+                respondedBy: 'desktop',
+              });
+            })
+            .catch((error: unknown) => {
+              window.electronAPI.invoke('messages:respond-to-prompt', {
+                sessionId: payload.sessionId,
+                promptId: payload.promptId,
+                promptType: 'git_commit_proposal_request',
+                response: {
+                  action: 'cancelled',
+                  error: error instanceof Error ? error.message : String(error),
+                },
+                respondedBy: 'desktop',
+              });
+            });
+        } else {
+          // Reject path -- or missing data, can't safely commit. Cancel cleanly.
+          window.electronAPI.invoke('messages:respond-to-prompt', {
+            sessionId: payload.sessionId,
+            promptId: payload.promptId,
+            promptType: 'git_commit_proposal_request',
+            response: { action: 'cancelled' },
+            respondedBy: 'desktop',
+          });
+        }
+        return;
       }
 
       // Use the respondToPromptAtom to persist and resolve the prompt

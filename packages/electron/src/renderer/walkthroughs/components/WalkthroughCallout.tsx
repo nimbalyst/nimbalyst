@@ -114,7 +114,7 @@ export function WalkthroughCallout({
           return;
         }
         setTargetElement(target);
-        const pos = calculateCalloutPosition(target, step.placement);
+        const pos = calculateCalloutPosition(target, step.placement, step.wide ?? false);
         setPosition(pos);
       } else {
         setTargetElement(null);

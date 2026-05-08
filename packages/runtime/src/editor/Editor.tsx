@@ -76,7 +76,8 @@ import CommentPlugin from "./plugins/CommentPlugin";
 // FloatingDocumentActionsPlugin removed - functionality moved to UnifiedEditorHeaderBar in TabEditor
 import AutoLinkPlugin from './plugins/AutoLinkPlugin';
 import { CollaborationPlugin } from '@lexical/react/LexicalCollaborationPlugin';
-import AssetLinkPlugin from './plugins/AssetLinkPlugin';
+import AssetGCPlugin from './plugins/AssetGCPlugin';
+import CollabAssetLinkPlugin from './plugins/CollabAssetLinkPlugin';
 
 
 interface EditorProps {
@@ -358,7 +359,12 @@ export default function Editor({config = DEFAULT_EDITOR_CONFIG}: EditorProps): J
             />
             <LinkPlugin hasLinkAttributes={hasLinkAttributes} />
             <ClickableLinkPlugin disabled={isEditable} />
-            <AssetLinkPlugin onOpenAssetLink={config.onOpenAssetLink} />
+            {/* collab-asset:// anchor clicks: ClickableLinkPlugin is
+                disabled in editable mode (so clicks place the cursor
+                instead of navigating). For E2E-encrypted attachment links
+                we still want a click to open/download the asset. */}
+            <CollabAssetLinkPlugin />
+            <AssetGCPlugin onAssetReferencesRemoved={config.onAssetReferencesRemoved} />
             <HorizontalRulePlugin />
             <TabFocusPlugin />
             <TabIndentationPlugin maxIndent={7} />
