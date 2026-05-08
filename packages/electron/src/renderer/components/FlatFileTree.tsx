@@ -20,6 +20,8 @@ import {
   type RendererFileTreeItem,
   type FlatTreeNode,
 } from '../store';
+import { dialogRef } from '../contexts/DialogContext';
+import { DIALOG_IDS } from '../dialogs/registry';
 
 interface FlatFileTreeProps {
   items: RendererFileTreeItem[];
@@ -422,18 +424,40 @@ export function FlatFileTree({
   const handleDelete = useCallback(async (filePath: string) => {
     const result = await window.electronAPI.deleteFile(filePath);
     if (!result.success) {
+      // The user just confirmed a delete; silent failure is the worst possible
+      // outcome. Surface the OS-level error (e.g. "Failed to move item to
+      // trash" when the trash folder is unwritable, common on Linux). See #195.
       console.error('Failed to delete file:', result.error);
+      dialogRef.current?.open(DIALOG_IDS.ERROR, {
+        title: 'Delete failed',
+        message: `Could not delete ${filePath.split(/[/\\]/).pop() || filePath}.`,
+        details: result.error || 'The OS did not provide a reason. Check that the file still exists and that the trash folder is writable.',
+      });
     }
   }, []);
 
   const handleDeleteMultiple = useCallback(async (filePaths: string[]) => {
+    const failures: Array<{ path: string; error?: string }> = [];
     for (const path of filePaths) {
       const result = await window.electronAPI.deleteFile(path);
       if (!result.success) {
         console.error('Failed to delete file:', path, result.error);
+        failures.push({ path, error: result.error });
       }
     }
     setSelectedPaths(new Set());
+    if (failures.length > 0) {
+      // Same silent-failure concern as handleDelete, but rolled up into a
+      // single summary dialog rather than one per failed file. See #195.
+      const failureSummary = failures
+        .map(f => `- ${f.path.split(/[/\\]/).pop() || f.path}: ${f.error || 'unknown error'}`)
+        .join('\n');
+      dialogRef.current?.open(DIALOG_IDS.ERROR, {
+        title: failures.length === filePaths.length ? 'Delete failed' : 'Some files could not be deleted',
+        message: `${failures.length} of ${filePaths.length} file${filePaths.length === 1 ? '' : 's'} could not be deleted.`,
+        details: failureSummary,
+      });
+    }
   }, [setSelectedPaths]);
 
   // == Drag and drop ==
