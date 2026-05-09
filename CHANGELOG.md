@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-<!-- New features go here -->
+- Allow `mcp__nimbalyst-tracker__tracker_update` to change the primary type of a tracker item. `tracker_update` previously only accepted `typeTags` as a secondary-tag list - the primary `type` (the thing that determines whether an item shows in the `task` / `idea` / `plan` / `bug` view) was set at creation time and immutable, so the only workaround for a `task` that turned out to be a `bug` was to archive it and recreate, losing comments, attachments, and session links. Adds a `primaryType` parameter that (a) validates against the tracker registry via `globalRegistry.has(newType)`, (b) updates `tracker_items.type` in a separate UPDATE before the existing data write, (c) re-validates the item's data against the new type's schema, (d) appends a `type_changed` activity-log entry, (e) rebuilds `type_tags` so the new primary type is at the front and the old primary type is removed (preserving any other secondary tags). When the user passes both `primaryType` and `typeTags` the explicit `typeTags` array wins. Fixes #79.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

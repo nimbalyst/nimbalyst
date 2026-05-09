@@ -669,6 +669,11 @@ export const trackerToolSchemas = [
           items: { type: "string" },
           description: "Set type tags (replaces existing type tags). Primary type is always included.",
         },
+        primaryType: {
+          type: "string",
+          description:
+            "Replace the item's primary type (e.g. change a 'task' into a 'bug', or an 'idea' into a 'plan'). Must be a registered tracker type. Item history (comments, attachments, session links) is preserved. The primary type is also auto-merged into type_tags so it remains the canonical primary tag.",
+        },
         fields: {
           type: "object",
           description: "Generic field bag for updating any schema-defined field. Values here override fixed arguments above.",
@@ -1726,6 +1731,31 @@ export async function handleTrackerUpdate(
       }
     }
 
+    // Apply primary-type change before validation so the new type's schema
+    // is what we validate against. Tracker items often start as one type
+    // (idea) and naturally evolve into another (task / bug / plan); the only
+    // existing workaround was archive-and-recreate which loses comments,
+    // attachments, and session links. See #79.
+    const oldType = row.type;
+    let primaryTypeChanged = false;
+    if (typeof args.primaryType === 'string' && args.primaryType !== row.type) {
+      const newType = args.primaryType;
+      if (!globalRegistry.has(newType)) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text' as const,
+              text: `Error: unknown tracker type "${newType}". Use tracker_list to see registered types.`,
+            },
+          ],
+        };
+      }
+      changes.type = { from: oldType, to: newType };
+      row.type = newType;
+      primaryTypeChanged = true;
+    }
+
     const validationResult = globalRegistry.validate(row.type, data);
     if (!validationResult.valid) {
       return buildTrackerSchemaValidationError('tracker_update', row.type, validationResult.errors);
@@ -1736,6 +1766,7 @@ export async function handleTrackerUpdate(
     for (const [field, change] of Object.entries(changes)) {
       const action = field === 'status' ? 'status_changed'
         : field === 'archived' ? 'archived'
+        : field === 'type' ? 'type_changed'
         : 'updated';
       appendActivity(data, modifierIdentity, action, {
         field,
@@ -1744,13 +1775,40 @@ export async function handleTrackerUpdate(
       });
     }
 
-    // Update type_tags if provided
+    // Persist the primary-type change. Done before the type_tags / data
+    // updates so subsequent code (and the type_tags rebuild below) sees the
+    // new row.type.
+    if (primaryTypeChanged) {
+      await db.query(
+        `UPDATE tracker_items SET type = $1 WHERE id = $2`,
+        [row.type, row.id]
+      );
+    }
+
+    // Update type_tags if explicitly provided OR if primaryType changed and
+    // the existing type_tags still contain the OLD primary type (which would
+    // leak it as a secondary tag). The rebuild keeps secondary tags intact
+    // and ensures the new primary type is at the front.
     if (args.typeTags !== undefined) {
       // Ensure primary type is always in the array
       const newTypeTags: string[] = [row.type];
       for (const tag of args.typeTags) {
         if (!newTypeTags.includes(tag)) newTypeTags.push(tag);
       }
+      await db.query(
+        `UPDATE tracker_items SET type_tags = $1 WHERE id = $2`,
+        [newTypeTags, row.id]
+      );
+    } else if (primaryTypeChanged) {
+      // Migrate existing type_tags: remove the old primary type, prepend the
+      // new one, preserve any other secondary tags in the order they were.
+      const existingTags: string[] = Array.isArray((row as any).type_tags)
+        ? ((row as any).type_tags as string[])
+        : [oldType];
+      const preservedSecondary = existingTags.filter(
+        (t) => t !== oldType && t !== row.type
+      );
+      const newTypeTags = [row.type, ...preservedSecondary];
       await db.query(
         `UPDATE tracker_items SET type_tags = $1 WHERE id = $2`,
         [newTypeTags, row.id]
