@@ -12,8 +12,18 @@ import { isPathInWorkspace } from '../utils/workspaceDetection';
  * macOS uses FSEvents (1 FD for the entire tree).
  * Windows uses ReadDirectoryChangesW (1 handle for the entire tree).
  * Linux does NOT support recursive: true and throws ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
+ *
+ * Implemented as a function (rather than a module-level const) so test
+ * setups that override `process.platform` via `vi.hoisted` (see
+ * `WorkspaceEventBus-nested-gitignore.test.ts`) pick up the override
+ * regardless of which test file imports this module first. A const would
+ * lock the value at module-load time, so any earlier test importing this
+ * module before the override ran would freeze the real platform value
+ * for every subsequent test in the same worker.
  */
-const supportsRecursiveWatch = process.platform === 'darwin' || process.platform === 'win32';
+function supportsRecursiveWatch(): boolean {
+  return process.platform === 'darwin' || process.platform === 'win32';
+}
 
 /**
  * .git is always ignored — it's an internal data structure, never user content.
@@ -317,7 +327,12 @@ function findGitRootForPathCached(
   workspaceAbs: string,
   cache: Map<string, string | null>,
 ): string | null {
-  const sep = process.platform === 'win32' ? '\\' : '/';
+  // Use `path.sep` rather than `process.platform`-derived separator: the
+  // test harness for this module overrides `process.platform`, so reading
+  // it directly produced the wrong separator when the actual filesystem
+  // paths from `path.join` / `mkdtempSync` continued to use the real OS
+  // separator. `path.sep` is locked to the actual OS at module load.
+  const sep = path.sep;
   const boundaryWithSep = workspaceAbs.endsWith(sep) ? workspaceAbs : workspaceAbs + sep;
   if (absolutePath !== workspaceAbs && !absolutePath.startsWith(boundaryWithSep)) {
     return null;
@@ -446,7 +461,7 @@ export async function subscribe(
 
   const ig = await loadGitignoreFilter(workspacePath);
 
-  if (supportsRecursiveWatch) {
+  if (supportsRecursiveWatch()) {
     startRecursiveWatch(key, workspacePath, subscriberId, listener, ig);
   } else {
     startChokidarWatch(key, workspacePath, subscriberId, listener, ig);
@@ -506,7 +521,7 @@ export function resetBus(): void {
  * No-op on macOS/Windows (recursive fs.watch covers the entire tree).
  */
 export function addWatchedPath(workspacePath: string, folderPath: string): void {
-  if (supportsRecursiveWatch) return;
+  if (supportsRecursiveWatch()) return;
 
   const key = path.resolve(workspacePath);
   const entry = busEntries.get(key);
@@ -542,7 +557,7 @@ export function addGitignoreBypass(workspacePath: string, absolutePath: string):
   entry.gitignoreBypassPaths.add(normalizedPath);
 
   // On Linux, ensure chokidar watches this specific path
-  if (!supportsRecursiveWatch && 'add' in entry.watcher) {
+  if (!supportsRecursiveWatch() && 'add' in entry.watcher) {
     (entry.watcher as ChokidarFSWatcher).add(absolutePath);
   }
 
@@ -599,7 +614,7 @@ export function clearGitignoreBypasses(workspacePath: string): void {
  * No-op on macOS/Windows.
  */
 export function removeWatchedPath(workspacePath: string, folderPath: string): void {
-  if (supportsRecursiveWatch) return;
+  if (supportsRecursiveWatch()) return;
 
   const key = path.resolve(workspacePath);
   const entry = busEntries.get(key);
@@ -617,7 +632,7 @@ export async function stopAll(): Promise<void> {
   const closePromises: Promise<void>[] = [];
   for (const [key, entry] of busEntries.entries()) {
     try {
-      if (supportsRecursiveWatch) {
+      if (supportsRecursiveWatch()) {
         (entry.watcher as fs.FSWatcher).close();
       } else {
         closePromises.push((entry.watcher as ChokidarFSWatcher).close());
@@ -656,7 +671,7 @@ export function getStats(): {
     });
   }
   return {
-    type: supportsRecursiveWatch
+    type: supportsRecursiveWatch()
       ? 'WorkspaceEventBus (fs.watch recursive)'
       : 'WorkspaceEventBus (chokidar)',
     activeWorkspaces: busEntries.size,
@@ -669,7 +684,7 @@ export function getStats(): {
 // ---------------------------------------------------------------------------
 
 function closeWatcher(watcher: fs.FSWatcher | ChokidarFSWatcher): void {
-  if (supportsRecursiveWatch) {
+  if (supportsRecursiveWatch()) {
     (watcher as fs.FSWatcher).close();
   } else {
     (watcher as ChokidarFSWatcher).close();

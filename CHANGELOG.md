@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- `WorkspaceEventBus` now evaluates `supportsRecursiveWatch` lazily and uses `path.sep` (not a `process.platform`-derived separator) inside `findGitRootForPathCached`, so the `WorkspaceEventBus-nested-gitignore.test.ts` suite added with #207 passes regardless of which test file imports the module first or which OS runs the tests. Previously the module-level `const supportsRecursiveWatch = process.platform === 'darwin' || process.platform === 'win32'` froze the value at module load, so vitest workers that imported the bus before the test's `vi.hoisted` `process.platform = 'darwin'` override took effect locked the value to the real platform (false on Linux CI), routing `subscribe` through the chokidar path instead of the mocked `fs.watch` and producing `Error: No watcher callback registered`. Separately, the boundary check at line 320 used a `process.platform === 'win32' ? '\\' : '/'` separator that clashed with the actual OS-style separator returned by real `path.join` on Windows when `process.platform` was mocked to `darwin`, causing the nested-repo discovery to give up and treat `nested/rootfs/etc/foo.txt` as not-ignored. Both the `supportsRecursiveWatch` accessor and the separator are now resolved at call-time. Production code behaves identically because `process.platform` and `path.sep` agree there. Refs #207.
 
 ### Removed
 <!-- Removed features go here -->
