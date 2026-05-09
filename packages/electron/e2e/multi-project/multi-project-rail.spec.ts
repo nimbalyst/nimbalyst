@@ -147,6 +147,49 @@ test.describe('Multi-Project Rail', () => {
     await expect(items.first()).toHaveClass(/active/);
   });
 
+  test('switching to a fresh workspace shows the agent empty state', async () => {
+    // Regression for the rail-switch session leak: when the rail switches
+    // to a workspace whose `selectedWorkstreamAtom` is null (e.g. a project
+    // added to the rail for the first time), the agent panel must reflect
+    // the new workspace and render its empty state — not keep rendering
+    // the previous workspace's transcript / tab. The
+    // `attachWorkspaceSwitchCleanup` subscriber clears the global
+    // `activeSessionIdAtom` on every flip so AgentMode falls back to the
+    // empty render path.
+    const freshWorkspace = await createTempWorkspace();
+    await fs.writeFile(path.join(freshWorkspace, 'fresh.md'), '# Fresh\n', 'utf8');
+
+    try {
+      await page.evaluate(async (workspacePath) => {
+        const reg = await window.electronAPI.invoke('workspace:register-additional', {
+          workspacePath,
+        });
+        if (!reg?.success) throw new Error('register-additional failed: ' + JSON.stringify(reg));
+
+        const projectsBefore = await window.electronAPI.invoke('app:get-open-projects');
+        const next = Array.isArray(projectsBefore) ? [...projectsBefore, workspacePath] : [workspacePath];
+        await window.electronAPI.invoke('app:set-open-projects', next);
+        await window.electronAPI.invoke('app:set-active-project-path', workspacePath);
+        await window.electronAPI.invoke('workspace:set-active', { workspacePath });
+      }, freshWorkspace);
+
+      await page.reload();
+      await page.waitForSelector('.workspace-sidebar', { timeout: TEST_TIMEOUTS.SIDEBAR_LOAD });
+
+      // The fresh workspace must own the active rail slot and the agent
+      // panel must show its empty state — no leaked tabs from the
+      // previously active workspace.
+      const rail = page.locator('[data-testid="project-rail"]');
+      const activeItem = rail.locator('[data-testid="project-rail-item"].active');
+      await expect(activeItem).toHaveCount(1);
+
+      const empty = page.locator('.agent-mode-empty');
+      await expect(empty).toBeVisible({ timeout: TEST_TIMEOUTS.SIDEBAR_LOAD });
+    } finally {
+      await fs.rm(freshWorkspace, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
   test('rail rejects projects beyond the cap', async () => {
     const extraPaths: string[] = [];
     for (let i = 0; i < 9; i++) {

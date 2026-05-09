@@ -57,6 +57,7 @@ import {
 import {
   addSessionFullAtom,
   setSelectedWorkstreamAtom,
+  initSessionList,
 } from './store/atoms/sessions';
 import { NavigationGutter } from './components/NavigationGutter';
 // NOTE: useTabs and useTabNavigation removed - EditorMode manages tabs now
@@ -151,7 +152,7 @@ import { setStorageBackend } from '@nimbalyst/runtime';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { extensionPanelAIContextAtom } from './store/atoms/extensionPanels';
 import { setDiffTreeGroupByDirectoryAtom, setAgentFileScopeModeAtom, setHiddenGutterButtonsAtom, hydrateFileGutterCollapsedAtom } from './store/atoms/projectState';
-import { toggleSessionHistoryCollapsedAtom, scrollToMessageAtom } from './store/atoms/agentMode';
+import { toggleSessionHistoryCollapsedAtom, scrollToMessageAtom, initAgentModeLayout } from './store/atoms/agentMode';
 import { setDeveloperFeatureSettingsAtom } from './store/atoms/appSettings';
 import {
   agentInsertPlanReferenceRequestAtom,
@@ -1579,12 +1580,27 @@ export default function App() {
     setWorkspacePath(railActivePath);
     setWorkspaceName(railActivePath.split(/[\\/]/).filter(Boolean).pop() ?? railActivePath);
 
+    // `activeSessionIdAtom` is cleared automatically on every flip of
+    // `activeWorkspacePathAtom` by the subscriber attached in
+    // `initOpenProjects` (`attachWorkspaceSwitchCleanup`). AgentMode's
+    // mount effect repopulates the global from the new workspace's
+    // `selectedWorkstreamAtom` if it has a selection.
+
     // Re-init navigation history for the newly visible project.
     initNavigationHistory(railActivePath).catch((err) => {
       console.error('[INIT] Failed to init navigation history on rail switch:', err);
     });
     initWindowMode(railActivePath).catch((err) => {
       console.error('[INIT] Failed to init window mode on rail switch:', err);
+    });
+    // Pre-warm the agent layout family and session registry for the new
+    // path so AgentMode's mount effect isn't the only initializer. Both
+    // helpers are idempotent — running them again from AgentMode is safe.
+    initAgentModeLayout(railActivePath).catch((err) => {
+      console.error('[INIT] Failed to init agent layout on rail switch:', err);
+    });
+    initSessionList(railActivePath).catch((err) => {
+      console.error('[INIT] Failed to init session list on rail switch:', err);
     });
   }, [isMultiProjectMode, railActivePath, workspacePath]);
 

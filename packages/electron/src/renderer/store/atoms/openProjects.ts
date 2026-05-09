@@ -13,9 +13,12 @@
  * `navigationHistory.ts`.
  */
 
-import { atom } from 'jotai';
+import { atom, type createStore } from 'jotai';
 import { store } from '@nimbalyst/runtime/store';
 import { clearWorkspaceActivityAtom } from './sessionActivity';
+import { activeSessionIdAtom } from './sessions';
+
+type JotaiStore = ReturnType<typeof createStore>;
 
 export interface OpenProject {
   /** Canonical absolute path; same key used by per-workspace atom families. */
@@ -221,7 +224,25 @@ export async function initOpenProjects(): Promise<void> {
       schedulePersistActivePath();
       notifyMainSetActive();
     }),
+    attachWorkspaceSwitchCleanup(store),
   );
+}
+
+/**
+ * Attach a subscriber that keeps cross-workspace globals coherent when
+ * `activeWorkspacePathAtom` flips. Currently clears `activeSessionIdAtom`
+ * so a rail switch cannot leak a session id from the previous workspace
+ * into the new one — the new workspace's `selectedWorkstreamAtom` (if it
+ * has a selection) repopulates the global via AgentMode's mount effect.
+ *
+ * Exported as a stand-alone unit so jotai-only tests can attach it to a
+ * `createStore()` instance and assert the clearing behavior without
+ * needing the full `initOpenProjects` IPC bootstrap.
+ */
+export function attachWorkspaceSwitchCleanup(jotaiStore: JotaiStore): () => void {
+  return jotaiStore.sub(activeWorkspacePathAtom, () => {
+    jotaiStore.set(activeSessionIdAtom, null);
+  });
 }
 
 /**

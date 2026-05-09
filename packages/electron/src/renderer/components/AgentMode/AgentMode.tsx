@@ -158,11 +158,13 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
   const actualActiveSessionId = activeChildId || selectedWorkstream?.id || null;
 
   // Sync the active session to the global atom so nav gutter components
-  // (VoiceModeButton) can read it without workstream context
+  // (VoiceModeButton) can read it without workstream context. The global
+  // atom must mirror `actualActiveSessionId` exactly — including `null` —
+  // so a rail switch to a workspace with no selected workstream clears
+  // the previous workspace's session id instead of leaving a cross-
+  // workspace stale value behind.
   useEffect(() => {
-    if (actualActiveSessionId) {
-      store.set(activeSessionIdAtom, actualActiveSessionId);
-    }
+    store.set(activeSessionIdAtom, actualActiveSessionId);
   }, [actualActiveSessionId]);
 
   // Initialize on mount

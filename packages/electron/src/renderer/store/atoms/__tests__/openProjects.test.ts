@@ -7,8 +7,10 @@ import {
   addOpenProjectAtom,
   closeOpenProjectAtom,
   isOpenProjectsAtCapAtom,
+  attachWorkspaceSwitchCleanup,
   type OpenProject,
 } from '../openProjects';
+import { activeSessionIdAtom } from '../sessions';
 
 const MAX_OPEN_PROJECTS = 8;
 
@@ -159,6 +161,52 @@ describe('openProjects atoms', () => {
       jotaiStore.set(activeWorkspacePathAtom, '/ws/zombie');
 
       expect(jotaiStore.get(activeOpenProjectAtom)).toBeNull();
+    });
+  });
+
+  describe('attachWorkspaceSwitchCleanup', () => {
+    // Regression: prior to the multi-project rail fix, switching the rail
+    // to a workspace whose `selectedWorkstreamAtom` was null left
+    // `activeSessionIdAtom` pointing at the previous workspace's session.
+    // The renderer then sent that stale id to `ai:sendMessage` against
+    // the new workspace's path and SessionManager rejected it as
+    // "Session ... not found". The cleanup subscriber forces the global
+    // session id to null on every flip; AgentMode repopulates it from
+    // the new workspace's selection on mount.
+    it('clears activeSessionIdAtom whenever activeWorkspacePathAtom flips', () => {
+      const unsub = attachWorkspaceSwitchCleanup(jotaiStore);
+
+      jotaiStore.set(activeWorkspacePathAtom, '/ws/a');
+      jotaiStore.set(activeSessionIdAtom, 'session-from-a');
+      expect(jotaiStore.get(activeSessionIdAtom)).toBe('session-from-a');
+
+      jotaiStore.set(activeWorkspacePathAtom, '/ws/b');
+      expect(jotaiStore.get(activeSessionIdAtom)).toBeNull();
+
+      unsub();
+    });
+
+    it('also clears when activeWorkspacePathAtom flips back to null', () => {
+      const unsub = attachWorkspaceSwitchCleanup(jotaiStore);
+
+      jotaiStore.set(activeWorkspacePathAtom, '/ws/a');
+      jotaiStore.set(activeSessionIdAtom, 'session-from-a');
+
+      jotaiStore.set(activeWorkspacePathAtom, null);
+      expect(jotaiStore.get(activeSessionIdAtom)).toBeNull();
+
+      unsub();
+    });
+
+    it('stops clearing once the returned unsubscribe is invoked', () => {
+      const unsub = attachWorkspaceSwitchCleanup(jotaiStore);
+      jotaiStore.set(activeWorkspacePathAtom, '/ws/a');
+      jotaiStore.set(activeSessionIdAtom, 'session-from-a');
+
+      unsub();
+      jotaiStore.set(activeWorkspacePathAtom, '/ws/b');
+
+      expect(jotaiStore.get(activeSessionIdAtom)).toBe('session-from-a');
     });
   });
 });
