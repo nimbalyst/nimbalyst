@@ -736,6 +736,24 @@ export async function createApplicationMenu() {
                     }
                 },
                 {
+                    // Hidden alias for Zoom In so users can press CmdOrCtrl+=
+                    // without holding Shift. The visible accelerator `Cmd+Plus`
+                    // requires Shift+= on Windows/Linux QWERTY layouts and the
+                    // Electron `Plus` accelerator can also miss the keystroke
+                    // when Windows reports the unshifted `=` keycode. Pattern
+                    // matches the hidden `New File` accelerator above. See #205.
+                    label: 'Zoom In (alt)',
+                    accelerator: 'CmdOrCtrl+=',
+                    visible: false,
+                    click: async () => {
+                        const focused = getFocusedWindow();
+                        if (focused) {
+                            const currentZoom = focused.webContents.getZoomFactor();
+                            focused.webContents.setZoomFactor(currentZoom + 0.1);
+                        }
+                    }
+                },
+                {
                     label: 'Zoom Out',
                     accelerator: KeyboardShortcuts.view.zoomOut,
                     click: async () => {
