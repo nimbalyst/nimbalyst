@@ -1081,119 +1081,12 @@ export function initVoiceModeService() {
     }
   });
 
-  /**
-   * Generate a voice-friendly project summary using Claude
-   * Stores the result in nimbalyst-local/voice-project-summary.md
-   */
-  safeHandle('voice-mode:generate-project-summary', async (event, workspacePath: string) => {
-    try {
-      if (!workspacePath) {
-        return { success: false, message: 'Workspace path is required' };
-      }
-
-      const fs = await import('fs/promises');
-      const path = await import('path');
-
-      // Get Anthropic API key
-      const apiKeys = settingsStore.get('apiKeys') as Record<string, string> | undefined;
-      const apiKey = apiKeys?.anthropic;
-
-      if (!apiKey) {
-        return { success: false, message: 'Anthropic API key not configured' };
-      }
-
-      // Read relevant project files for context
-      const contextFiles: { name: string; content: string }[] = [];
-
-      // Try to read CLAUDE.md
-      try {
-        const claudeMd = await fs.readFile(path.join(workspacePath, 'CLAUDE.md'), 'utf-8');
-        contextFiles.push({ name: 'CLAUDE.md', content: claudeMd.slice(0, 15000) }); // Limit size
-      } catch { /* ignore */ }
-
-      // Try to read README.md
-      try {
-        const readme = await fs.readFile(path.join(workspacePath, 'README.md'), 'utf-8');
-        contextFiles.push({ name: 'README.md', content: readme.slice(0, 8000) });
-      } catch { /* ignore */ }
-
-      // Try to read package.json
-      try {
-        const pkgJson = await fs.readFile(path.join(workspacePath, 'package.json'), 'utf-8');
-        contextFiles.push({ name: 'package.json', content: pkgJson });
-      } catch { /* ignore */ }
-
-      if (contextFiles.length === 0) {
-        return { success: false, message: 'No project files found (CLAUDE.md, README.md, or package.json)' };
-      }
-
-      // Build the prompt
-      const prompt = `You are generating a concise project summary for a voice assistant that helps developers with this codebase. The voice assistant needs a quick overview it can reference during conversations.
-
-Based on the following project files, generate a voice-friendly summary (400-600 words) that covers:
-1. What the project is and what it does (1-2 sentences)
-2. Key technologies and frameworks used
-3. Main directory/package structure (if it's a monorepo)
-4. Important conventions or patterns to be aware of
-5. Current focus areas or notable features
-
-Keep it conversational and scannable - this will be read by an AI, not displayed to humans. Avoid code blocks, bullet points with symbols, and overly technical jargon. Use natural sentences.
-
-${contextFiles.map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n')}
-
-Generate the summary now:`;
-
-      // Call Anthropic API directly
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1024,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        return { success: false, message: `API error: ${response.status} - ${errorText}` };
-      }
-
-      const result = await response.json() as { content: Array<{ type: string; text?: string }> };
-      const summary = result.content.find(c => c.type === 'text')?.text;
-
-      if (!summary) {
-        return { success: false, message: 'No summary generated' };
-      }
-
-      // Ensure nimbalyst-local directory exists
-      const nimbalystLocalDir = path.join(workspacePath, 'nimbalyst-local');
-      await fs.mkdir(nimbalystLocalDir, { recursive: true });
-
-      // Write the summary
-      const summaryPath = path.join(nimbalystLocalDir, 'voice-project-summary.md');
-      await fs.writeFile(summaryPath, summary.trim(), 'utf-8');
-
-      console.log('[VoiceModeService] Generated project summary:', summaryPath);
-
-      return {
-        success: true,
-        message: 'Project summary generated',
-        path: summaryPath,
-        summary: summary.trim(),
-      };
-    } catch (error) {
-      console.error('[VoiceModeService] Failed to generate project summary:', error);
-      return {
-        success: false,
-        message: `Failed to generate summary: ${error instanceof Error ? error.message : String(error)}`,
-      };
-    }
-  });
+  // Voice-friendly project summary generation lives in the renderer now: the
+  // Voice Mode settings panel launches an agent session that writes
+  // nimbalyst-local/voice-project-summary.md using its Write tool. See
+  // packages/electron/src/renderer/components/Settings/VoiceModePanel.tsx and
+  // voiceModeSummaryPrompt.ts. Voice mode loads the resulting file in
+  // loadSessionContext above.
 
   /**
    * Find the most recent voice session for a workspace, if it was updated
