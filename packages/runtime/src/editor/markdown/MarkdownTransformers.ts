@@ -213,6 +213,7 @@ const CODE_SINGLE_LINE_REGEX =
   /^[ \t]*```[^`]+(?:(?:`{1,2}|`{4,})[^`]+)*```(?:[^`]|$)/;
 const TABLE_ROW_REG_EXP = /^(?:\|)(.+)(?:\|)\s?$/;
 const TABLE_ROW_DIVIDER_REG_EXP = /^(\| ?:?-*:? ?)+\|\s?$/;
+const MATH_BLOCK_DELIMITER_REGEX = /^\$\$/;
 
 const createBlockNode = (
   createNode: (match: Array<string>) => ElementNode,
@@ -509,6 +510,7 @@ export function normalizeMarkdown(
 ): string {
   const lines = input.split('\n');
   let inCodeBlock = false;
+  let inMathBlock = false;
   const sanitizedLines: string[] = [];
 
   for (let i = 0; i < lines.length; i++) {
@@ -530,6 +532,19 @@ export function normalizeMarkdown(
 
     // If we are inside a code block, keep the line unchanged
     if (inCodeBlock) {
+      sanitizedLines.push(line);
+      continue;
+    }
+
+    // Detect the start or end of a math block ($$)
+    if (MATH_BLOCK_DELIMITER_REGEX.test(line)) {
+      inMathBlock = !inMathBlock;
+      sanitizedLines.push(line);
+      continue;
+    }
+
+    // If we are inside a math block, keep the line unchanged
+    if (inMathBlock) {
       sanitizedLines.push(line);
       continue;
     }

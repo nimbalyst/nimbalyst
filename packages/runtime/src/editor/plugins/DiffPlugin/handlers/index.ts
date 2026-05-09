@@ -20,3 +20,4 @@ export {ListDiffHandler} from './ListDiffHandler';
 export {ParagraphDiffHandler} from './ParagraphDiffHandler';
 export {CodeBlockDiffHandler} from './CodeBlockDiffHandler';
 export {MermaidDiffHandler} from './MermaidDiffHandler';
+export {MathDiffHandler} from '../../MathPlugin/MathDiffHandler';

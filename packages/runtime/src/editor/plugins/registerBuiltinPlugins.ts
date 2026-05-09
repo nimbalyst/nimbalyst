@@ -15,6 +15,10 @@ import { BOARD_TABLE_TRANSFORMER } from './KanbanBoardPlugin/BoardTableTransform
 import { MERMAID_TRANSFORMER } from './MermaidPlugin/MermaidTransformer';
 import MermaidPlugin, { INSERT_MERMAID_COMMAND } from './MermaidPlugin';
 import { MermaidNode } from './MermaidPlugin/MermaidNode';
+import { MATH_BLOCK_TRANSFORMER, MATH_INLINE_TRANSFORMER } from './MathPlugin/MathTransformers';
+import MathPlugin, { INSERT_MATH_COMMAND, INSERT_INLINE_MATH_COMMAND } from './MathPlugin';
+import { MathNode } from './MathPlugin/MathNode';
+import { InlineMathNode } from './MathPlugin/InlineMathNode';
 
 // Note: Nodes are already registered via EditorNodes.ts,
 // so we don't need to import them here.
@@ -90,5 +94,32 @@ export function registerBuiltinPlugins(): void {
     enabledByDefault: true,
   };
   pluginRegistry.register(mermaidPlugin);
+
+  // Math Plugin
+  const mathPlugin: PluginPackage = {
+    name: 'MathPlugin',
+    Component: MathPlugin,
+    nodes: [MathNode, InlineMathNode],
+    // Block transformer must come before inline to prevent $$ being consumed as two $
+    transformers: [MATH_BLOCK_TRANSFORMER, MATH_INLINE_TRANSFORMER],
+    userCommands: [
+      {
+        title: 'Math Block',
+        description: 'Insert a math equation block (LaTeX)',
+        icon: 'functions',
+        keywords: ['math', 'equation', 'latex', 'katex', 'formula'],
+        command: INSERT_MATH_COMMAND,
+      },
+      {
+        title: 'Inline Math',
+        description: 'Insert an inline math expression (LaTeX)',
+        icon: 'function',
+        keywords: ['math', 'inline', 'equation', 'latex', 'katex', 'formula'],
+        command: INSERT_INLINE_MATH_COMMAND,
+      },
+    ],
+    enabledByDefault: true,
+  };
+  pluginRegistry.register(mathPlugin);
 
 }

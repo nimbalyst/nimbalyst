@@ -34,6 +34,8 @@ import {BoardColumnHeaderNode} from '../plugins/KanbanBoardPlugin/BoardColumnHea
 import {BoardColumnContentNode} from '../plugins/KanbanBoardPlugin/BoardColumnContentNode';
 import {BoardCardNode} from '../plugins/KanbanBoardPlugin/BoardCardNode';
 import {MermaidNode} from '../plugins/MermaidPlugin/MermaidNode';
+import {MathNode} from '../plugins/MathPlugin/MathNode';
+import {InlineMathNode} from '../plugins/MathPlugin/InlineMathNode';
 
 const EditorNodes: Array<Klass<LexicalNode>> = [
   HeadingNode,
@@ -67,6 +69,8 @@ const EditorNodes: Array<Klass<LexicalNode>> = [
   BoardColumnContentNode,
   BoardCardNode,
   MermaidNode,
+  MathNode,
+  InlineMathNode,
 
     // ThemelessCodeNode,
     // {
