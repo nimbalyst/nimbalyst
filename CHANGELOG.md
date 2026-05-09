@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- Drag-and-drop on a multi-file selection now moves or copies every selected item, not just one. `handleDragStart` in `FlatFileTree.tsx` was setting `sourcePaths: [node.path]` regardless of the current `selectedPaths` set, and `handleDrop` was reading only `sourcePaths[0]`, so dragging a Ctrl-Click selection of N files always silently dropped N-1 of them. `handleDragStart` now uses the full selection when the dragged item is part of it (and falls back to single-item drag when the user grabs an unselected item, matching Finder/Explorer behavior). `handleDrop` iterates every dragged path, collects per-item failures, refreshes the tree if any succeeded, and surfaces a single summary `ErrorDialog` for partial failures (mirroring the multi-delete pattern from #216). The drag preview shows `N items` for multi-selection drags. Fixes #31.
 
 ### Removed
 <!-- Removed features go here -->
