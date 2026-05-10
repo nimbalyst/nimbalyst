@@ -64,12 +64,32 @@ function getFilePath(file: FileInput): string {
 // Directory Tree Types and Helpers
 // ============================================================
 
-interface DirectoryNode {
+export interface DirectoryNode {
   path: string;
   displayPath: string;
   files: string[];
   subdirectories: Map<string, DirectoryNode>;
   fileCount: number;
+}
+
+/**
+ * Comparator: sort DirectoryNodes alphabetically by displayPath.
+ * Used by renderDirectoryNode for deterministic tree rendering.
+ */
+export function compareSubdirectoriesByDisplayPath(a: DirectoryNode, b: DirectoryNode): number {
+  return a.displayPath.localeCompare(b.displayPath);
+}
+
+/**
+ * Comparator: sort file path strings alphabetically by basename.
+ * Used by renderDirectoryNode so files within a directory render in
+ * alphabetical order regardless of how the model ordered them in
+ * `filesToStage`.
+ */
+export function compareFilesByBasename(a: string, b: string): number {
+  const aBase = a.substring(a.lastIndexOf('/') + 1);
+  const bBase = b.substring(b.lastIndexOf('/') + 1);
+  return aBase.localeCompare(bBase);
 }
 
 /**
@@ -731,12 +751,8 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
     // emitted paths in filesToStage. Folders-before-files convention is
     // preserved by rendering subdirectories before files at each site.
     const sortedSubdirectories = Array.from(node.subdirectories.values())
-      .sort((a, b) => a.displayPath.localeCompare(b.displayPath));
-    const sortedFiles = [...node.files].sort((a, b) => {
-      const aBase = a.substring(a.lastIndexOf('/') + 1);
-      const bBase = b.substring(b.lastIndexOf('/') + 1);
-      return aBase.localeCompare(bBase);
-    });
+      .sort(compareSubdirectoriesByDisplayPath);
+    const sortedFiles = [...node.files].sort(compareFilesByBasename);
 
     // Root node - just render children
     if (!node.displayPath) {
