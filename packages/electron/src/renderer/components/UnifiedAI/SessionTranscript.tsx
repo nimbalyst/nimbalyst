@@ -74,7 +74,7 @@ import { convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitA
 import { clearAIInputHistoryAtom } from '../../store/atoms/aiInputUndo';
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
-import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom } from '../../store/atoms/appSettings';
+import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom } from '../../store/atoms/appSettings';
 import { supportsEffortLevel, parseEffortLevel, type EffortLevel } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
@@ -312,6 +312,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const provider = useAtomValue(sessionProviderAtom(sessionId));
   const tokenUsage = useAtomValue(sessionTokenUsageAtom(sessionId));
   const isDataLoading = useAtomValue(sessionLoadingAtom(sessionId));
+  const chatShowToolCalls = useAtomValue(chatShowToolCallsAtom);
   const [aiMode, setAiMode] = useAtom(sessionModeAtom(sessionId));
   const [currentModel, setCurrentModel] = useAtom(sessionModelAtom(sessionId));
   const [isArchived, setIsArchived] = useAtom(sessionArchivedAtom(sessionId));
@@ -1647,7 +1648,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             showFloatingActions={mode === 'agent'}
             workspacePath={workspacePath}
             initialSettings={{
-              showToolCalls: true,
+              showToolCalls: chatShowToolCalls,
               compactMode: false,
               collapseTools: false,
               showThinking: true,

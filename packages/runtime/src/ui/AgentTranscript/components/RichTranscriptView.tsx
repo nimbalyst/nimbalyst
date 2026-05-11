@@ -481,6 +481,13 @@ const isEditToolName = (name?: string): boolean => {
 
 const WRITE_TOOL_NAMES = new Set(['write', 'notebookedit']);
 
+/**
+ * Interactive tool widgets that require the user to act. These render even when
+ * `settings.showToolCalls` is false, so the user can still respond to prompts
+ * (permission grants, plan-mode exits, AskUserQuestion answers, commit proposals).
+ */
+const INTERACTIVE_WIDGET_TOOLS = new Set(['ToolPermission', 'ExitPlanMode', 'AskUserQuestion', 'GitCommitProposal']);
+
 const isFileModifyingTool = (name?: string): boolean => {
   if (!name) return false;
   const normalized = name.toLowerCase();
@@ -1845,15 +1852,14 @@ export const RichTranscriptView = React.forwardRef<
                     // NEVER hide interactive tool widgets (ToolPermission, ExitPlanMode, etc.) that require user action.
                     // Also never hide assistant messages that would carry interactive widgets in toolMessagesBefore.
                     if (message.type === 'assistant_message' || isToolLikeMessage(message)) {
-                      const INTERACTIVE_WIDGETS = ['ToolPermission', 'ExitPlanMode', 'AskUserQuestion', 'GitCommitProposal'];
                       const isInteractiveWidget = isToolLikeMessage(message) && message.toolCall?.toolName &&
-                        INTERACTIVE_WIDGETS.includes(message.toolCall.toolName);
+                        INTERACTIVE_WIDGET_TOOLS.has(message.toolCall.toolName);
                       // For assistant messages, check if preceding tool messages contain interactive widgets
                       let hasInteractiveToolsBefore = false;
                       if (message.type === 'assistant_message') {
                         let checkPrev = index - 1;
                         while (checkPrev >= 0 && isToolLikeMessage(messages[checkPrev])) {
-                          if (messages[checkPrev].toolCall?.toolName && INTERACTIVE_WIDGETS.includes(messages[checkPrev].toolCall!.toolName)) {
+                          if (messages[checkPrev].toolCall?.toolName && INTERACTIVE_WIDGET_TOOLS.has(messages[checkPrev].toolCall!.toolName!)) {
                             hasInteractiveToolsBefore = true;
                             break;
                           }
@@ -1908,8 +1914,17 @@ export const RichTranscriptView = React.forwardRef<
                     }
                     const isNewGroup = !effectivePrevMessage || effectivePrevMessage.type !== message.type;
 
-                    // Render orphaned tool calls
+                    // Render orphaned tool calls.
+                    // When settings.showToolCalls is false, hide non-interactive tool
+                    // rows from the chat view but always render interactive widgets
+                    // (ToolPermission / ExitPlanMode / AskUserQuestion /
+                    // GitCommitProposal) so the user can still act on prompts.
                     if (isTool && message.toolCall) {
+                      const toolName = message.toolCall.toolName;
+                      const isInteractiveWidget = toolName ? INTERACTIVE_WIDGET_TOOLS.has(toolName) : false;
+                      if (!settings.showToolCalls && !isInteractiveWidget) {
+                        return null;
+                      }
                       return (
                         <div key={`${sessionId}-${index}`} className="rich-transcript-tool-container orphan ml-6 mb-2">
                           {renderToolCard(message, index, 0)}
@@ -2033,13 +2048,24 @@ export const RichTranscriptView = React.forwardRef<
                           </div>
                         )}
 
-                        {toolMessagesBefore.length > 0 && (
-                          <div className={`rich-transcript-tool-messages flex flex-col gap-2 mb-1.5 ${isNewGroup ? 'indented ml-6' : ''}`}>
-                            {toolMessagesBefore.map(({ message: toolMsg, index: toolIndex }) =>
-                              renderToolCard(toolMsg, toolIndex, 0)
-                            )}
-                          </div>
-                        )}
+                        {toolMessagesBefore.length > 0 && (() => {
+                          // Filter out non-interactive tool messages when settings.showToolCalls
+                          // is off; always keep interactive widgets so the user can act on prompts.
+                          const visibleToolMessages = settings.showToolCalls
+                            ? toolMessagesBefore
+                            : toolMessagesBefore.filter(
+                                ({ message: toolMsg }) =>
+                                  !!toolMsg.toolCall?.toolName && INTERACTIVE_WIDGET_TOOLS.has(toolMsg.toolCall.toolName)
+                              );
+                          if (visibleToolMessages.length === 0) return null;
+                          return (
+                            <div className={`rich-transcript-tool-messages flex flex-col gap-2 mb-1.5 ${isNewGroup ? 'indented ml-6' : ''}`}>
+                              {visibleToolMessages.map(({ message: toolMsg, index: toolIndex }) =>
+                                renderToolCard(toolMsg, toolIndex, 0)
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         <div className={`rich-transcript-message-content relative ${isNewGroup ? 'ml-6' : 'no-indent ml-0'}`}>
                           {/* Copy button - shows on hover */}

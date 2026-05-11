@@ -429,6 +429,10 @@ export class AIService {
             type: 'boolean',
             default: false  // Hidden by default, developer mode only
           },
+          chatShowToolCalls: {
+            type: 'boolean',
+            default: true  // User-facing chat toggle; defaults true to preserve current UX
+          },
           aiDebugLogging: {
             type: 'boolean',
             default: false  // Hidden by default, developer mode only
@@ -2570,6 +2574,7 @@ export class AIService {
       const apiKeys = this.getSettingsStore().get('apiKeys', {}) as Record<string, string>;
       const providerSettings = this.getNormalizedProviderSettings();
       const showToolCalls = this.getSettingsStore().get('showToolCalls', false) as boolean;
+      const chatShowToolCalls = this.getSettingsStore().get('chatShowToolCalls', true) as boolean;
       const aiDebugLogging = this.getSettingsStore().get('aiDebugLogging', false) as boolean;
       const showPromptAdditions = this.getSettingsStore().get('showPromptAdditions', false) as boolean;
       const showUsageIndicator = this.getSettingsStore().get('showUsageIndicator', true) as boolean;
@@ -2592,6 +2597,7 @@ export class AIService {
         apiKeys: this.maskApiKeys(apiKeys),
         providerSettings,
         showToolCalls,
+        chatShowToolCalls,
         aiDebugLogging,
         showPromptAdditions,
         showUsageIndicator,
@@ -2689,6 +2695,10 @@ export class AIService {
 
       if (settings.showToolCalls !== undefined) {
         this.getSettingsStore().set('showToolCalls', settings.showToolCalls);
+      }
+
+      if (settings.chatShowToolCalls !== undefined) {
+        this.getSettingsStore().set('chatShowToolCalls', settings.chatShowToolCalls);
       }
 
       if (settings.aiDebugLogging !== undefined) {
@@ -3221,6 +3231,7 @@ export class AIService {
       const apiKeys = this.getSettingsStore().get('apiKeys', {}) as Record<string, string>;
       const providerSettings = this.getSettingsStore().get('providerSettings', {}) as any;
       const showToolCalls = this.getSettingsStore().get('showToolCalls', false) as boolean;
+      const chatShowToolCalls = this.getSettingsStore().get('chatShowToolCalls', true) as boolean;
       const aiDebugLogging = this.getSettingsStore().get('aiDebugLogging', false) as boolean;
       const showPromptAdditions = this.getSettingsStore().get('showPromptAdditions', false) as boolean;
       const defaultProvider = this.getSettingsStore().get('defaultProvider', 'claude-code') as string;
@@ -3230,6 +3241,7 @@ export class AIService {
         apiKeys: this.maskApiKeys(apiKeys),
         providerSettings,
         showToolCalls,
+        chatShowToolCalls,
         aiDebugLogging,
         showPromptAdditions,
       };

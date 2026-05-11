@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-<!-- New features go here -->
+- Honour a new user-facing `chatShowToolCalls` setting in `ai-settings.json` (default `true`) so the AI chat view can hide tool-call rows entirely instead of just collapsing them. The original `showToolCalls` field stays a developer-mode-only toggle (default `false`, gated behind `isDevelopment` in `AgentFeaturesPanel`), so production users get a discoverable "Show Tool Calls in Chat" toggle in Agent Features that defaults to on. The renderer's tool-row guards in `RichTranscriptView` (orphan-tool path and `toolMessagesBefore` path) consume the new value flowing through `initialSettings.showToolCalls`. Interactive tool widgets (`ToolPermission`, `ExitPlanMode`, `AskUserQuestion`, `GitCommitProposal`) always render so the user can still act on prompts even when tool rows are hidden. Default `true` preserves UX for everyone who has not manually set the value. Fixes #118.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

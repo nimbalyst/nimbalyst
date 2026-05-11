@@ -42,7 +42,7 @@ export function AgentFeaturesPanel() {
 
   const [aiDebugSettings] = useAtom(aiDebugSettingsAtom);
   const [, updateAIDebugSettings] = useAtom(setAIDebugSettingsAtom);
-  const { showToolCalls, aiDebugLogging, showPromptAdditions } = aiDebugSettings;
+  const { showToolCalls, chatShowToolCalls, aiDebugLogging, showPromptAdditions } = aiDebugSettings;
   const [workflowSettingsLoading, setWorkflowSettingsLoading] = useState(false);
   const [preferredAgentLanguage, setPreferredAgentLanguage] = useState<string>('');
   const [workflowSourceSettings, setWorkflowSourceSettings] = useState<WorkflowSourceSettings>({
@@ -265,6 +265,13 @@ export function AgentFeaturesPanel() {
             description={feature.description}
           />
         ))}
+
+        <SettingsToggle
+          checked={chatShowToolCalls}
+          onChange={(checked) => updateAIDebugSettings({ chatShowToolCalls: checked })}
+          name="Show Tool Calls in Chat"
+          description="Display tool call rows in the AI chat view. Turn off to hide tool activity and see only the conversational messages."
+        />
       </div>
 
       {isDevelopment && (

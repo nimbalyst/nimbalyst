@@ -827,6 +827,7 @@ export async function initSyncConfig(): Promise<SyncConfig> {
 
 export interface AIDebugSettings {
   showToolCalls: boolean;
+  chatShowToolCalls: boolean;
   aiDebugLogging: boolean;
   showPromptAdditions: boolean;
 }
@@ -836,6 +837,7 @@ export interface AIDebugSettings {
  */
 const defaultAIDebugSettings: AIDebugSettings = {
   showToolCalls: false,
+  chatShowToolCalls: true,
   aiDebugLogging: false,
   showPromptAdditions: false,
 };
@@ -868,6 +870,7 @@ function scheduleAIDebugPersist(settings: AIDebugSettings): void {
       try {
         await window.electronAPI.aiSaveSettings({
           showToolCalls: settings.showToolCalls,
+          chatShowToolCalls: settings.chatShowToolCalls,
           aiDebugLogging: settings.aiDebugLogging,
           showPromptAdditions: settings.showPromptAdditions,
         });
@@ -881,9 +884,17 @@ function scheduleAIDebugPersist(settings: AIDebugSettings): void {
 // === Derived read-only atoms (slices) ===
 
 /**
- * Show tool calls setting.
+ * Show tool calls setting (developer-mode only - the existing dev toggle).
  */
 export const showToolCallsAtom = atom((get) => get(aiDebugSettingsAtom).showToolCalls);
+
+/**
+ * User-facing chat-view tool-call visibility (default true).
+ * Independent of the dev-only `showToolCallsAtom` above. Reporter on #118
+ * who manually sets `chatShowToolCalls: false` in ai-settings.json sees
+ * tool rows hidden; default-true preserves UX for everyone else.
+ */
+export const chatShowToolCallsAtom = atom((get) => get(aiDebugSettingsAtom).chatShowToolCalls);
 
 /**
  * AI debug logging setting.
@@ -924,6 +935,7 @@ export async function initAIDebugSettings(): Promise<AIDebugSettings> {
     const settings = await window.electronAPI.aiGetSettings();
     return {
       showToolCalls: settings?.showToolCalls ?? false,
+      chatShowToolCalls: settings?.chatShowToolCalls ?? true,
       aiDebugLogging: settings?.aiDebugLogging ?? false,
       showPromptAdditions: settings?.showPromptAdditions ?? false,
     };
