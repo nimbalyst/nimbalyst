@@ -6,9 +6,14 @@
  * from loaded extensions.
  */
 
-import { getExtensionLoader } from '@nimbalyst/runtime';
-import { pluginRegistry, type PluginPackage } from '@nimbalyst/runtime';
+import {
+  getExtensionLoader,
+  pluginRegistry,
+  setExtensionLexicalExtensions,
+  type PluginPackage,
+} from '@nimbalyst/runtime';
 import type { LexicalCommand, Klass, LexicalNode } from 'lexical';
+import type { AnyLexicalExtensionArgument } from 'lexical';
 import type { Transformer } from '@lexical/markdown';
 import { createCommand } from 'lexical';
 import { logger } from '../utils/logger';
@@ -31,6 +36,23 @@ function getOrCreateCommand(commandId: string): LexicalCommand<void> {
     extensionCommands.set(commandId, command);
   }
   return command;
+}
+
+/**
+ * Sync extension-contributed `LexicalExtension` instances into the editor's
+ * extension graph (Phase 7.6). `NimbalystEditor` reads from the runtime
+ * store and rebuilds when the set changes; toggling an extension on/off
+ * therefore rebuilds open editors.
+ */
+function syncExtensionLexicalExtensions(): void {
+  const loader = getExtensionLoader();
+  const contributions = loader.getLexicalExtensions();
+  // Loader returns `unknown` so we don't pin a Lexical version here. The
+  // editor validates the shape at construction time.
+  const next = contributions.map(
+    (c) => c.extension as AnyLexicalExtensionArgument,
+  );
+  setExtensionLexicalExtensions(next);
 }
 
 /**
@@ -125,12 +147,15 @@ export function getAllExtensionCommands(): Map<string, LexicalCommand<void>> {
 export function initializeExtensionPluginBridge(): void {
   const loader = getExtensionLoader();
 
-  // Initial sync
+  // Initial sync of both legacy PluginPackage path and the new Lexical
+  // extension contributions store.
   syncExtensionPlugins();
+  syncExtensionLexicalExtensions();
 
   // Subscribe to changes
   loader.subscribe(() => {
     syncExtensionPlugins();
+    syncExtensionLexicalExtensions();
   });
 
   // logger.ui.info('[ExtensionPluginBridge] Initialized');

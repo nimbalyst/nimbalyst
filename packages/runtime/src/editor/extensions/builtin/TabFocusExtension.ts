@@ -1,31 +1,30 @@
 /**
- * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * Preserves the editor's range selection when focus is restored via Tab.
+ * Without this, tabbing back into the editor collapses the selection to
+ * the caret.
  *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
- *
+ * Headless extension (Phase 7.3). Replaces the prior React-component
+ * `TabFocusPlugin` mounted in Editor.tsx.
  */
 
-import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
 import {
   $getSelection,
   $isRangeSelection,
   $setSelection,
   COMMAND_PRIORITY_LOW,
   FOCUS_COMMAND,
+  defineExtension,
 } from 'lexical';
-import {useEffect} from 'react';
 
 const TAB_TO_FOCUS_INTERVAL = 100;
 
 let lastTabKeyDownTimestamp = 0;
 let hasRegisteredKeyDownListener = false;
 
-function registerKeyTimeStampTracker() {
+function registerKeyTimeStampTracker(): void {
   window.addEventListener(
     'keydown',
     (event: KeyboardEvent) => {
-      // Tab
       if (event.key === 'Tab') {
         lastTabKeyDownTimestamp = event.timeStamp;
       }
@@ -34,15 +33,13 @@ function registerKeyTimeStampTracker() {
   );
 }
 
-export default function TabFocusPlugin(): null {
-  const [editor] = useLexicalComposerContext();
-
-  useEffect(() => {
+export const TabFocusExtension = defineExtension({
+  name: '@nimbalyst/editor/tab-focus',
+  register: (editor) => {
     if (!hasRegisteredKeyDownListener) {
       registerKeyTimeStampTracker();
       hasRegisteredKeyDownListener = true;
     }
-
     return editor.registerCommand(
       FOCUS_COMMAND,
       (event: FocusEvent) => {
@@ -59,7 +56,5 @@ export default function TabFocusPlugin(): null {
       },
       COMMAND_PRIORITY_LOW,
     );
-  }, [editor]);
-
-  return null;
-}
+  },
+});

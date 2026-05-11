@@ -9,33 +9,28 @@
 import type { JSX } from 'react';
 import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 
-import { CheckListPlugin } from '@lexical/react/LexicalCheckListPlugin';
-import { ClearEditorPlugin } from '@lexical/react/LexicalClearEditorPlugin';
 import { ClickableLinkPlugin } from '@lexical/react/LexicalClickableLinkPlugin';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
 import { HashtagPlugin } from '@lexical/react/LexicalHashtagPlugin';
-import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
-import { HorizontalRulePlugin } from '@lexical/react/LexicalHorizontalRulePlugin';
-import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
-import { SelectionAlwaysOnDisplay } from '@lexical/react/LexicalSelectionAlwaysOnDisplay';
-import { TabIndentationPlugin } from '@lexical/react/LexicalTabIndentationPlugin';
 import { TablePlugin } from '@lexical/react/LexicalTablePlugin';
+// HistoryPlugin, ListPlugin, CheckListPlugin, HorizontalRulePlugin,
+// ClearEditorPlugin, TabIndentationPlugin replaced by upstream extensions
+// wired in NimbalystEditorExtensions.ts (Phase 7.2).
 import { useLexicalEditable } from '@lexical/react/useLexicalEditable';
 import { CAN_USE_DOM } from '@lexical/utils';
 
 import { $convertToEnhancedMarkdownString } from './markdown';
 
 import { DEFAULT_EDITOR_CONFIG, type EditorConfig } from './EditorConfig';
-import { useSharedHistoryContext } from './context/SharedHistoryContext';
 import { getEditorTransformers } from './markdown';
 import AutoEmbedPlugin from './plugins/AutoEmbedPlugin';
 import CodeActionMenuPlugin from './plugins/CodeActionMenuPlugin';
 import CollapsiblePlugin from './plugins/CollapsiblePlugin';
 import ComponentPickerPlugin from './plugins/ComponentPickerPlugin';
-import DragDropPaste from './plugins/DragDropPastePlugin';
+// DragDropPaste replaced by DragDropPasteExtension (Phase 7.3).
 import DraggableBlockPlugin from './plugins/DraggableBlockPlugin';
 
 // TODO: Should we keep emojis?
@@ -46,20 +41,20 @@ import FloatingLinkEditorPlugin from './plugins/FloatingLinkEditorPlugin';
 import FloatingTextFormatToolbarPlugin from './plugins/FloatingTextFormatToolbarPlugin';
 import ImagesPlugin from './plugins/ImagesPlugin';
 import { LayoutPlugin } from './plugins/LayoutPlugin/LayoutPlugin';
-import LinkPlugin from './plugins/LinkPlugin';
+// LinkPlugin replaced by LinkExtension in NimbalystEditorExtensions (Phase 7.2).
 import MarkdownShortcutPlugin from './plugins/MarkdownShortcutPlugin';
-import MarkdownPastePlugin from './plugins/MarkdownPastePlugin';
-import MarkdownCopyPlugin from './plugins/MarkdownCopyPlugin';
+// MarkdownPastePlugin / MarkdownCopyPlugin replaced by extensions
+// (Phase 7.3); see NimbalystEditorExtensions.ts.
 import PageBreakPlugin from './plugins/PageBreakPlugin';
 import ShortcutsPlugin from './plugins/ShortcutsPlugin';
 import SpeechToTextPlugin from './plugins/SpeechToTextPlugin';
-import TabFocusPlugin from './plugins/TabFocusPlugin';
+// TabFocusPlugin replaced by TabFocusExtension (Phase 7.3).
 import TableCellActionMenuPlugin from './plugins/TableActionMenuPlugin';
 import TableCellResizer from './plugins/TableCellResizer';
 import TableHoverActionsPlugin from './plugins/TableHoverActionsPlugin';
 import ToolbarPlugin from './plugins/ToolbarPlugin';
 import TreeViewPlugin from './plugins/TreeViewPlugin';
-import SearchReplacePlugin from './plugins/SearchReplacePlugin';
+import { SelectionAlwaysOnDisplay } from './plugins/SelectionAlwaysOnDisplayPlugin';
 import { DiffPlugin } from './plugins/DiffPlugin';
 import ContentEditable from './ui/ContentEditable';
 import { AnchorProvider } from './context/AnchorContext';
@@ -72,12 +67,12 @@ import CodeHighlightPlugin from './plugins/CodeHighlightPlugin';
 // Shiki plugin has issues with Vite bundling
 // import CodeHighlightShikiPlugin  from './plugins/CodeHighlightShikiPlugin';
 import { KanbanBoardPlugin } from './plugins/KanbanBoardPlugin';
-import CommentPlugin from "./plugins/CommentPlugin";
 // FloatingDocumentActionsPlugin removed - functionality moved to UnifiedEditorHeaderBar in TabEditor
-import AutoLinkPlugin from './plugins/AutoLinkPlugin';
+// AutoLinkPlugin replaced by AutoLinkExtension (Phase 7.3); see
+// editor/extensions/builtin/AutoLinkExtension.ts.
 import { CollaborationPlugin } from '@lexical/react/LexicalCollaborationPlugin';
-import AssetGCPlugin from './plugins/AssetGCPlugin';
-import CollabAssetLinkPlugin from './plugins/CollabAssetLinkPlugin';
+// AssetGCPlugin / CollabAssetLinkPlugin replaced by extensions (Phase 7.3);
+// see NimbalystEditorExtensions.ts.
 
 
 interface EditorProps {
@@ -92,7 +87,6 @@ interface EditorProps {
  * List of omitted plugins:
  *
  * - AutocompletePlugin: Not relevant for this editor, nor configurable
- * - CommentPlugin: Not relevant for this editor (left in code for now)
  * - ContextPlugin: Not complete
  * - CollaborationPlugin: Not implemented yet (left in code for now)
  * - DocsPlugin: Not relevant for this editor
@@ -108,14 +102,11 @@ interface EditorProps {
  */
 export default function Editor({config = DEFAULT_EDITOR_CONFIG}: EditorProps): JSX.Element {
   const runtimeSettings = useRuntimeSettings();
-  const {historyState} = useSharedHistoryContext();
   const {
     isCodeHighlighted,
-    hasLinkAttributes,
     isRichText,
     shouldPreserveNewLinesInMarkdown,
     selectionAlwaysOnDisplay,
-    listStrictIndent,
     markdownOnly,
     editable = true,
     onSaveRequest,
@@ -285,29 +276,23 @@ export default function Editor({config = DEFAULT_EDITOR_CONFIG}: EditorProps): J
           onSaveRequest={onSaveRequest}
         />
       )}
-      {/* SearchReplacePlugin disabled - now uses fixed tab header implementation in runtime */}
-      {/* {isRichText && editable && <SearchReplacePlugin />} */}
       <div
-        className={`editor-container ${(runtimeSettings.settings.showTreeView || config.showTreeView) ? 'tree-view' : ''} ${
+        className={`editor-container ${
+          (runtimeSettings.settings.showTreeView || config.showTreeView) ? 'tree-view' : ''
+        } ${
           !isRichText ? 'plain-text' : ''
         }`}>
-        <DragDropPaste uploadAsset={config.onUploadAsset} />
         {selectionAlwaysOnDisplay && <SelectionAlwaysOnDisplay />}
-        <ClearEditorPlugin />
         {floatingAnchorElem && <ComponentPickerPlugin anchorElem={floatingAnchorElem} />}
         <EmojiPickerPlugin />
         <AutoEmbedPlugin />
         {/*<EmojisPlugin />*/}
         <HashtagPlugin />
         <SpeechToTextPlugin />
-        <AutoLinkPlugin />
 
-        {/*<CommentPlugin*/}
-        {/*  // providerFactory={isCollab ? createWebsocketProvider : undefined}*/}
-        {/*/>*/}
         {isRichText ? (
           <>
-            {config.collaboration ? (
+            {config.collaboration && (
               <CollaborationPlugin
                 id="main"
                 providerFactory={config.collaboration.providerFactory}
@@ -317,10 +302,10 @@ export default function Editor({config = DEFAULT_EDITOR_CONFIG}: EditorProps): J
                 cursorsContainerRef={cursorsContainerRef}
                 initialEditorState={config.collaboration.initialEditorState}
               />
-            ) : (
-              <HistoryPlugin externalHistoryState={historyState} />
             )}
-            {/* FloatingDocumentActionsPlugin removed - unified header bar now provides these features */}
+            {/* HistoryPlugin replaced by HistoryExtension in NimbalystEditorExtensions
+                when collaboration is off (the extension is omitted in collab mode
+                because CollaborationPlugin owns the history surface). */}
             <RichTextPlugin
               contentEditable={
                 <div className="editor-scroller" ref={onRef}>
@@ -336,15 +321,11 @@ export default function Editor({config = DEFAULT_EDITOR_CONFIG}: EditorProps): J
               ErrorBoundary={LexicalErrorBoundary}
             />
             <MarkdownShortcutPlugin />
-            <MarkdownPastePlugin transformers={markdownTransformers} />
-            <MarkdownCopyPlugin transformers={markdownTransformers} />
             {isCodeHighlighted && (
               <Suspense fallback={null}>
                 <CodeHighlightPlugin />
               </Suspense>
             )}
-            <ListPlugin hasStrictIndent={listStrictIndent} />
-            <CheckListPlugin />
             <TablePlugin
               hasCellMerge={false}
               hasCellBackgroundColor={false}
@@ -357,17 +338,10 @@ export default function Editor({config = DEFAULT_EDITOR_CONFIG}: EditorProps): J
               onUploadAsset={config.onUploadAsset}
               resolveImageSrc={config.resolveImageSrc}
             />
-            <LinkPlugin hasLinkAttributes={hasLinkAttributes} />
             <ClickableLinkPlugin disabled={isEditable} />
-            {/* collab-asset:// anchor clicks: ClickableLinkPlugin is
-                disabled in editable mode (so clicks place the cursor
-                instead of navigating). For E2E-encrypted attachment links
-                we still want a click to open/download the asset. */}
-            <CollabAssetLinkPlugin />
-            <AssetGCPlugin onAssetReferencesRemoved={config.onAssetReferencesRemoved} />
-            <HorizontalRulePlugin />
-            <TabFocusPlugin />
-            <TabIndentationPlugin maxIndent={7} />
+            {/* collab-asset:// anchor clicks are handled by
+                CollabAssetLinkExtension (Phase 7.3 headless extension)
+                because ClickableLinkPlugin is disabled while editing. */}
             <CollapsiblePlugin />
             <PageBreakPlugin />
             <LayoutPlugin />
@@ -412,7 +386,6 @@ export default function Editor({config = DEFAULT_EDITOR_CONFIG}: EditorProps): J
               contentEditable={<ContentEditable placeholder={placeholder} />}
               ErrorBoundary={LexicalErrorBoundary}
             />
-            <HistoryPlugin externalHistoryState={historyState} />
           </>
         )}
 

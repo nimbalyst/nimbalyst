@@ -1,15 +1,25 @@
 /**
- * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * Forked from `@lexical/react/LexicalAutoLinkPlugin` (and its v0.34-era
+ * predecessor) so we can drop two classes of bogus auto-links that crashed
+ * the editor in earlier Nimbalyst releases:
  *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * 1. Pasted base64 image data URIs were sometimes long enough to match the
+ *    URL regex and would be wrapped in giant `<a>` nodes that the diff
+ *    system couldn't reconcile.
+ * 2. Any `data:` URL was getting auto-linked even when the user clearly
+ *    didn't want it (pasted screenshots, copied SVGs).
  *
- * Forked from @lexical/react/LexicalAutoLinkPlugin to add base64 URL filtering
+ * Both are filtered at the matcher level so the rest of the pipeline
+ * (export, history, collab) never sees the link node at all. The
+ * `MAX_URL_LENGTH` is intentionally smaller than the LinkNode size limits
+ * so we trip early.
+ *
+ * Headless extension (Phase 7.3/7.4). Replaces the prior React-component
+ * `AutoLinkPlugin` mounted in Editor.tsx. The upstream
+ * `@lexical/link/AutoLinkExtension` does NOT include this filter, which is
+ * why we keep our fork instead of consuming the upstream extension
+ * directly.
  */
-
-import type {AutoLinkAttributes} from '@lexical/link';
-import type {ElementNode, LexicalEditor, LexicalNode} from 'lexical';
-import type {JSX} from 'react';
 
 import {
   $createAutoLinkNode,
@@ -17,9 +27,9 @@ import {
   $isLinkNode,
   AutoLinkNode,
   TOGGLE_LINK_COMMAND,
+  type AutoLinkAttributes,
 } from '@lexical/link';
-import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
-import {mergeRegister} from '@lexical/utils';
+import { mergeRegister } from '@lexical/utils';
 import {
   $createTextNode,
   $getSelection,
@@ -29,13 +39,16 @@ import {
   $isRangeSelection,
   $isTextNode,
   COMMAND_PRIORITY_LOW,
+  type ElementNode,
+  type LexicalEditor,
+  type LexicalNode,
   TextNode,
+  defineExtension,
 } from 'lexical';
-import {useEffect} from 'react';
 
 type ChangeHandler = (url: string | null, prevUrl: string | null) => void;
 
-type LinkMatcherResult = {
+export type LinkMatcherResult = {
   attributes?: AutoLinkAttributes;
   index: number;
   length: number;
@@ -45,33 +58,21 @@ type LinkMatcherResult = {
 
 export type LinkMatcher = (text: string) => LinkMatcherResult | null;
 
-// Maximum length for URLs to auto-link (prevents issues with base64 data URLs)
+// URLs longer than this are skipped -- catches base64 data URIs that
+// accidentally match the URL regex.
 const MAX_URL_LENGTH = 500;
 
 export function createLinkMatcherWithRegExp(
   regExp: RegExp,
   urlTransformer: (text: string) => string = (text) => text,
-) {
+): LinkMatcher {
   return (text: string) => {
     const match = regExp.exec(text);
-    if (match === null) {
-      return null;
-    }
-
+    if (match === null) return null;
     const matchedText = match[0];
-
-    // MODIFICATION: Skip very long matches (likely base64 image data)
-    if (matchedText.length > MAX_URL_LENGTH) {
-      return null;
-    }
-
+    if (matchedText.length > MAX_URL_LENGTH) return null;
     const url = urlTransformer(matchedText);
-
-    // MODIFICATION: Skip data URLs explicitly
-    if (url.startsWith('data:')) {
-      return null;
-    }
-
+    if (url.startsWith('data:')) return null;
     return {
       index: match.index,
       length: matchedText.length,
@@ -81,20 +82,18 @@ export function createLinkMatcherWithRegExp(
   };
 }
 
-function findFirstMatch(
-  text: string,
-  matchers: Array<LinkMatcher>,
-): LinkMatcherResult | null {
-  for (let i = 0; i < matchers.length; i++) {
-    const match = matchers[i](text);
+const URL_REGEX =
+  /((https?:\/\/(www\.)?)|(www\.))[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}([-a-zA-Z0-9()@:%_+.~#?&//=]*)(?<![-.+:%])/;
 
-    if (match) {
-      return match;
-    }
-  }
+const EMAIL_REGEX =
+  /(([^<>()[\]\\.,;:\s@"]+(\.[^<>()[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))/;
 
-  return null;
-}
+export const DEFAULT_AUTOLINK_MATCHERS: LinkMatcher[] = [
+  createLinkMatcherWithRegExp(URL_REGEX, (text) =>
+    text.startsWith('http') ? text : `https://${text}`,
+  ),
+  createLinkMatcherWithRegExp(EMAIL_REGEX, (text) => `mailto:${text}`),
+];
 
 const PUNCTUATION_OR_SPACE = /[.,;\s]/;
 
@@ -110,19 +109,11 @@ function startsWithSeparator(textContent: string): boolean {
   return isSeparator(textContent[0]);
 }
 
-/**
- * Check if the text content starts with a fullstop followed by a top-level domain.
- * Meaning if the text content can be a beginning of a top level domain.
- * @param textContent
- * @param isEmail
- * @returns boolean
- */
 function startsWithTLD(textContent: string, isEmail: boolean): boolean {
   if (isEmail) {
     return /^\.[a-zA-Z]{2,}/.test(textContent);
-  } else {
-    return /^\.[a-zA-Z0-9]{1,}/.test(textContent);
   }
+  return /^\.[a-zA-Z0-9]{1,}/.test(textContent);
 }
 
 function isPreviousNodeValid(node: LexicalNode): boolean {
@@ -160,9 +151,7 @@ function isContentAroundIsValid(
     matchStart > 0
       ? isSeparator(text[matchStart - 1])
       : isPreviousNodeValid(nodes[0]);
-  if (!contentBeforeIsValid) {
-    return false;
-  }
+  if (!contentBeforeIsValid) return false;
 
   const contentAfterIsValid =
     matchEnd < text.length
@@ -175,17 +164,11 @@ function extractMatchingNodes(
   nodes: TextNode[],
   startIndex: number,
   endIndex: number,
-): [
-  matchingOffset: number,
-  unmodifiedBeforeNodes: TextNode[],
-  matchingNodes: TextNode[],
-  unmodifiedAfterNodes: TextNode[],
-] {
+): [number, TextNode[], TextNode[], TextNode[]] {
   const unmodifiedBeforeNodes: TextNode[] = [];
   const matchingNodes: TextNode[] = [];
   const unmodifiedAfterNodes: TextNode[] = [];
   let matchingOffset = 0;
-
   let currentOffset = 0;
   const currentNodes = [...nodes];
 
@@ -207,12 +190,7 @@ function extractMatchingNodes(
     currentOffset += currentNodeLength;
     currentNodes.shift();
   }
-  return [
-    matchingOffset,
-    unmodifiedBeforeNodes,
-    matchingNodes,
-    unmodifiedAfterNodes,
-  ];
+  return [matchingOffset, unmodifiedBeforeNodes, matchingNodes, unmodifiedAfterNodes];
 }
 
 function $createAutoLinkNode_(
@@ -279,8 +257,6 @@ function $createAutoLinkNode_(
     textNode.setDetail(firstLinkTextNode.getDetail());
     textNode.setStyle(firstLinkTextNode.getStyle());
     linkNode.append(textNode, ...linkNodes);
-    // it does not preserve caret position if caret was at the first text node
-    // so we need to restore caret position
     if (selectedTextNode && selectedTextNode === firstLinkTextNode) {
       if ($isRangeSelection(selection)) {
         textNode.select(selection.anchor.offset, selection.focus.offset);
@@ -294,15 +270,21 @@ function $createAutoLinkNode_(
   return undefined;
 }
 
+function findFirstMatch(text: string, matchers: LinkMatcher[]): LinkMatcherResult | null {
+  for (let i = 0; i < matchers.length; i++) {
+    const match = matchers[i](text);
+    if (match) return match;
+  }
+  return null;
+}
+
 function $handleLinkCreation(
   nodes: TextNode[],
-  matchers: Array<LinkMatcher>,
+  matchers: LinkMatcher[],
   onChange: ChangeHandler,
 ): void {
   let currentNodes = [...nodes];
-  const initialText = currentNodes
-    .map((node) => node.getTextContent())
-    .join('');
+  const initialText = currentNodes.map((node) => node.getTextContent()).join('');
   let text = initialText;
   let match;
   let invalidMatchEnd = 0;
@@ -325,7 +307,6 @@ function $handleLinkCreation(
           invalidMatchEnd + matchStart,
           invalidMatchEnd + matchEnd,
         );
-
       const actualMatchStart = invalidMatchEnd + matchStart - matchingOffset;
       const actualMatchEnd = invalidMatchEnd + matchEnd - matchingOffset;
       const remainingTextNode = $createAutoLinkNode_(
@@ -342,20 +323,17 @@ function $handleLinkCreation(
     } else {
       invalidMatchEnd += matchEnd;
     }
-
     text = text.substring(matchEnd);
   }
 }
 
 function handleLinkEdit(
   linkNode: AutoLinkNode,
-  matchers: Array<LinkMatcher>,
+  matchers: LinkMatcher[],
   onChange: ChangeHandler,
 ): void {
-  // Check children are simple text
   const children = linkNode.getChildren();
-  const childrenLength = children.length;
-  for (let i = 0; i < childrenLength; i++) {
+  for (let i = 0; i < children.length; i++) {
     const child = children[i];
     if (!$isTextNode(child) || !child.isSimpleText()) {
       replaceWithChildren(linkNode);
@@ -364,7 +342,6 @@ function handleLinkEdit(
     }
   }
 
-  // Check text content fully matches
   const text = linkNode.getTextContent();
   const match = findFirstMatch(text, matchers);
   if (match === null || match.text !== text) {
@@ -373,7 +350,6 @@ function handleLinkEdit(
     return;
   }
 
-  // Check neighbors
   if (!isPreviousNodeValid(linkNode) || !isNextNodeValid(linkNode)) {
     replaceWithChildren(linkNode);
     onChange(null, linkNode.getURL());
@@ -392,7 +368,6 @@ function handleLinkEdit(
       linkNode.setRel(match.attributes.rel || null);
       onChange(match.attributes.rel || null, rel);
     }
-
     const target = linkNode.getTarget();
     if (target !== match.attributes.target) {
       linkNode.setTarget(match.attributes.target || null);
@@ -401,11 +376,9 @@ function handleLinkEdit(
   }
 }
 
-// Bad neighbors are edits in neighbor nodes that make AutoLinks incompatible.
-// Given the creation preconditions, these can only be simple text nodes.
 function handleBadNeighbors(
   textNode: TextNode,
-  matchers: Array<LinkMatcher>,
+  matchers: LinkMatcher[],
   onChange: ChangeHandler,
 ): void {
   const previousSibling = textNode.getPreviousSibling();
@@ -434,20 +407,16 @@ function handleBadNeighbors(
   }
 }
 
-function replaceWithChildren(node: ElementNode): Array<LexicalNode> {
+function replaceWithChildren(node: ElementNode): LexicalNode[] {
   const children = node.getChildren();
-  const childrenLength = children.length;
-
-  for (let j = childrenLength - 1; j >= 0; j--) {
+  for (let j = children.length - 1; j >= 0; j--) {
     node.insertAfter(children[j]);
   }
-
   node.remove();
   return children.map((child) => child.getLatest());
 }
 
 function getTextNodesToMatch(textNode: TextNode): TextNode[] {
-  // check if next siblings are simple text nodes till a node contains a space separator
   const textNodesToMatch = [textNode];
   let nextSibling = textNode.getNextSibling();
   while (
@@ -456,86 +425,75 @@ function getTextNodesToMatch(textNode: TextNode): TextNode[] {
     nextSibling.isSimpleText()
   ) {
     textNodesToMatch.push(nextSibling);
-    if (/[\s]/.test(nextSibling.getTextContent())) {
-      break;
-    }
+    if (/[\s]/.test(nextSibling.getTextContent())) break;
     nextSibling = nextSibling.getNextSibling();
   }
   return textNodesToMatch;
 }
 
-function useAutoLink(
+function registerAutoLink(
   editor: LexicalEditor,
-  matchers: Array<LinkMatcher>,
-  onChange?: ChangeHandler,
-): void {
-  useEffect(() => {
-    if (!editor.hasNodes([AutoLinkNode])) {
-      throw new Error(
-        'LexicalAutoLinkPlugin: AutoLinkNode not registered on editor',
-      );
-    }
-
-    const onChangeWrapped = (url: string | null, prevUrl: string | null) => {
-      if (onChange) {
-        onChange(url, prevUrl);
-      }
-    };
-
-    return mergeRegister(
-      editor.registerNodeTransform(TextNode, (textNode: TextNode) => {
-        const parent = textNode.getParentOrThrow();
-        const previous = textNode.getPreviousSibling();
-        if ($isAutoLinkNode(parent) && !parent.getIsUnlinked()) {
-          handleLinkEdit(parent, matchers, onChangeWrapped);
-        } else if (!$isLinkNode(parent)) {
-          if (
-            textNode.isSimpleText() &&
-            (startsWithSeparator(textNode.getTextContent()) ||
-              !$isAutoLinkNode(previous))
-          ) {
-            const textNodesToMatch = getTextNodesToMatch(textNode);
-            $handleLinkCreation(textNodesToMatch, matchers, onChangeWrapped);
-          }
-
-          handleBadNeighbors(textNode, matchers, onChangeWrapped);
-        }
-      }),
-      editor.registerCommand(
-        TOGGLE_LINK_COMMAND,
-        (payload) => {
-          const selection = $getSelection();
-          if (payload !== null || !$isRangeSelection(selection)) {
-            return false;
-          }
-          const nodes = selection.extract();
-          nodes.forEach((node) => {
-            const parent = node.getParent();
-
-            if ($isAutoLinkNode(parent)) {
-              // invert the value
-              parent.setIsUnlinked(!parent.getIsUnlinked());
-              parent.markDirty();
-            }
-          });
-          return false;
-        },
-        COMMAND_PRIORITY_LOW,
-      ),
+  matchers: LinkMatcher[],
+  onChange: ChangeHandler,
+): () => void {
+  if (!editor.hasNodes([AutoLinkNode])) {
+    throw new Error(
+      'AutoLinkExtension: AutoLinkNode is not registered on the editor.',
     );
-  }, [editor, matchers, onChange]);
+  }
+  return mergeRegister(
+    editor.registerNodeTransform(TextNode, (textNode: TextNode) => {
+      const parent = textNode.getParentOrThrow();
+      const previous = textNode.getPreviousSibling();
+      if ($isAutoLinkNode(parent) && !parent.getIsUnlinked()) {
+        handleLinkEdit(parent, matchers, onChange);
+      } else if (!$isLinkNode(parent)) {
+        if (
+          textNode.isSimpleText() &&
+          (startsWithSeparator(textNode.getTextContent()) ||
+            !$isAutoLinkNode(previous))
+        ) {
+          const textNodesToMatch = getTextNodesToMatch(textNode);
+          $handleLinkCreation(textNodesToMatch, matchers, onChange);
+        }
+        handleBadNeighbors(textNode, matchers, onChange);
+      }
+    }),
+    editor.registerCommand(
+      TOGGLE_LINK_COMMAND,
+      (payload) => {
+        const selection = $getSelection();
+        if (payload !== null || !$isRangeSelection(selection)) return false;
+        const nodes = selection.extract();
+        nodes.forEach((node) => {
+          const parent = node.getParent();
+          if ($isAutoLinkNode(parent)) {
+            parent.setIsUnlinked(!parent.getIsUnlinked());
+            parent.markDirty();
+          }
+        });
+        return false;
+      },
+      COMMAND_PRIORITY_LOW,
+    ),
+  );
 }
 
-export function AutoLinkPlugin({
-  matchers,
-  onChange,
-}: {
-  matchers: Array<LinkMatcher>;
-  onChange?: ChangeHandler;
-}): JSX.Element | null {
-  const [editor] = useLexicalComposerContext();
-
-  useAutoLink(editor, matchers, onChange);
-
-  return null;
+export interface AutoLinkConfig {
+  matchers: LinkMatcher[];
+  onChange: ChangeHandler | undefined;
 }
+
+export const AutoLinkExtension = defineExtension({
+  name: '@nimbalyst/editor/auto-link',
+  config: {
+    matchers: DEFAULT_AUTOLINK_MATCHERS,
+    onChange: undefined,
+  } as AutoLinkConfig,
+  register: (editor, config) => {
+    const onChange: ChangeHandler = (url, prevUrl) => {
+      config.onChange?.(url, prevUrl);
+    };
+    return registerAutoLink(editor, config.matchers, onChange);
+  },
+});

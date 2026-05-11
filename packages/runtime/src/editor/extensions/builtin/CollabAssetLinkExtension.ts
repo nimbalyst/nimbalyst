@@ -1,24 +1,20 @@
 /**
- * CollabAssetLinkPlugin
- *
- * Intercepts clicks on `<a href="collab-asset://...">` and opens the URL
- * in a new browser context via `window.open`. Chromium routes the request
- * through the registered `collab-asset://` protocol handler in main, which
- * fetches and decrypts; for image/PDF/text MIME types Chromium previews
- * inline, otherwise it triggers a download.
- *
- * Why this exists: the editor's stock `ClickableLinkPlugin` is disabled
- * whenever `isEditable === true` (so clicking a link doesn't navigate
- * away from an in-progress edit). In the collaborative editor's normal
- * editable state, that means non-image attachment links would do nothing
- * without this intercept.
+ * Intercepts clicks on `<a href="collab-asset://...">` anchors inside the
+ * editor's root element and routes them through `window.open` so the
+ * registered `collab-asset://` protocol handler can fetch + decrypt the
+ * asset. Without this, non-image attachment links would do nothing while
+ * the editor is editable (because the stock ClickableLink plugin is
+ * intentionally disabled during editing).
  *
  * Scoped to `collab-asset://` only -- regular http(s) links continue to
- * follow the standard ClickableLinkPlugin / no-op-when-editing semantics.
+ * follow the standard ClickableLink semantics.
+ *
+ * Headless extension (Phase 7.3). Replaces the prior React-component
+ * `CollabAssetLinkPlugin` mounted in Editor.tsx.
  */
-import { useEffect } from 'react';
+
+import { defineExtension } from 'lexical';
 import { isDOMNode } from 'lexical';
-import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 
 function getCollabAssetAnchor(target: Node): HTMLAnchorElement | null {
   const el = typeof Element !== 'undefined' && target instanceof Element
@@ -28,10 +24,9 @@ function getCollabAssetAnchor(target: Node): HTMLAnchorElement | null {
   return anchor instanceof HTMLAnchorElement ? anchor : null;
 }
 
-export default function CollabAssetLinkPlugin(): null {
-  const [editor] = useLexicalComposerContext();
-
-  useEffect(() => {
+export const CollabAssetLinkExtension = defineExtension({
+  name: '@nimbalyst/editor/collab-asset-link',
+  register: (editor) => {
     const handle = (event: MouseEvent, allowButton: (button: number) => boolean) => {
       if (event.defaultPrevented || !allowButton(event.button)) return;
       const target = event.target;
@@ -45,8 +40,8 @@ export default function CollabAssetLinkPlugin(): null {
       window.open(anchor.href, '_blank', 'noopener,noreferrer');
     };
 
-    const onClick = (event: MouseEvent) => handle(event, b => b === 0);
-    const onAuxClick = (event: MouseEvent) => handle(event, b => b === 1);
+    const onClick = (event: MouseEvent) => handle(event, (b) => b === 0);
+    const onAuxClick = (event: MouseEvent) => handle(event, (b) => b === 1);
 
     return editor.registerRootListener((rootElement, prevRootElement) => {
       if (prevRootElement) {
@@ -61,7 +56,5 @@ export default function CollabAssetLinkPlugin(): null {
         rootElement.removeEventListener('auxclick', onAuxClick, true);
       };
     });
-  }, [editor]);
-
-  return null;
-}
+  },
+});

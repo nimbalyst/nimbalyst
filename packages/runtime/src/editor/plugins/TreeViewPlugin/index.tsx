@@ -6,20 +6,30 @@
  *
  */
 
-import type {JSX} from 'react';
+import type { JSX } from 'react';
 
-import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
-import {TreeView} from '@lexical/react/LexicalTreeView';
-import { $getDiffState } from "../DiffPlugin/core";
+import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+import { TreeView } from '@lexical/react/LexicalTreeView';
 
+import { $getDiffState } from '../DiffPlugin/core';
+
+/**
+ * Debug-only tree view, mounted when `EditorConfig.showTreeView` or the
+ * `showTreeView` runtime setting is true. Wired from the "Toggle Debug
+ * Tree" menu items in `UnifiedEditorHeaderBar` and the toolbar.
+ *
+ * Thin wrapper around `@lexical/react/LexicalTreeView` (which has no
+ * `@lexical/extension` equivalent today). The custom `customPrintNode`
+ * surfaces Nimbalyst's diff-state annotations next to each node so the
+ * dev tree shows pending AI edits inline.
+ */
 export default function TreeViewPlugin(): JSX.Element {
   const [editor] = useLexicalComposerContext();
-  // console.log("Showing TreeViewPlugin");
 
-    function customPrintNode(node: any): string {
-      const diffState = $getDiffState(node);
-      return diffState? `[${diffState}] ` : '';
-    }
+  function customPrintNode(node: any): string {
+    const diffState = $getDiffState(node);
+    return diffState ? `[${diffState}] ` : '';
+  }
 
   return (
     <TreeView

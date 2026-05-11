@@ -88,21 +88,19 @@ export type {
   InitialConfigType,
 } from '@lexical/react/LexicalComposer';
 
-// Export search/replace commands
-export {
-  TOGGLE_SEARCH_COMMAND,
-  CLOSE_SEARCH_COMMAND,
-  SEARCH_COMMAND,
-  REPLACE_COMMAND,
-  REPLACE_ALL_COMMAND,
-  NEXT_MATCH_COMMAND,
-  PREVIOUS_MATCH_COMMAND,
-} from './plugins/SearchReplacePlugin';
-
 // Plugin system exports
 export type { PluginPackage, DynamicMenuOption, UserCommand } from './types/PluginTypes';
 export { pluginRegistry } from './plugins/PluginRegistry';
 export { PluginManager } from './plugins/PluginManager';
+
+// Lexical-extension contributions from Nimbalyst extensions (Phase 7.6).
+// The electron-side bridge writes here; `NimbalystEditor` reads from here
+// and includes the contributions in the editor's extension graph.
+export {
+  setExtensionLexicalExtensions,
+  getExtensionLexicalExtensions,
+  useExtensionLexicalExtensions,
+} from './extensions/extensionLexicalExtensionsStore';
 
 // Markdown utilities. Always go through `$convertFromEnhancedMarkdownString` /
 // `$convertToEnhancedMarkdownString` so frontmatter extraction, list-indent
@@ -156,8 +154,9 @@ export {
   $convertFromEnhancedMarkdownString
 } from './markdown/EnhancedMarkdownImport';
 
-// Markdown copy plugin - Cmd+Shift+C to copy as markdown
-export { default as MarkdownCopyPlugin, COPY_AS_MARKDOWN_COMMAND } from './plugins/MarkdownCopyPlugin';
+// Markdown copy extension - Cmd+Shift+C to copy as markdown (Phase 7.3
+// headless extension; previously a React-mounted plugin).
+export { COPY_AS_MARKDOWN_COMMAND } from './extensions/builtin/MarkdownCopyExtension';
 
 // Diff plugin and hook
 export { DiffPlugin, useDiffCommands, APPLY_MARKDOWN_REPLACE_COMMAND, LiveNodeKeyState } from './plugins/DiffPlugin';

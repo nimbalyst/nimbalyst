@@ -9,7 +9,7 @@
 import type { JSX } from 'react';
 import { useMemo, useRef } from 'react';
 
-import { LexicalComposer } from '@lexical/react/LexicalComposer';
+import { LexicalExtensionComposer } from '@lexical/react/LexicalExtensionComposer';
 import { $convertFromEnhancedMarkdownString } from './markdown';
 import {
     $createParagraphNode,
@@ -26,9 +26,8 @@ import { useTheme } from './context/ThemeContext';
 import { RuntimeSettingsProvider } from './context/RuntimeSettingsContext';
 import { useResponsiveWidth } from './hooks/useResponsiveWidth';
 import Editor from './Editor';
-import NimbalystEditorTheme from './themes/NimbalystEditorTheme';
-import EditorNodes from "./nodes/EditorNodes";
-import { pluginRegistry } from './plugins/PluginRegistry';
+import { buildNimbalystRootExtension } from './extensions/NimbalystEditorExtensions';
+import { useExtensionLexicalExtensions } from './extensions/extensionLexicalExtensionsStore';
 import { getEditorTransformers } from './markdown';
 
 export interface NimbalystEditorProps {
@@ -51,38 +50,68 @@ function NimbalystEditor({config}: NimbalystEditorProps): JSX.Element {
         [mergedConfig.markdownTransformers]
     );
 
-    const initialConfig = {
-        // Set initial editor state based on whether we have initial content
-        // In collaboration mode, CollaborationPlugin hydrates from Y.Doc -- skip markdown parsing
-        editorState: (() => {
+    // Live view of extension-contributed Lexical extensions. The bridge
+    // publishes into this store; updates rebuild the editor via the
+    // useMemo below.
+    const extensionLexicalExtensions = useExtensionLexicalExtensions();
+
+    // The root extension must be stable across renders so the underlying
+    // editor instance isn't recreated. We deliberately key only on inputs
+    // that should rebuild the editor: collaboration mode toggle, initial
+    // content change, editable flag, emptyEditor flag, and the transformer
+    // set (markdown imports depend on it).
+    //
+    // Phase 7.5 will move plugin extensions into `dependencies` here. For
+    // now `dependencies: []` -- every plugin still mounts as a React child
+    // inside `<LexicalExtensionComposer>` (see Phase 7.1 in
+    // `nimbalyst-local/plans/lexical-upgrade-and-defork.md`).
+    const rootExtension = useMemo(() => {
+        const $initialEditorState = (() => {
             if (mergedConfig.collaboration) {
-                // CollaborationPlugin will set the initial state from Y.Doc
+                // CollaborationPlugin hydrates from Y.Doc; do not bootstrap.
                 return null;
             }
             if (mergedConfig.initialContent) {
-                // Load markdown content properly through the initialConfig
                 return () => {
                     const root = $getRoot();
                     root.clear();
-                    $convertFromEnhancedMarkdownString(mergedConfig.initialContent!, markdownTransformers);
-                    // Don't call root.selectStart() here - it triggers auto-scroll behavior
-                    // The selection will be set naturally when the user interacts with the editor
+                    $convertFromEnhancedMarkdownString(
+                        mergedConfig.initialContent!,
+                        markdownTransformers,
+                    );
                 };
-            } else if (!mergedConfig.emptyEditor) {
-                // Create an empty editor with a paragraph
+            }
+            if (!mergedConfig.emptyEditor) {
                 return $createEmptyEditor;
             }
-            // Return undefined for truly empty editor
-            return undefined;
-        })(),
-        namespace: 'Nimbalyst',
-        nodes: [...EditorNodes,  ...pluginRegistry.getAllNodes()],
-        onError: (error: Error) => {
-            throw error;
-        },
-        theme: NimbalystEditorTheme,
-        editable: mergedConfig.editable !== undefined ? mergedConfig.editable : true,
-    };
+            return null;
+        })();
+
+        return buildNimbalystRootExtension({
+            editable: mergedConfig.editable,
+            $initialEditorState,
+            listStrictIndent: mergedConfig.listStrictIndent,
+            collaboration: Boolean(mergedConfig.collaboration),
+            hasLinkAttributes: mergedConfig.hasLinkAttributes,
+            markdownTransformers,
+            onAssetReferencesRemoved: mergedConfig.onAssetReferencesRemoved,
+            onUploadAsset: mergedConfig.onUploadAsset,
+            extensionDependencies: extensionLexicalExtensions,
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+        // rebuild keys; we explicitly do not depend on every config field.
+    }, [
+        mergedConfig.collaboration,
+        mergedConfig.initialContent,
+        mergedConfig.editable,
+        mergedConfig.emptyEditor,
+        mergedConfig.listStrictIndent,
+        mergedConfig.hasLinkAttributes,
+        mergedConfig.onAssetReferencesRemoved,
+        mergedConfig.onUploadAsset,
+        markdownTransformers,
+        extensionLexicalExtensions,
+    ]);
 
     return (
         <div
@@ -91,7 +120,7 @@ function NimbalystEditor({config}: NimbalystEditorProps): JSX.Element {
             data-theme={theme}
         >
             <RuntimeSettingsProvider>
-                <LexicalComposer initialConfig={initialConfig}>
+                <LexicalExtensionComposer extension={rootExtension} contentEditable={null}>
                     <SharedHistoryContext>
                         <TableContext>
                             <ToolbarContext>
@@ -101,7 +130,7 @@ function NimbalystEditor({config}: NimbalystEditorProps): JSX.Element {
                             </ToolbarContext>
                         </TableContext>
                     </SharedHistoryContext>
-                </LexicalComposer>
+                </LexicalExtensionComposer>
             </RuntimeSettingsProvider>
         </div>
     );

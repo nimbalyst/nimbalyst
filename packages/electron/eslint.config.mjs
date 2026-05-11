@@ -56,6 +56,47 @@ export default tseslint.config(
             importNames: ['$convertFromMarkdownString', '$convertToMarkdownString'],
             message: 'Use $convertFromEnhancedMarkdownString / $convertToEnhancedMarkdownString from @nimbalyst/runtime/editor instead. See packages/runtime/src/editor/markdown/FORKED_MARKDOWN_IMPORT.md for why upstream import/export must not be called directly.',
           },
+          // Phase 7 retired these React plugins in favor of `@lexical/*`
+          // extensions wired into `NimbalystEditorExtensions`. Importing
+          // them again means mounting them inside `LexicalExtensionComposer`
+          // alongside the extension that already does the same work, which
+          // double-registers commands and history listeners.
+          {
+            name: '@lexical/react/LexicalHistoryPlugin',
+            message: 'HistoryPlugin is replaced by HistoryExtension from @lexical/history, wired in editor/extensions/NimbalystEditorExtensions.ts (Phase 7.2). Do not re-mount the React plugin -- it double-tracks undo/redo.',
+          },
+          {
+            name: '@lexical/react/LexicalListPlugin',
+            message: 'ListPlugin is replaced by ListExtension from @lexical/list (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            name: '@lexical/react/LexicalCheckListPlugin',
+            message: 'CheckListPlugin is replaced by CheckListExtension from @lexical/list (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            name: '@lexical/react/LexicalTabIndentationPlugin',
+            message: 'TabIndentationPlugin is replaced by TabIndentationExtension from @lexical/extension (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            name: '@lexical/react/LexicalHorizontalRulePlugin',
+            message: 'HorizontalRulePlugin is replaced by HorizontalRuleExtension from @lexical/extension (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            name: '@lexical/react/LexicalClearEditorPlugin',
+            message: 'ClearEditorPlugin is replaced by ClearEditorExtension from @lexical/extension (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            name: '@lexical/react/LexicalLinkPlugin',
+            message: 'LinkPlugin is replaced by LinkExtension from @lexical/link (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            // The React-only subclass exists for back-compat. Phase 7.2
+            // moved every callsite to the canonical class from
+            // @lexical/extension; the subclass would not be registered on
+            // the editor and would round-trip to an unknown node type.
+            name: '@lexical/react/LexicalHorizontalRuleNode',
+            message: 'Import HorizontalRuleNode, $createHorizontalRuleNode, $isHorizontalRuleNode, and INSERT_HORIZONTAL_RULE_COMMAND from @lexical/extension instead (Phase 7.2). The React subclass is not registered on the editor.',
+          },
         ],
       }],
       // Ban electronAPI.on() in the renderer by default. Re-enabled for the

@@ -14,8 +14,10 @@ import {AutoLinkNode, LinkNode} from '@lexical/link';
 import {ListItemNode, ListNode} from '@lexical/list';
 import {MarkNode} from '@lexical/mark';
 import {OverflowNode} from '@lexical/overflow';
-import {HorizontalRuleNode} from '@lexical/react/LexicalHorizontalRuleNode';
 import {HeadingNode, QuoteNode} from '@lexical/rich-text';
+// HorizontalRuleNode is registered via HorizontalRuleExtension (see
+// NimbalystEditorExtensions). Listing it here would double-register the
+// node class because the extension owns it.
 import {TableCellNode, TableNode, TableRowNode} from '@lexical/table';
 
 import {CollapsibleContainerNode} from '../plugins/CollapsiblePlugin/CollapsibleContainerNode';
@@ -51,7 +53,6 @@ const EditorNodes: Array<Klass<LexicalNode>> = [
   OverflowNode,
   ImageNode,
   EmojiNode,
-  HorizontalRuleNode,
 
   MarkNode,
   CollapsibleContainerNode,

@@ -45,7 +45,8 @@ import {Suspense, useCallback, useEffect, useRef, useState} from 'react';
 import {useSharedHistoryContext} from '../../context/SharedHistoryContext';
 const brokenImage = '/src/images/image-broken.svg';
 import EmojisPlugin from '../../plugins/EmojisPlugin';
-import LinkPlugin from '../../plugins/LinkPlugin';
+// LinkPlugin import removed; nested image-caption editor's LinkPlugin
+// usage is commented out below.
 import ContentEditable from '../../ui/ContentEditable';
 import ImageResizer from '../../ui/ImageResizer';
 import {$isImageNode} from './ImageNode';

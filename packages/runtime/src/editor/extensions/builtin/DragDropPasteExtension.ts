@@ -1,27 +1,29 @@
 /**
- * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * Handles `DRAG_DROP_PASTE` (dispatched by RichTextPlugin when files are
+ * dropped or pasted into the editor). If a host-supplied `uploadAsset`
+ * callback is configured, files are uploaded through it; otherwise the
+ * extension falls back to the electron document-service IPC for images,
+ * with a final base64 fallback when the API is unavailable.
  *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
- *
+ * Headless extension (Phase 7.3). Replaces the prior React-component
+ * `DragDropPaste` mounted in Editor.tsx.
  */
 
-import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
-import {$createLinkNode} from '@lexical/link';
-import {DRAG_DROP_PASTE} from '@lexical/rich-text';
-import {$wrapNodeInElement, isMimeType} from '@lexical/utils';
+import { $createLinkNode } from '@lexical/link';
+import { DRAG_DROP_PASTE } from '@lexical/rich-text';
+import { $wrapNodeInElement, isMimeType } from '@lexical/utils';
 import {
   $createParagraphNode,
   $createTextNode,
   $insertNodes,
   $isRootOrShadowRoot,
   COMMAND_PRIORITY_HIGH,
-  LexicalEditor,
+  type LexicalEditor,
+  defineExtension,
 } from 'lexical';
-import {useEffect} from 'react';
 
-import {INSERT_IMAGE_COMMAND} from '../ImagesPlugin';
 import type { UploadedEditorAsset } from '../../EditorConfig';
+import { INSERT_IMAGE_COMMAND } from '../../plugins/ImagesPlugin';
 
 const ACCEPTABLE_IMAGE_TYPES = [
   'image/',
@@ -32,31 +34,20 @@ const ACCEPTABLE_IMAGE_TYPES = [
 ];
 
 async function processImageFile(file: File): Promise<string> {
-  // Check if we have access to electron API for asset storage
   if (typeof window !== 'undefined' && (window as any).electronAPI) {
     try {
-      // Read file as array buffer
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Array.from(new Uint8Array(arrayBuffer));
-
-      // Get current document path from window global (set by EditorMode)
       const documentPath = (window as any).__currentDocumentPath || undefined;
-
-      // Store via document service
       const { relativePath } = await (window as any).electronAPI.invoke(
         'document-service:store-asset',
-        { buffer, mimeType: file.type, documentPath }
+        { buffer, mimeType: file.type, documentPath },
       );
-
-      // Return the relative path provided by the service
       return relativePath;
     } catch (error) {
       console.error('Failed to store asset, falling back to base64:', error);
-      // Fall through to base64 fallback
     }
   }
-
-  // Fallback to base64 if electron API unavailable or error occurred
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -74,7 +65,7 @@ async function processImageFile(file: File): Promise<string> {
 function insertUploadedAsset(
   editor: LexicalEditor,
   file: File,
-  asset: UploadedEditorAsset
+  asset: UploadedEditorAsset,
 ): void {
   if (asset.kind === 'image') {
     editor.dispatchCommand(INSERT_IMAGE_COMMAND, {
@@ -83,7 +74,6 @@ function insertUploadedAsset(
     });
     return;
   }
-
   editor.update(() => {
     const linkNode = $createLinkNode(asset.src);
     linkNode.append($createTextNode(asset.name ?? file.name));
@@ -94,27 +84,24 @@ function insertUploadedAsset(
   });
 }
 
-export default function DragDropPaste({
-  uploadAsset,
-}: {
-  uploadAsset?: (file: File) => Promise<UploadedEditorAsset>;
-}): null {
-  const [editor] = useLexicalComposerContext();
-  useEffect(() => {
-    // Handle DRAG_DROP_PASTE command that's dispatched by RichTextPlugin
-    // when files are pasted/dropped
+export interface DragDropPasteConfig {
+  uploadAsset: ((file: File) => Promise<UploadedEditorAsset>) | undefined;
+}
+
+export const DragDropPasteExtension = defineExtension({
+  name: '@nimbalyst/editor/drag-drop-paste',
+  config: { uploadAsset: undefined } as DragDropPasteConfig,
+  register: (editor, config) => {
     return editor.registerCommand(
       DRAG_DROP_PASTE,
       (files) => {
         (async () => {
-          // Process each file
           for (const file of files) {
-            if (uploadAsset) {
-              const asset = await uploadAsset(file);
+            if (config.uploadAsset) {
+              const asset = await config.uploadAsset(file);
               insertUploadedAsset(editor, file, asset);
               continue;
             }
-
             if (isMimeType(file, ACCEPTABLE_IMAGE_TYPES)) {
               const src = await processImageFile(file);
               editor.dispatchCommand(INSERT_IMAGE_COMMAND, {
@@ -128,6 +115,5 @@ export default function DragDropPaste({
       },
       COMMAND_PRIORITY_HIGH,
     );
-  }, [editor, uploadAsset]);
-  return null;
-}
+  },
+});
