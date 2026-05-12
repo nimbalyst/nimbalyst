@@ -187,6 +187,14 @@ async function getWorkspacePathForSession(sessionId: string): Promise<string | n
 export class MessageStreamingHandler {
   private readonly svc: AIServiceInternal;
   private readonly unsubscribeBatchListener: () => void;
+  // Per-provider map of event -> currently-installed listener. Used by
+  // installListener so handle() can re-wire its own subscriptions on every
+  // ai:sendMessage call without nuking listeners owned by other modules.
+  // WeakMap so a discarded provider instance is garbage-collected normally.
+  private readonly providerListeners = new WeakMap<
+    AIProvider,
+    Map<string, (...args: any[]) => void>
+  >();
 
   constructor(service: AIService) {
     this.svc = service as unknown as AIServiceInternal;
@@ -228,6 +236,32 @@ export class MessageStreamingHandler {
   /** Used by AIService teardown to unwire the singleton batch listener. */
   destroy(): void {
     this.unsubscribeBatchListener();
+  }
+
+  /**
+   * Replace the previously-installed listener for this (provider, event) pair
+   * without touching listeners owned by other modules. handle() registers its
+   * subscriptions on every ai:sendMessage call against the same cached
+   * per-session provider instance, so it needs to remove its own prior
+   * listener but not the whole event channel (the old removeAllListeners
+   * pattern silently dropped any other module that started subscribing).
+   */
+  private installListener(
+    provider: AIProvider,
+    event: string,
+    listener: (...args: any[]) => void,
+  ): void {
+    let listeners = this.providerListeners.get(provider);
+    if (!listeners) {
+      listeners = new Map<string, (...args: any[]) => void>();
+      this.providerListeners.set(provider, listeners);
+    }
+    const previous = listeners.get(event);
+    if (previous) {
+      provider.off(event, previous);
+    }
+    listeners.set(event, listener);
+    provider.on(event, listener);
   }
 
   handle: SendMessageHandler = async (
@@ -616,9 +650,9 @@ export class MessageStreamingHandler {
       if (data.hidden) return;
       safeSend(event, 'ai:message-logged', { ...data, workspacePath: effectiveWorkspacePath });
     };
-    // Remove all previous listeners to avoid duplicates
-    provider.removeAllListeners('message:logged');
-    provider.on('message:logged', onMessageLogged);
+    // Replace this handler's previous 'message:logged' subscription only,
+    // so other modules subscribing to the same provider event stay wired.
+    this.installListener(provider, 'message:logged', onMessageLogged);
 
     // Forward provider-side title updates (from the SDK's generateSessionTitle
     // path) to all renderers so the session list updates in real time.
@@ -630,8 +664,7 @@ export class MessageStreamingHandler {
         }
       }
     };
-    provider.removeAllListeners('session:title-updated');
-    provider.on('session:title-updated', onSessionTitleUpdated);
+    this.installListener(provider, 'session:title-updated', onSessionTitleUpdated);
 
     // Forward provider-side metadata updates (e.g. tags/phase from the SDK's
     // out-of-band naming side-question and the default-phase fallback) to all
@@ -655,8 +688,7 @@ export class MessageStreamingHandler {
         });
       }
     };
-    provider.removeAllListeners('session:metadata-updated');
-    provider.on('session:metadata-updated', onSessionMetadataUpdated);
+    this.installListener(provider, 'session:metadata-updated', onSessionMetadataUpdated);
 
     // Helper to sync pending prompt state to mobile
     const syncPendingPrompt = (sessionId: string, hasPendingPrompt: boolean) => {
@@ -693,8 +725,7 @@ export class MessageStreamingHandler {
         effectiveWorkspacePath
       );
     };
-    provider.removeAllListeners('exitPlanMode:confirm');
-    provider.on('exitPlanMode:confirm', onExitPlanModeConfirm);
+    this.installListener(provider, 'exitPlanMode:confirm', onExitPlanModeConfirm);
 
     // Listen for ExitPlanMode resolutions (approve/deny) and flip session
     // status back to 'running' so SessionStateManager emits session:streaming
@@ -722,8 +753,7 @@ export class MessageStreamingHandler {
         logger.main.error('[AIService] Failed to update session status to running after ExitPlanMode resolve:', err);
       });
     };
-    provider.removeAllListeners('exitPlanMode:resolved');
-    provider.on('exitPlanMode:resolved', onExitPlanModeResolved);
+    this.installListener(provider, 'exitPlanMode:resolved', onExitPlanModeResolved);
 
     // Listen for AskUserQuestion requests and forward to renderer
     const onAskUserQuestion = async (data: { questionId: string; sessionId: string; questions: any[]; timestamp: number }) => {
@@ -749,8 +779,7 @@ export class MessageStreamingHandler {
         effectiveWorkspacePath
       );
     };
-    provider.removeAllListeners('askUserQuestion:pending');
-    provider.on('askUserQuestion:pending', onAskUserQuestion);
+    this.installListener(provider, 'askUserQuestion:pending', onAskUserQuestion);
 
     // Listen for AskUserQuestion answers and forward to renderer to update tool call display
     const onAskUserQuestionAnswered = (data: { questionId: string; sessionId: string; questions: any[]; answers: Record<string, string>; timestamp: number }) => {
@@ -766,8 +795,7 @@ export class MessageStreamingHandler {
         isStreaming: true,
       }).catch(() => {});
     };
-    provider.removeAllListeners('askUserQuestion:answered');
-    provider.on('askUserQuestion:answered', onAskUserQuestionAnswered);
+    this.installListener(provider, 'askUserQuestion:answered', onAskUserQuestionAnswered);
 
     // Listen for tool permission requests and forward to renderer
     const onToolPermissionPending = async (data: { requestId: string; sessionId: string; workspacePath: string; request: any; timestamp: number }) => {
@@ -797,8 +825,7 @@ export class MessageStreamingHandler {
         data.workspacePath
       );
     };
-    provider.removeAllListeners('toolPermission:pending');
-    provider.on('toolPermission:pending', onToolPermissionPending);
+    this.installListener(provider, 'toolPermission:pending', onToolPermissionPending);
 
     // Listen for tool permission resolved and forward to renderer
     const onToolPermissionResolved = (data: { requestId: string; sessionId: string; response: any; timestamp: number }) => {
@@ -814,8 +841,7 @@ export class MessageStreamingHandler {
         isStreaming: true,
       }).catch(() => {});
     };
-    provider.removeAllListeners('toolPermission:resolved');
-    provider.on('toolPermission:resolved', onToolPermissionResolved);
+    this.installListener(provider, 'toolPermission:resolved', onToolPermissionResolved);
 
     // Listen for prompt additions and forward to renderer for debug display
     const onPromptAdditions = (data: {
@@ -827,8 +853,7 @@ export class MessageStreamingHandler {
     }) => {
       safeSend(event, 'ai:promptAdditions', data);
     };
-    provider.removeAllListeners('promptAdditions');
-    provider.on('promptAdditions', onPromptAdditions);
+    this.installListener(provider, 'promptAdditions', onPromptAdditions);
 
     // Listen for expired session events and clear the providerSessionId from database
     // This ensures subsequent messages start fresh even after app restart
@@ -840,8 +865,7 @@ export class MessageStreamingHandler {
         logger.main.error('[AIService] Failed to clear expired providerSessionId:', error);
       }
     };
-    provider.removeAllListeners('session:providerSessionExpired');
-    provider.on('session:providerSessionExpired', onProviderSessionExpired);
+    this.installListener(provider, 'session:providerSessionExpired', onProviderSessionExpired);
 
     // Listen for provider session ID received and persist immediately
     // This ensures session can be resumed even if interrupted/cancelled
@@ -852,8 +876,7 @@ export class MessageStreamingHandler {
         logger.main.error('[AIService] Failed to persist providerSessionId:', error);
       }
     };
-    provider.removeAllListeners('session:providerSessionReceived');
-    provider.on('session:providerSessionReceived', onProviderSessionReceived);
+    this.installListener(provider, 'session:providerSessionReceived', onProviderSessionReceived);
 
     // Listen for teammate messages when the lead is idle (no active query).
     // When the lead is active, messages are delivered via interrupt + streamInput
@@ -907,8 +930,7 @@ export class MessageStreamingHandler {
         logger.main.error('[AIService] Failed to handle teammate message while idle:', error);
       }
     };
-    provider.removeAllListeners('teammate:messageWhileIdle');
-    provider.on('teammate:messageWhileIdle', onTeammateMessageWhileIdle);
+    this.installListener(provider, 'teammate:messageWhileIdle', onTeammateMessageWhileIdle);
 
     // Listen for all teammates completing. When the lead finished but teammates
     // were still active, endSession was deferred. Now that all teammates are
@@ -939,8 +961,7 @@ export class MessageStreamingHandler {
         soundService.playCompletionSound(workspacePath);
       }
     };
-    provider.removeAllListeners('teammates:allCompleted');
-    provider.on('teammates:allCompleted', onTeammatesAllCompleted);
+    this.installListener(provider, 'teammates:allCompleted', onTeammatesAllCompleted);
 
     // Track user @ mentions in the message
     try {
