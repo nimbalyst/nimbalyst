@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
+- Commit-widget failure path now renders the error state instead of the cancelled state. The renderer's `gitCommit` host was collapsing every `result.success === false` outcome (including hook rejection, no-staged-changes errors, and IPC throws) into `action: 'cancelled'`, which the widget's reader at `GitCommitConfirmationWidget.tsx:452` short-circuits to the cancelled state before reaching the error check. Real failures are now sent as `action: 'error'` with the underlying error string, and the widget gains an `error`/`failed` action handler so the user sees the actual failure reason. `'cancelled'` stays reserved for the explicit user-cancel path. (Partial fix for #202.)
 <!-- Bug fixes go here -->
 
 ### Removed

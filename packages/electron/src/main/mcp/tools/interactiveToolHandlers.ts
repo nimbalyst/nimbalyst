@@ -737,7 +737,7 @@ export async function handleGitCommitProposal(
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
     type CommitResult = {
-      action: "committed" | "cancelled";
+      action: "committed" | "cancelled" | "error";
       commitHash?: string;
       commitDate?: string;
       error?: string;

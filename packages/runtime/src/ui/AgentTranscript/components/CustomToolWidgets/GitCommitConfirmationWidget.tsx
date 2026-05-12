@@ -461,6 +461,12 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
       if (action === 'cancelled' || action === 'canceled') {
         return { type: 'cancelled' as const };
       }
+      if (action === 'error' || action === 'failed') {
+        return {
+          type: 'error' as const,
+          error: structuredResult.error || toolResult || 'Commit failed',
+        };
+      }
     }
 
     if (structuredResult?.error) {
