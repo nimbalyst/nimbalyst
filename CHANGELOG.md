@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- Meta-agent `get_session_result` now returns the actual most-recent assistant response on Codex `send_prompt` follow-up turns. The meta-agent's `extractMessageText` had its own bespoke Codex extractor (in `metaAgentMessageText.ts`) that only walked `item.text` and `item.content` shallowly, while the canonical `extractTextFromCodexEvent` in `codex/textExtraction.ts` recurses into `item.message`, `item.delta`, and `item.output_text` too. Follow-up turns whose text lived in those nested fields produced no extraction; `extractLastAgentResponse` then walked further back through the message log and surfaced a stale older turn, leaving callers unable to read Codex's reply through the bridge. The meta-agent's Codex extractor now mirrors the canonical algorithm so it picks up the same shapes as the renderer. (#270)
 
 ### Removed
 <!-- Removed features go here -->
