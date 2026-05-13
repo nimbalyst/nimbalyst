@@ -471,6 +471,33 @@ function validateManifest(
         }
       }
 
+      // Validate agentWorkflows
+      if (contributions.agentWorkflows !== undefined) {
+        const agentWorkflows = contributions.agentWorkflows as Record<string, unknown>;
+        if (typeof agentWorkflows !== 'object' || agentWorkflows === null) {
+          errors.push({
+            error: `Invalid 'contributions.agentWorkflows' - should be an object`,
+            field: 'contributions.agentWorkflows',
+            suggestion: 'Provide workflow metadata with at least "path" and "displayName"',
+          });
+        } else {
+          if (typeof agentWorkflows.path !== 'string' || !agentWorkflows.path) {
+            errors.push({
+              error: `agentWorkflows missing 'path'`,
+              field: 'contributions.agentWorkflows.path',
+              suggestion: 'Add the relative workflow directory path',
+            });
+          }
+          if (typeof agentWorkflows.displayName !== 'string' || !agentWorkflows.displayName) {
+            errors.push({
+              error: `agentWorkflows missing 'displayName'`,
+              field: 'contributions.agentWorkflows.displayName',
+              suggestion: 'Add a user-facing workflow collection name',
+            });
+          }
+        }
+      }
+
       // Validate panels
       if (contributions.panels !== undefined) {
         if (!Array.isArray(contributions.panels)) {
@@ -1511,6 +1538,55 @@ export class ExtensionLoader {
     }
 
     return transformers;
+  }
+
+  /**
+   * Get all `LexicalExtension` contributions from loaded extensions.
+   *
+   * The host treats the value as opaque (`unknown`) at this layer so the
+   * loader does not have to pin a specific version of
+   * `@lexical/extension`. The consumer (e.g. `NimbalystEditor`) feeds the
+   * values directly into `LexicalExtensionComposer`'s dependency graph,
+   * which performs the actual runtime validation.
+   *
+   * Skips disabled extensions and extensions that declare a name in
+   * `contributions.lexicalExtensions` without a matching export on
+   * `module.lexicalExtensions` (a warning is logged instead).
+   */
+  getLexicalExtensions(): Array<{
+    extensionId: string;
+    name: string;
+    extension: unknown;
+  }> {
+    const result: Array<{
+      extensionId: string;
+      name: string;
+      extension: unknown;
+    }> = [];
+
+    for (const loaded of this.loadedExtensions.values()) {
+      if (!loaded.enabled) continue;
+
+      const names = loaded.manifest.contributions?.lexicalExtensions || [];
+      const exports = loaded.module.lexicalExtensions || {};
+
+      for (const name of names) {
+        const extension = exports[name];
+        if (extension) {
+          result.push({
+            extensionId: loaded.manifest.id,
+            name,
+            extension,
+          });
+        } else {
+          console.warn(
+            `[ExtensionLoader] Extension ${loaded.manifest.id} declares lexicalExtension '${name}' but does not export it`,
+          );
+        }
+      }
+    }
+
+    return result;
   }
 
   /**

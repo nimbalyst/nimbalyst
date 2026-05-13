@@ -67,7 +67,7 @@ export function extractFrontmatter(content: string): Record<string, any> | null 
  * Legacy frontmatter key -> tracker type mapping.
  * These keys were used before the unified `trackerStatus` format.
  */
-const LEGACY_KEY_TO_TYPE: Record<string, string> = {
+export const LEGACY_KEY_TO_TYPE: Record<string, string> = {
   planStatus: 'plan',
   decisionStatus: 'decision',
   bugStatus: 'bug',

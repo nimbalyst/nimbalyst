@@ -44,7 +44,10 @@ export { SearchReplacePlugin, SearchReplaceBar, SearchReplaceStateManager } from
 export type { SearchReplaceState } from './plugins/SearchReplace';
 // Unified Tracker Plugin
 export {
-  trackerPluginPackage,
+  TrackerPlugin,
+  TrackerLexicalExtension,
+  TRACKER_USER_COMMANDS,
+  TRACKER_ITEM_TRANSFORMERS,
   TrackerItemNode,
   $createTrackerItemNode,
   $getTrackerItemNode,
@@ -138,6 +141,7 @@ export type {
 export { MOCKUP_TRANSFORMER } from './plugins/MockupPlugin/MockupTransformer';
 export {
   INSERT_MOCKUP_COMMAND,
+  MockupLexicalExtension,
   generateMockupScreenshot,
 } from './plugins/MockupPlugin';
 export type {
@@ -150,7 +154,6 @@ export {
   getMockupPlatformService,
   hasMockupPlatformService,
 } from './plugins/MockupPlugin/MockupPlatformService';
-export { default as MockupPlugin } from './plugins/MockupPlugin';
 // Config
 export { STYTCH_CONFIG, getStytchConfig } from './config/stytch';
 // Extensions

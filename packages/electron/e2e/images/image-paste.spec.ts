@@ -88,22 +88,20 @@ test('should store pasted image as content-addressed asset', async () => {
 
   await page.waitForTimeout(1000);
 
-  // Check that .nimbalyst/assets directory was created
-  const assetsDir = path.join(workspace, '.nimbalyst', 'assets');
+  // Assets land in an `assets/` folder adjacent to the document (so docs stay
+  // portable to VSCode/Obsidian/GitHub). See storeAsset() in
+  // ElectronDocumentService.
+  const assetsDir = path.join(workspace, 'assets');
   const assetsDirExists = fs.existsSync(assetsDir);
   expect(assetsDirExists).toBe(true);
 
-  if (assetsDirExists) {
-    const files = fs.readdirSync(assetsDir);
-    expect(files.length).toBeGreaterThan(0);
+  const files = fs.readdirSync(assetsDir);
+  const svgFiles = files.filter(f => f.endsWith('.svg'));
+  expect(svgFiles.length).toBe(1);
 
-    const svgFiles = files.filter(f => f.endsWith('.svg'));
-    expect(svgFiles.length).toBe(1);
-
-    const assetContent = fs.readFileSync(path.join(assetsDir, svgFiles[0]), 'utf-8');
-    expect(assetContent).toContain('circle');
-    expect(assetContent).toContain('fill="red"');
-  }
+  const assetContent = fs.readFileSync(path.join(assetsDir, svgFiles[0]), 'utf-8');
+  expect(assetContent).toContain('circle');
+  expect(assetContent).toContain('fill="red"');
 
   const hasImage = await page.evaluate(() => {
     const editorElement = document.querySelector('.editor [contenteditable="true"]');
@@ -119,7 +117,10 @@ test('should store pasted image as content-addressed asset', async () => {
 
   expect(hasImage).not.toBeNull();
   expect(hasImage?.count).toBeGreaterThan(0);
-  expect(hasImage?.src).toContain('.nimbalyst/assets/');
+  // ImageComponent resolves the relative path through `localAssetUrl`, which
+  // in Electron routes through the `nim-asset://` protocol (issue #146). A
+  // `data:` URL would mean storage fell back to base64 (i.e. failed).
+  expect(hasImage?.src).toMatch(/^nim-asset:\/\//);
   expect(hasImage?.src).not.toContain('data:image');
 });
 
@@ -173,12 +174,15 @@ test('should deduplicate identical pasted images', async () => {
     await page.waitForTimeout(500);
   }
 
-  // Check that only ONE asset file for this SVG was created (deduplication)
-  const assetsDir = path.join(workspace, '.nimbalyst', 'assets');
+  // Check that only ONE asset file for THIS svg was created (deduplication).
+  // Other tests in this spec store their own unique SVGs in the same
+  // `assets/` folder, so count exact deduplication by content rather than
+  // total file count.
+  const assetsDir = path.join(workspace, 'assets');
   const files = fs.readdirSync(assetsDir);
-  const svgFiles = files.filter(f => f.endsWith('.svg'));
+  const blueRectSvgs = files
+    .filter(f => f.endsWith('.svg'))
+    .filter(f => fs.readFileSync(path.join(assetsDir, f), 'utf-8').includes('fill="blue"'));
 
-  // The first test created one SVG, this test should add exactly one more (deduplicated)
-  // So we expect 2 total SVG files (one from each test, but not 3)
-  expect(svgFiles.length).toBe(2);
+  expect(blueRectSvgs.length).toBe(1);
 });

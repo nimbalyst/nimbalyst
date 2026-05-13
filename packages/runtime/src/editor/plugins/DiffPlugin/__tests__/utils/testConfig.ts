@@ -1,40 +1,68 @@
+import type { Transformer } from '@lexical/markdown';
+import type { Klass, LexicalEditor, LexicalNode } from 'lexical';
+import { createEditor } from 'lexical';
+import { createHeadlessEditor } from '@lexical/headless';
 
-
-import type {Transformer} from '@lexical/markdown';
-import type {Klass, LexicalEditor, LexicalNode} from 'lexical';
-import {createEditor} from 'lexical';
-import {createHeadlessEditor} from '@lexical/headless';
-
-// Import existing editor nodes
 import EditorNodes from '../../../../nodes/EditorNodes';
-
-// Import transformers from the project
 import { getEditorTransformers } from '../../../../markdown';
-import { registerBuiltinPlugins } from '../../../../plugins/registerBuiltinPlugins';
 
-// Ensure built-in plugin transformers (tables, mermaid, etc.) are available in tests.
-registerBuiltinPlugins();
+// Side-effect import: runs every built-in extension's
+// `setExtensionContributions` call so `getEditorTransformers()` returns
+// the full transformer set (tables, mermaid, etc.) under test.
+import '../../../../extensions/registerBuiltinExtensions';
 
-/**
- * Test transformers for diff plugin testing.
- * Uses the same transformer set as the editor (core + built-in plugin transformers).
- */
+// Nodes that the diff tests need but that are now registered by their
+// extension rather than by `EditorNodes` (the editor instance built in
+// tests doesn't go through `buildEditorFromExtensions`).
+import { ImageNode } from '../../../ImagesPlugin/ImageNode';
+import { PageBreakNode } from '../../../PageBreakPlugin/PageBreakNode';
+import { MermaidNode } from '../../../MermaidPlugin/MermaidNode';
+import {
+  CollapsibleContainerNode,
+  CollapsibleContentNode,
+  CollapsibleTitleNode,
+} from '../../../CollapsiblePlugin';
+import { LayoutContainerNode } from '../../../LayoutPlugin/LayoutContainerNode';
+import { LayoutItemNode } from '../../../LayoutPlugin/LayoutItemNode';
+import { KanbanBoardNode } from '../../../KanbanBoardPlugin/KanbanBoardNode';
+import { BoardHeaderNode } from '../../../KanbanBoardPlugin/BoardHeaderNode';
+import { BoardColumnNode } from '../../../KanbanBoardPlugin/BoardColumnNode';
+import { BoardColumnHeaderNode } from '../../../KanbanBoardPlugin/BoardColumnHeaderNode';
+import { BoardColumnContentNode } from '../../../KanbanBoardPlugin/BoardColumnContentNode';
+import { BoardCardNode } from '../../../KanbanBoardPlugin/BoardCardNode';
+import { LinkNode, AutoLinkNode } from '@lexical/link';
+import { HorizontalRuleNode } from '@lexical/react/LexicalHorizontalRuleNode';
+import { ListNode, ListItemNode } from '@lexical/list';
+
 export const MARKDOWN_TEST_TRANSFORMERS: Transformer[] = getEditorTransformers();
 
-/**
- * Test nodes for diff plugin testing.
- * Uses the same nodes as the main editor for consistency.
- */
-export const TEST_NODES: Array<Klass<LexicalNode>> = EditorNodes;
+export const TEST_NODES: Array<Klass<LexicalNode>> = [
+  ...EditorNodes,
+  ImageNode,
+  PageBreakNode,
+  MermaidNode,
+  CollapsibleContainerNode,
+  CollapsibleContentNode,
+  CollapsibleTitleNode,
+  LayoutContainerNode,
+  LayoutItemNode,
+  KanbanBoardNode,
+  BoardHeaderNode,
+  BoardColumnNode,
+  BoardColumnHeaderNode,
+  BoardColumnContentNode,
+  BoardCardNode,
+  LinkNode,
+  AutoLinkNode,
+  HorizontalRuleNode,
+  ListNode,
+  ListItemNode,
+];
 
-/**
- * Creates a test editor with diff plugin requirements.
- * This function mimics the createTestEditor from lexical but uses our project's nodes.
- */
 export function createTestEditor(
   config: {
     namespace?: string;
-    theme?: any;
+    theme?: Record<string, unknown>;
     nodes?: ReadonlyArray<Klass<LexicalNode>>;
     onError?: (error: Error) => void;
   } = {},
@@ -43,23 +71,21 @@ export function createTestEditor(
   const editorConfig = {
     namespace: config.namespace || 'test',
     theme: config.theme || {},
-    onError: config.onError || ((e) => {
-      throw e;
-    }),
-    nodes: TEST_NODES.concat(customNodes as any),
+    onError:
+      config.onError ||
+      ((e: Error) => {
+        throw e;
+      }),
+    nodes: TEST_NODES.concat(customNodes as Array<Klass<LexicalNode>>),
   };
 
   const editor = createEditor(editorConfig);
 
   // Store the config so createHeadlessEditorFromEditor can access it
-  (editor as any)._createEditorArgs = editorConfig;
-
+  (editor as unknown as { _createEditorArgs: typeof editorConfig })._createEditorArgs = editorConfig;
   return editor;
 }
 
-/**
- * Creates a headless test editor for state comparisons.
- */
 export function createTestHeadlessEditor(
   config: {
     nodes?: ReadonlyArray<Klass<LexicalNode>>;
@@ -68,9 +94,11 @@ export function createTestHeadlessEditor(
 ): LexicalEditor {
   const customNodes = config.nodes || [];
   return createHeadlessEditor({
-    onError: config.onError || ((error) => {
-      throw error;
-    }),
-    nodes: TEST_NODES.concat(customNodes as any),
+    onError:
+      config.onError ||
+      ((error) => {
+        throw error;
+      }),
+    nodes: TEST_NODES.concat(customNodes as Array<Klass<LexicalNode>>),
   });
 }

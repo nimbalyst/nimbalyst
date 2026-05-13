@@ -1,6 +1,7 @@
 ---
 packageVersion: 1.0.0
 packageId: core
+description: Create a guided walkthrough for a feature or workflow.
 ---
 
 Create a walkthrough guide for: {{arg1}}

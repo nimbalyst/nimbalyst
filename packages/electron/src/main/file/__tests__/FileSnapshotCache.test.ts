@@ -293,6 +293,46 @@ describe('FileSnapshotCache', () => {
     });
   });
 
+  describe('hasSnapshot', () => {
+    it('returns true only for files in tier-1 in-memory cache, never via tier-2 git fallback', async () => {
+      setupGitMocks({
+        'status --porcelain': ' M src/dirty.ts\n',
+        'show abc123:src/clean.ts': 'committed clean content',
+      });
+      mockReadFile.mockImplementation(async (filePath: string) => {
+        if (filePath.endsWith('src/dirty.ts')) return 'working dirty content';
+        throw new Error('not found');
+      });
+
+      const cache = new FileSnapshotCache();
+      await cache.startSession(workspacePath, 'session-1');
+
+      const dirty = path.resolve(workspacePath, 'src/dirty.ts');
+      const clean = path.resolve(workspacePath, 'src/clean.ts');
+
+      // Dirty file is in cache from initGitCache.
+      expect(cache.hasSnapshot(dirty)).toBe(true);
+      // Clean file is NOT in cache, even though `getBeforeState` would fall
+      // back to git startSha for it. `hasSnapshot` deliberately ignores that
+      // tier so callers can distinguish "real session-lifetime baseline" from
+      // "fabricated from committed state".
+      expect(cache.hasSnapshot(clean)).toBe(false);
+    });
+
+    it('returns true after updateSnapshot seeds disk content for a file not previously cached', async () => {
+      setupGitMocks();
+
+      const cache = new FileSnapshotCache();
+      await cache.startSession(workspacePath, 'session-1');
+
+      const filePath = path.resolve(workspacePath, 'src/seeded.ts');
+      expect(cache.hasSnapshot(filePath)).toBe(false);
+
+      cache.updateSnapshot(filePath, 'seeded content');
+      expect(cache.hasSnapshot(filePath)).toBe(true);
+    });
+  });
+
   describe('removeSnapshot', () => {
     it('should remove cached content and update byte count', async () => {
       setupGitMocks();

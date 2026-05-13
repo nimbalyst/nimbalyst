@@ -104,19 +104,27 @@ export function startWorkspaceWatcher(window: BrowserWindow, workspacePath: stri
 
 // Stop watching a workspace
 export function stopWorkspaceWatcher(windowId: number) {
-    // Stop project file sync for this workspace if it was the last window using it
+    // Stop project file sync for any workspace this window referenced
+    // (primary or rail-warm additional paths) when no other window still
+    // references it.
     const state = windowStates.get(windowId);
-    if (state?.workspacePath) {
-        // Check if any other windows use this workspace
-        let otherWindowUsesWorkspace = false;
-        for (const [otherId, otherState] of windowStates) {
-            if (otherId !== windowId && otherState.workspacePath === state.workspacePath) {
-                otherWindowUsesWorkspace = true;
-                break;
+    if (state) {
+        const referencedPaths = new Set<string>();
+        if (state.workspacePath) referencedPaths.add(state.workspacePath);
+        state.additionalWorkspacePaths?.forEach((p) => referencedPaths.add(p));
+
+        for (const path of referencedPaths) {
+            let otherWindowUsesWorkspace = false;
+            for (const [otherId, otherState] of windowStates) {
+                if (otherId === windowId) continue;
+                if (otherState.workspacePath === path || otherState.additionalWorkspacePaths?.includes(path)) {
+                    otherWindowUsesWorkspace = true;
+                    break;
+                }
             }
-        }
-        if (!otherWindowUsesWorkspace) {
-            stopProjectFileSync(state.workspacePath);
+            if (!otherWindowUsesWorkspace) {
+                stopProjectFileSync(path);
+            }
         }
     }
 

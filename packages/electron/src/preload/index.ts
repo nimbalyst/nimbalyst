@@ -440,7 +440,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-session-state:get-state', sessionId),
     isSessionActive: (sessionId: string) =>
       ipcRenderer.invoke('ai-session-state:is-active', sessionId),
-    subscribe: (workspacePath?: string) =>
+    subscribe: (workspacePath?: string | string[]) =>
       ipcRenderer.invoke('ai-session-state:subscribe', workspacePath),
     unsubscribe: () =>
       ipcRenderer.invoke('ai-session-state:unsubscribe'),
@@ -1079,6 +1079,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getEnabled: (extensionId: string, defaultEnabled?: boolean) => ipcRenderer.invoke('extensions:get-enabled', extensionId, defaultEnabled),
     setEnabled: (extensionId: string, enabled: boolean) => ipcRenderer.invoke('extensions:set-enabled', extensionId, enabled),
     setClaudePluginEnabled: (extensionId: string, enabled: boolean) => ipcRenderer.invoke('extensions:set-claude-plugin-enabled', extensionId, enabled),
+    setAgentWorkflowsEnabled: (extensionId: string, enabled: boolean) => ipcRenderer.invoke('extensions:set-agent-workflows-enabled', extensionId, enabled),
     getClaudePluginCommands: () => ipcRenderer.invoke('extensions:get-claude-plugin-commands') as Promise<Array<{
       extensionId: string;
       extensionName: string;
@@ -1126,6 +1127,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // User-level environment variables (~/.claude/settings.json)
     getEnv: () => ipcRenderer.invoke('claudeSettings:get-env') as Promise<Record<string, string>>,
     setEnv: (env: Record<string, string>) => ipcRenderer.invoke('claudeSettings:set-env', env) as Promise<{ success: boolean }>,
+  },
+
+  agentWorkflows: {
+    getSettings: () => ipcRenderer.invoke('agentWorkflows:get-settings') as Promise<{
+      sourceSettings: {
+        workspaceClaudeCompatibilityEnabled: boolean;
+        includeProjectClaudeSources: boolean;
+        includeUserClaudeSources: boolean;
+        extensionWorkflowsEnabled: boolean;
+      };
+      exportSettings: {
+        codexEnabled: boolean;
+        claudeGeneratedExtensionWorkflowsEnabled: boolean;
+      };
+    }>,
+    setSourceSettings: (updates: {
+      workspaceClaudeCompatibilityEnabled?: boolean;
+      includeProjectClaudeSources?: boolean;
+      includeUserClaudeSources?: boolean;
+      extensionWorkflowsEnabled?: boolean;
+    }) => ipcRenderer.invoke('agentWorkflows:set-source-settings', updates),
+    setExportSettings: (updates: {
+      codexEnabled?: boolean;
+      claudeGeneratedExtensionWorkflowsEnabled?: boolean;
+    }) => ipcRenderer.invoke('agentWorkflows:set-export-settings', updates),
   },
 
   // Extension Development Kit (EDK) API

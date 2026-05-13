@@ -38,11 +38,77 @@ export default tseslint.config(
       // The wrapper auto-registers every atomFamily for the Developer Dashboard stats view.
       // The registry itself (atomFamilyRegistry.ts) is excluded via the ignores pattern below.
       'no-restricted-imports': ['error', {
-        paths: [{
-          name: 'jotai/utils',
-          importNames: ['atomFamily'],
-          message: 'Import atomFamily from \'../debug/atomFamilyRegistry\' (or correct relative path) instead of \'jotai/utils\'. This ensures automatic registration for the Developer Dashboard > AtomFamily Stats.'
-        }]
+        paths: [
+          {
+            name: 'jotai/utils',
+            importNames: ['atomFamily'],
+            message: 'Import atomFamily from \'../debug/atomFamilyRegistry\' (or correct relative path) instead of \'jotai/utils\'. This ensures automatic registration for the Developer Dashboard > AtomFamily Stats.'
+          },
+          {
+            // Renderer code must go through the Enhanced wrappers so frontmatter
+            // extraction, list-indent normalization, and our NCR-based
+            // literal-emphasis encoding stay applied. Calling upstream's
+            // $convertFromMarkdownString or $convertToMarkdownString directly
+            // skips those steps and regresses round-trip stability on real
+            // Nimbalyst plan documents (see
+            // packages/runtime/src/editor/markdown/FORKED_MARKDOWN_IMPORT.md).
+            name: '@lexical/markdown',
+            importNames: ['$convertFromMarkdownString', '$convertToMarkdownString'],
+            message: 'Use $convertFromEnhancedMarkdownString / $convertToEnhancedMarkdownString from @nimbalyst/runtime/editor instead. See packages/runtime/src/editor/markdown/FORKED_MARKDOWN_IMPORT.md for why upstream import/export must not be called directly.',
+          },
+          // Phase 7 retired these React plugins in favor of `@lexical/*`
+          // extensions wired into `NimbalystEditorExtensions`. Importing
+          // them again means mounting them inside `LexicalExtensionComposer`
+          // alongside the extension that already does the same work, which
+          // double-registers commands and history listeners.
+          {
+            name: '@lexical/react/LexicalHistoryPlugin',
+            message: 'HistoryPlugin is replaced by HistoryExtension from @lexical/history, wired in editor/extensions/NimbalystEditorExtensions.ts (Phase 7.2). Do not re-mount the React plugin -- it double-tracks undo/redo.',
+          },
+          {
+            name: '@lexical/react/LexicalListPlugin',
+            message: 'ListPlugin is replaced by ListExtension from @lexical/list (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            name: '@lexical/react/LexicalCheckListPlugin',
+            message: 'CheckListPlugin is replaced by CheckListExtension from @lexical/list (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            name: '@lexical/react/LexicalTabIndentationPlugin',
+            message: 'TabIndentationPlugin is replaced by TabIndentationExtension from @lexical/extension (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            name: '@lexical/react/LexicalHorizontalRulePlugin',
+            message: 'HorizontalRulePlugin is replaced by HorizontalRuleExtension from @lexical/extension (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            name: '@lexical/react/LexicalClearEditorPlugin',
+            message: 'ClearEditorPlugin is replaced by ClearEditorExtension from @lexical/extension (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            name: '@lexical/react/LexicalLinkPlugin',
+            message: 'LinkPlugin is replaced by LinkExtension from @lexical/link (Phase 7.2). See editor/extensions/NimbalystEditorExtensions.ts.',
+          },
+          {
+            // The React-only subclass exists for back-compat. Phase 7.2
+            // moved every callsite to the canonical class from
+            // @lexical/extension; the subclass would not be registered on
+            // the editor and would round-trip to an unknown node type.
+            name: '@lexical/react/LexicalHorizontalRuleNode',
+            message: 'Import HorizontalRuleNode, $createHorizontalRuleNode, $isHorizontalRuleNode, and INSERT_HORIZONTAL_RULE_COMMAND from @lexical/extension instead (Phase 7.2). The React subclass is not registered on the editor.',
+          },
+          // Phase 7.5 deleted the legacy Nimbalyst plugin system. These
+          // symbols no longer exist in the runtime; importing them is a
+          // sign that a stale callsite still expects the old surface.
+          // Migration target: publish into the runtime extension stores
+          // (`setExtensionContributions`, `setExtensionLexicalExtension`,
+          // `registerExtensionEditorComponent`) instead.
+          {
+            name: '@nimbalyst/runtime',
+            importNames: ['pluginRegistry', 'PluginPackage', 'PluginManager'],
+            message: 'The legacy pluginRegistry / PluginPackage / PluginManager surface was deleted in Phase 7.5. Use setExtensionContributions + setExtensionLexicalExtension + registerExtensionEditorComponent from @nimbalyst/runtime instead. See docs/EXTENSION_ARCHITECTURE.md.',
+          },
+        ],
       }],
       // Ban electronAPI.on() in the renderer by default. Re-enabled for the
       // sanctioned singleton-subscription directories below.
@@ -52,6 +118,17 @@ export default tseslint.config(
   {
     // The registry itself must import the real atomFamily from jotai/utils
     files: ['src/renderer/store/debug/atomFamilyRegistry.ts'],
+    rules: {
+      'no-restricted-imports': 'off',
+    },
+  },
+  {
+    // The extension platform service deliberately re-exposes the entire
+    // @lexical/markdown surface to extension code via importShim, so the
+    // namespace import has to be allowed here. Extensions are trusted to
+    // know the import-fn caveats; first-party code does not get the same
+    // free pass.
+    files: ['src/renderer/services/ExtensionPlatformServiceImpl.ts'],
     rules: {
       'no-restricted-imports': 'off',
     },

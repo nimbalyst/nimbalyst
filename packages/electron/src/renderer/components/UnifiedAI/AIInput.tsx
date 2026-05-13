@@ -614,8 +614,8 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     // Detect /implement command trigger - switch to agent mode when user types "/implement"
     // This allows the implement command to work even if user was in planning mode
     useEffect(() => {
-      // Match "/implement" or "/nimbalyst-planning:implement" at start, followed by end of string or whitespace
-      const implementCommandMatch = value.match(/^\/(nimbalyst-planning:)?implement(?:\s|$)/);
+      // Match "/implement", "/planning:implement", or the legacy "/nimbalyst-planning:implement" form
+      const implementCommandMatch = value.match(/^\/(?:nimbalyst-planning:|planning:)?implement(?:\s|$)/);
       if (implementCommandMatch && mode === 'planning' && onModeChange) {
         // Switch to agent mode immediately - implementing requires coding
         onModeChange('agent');

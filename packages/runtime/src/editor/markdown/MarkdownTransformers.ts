@@ -1,9 +1,11 @@
 /**
- * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * Nimbalyst markdown transformers.
  *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
- *
+ * Transformer interface types come from upstream `@lexical/markdown`. The
+ * remaining definitions in this file are either Nimbalyst-specific tweaks
+ * (HEADING/QUOTE/CODE/LINK with our regexes and CodeNode "plain"-language
+ * marker) or thin re-exports of upstream text-format constants kept here for
+ * backwards compatibility with existing transformer arrays.
  */
 
 import type {HeadingTagType} from '@lexical/rich-text';
@@ -27,176 +29,39 @@ import {
   $createLineBreakNode,
   $createTextNode,
   ElementNode,
-  Klass,
   LexicalNode,
-  TextFormatType,
-  TextNode,
 } from 'lexical';
+import {
+  BOLD_ITALIC_STAR as UPSTREAM_BOLD_ITALIC_STAR,
+  BOLD_ITALIC_UNDERSCORE as UPSTREAM_BOLD_ITALIC_UNDERSCORE,
+  BOLD_STAR as UPSTREAM_BOLD_STAR,
+  BOLD_UNDERSCORE as UPSTREAM_BOLD_UNDERSCORE,
+  HIGHLIGHT as UPSTREAM_HIGHLIGHT,
+  INLINE_CODE as UPSTREAM_INLINE_CODE,
+  ITALIC_STAR as UPSTREAM_ITALIC_STAR,
+  ITALIC_UNDERSCORE as UPSTREAM_ITALIC_UNDERSCORE,
+  STRIKETHROUGH as UPSTREAM_STRIKETHROUGH,
+} from '@lexical/markdown';
 
-export type Transformer =
-  | ElementTransformer
-  | MultilineElementTransformer
-  | TextFormatTransformer
-  | TextMatchTransformer;
-
-export type ElementTransformer = {
-  dependencies: Array<Klass<LexicalNode>>;
-  /**
-   * `export` is called when the `$convertToMarkdownString` is called to convert the editor state into markdown.
-   *
-   * @return return null to cancel the export, even though the regex matched. Lexical will then search for the next transformer.
-   */
-  export: (
-    node: LexicalNode,
-    // eslint-disable-next-line no-shadow
-    traverseChildren: (node: ElementNode) => string,
-  ) => string | null;
-  regExp: RegExp;
-  /**
-   * `replace` is called when markdown is imported or typed in the editor
-   *
-   * @return return false to cancel the transform, even though the regex matched. Lexical will then search for the next transformer.
-   */
-  replace: (
-    parentNode: ElementNode,
-    children: Array<LexicalNode>,
-    match: Array<string>,
-    /**
-     * Whether the match is from an import operation (e.g. through `$convertFromMarkdownString`) or not (e.g. through typing in the editor).
-     */
-    isImport: boolean,
-  ) => boolean | void;
-  type: 'element';
-};
-
-export type MultilineElementTransformer = {
-  /**
-   * Use this function to manually handle the import process, once the `regExpStart` has matched successfully.
-   * Without providing this function, the default behavior is to match until `regExpEnd` is found, or until the end of the document if `regExpEnd.optional` is true.
-   *
-   * @returns a tuple or null. The first element of the returned tuple is a boolean indicating if a multiline element was imported. The second element is the index of the last line that was processed. If null is returned, the next multilineElementTransformer will be tried. If undefined is returned, the default behavior will be used.
-   */
-  handleImportAfterStartMatch?: (args: {
-    lines: Array<string>;
-    rootNode: ElementNode;
-    startLineIndex: number;
-    startMatch: RegExpMatchArray;
-    transformer: MultilineElementTransformer;
-  }) => [boolean, number] | null | undefined;
-  dependencies: Array<Klass<LexicalNode>>;
-  /**
-   * `export` is called when the `$convertToMarkdownString` is called to convert the editor state into markdown.
-   *
-   * @return return null to cancel the export, even though the regex matched. Lexical will then search for the next transformer.
-   */
-  export?: (
-    node: LexicalNode,
-    // eslint-disable-next-line no-shadow
-    traverseChildren: (node: ElementNode) => string,
-  ) => string | null;
-  /**
-   * This regex determines when to start matching
-   */
-  regExpStart: RegExp;
-  /**
-   * This regex determines when to stop matching. Anything in between regExpStart and regExpEnd will be matched
-   */
-  regExpEnd?:
-    | RegExp
-    | {
-        /**
-         * Whether the end match is optional. If true, the end match is not required to match for the transformer to be triggered.
-         * The entire text from regexpStart to the end of the document will then be matched.
-         */
-        optional?: true;
-        regExp: RegExp;
-      };
-  /**
-   * `replace` is called only when markdown is imported in the editor, not when it's typed
-   *
-   * @return return false to cancel the transform, even though the regex matched. Lexical will then search for the next transformer.
-   */
-  replace: (
-    rootNode: ElementNode,
-    /**
-     * During markdown shortcut transforms, children nodes may be provided to the transformer. If this is the case, no `linesInBetween` will be provided and
-     * the children nodes should be used instead of the `linesInBetween` to create the new node.
-     */
-    children: Array<LexicalNode> | null,
-    startMatch: Array<string>,
-    endMatch: Array<string> | null,
-    /**
-     * linesInBetween includes the text between the start & end matches, split up by lines, not including the matches themselves.
-     * This is null when the transformer is triggered through markdown shortcuts (by typing in the editor)
-     */
-    linesInBetween: Array<string> | null,
-    /**
-     * Whether the match is from an import operation (e.g. through `$convertFromMarkdownString`) or not (e.g. through typing in the editor).
-     */
-    isImport: boolean,
-  ) => boolean | void;
-  type: 'multiline-element';
-};
-
-export type TextFormatTransformer = Readonly<{
-  format: ReadonlyArray<TextFormatType>;
-  tag: string;
-  intraword?: boolean;
-  type: 'text-format';
-}>;
-
-export type TextMatchTransformer = Readonly<{
-  dependencies: Array<Klass<LexicalNode>>;
-  /**
-   * Determines how a node should be exported to markdown
-   */
-  export?: (
-    node: LexicalNode,
-    // eslint-disable-next-line no-shadow
-    exportChildren: (node: ElementNode) => string,
-    // eslint-disable-next-line no-shadow
-    exportFormat: (node: TextNode, textContent: string) => string,
-  ) => string | null;
-  /**
-   * This regex determines what text is matched during markdown imports
-   */
-  importRegExp?: RegExp;
-  /**
-   * This regex determines what text is matched for markdown shortcuts while typing in the editor
-   */
-  regExp: RegExp;
-  /**
-   * Determines how the matched markdown text should be transformed into a node during the markdown import process
-   *
-   * @returns nothing, or a TextNode that may be a child of the new node that is created.
-   * If a TextNode is returned, text format matching will be applied to it (e.g. bold, italic, etc.)
-   */
-  replace?: (node: TextNode, match: RegExpMatchArray) => void | TextNode;
-  /**
-   * For import operations, this function can be used to determine the end index of the match, after `importRegExp` has matched.
-   * Without this function, the end index will be determined by the length of the match from `importRegExp`. Manually determining the end index can be useful if
-   * the match from `importRegExp` is not the entire text content of the node. That way, `importRegExp` can be used to match only the start of the node, and `getEndIndex`
-   * can be used to match the end of the node.
-   *
-   * @returns The end index of the match, or false if the match was unsuccessful and a different transformer should be tried.
-   */
-  getEndIndex?: (node: TextNode, match: RegExpMatchArray) => number | false;
-  /**
-   * Single character that allows the transformer to trigger when typed in the editor. This does not affect markdown imports outside of the markdown shortcut plugin.
-   * If the trigger is matched, the `regExp` will be used to match the text in the second step.
-   */
-  trigger?: string;
-  type: 'text-match';
-}>;
+export type {
+  ElementTransformer,
+  MultilineElementTransformer,
+  TextFormatTransformer,
+  TextMatchTransformer,
+  Transformer,
+} from '@lexical/markdown';
+import type {
+  ElementTransformer,
+  MultilineElementTransformer,
+  TextFormatTransformer,
+  TextMatchTransformer,
+} from '@lexical/markdown';
 
 // Import list transformers from the dedicated module
 import {
   UNORDERED_LIST,
   ORDERED_LIST,
   CHECK_LIST,
-  ORDERED_LIST_REGEX,
-  UNORDERED_LIST_REGEX,
-  CHECK_LIST_REGEX,
   setListConfig,
   getListConfig,
   type ListConfig,
@@ -209,10 +74,6 @@ const HEADING_REGEX = /^(#{1,6})\s/;
 const QUOTE_REGEX = /^>\s/;
 const CODE_START_REGEX = /^[ \t]*```([\w-]+)?/;
 const CODE_END_REGEX = /[ \t]*```$/;
-const CODE_SINGLE_LINE_REGEX =
-  /^[ \t]*```[^`]+(?:(?:`{1,2}|`{4,})[^`]+)*```(?:[^`]|$)/;
-const TABLE_ROW_REG_EXP = /^(?:\|)(.+)(?:\|)\s?$/;
-const TABLE_ROW_DIVIDER_REG_EXP = /^(\| ?:?-*:? ?)+\|\s?$/;
 
 const createBlockNode = (
   createNode: (match: Array<string>) => ElementNode,
@@ -405,62 +266,21 @@ export const CODE: MultilineElementTransformer = {
 // Re-export list transformers from ListTransformers module
 export { UNORDERED_LIST, ORDERED_LIST, CHECK_LIST };
 
-export const INLINE_CODE: TextFormatTransformer = {
-  format: ['code'],
-  tag: '`',
-  type: 'text-format',
-};
-
-export const HIGHLIGHT: TextFormatTransformer = {
-  format: ['highlight'],
-  tag: '==',
-  type: 'text-format',
-};
-
-export const BOLD_ITALIC_STAR: TextFormatTransformer = {
-  format: ['bold', 'italic'],
-  tag: '***',
-  type: 'text-format',
-};
-
-export const BOLD_ITALIC_UNDERSCORE: TextFormatTransformer = {
-  format: ['bold', 'italic'],
-  intraword: false,
-  tag: '___',
-  type: 'text-format',
-};
-
-export const BOLD_STAR: TextFormatTransformer = {
-  format: ['bold'],
-  tag: '**',
-  type: 'text-format',
-};
-
-export const BOLD_UNDERSCORE: TextFormatTransformer = {
-  format: ['bold'],
-  intraword: false,
-  tag: '__',
-  type: 'text-format',
-};
-
-export const STRIKETHROUGH: TextFormatTransformer = {
-  format: ['strikethrough'],
-  tag: '~~',
-  type: 'text-format',
-};
-
-export const ITALIC_STAR: TextFormatTransformer = {
-  format: ['italic'],
-  tag: '*',
-  type: 'text-format',
-};
-
-export const ITALIC_UNDERSCORE: TextFormatTransformer = {
-  format: ['italic'],
-  intraword: false,
-  tag: '_',
-  type: 'text-format',
-};
+// Re-export upstream text-format transformers verbatim. These are pure data
+// declarations identical to the values in `@lexical/markdown@0.44.0`; we
+// re-export them so existing imports of `BOLD_STAR` etc. from this module
+// keep working without dragging in the rest of the upstream surface.
+export const INLINE_CODE: TextFormatTransformer = UPSTREAM_INLINE_CODE;
+export const HIGHLIGHT: TextFormatTransformer = UPSTREAM_HIGHLIGHT;
+export const BOLD_ITALIC_STAR: TextFormatTransformer = UPSTREAM_BOLD_ITALIC_STAR;
+export const BOLD_ITALIC_UNDERSCORE: TextFormatTransformer =
+  UPSTREAM_BOLD_ITALIC_UNDERSCORE;
+export const BOLD_STAR: TextFormatTransformer = UPSTREAM_BOLD_STAR;
+export const BOLD_UNDERSCORE: TextFormatTransformer = UPSTREAM_BOLD_UNDERSCORE;
+export const STRIKETHROUGH: TextFormatTransformer = UPSTREAM_STRIKETHROUGH;
+export const ITALIC_STAR: TextFormatTransformer = UPSTREAM_ITALIC_STAR;
+export const ITALIC_UNDERSCORE: TextFormatTransformer =
+  UPSTREAM_ITALIC_UNDERSCORE;
 
 // Order of text transformers matters:
 //
@@ -503,58 +323,3 @@ export const LINK: TextMatchTransformer = {
   type: 'text-match',
 };
 
-export function normalizeMarkdown(
-  input: string,
-  shouldMergeAdjacentLines = false,
-): string {
-  const lines = input.split('\n');
-  let inCodeBlock = false;
-  const sanitizedLines: string[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const lastLine = sanitizedLines[sanitizedLines.length - 1];
-
-    // Code blocks of ```single line``` don't toggle the inCodeBlock flag
-    if (CODE_SINGLE_LINE_REGEX.test(line)) {
-      sanitizedLines.push(line);
-      continue;
-    }
-
-    // Detect the start or end of a code block
-    if (CODE_START_REGEX.test(line) || CODE_END_REGEX.test(line)) {
-      inCodeBlock = !inCodeBlock;
-      sanitizedLines.push(line);
-      continue;
-    }
-
-    // If we are inside a code block, keep the line unchanged
-    if (inCodeBlock) {
-      sanitizedLines.push(line);
-      continue;
-    }
-
-    // In markdown the concept of "empty paragraphs" does not exist.
-    // Blocks must be separated by an empty line. Non-empty adjacent lines must be merged.
-    if (
-      line === '' ||
-      lastLine === '' ||
-      !lastLine ||
-      HEADING_REGEX.test(lastLine) ||
-      HEADING_REGEX.test(line) ||
-      QUOTE_REGEX.test(line) ||
-      ORDERED_LIST_REGEX.test(line) ||
-      UNORDERED_LIST_REGEX.test(line) ||
-      CHECK_LIST_REGEX.test(line) ||
-      TABLE_ROW_REG_EXP.test(line) ||
-      TABLE_ROW_DIVIDER_REG_EXP.test(line) ||
-      !shouldMergeAdjacentLines
-    ) {
-      sanitizedLines.push(line);
-    } else {
-      sanitizedLines[sanitizedLines.length - 1] = lastLine + line;
-    }
-  }
-
-  return sanitizedLines.join('\n');
-}

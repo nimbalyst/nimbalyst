@@ -21,6 +21,15 @@ type PGliteLike = {
 
 type EnsureReadyFn = () => Promise<void>;
 
+function buildSessionArchiveFilter(includeArchived: boolean, sessionAlias = 's', worktreeAlias = 'w'): string {
+  if (includeArchived) {
+    return '';
+  }
+
+  return `AND (${sessionAlias}.is_archived = FALSE OR ${sessionAlias}.is_archived IS NULL)
+          AND (${sessionAlias}.worktree_id IS NULL OR ${worktreeAlias}.is_archived = FALSE OR ${worktreeAlias}.is_archived IS NULL)`;
+}
+
 
 // Module-level reference for standalone functions
 let moduleDb: PGliteLike | null = null;
@@ -535,7 +544,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       await ensureReady();
       const ensureTime = performance.now() - startTime;
       const includeArchived = options?.includeArchived ?? false;
-      const archiveFilter = includeArchived ? '' : 'AND (s.is_archived = FALSE OR s.is_archived IS NULL)';
+      const archiveFilter = buildSessionArchiveFilter(includeArchived);
 
       const queryStart = performance.now();
       // Query includes parent_session_id and child_count for hierarchical session support
@@ -552,6 +561,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
                 COALESCE(child_stats.child_count, 0) as child_count,
                 GREATEST(s.updated_at, COALESCE(child_stats.max_child_updated_at, s.updated_at)) as effective_updated_at
          FROM ai_sessions s
+         LEFT JOIN worktrees w ON s.worktree_id = w.id
          LEFT JOIN (
            SELECT
              parent_session_id,
@@ -620,7 +630,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       }
 
       const includeArchived = options?.includeArchived ?? false;
-      const archiveFilter = includeArchived ? '' : 'AND (s.is_archived = FALSE OR s.is_archived IS NULL)';
+      const archiveFilter = buildSessionArchiveFilter(includeArchived);
 
       // Default to 30 days to reduce database load
       const timeRange = options?.timeRange ?? '30d';
@@ -665,6 +675,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           ts_rank_cd(to_tsvector('english', COALESCE(s.title, '')), plainto_tsquery('english', $2)) * 2 as rank,
           COALESCE(child_stats.child_count, 0) as child_count
         FROM ai_sessions s
+        LEFT JOIN worktrees w ON s.worktree_id = w.id
         LEFT JOIN (
           SELECT parent_session_id, COUNT(*) AS child_count
           FROM ai_sessions
@@ -744,6 +755,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             s.branched_at,
             COALESCE(child_stats.child_count, 0) as child_count
           FROM ai_sessions s
+          LEFT JOIN worktrees w ON s.worktree_id = w.id
           LEFT JOIN (
             SELECT parent_session_id, COUNT(*) AS child_count
             FROM ai_sessions

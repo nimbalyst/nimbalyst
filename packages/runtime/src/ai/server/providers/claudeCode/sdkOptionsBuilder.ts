@@ -169,7 +169,8 @@ export async function buildSdkOptions(
     settingSources = ['user', 'project', 'local'];
   }
 
-  const resolvedBinaryPath = await resolveClaudeAgentCliPath().catch(() => undefined);
+  const enhancedPath = ClaudeCodeDeps.enhancedPathLoader?.() || undefined;
+  const resolvedBinaryPath = await resolveClaudeAgentCliPath(enhancedPath).catch(() => undefined);
   const customPath = ClaudeCodeDeps.customClaudeCodePathLoader?.(workspacePath) || '';
   const effectivePath = customPath || resolvedBinaryPath;
   console.log(`[CLAUDE-CODE] Binary path: custom=${customPath || '(none)'} resolved=${resolvedBinaryPath ?? '(none)'} effective=${effectivePath ?? '(none)'}`);
@@ -289,7 +290,6 @@ export async function buildSdkOptions(
   // (/usr/bin:/bin:/usr/sbin:/sbin) that doesn't include Homebrew/nvm/volta,
   // and CLIManager's cachedShellEnvironment deliberately strips PATH so
   // shellEnv can't contribute it either.
-  const enhancedPath = ClaudeCodeDeps.enhancedPathLoader?.();
   if (enhancedPath) {
     env.PATH = enhancedPath;
   }

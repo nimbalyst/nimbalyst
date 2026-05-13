@@ -27,11 +27,12 @@ import {
 } from '@nimbalyst/runtime';
 import { $generateHtmlFromNodes } from '@lexical/html';
 import { copyToClipboard, ProviderIcon } from '@nimbalyst/runtime';
-import { revealFolderAtom, revealFileAtom, openFileRequestAtom, setWindowModeAtom, historyDialogFileAtom } from '../../store';
+import { historyDialogFileAtom } from '../../store';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
 import { getDocumentService } from '../../services/RendererDocumentService';
 import { isWorktreePath } from '../../../shared/pathUtils';
 import { CommonFileActions } from '../CommonFileActions';
+import { FilePathBreadcrumb } from '../common/FilePathBreadcrumb';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
 import type { ShareDialogData } from '../../dialogs';
 
@@ -158,11 +159,6 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   onToggleDebugTree,
   onContentChanged,
 }) => {
-  // Jotai atom for folder navigation and mode switching
-  const revealFolder = useSetAtom(revealFolderAtom);
-  const revealFile = useSetAtom(revealFileAtom);
-  const setOpenFileRequest = useSetAtom(openFileRequestAtom);
-  const setWindowMode = useSetAtom(setWindowModeAtom);
   const openHistoryDialog = useSetAtom(historyDialogFileAtom);
 
   // Dropdown states
@@ -191,56 +187,6 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   // Refs for click-outside handling
   const aiSessionsButtonRef = useRef<HTMLButtonElement>(null);
   const tocButtonRef = useRef<HTMLButtonElement>(null);
-
-  // workspaceId is actually the workspace path (naming is misleading but correct)
-  const workspacePath = workspaceId;
-
-  // Parse breadcrumb segments from file path relative to workspace root
-  // Returns array of { name, folderPath } where folderPath is the absolute path to that folder
-  const breadcrumbSegments = React.useMemo(() => {
-    if (!workspacePath) {
-      // Fallback: just show the filename
-      return [{ name: fileName, folderPath: null }];
-    }
-
-    // Get path relative to workspace root
-    let relativePath = filePath;
-    if (filePath.startsWith(workspacePath)) {
-      relativePath = filePath.slice(workspacePath.length);
-      // Remove leading slash if present
-      if (relativePath.startsWith('/')) {
-        relativePath = relativePath.slice(1);
-      }
-    }
-
-    // Split into segments and compute folder paths
-    const parts = relativePath.split('/').filter(Boolean);
-    return parts.map((name, index) => {
-      // For folder segments, compute the absolute folder path
-      // For the last segment (filename), folderPath is null
-      const isFile = index === parts.length - 1;
-      const folderPath = isFile
-        ? null
-        : workspacePath + '/' + parts.slice(0, index + 1).join('/');
-      return { name, folderPath };
-    });
-  }, [filePath, workspacePath, fileName]);
-
-  // Handle breadcrumb click - switches to files mode and opens the file/folder
-  const handleBreadcrumbClick = useCallback((folderPath: string | null, targetFilePath?: string) => {
-    if (folderPath) {
-      // Folder segment: switch to files mode and reveal the folder in the tree
-      setWindowMode('files');
-      revealFolder(folderPath);
-      return;
-    }
-    if (targetFilePath) {
-      // Filename segment: open the file in files mode and reveal it in the tree
-      // (reveal clears any active filter so the file becomes visible)
-      setOpenFileRequest({ path: targetFilePath, ts: Date.now() });
-      revealFile(targetFilePath);
-    }
-  }, [revealFolder, revealFile, setOpenFileRequest, setWindowMode]);
 
   // Load AI sessions
   const loadAISessions = useCallback(async () => {
@@ -585,43 +531,7 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   return (
     <div className="unified-editor-header-bar h-9 min-h-9 flex items-center justify-between px-3 shrink-0 bg-[var(--nim-bg)] border-b border-[var(--nim-border)]">
       {/* Left: Breadcrumb Path */}
-      <div className="unified-header-breadcrumb flex items-center gap-1.5 text-[13px] min-w-0 overflow-hidden">
-        {breadcrumbSegments.map((segment, index) => {
-          const isLast = index === breadcrumbSegments.length - 1;
-          const isClickable = (!isLast && segment.folderPath) || (isLast && Boolean(filePath));
-          return (
-            <React.Fragment key={index}>
-              <span
-                className={`breadcrumb-segment flex items-center gap-1 whitespace-nowrap ${
-                  isLast
-                    ? 'breadcrumb-filename text-[var(--nim-text)] font-medium'
-                    : 'text-[var(--nim-text-muted)]'
-                } ${
-                  isClickable
-                    ? 'breadcrumb-clickable cursor-pointer rounded py-0.5 px-1 -my-0.5 -mx-1 transition-colors duration-150 hover:text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]'
-                    : ''
-                }`}
-                onClick={isClickable ? () => handleBreadcrumbClick(segment.folderPath, isLast ? filePath : undefined) : undefined}
-                title={isClickable ? `Go to ${segment.name} in file tree` : undefined}
-              >
-                {!isLast && (
-                  <svg className="breadcrumb-icon w-3.5 h-3.5 opacity-70 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                  </svg>
-                )}
-                {isLast && (
-                  <svg className="breadcrumb-icon w-3.5 h-3.5 opacity-80 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                  </svg>
-                )}
-                {segment.name}
-              </span>
-              {!isLast && <span className="breadcrumb-separator text-[var(--nim-text-faint)] text-[11px]">/</span>}
-            </React.Fragment>
-          );
-        })}
-      </div>
+      <FilePathBreadcrumb filePath={filePath} workspacePath={workspaceId} />
 
       {/* Right: Action Buttons */}
       <div className="unified-header-actions flex items-center gap-1">

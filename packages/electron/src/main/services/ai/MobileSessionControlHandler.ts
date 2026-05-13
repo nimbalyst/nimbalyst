@@ -46,9 +46,19 @@ interface PromptPayload {
  * All interactive prompts use this structure.
  */
 interface PromptResponsePayload {
-  promptType: 'ask_user_question' | 'exit_plan_mode' | 'tool_permission' | 'git_commit';
+  promptType: 'ask_user_question' | 'exit_plan_mode' | 'tool_permission' | 'git_commit' | 'request_user_input';
   promptId: string;
-  response: AskUserQuestionResponse | ExitPlanModeResponse | ToolPermissionResponse | GitCommitResponse;
+  response:
+    | AskUserQuestionResponse
+    | ExitPlanModeResponse
+    | ToolPermissionResponse
+    | GitCommitResponse
+    | RequestUserInputResponse;
+}
+
+interface RequestUserInputResponse {
+  answers: Record<string, unknown>;
+  cancelled?: boolean;
 }
 
 interface AskUserQuestionResponse {
@@ -208,9 +218,78 @@ function handlePromptResponse(
       break;
     }
 
+    case 'request_user_input': {
+      const response = payload.response as RequestUserInputResponse;
+      handleRequestUserInputResponse(sessionId, payload.promptId, response);
+      break;
+    }
+
     default:
       log.warn('Unknown prompt type:', payload.promptType);
   }
+}
+
+/**
+ * Handle RequestUserInput response from mobile.
+ *
+ * The desktop MCP handler is waiting on a session-scoped IPC channel + a
+ * DB-polling fallback. We try the IPC channel first (matches the MCP server's
+ * fast path) and write a `request_user_input_response` row to the DB so the
+ * polling fallback resolves even if no IPC waiter is registered (e.g., the
+ * MCP transport dropped or the desktop wasn't open when the prompt was
+ * created). Then notify all windows to clear the pending UI.
+ */
+function handleRequestUserInputResponse(
+  sessionId: string,
+  promptId: string,
+  response: RequestUserInputResponse,
+): void {
+  log.info(
+    `[Mobile] RequestUserInput response: promptId=${promptId}, sessionId=${sessionId}, cancelled=${response.cancelled === true}`,
+  );
+
+  const { ipcMain } = require('electron');
+
+  import('../../mcp/tools/interactiveToolHandlers').then(({ getRequestUserInputResponseChannel }) => {
+    const channel = getRequestUserInputResponseChannel(sessionId, promptId);
+    const hasWaiter = ipcMain.listenerCount(channel) > 0;
+    if (hasWaiter) {
+      log.info(`[Mobile] Emitting on RequestUserInput channel: ${channel}`);
+      ipcMain.emit(channel, {}, {
+        answers: response.cancelled ? {} : (response.answers ?? {}),
+        cancelled: response.cancelled === true,
+        respondedBy: 'mobile',
+      });
+    } else {
+      log.info(`[Mobile] No MCP waiter for RequestUserInput on ${channel} -- relying on DB poll`);
+    }
+  }).catch((err) => {
+    log.warn('[Mobile] Failed to import interactiveToolHandlers:', err);
+  });
+
+  // DB fallback: write a response row so the MCP server's polling loop resolves.
+  import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository').then(({ AgentMessagesRepository }) => {
+    AgentMessagesRepository.create({
+      sessionId,
+      source: 'claude-code',
+      direction: 'output' as const,
+      createdAt: new Date(),
+      content: JSON.stringify({
+        type: 'request_user_input_response',
+        promptId,
+        answers: response.cancelled ? {} : (response.answers ?? {}),
+        cancelled: response.cancelled === true,
+        respondedBy: 'mobile',
+        respondedAt: Date.now(),
+      }),
+    }).catch((err) => {
+      log.warn(`[Mobile] Failed to persist RequestUserInput response: ${err}`);
+    });
+  });
+
+  // Notify all windows to clear the pending UI.
+  notifyAllWindows('ai:requestUserInputResolved', { sessionId, promptId });
+  TrayManager.getInstance().onPromptResolved(sessionId);
 }
 
 /**
@@ -443,8 +522,9 @@ async function handleGitCommitResponse(
 
   // Helper to emit the proposal response to unblock the MCP tool
   const emitProposalResponse = async (result: {
-    action: 'committed' | 'cancelled';
+    action: 'committed' | 'cancelled' | 'error';
     commitHash?: string;
+    commitDate?: string;
     error?: string;
     filesCommitted?: string[];
     commitMessage?: string;
@@ -465,7 +545,7 @@ async function handleGitCommitResponse(
   // For 'committed' action, we need to execute the git commit on desktop
   if (!response.files || !response.message) {
     log.error('GitCommit response missing files or message');
-    await emitProposalResponse({ action: 'cancelled', error: 'Missing files or message' });
+    await emitProposalResponse({ action: 'error', error: 'Missing files or message' });
     return;
   }
 
@@ -475,63 +555,34 @@ async function handleGitCommitResponse(
     const session = await AISessionsRepository.get(sessionId);
     if (!session) {
       log.error('GitCommit: session not found:', sessionId);
-      await emitProposalResponse({ action: 'cancelled', error: 'Session not found' });
+      await emitProposalResponse({ action: 'error', error: 'Session not found' });
       return;
     }
 
     const workspacePath = session.workspacePath;
     if (!workspacePath) {
       log.error('GitCommit: no workspace path for session:', sessionId);
-      await emitProposalResponse({ action: 'cancelled', error: 'No workspace path' });
+      await emitProposalResponse({ action: 'error', error: 'No workspace path' });
       return;
     }
 
-    // Execute the git commit
-    const simpleGit = (await import('simple-git')).default;
-    const { gitOperationLock } = await import('../../services/GitOperationLock');
-
-    const commitResult = await gitOperationLock.withLock(workspacePath, 'git:commit', async () => {
-      const git = simpleGit(workspacePath);
-
-      // Stage the files
-      log.info(`[GitCommit mobile] Staging ${response.files!.length} files in ${workspacePath}`);
-
-      // Reset staging area, then add only selected files
-      try {
-        await git.reset(['HEAD']);
-      } catch {
-        // May fail in fresh repo with no commits - that's OK
-      }
-      // Use --all so deletions are staged correctly. Plain `git add <path>`
-      // errors with "pathspec did not match any files" when the proposal
-      // includes deleted files (e.g., during renames where one path was
-      // removed and a new one added).
-      await git.add(['--all', '--', ...response.files!]);
-
-      // Commit
-      const result = await git.commit(response.message!);
-      return result;
-    });
-
-    if (commitResult.commit) {
-      log.info(`[GitCommit mobile] Successfully committed: ${commitResult.commit}`);
-      await emitProposalResponse({
-        action: 'committed',
-        commitHash: commitResult.commit,
-        filesCommitted: response.files,
-        commitMessage: response.message,
-      });
-    } else {
-      log.warn('[GitCommit mobile] Commit returned empty hash');
-      await emitProposalResponse({
-        action: 'cancelled',
-        error: 'No changes were committed',
-      });
-    }
+    const {
+      createGitCommitProposalResponse,
+      executeGitCommit,
+    } = await import('../../services/GitCommitService');
+    const commitResult = await executeGitCommit(
+      workspacePath,
+      response.message,
+      response.files,
+      { logContext: '[GitCommit mobile]' }
+    );
+    await emitProposalResponse(
+      createGitCommitProposalResponse(commitResult, response.files, response.message)
+    );
   } catch (error) {
     log.error('[GitCommit mobile] Failed to execute commit:', error);
     await emitProposalResponse({
-      action: 'cancelled',
+      action: 'error',
       error: error instanceof Error ? error.message : String(error),
     });
   }

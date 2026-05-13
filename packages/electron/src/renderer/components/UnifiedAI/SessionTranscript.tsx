@@ -74,7 +74,7 @@ import { convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitA
 import { clearAIInputHistoryAtom } from '../../store/atoms/aiInputUndo';
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
-import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom } from '../../store/atoms/appSettings';
+import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom } from '../../store/atoms/appSettings';
 import { supportsEffortLevel, parseEffortLevel, type EffortLevel } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
@@ -312,6 +312,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const provider = useAtomValue(sessionProviderAtom(sessionId));
   const tokenUsage = useAtomValue(sessionTokenUsageAtom(sessionId));
   const isDataLoading = useAtomValue(sessionLoadingAtom(sessionId));
+  const chatShowToolCalls = useAtomValue(chatShowToolCallsAtom);
   const [aiMode, setAiMode] = useAtom(sessionModeAtom(sessionId));
   const [currentModel, setCurrentModel] = useAtom(sessionModelAtom(sessionId));
   const [isArchived, setIsArchived] = useAtom(sessionArchivedAtom(sessionId));
@@ -771,9 +772,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     }
 
     // Intercept /implement command - switch to agent mode if in planning mode
-    // This allows the /implement command (or nimbalyst-planning:implement) to actually code
-    // Match both "/implement" and "/nimbalyst-planning:implement" followed by space or end
-    const implementCommandMatch = message.match(/^\/(nimbalyst-planning:)?implement(?:\s|$)/);
+    // This allows the /implement command (or planning:implement) to actually code
+    // Match "/implement", "/planning:implement", and the legacy "/nimbalyst-planning:implement" form
+    const implementCommandMatch = message.match(/^\/(?:nimbalyst-planning:|planning:)?implement(?:\s|$)/);
     if (implementCommandMatch && overrideMode === 'planning') {
       // Switch to agent mode for implementation
       overrideMode = 'agent';
@@ -1206,6 +1207,38 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         posthog?.capture('ask_user_question_cancelled');
       },
 
+      // RequestUserInput operations - durable prompt path
+      requestUserInputSubmit: async (promptId: string, answers) => {
+        await window.electronAPI.invoke('messages:respond-to-prompt', {
+          sessionId,
+          promptId,
+          promptType: 'request_user_input_request' as const,
+          response: { answers, cancelled: false },
+          respondedBy: 'desktop' as const,
+        });
+        // Counts of each field type, no PII.
+        const fieldTypeCounts: Record<string, number> = {};
+        for (const a of Object.values(answers)) {
+          fieldTypeCounts[a.type] = (fieldTypeCounts[a.type] ?? 0) + 1;
+        }
+        posthog?.capture('request_user_input_answered', {
+          numFields: Object.keys(answers).length,
+          fieldTypeCounts,
+        });
+        refreshPendingPrompts(sessionId);
+      },
+      requestUserInputCancel: async (promptId: string) => {
+        await window.electronAPI.invoke('messages:respond-to-prompt', {
+          sessionId,
+          promptId,
+          promptType: 'request_user_input_request' as const,
+          response: { answers: {}, cancelled: true },
+          respondedBy: 'desktop' as const,
+        });
+        posthog?.capture('request_user_input_cancelled');
+        refreshPendingPrompts(sessionId);
+      },
+
       // ExitPlanMode operations
       exitPlanModeApprove: async (requestId: string) => {
         await handleExitPlanModeApprove(requestId, sessionId);
@@ -1279,13 +1312,17 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             files
           ) as { success: boolean; commitHash?: string; commitDate?: string; error?: string };
 
-          // Send response via unified IPC channel for the durable prompt
+          // Send response via unified IPC channel for the durable prompt.
+          // A real failure (success=false with an error) maps to action='error',
+          // not 'cancelled'. 'cancelled' is reserved for the explicit user-cancel
+          // path; collapsing failures into 'cancelled' makes the widget render
+          // the cancelled state instead of surfacing the error to the user.
           await window.electronAPI.invoke('messages:respond-to-prompt', {
             sessionId,
             promptId: proposalId,
             promptType: 'git_commit_proposal_request' as const,
             response: {
-              action: result.success ? 'committed' : 'cancelled',
+              action: result.success ? 'committed' : 'error',
               commitHash: result.commitHash,
               commitDate: result.commitDate,
               error: result.error,
@@ -1302,13 +1339,14 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             error: error instanceof Error ? error.message : String(error),
           };
 
-          // Send error result back via unified IPC
+          // IPC threw outright. Surface as action='error' for the same reason
+          // as above: the user needs to see the failure, not a cancelled state.
           await window.electronAPI.invoke('messages:respond-to-prompt', {
             sessionId,
             promptId: proposalId,
             promptType: 'git_commit_proposal_request' as const,
             response: {
-              action: 'cancelled',
+              action: 'error',
               error: errorResult.error,
             },
             respondedBy: 'desktop' as const,
@@ -1615,7 +1653,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             showFloatingActions={mode === 'agent'}
             workspacePath={workspacePath}
             initialSettings={{
-              showToolCalls: true,
+              showToolCalls: chatShowToolCalls,
               compactMode: false,
               collapseTools: false,
               showThinking: true,

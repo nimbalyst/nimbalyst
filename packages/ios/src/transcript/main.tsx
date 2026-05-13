@@ -121,6 +121,14 @@ function createMobileBridgeHost(sessionId: string): InteractiveWidgetHost {
       postToNative({ type: 'interactive_response', action: 'askUserQuestionSubmit', questionId, answers });
     },
 
+    async requestUserInputSubmit(promptId: string, answers: Record<string, unknown>) {
+      postToNative({ type: 'interactive_response', action: 'requestUserInputSubmit', promptId, answers });
+    },
+
+    async requestUserInputCancel(promptId: string) {
+      postToNative({ type: 'interactive_response', action: 'requestUserInputCancel', promptId });
+    },
+
     async toolPermissionSubmit(requestId: string, response: any) {
       postToNative({ type: 'interactive_response', action: 'toolPermissionSubmit', requestId, response });
     },

@@ -91,6 +91,19 @@ export const INTERACTIVE_PROMPT_SELECTORS = {
   toolPermissionAllowSessionButton: '[data-testid="tool-permission-allow-session"]',
   toolPermissionAllowAlwaysButton: '[data-testid="tool-permission-allow-always"]',
 
+  // RequestUserInput widget
+  requestUserInputWidget: '[data-testid="request-user-input-widget"]',
+  requestUserInputPendingState: '[data-testid="request-user-input-pending"]',
+  requestUserInputCompletedState: '[data-testid="request-user-input-completed"]',
+  requestUserInputCancelledState: '[data-testid="request-user-input-cancelled"]',
+  requestUserInputSubmitButton: '[data-testid="request-user-input-submit"]',
+  requestUserInputCancelButton: '[data-testid="request-user-input-cancel"]',
+  requestUserInputMultiSelectRow: '[data-testid="request-user-input-multiselect-row"]',
+  requestUserInputSingleSelectRow: '[data-testid="request-user-input-singleselect-row"]',
+  requestUserInputReorderRow: '[data-testid="request-user-input-reorder-row"]',
+  requestUserInputReorderRemove: '[data-testid="request-user-input-reorder-remove"]',
+  requestUserInputEditTextContent: '[data-testid="request-user-input-edittext-content"]',
+
   // GitCommitProposal widget
   gitCommitWidget: '[data-testid="git-commit-widget"]',
   gitCommitPendingState: '[data-testid="git-commit-pending"]',
@@ -407,6 +420,92 @@ export async function insertAskUserQuestionResult(
 ): Promise<string> {
   const content = createAskUserQuestionResultMessage(questionId, answers, cancelled);
   return await insertMessage(page, sessionId, 'output', content, { source: 'claude-code' });
+}
+
+// ============================================================
+// RequestUserInput
+// ============================================================
+
+export interface RequestUserInputArgsForTest {
+  title?: string;
+  intro?: string;
+  fields: Array<Record<string, any>>;
+  submitLabel?: string;
+  cancelLabel?: string;
+}
+
+/**
+ * Generate an MCP tool_use message for PromptForUserInput.
+ * Persisted as the SDK-style tool_use envelope so the canonical transformer
+ * picks it up and the widget renders.
+ *
+ * Wire-name is `PromptForUserInput` (not `RequestUserInput`) to avoid colliding
+ * with Codex CLI's built-in `request_user_input` tool gated to Plan mode.
+ */
+export function createRequestUserInputMessage(
+  toolId: string,
+  args: RequestUserInputArgsForTest,
+): string {
+  return JSON.stringify({
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: toolId,
+        name: 'mcp__nimbalyst-mcp__PromptForUserInput',
+        input: args,
+      }],
+    },
+  });
+}
+
+/**
+ * Generate a tool_result message for RequestUserInput
+ */
+export function createRequestUserInputResultMessage(
+  toolId: string,
+  answers: Record<string, unknown>,
+  cancelled = false,
+): string {
+  return JSON.stringify({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: toolId,
+        content: [{ type: 'text', text: JSON.stringify({ answers, cancelled }) }],
+      }],
+    },
+  });
+}
+
+/**
+ * Insert a pending RequestUserInput prompt
+ */
+export async function insertPendingRequestUserInput(
+  page: Page,
+  sessionId: string,
+  args: RequestUserInputArgsForTest,
+): Promise<InsertResult> {
+  const toolId = `toolu_${generateUUID().replace(/-/g, '')}`;
+  const content = createRequestUserInputMessage(toolId, args);
+  const messageId = await insertMessage(page, sessionId, 'output', content, { source: 'claude-code' });
+  return { id: toolId, messageId };
+}
+
+/**
+ * Insert a RequestUserInput result (marks as completed)
+ */
+export async function insertRequestUserInputResult(
+  page: Page,
+  sessionId: string,
+  toolId: string,
+  answers: Record<string, unknown>,
+  cancelled = false,
+): Promise<string> {
+  const content = createRequestUserInputResultMessage(toolId, answers, cancelled);
+  return await insertMessage(page, sessionId, 'input', content, { source: 'claude-code' });
 }
 
 /**

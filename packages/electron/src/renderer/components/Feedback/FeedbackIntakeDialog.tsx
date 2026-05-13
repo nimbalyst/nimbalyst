@@ -4,9 +4,15 @@ import { MaterialSymbol } from '@nimbalyst/runtime';
 
 export type FeedbackKind = 'bug' | 'feature';
 
+export interface FeedbackDraftOptions {
+  mayGatherLogs?: boolean;
+  shouldCreateMockup?: boolean;
+}
+
 export interface FeedbackIntakeLaunchOptions {
   kind: FeedbackKind;
-  mayGatherLogs: boolean;
+  mayGatherLogs?: boolean;
+  shouldCreateMockup?: boolean;
 }
 
 export interface FeedbackIntakeDialogProps {
@@ -25,15 +31,34 @@ export const FeedbackIntakeDialog: React.FC<FeedbackIntakeDialogProps> = ({
   onLaunch,
 }) => {
   const posthog = usePostHog();
+  const [selectedKind, setSelectedKind] = useState<FeedbackKind | null>(null);
   const [mayGatherLogs, setMayGatherLogs] = useState(true);
+  const [shouldCreateMockup, setShouldCreateMockup] = useState(false);
 
-  const handlePick = useCallback(
+  const handleLaunch = useCallback(() => {
+    if (!selectedKind) return;
+
+    const launchOptions =
+      selectedKind === 'bug'
+        ? { kind: selectedKind, mayGatherLogs }
+        : { kind: selectedKind, shouldCreateMockup };
+
+    posthog?.capture('feedback_intake_launched', launchOptions);
+    onLaunch(launchOptions);
+    onClose();
+  }, [mayGatherLogs, onClose, onLaunch, posthog, selectedKind, shouldCreateMockup]);
+
+  const handleSelectKind = useCallback(
     (kind: FeedbackKind) => {
-      posthog?.capture('feedback_intake_launched', { kind, mayGatherLogs });
-      onLaunch({ kind, mayGatherLogs });
-      onClose();
+      setSelectedKind(kind);
+      const launchOptions =
+        kind === 'bug'
+          ? { kind, mayGatherLogs }
+          : { kind, shouldCreateMockup };
+
+      posthog?.capture('feedback_intake_type_selected', launchOptions);
     },
-    [posthog, mayGatherLogs, onLaunch, onClose],
+    [mayGatherLogs, posthog, shouldCreateMockup],
   );
 
   const handleOpenExternal = useCallback(
@@ -49,12 +74,12 @@ export const FeedbackIntakeDialog: React.FC<FeedbackIntakeDialogProps> = ({
 
   return (
     <div
-      className="nim-overlay nim-animate-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      className="feedback-intake-overlay nim-overlay nim-animate-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       onClick={onClose}
       data-testid="feedback-intake-overlay"
     >
       <div
-        className="nim-animate-slide-up relative w-[520px] max-w-[90vw] max-h-[90vh] overflow-y-auto rounded-2xl border border-[var(--nim-border)] bg-[var(--nim-bg)] shadow-[0_8px_32px_rgba(0,0,0,0.4)]"
+        className="feedback-intake-dialog nim-animate-slide-up relative max-h-[90vh] w-[520px] max-w-[90vw] overflow-y-auto rounded-2xl border border-[var(--nim-border)] bg-[var(--nim-bg)] shadow-[0_8px_32px_rgba(0,0,0,0.4)]"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-labelledby="feedback-intake-title"
@@ -70,93 +95,148 @@ export const FeedbackIntakeDialog: React.FC<FeedbackIntakeDialogProps> = ({
           <MaterialSymbol icon="close" size={20} />
         </button>
 
-        <div className="px-8 pt-8 pb-6">
-          <h2
-            id="feedback-intake-title"
-            className="m-0 mb-1.5 text-xl font-semibold leading-snug text-[var(--nim-text)]"
-          >
-            Send feedback
-          </h2>
-          <p className="m-0 mb-6 text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
-            The assistant will help you write a clear report and post it to GitHub.
-          </p>
-
-          <div className="flex flex-col gap-2.5">
-            <button
-              type="button"
-              className="group flex w-full items-start gap-3.5 rounded-xl border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-4 text-left text-[var(--nim-text)] transition-all duration-150 hover:border-[var(--nim-primary)] hover:bg-[var(--nim-bg-tertiary)] active:scale-[0.995]"
-              onClick={() => handlePick('bug')}
-              data-testid="feedback-intake-bug"
+        <div className="px-6 pt-6 pb-6">
+          <div className="feedback-intake-hero mb-5 overflow-hidden rounded-[24px] border border-[var(--nim-border)] bg-[linear-gradient(135deg,rgba(56,189,248,0.10),rgba(251,191,36,0.08),rgba(255,255,255,0.02))] px-6 py-5">
+            <h2
+              id="feedback-intake-title"
+              className="m-0 text-[24px] font-semibold leading-[1.1] text-[var(--nim-text)]"
             >
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-[var(--nim-bg-tertiary)] text-[var(--nim-error)]">
-                <MaterialSymbol icon="bug_report" size={22} />
-              </span>
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="flex items-center gap-2">
-                  <span className="text-sm font-semibold leading-snug text-[var(--nim-text)]">
-                    Report a bug
-                  </span>
-                  <span className="rounded-full border border-[rgba(74,222,128,0.4)] bg-[rgba(74,222,128,0.12)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--nim-success)]">
-                    Recommended
-                  </span>
-                </span>
-                <span className="text-[12.5px] leading-snug text-[var(--nim-text-muted)]">
-                  Crashes, errors, broken features. The assistant gathers reproduction steps and logs (if allowed below).
-                </span>
-              </span>
-              <span className="ml-auto self-center text-[var(--nim-text-faint)] transition-colors duration-150 group-hover:text-[var(--nim-primary)]">
-                <MaterialSymbol icon="chevron_right" size={20} />
-              </span>
-            </button>
-
-            <button
-              type="button"
-              className="group flex w-full items-start gap-3.5 rounded-xl border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-4 text-left text-[var(--nim-text)] transition-all duration-150 hover:border-[var(--nim-primary)] hover:bg-[var(--nim-bg-tertiary)] active:scale-[0.995]"
-              onClick={() => handlePick('feature')}
-              data-testid="feedback-intake-feature"
-            >
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-[var(--nim-bg-tertiary)] text-[var(--nim-warning)]">
-                <MaterialSymbol icon="lightbulb" size={22} />
-              </span>
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-sm font-semibold leading-snug text-[var(--nim-text)]">
-                  Request a feature
-                </span>
-                <span className="text-[12.5px] leading-snug text-[var(--nim-text-muted)]">
-                  Something missing? The assistant helps you turn the idea into a clear proposal.
-                </span>
-              </span>
-              <span className="ml-auto self-center text-[var(--nim-text-faint)] transition-colors duration-150 group-hover:text-[var(--nim-primary)]">
-                <MaterialSymbol icon="chevron_right" size={20} />
-              </span>
-            </button>
+              Send better feedback with your Agent
+            </h2>
+            <p className="mt-2 max-w-[42ch] text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
+              Use your Agent to improve your bug reports and feature requests. Your agent will help draft it, and you
+              approve everything before GitHub opens.
+            </p>
           </div>
 
-          <div className="mt-4 flex items-start gap-3 rounded-[10px] border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-3.5 py-3">
-            <input
-              id="feedback-may-gather-logs"
-              type="checkbox"
-              checked={mayGatherLogs}
-              onChange={(e) => setMayGatherLogs(e.target.checked)}
-              className="mt-0.5 h-[18px] w-[18px] shrink-0 cursor-pointer appearance-none rounded border-2 border-[var(--nim-border)] bg-[var(--nim-bg)] checked:border-[var(--nim-primary)] checked:bg-[var(--nim-primary)] checked:bg-[url('data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20viewBox=%270%200%2024%2024%27%20fill=%27white%27%3E%3Cpath%20d=%27M9%2016.17L4.83%2012l-1.42%201.41L9%2019%2021%207l-1.41-1.41L9%2016.17z%27/%3E%3C/svg%3E')] checked:bg-[length:14px] checked:bg-center checked:bg-no-repeat"
-              data-testid="feedback-intake-consent"
-            />
-            <div className="min-w-0 flex-1">
-              <label
-                htmlFor="feedback-may-gather-logs"
-                className="block cursor-pointer text-[13px] font-medium leading-snug text-[var(--nim-text)]"
+          <div className="feedback-intake-options flex flex-col gap-4">
+            <div className="feedback-intake-kind-grid grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                className={`feedback-intake-kind-card rounded-[18px] border px-4 py-3 text-left transition-all duration-150 ${
+                  selectedKind === 'bug'
+                    ? 'border-[var(--nim-primary)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text)]'
+                    : 'border-[var(--nim-border)] bg-[var(--nim-bg)] text-[var(--nim-text-muted)] hover:border-[var(--nim-primary)] hover:bg-[var(--nim-bg-secondary)] hover:text-[var(--nim-text)]'
+                }`}
+                onClick={() => handleSelectKind('bug')}
+                data-testid="feedback-intake-select-bug"
               >
-                Allow the assistant to gather logs and environment info
-              </label>
-              <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
-                <strong className="font-semibold text-[var(--nim-warning)]">Heads up:</strong>{' '}
-                logs may contain file paths, workspace names, and error details. Sensitive data is
-                anonymized first by a regex pass and then double-checked by the assistant.{' '}
-                <strong className="font-semibold text-[var(--nim-warning)]">
-                  You review and approve every report before it&rsquo;s posted.
-                </strong>
-              </p>
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[rgba(239,68,68,0.12)] text-[var(--nim-error)]">
+                    <MaterialSymbol icon="bug_report" size={20} />
+                  </span>
+                  <span className="text-[14px] font-semibold leading-none">Bug report</span>
+                </div>
+                <p className="m-0 text-[12px] leading-relaxed">
+                  Broken behavior, crashes, sync issues, or regressions.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                className={`feedback-intake-kind-card rounded-[18px] border px-4 py-3 text-left transition-all duration-150 ${
+                  selectedKind === 'feature'
+                    ? 'border-[var(--nim-primary)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text)]'
+                    : 'border-[var(--nim-border)] bg-[var(--nim-bg)] text-[var(--nim-text-muted)] hover:border-[var(--nim-primary)] hover:bg-[var(--nim-bg-secondary)] hover:text-[var(--nim-text)]'
+                }`}
+                onClick={() => handleSelectKind('feature')}
+                data-testid="feedback-intake-select-feature"
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[rgba(245,158,11,0.14)] text-[var(--nim-warning)]">
+                    <MaterialSymbol icon="lightbulb" size={20} />
+                  </span>
+                  <span className="text-[14px] font-semibold leading-none">Feature request</span>
+                </div>
+                <p className="m-0 text-[12px] leading-relaxed">
+                  Missing capabilities, workflow improvements, or UX changes.
+                </p>
+              </button>
             </div>
+
+            {selectedKind ? (
+              <div className="feedback-intake-detail rounded-[20px] border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-4 py-4">
+                {selectedKind === 'bug' ? (
+                  <label
+                    htmlFor="feedback-may-gather-logs"
+                    className="block cursor-pointer rounded-2xl border border-[var(--nim-border)] bg-[var(--nim-bg)] px-4 py-3 transition-colors duration-150 hover:bg-[var(--nim-bg-tertiary)]"
+                  >
+                    <div className="flex items-start gap-3">
+                      <input
+                        id="feedback-may-gather-logs"
+                        type="checkbox"
+                        checked={mayGatherLogs}
+                        onChange={(e) => setMayGatherLogs(e.target.checked)}
+                        className="mt-0.5 h-[18px] w-[18px] shrink-0 cursor-pointer appearance-none rounded border-2 border-[var(--nim-border)] bg-[var(--nim-bg)] checked:border-[var(--nim-primary)] checked:bg-[var(--nim-primary)] checked:bg-[url('data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20viewBox=%270%200%2024%2024%27%20fill=%27white%27%3E%3Cpath%20d=%27M9%2016.17L4.83%2012l-1.42%201.41L9%2019%2021%207l-1.41-1.41L9%2016.17z%27/%3E%3C/svg%3E')] checked:bg-[length:14px] checked:bg-center checked:bg-no-repeat"
+                        data-testid="feedback-intake-consent"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="m-0 text-[13px] font-medium leading-snug text-[var(--nim-text)]">
+                          Include logs and environment details
+                        </p>
+                        <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
+                          Logs may include file paths, workspace names, and error details. The
+                          assistant anonymizes them first, and you review the final report before it
+                          is posted.
+                        </p>
+                      </div>
+                    </div>
+                  </label>
+                ) : null}
+
+                {selectedKind === 'feature' ? (
+                  <label
+                    htmlFor="feedback-should-create-mockup"
+                    className="block cursor-pointer rounded-2xl border border-[var(--nim-border)] bg-[var(--nim-bg)] px-4 py-3 transition-colors duration-150 hover:bg-[var(--nim-bg-tertiary)]"
+                  >
+                    <div className="flex items-start gap-3">
+                      <input
+                        id="feedback-should-create-mockup"
+                        type="checkbox"
+                        checked={shouldCreateMockup}
+                        onChange={(e) => setShouldCreateMockup(e.target.checked)}
+                        className="mt-0.5 h-[18px] w-[18px] shrink-0 cursor-pointer appearance-none rounded border-2 border-[var(--nim-border)] bg-[var(--nim-bg)] checked:border-[var(--nim-primary)] checked:bg-[var(--nim-primary)] checked:bg-[url('data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20viewBox=%270%200%2024%2024%27%20fill=%27white%27%3E%3Cpath%20d=%27M9%2016.17L4.83%2012l-1.42%201.41L9%2019%2021%207l-1.41-1.41L9%2016.17z%27/%3E%3C/svg%3E')] checked:bg-[length:14px] checked:bg-center checked:bg-no-repeat"
+                        data-testid="feedback-intake-mockup"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="m-0 text-[13px] font-medium leading-snug text-[var(--nim-text)]">
+                          Explore the idea with a UX mockup first
+                        </p>
+                        <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
+                          Best for interface or workflow changes. The assistant can sketch a mockup,
+                          refine it with you, and include that visual direction in the request.
+                        </p>
+                      </div>
+                    </div>
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
+
+            <button
+              type="button"
+              className={`feedback-intake-start-button flex w-full items-center justify-between rounded-[18px] px-4 py-3 text-left text-[13px] font-semibold transition-all duration-150 ${
+                selectedKind
+                  ? 'border border-[var(--nim-primary)] bg-[var(--nim-primary)] text-white hover:bg-[var(--nim-primary-hover)]'
+                  : 'border border-[var(--nim-border)] bg-[var(--nim-bg)] text-[var(--nim-text-disabled)]'
+              }`}
+              onClick={handleLaunch}
+              disabled={!selectedKind}
+              data-testid="feedback-intake-start"
+            >
+              <span>
+                {selectedKind === 'bug'
+                  ? 'Start bug report'
+                  : selectedKind === 'feature'
+                    ? 'Start feature request'
+                    : 'Choose a type to continue'}
+              </span>
+              <MaterialSymbol
+                icon="arrow_forward"
+                size={18}
+                className={selectedKind ? 'text-white' : 'text-[var(--nim-text-faint)]'}
+              />
+            </button>
           </div>
         </div>
 
@@ -219,12 +299,18 @@ export const FeedbackIntakeDialog: React.FC<FeedbackIntakeDialogProps> = ({
 
 export function buildFeedbackInitialDraft(
   kind: FeedbackKind,
-  mayGatherLogs: boolean,
+  options: FeedbackDraftOptions = {},
 ): string {
   const command =
     kind === 'bug'
-      ? '/nimbalyst-feedback:bug-report'
-      : '/nimbalyst-feedback:feature-request';
-  const consent = mayGatherLogs ? 'allowed' : 'not allowed';
-  return `${command}\n\nLog gathering: ${consent}`;
+      ? '/feedback:bug-report'
+      : '/feedback:feature-request';
+
+  if (kind === 'bug') {
+    const consent = options.mayGatherLogs ? 'allowed' : 'not allowed';
+    return `${command}\n\nLog gathering: ${consent}`;
+  }
+
+  const mockup = options.shouldCreateMockup ? 'requested' : 'not requested';
+  return `${command}\n\nUX mockup: ${mockup}`;
 }

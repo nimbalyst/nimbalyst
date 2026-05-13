@@ -1,5 +1,5 @@
 {
-  "name": "nimbalyst-ios-dev",
+  "name": "ios-dev",
   "version": "0.1.0",
   "description": "iOS development tools for Nimbalyst including XcodeGen, simulator management, and deployment",
   "author": {

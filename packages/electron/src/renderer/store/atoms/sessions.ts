@@ -194,7 +194,7 @@ export const sessionPromptAdditionsAtom = atomFamily((_sessionId: string) =>
 /**
  * Pending interactive prompt from the database.
  * Represents one of: permission_request, ask_user_question_request,
- * exit_plan_mode_request, or git_commit_proposal_request.
+ * exit_plan_mode_request, git_commit_proposal_request, or request_user_input_request.
  */
 export interface PendingPrompt {
   id: string;
@@ -203,7 +203,8 @@ export interface PendingPrompt {
     | 'permission_request'
     | 'ask_user_question_request'
     | 'exit_plan_mode_request'
-    | 'git_commit_proposal_request';
+    | 'git_commit_proposal_request'
+    | 'request_user_input_request';
   promptId: string;  // requestId or questionId
   data: any;         // The full prompt content
   createdAt: number;
@@ -229,7 +230,18 @@ export const sessionPendingPromptsRefreshAtom = atomFamily((_sessionId: string) 
  * Action atom to refresh pending prompts for a session.
  * Pending prompts are now derived from canonical transcript events, not ai_agent_messages.
  */
-const INTERACTIVE_PROMPT_TOOLS = new Set(['AskUserQuestion', 'ToolPermission', 'ExitPlanMode', 'GitCommitProposal']);
+const INTERACTIVE_PROMPT_TOOLS = new Set([
+  'AskUserQuestion',
+  'ToolPermission',
+  'ExitPlanMode',
+  'GitCommitProposal',
+  // Wire-name for the generic structured-input prompt. NOT `RequestUserInput` --
+  // that snake_cases to Codex's built-in `request_user_input`, which is gated to
+  // Plan mode and gets refused in Default mode. `RequestUserInput` is kept here
+  // so older recorded sessions still detect the pending state.
+  'PromptForUserInput',
+  'RequestUserInput',
+]);
 
 // MCP tools arrive as `mcp__<server>__<toolName>` (server name may contain dashes).
 // Match the bare name first; if not found, peel off the MCP prefix and recheck.
@@ -279,7 +291,7 @@ export const respondToPromptAtom = atom(
   async (get, set, params: {
     sessionId: string;
     promptId: string;
-    promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
+    promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request' | 'request_user_input_request';
     response: any;
   }) => {
     const { sessionId, promptId, promptType, response } = params;
@@ -1255,6 +1267,15 @@ export const convertToWorkstreamAtom = atom(
         return null;
       }
 
+      // Don't convert if the session is in a worktree. A worktree IS the workstream —
+      // wrapping a worktree-resident session in a workstream container produces a
+      // forbidden third layer (worktree → workstream → session). New sessions in a
+      // worktree should just be created as flat siblings, never via this conversion path.
+      if (sessionData.worktreeId) {
+        console.error(`[sessions] Cannot convert to workstream: session ${sessionId} is in worktree ${sessionData.worktreeId} (the worktree is already the workstream)`);
+        return null;
+      }
+
       // Don't convert if already a workstream root (has children or isWorkstreamRoot flag)
       // Check children in the atom first
       const existingChildren = get(sessionChildrenAtom(sessionId));
@@ -1422,15 +1443,18 @@ export const convertToWorkstreamAtom = atom(
         set(setWorkstreamActiveChildAtom, { workstreamId: parentSessionId, childId: sessionId });
       }
 
-      // Update unified workstream state (only when sibling was created)
-      if (siblingResult.success && siblingResult.sessionId) {
-        const { convertToWorkstreamAtom: convertToWorkstreamStateAtom } = await import('./workstreamState');
-        set(convertToWorkstreamStateAtom, {
-          sessionId,
-          parentId: parentSessionId,
-          siblingId: siblingResult.sessionId,
-        });
-      }
+      // Update unified workstream state. Always runs so drag-drop conversions
+      // (skipSiblingCreation=true) initialize childSessionIds; otherwise subsequent
+      // reparentSession calls operate on uninitialized state and the workstream's
+      // child list never reflects further drops.
+      const { convertToWorkstreamAtom: convertToWorkstreamStateAtom } = await import('./workstreamState');
+      set(convertToWorkstreamStateAtom, {
+        sessionId,
+        parentId: parentSessionId,
+        ...(siblingResult.success && siblingResult.sessionId
+          ? { siblingId: siblingResult.sessionId }
+          : {}),
+      });
 
       // Add the new parent session to the session list so it appears in the sidebar
       // If original was pinned, transfer pin to the parent workstream
@@ -1447,7 +1471,9 @@ export const convertToWorkstreamAtom = atom(
         messageCount: 0,
         isArchived: false,
         isPinned: originalWasPinned,
-        worktreeId: sessionData.worktreeId || null,
+        // Workstreams never carry a worktreeId — the worktree IS the workstream,
+        // and the early-return above already blocks this path for worktree sessions.
+        worktreeId: null,
         parentSessionId: null, // This is the root
         childCount: children.length,
         uncommittedCount: 0,

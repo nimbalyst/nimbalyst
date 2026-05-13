@@ -244,6 +244,20 @@ In `buildClaudeCodeSystemPrompt()` (packages/runtime/src/ai/prompt.ts), when `is
 
 Both ClaudeCodeProvider and OpenAICodexProvider extract `isVoiceMode` and `voiceModeCodingAgentPrompt` from the document context and pass them to the prompt builder.
 
+## Project Summary
+
+A workspace-specific, voice-friendly project summary lives at `nimbalyst-local/voice-project-summary.md`. When a voice session starts, `VoiceModeService.loadSessionContext` reads this file and appends its contents to the voice agent's session context, giving the voice assistant a quick overview it can reference during conversations.
+
+Generation happens in the Voice Mode settings panel (`packages/electron/src/renderer/components/Settings/VoiceModePanel.tsx`):
+
+1. The user clicks "Generate Project Summary".
+2. A confirmation dialog explains that an agent session will be launched using the user's default agent (`defaultAgentModelAtom`).
+3. On confirm, the renderer creates a normal AI session titled "Voice mode: project summary" via the `sessions:create` IPC, then sends a single prompt (`buildVoiceProjectSummaryPrompt()` in `voiceModeSummaryPrompt.ts`) via `ai:sendMessage`.
+4. The agent reads whichever project files it considers useful and writes the result to `nimbalyst-local/voice-project-summary.md` using its Write tool.
+5. The window switches to Agent mode and selects the new session so the user can watch it run.
+
+There is no main-process IPC handler for summary generation -- the agent does the work through its existing tooling. If no agent is configured (`defaultAgentModel` is empty), the button is disabled and the panel shows a link into the AI Models settings instead. The previous direct-Anthropic-API implementation was removed because it required a chat API key the user might not have, even though voice mode itself only requires an OpenAI key.
+
 ## Session Persistence
 
 Voice mode maintains two separate but linked sessions in the database:

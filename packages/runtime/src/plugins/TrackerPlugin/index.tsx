@@ -35,8 +35,8 @@ import { $isListItemNode, $createListNode, $createListItemNode } from '@lexical/
 import { useEffect as useReactEffect } from 'react';
 import { $createTrackerItemNode, $getTrackerItemNode, $isTrackerItemNode, TrackerItemData, TrackerItemType, TrackerItemNode, TrackerItemStatus, TrackerItemPriority } from './TrackerItemNode';
 import { TRACKER_ITEM_TRANSFORMERS } from './TrackerItemTransformer';
-import type { PluginPackage } from '../../editor';
-import { TypeaheadMenuPlugin, type TypeaheadMenuOption, $convertToEnhancedMarkdownString, getEditorTransformers } from '../../editor';
+import { defineExtension } from 'lexical';
+import { TypeaheadMenuPlugin, type TypeaheadMenuOption, type UserCommand, $convertToEnhancedMarkdownString, getEditorTransformers } from '../../editor';
 import { globalRegistry } from './models';
 import { DocumentHeaderRegistry } from './documentHeader/DocumentHeaderRegistry';
 import { TrackerDocumentHeader, shouldRenderTrackerHeader } from './documentHeader/TrackerDocumentHeader';
@@ -889,21 +889,28 @@ function TrackerPlugin(): JSX.Element | null {
   );
 }
 
-// Export the plugin package for dynamic registration
-export const trackerPluginPackage: PluginPackage<TrackerPluginProps> = {
-  name: 'tracker',
-  Component: TrackerPlugin,
+/**
+ * React component exposed to the renderer so it can register through
+ * `registerExtensionEditorComponent`.
+ */
+export { TrackerPlugin };
+
+/**
+ * Lexical extension that registers `TrackerItemNode`. The actual command
+ * handlers and typeahead lifecycle live in the React component; this
+ * extension is intentionally narrow because the renderer publishes it
+ * via `setExtensionLexicalExtension('tracker', ...)`.
+ */
+export const TrackerLexicalExtension = defineExtension({
+  name: '@nimbalyst/tracker',
   nodes: [TrackerItemNode],
-  transformers: TRACKER_ITEM_TRANSFORMERS,
-  commands: {
-    INSERT_TRACKER_TASK: INSERT_TRACKER_TASK_COMMAND,
-    INSERT_TRACKER_BUG: INSERT_TRACKER_BUG_COMMAND,
-    INSERT_TRACKER_PLAN: INSERT_TRACKER_PLAN_COMMAND,
-    INSERT_TRACKER_IDEA: INSERT_TRACKER_IDEA_COMMAND,
-    CONVERT_TO_PLAN: CONVERT_TO_PLAN_COMMAND,
-    CONVERT_TO_DECISION: CONVERT_TO_DECISION_COMMAND,
-  },
-  userCommands: [
+});
+
+/**
+ * Slash-picker entries published into the extension contributions store
+ * by the renderer-side `registerTrackerPlugin` call.
+ */
+export const TRACKER_USER_COMMANDS: ReadonlyArray<UserCommand> = [
     {
       title: 'Task Item',
       description: 'Add a task item to track work',
@@ -946,8 +953,13 @@ export const trackerPluginPackage: PluginPackage<TrackerPluginProps> = {
       keywords: ['convert', 'decision', 'document'],
       command: CONVERT_TO_DECISION_COMMAND,
     },
-  ],
-};
+];
+
+/**
+ * Re-export the markdown transformers under a name that callers can use
+ * without going through the legacy plugin-package shape.
+ */
+export { TRACKER_ITEM_TRANSFORMERS };
 
 // Export document header system for external use
 export { DocumentHeaderRegistry } from './documentHeader/DocumentHeaderRegistry';

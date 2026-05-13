@@ -21,6 +21,8 @@ import {
   setExtensionEnabled,
   getClaudePluginEnabled,
   setClaudePluginEnabled,
+  getAgentWorkflowsEnabled,
+  setAgentWorkflowsEnabled,
   getExtensionConfiguration,
   setExtensionConfiguration,
   setExtensionConfigurationBulk,
@@ -191,7 +193,7 @@ async function getBuiltinExtensionsDirectory(): Promise<string | null> {
 /**
  * Get all extension directories (both user and built-in).
  */
-async function getAllExtensionDirectories(): Promise<string[]> {
+export async function getAllExtensionDirectories(): Promise<string[]> {
   const dirs: string[] = [];
 
   // Always include user extensions directory
@@ -553,7 +555,7 @@ async function getClaudeCliPluginPaths(workspacePath?: string): Promise<Array<{ 
  * @param workspacePath - If provided, includes project-scoped CLI plugins for this workspace
  * @returns Paths in the format expected by the Claude Agent SDK: { type: 'local', path: string }
  */
-export async function getClaudePluginPaths(workspacePath?: string): Promise<Array<{ type: 'local'; path: string }>> {
+export async function getNativeClaudePluginPaths(workspacePath?: string): Promise<Array<{ type: 'local'; path: string }>> {
   try {
     const plugins: Array<{ type: 'local'; path: string }> = [];
     const seenExtensionIds = new Set<string>();
@@ -587,6 +589,10 @@ export async function getClaudePluginPaths(workspacePath?: string): Promise<Arra
     logger.main.error('[ExtensionHandlers] Failed to get Claude plugin paths:', error);
     return [];
   }
+}
+
+export async function getClaudePluginPaths(workspacePath?: string): Promise<Array<{ type: 'local'; path: string }>> {
+  return getNativeClaudePluginPaths(workspacePath);
 }
 
 /**
@@ -922,6 +928,17 @@ export function registerExtensionHandlers(): void {
       return { success: true };
     } catch (error) {
       logger.main.error(`[ExtensionHandlers] Failed to set Claude plugin state for ${extensionId}:`, error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  safeHandle('extensions:set-agent-workflows-enabled', async (_event, extensionId: string, enabled: boolean) => {
+    try {
+      setAgentWorkflowsEnabled(extensionId, enabled);
+      logger.main.info(`[ExtensionHandlers] Agent workflows for ${extensionId} ${enabled ? 'enabled' : 'disabled'}`);
+      return { success: true };
+    } catch (error) {
+      logger.main.error(`[ExtensionHandlers] Failed to set agent workflow state for ${extensionId}:`, error);
       return { success: false, error: String(error) };
     }
   });

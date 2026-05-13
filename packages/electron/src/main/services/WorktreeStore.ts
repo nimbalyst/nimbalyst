@@ -490,14 +490,33 @@ export async function checkWorktreeArchiveConsistency(
       HAVING COUNT(s.id) > 0 AND COUNT(s.id) = COUNT(CASE WHEN s.is_archived = true THEN 1 END)
     `);
 
-    if (inconsistentWorktrees.length === 0) {
+    const { rows: archivedWorktreesWithVisibleSessions } = await db.query<{
+      worktree_id: string;
+      worktree_path: string;
+      session_count: number;
+      visible_session_count: number;
+    }>(`
+      SELECT
+        w.id as worktree_id,
+        w.path as worktree_path,
+        COUNT(s.id) as session_count,
+        COUNT(CASE WHEN s.is_archived = false OR s.is_archived IS NULL THEN 1 END) as visible_session_count
+      FROM worktrees w
+      INNER JOIN ai_sessions s ON s.worktree_id = w.id
+      WHERE w.is_archived = true
+      GROUP BY w.id, w.path
+      HAVING COUNT(CASE WHEN s.is_archived = false OR s.is_archived IS NULL THEN 1 END) > 0
+    `);
+
+    if (inconsistentWorktrees.length === 0 && archivedWorktreesWithVisibleSessions.length === 0) {
       logger.info('No worktree archive inconsistencies found');
       return results;
     }
 
     logger.warn('Found worktree archive inconsistencies', {
-      count: inconsistentWorktrees.length,
+      count: inconsistentWorktrees.length + archivedWorktreesWithVisibleSessions.length,
       worktreeIds: inconsistentWorktrees.map(w => w.worktree_id),
+      archivedWithVisibleSessions: archivedWorktreesWithVisibleSessions.map(w => w.worktree_id),
     });
 
     // For each inconsistent worktree, decide how to handle it
@@ -555,8 +574,40 @@ export async function checkWorktreeArchiveConsistency(
       }
     }
 
+    for (const worktree of archivedWorktreesWithVisibleSessions) {
+      try {
+        logger.warn('Archived worktree still has visible sessions, repairing session archive state', {
+          worktreeId: worktree.worktree_id,
+          visibleSessionCount: worktree.visible_session_count,
+        });
+
+        await db.query(
+          `UPDATE ai_sessions
+           SET is_archived = true
+           WHERE worktree_id = $1 AND (is_archived = false OR is_archived IS NULL)`,
+          [worktree.worktree_id]
+        );
+
+        results.push({
+          worktreeId: worktree.worktree_id,
+          action: 'completed',
+          details: `Worktree already archived; marked ${worktree.visible_session_count} lingering session(s) as archived`,
+        });
+      } catch (error) {
+        logger.error('Failed to repair archived worktree sessions', {
+          worktreeId: worktree.worktree_id,
+          error,
+        });
+        results.push({
+          worktreeId: worktree.worktree_id,
+          action: 'error',
+          details: `Failed to repair archived sessions: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    }
+
     logger.info('Worktree archive consistency check completed', {
-      total: inconsistentWorktrees.length,
+      total: inconsistentWorktrees.length + archivedWorktreesWithVisibleSessions.length,
       completed: results.filter(r => r.action === 'completed').length,
       reverted: results.filter(r => r.action === 'reverted').length,
       errors: results.filter(r => r.action === 'error').length,

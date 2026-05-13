@@ -243,14 +243,6 @@ export function isInsertLink(event: KeyboardEvent): boolean {
   return code === 'KeyK' && isModifierMatch(event, CONTROL_OR_META);
 }
 
-export function isAddComment(event: KeyboardEvent): boolean {
-  const {code} = event;
-  return (
-    code === 'KeyM' &&
-    isModifierMatch(event, {...CONTROL_OR_META, altKey: true})
-  );
-}
-
 export function isAcceptDiffs(event: KeyboardEvent): boolean {
   const {code} = event;
   return code === 'Enter' && isModifierMatch(event, CONTROL_OR_META);

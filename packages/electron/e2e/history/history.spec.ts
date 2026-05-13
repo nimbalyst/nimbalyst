@@ -180,11 +180,14 @@ test.describe('History', () => {
     expect(editorText).toContain(manualMarker);
     expect(editorText).not.toContain(autoSaveMarker);
 
-    // Verify dirty indicator appears
-    const tab = page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTabsContainer).locator(PLAYWRIGHT_TEST_SELECTORS.tab, {
-      has: page.locator(PLAYWRIGHT_TEST_SELECTORS.tabTitle, { hasText: 'hist-auto-2.md' })
-    });
-    await expect(tab.locator(PLAYWRIGHT_TEST_SELECTORS.tabDirtyIndicator)).toBeVisible();
+    // Restore persists the chosen snapshot through saveFile, so on-disk
+    // content must reflect the older version. The file-watcher then
+    // re-syncs the editor, so the tab is *not* dirty after restore.
+    const filePath = path.join(workspaceDir, 'hist-auto-2.md');
+    await expect.poll(
+      async () => (await fs.readFile(filePath, 'utf-8')).includes(manualMarker),
+      { timeout: 5000 },
+    ).toBe(true);
 
     await closeTabByFileName(page, 'hist-auto-2.md');
   });

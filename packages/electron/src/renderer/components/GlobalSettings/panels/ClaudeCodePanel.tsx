@@ -620,11 +620,16 @@ export function ClaudeCodePanel({
             </p>
           </div>
 
+          {/* Environment Variables are user-level only (~/.claude/settings.json applies
+              to every workspace). Hiding this section in the Project tab prevents users
+              from believing they're setting a per-project value when they're really
+              changing global state. See issue #185. */}
+          {scope === 'user' && (
           <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
             <h4 className="provider-panel-section-title text-base font-semibold mb-3 text-[var(--nim-text)]">Environment Variables</h4>
             <p className="text-xs leading-relaxed text-[var(--nim-text-muted)] mb-3">
               Configure environment variables that will be set for all Claude Code sessions.
-              These are stored in <code className="text-xs bg-[var(--nim-bg-tertiary)] px-1 py-0.5 rounded">~/.claude/settings.json</code>.
+              These are stored in <code className="text-xs bg-[var(--nim-bg-tertiary)] px-1 py-0.5 rounded">~/.claude/settings.json</code> and apply to every project.
             </p>
 
             {isLoadingEnv ? (
@@ -739,6 +744,7 @@ export function ClaudeCodePanel({
               </>
             )}
           </div>
+          )}
         </>
       )}
     </div>

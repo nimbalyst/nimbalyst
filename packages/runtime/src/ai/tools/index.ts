@@ -6,6 +6,17 @@ import { DOCUMENT_TOOLS } from './documentTools';
 
 export type ToolSource = 'runtime' | 'renderer' | 'main';
 
+/**
+ * Context passed alongside `args` when a tool's handler runs. Carries
+ * workspace identity so handlers that need to resolve workspace-scoped
+ * services (e.g. file system access for the multi-project rail) do not
+ * have to fall back to a runtime-global singleton, which would route
+ * through the currently-visible workspace instead of the session's own.
+ */
+export interface ToolContext {
+  workspacePath?: string;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -14,7 +25,7 @@ export interface ToolDefinition {
     properties: Record<string, any>;
     required?: string[];
   };
-  handler?: (args: any) => Promise<any> | any;
+  handler?: (args: any, context?: ToolContext) => Promise<any> | any;
   source?: ToolSource;
 }
 

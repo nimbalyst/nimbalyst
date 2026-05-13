@@ -239,6 +239,7 @@ export class DocumentSyncProvider {
     this.connecting = false;
 
     ws.addEventListener('open', () => {
+      if (this.ws !== ws) return;
       console.log('[DocumentSync] WebSocket open');
       this.suppressReconnect = false;
       this.reconnectAttempt = 0;
@@ -248,15 +249,21 @@ export class DocumentSyncProvider {
     });
 
     ws.addEventListener('message', (event) => {
+      if (this.ws !== ws) return;
       this.handleMessage(event);
     });
 
     ws.addEventListener('close', (event) => {
+      // Stale close from a socket we already replaced (e.g. via reconnectNow)
+      // must not call handleDisconnect() -- that would null out `this.ws` and
+      // clobber the new socket.
+      if (this.ws !== ws) return;
       console.log('[DocumentSync] WebSocket closed, code:', event.code, 'reason:', event.reason);
       this.handleDisconnect();
     });
 
     ws.addEventListener('error', (event) => {
+      if (this.ws !== ws) return;
       console.error('[DocumentSync] WebSocket error:', event);
       this.handleDisconnect();
     });
@@ -1024,16 +1031,26 @@ export class DocumentSyncProvider {
   /**
    * Immediately reconnect, cancelling any pending backoff and resetting attempts.
    * Called externally when the network has been confirmed available (e.g. after
-   * the CollabV3 index has reached `synced`). Falls back to normal backoff on failure.
+   * the CollabV3 index has reached `synced`). This intentionally tears down any
+   * existing socket first: after sleep/wake a WebSocket can remain "open" while
+   * the underlying transport is dead, and a forced reconnect is cheaper than
+   * waiting for that zombie socket to notice.
+   *
+   * Falls back to normal backoff on failure.
    */
   reconnectNow(): void {
     if (this.destroyed) return;
-    if (this.ws && this.synced) return; // already connected and caught up
+
+    // A previous reconnectNow() already started a fresh handshake that hasn't
+    // resolved yet. Don't tear it down -- post-wake the broker fires several
+    // network-available events in a ~20s burst and we'd otherwise churn through
+    // half-finished sockets.
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) return;
 
     this.cancelReconnect();
     this.reconnectAttempt = 0;
 
-    // Tear down any half-open WS so connect() creates a fresh one.
+    // Tear down any existing WS so connect() creates a fresh one.
     if (this.ws) {
       try {
         this.ws.close();

@@ -104,6 +104,8 @@ Stores AI chat conversation sessions with complete message history and provider 
 - `model` (TEXT): AI model identifier
 - `title` (TEXT): Human-readable session title
 - `session_type` (TEXT): Structural type of session ('session', 'workstream', 'blitz')
+- `parent_session_id` (TEXT, FK → ai_sessions.id, ON DELETE SET NULL): Parent session for workstream children. **Always `NULL` for worktree-resident sessions.**
+- `worktree_id` (TEXT, FK → worktrees.id): Worktree this session lives in. **Always `NULL` on `session_type='workstream'` rows.**
 - `document_context` (JSONB): Document context sent with messages
 - `provider_config` (JSONB): Provider-specific configuration
 - `provider_session_id` (TEXT): External provider session ID
@@ -111,6 +113,9 @@ Stores AI chat conversation sessions with complete message history and provider 
 - `metadata` (JSONB): Additional metadata
 - `created_at` (TIMESTAMP): Creation timestamp
 - `updated_at` (TIMESTAMP): Last update timestamp
+
+**Hierarchy rules — READ BEFORE WRITING CODE THAT CREATES SESSIONS:**
+See [SESSION_HIERARCHY.md](./SESSION_HIERARCHY.md) for the authoritative two-layer invariant, the "worktree IS the workstream" rule, and the legal combinations of `session_type` / `parent_session_id` / `worktree_id`. Violating those rules silently breaks the left-pane grouping.
 
 **Note:** Message history is now stored in the `ai_agent_messages` table, not as a JSONB column in this table.
 

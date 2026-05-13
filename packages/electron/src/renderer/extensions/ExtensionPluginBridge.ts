@@ -1,137 +1,172 @@
 /**
- * Extension Plugin Bridge
- *
- * Bridges the ExtensionLoader with the PluginRegistry,
- * automatically registering slash commands, nodes, and transformers
- * from loaded extensions.
+ * Bridges the ExtensionLoader output into the runtime extension stores
+ * so on-disk Nimbalyst extensions can contribute Lexical extensions,
+ * markdown transformers, nodes, and slash commands without depending on
+ * a private runtime API.
  */
 
-import { getExtensionLoader } from '@nimbalyst/runtime';
-import { pluginRegistry, type PluginPackage } from '@nimbalyst/runtime';
-import type { LexicalCommand, Klass, LexicalNode } from 'lexical';
+import {
+  getExtensionLoader,
+  setExtensionContributions,
+  setExtensionLexicalExtension,
+  setExtensionLexicalExtensions,
+  type UserCommand,
+} from '@nimbalyst/runtime';
+import {
+  type AnyLexicalExtensionArgument,
+  type Klass,
+  type LexicalCommand,
+  type LexicalNode,
+  createCommand,
+  defineExtension,
+} from 'lexical';
 import type { Transformer } from '@lexical/markdown';
-import { createCommand } from 'lexical';
 import { logger } from '../utils/logger';
-import ExtensionCommandsPlugin from '../plugins/ExtensionCommandsPlugin';
 
-// Store created commands for reuse
-const extensionCommands = new Map<string, LexicalCommand<void>>();
+const SOURCE_LEGACY_NODES = '@nimbalyst/extension-loader/legacy-nodes';
+const SOURCE_LEGACY_CONTRIBUTIONS = '@nimbalyst/extension-loader/contributions';
 
-// Plugin name for extension-contributed items
-const EXTENSION_PLUGIN_NAME = 'ExtensionContributions';
+// Stable command identities per slash-command ID so re-syncs don't churn
+// the editor command registration.
+const slashCommands = new Map<string, LexicalCommand<void>>();
 
 /**
- * Get or create a LexicalCommand for a slash command ID.
- * Commands are cached to maintain identity across syncs.
+ * Handlers indexed by slash command ID. Looked up by the bridge-installed
+ * `register()` function inside the synthetic legacy-nodes extension so
+ * dispatching a slash command runs the handler from the extension loader.
  */
+export const extensionCommandHandlers = new Map<string, () => void>();
+
 function getOrCreateCommand(commandId: string): LexicalCommand<void> {
-  let command = extensionCommands.get(commandId);
+  let command = slashCommands.get(commandId);
   if (!command) {
     command = createCommand<void>(commandId);
-    extensionCommands.set(commandId, command);
+    slashCommands.set(commandId, command);
   }
   return command;
 }
 
 /**
- * Sync all extension contributions with the plugin registry.
- * This registers slash commands from all enabled extensions.
+ * Sync extension-contributed `LexicalExtension` instances into the
+ * editor's extension graph. `NimbalystEditor` reads from the runtime
+ * store and rebuilds when the set changes, so toggling an extension on
+ * or off rebuilds open editors.
  */
-export function syncExtensionPlugins(): void {
+function syncExtensionLexicalExtensions(): void {
   const loader = getExtensionLoader();
-  const slashCommands = loader.getSlashCommands();
-  const nodes = loader.getNodes();
-  const transformers = loader.getTransformers();
+  const contributions = loader.getLexicalExtensions();
+  // Loader returns `unknown` so we don't pin a Lexical version here. The
+  // editor validates the shape at construction time.
+  const next = contributions.map((c) => c.extension as AnyLexicalExtensionArgument);
+  setExtensionLexicalExtensions(next, SOURCE_LEGACY_CONTRIBUTIONS);
+}
 
-  // console.log(
-  //   `[ExtensionPluginBridge] Syncing ${slashCommands.length} slash command(s), ` +
-  //   `${nodes.length} node(s), ${transformers.length} transformer(s)`
-  // );
-  //
-  // if (nodes.length > 0) {
-  //   console.log('[ExtensionPluginBridge] Nodes:', nodes.map(n => n.nodeName));
-  // }
-  //
-  // logger.ui.info(
-  //   `[ExtensionPluginBridge] Syncing ${slashCommands.length} slash command(s), ` +
-  //   `${nodes.length} node(s), ${transformers.length} transformer(s)`
-  // );
+/**
+ * Sync the legacy node + transformer + slash-command surface contributed
+ * by extensions that haven't migrated to `contributions.lexicalExtensions`
+ * yet. Nodes are wrapped in a synthetic Lexical extension; transformers
+ * and slash-picker entries flow through the contributions store; the
+ * slash-command handlers are installed when the synthetic extension is
+ * registered against the editor.
+ */
+function syncLegacyContributions(): void {
+  const loader = getExtensionLoader();
+  const cmds = loader.getSlashCommands();
+  const nodes = loader.getNodes().map((n) => n.nodeClass as Klass<LexicalNode>);
+  const transformers = loader.getTransformers().map((t) => t.transformer as Transformer);
 
-  // Build the plugin package with all extension contributions
-  const extensionPlugin: PluginPackage = {
-    name: EXTENSION_PLUGIN_NAME,
-    // The plugin component that registers command handlers
-    Component: ExtensionCommandsPlugin,
-    // Convert slash commands to user commands
-    userCommands: slashCommands.map((cmd) => {
-      const command = getOrCreateCommand(cmd.contribution.id);
-      return {
-        title: cmd.contribution.title,
-        description: cmd.contribution.description,
-        icon: cmd.contribution.icon,
-        keywords: cmd.contribution.keywords,
-        command,
-        // The payload is undefined - the handler will be invoked directly
-      };
-    }),
-    // Add nodes from extensions
-    nodes: nodes.map((n) => n.nodeClass as Klass<LexicalNode>),
-    // Add transformers from extensions
-    transformers: transformers.map((t) => t.transformer as Transformer),
-  };
-
-  // Register the plugin (overwrites previous registration)
-  pluginRegistry.register(extensionPlugin);
-
-  // Set up command handlers
-  // Note: We need to register command listeners for each slash command
-  // This is done via the editor's registerCommand in the actual plugin component
-  // For now, we store the handlers so they can be called when commands are dispatched
-  for (const cmd of slashCommands) {
-    const commandId = cmd.contribution.id;
-    const handler = cmd.handler;
-
-    // Store handler in a global map for the command listener to find
-    extensionCommandHandlers.set(commandId, handler);
-
+  // Build the user-command list for the slash picker.
+  const userCommands: UserCommand[] = cmds.map((cmd) => {
+    const command = getOrCreateCommand(cmd.contribution.id);
+    extensionCommandHandlers.set(cmd.contribution.id, cmd.handler);
     logger.ui.info(
-      `[ExtensionPluginBridge] Registered slash command: /${cmd.contribution.title} (${commandId})`
+      `[ExtensionPluginBridge] Registered slash command: /${cmd.contribution.title} (${cmd.contribution.id})`,
     );
-  }
+    return {
+      title: cmd.contribution.title,
+      description: cmd.contribution.description,
+      icon: cmd.contribution.icon,
+      keywords: cmd.contribution.keywords,
+      command,
+    };
+  });
+
+  // Synthetic Lexical extension carrying the nodes and (lazily) the
+  // slash-command listeners. Registering listeners inside `register()`
+  // means they get attached to every editor instance that mounts this
+  // extension graph.
+  const extension =
+    nodes.length === 0 && userCommands.length === 0
+      ? undefined
+      : defineExtension({
+          name: SOURCE_LEGACY_NODES,
+          nodes: nodes.length > 0 ? nodes : undefined,
+          register: (editor) => {
+            const unregisterFns: Array<() => void> = [];
+            for (const [commandId, command] of slashCommands) {
+              unregisterFns.push(
+                editor.registerCommand(
+                  command,
+                  () => {
+                    const handler = extensionCommandHandlers.get(commandId);
+                    if (!handler) {
+                      console.warn(
+                        `[ExtensionPluginBridge] No handler found for command ${commandId}`,
+                      );
+                      return true;
+                    }
+                    try {
+                      handler();
+                    } catch (error) {
+                      console.error(
+                        `[ExtensionPluginBridge] Error executing handler for ${commandId}:`,
+                        error,
+                      );
+                    }
+                    return true;
+                  },
+                  0,
+                ),
+              );
+            }
+            return () => {
+              for (const fn of unregisterFns) fn();
+            };
+          },
+        });
+
+  setExtensionLexicalExtension(SOURCE_LEGACY_NODES, extension);
+  setExtensionContributions(SOURCE_LEGACY_NODES, {
+    markdownTransformers: transformers,
+    userCommands,
+  });
 }
 
-// Store handlers for extension commands
-export const extensionCommandHandlers = new Map<string, () => void>();
-
 /**
- * Get the LexicalCommand for a slash command ID.
- * Used by the command listener plugin to look up commands.
- */
-export function getExtensionCommand(commandId: string): LexicalCommand<void> | undefined {
-  return extensionCommands.get(commandId);
-}
-
-/**
- * Get all extension commands (for registering listeners in the editor).
- */
-export function getAllExtensionCommands(): Map<string, LexicalCommand<void>> {
-  return new Map(extensionCommands);
-}
-
-/**
- * Initialize the extension plugin bridge.
- * Call this after the extension system is initialized.
+ * Initialize the extension plugin bridge. Call after the extension
+ * system has been initialized so loader output is available.
  */
 export function initializeExtensionPluginBridge(): void {
   const loader = getExtensionLoader();
-
-  // Initial sync
-  syncExtensionPlugins();
-
-  // Subscribe to changes
+  syncLegacyContributions();
+  syncExtensionLexicalExtensions();
   loader.subscribe(() => {
-    syncExtensionPlugins();
+    syncLegacyContributions();
+    syncExtensionLexicalExtensions();
   });
+}
 
-  // logger.ui.info('[ExtensionPluginBridge] Initialized');
+/**
+ * Get the LexicalCommand for a slash command ID. Kept for callers that
+ * still need to look up command identities by string ID.
+ */
+export function getExtensionCommand(commandId: string): LexicalCommand<void> | undefined {
+  return slashCommands.get(commandId);
+}
+
+/**
+ * Get all extension commands (used by debug tooling).
+ */
+export function getAllExtensionCommands(): Map<string, LexicalCommand<void>> {
+  return new Map(slashCommands);
 }

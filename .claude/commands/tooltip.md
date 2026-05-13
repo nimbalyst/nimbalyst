@@ -1,6 +1,7 @@
 ---
 packageVersion: 1.0.0
 packageId: core
+description: Add help content tooltips to existing UI elements.
 ---
 
 Add help content tooltip to: {{arg1}}

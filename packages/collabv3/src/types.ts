@@ -1295,4 +1295,14 @@ export interface Env {
   ANALYTICS?: AnalyticsEngineDataset;
   // Test-only: bypass JWT auth in dev mode (parse user_id/org_id from query params)
   TEST_AUTH_BYPASS?: string;
+  // Admin DO cleanup endpoint (POST /admin/cleanup-do).
+  // CF_ACCOUNT_ID is the Cloudflare account ID (var); CF_API_TOKEN is a token
+  // scoped to list DO namespaces (secret). The endpoint is gated by Cloudflare
+  // Access -- the worker validates the Cf-Access-Jwt-Assertion header against
+  // the team's Access JWKS, so removing Access from in front of /admin/* makes
+  // the endpoint stop working instead of falling back to a shared secret.
+  CF_ACCOUNT_ID?: string;
+  CF_API_TOKEN?: string;
+  CF_ACCESS_TEAM_DOMAIN?: string;
+  CF_ACCESS_AUD?: string;
 }

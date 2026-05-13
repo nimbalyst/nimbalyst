@@ -149,6 +149,18 @@ function normalizeRange(
 export function SpreadsheetEditor({ host }: EditorHostProps) {
   const { filePath, isActive } = host;
 
+  // Reactive read-only state. In read-only mode (inline embeds, share
+  // viewer) we hide the formula-bar toolbar, suppress the right-click
+  // editing context menu, and pass `readonly` through to RevoGrid so cells
+  // can't be edited. Selection, scrolling, and copy still work.
+  const [readOnly, setReadOnly] = useState<boolean>(host.readOnly ?? false);
+  useEffect(() => {
+    setReadOnly(host.readOnly ?? false);
+    return host.onReadOnlyChanged?.((next) => {
+      setReadOnly(next);
+    });
+  }, [host]);
+
   // Metadata hook (manages headers, frozen cols, formats - NOT cell data)
   const spreadsheetMeta = useSpreadsheetMetadata('', filePath, {
     onDirtyChange: host.setDirty,
@@ -879,6 +891,10 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
 
   // Context menu handler
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
+    // In read-only mode the editing context menu (insert / delete row,
+    // format column, etc.) is meaningless -- let the browser's default
+    // selection / copy menu through instead.
+    if (readOnly) return;
     event.preventDefault();
     const container = gridContainerRef.current;
     if (!container) return;
@@ -962,7 +978,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
       isColumnHeader: false,
       colIndex: null,
     });
-  }, [spreadsheetMeta.metadata.columnCount, updateSelection]);
+  }, [spreadsheetMeta.metadata.columnCount, updateSelection, readOnly]);
 
   const handleCloseContextMenu = useCallback(() => {
     setContextMenu(null);
@@ -1435,21 +1451,23 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
       onKeyDown={handleKeyDown}
       tabIndex={0}
     >
-      <div className="flex items-center gap-2 bg-nim-secondary border-b border-nim">
-        <FormulaBar
-          ref={formulaBarRef}
-          onChange={handleFormulaChange}
-        />
-        {host.supportsSourceMode && (
-          <button
-            className="px-3 py-1.5 mr-3 text-[13px] font-medium bg-nim-tertiary border border-nim rounded text-nim-muted cursor-pointer transition-all whitespace-nowrap hover:bg-nim-hover hover:text-nim active:bg-nim"
-            onClick={() => host.toggleSourceMode?.()}
-            title="View raw CSV source"
-          >
-            View Source
-          </button>
-        )}
-      </div>
+      {!readOnly && (
+        <div className="flex items-center gap-2 bg-nim-secondary border-b border-nim">
+          <FormulaBar
+            ref={formulaBarRef}
+            onChange={handleFormulaChange}
+          />
+          {host.supportsSourceMode && (
+            <button
+              className="px-3 py-1.5 mr-3 text-[13px] font-medium bg-nim-tertiary border border-nim rounded text-nim-muted cursor-pointer transition-all whitespace-nowrap hover:bg-nim-hover hover:text-nim active:bg-nim"
+              onClick={() => host.toggleSourceMode?.()}
+              title="View raw CSV source"
+            >
+              View Source
+            </button>
+          )}
+        </div>
+      )}
       <div
         ref={gridContainerRef}
         className="flex-1 overflow-hidden relative"
@@ -1477,7 +1495,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
           applyOnClose={true}
           editors={editors}
           rowClass="_rowClass"
-          readonly={diffState?.isActive}
+          readonly={readOnly || diffState?.isActive}
           onAfteredit={handleAfterEdit}
           onAfterfocus={handleFocusCell}
           // @ts-expect-error onSetrange exists but not in React type defs

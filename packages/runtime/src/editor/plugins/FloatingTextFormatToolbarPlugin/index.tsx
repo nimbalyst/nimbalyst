@@ -36,7 +36,6 @@ import DropDown, {DropDownItem} from '../../ui/DropDown';
 import {getDOMRangeRect} from '../../utils/getDOMRangeRect';
 import {getSelectedNode} from '../../utils/getSelectedNode';
 import {setFloatingElemPosition} from '../../utils/setFloatingElemPosition';
-import {INSERT_INLINE_COMMAND} from '../CommentPlugin';
 import {SHORTCUTS} from '../ShortcutsPlugin/shortcuts';
 import {
   formatBulletList,
@@ -200,10 +199,6 @@ function TextFormatFloatingToolbar({
       editor.dispatchCommand(TOGGLE_LINK_COMMAND, null);
     }
   }, [editor, isLink, setIsLinkEditMode]);
-
-  const insertComment = () => {
-    editor.dispatchCommand(INSERT_INLINE_COMMAND, undefined);
-  };
 
   function mouseMoveListener(e: MouseEvent) {
     if (
@@ -438,14 +433,6 @@ function TextFormatFloatingToolbar({
           </button>
         </>
       )}
-      <button
-        type="button"
-        onClick={insertComment}
-        className={'popup-item spaced insert-comment'}
-        title="Insert comment"
-        aria-label="Insert comment">
-        <i className="format add-comment" />
-      </button>
     </div>
   );
 }

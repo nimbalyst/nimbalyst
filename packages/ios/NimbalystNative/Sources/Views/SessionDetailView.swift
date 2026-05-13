@@ -961,6 +961,44 @@ public struct SessionDetailView: View {
                 "question_count": answers.count,
             ])
 
+        case "requestUserInputSubmit":
+            let answers = body["answers"] as? [String: Any] ?? [:]
+            syncManager.sendSessionControlMessage(
+                sessionId: session.id,
+                messageType: "prompt_response",
+                payload: [
+                    "promptType": "request_user_input",
+                    "promptId": promptId,
+                    "response": ["answers": answers, "cancelled": false],
+                ]
+            )
+            if let json = try? JSONSerialization.data(withJSONObject: ["answers": answers, "cancelled": false]),
+               let jsonStr = String(data: json, encoding: .utf8) {
+                syncManager.appendToolResult(sessionId: session.id, toolResultId: promptId, content: jsonStr)
+            }
+            AnalyticsManager.shared.capture("mobile_request_user_input_response", properties: [
+                "action": "submitted",
+                "field_count": answers.count,
+            ])
+
+        case "requestUserInputCancel":
+            syncManager.sendSessionControlMessage(
+                sessionId: session.id,
+                messageType: "prompt_response",
+                payload: [
+                    "promptType": "request_user_input",
+                    "promptId": promptId,
+                    "response": ["answers": [String: Any](), "cancelled": true],
+                ]
+            )
+            if let json = try? JSONSerialization.data(withJSONObject: ["cancelled": true]),
+               let jsonStr = String(data: json, encoding: .utf8) {
+                syncManager.appendToolResult(sessionId: session.id, toolResultId: promptId, content: jsonStr)
+            }
+            AnalyticsManager.shared.capture("mobile_request_user_input_response", properties: [
+                "action": "cancelled",
+            ])
+
         case "toolPermissionSubmit":
             let response = body["response"] as? [String: Any] ?? [:]
             syncManager.sendSessionControlMessage(

@@ -47,6 +47,36 @@ describe('resolveTrackerFrontmatter - extension-owned automationStatus (#67)', (
     expect(resolved?.title).toBe('Q3 Plan');
   });
 
+  it('falls back to legacy planStatus blocks for plan documents', () => {
+    const frontmatter = {
+      planStatus: {
+        planId: 'plan-q3',
+        title: 'Legacy Q3 Plan',
+        status: 'in-development',
+      },
+      owner: 'ghinkle',
+    };
+    const resolved = resolveTrackerFrontmatter(frontmatter, 'plan');
+    expect(resolved).not.toBeNull();
+    expect(resolved?.planId).toBe('plan-q3');
+    expect(resolved?.title).toBe('Legacy Q3 Plan');
+    expect(resolved?.owner).toBe('ghinkle');
+  });
+
+  it('falls back to legacy decisionStatus blocks for decision documents', () => {
+    const frontmatter = {
+      decisionStatus: {
+        decisionId: 'dec-42',
+        title: 'Legacy Decision',
+        status: 'decided',
+      },
+    };
+    const resolved = resolveTrackerFrontmatter(frontmatter, 'decision');
+    expect(resolved).not.toBeNull();
+    expect(resolved?.decisionId).toBe('dec-42');
+    expect(resolved?.title).toBe('Legacy Decision');
+  });
+
   it('prefers the nested automationStatus block over stale top-level fields', () => {
     const frontmatter = {
       title: 'Stale top-level title',

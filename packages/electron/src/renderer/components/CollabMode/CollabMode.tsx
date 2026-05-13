@@ -17,7 +17,7 @@ import { TabManager } from '../TabManager/TabManager';
 import { TabContent } from '../TabContent/TabContent';
 import { ChatSidebar } from '../ChatSidebar';
 import { openCollabDocumentViaIPC } from '../../utils/collabDocumentOpener';
-import { initSharedDocuments, destroyTeamSync, pendingCollabDocumentAtom, sharedDocumentsAtom, type SharedDocument } from '../../store/atoms/collabDocuments';
+import { initSharedDocuments, pendingCollabDocumentAtom, sharedDocumentsAtom, type SharedDocument } from '../../store/atoms/collabDocuments';
 import { isCollabUri, parseCollabUri } from '../../utils/collabUri';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { getCollabNodeName } from './collabTree';
@@ -38,11 +38,16 @@ export const CollabMode: React.FC<CollabModeProps> = ({
   // Initialize shared documents sync from TeamRoom.
   // Retry when user activates collab mode, in case the initial attempt
   // failed (e.g., encryption key not yet available, admin hadn't shared keys).
+  //
+  // Multi-project rail switching re-mounts CollabMode whenever the visible
+  // `workspacePath` changes, but the team-sync provider is keyed by path
+  // in `providersByPath` and must stay connected while the project is warm
+  // — tearing it down on every switch would lose pending writes. The
+  // explicit close path (`closeOpenProjectAtom` → workspaceStatePruner →
+  // `pruneCollabDocumentsWorkspaceState`) is the one that destroys the
+  // provider when the user actually closes the project.
   useEffect(() => {
     initSharedDocuments(workspacePath);
-    return () => {
-      destroyTeamSync();
-    };
   }, [workspacePath]);
 
   useEffect(() => {

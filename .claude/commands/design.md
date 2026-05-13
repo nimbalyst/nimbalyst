@@ -1,6 +1,7 @@
 ---
 packageVersion: 1.0.0
 packageId: core
+description: Create a new plan document for tracking work.
 ---
 
 # /design Command

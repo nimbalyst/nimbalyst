@@ -153,6 +153,7 @@ export class TeamSyncProvider {
     this.ws = ws;
 
     ws.addEventListener('open', () => {
+      if (this.ws !== ws) return;
       console.log('[TeamSync] WebSocket connected, requesting team state...');
       this.reconnectAttempt = 0;
       this.setStatus('syncing');
@@ -160,15 +161,21 @@ export class TeamSyncProvider {
     });
 
     ws.addEventListener('message', (event) => {
+      if (this.ws !== ws) return;
       this.handleMessage(event);
     });
 
     ws.addEventListener('close', (event) => {
+      // Stale close from a socket we already replaced (e.g. via reconnectNow)
+      // must not call handleDisconnect() -- that would null out `this.ws` and
+      // clobber the new socket.
+      if (this.ws !== ws) return;
       console.log('[TeamSync] WebSocket closed:', event.code, event.reason);
       this.handleDisconnect();
     });
 
     ws.addEventListener('error', (event) => {
+      if (this.ws !== ws) return;
       console.error('[TeamSync] WebSocket error:', event);
       this.handleDisconnect();
     });
@@ -522,11 +529,20 @@ export class TeamSyncProvider {
   /**
    * Immediately reconnect, cancelling any pending backoff and resetting attempts.
    * Called externally when the network has been confirmed available (e.g. after
-   * the CollabV3 index has reached `synced`). Falls back to normal backoff on failure.
+   * the CollabV3 index has reached `synced`). This intentionally tears down any
+   * existing socket first so resume/wake can recover from half-open transports
+   * that still report OPEN at the WebSocket API layer.
+   *
+   * Falls back to normal backoff on failure.
    */
   reconnectNow(): void {
     if (this.destroyed) return;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+
+    // A previous reconnectNow() already started a fresh handshake that hasn't
+    // resolved yet. Don't tear it down -- post-wake the broker fires several
+    // network-available events in a ~20s burst and we'd otherwise churn through
+    // half-finished sockets.
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) return;
 
     this.cancelReconnect();
     this.reconnectAttempt = 0;

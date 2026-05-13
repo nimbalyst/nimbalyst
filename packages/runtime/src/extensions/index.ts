@@ -17,6 +17,7 @@ export type {
   CommandContribution,
   NewFileMenuContribution,
   SlashCommandContribution,
+  AgentWorkflowsContribution,
   ClaudePluginContribution,
   ClaudePluginCommand,
   ClaudePluginAgent,

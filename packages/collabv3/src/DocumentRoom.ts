@@ -1070,27 +1070,20 @@ export class TeamDocumentRoom implements DurableObject {
       return;
     }
 
+    // Drop R2 blobs first (they live outside DO storage), then nuke DO storage
+    // so Cloudflare can reclaim the SQLite pages. Per-table DELETE leaves the
+    // SQLite file at high-water-mark.
     log.info('Document TTL expired, deleting data. Last activity:', lastActivity);
     await this.deleteAllAssetBlobs();
-    sql.exec(`DELETE FROM encrypted_updates`);
-    sql.exec(`DELETE FROM key_envelopes`);
-    sql.exec(`DELETE FROM snapshots`);
-    sql.exec(`DELETE FROM document_assets`);
-    sql.exec(`DELETE FROM metadata`);
+    await this.state.storage.deleteAll();
+    this.initialized = false;
   }
 
   /**
    * Handle account deletion - purge all data and disconnect clients.
    */
   private async handleDeleteAccount(): Promise<Response> {
-    const sql = this.state.storage.sql;
-
     await this.deleteAllAssetBlobs();
-    sql.exec(`DELETE FROM encrypted_updates`);
-    sql.exec(`DELETE FROM key_envelopes`);
-    sql.exec(`DELETE FROM snapshots`);
-    sql.exec(`DELETE FROM document_assets`);
-    sql.exec(`DELETE FROM metadata`);
 
     for (const [ws] of this.connections) {
       try {
@@ -1101,7 +1094,8 @@ export class TeamDocumentRoom implements DurableObject {
     }
     this.connections.clear();
 
-    this.state.storage.deleteAlarm();
+    await this.state.storage.deleteAll();
+    this.initialized = false;
 
     return new Response(JSON.stringify({ deleted: true }), {
       headers: { 'Content-Type': 'application/json' },
@@ -1113,15 +1107,9 @@ export class TeamDocumentRoom implements DurableObject {
    * Called when a document is unshared from the TeamRoom index.
    */
   private async handleDeleteDocument(): Promise<Response> {
-    const sql = this.state.storage.sql;
     log.info('Document deletion requested, purging all data');
 
     await this.deleteAllAssetBlobs();
-    sql.exec(`DELETE FROM encrypted_updates`);
-    sql.exec(`DELETE FROM key_envelopes`);
-    sql.exec(`DELETE FROM snapshots`);
-    sql.exec(`DELETE FROM document_assets`);
-    sql.exec(`DELETE FROM metadata`);
 
     for (const [ws] of this.connections) {
       try {
@@ -1132,7 +1120,8 @@ export class TeamDocumentRoom implements DurableObject {
     }
     this.connections.clear();
 
-    this.state.storage.deleteAlarm();
+    await this.state.storage.deleteAll();
+    this.initialized = false;
 
     return new Response(JSON.stringify({ deleted: true }), {
       headers: { 'Content-Type': 'application/json' },

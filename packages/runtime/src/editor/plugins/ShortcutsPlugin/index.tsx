@@ -22,7 +22,6 @@ import {Dispatch, useEffect} from 'react';
 
 import {useToolbarState} from '../../context/ToolbarContext';
 import {sanitizeUrl} from '../../utils/url';
-import {INSERT_INLINE_COMMAND} from '../CommentPlugin';
 import {APPROVE_DIFF_COMMAND} from '../DiffPlugin/core/exports';
 import {
   clearFormatting,
@@ -38,7 +37,6 @@ import {
 } from '../ToolbarPlugin/utils';
 import {
   isAcceptDiffs,
-  isAddComment,
   isCapitalize,
   isCenterAlign,
   isClearFormatting,
@@ -118,8 +116,6 @@ export default function ShortcutsPlugin({
         const url = toolbarState.isLink ? null : sanitizeUrl('https://');
         setIsLinkEditMode(!toolbarState.isLink);
         editor.dispatchCommand(TOGGLE_LINK_COMMAND, url);
-      } else if (isAddComment(event)) {
-        editor.dispatchCommand(INSERT_INLINE_COMMAND, undefined);
       }
 
       // === Non-markdown shortcuts (disabled) ===

@@ -1511,7 +1511,16 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     generateTitle: any
   ): Promise<void> {
     try {
-      const title: string | undefined = await generateTitle.call(queryRef, description, { persist: false });
+      // generateSessionTitle has no language parameter on the SDK surface, so
+      // we steer it via the description string. This is best-effort -- the
+      // SDK still ultimately decides.
+      const { getPreferredAgentLanguage } = await import('../preferredAgentLanguageConfig');
+      const language = getPreferredAgentLanguage();
+      const promptDescription = language
+        ? `${description}\n\n(Write the title in this language: ${language}.)`
+        : description;
+
+      const title: string | undefined = await generateTitle.call(queryRef, promptDescription, { persist: false });
       if (!title || typeof title !== 'string' || title.trim().length === 0) return;
 
       const trimmed = title.trim();
@@ -2258,6 +2267,19 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     if (pending) {
       pending.resolve(response);
       this.pendingExitPlanModeConfirmations.delete(requestId);
+
+      // Mirror AskUserQuestion / ToolPermission semantics: emit a resolved
+      // event so MessageStreamingHandler can flip the SessionStateManager
+      // status back to 'running'. Without this, the multi-project rail
+      // misses the resume transition after an ExitPlanMode denial and the
+      // "Thinking…" spinner stays hidden until the rail is remounted.
+      this.emit('exitPlanMode:resolved', {
+        requestId,
+        sessionId,
+        approved: response.approved,
+        respondedBy,
+        timestamp: Date.now(),
+      });
 
       // Persist the response as a message for sync and audit trail
       if (sessionId) {

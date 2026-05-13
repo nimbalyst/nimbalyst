@@ -31,6 +31,7 @@ let handlersRegistered = false;
 // Git Status Cache
 // Caches uncommitted file sets to avoid repeated git status calls
 // when multiple components request session lists simultaneously.
+// In-flight dedup so concurrent callers share one git status invocation.
 // ============================================================
 interface GitStatusCache {
     uncommittedFiles: Set<string>;
@@ -38,21 +39,31 @@ interface GitStatusCache {
 }
 
 const gitStatusCache = new Map<string, GitStatusCache>();
+const gitStatusInFlight = new Map<string, Promise<Set<string>>>();
 const GIT_STATUS_CACHE_TTL_MS = 5000; // 5 second cache
 
 // ============================================================
 // Session Files Cache
-// Caches the session_files query result to avoid slow DB queries
-// when multiple components request session lists simultaneously.
+// Caches the (uncommitted-file -> last-editing-session) mapping. The query is
+// bounded to currently-uncommitted file paths (typically tens) so the result
+// set is small. In-flight dedup keyed by (workspace + file set) collapses
+// concurrent callers from session list refreshes onto a single query.
 // ============================================================
 interface SessionFilesCache {
-    /** Map of file_path -> session_id (most recent editor of each file) */
+    /** Map of file_path -> session_id (most recent editor of each uncommitted file) */
     fileToSession: Map<string, string>;
     timestamp: number;
 }
 
 const sessionFilesCache = new Map<string, SessionFilesCache>();
+const sessionFilesInFlight = new Map<string, Promise<Map<string, string>>>();
 const SESSION_FILES_CACHE_TTL_MS = 5000; // 5 second cache
+
+// Sessions that have ever edited any file in a workspace -- bounded by session
+// count (much smaller than per-file edit history). Used to seed zero counts
+// so previously-touched sessions reset to 0 when their files get committed.
+const sessionEditorsCache = new Map<string, { ids: Set<string>; timestamp: number }>();
+const sessionEditorsInFlight = new Map<string, Promise<Set<string>>>();
 
 function trackCreateAISession(provider: AIProviderType, options?: {
     worktreeId?: string | null;
@@ -171,47 +182,132 @@ async function resolveGitCommitProposalPromptId(
     return promptId;
 }
 
+function makeSessionFilesCacheKey(workspacePath: string, uncommittedFiles: Set<string>): string {
+    if (uncommittedFiles.size === 0) return `${workspacePath}::__empty__`;
+    return `${workspacePath}::${Array.from(uncommittedFiles).sort().join('|')}`;
+}
+
 /**
- * Get session files mapping with caching.
- * Returns a map of file_path -> session_id for the most recent session that edited each file.
- * Avoids running expensive DISTINCT ON query multiple times in rapid succession.
+ * For each currently-uncommitted file, find the most recent session that edited it.
+ * Returns a Map<file_path-as-stored-in-session_files, session_id>.
+ *
+ * The query is bounded to `uncommittedFiles.size` candidate paths instead of
+ * scanning the entire per-file edit history of the workspace. Previously this
+ * returned thousands of rows on every session-list refresh and saturated the
+ * single-threaded PGLite queue.
+ *
+ * In-flight dedup is keyed by (workspace + file set) so concurrent callers
+ * from sessions:list, sessions:list-children, and sessions:get-uncommitted-counts
+ * share one query.
  */
-async function getCachedSessionFiles(workspacePath: string): Promise<Map<string, string>> {
-    const cached = sessionFilesCache.get(workspacePath);
+async function getSessionsForUncommittedFiles(
+    workspacePath: string,
+    uncommittedFiles: Set<string>
+): Promise<Map<string, string>> {
+    if (uncommittedFiles.size === 0) {
+        return new Map();
+    }
+
+    const cacheKey = makeSessionFilesCacheKey(workspacePath, uncommittedFiles);
+
+    const cached = sessionFilesCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < SESSION_FILES_CACHE_TTL_MS) {
         return cached.fileToSession;
     }
 
-    const { database } = await import('../database/PGLiteDatabaseWorker');
+    const inFlight = sessionFilesInFlight.get(cacheKey);
+    if (inFlight) return inFlight;
 
-    // Get the MOST RECENT session that edited each file
-    const { rows: sessionFiles } = await database.query<{ session_id: string; file_path: string }>(
-        `SELECT DISTINCT ON (file_path) session_id, file_path
-         FROM session_files
-         WHERE workspace_id = $1 AND link_type = 'edited'
-         ORDER BY file_path, timestamp DESC`,
-        [workspacePath]
-    );
+    const queryPromise = (async () => {
+        const { database } = await import('../database/PGLiteDatabaseWorker');
 
-    const fileToSession = new Map<string, string>();
-    sessionFiles.forEach(row => {
-        fileToSession.set(row.file_path, row.session_id);
-    });
+        // session_files historically stored paths in two forms (relative for
+        // older Edit/Write rows, absolute for Bash watcher and ApplyPatch).
+        // Look up by both so legacy rows still match. New rows are normalized
+        // by SessionFileTracker.
+        const candidatePaths: string[] = [];
+        for (const relativePath of uncommittedFiles) {
+            candidatePaths.push(relativePath);
+            candidatePaths.push(`${workspacePath}/${relativePath}`);
+        }
 
-    sessionFilesCache.set(workspacePath, {
-        fileToSession,
-        timestamp: Date.now()
-    });
+        const { rows } = await database.query<{ session_id: string; file_path: string }>(
+            `SELECT DISTINCT ON (file_path) session_id, file_path
+             FROM session_files
+             WHERE workspace_id = $1
+               AND link_type = 'edited'
+               AND file_path = ANY($2::text[])
+             ORDER BY file_path, timestamp DESC`,
+            [workspacePath, candidatePaths]
+        );
 
-    return fileToSession;
+        const fileToSession = new Map<string, string>();
+        rows.forEach(row => {
+            fileToSession.set(row.file_path, row.session_id);
+        });
+
+        sessionFilesCache.set(cacheKey, { fileToSession, timestamp: Date.now() });
+        return fileToSession;
+    })();
+
+    sessionFilesInFlight.set(cacheKey, queryPromise);
+    try {
+        return await queryPromise;
+    } finally {
+        sessionFilesInFlight.delete(cacheKey);
+    }
 }
 
 /**
- * Invalidate session files cache for a workspace.
+ * Get the set of session IDs that have ever edited any file in a workspace.
+ *
+ * Used by sessions:get-uncommitted-counts to seed zero counts so a session
+ * whose files have all just been committed correctly drops to 0 in the UI
+ * (rather than retaining a stale count). Bounded by session count, much
+ * smaller than the per-file edit history.
+ */
+async function getSessionIdsWithEdits(workspacePath: string): Promise<Set<string>> {
+    const cached = sessionEditorsCache.get(workspacePath);
+    if (cached && Date.now() - cached.timestamp < SESSION_FILES_CACHE_TTL_MS) {
+        return cached.ids;
+    }
+
+    const inFlight = sessionEditorsInFlight.get(workspacePath);
+    if (inFlight) return inFlight;
+
+    const queryPromise = (async () => {
+        const { database } = await import('../database/PGLiteDatabaseWorker');
+        const { rows } = await database.query<{ session_id: string }>(
+            `SELECT DISTINCT session_id
+             FROM session_files
+             WHERE workspace_id = $1 AND link_type = 'edited'`,
+            [workspacePath]
+        );
+        const ids = new Set(rows.map(r => r.session_id));
+        sessionEditorsCache.set(workspacePath, { ids, timestamp: Date.now() });
+        return ids;
+    })();
+
+    sessionEditorsInFlight.set(workspacePath, queryPromise);
+    try {
+        return await queryPromise;
+    } finally {
+        sessionEditorsInFlight.delete(workspacePath);
+    }
+}
+
+/**
+ * Invalidate session files caches for a workspace.
  * Call this when files are edited to ensure fresh data on next query.
  */
 export function invalidateSessionFilesCache(workspacePath: string): void {
-    sessionFilesCache.delete(workspacePath);
+    const prefix = `${workspacePath}::`;
+    for (const key of sessionFilesCache.keys()) {
+        if (key.startsWith(prefix)) {
+            sessionFilesCache.delete(key);
+        }
+    }
+    sessionEditorsCache.delete(workspacePath);
 }
 
 /**
@@ -229,25 +325,37 @@ async function getCachedUncommittedFiles(workspacePath: string): Promise<Set<str
         return cached.uncommittedFiles;
     }
 
-    const simpleGit = (await import('simple-git')).default;
-    const git = simpleGit(workspacePath);
-    const status = await git.status();
+    const inFlight = gitStatusInFlight.get(workspacePath);
+    if (inFlight) return inFlight;
 
-    const uncommittedFiles = new Set([
-        ...status.modified,
-        ...status.created,
-        ...status.not_added,
-        ...status.deleted,
-        ...status.renamed.map(r => r.to),
-        ...status.staged
-    ]);
+    const queryPromise = (async () => {
+        const simpleGit = (await import('simple-git')).default;
+        const git = simpleGit(workspacePath);
+        const status = await git.status();
 
-    gitStatusCache.set(workspacePath, {
-        uncommittedFiles,
-        timestamp: Date.now()
-    });
+        const uncommittedFiles = new Set([
+            ...status.modified,
+            ...status.created,
+            ...status.not_added,
+            ...status.deleted,
+            ...status.renamed.map(r => r.to),
+            ...status.staged
+        ]);
 
-    return uncommittedFiles;
+        gitStatusCache.set(workspacePath, {
+            uncommittedFiles,
+            timestamp: Date.now()
+        });
+
+        return uncommittedFiles;
+    })();
+
+    gitStatusInFlight.set(workspacePath, queryPromise);
+    try {
+        return await queryPromise;
+    } finally {
+        gitStatusInFlight.delete(workspacePath);
+    }
 }
 
 export async function registerSessionHandlers() {
@@ -517,21 +625,16 @@ export async function registerSessionHandlers() {
 
             // Get uncommitted file counts for all sessions
             // Count files edited by each session that are currently uncommitted in git
-            // Uses cached git status and session files to avoid redundant queries
+            // Uses cached git status and a query bounded to currently-uncommitted paths
             const uncommittedMap = new Map<string, number>();
             try {
                 const uncommittedFiles = await getCachedUncommittedFiles(workspacePath);
 
                 if (uncommittedFiles.size > 0) {
-                    // Use cached session files query
-                    const fileToSession = await getCachedSessionFiles(workspacePath);
-
-                    // Count uncommitted files per session (only for the session that last edited each file)
-                    fileToSession.forEach((sessionId, filePath) => {
-                        const relativePath = filePath.replace(workspacePath + '/', '');
-                        if (uncommittedFiles.has(relativePath)) {
-                            uncommittedMap.set(sessionId, (uncommittedMap.get(sessionId) || 0) + 1);
-                        }
+                    const fileToSession = await getSessionsForUncommittedFiles(workspacePath, uncommittedFiles);
+                    // Every entry is, by construction, a currently-uncommitted file
+                    fileToSession.forEach((sessionId) => {
+                        uncommittedMap.set(sessionId, (uncommittedMap.get(sessionId) || 0) + 1);
                     });
                 }
             } catch (error) {
@@ -603,7 +706,7 @@ export async function registerSessionHandlers() {
             );
 
             // Calculate uncommitted file counts per session
-            // Uses cached git status and session files to avoid redundant queries
+            // Uses cached git status and a query bounded to currently-uncommitted paths
             const uncommittedMap = new Map<string, number>();
             try {
                 const uncommittedFiles = await getCachedUncommittedFiles(workspacePath);
@@ -612,16 +715,10 @@ export async function registerSessionHandlers() {
                     // Get the session IDs we care about (children of this parent)
                     const childSessionIds = new Set(rows.map((r: any) => r.id));
 
-                    // Use cached session files query
-                    const fileToSession = await getCachedSessionFiles(workspacePath);
-
-                    // Count uncommitted files per session (only for child sessions)
-                    fileToSession.forEach((sessionId, filePath) => {
+                    const fileToSession = await getSessionsForUncommittedFiles(workspacePath, uncommittedFiles);
+                    fileToSession.forEach((sessionId) => {
                         if (childSessionIds.has(sessionId)) {
-                            const relativePath = filePath.replace(workspacePath + '/', '');
-                            if (uncommittedFiles.has(relativePath)) {
-                                uncommittedMap.set(sessionId, (uncommittedMap.get(sessionId) || 0) + 1);
-                            }
+                            uncommittedMap.set(sessionId, (uncommittedMap.get(sessionId) || 0) + 1);
                         }
                     });
                 }
@@ -1143,30 +1240,26 @@ export async function registerSessionHandlers() {
 
 
     // Get uncommitted file counts per session (lightweight, for updating after git commits)
-    // Returns counts for ALL sessions that have edited files, including 0 for fully committed sessions
-    // Uses cached git status and session files when called in rapid succession
+    // Returns counts for ALL sessions that have edited files, including 0 for fully
+    // committed sessions -- the caller relies on the explicit 0 to reset stale UI badges.
     safeHandle('sessions:get-uncommitted-counts', async (event, workspacePath: string) => {
         try {
             const uncommittedFiles = await getCachedUncommittedFiles(workspacePath);
 
-            // Use cached session files query
-            const fileToSession = await getCachedSessionFiles(workspacePath);
-
-            // Initialize counts for all sessions that have edited files (start at 0)
+            // Seed every session that has ever edited a file with 0 so callers
+            // reset previously-non-zero badges to 0 when files get committed.
+            const editorIds = await getSessionIdsWithEdits(workspacePath);
             const counts: Record<string, number> = {};
-            fileToSession.forEach((sessionId) => {
-                if (!counts[sessionId]) {
-                    counts[sessionId] = 0;
-                }
+            editorIds.forEach(sessionId => {
+                counts[sessionId] = 0;
             });
 
-            // Count uncommitted files per session
-            fileToSession.forEach((sessionId, filePath) => {
-                const relativePath = filePath.replace(workspacePath + '/', '');
-                if (uncommittedFiles.has(relativePath)) {
+            if (uncommittedFiles.size > 0) {
+                const fileToSession = await getSessionsForUncommittedFiles(workspacePath, uncommittedFiles);
+                fileToSession.forEach((sessionId) => {
                     counts[sessionId] = (counts[sessionId] || 0) + 1;
-                }
-            });
+                });
+            }
 
             return { success: true, counts };
         } catch (error) {
@@ -1189,7 +1282,7 @@ export async function registerSessionHandlers() {
     safeHandle('messages:respond-to-prompt', async (event, params: {
         sessionId: string;
         promptId: string;
-        promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request' | 'git_commit_proposal_request';
+        promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request' | 'git_commit_proposal_request' | 'request_user_input_request';
         response: any;
         respondedBy: 'desktop' | 'mobile';
     }) => {
@@ -1241,6 +1334,15 @@ export async function registerSessionHandlers() {
                     error: response.error,
                     filesCommitted: response.filesCommitted,
                     commitMessage: response.commitMessage,
+                    respondedAt: timestamp,
+                    respondedBy,
+                };
+            } else if (promptType === 'request_user_input_request') {
+                responseContent = {
+                    type: 'request_user_input_response',
+                    promptId: canonicalPromptId,
+                    answers: response.answers || {},
+                    cancelled: response.cancelled === true,
                     respondedAt: timestamp,
                     respondedBy,
                 };
@@ -1325,6 +1427,29 @@ export async function registerSessionHandlers() {
                         console.warn('[SessionHandlers] Failed to persist synthetic Codex commit completion event:', error);
                     }
                 }
+            }
+
+            // For request_user_input, emit to the session-scoped MCP waiter channel
+            // so the MCP handler resolves immediately. (The DB row above is the
+            // durable fallback for cases where the MCP transport drops.)
+            if (promptType === 'request_user_input_request') {
+                const { ipcMain } = await import('electron');
+                const { getRequestUserInputResponseChannel } = await import('../mcp/tools/interactiveToolHandlers');
+                const channel = getRequestUserInputResponseChannel(sessionId, canonicalPromptId);
+                if (ipcMain.listenerCount(channel) > 0) {
+                    ipcMain.emit(channel, null, {
+                        answers: response.answers,
+                        cancelled: response.cancelled === true,
+                        respondedBy,
+                    });
+                } else {
+                    console.warn(
+                        `[SessionHandlers] No MCP waiter for RequestUserInput on channel: ${channel}. ` +
+                        `Response was persisted to DB; the handler may have already resolved or the subprocess exited.`,
+                    );
+                }
+                event.sender.send('ai:requestUserInputResolved', { sessionId, promptId: canonicalPromptId });
+                TrayManager.getInstance().onPromptResolved(sessionId);
             }
 
             // For git_commit_proposal, emit to the session-scoped MCP waiter channel

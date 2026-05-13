@@ -33,6 +33,12 @@ export interface ReadOnlyHostOptions {
 
   /** Optional synthetic file path (defaults to `/shared/{fileName}`) */
   filePath?: string;
+
+  /**
+   * Whether this host represents an inline embed (vs. a full tab/share viewer).
+   * When true, extensions may suppress chrome that doesn't fit inline contexts.
+   */
+  embedded?: boolean;
 }
 
 export interface ReadOnlyHost extends EditorHost {
@@ -59,6 +65,7 @@ export function createReadOnlyHost(
     filePath: opts.filePath ?? `/shared/${opts.fileName}`,
     fileName: opts.fileName,
     readOnly: true,
+    embedded: opts.embedded ?? false,
     theme: currentTheme,
     isActive: true,
 
@@ -79,6 +86,9 @@ export function createReadOnlyHost(
     setDirty: () => {},
     onSaveRequested: () => () => {},
     onFileChanged: () => () => {},
+    // readOnly never flips for the share viewer; the callback is held but
+    // never invoked.
+    onReadOnlyChanged: () => () => {},
     openHistory: () => {},
     registerMenuItems: (_items: EditorMenuItem[]) => {},
     registerEditorAPI: () => {},

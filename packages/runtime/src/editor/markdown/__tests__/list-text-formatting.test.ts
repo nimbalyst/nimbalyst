@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { $convertFromMarkdownStringRexical } from '../LexicalMarkdownImport';
+import { $convertFromMarkdownString } from '@lexical/markdown';
 import { $getRoot, $createParagraphNode, $createTextNode, $isElementNode, TextNode } from 'lexical';
 import { createHeadlessEditor } from '@lexical/headless';
 import { $createListItemNode, $createListNode, ListItemNode, ListNode } from '@lexical/list';
@@ -18,7 +18,7 @@ describe('Text formatting in lists', () => {
 
     editor.update(
       () => {
-        $convertFromMarkdownStringRexical(markdown, CORE_TRANSFORMERS);
+        $convertFromMarkdownString(markdown, CORE_TRANSFORMERS);
       },
       { discrete: true }
     );
@@ -78,7 +78,7 @@ describe('Text formatting in lists', () => {
 
     editor.update(
       () => {
-        $convertFromMarkdownStringRexical(markdown, CORE_TRANSFORMERS);
+        $convertFromMarkdownString(markdown, CORE_TRANSFORMERS);
       },
       { discrete: true }
     );
@@ -119,7 +119,7 @@ describe('Text formatting in lists', () => {
 
     editor.update(
       () => {
-        $convertFromMarkdownStringRexical(markdown, CORE_TRANSFORMERS);
+        $convertFromMarkdownString(markdown, CORE_TRANSFORMERS);
       },
       { discrete: true }
     );
@@ -160,7 +160,7 @@ describe('Text formatting in lists', () => {
 
     editor.update(
       () => {
-        $convertFromMarkdownStringRexical(markdown, CORE_TRANSFORMERS);
+        $convertFromMarkdownString(markdown, CORE_TRANSFORMERS);
       },
       { discrete: true }
     );
@@ -198,7 +198,7 @@ describe('Text formatting in lists', () => {
 
     editor.update(
       () => {
-        $convertFromMarkdownStringRexical(markdown, CORE_TRANSFORMERS);
+        $convertFromMarkdownString(markdown, CORE_TRANSFORMERS);
       },
       { discrete: true }
     );

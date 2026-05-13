@@ -395,13 +395,26 @@ async function handleListRecentSessions(
   offset: number,
   workspaceId: string,
   currentSessionId: string,
-  includeArchived: boolean
+  includeArchived: boolean,
+  searchField: "title" | "content" | "both" = "both"
 ): Promise<string> {
   let sessions: SessionMeta[];
 
   const options = { includeArchived };
-  if (query && query.trim().length > 0) {
-    sessions = await AISessionsRepository.search(workspaceId, query.trim(), options);
+  const trimmedQuery = query?.trim() ?? "";
+  if (trimmedQuery.length > 0) {
+    if (searchField === "title") {
+      // Title-only: list everything in the workspace, then case-insensitive
+      // substring match on title. Avoids the FTS path which also matches
+      // conversation content. See #83.
+      const all = await AISessionsRepository.list(workspaceId, options);
+      const needle = trimmedQuery.toLowerCase();
+      sessions = all.filter((s) =>
+        (s.title ?? "").toLowerCase().includes(needle)
+      );
+    } else {
+      sessions = await AISessionsRepository.search(workspaceId, trimmedQuery, options);
+    }
   } else {
     sessions = await AISessionsRepository.list(workspaceId, options);
   }
@@ -412,9 +425,11 @@ async function handleListRecentSessions(
   const limited = leafSessions.slice(offset, offset + limit);
 
   if (limited.length === 0) {
-    return query
-      ? `No sessions found matching "${query}"`
-      : "No sessions found in this workspace.";
+    if (trimmedQuery.length > 0) {
+      const scope = searchField === "title" ? " in titles" : "";
+      return `No sessions found matching "${trimmedQuery}"${scope}`;
+    }
+    return "No sessions found in this workspace.";
   }
 
   const parentIds = new Set<string>();
@@ -459,7 +474,11 @@ async function handleListRecentSessions(
   }
 
   const lines: string[] = [];
-  const totalLabel = query ? `matching "${query}"` : "total";
+  const matchScope =
+    trimmedQuery.length > 0
+      ? `matching "${trimmedQuery}"${searchField === "title" ? " in titles" : ""}`
+      : "total";
+  const totalLabel = matchScope;
   const offsetLabel = offset > 0 ? `, offset ${offset}` : "";
   lines.push(
     `Recent sessions (showing ${limited.length} of ${leafSessions.length} ${totalLabel}${offsetLabel}):`
@@ -705,7 +724,7 @@ function createSessionContextMcpServer(
         {
           name: "list_recent_sessions",
           description:
-            "List recent AI sessions in the current workspace. Optionally search by title or content. Use this when the user references a previous session or asks about past work (e.g., 'implement the plan from our session about X'). By default, archived sessions are excluded -- pass includeArchived: true to search across archived sessions as well.",
+            "List recent AI sessions in the current workspace. Optionally search by title or content. Use this when the user references a previous session or asks about past work (e.g., 'implement the plan from our session about X'). By default, archived sessions are excluded -- pass includeArchived: true to search across archived sessions as well. To find a session by name when the search term appears frequently in conversations, pass searchField: 'title' to restrict matching to session titles only.",
           inputSchema: {
             type: "object",
             properties: {
@@ -713,6 +732,12 @@ function createSessionContextMcpServer(
                 type: "string",
                 description:
                   "Optional search string to filter sessions by title or content.",
+              },
+              searchField: {
+                type: "string",
+                enum: ["title", "content", "both"],
+                description:
+                  "Where to look for the query. 'title' matches only session titles (case-insensitive substring). 'content' and 'both' match titles and conversation content via full-text search. Defaults to 'both'. Ignored if query is empty.",
               },
               limit: {
                 type: "number",
@@ -857,13 +882,19 @@ function createSessionContextMcpServer(
           );
           const offset = Math.max((args?.offset as number) || 0, 0);
           const includeArchived = Boolean(args?.includeArchived);
+          const rawSearchField = args?.searchField as string | undefined;
+          const searchField: "title" | "content" | "both" =
+            rawSearchField === "title" || rawSearchField === "content"
+              ? rawSearchField
+              : "both";
           const result = await handleListRecentSessions(
             args?.query as string | undefined,
             limit,
             offset,
             workspaceId,
             aiSessionId,
-            includeArchived
+            includeArchived,
+            searchField
           );
           return {
             content: [{ type: "text", text: result }],

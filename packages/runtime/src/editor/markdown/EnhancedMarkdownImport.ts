@@ -6,9 +6,15 @@
  * - Preserve frontmatter data during editor operations
  */
 
-import { Transformer } from '@lexical/markdown';
-import { ElementNode } from 'lexical';
-import { $convertFromMarkdownStringRexical } from './LexicalMarkdownImport';
+import { $convertFromMarkdownString, Transformer } from '@lexical/markdown';
+import {
+  $createTextNode,
+  $getRoot,
+  $isElementNode,
+  $isTabNode,
+  ElementNode,
+  type LexicalNode,
+} from 'lexical';
 
 import {
   $setFrontmatter,
@@ -91,13 +97,46 @@ export function $convertFromEnhancedMarkdownString(
     content = normalizeMarkdown(content, normalizerConfig);
   }
 
-  // Import the content using OUR FORKED markdown import that handles 2-space indents
-  $convertFromMarkdownStringRexical(content, transformers || [], node, preserveNewLines);
+  // Import via upstream Lexical's $convertFromMarkdownString. Our 2-space
+  // list house style is handled by the MarkdownNormalizer pre-pass above and
+  // by ListTransformers' export side; the importer itself accepts any
+  // indent size that matches a list-item regex.
+  //
+  // The export side encodes literal `*`/`_` adjacent to emphasis runs as
+  // HTML numeric character references, so upstream's CommonMark emphasis
+  // scanner (which classifies `\` as non-punctuation) re-imports our exports
+  // without losing emphasis spans. See exportTextFormat in
+  // EnhancedMarkdownExport for the rationale.
+  $convertFromMarkdownString(content, transformers || [], node, preserveNewLines);
+
+  // Upstream splits literal tab characters in text nodes into TabNodes
+  // (registered automatically by core Lexical). Our DiffPlugin's tree matcher
+  // doesn't know how to align text+tab+text+tab+text spans against the same
+  // logical paragraph, which corrupts diffs that contain tab whitespace. The
+  // forked import path used to leave tabs as plain characters inside their
+  // surrounding TextNodes, so collapse upstream's TabNodes back to text here
+  // to preserve that behavior until the diff system grows TabNode awareness.
+  $collapseTabNodes(node ?? $getRoot());
 
   return {
     frontmatter,
     originalContent,
   };
+}
+
+function $collapseTabNodes(root: ElementNode): void {
+  const visit = (node: LexicalNode): void => {
+    if ($isTabNode(node)) {
+      node.replace($createTextNode('\t'));
+      return;
+    }
+    if ($isElementNode(node)) {
+      for (const child of node.getChildren()) {
+        visit(child);
+      }
+    }
+  };
+  visit(root);
 }
 
 /**

@@ -1,6 +1,7 @@
 ---
 packageVersion: 1.0.0
 packageId: core
+description: Create a visual UX mockup for a requested feature or screen.
 ---
 
 Create a visual UX mockup for: {{arg1}}

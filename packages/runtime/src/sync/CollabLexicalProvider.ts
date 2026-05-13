@@ -92,17 +92,20 @@ export class CollabLexicalProvider implements Provider {
         this.awarenessListeners.update?.delete(cb);
       },
 
-      setLocalState: (state: UserState) => {
+      setLocalState: (state: UserState | null) => {
+        const previousState = this.localUserState;
         this.localUserState = state;
+        const awarenessState = state ?? previousState;
+
         // Forward to DocumentSyncProvider's awareness
         this.syncProvider.setLocalAwareness({
-          cursor: state.anchorPos && state.focusPos ? {
+          cursor: state?.anchorPos && state.focusPos ? {
             anchor: JSON.stringify(state.anchorPos),
             head: JSON.stringify(state.focusPos),
           } : undefined,
           user: {
-            name: state.name,
-            color: state.color,
+            name: awarenessState?.name ?? '',
+            color: awarenessState?.color ?? '',
           },
         });
       },

@@ -163,11 +163,11 @@ test('should preserve edited content after theme switch', async () => {
     });
   });
 
-  const editor = page.locator('.nimbalyst-editor').first();
-  await expect(editor).toHaveClass(/dark-theme/, { timeout: 2000 });
+  const editorRoot = page.locator('.nimbalyst-editor').first();
+  await expect(editorRoot).toHaveClass(/dark-theme/, { timeout: 2000 });
 
   // Verify content preserved
-  await expect(editor).toContainText(testContent, { timeout: 2000 });
+  await expect(editorRoot).toContainText(testContent, { timeout: 2000 });
 
   const diskContentAfterThemeSwitch = await fs.readFile(testFilePath, 'utf-8');
   expect(diskContentAfterThemeSwitch).toContain(testContent);

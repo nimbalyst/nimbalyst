@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { NimbalystEditor, pluginRegistry } from '@nimbalyst/runtime';
+import { NimbalystEditor } from '@nimbalyst/runtime';
 import {
   APPLY_MARKDOWN_REPLACE_COMMAND,
   groupDiffChanges,

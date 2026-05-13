@@ -13,14 +13,18 @@ import { ElectronDocumentService, setupDocumentServiceHandlers } from '../servic
 import { ElectronFileSystemService } from '../services/ElectronFileSystemService';
 import { isWorktreePath, resolveProjectPath } from '../utils/workspaceDetection';
 import { getPreloadPath } from '../utils/appPaths';
-import { setFileSystemService, clearFileSystemService } from '@nimbalyst/runtime';
+import {
+  setFileSystemService,
+  clearFileSystemService,
+  setFileSystemServiceFor,
+} from '@nimbalyst/runtime';
 import { navigationHistoryService } from '../services/NavigationHistoryService';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { FeatureTrackingService } from '../services/analytics/FeatureTrackingService';
 import { ExtensionLogService } from '../services/ExtensionLogService';
 import { getMcpConfigService } from '../index';
 import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
-import { windows, windowStates } from './windowState';
+import { windows, windowStates, anyWindowReferencesWorkspace } from './windowState';
 
 // Window management
 export { windows, windowStates };
@@ -88,8 +92,9 @@ export const recentlyDeletedFiles = {
 
 // Store document services for each workspace
 export const documentServices = new Map<string, ElectronDocumentService>();
-// Store file system services for each workspace
-const fileSystemServices = new Map<string, ElectronFileSystemService>();
+// File-system services live in a separate module so the multi-project rail
+// handlers can register/free them without importing this whole module.
+import { fileSystemServices } from './serviceRegistry';
 
 function resolveDocumentServiceForEvent(event: IpcMainEvent | IpcMainInvokeEvent): ElectronDocumentService | null {
     const browserWindow = BrowserWindow.fromWebContents(event.sender);
@@ -293,6 +298,11 @@ export function createWindow(
                 fileSystemServices.set(workspacePath, fileSystemService);
                 // Set the file system service globally for the runtime
                 setFileSystemService(fileSystemService);
+                // Also register it in the per-path runtime registry so AI
+                // tool dispatch in inactive rail projects can resolve the
+                // correct workspace's service without falling back to the
+                // global (see fileTools.resolveFileSystemServiceForCall).
+                setFileSystemServiceFor(workspacePath, fileSystemService);
                 // console.log('[MAIN] Created FileSystemService for workspace:', workspacePath);
             }
 
@@ -430,37 +440,39 @@ export function createWindow(
             // Clean up navigation history for this window
             navigationHistoryService.removeWindow(windowId);
 
-            // Clean up document service if this was the last window for the workspace
-            if (state?.mode === 'workspace' && state.workspacePath) {
-                // Check if any other windows are using this workspace
-                const otherWorkspaceWindows = Array.from(windowStates.values())
-                    .filter(s => s.mode === 'workspace' && s.workspacePath === state.workspacePath);
+            // Clean up document/file-system services for any workspace this
+            // window referenced (its primary path AND any rail-warm
+            // additional paths). A path is freed only when no other window
+            // still references it — covers both window-per-project overlap
+            // and the multi-project rail.
+            if (state?.mode === 'workspace') {
+                const referencedPaths = new Set<string>();
+                if (state.workspacePath) referencedPaths.add(state.workspacePath);
+                state.additionalWorkspacePaths?.forEach((p) => referencedPaths.add(p));
 
-                if (otherWorkspaceWindows.length === 0) {
-                    // Clean up document service if no other windows are using it
-                    const docService = documentServices.get(state.workspacePath);
+                for (const path of referencedPaths) {
+                    if (anyWindowReferencesWorkspace(path)) continue;
+
+                    const docService = documentServices.get(path);
                     if (docService) {
                         docService.destroy();
-                        documentServices.delete(state.workspacePath);
-                        console.log('[MAIN] Destroyed DocumentService for workspace:', state.workspacePath);
+                        documentServices.delete(path);
+                        console.log('[MAIN] Destroyed DocumentService for workspace:', path);
                     }
-                    // Clean up file system service
-                    const fileSystemService = fileSystemServices.get(state.workspacePath);
+                    const fileSystemService = fileSystemServices.get(path);
                     if (fileSystemService) {
                         fileSystemService.destroy();
-                        fileSystemServices.delete(state.workspacePath);
+                        fileSystemServices.delete(path);
                         clearFileSystemService();
-                        console.log('[MAIN] Destroyed FileSystemService for workspace:', state.workspacePath);
+                        console.log('[MAIN] Destroyed FileSystemService for workspace:', path);
                     }
-                    // Stop watching MCP config for this workspace
                     try {
                         const mcpService = getMcpConfigService();
                         if (mcpService) {
-                            mcpService.stopWatchingWorkspaceConfig(state.workspacePath);
-                            console.log('[MAIN] Stopped watching MCP config for workspace:', state.workspacePath);
+                            mcpService.stopWatchingWorkspaceConfig(path);
+                            console.log('[MAIN] Stopped watching MCP config for workspace:', path);
                         }
                     } catch (error) {
-                        // Log error but don't throw - window cleanup must continue
                         console.error('[MAIN] Error stopping MCP config watcher:', error);
                     }
                 }
@@ -718,20 +730,43 @@ export function findWindowByFilePath(filePath: string): BrowserWindow | null {
  * @returns The BrowserWindow for that workspace, or null if not found
  */
 export function findWindowByWorkspace(workspacePath: string): BrowserWindow | null {
-    // First try exact match
+    // First try exact match — primary or any rail-warm additional path.
+    // Prefer windows where the path is currently active so MCP routes to
+    // the visible project when several windows host the same workspace.
+    let bestActiveMatch: BrowserWindow | null = null;
+    let bestAnyMatch: BrowserWindow | null = null;
+
     for (const [windowId, window] of windows) {
         const state = windowStates.get(windowId);
-        if (state?.workspacePath === workspacePath) {
-            return window;
+        if (!state) continue;
+
+        const isActive = (state.activeWorkspacePath ?? state.workspacePath) === workspacePath;
+        const isReferenced =
+            state.workspacePath === workspacePath ||
+            state.additionalWorkspacePaths?.includes(workspacePath) === true;
+
+        if (isActive) {
+            bestActiveMatch = window;
+            break;
+        }
+        if (isReferenced && !bestAnyMatch) {
+            bestAnyMatch = window;
         }
     }
+
+    if (bestActiveMatch) return bestActiveMatch;
+    if (bestAnyMatch) return bestAnyMatch;
 
     // If the given path is a worktree, try to find window by parent project path
     if (isWorktreePath(workspacePath)) {
         const projectPath = resolveProjectPath(workspacePath);
         for (const [windowId, window] of windows) {
             const state = windowStates.get(windowId);
-            if (state?.workspacePath === projectPath) {
+            if (!state) continue;
+            if (
+                state.workspacePath === projectPath ||
+                state.additionalWorkspacePaths?.includes(projectPath)
+            ) {
                 return window;
             }
         }
@@ -740,9 +775,13 @@ export function findWindowByWorkspace(workspacePath: string): BrowserWindow | nu
     // If the given path is a project path, check if any window is a worktree of that project
     for (const [windowId, window] of windows) {
         const state = windowStates.get(windowId);
-        if (state?.workspacePath && isWorktreePath(state.workspacePath)) {
-            const windowProjectPath = resolveProjectPath(state.workspacePath);
-            if (windowProjectPath === workspacePath) {
+        if (!state) continue;
+        const candidatePaths: string[] = [];
+        if (state.workspacePath) candidatePaths.push(state.workspacePath);
+        if (state.additionalWorkspacePaths) candidatePaths.push(...state.additionalWorkspacePaths);
+
+        for (const candidate of candidatePaths) {
+            if (isWorktreePath(candidate) && resolveProjectPath(candidate) === workspacePath) {
                 return window;
             }
         }

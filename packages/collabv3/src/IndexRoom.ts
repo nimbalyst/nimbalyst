@@ -339,7 +339,53 @@ export class PersonalIndexRoom implements DurableObject {
       return await this.handleDeleteAccount();
     }
 
+    // Admin cleanup probe -- returns last activity + whether storage holds data.
+    // Path includes /internal/ so the public /sync/ router blocks external access.
+    if (url.pathname.endsWith('/internal/staleness') && request.method === 'GET') {
+      return await this.handleStaleness();
+    }
+
     return new Response('Expected WebSocket', { status: 400 });
+  }
+
+  /**
+   * Staleness probe for the admin cleanup endpoint. Last activity is the most
+   * recent of: any session_index row, any stored device's last-seen timestamp,
+   * or any file_index sync. hasData is true if any of those tables has rows.
+   */
+  private async handleStaleness(): Promise<Response> {
+    await this.ensureInitialized();
+    const sql = this.state.storage.sql;
+    const sessionRow = sql.exec<{ max: number | null }>(
+      `SELECT MAX(updated_at) as max FROM session_index`
+    ).toArray()[0];
+    const fileRow = sql.exec<{ max: number | null }>(
+      `SELECT MAX(synced_at) as max FROM file_index`
+    ).toArray()[0];
+    const sessionCount = sql.exec<{ count: number }>(
+      `SELECT COUNT(*) as count FROM session_index`
+    ).toArray()[0]?.count ?? 0;
+    const projectCount = sql.exec<{ count: number }>(
+      `SELECT COUNT(*) as count FROM project_index`
+    ).toArray()[0]?.count ?? 0;
+    const fileCount = sql.exec<{ count: number }>(
+      `SELECT COUNT(*) as count FROM file_index`
+    ).toArray()[0]?.count ?? 0;
+
+    let deviceMax = 0;
+    let deviceCount = 0;
+    for (const device of this.storedDevices.values()) {
+      deviceCount++;
+      const seen = device.lastSeenAt ?? device.lastActiveAt ?? 0;
+      if (seen > deviceMax) deviceMax = seen;
+    }
+
+    const candidates = [sessionRow?.max ?? 0, fileRow?.max ?? 0, deviceMax];
+    const updatedAt = Math.max(...candidates);
+    return new Response(JSON.stringify({
+      updatedAt: updatedAt > 0 ? updatedAt : null,
+      hasData: sessionCount > 0 || projectCount > 0 || fileCount > 0 || deviceCount > 0,
+    }), { headers: { 'Content-Type': 'application/json' } });
   }
 
   /**
@@ -366,7 +412,43 @@ export class PersonalIndexRoom implements DurableObject {
       synced: false,
     });
 
+    // Persist owner identity so the alarm-driven GC can construct
+    // SessionRoom room IDs (org:{orgId}:user:{userId}:session:{sessionId})
+    // when no client is connected.
+    await this.persistOwnerIdentity(auth);
+
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * Persist the owning user's identity so the alarm GC can route to
+   * per-session DOs without an active connection. Cheap KV write per connect.
+   */
+  private async persistOwnerIdentity(auth: AuthContext): Promise<void> {
+    const stored = await this.state.storage.get<{ userId: string; orgId: string }>('meta:owner');
+    if (stored?.userId === auth.userId && stored?.orgId === auth.orgId) return;
+    await this.state.storage.put('meta:owner', { userId: auth.userId, orgId: auth.orgId });
+  }
+
+  /**
+   * Propagate session deletion to the corresponding PersonalSessionRoom DO so
+   * its SQLite pages are released. Without this, expired sessions remain as
+   * orphaned DOs holding all encrypted message storage.
+   */
+  private async purgeSessionRoom(owner: { userId: string; orgId: string }, sessionId: string): Promise<void> {
+    const roomId = `org:${owner.orgId}:user:${owner.userId}:session:${sessionId}`;
+    try {
+      const id = this.env.SESSION_ROOM.idFromName(roomId);
+      const stub = this.env.SESSION_ROOM.get(id);
+      const response = await stub.fetch(
+        new Request('https://internal/delete-account', { method: 'DELETE' })
+      );
+      if (!response.ok) {
+        log.warn('SessionRoom purge failed for', sessionId, ':', response.status);
+      }
+    } catch (err) {
+      log.error('SessionRoom purge errored for', sessionId, '(continuing):', err);
+    }
   }
 
   /**
@@ -1641,10 +1723,21 @@ export class PersonalIndexRoom implements DurableObject {
       log.info('Cleaning up', expiredSessions.length, 'expired session index entries');
 
       const affectedProjects = new Map<string, string>();
+      const owner = await this.state.storage.get<{ userId: string; orgId: string }>('meta:owner');
 
       for (const session of expiredSessions) {
+        // Drop the underlying PersonalSessionRoom DO storage. Skip when owner
+        // identity hasn't been persisted yet -- it'll be picked up on the next
+        // GC cycle once any connection has come through.
+        if (owner) {
+          await this.purgeSessionRoom(owner, session.session_id);
+        }
         sql.exec(`DELETE FROM session_index WHERE session_id = ?`, session.session_id);
         affectedProjects.set(session.project_id, session.project_id_iv);
+      }
+
+      if (!owner) {
+        log.warn('No persisted owner identity; SessionRoom DOs not purged this cycle');
       }
 
       // Update project stats for affected projects
@@ -1746,14 +1839,7 @@ export class PersonalIndexRoom implements DurableObject {
 
     log.info('Account deletion: purging', sessionIds.length, 'sessions from index');
 
-    // Purge all SQL tables
-    sql.exec(`DELETE FROM session_index`);
-    sql.exec(`DELETE FROM project_index`);
-
-    // Purge all KV storage (device info, push tokens, etc.)
-    await this.state.storage.deleteAll();
-
-    // Close all WebSocket connections
+    // Close all WebSocket connections first so no writes race the delete.
     for (const [ws] of this.connections) {
       try {
         ws.close(4003, 'Account deleted');
@@ -1763,6 +1849,11 @@ export class PersonalIndexRoom implements DurableObject {
     }
     this.connections.clear();
     this.storedDevices.clear();
+
+    // Bulk-drop all storage (SQL tables + KV). Explicit `DELETE FROM session_index`
+    // previously ran first and hit the DO storage operation timeout on large
+    // accounts, resetting the DO mid-delete and stranding partial state.
+    await this.state.storage.deleteAll();
 
     return new Response(JSON.stringify({ deleted: true, sessionIds }), {
       headers: { 'Content-Type': 'application/json' },

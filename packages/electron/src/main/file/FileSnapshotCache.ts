@@ -102,6 +102,16 @@ export class FileSnapshotCache {
     this.addToCache(filePath, content);
   }
 
+  /**
+   * Returns true when this file is already in the in-memory cache (tier 1).
+   * Does NOT consult tier 2 git fallback; intended for callers that need to
+   * distinguish "we have a session-lifetime baseline" from "we'd be making
+   * one up from committed state".
+   */
+  hasSnapshot(filePath: string): boolean {
+    return this.cache.has(filePath);
+  }
+
   removeSnapshot(filePath: string): void {
     const existing = this.cache.get(filePath);
     if (existing !== undefined) {

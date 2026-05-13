@@ -401,6 +401,33 @@ function validateManifest(manifestPath: string): {
           });
         }
       }
+
+      // Validate agentWorkflows
+      if (manifest.contributions.agentWorkflows !== undefined) {
+        const agentWorkflows = manifest.contributions.agentWorkflows as any;
+        if (!agentWorkflows || typeof agentWorkflows !== 'object') {
+          warnings.push({
+            field: 'contributions.agentWorkflows',
+            message: 'agentWorkflows must be an object',
+            severity: 'error',
+          });
+        } else {
+          if (!agentWorkflows.path) {
+            warnings.push({
+              field: 'contributions.agentWorkflows.path',
+              message: 'agentWorkflows must have a "path" field',
+              severity: 'error',
+            });
+          }
+          if (!agentWorkflows.displayName) {
+            warnings.push({
+              field: 'contributions.agentWorkflows.displayName',
+              message: 'agentWorkflows must have a "displayName" field',
+              severity: 'error',
+            });
+          }
+        }
+      }
     }
 
     const hasErrors = warnings.some((w) => w.severity === "error");

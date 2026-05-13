@@ -1,6 +1,13 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import {createRequire} from 'module';
+
+const runtimeRequire = createRequire(
+  path.resolve(__dirname, './packages/runtime/package.json'),
+);
+const lexicalDir = path.dirname(runtimeRequire.resolve('lexical'));
+const lexicalScopeDir = path.join(path.dirname(lexicalDir), '@lexical');
 
 export default defineConfig({
   plugins: [react()],
@@ -37,11 +44,23 @@ export default defineConfig({
     }
   },
   resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './packages/runtime/src/editor'),
-      '@nimbalyst/runtime': path.resolve(__dirname, './packages/runtime/src'),
-      'lexical': path.resolve(__dirname, './node_modules/lexical'),
-      '@lexical': path.resolve(__dirname, './node_modules/@lexical')
-    }
+    alias: [
+      {
+        find: '@nimbalyst/runtime',
+        replacement: path.resolve(__dirname, './packages/runtime/src'),
+      },
+      {
+        find: /^@\//,
+        replacement: `${path.resolve(__dirname, './packages/runtime/src/editor')}/`,
+      },
+      {
+        find: /^lexical$/,
+        replacement: lexicalDir,
+      },
+      {
+        find: /^@lexical\/(.*)$/,
+        replacement: `${lexicalScopeDir}/$1`,
+      },
+    ],
   }
 });

@@ -309,6 +309,32 @@ Bundle a Claude Code plugin with the extension.
 }
 ```
 
+### `agentWorkflows`
+
+Bundle provider-neutral agent workflows that Nimbalyst can export to supported
+agent providers such as Claude Code and Codex.
+
+```json
+"agentWorkflows": {
+  "path": "agent-workflows",
+  "displayName": "CSV Agent Workflows",
+  "description": "Reusable coding workflows for CSV tasks",
+  "enabledByDefault": true
+}
+```
+
+The directory at `path` should contain `commands/` and/or `skills/`
+subdirectories using the familiar markdown formats:
+
+```text
+agent-workflows/
+  commands/
+    review.md
+  skills/
+    triage/
+      SKILL.md
+```
+
 ### `panels`
 
 Register non-file-based panels.

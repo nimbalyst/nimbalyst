@@ -74,9 +74,9 @@ function createExcalidrawWithElement() {
 // Helper to add an element via Excalidraw API
 async function addRectangleViaAPI(page: Page, filePath: string, elementId: string): Promise<boolean> {
   return page.evaluate(({ filePath, elementId }) => {
-    const getEditorAPI = (window as any).__excalidraw_getEditorAPI;
+    const getEditorAPI = (window as any).__testHelpers?.getExtensionEditorAPI;
     if (!getEditorAPI) {
-      console.error('No Excalidraw getEditorAPI found');
+      console.error('No __testHelpers.getExtensionEditorAPI exposed');
       return false;
     }
 
@@ -126,7 +126,7 @@ async function addRectangleViaAPI(page: Page, filePath: string, elementId: strin
 // Helper to get element count via Excalidraw API
 async function getElementCount(page: Page, filePath: string): Promise<number> {
   return page.evaluate((filePath) => {
-    const getEditorAPI = (window as any).__excalidraw_getEditorAPI;
+    const getEditorAPI = (window as any).__testHelpers?.getExtensionEditorAPI;
     if (getEditorAPI) {
       const api = getEditorAPI(filePath);
       if (api) {
@@ -350,9 +350,10 @@ test('add_elements creates multiple rectangles in one operation', async () => {
 
   const excalidrawPath = path.join(workspaceDir, 'batch-test.excalidraw');
   const result = await page.evaluate(async (filePath) => {
-    const { getEditorAPI } = (window as any).__excalidraw_getEditorAPI
-      ? { getEditorAPI: (window as any).__excalidraw_getEditorAPI }
-      : (window as any);
+    const getEditorAPI = (window as any).__testHelpers?.getExtensionEditorAPI;
+    if (!getEditorAPI) {
+      return { success: false, error: 'No __testHelpers.getExtensionEditorAPI' };
+    }
 
     const api = getEditorAPI(filePath);
     if (!api) {
@@ -425,7 +426,7 @@ test.skip('should import a simple mermaid diagram without crashing', async () =>
       B --> C[End]`;
 
     try {
-      const getEditorAPI = (window as any).__excalidraw_getEditorAPI;
+      const getEditorAPI = (window as any).__testHelpers?.getExtensionEditorAPI;
       const parseMermaidToExcalidraw = (window as any).__excalidraw_parseMermaidToExcalidraw;
 
       if (!getEditorAPI || !parseMermaidToExcalidraw) {

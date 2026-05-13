@@ -27,7 +27,9 @@ import { switchToAgentMode, switchToFilesMode, openFileFromTree } from '../utils
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-test.describe.configure({ mode: 'serial' });
+// Each test sleeps ~13s to step past the 10s recentlyDeletedFiles TTL plus
+// several autosave cycles, so the default 15s test budget is too tight.
+test.describe.configure({ mode: 'serial', timeout: 25_000 });
 
 let electronApp: ElectronApplication;
 let page: Page;

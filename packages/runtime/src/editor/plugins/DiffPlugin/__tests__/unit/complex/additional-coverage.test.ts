@@ -9,6 +9,7 @@
 import {setupMarkdownDiffTest} from '../../utils/diffTestUtils';
 import { MARKDOWN_TEST_TRANSFORMERS } from "../../utils";
 import {$convertToMarkdownString} from '@lexical/markdown';
+import {$convertToEnhancedMarkdownString} from '../../../../../markdown';
 import {normalizeMarkdownForComparison} from '../../utils/replaceTestUtils';
 
 function expectMarkdownEquivalent(actual: string, expected: string): void {
@@ -36,12 +37,16 @@ describe('Additional Coverage Tests', () => {
       const target = `This is ~~strikethrough with *italic and **bold modified** text* inside~~.`;
 
       const result = setupMarkdownDiffTest(original, target);
+      // Use the enhanced exporter (the production export path). Upstream's
+      // own $convertToMarkdownString mishandles emphasis continuity across
+      // whitespace-only sibling text nodes that the diff plugin can leave
+      // behind; the enhanced exporter fixes that case (see
+      // EnhancedMarkdownExport.ts comment near hasTextFormat continuity check).
       const actualMarkdown = result.diffEditor.getEditorState().read(() => {
-        return $convertToMarkdownString(
-          MARKDOWN_TEST_TRANSFORMERS,
-          undefined,
-          true,
-        );
+        return $convertToEnhancedMarkdownString(MARKDOWN_TEST_TRANSFORMERS, {
+          shouldPreserveNewLines: true,
+          includeFrontmatter: false,
+        });
       });
       expectMarkdownEquivalent(actualMarkdown, result.expectedMarkdown);
     });
@@ -246,10 +251,12 @@ const x: number = 5;
         );
       });
 
-      // The markdown system may escape complex backtick patterns for safety
-      // The key is that the content modification ("modified") is preserved
+      // The markdown importer follows CommonMark: only the inner ``backticks``
+      // span is recognised as a code span; the outer double-backticks become
+      // literal text and are escaped on export. The key is that the content
+      // modification ("modified") is preserved.
       const expectedWithEscaping =
-        'Use ``modified code with `backticks` inside\\`\\`.';
+        'Use \\`\\`modified code with `backticks` inside\\`\\`.';
       expectMarkdownEquivalent(actualMarkdown, expectedWithEscaping);
     });
   });

@@ -16,9 +16,16 @@ import crypto from 'crypto';
 import { getCurrentIdentity } from './TrackerIdentityService';
 import { extractFrontmatter, extractCommonFields } from '../utils/frontmatterReader';
 import { VIRTUAL_DOCS, isVirtualPath } from '@nimbalyst/runtime';
-import { updateTrackerInFrontmatter, updateInlineTrackerItem, removeInlineTrackerItem, EXTENSION_OWNED_KEYS } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
+import {
+  updateTrackerInFrontmatter,
+  updateInlineTrackerItem,
+  removeInlineTrackerItem,
+  EXTENSION_OWNED_KEYS,
+  LEGACY_KEY_TO_TYPE,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { shouldExcludeDir } from '../utils/fileFilters';
+import { getRegisteredExtensions } from '../extensions/RegisteredFileTypes';
 import { isPathInWorkspace, getRelativeWorkspacePath } from '../utils/workspaceDetection';
 import { syncTrackerItem, unsyncTrackerItem, isTrackerSyncActive } from './TrackerSyncManager';
 import {
@@ -471,6 +478,18 @@ export class ElectronDocumentService implements DocumentService {
       '.vue', '.svelte', '.astro'
     ];
 
+    // Extension-contributed file types. Extensions declare these via
+    // `contributions.customEditors[].filePatterns` in their manifest, and
+    // `initializeExtensionFileTypes` populates the central registry at
+    // boot. Merge them in here so files like `*.excalidraw`, `*.mockup.html`,
+    // `*.mindmap` etc. show up in the `@` typeahead without anyone editing
+    // this file.
+    const extensionContributedExtensions = Array.from(getRegisteredExtensions());
+    const supportedExtensionsSet = new Set<string>([
+      ...supportedExtensions,
+      ...extensionContributedExtensions,
+    ]);
+
     // Markdown extensions for tracker content check
     const markdownExtensions = ['.md', '.markdown'];
 
@@ -526,7 +545,7 @@ export class ElectronDocumentService implements DocumentService {
             documents.push(...subDocs);
           } else if (stats.isFile()) {
             const ext = path.extname(item).toLowerCase();
-            if (supportedExtensions.includes(ext)) {
+            if (supportedExtensionsSet.has(ext)) {
               const isMarkdown = markdownExtensions.includes(ext);
               const underLimit = scanState.count < ElectronDocumentService.MAX_FILES_TO_SCAN;
 
@@ -1422,14 +1441,11 @@ export class ElectronDocumentService implements DocumentService {
       return { item: null, skipped: false, error: 'No valid frontmatter found' };
     }
 
-    // Resolve tracker frontmatter. Check extension-owned keys (e.g.
-    // `automationStatus` for the automations extension) first - the same
-    // priority order `detectTrackerFromFrontmatter` and
-    // `resolveTrackerFrontmatter` already use. Without this, an automation
-    // document imported through this path (file-system import via the
-    // `document-service:*` IPC channels) would be silently rejected as "no
-    // tracker frontmatter" even though every other code path classifies it
-    // correctly. See nimbalyst#67.
+    // Resolve tracker frontmatter. Keep this in sync with
+    // `detectTrackerFromFrontmatter` / `resolveTrackerFrontmatter` so import
+    // accepts extension-owned keys, canonical trackerStatus docs, and older
+    // legacy per-type keys like `planStatus`. Otherwise import rejects files
+    // that the tracker UI still considers valid tracker documents.
     let trackerData: Record<string, any> | null = null;
     let trackerType = 'plan'; // default
 
@@ -1452,7 +1468,19 @@ export class ElectronDocumentService implements DocumentService {
     }
 
     if (!trackerData) {
-      return { item: null, skipped: false, error: 'No tracker frontmatter found (expected trackerStatus with type field)' };
+      for (const [legacyKey, legacyType] of Object.entries(LEGACY_KEY_TO_TYPE)) {
+        if (frontmatter[legacyKey] && typeof frontmatter[legacyKey] === 'object') {
+          const legacyData = frontmatter[legacyKey] as Record<string, any>;
+          const { [legacyKey]: _, trackerStatus: _ts, ...topLevel } = frontmatter;
+          trackerType = legacyType;
+          trackerData = { ...legacyData, ...topLevel };
+          break;
+        }
+      }
+    }
+
+    if (!trackerData) {
+      return { item: null, skipped: false, error: 'No tracker frontmatter found' };
     }
 
     // Extract markdown body (everything after frontmatter)

@@ -34,7 +34,7 @@ export function initFileChangeListeners(): () => void {
 
   const u1 = window.electronAPI?.on?.('file-changed-on-disk', (data: { path: string }) => {
     if (!data?.path) return;
-    diffTrace('IPC file-changed-on-disk', { path: data.path, t: performance.now() });
+    // diffTrace('IPC file-changed-on-disk', { path: data.path, t: performance.now() });
     store.set(fileChangedOnDiskAtomFamily(data.path), (v) => v + 1);
   });
   if (typeof u1 === 'function') cleanups.push(u1);

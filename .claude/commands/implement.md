@@ -1,3 +1,7 @@
+---
+description: Execute a plan document while keeping progress synchronized.
+---
+
 # /implement Command
 
 Execute a plan document while maintaining progress tracking.

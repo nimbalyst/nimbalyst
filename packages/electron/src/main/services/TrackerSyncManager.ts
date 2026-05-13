@@ -639,7 +639,7 @@ async function hydrateTrackerItem(
   // Content comes from the payload (Lexical editor state), stored in a separate SQL column
   const contentJson = payload.content != null ? JSON.stringify(payload.content) : null;
 
-  await database.query(
+  const upsertResult = await database.query<any>(
     `INSERT INTO tracker_items (
       id, issue_number, issue_key, type, data, workspace, document_path, line_number, created, updated, last_indexed, sync_status, archived, archived_at, content, source
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, COALESCE($11, NOW()), COALESCE($12, NOW()), $8, 'synced', $9, $10, $13, 'native')
@@ -650,7 +650,8 @@ async function hydrateTrackerItem(
       archived = CASE WHEN $9 = TRUE THEN TRUE ELSE tracker_items.archived END,
       archived_at = CASE WHEN $9 = TRUE THEN $10 ELSE tracker_items.archived_at END,
       content = COALESCE($13, tracker_items.content),
-      source = 'native'`,
+      source = 'native'
+    RETURNING *`,
     [
       item.id,
       item.issueNumber ?? null,
@@ -670,53 +671,8 @@ async function hydrateTrackerItem(
 
   // logger.main.info('[TrackerSyncManager] Hydrated item:', payload.itemId, 'into PGLite. Notifying renderer...');
 
-  // Re-read the item from DB to get authoritative state including comments/activity
-  // that were just written to the data JSONB column.
-  let dbItem: any = item;
-  try {
-    const dbResult = await database.query<any>(
-      `SELECT * FROM tracker_items WHERE id = $1`,
-      [item.id]
-    );
-    if (dbResult.rows.length > 0) {
-      const row = dbResult.rows[0];
-      const rowData = typeof row.data === 'string' ? JSON.parse(row.data) : row.data || {};
-      const typeTags: string[] = row.type_tags?.length > 0 ? row.type_tags : [row.type];
-      // Build a full TrackerItem from the DB row (same pattern as other rowToTrackerItem functions)
-      const result: any = {
-        id: row.id, issueNumber: row.issue_number ?? undefined, issueKey: row.issue_key ?? undefined,
-        type: row.type, typeTags, title: rowData.title || row.title,
-        description: rowData.description || undefined, status: rowData.status || row.status,
-        priority: rowData.priority || undefined, owner: rowData.owner || undefined,
-        module: row.document_path || undefined, workspace: row.workspace,
-        tags: rowData.tags || undefined, created: rowData.created || row.created || undefined,
-        updated: rowData.updated || row.updated || undefined,
-        lastIndexed: new Date(row.last_indexed), content: row.content != null ? row.content : undefined,
-        archived: row.archived ?? false,
-        archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
-        source: row.source || (row.document_path ? 'inline' : 'native'),
-        authorIdentity: rowData.authorIdentity || undefined,
-        lastModifiedBy: rowData.lastModifiedBy || undefined,
-        createdByAgent: rowData.createdByAgent || false,
-        assigneeEmail: rowData.assigneeEmail || undefined, reporterEmail: rowData.reporterEmail || undefined,
-        assigneeId: rowData.assigneeId || undefined, reporterId: rowData.reporterId || undefined,
-        labels: rowData.labels || undefined, linkedSessions: rowData.linkedSessions || undefined,
-        linkedCommitSha: rowData.linkedCommitSha || undefined, documentId: rowData.documentId || undefined,
-        syncStatus: row.sync_status || 'local',
-        fieldUpdatedAt: rowData._fieldUpdatedAt || undefined,
-      };
-      // Include extra data fields as customFields (comments, activity, etc.)
-      const resultKeys = new Set(Object.keys(result));
-      const extra: Record<string, any> = {};
-      for (const [k, v] of Object.entries(rowData)) {
-        if (v !== undefined && !resultKeys.has(k)) extra[k] = v;
-      }
-      if (Object.keys(extra).length > 0) result.customFields = extra;
-      dbItem = result;
-    }
-  } catch {
-    // Fall back to sync item if DB read fails
-  }
+  const returnedRow = upsertResult.rows[0];
+  const dbItem = returnedRow ? trackerDbRowToItem(returnedRow) : item;
 
   // Notify renderer of item change via the document-service channel
   // that TrackerTable's watchTrackerItems is already subscribed to.
@@ -734,6 +690,54 @@ async function hydrateTrackerItem(
     title: payload.fields.title,
     status: payload.fields.status,
   });
+}
+
+function trackerDbRowToItem(row: any): any {
+  const rowData = typeof row.data === 'string' ? JSON.parse(row.data) : row.data || {};
+  const typeTags: string[] = row.type_tags?.length > 0 ? row.type_tags : [row.type];
+  const result: any = {
+    id: row.id,
+    issueNumber: row.issue_number ?? undefined,
+    issueKey: row.issue_key ?? undefined,
+    type: row.type,
+    typeTags,
+    title: rowData.title || row.title,
+    description: rowData.description || undefined,
+    status: rowData.status || row.status,
+    priority: rowData.priority || undefined,
+    owner: rowData.owner || undefined,
+    module: row.document_path || undefined,
+    workspace: row.workspace,
+    tags: rowData.tags || undefined,
+    created: rowData.created || row.created || undefined,
+    updated: rowData.updated || row.updated || undefined,
+    lastIndexed: new Date(row.last_indexed),
+    content: row.content != null ? row.content : undefined,
+    archived: row.archived ?? false,
+    archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
+    source: row.source || (row.document_path ? 'inline' : 'native'),
+    authorIdentity: rowData.authorIdentity || undefined,
+    lastModifiedBy: rowData.lastModifiedBy || undefined,
+    createdByAgent: rowData.createdByAgent || false,
+    assigneeEmail: rowData.assigneeEmail || undefined,
+    reporterEmail: rowData.reporterEmail || undefined,
+    assigneeId: rowData.assigneeId || undefined,
+    reporterId: rowData.reporterId || undefined,
+    labels: rowData.labels || undefined,
+    linkedSessions: rowData.linkedSessions || undefined,
+    linkedCommitSha: rowData.linkedCommitSha || undefined,
+    documentId: rowData.documentId || undefined,
+    syncStatus: row.sync_status || 'local',
+    fieldUpdatedAt: rowData._fieldUpdatedAt || undefined,
+  };
+
+  const resultKeys = new Set(Object.keys(result));
+  const extra: Record<string, any> = {};
+  for (const [k, v] of Object.entries(rowData)) {
+    if (v !== undefined && !resultKeys.has(k)) extra[k] = v;
+  }
+  if (Object.keys(extra).length > 0) result.customFields = extra;
+  return result;
 }
 
 /**

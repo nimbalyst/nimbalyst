@@ -35,6 +35,8 @@ export interface ExtensionSettings {
   enabled: boolean;
   /** Whether the Claude Agent SDK plugin is enabled (if extension has one) */
   claudePluginEnabled?: boolean;
+  /** Whether provider-neutral agent workflows are enabled (if extension has them) */
+  agentWorkflowsEnabled?: boolean;
   /** Extension-specific configuration values (user scope) */
   configuration?: Record<string, unknown>;
 }
@@ -97,6 +99,18 @@ interface AppStoreSchema {
     // Enable user-level commands (~/.claude/commands/)
     userCommandsEnabled?: boolean;
   };
+  // Unified agent workflow registry source settings
+  agentWorkflowSources?: {
+    workspaceClaudeCompatibilityEnabled?: boolean;
+    includeProjectClaudeSources?: boolean;
+    includeUserClaudeSources?: boolean;
+    extensionWorkflowsEnabled?: boolean;
+  };
+  // Provider-specific workflow export settings
+  agentWorkflowExports?: {
+    codexEnabled?: boolean;
+    claudeGeneratedExtensionWorkflowsEnabled?: boolean;
+  };
   // Extension Development Kit (EDK) - enables MCP tools for building/reloading extensions
   extensionDevToolsEnabled?: boolean;
   // Share encryption keys: maps sessionId -> base64 AES-256 key (for re-sharing with stable URLs)
@@ -126,6 +140,11 @@ interface AppStoreSchema {
     autoCommitAudio?: boolean; // Auto-commit audio on speech pause (VAD)
     showTranscription?: boolean; // Show live transcription in UI
   };
+  // Preferred language for the agent (currently used for AI-generated session
+  // names). BCP-47 code or common name, e.g. "ja", "Japanese", "en", "fr".
+  // Empty/undefined means no preference -- the agent picks based on the
+  // conversation language.
+  preferredAgentLanguage?: string;
   // Walkthrough guide system state
   walkthroughs?: WalkthroughState;
   // First-open tracking for editor types (for walkthrough triggers)
@@ -168,6 +187,20 @@ interface AppStoreSchema {
   lastKnownVersion?: string;
   // Extension marketplace install tracking
   marketplaceInstalls?: Record<string, MarketplaceInstallRecord>;
+  // Multi-project rail: opt-in flag to host multiple projects in a single
+  // window. When false (default), each project still gets its own window.
+  multiProjectMode?: boolean;
+  // Workspace paths currently warm in the multi-project rail, in display
+  // order. Empty when multiProjectMode is off or before the user adds any.
+  openProjects?: string[];
+  // Path of the project currently visible in the rail. Restored on launch
+  // so the user lands on the same project.
+  activeProjectPath?: string | null;
+  // When true, the rail rehydrates with the projects that were warm at
+  // last app close. When false (default), the rail starts empty and is
+  // seeded only with the project the user picks from the launch screen
+  // — additional projects must be added explicitly.
+  restorePreviousProjectsOnLaunch?: boolean;
 }
 
 /**
@@ -1455,6 +1488,21 @@ export function setClaudePluginEnabled(extensionId: string, enabled: boolean): v
   setExtensionSettings(settings);
 }
 
+export function getAgentWorkflowsEnabled(extensionId: string): boolean | undefined {
+  const settings = getExtensionSettings();
+  return settings[extensionId]?.agentWorkflowsEnabled;
+}
+
+export function setAgentWorkflowsEnabled(extensionId: string, enabled: boolean): void {
+  const settings = getExtensionSettings();
+  if (!settings[extensionId]) {
+    settings[extensionId] = { enabled: true, agentWorkflowsEnabled: enabled };
+  } else {
+    settings[extensionId].agentWorkflowsEnabled = enabled;
+  }
+  setExtensionSettings(settings);
+}
+
 // Claude Code settings
 export function getClaudeCodeSettings(): { projectCommandsEnabled: boolean; userCommandsEnabled: boolean } {
   const settings = getAppStore().get('claudeCode', {});
@@ -1467,11 +1515,72 @@ export function getClaudeCodeSettings(): { projectCommandsEnabled: boolean; user
 export function setClaudeCodeProjectCommandsEnabled(enabled: boolean): void {
   const current = getAppStore().get('claudeCode', {});
   getAppStore().set('claudeCode', { ...current, projectCommandsEnabled: enabled });
+  const workflowSources = getAppStore().get('agentWorkflowSources', {});
+  getAppStore().set('agentWorkflowSources', {
+    ...workflowSources,
+    workspaceClaudeCompatibilityEnabled: true,
+    includeProjectClaudeSources: enabled,
+  });
 }
 
 export function setClaudeCodeUserCommandsEnabled(enabled: boolean): void {
   const current = getAppStore().get('claudeCode', {});
   getAppStore().set('claudeCode', { ...current, userCommandsEnabled: enabled });
+  const workflowSources = getAppStore().get('agentWorkflowSources', {});
+  getAppStore().set('agentWorkflowSources', {
+    ...workflowSources,
+    workspaceClaudeCompatibilityEnabled: true,
+    includeUserClaudeSources: enabled,
+  });
+}
+
+export interface AgentWorkflowSourceSettings {
+  workspaceClaudeCompatibilityEnabled: boolean;
+  includeProjectClaudeSources: boolean;
+  includeUserClaudeSources: boolean;
+  extensionWorkflowsEnabled: boolean;
+}
+
+export interface AgentWorkflowExportSettings {
+  codexEnabled: boolean;
+  claudeGeneratedExtensionWorkflowsEnabled: boolean;
+}
+
+export function getAgentWorkflowSourceSettings(): AgentWorkflowSourceSettings {
+  const configured = getAppStore().get('agentWorkflowSources', {});
+  const claudeSettings = getAppStore().get('claudeCode', {});
+  return {
+    workspaceClaudeCompatibilityEnabled: configured.workspaceClaudeCompatibilityEnabled ?? false,
+    includeProjectClaudeSources: configured.includeProjectClaudeSources ?? claudeSettings.projectCommandsEnabled ?? false,
+    includeUserClaudeSources: configured.includeUserClaudeSources ?? claudeSettings.userCommandsEnabled ?? false,
+    extensionWorkflowsEnabled: configured.extensionWorkflowsEnabled ?? false,
+  };
+}
+
+export function getAgentWorkflowExportSettings(): AgentWorkflowExportSettings {
+  const configured = getAppStore().get('agentWorkflowExports', {});
+  return {
+    codexEnabled: configured.codexEnabled ?? false,
+    claudeGeneratedExtensionWorkflowsEnabled: configured.claudeGeneratedExtensionWorkflowsEnabled ?? false,
+  };
+}
+
+export function setAgentWorkflowSourceSettings(
+  updates: Partial<AgentWorkflowSourceSettings>
+): AgentWorkflowSourceSettings {
+  const current = getAppStore().get('agentWorkflowSources', {});
+  const next = { ...current, ...updates };
+  getAppStore().set('agentWorkflowSources', next);
+  return getAgentWorkflowSourceSettings();
+}
+
+export function setAgentWorkflowExportSettings(
+  updates: Partial<AgentWorkflowExportSettings>
+): AgentWorkflowExportSettings {
+  const current = getAppStore().get('agentWorkflowExports', {});
+  const next = { ...current, ...updates };
+  getAppStore().set('agentWorkflowExports', next);
+  return getAgentWorkflowExportSettings();
 }
 
 // Extension Development Kit (EDK) Settings
@@ -1778,6 +1887,34 @@ export function setAppSetting<T>(key: string, value: T): void {
   getAppStore().set(key as keyof AppStoreSchema, value as any);
 }
 
+// Preferred Agent Language
+// Preferred language for the agent. Currently used to steer the auto-generated
+// session name. Empty/undefined means no preference -- the agent picks based
+// on the conversation language.
+
+/**
+ * Get the preferred agent language.
+ * Returns undefined when no preference is set.
+ */
+export function getPreferredAgentLanguage(): string | undefined {
+  const value = getAppStore().get('preferredAgentLanguage');
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Set the preferred agent language.
+ * Pass undefined or empty string to clear the preference.
+ */
+export function setPreferredAgentLanguage(language: string | undefined): void {
+  if (language && language.trim().length > 0) {
+    getAppStore().set('preferredAgentLanguage', language.trim());
+  } else {
+    getAppStore().delete('preferredAgentLanguage');
+  }
+}
+
 // V8 Heap Memory Limit
 // Default is 4096MB (4GB). Increase if experiencing OOM crashes with large sessions.
 
@@ -2022,6 +2159,44 @@ export function updateMarketplaceInstall(extensionId: string, updates: Partial<M
     installs[extensionId] = { ...installs[extensionId], ...updates };
     getAppStore().set('marketplaceInstalls', installs);
   }
+}
+
+// Multi-Project Rail Settings
+// `multiProjectMode` is the opt-in toggle that lets users open several
+// projects in a single window via the project rail. The `openProjects` list
+// and `activeProjectPath` are restored on launch so the rail rehydrates.
+
+export function getMultiProjectMode(): boolean {
+  return getAppStore().get('multiProjectMode', false);
+}
+
+export function setMultiProjectMode(enabled: boolean): void {
+  getAppStore().set('multiProjectMode', enabled);
+}
+
+export function getOpenProjectPaths(): string[] {
+  const stored = getAppStore().get('openProjects', []);
+  return Array.isArray(stored) ? stored : [];
+}
+
+export function setOpenProjectPaths(paths: string[]): void {
+  getAppStore().set('openProjects', paths);
+}
+
+export function getActiveProjectPath(): string | null {
+  return getAppStore().get('activeProjectPath', null);
+}
+
+export function setActiveProjectPath(path: string | null): void {
+  getAppStore().set('activeProjectPath', path);
+}
+
+export function getRestorePreviousProjectsOnLaunch(): boolean {
+  return getAppStore().get('restorePreviousProjectsOnLaunch', false);
+}
+
+export function setRestorePreviousProjectsOnLaunch(enabled: boolean): void {
+  getAppStore().set('restorePreviousProjectsOnLaunch', enabled);
 }
 
 export function runMigrations(currentVersion: string): void {

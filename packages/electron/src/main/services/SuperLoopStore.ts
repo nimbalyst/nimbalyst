@@ -205,6 +205,8 @@ export function createSuperLoopStore(db: PGliteLike, ensureDbReady?: EnsureReady
         `SELECT rl.* FROM super_loops rl
          JOIN worktrees w ON rl.worktree_id = w.id
          WHERE w.workspace_id = $1
+           AND (rl.is_archived = FALSE OR rl.is_archived IS NULL)
+           AND (w.is_archived = FALSE OR w.is_archived IS NULL)
          ORDER BY rl.created_at DESC`,
         [workspaceId]
       );

@@ -1,161 +1,287 @@
 # AI Provider Types
 
-Nimbalyst supports two categories of AI providers, each with different capabilities and use cases.
+Nimbalyst currently supports two provider categories:
 
-## Agent Providers
+- **Agent providers**: long-running coding agents with MCP, direct file/tool access, multi-file workflows, and resumable provider sessions.
+- **Chat providers**: direct model/API integrations that work by attaching document context to prompts instead of giving the model a live tool surface.
 
-Agent providers are designed for autonomous coding tasks. They have full access to your codebase through the Model Context Protocol (MCP) and can read, write, and modify files directly.
+The code-level source of truth for provider IDs lives in `packages/runtime/src/ai/server/types.ts` (`AI_PROVIDER_TYPES` and `isAgentProvider()`).
 
-### Capabilities
+## Current Provider Inventory
 
-- **MCP Support**: Native integration with Model Context Protocol for tool execution
-- **File System Access**: Can read and write files directly via MCP tools
-- **Multi-file Operations**: Capable of complex refactoring across multiple files
-- **Session Persistence**: Maintains context across conversation turns
-- **Planning Mode**: Supports plan-then-execute workflows for safer changes
+### Agent providers
 
-### Available Agent Providers
+These providers currently register through `packages/runtime/src/ai/server/ProviderFactory.ts` and are treated as agents by `isAgentProvider()`.
 
-| Provider | Description |
-|----------|-------------|
-| Claude Code | Uses the Claude Agent SDK with full MCP integration |
-| OpenAI Codex | Uses the OpenAI Codex SDK with agent-style streaming and tool support |
+| Provider ID | UI label / availability | Transport style | Auth model | Model discovery | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `claude-code` | **Claude Agent**. Enabled by default in settings. | Anthropic SDK integration in `ClaudeCodeProvider.ts` using `@anthropic-ai/claude-agent-sdk`. | Claude CLI / account login, with optional stored provider key. | Provider-managed; Claude model variants are handled internally. | Historical provider ID is still `claude-code` even though the UI now says "Claude Agent". |
+| `openai-codex` | **OpenAI Codex**. First-class settings panel. | Codex SDK adapter via `CodexSDKProtocol`. | Codex CLI login by default; optional OpenAI API key override. | Dynamic discovery from Codex/OpenAI. | Main Codex transport today. |
+| `openai-codex-acp` | **OpenAI Codex (ACP)**. Hidden behind the experimental ACP toggle in the OpenAI Codex settings panel. | ACP over stdio via `CodexACPProtocol`. | Same auth story as Codex; optional API key. | Reuses Codex model catalog. | Experimental peer provider with native file-edit hooks and better diff attribution. |
+| `opencode` | **OpenCode**. Alpha settings panel. | OpenCode local server + SDK (`OpenCodeSDKProtocol`) over HTTP/SSE. | OpenCode's own config/auth model. | Preset model list plus user-configured providers/models from `opencode.json`. | Best fit when we want an open-source multi-model agent surface. |
+| `copilot-cli` | **GitHub Copilot**. Alpha settings panel. | ACP over stdio via `copilot --acp --stdio` and `CopilotACPProtocol`. | Existing Copilot CLI login. | Minimal fixed catalog (`copilot-cli:default`). | No separate API key flow; relies on CLI auth. |
 
-### Claude Code Provider Details
+### Chat providers
 
-The primary agent provider, Claude Code, uses the Model Context Protocol for enhanced code-aware features:
+These providers still use `BaseAIProvider`, not `BaseAgentProvider`.
 
-- **Provider ID**: `claude-code`
-- **Implementation**: `packages/runtime/src/ai/server/providers/ClaudeCodeProvider.ts`
-- **SDK**: Dynamically loads `@anthropic-ai/claude-agent-sdk` from user's installation
-- **Installation**: Requires `npm install -g @anthropic-ai/claude-agent-sdk` or local installation
-- **Model Selection**: Manages its own model selection internally (do not pass model IDs)
-- **Internal MCP Servers**: See [INTERNAL_MCP_SERVERS.md](./INTERNAL_MCP_SERVERS.md) for how to implement and add new MCP servers
+| Provider ID | UI label | Transport style | Notes |
+| --- | --- | --- | --- |
+| `claude` | Claude Chat | Direct Anthropic SDK | Standard chat provider with tool calling but no MCP/file-agent loop. |
+| `openai` | OpenAI | Direct OpenAI SDK | Standard chat/completions path. |
+| `lmstudio` | LM Studio | Local OpenAI-compatible endpoint | Local-only chat provider. |
 
-### When to Use
+## What Makes An Agent Provider Different
 
-- Complex refactoring tasks
-- Multi-file changes
-- Tasks requiring file system awareness
-- When you need the AI to explore and understand your codebase
+Agent providers all advertise:
 
-## Chat Providers
+- `mcpSupport: true`
+- `supportsFileTools: true`
+- `resumeSession: true`
+- `edits: true`
 
-Chat providers use direct API calls for conversational AI assistance. Files are attached as context to messages rather than accessed via tools.
+Those capabilities are defined in `packages/runtime/src/ai/server/types.ts` and are what the rest of the app uses to distinguish agents from chat providers.
 
-### Capabilities
+At runtime, almost all agent-only behavior is shared by `packages/runtime/src/ai/server/providers/BaseAgentProvider.ts`, including:
 
-- **Streaming Responses**: Real-time response streaming
-- **Tool Calling**: Basic tool support (applyDiff, streamContent)
-- **File Context**: Files are injected into the conversation as context
-- **Direct API**: Uses official provider SDKs for reliable integration
+- provider-session ID mapping
+- permission request lifecycle
+- abort/destroy behavior
+- trust-check integration
+- permission response polling
+- best-effort raw message logging
 
-### Available Chat Providers
+If a provider is agentic but does **not** extend `BaseAgentProvider`, it will miss a large amount of expected app behavior.
 
-| Provider | Description |
-|----------|-------------|
-| Claude Chat | Direct Anthropic API - reliable, fast responses |
-| OpenAI | GPT-4 and other OpenAI models |
-| LM Studio | Local models for privacy-focused usage |
+## Current Agent Provider Patterns
 
-### Claude Chat Provider Details
+The current codebase has three useful implementation shapes:
 
-Direct Anthropic API integration for standard chat:
+### 1. Direct SDK provider
 
-- **Provider ID**: `claude`
-- **Implementation**: `packages/runtime/src/ai/server/providers/ClaudeProvider.ts`
-- **SDK**: Uses official Anthropic SDK (`@anthropic-ai/sdk`)
-- **Features**:
-  - Standard Claude models (Opus 4.6, Sonnet 4.6, Opus 4.5, Sonnet 4.5, etc.)
-  - Streaming responses with tool use support
-  - Direct API key authentication
-  - Full control over model selection
+`ClaudeCodeProvider.ts` talks to the SDK directly and handles provider-specific stream parsing inline.
 
-### Other Chat Providers
+Use this pattern when the upstream SDK already exposes the exact lifecycle you need and wrapping it in `AgentProtocol` would not buy much.
 
-- **OpenAI**: GPT-4 and GPT-3.5 models via OpenAI API
-- **LM Studio**: Local model support for privacy-focused usage - automatically detects models running locally
+### 2. Protocol-backed provider
 
-### When to Use
+`OpenAICodexProvider.ts`, `OpenAICodexACPProvider.ts`, `OpenCodeProvider.ts`, and `CopilotCLIProvider.ts` all extend `BaseAgentProvider` but push provider-specific transport details into protocol adapters under `packages/runtime/src/ai/server/protocols/`.
 
-- Quick questions about code
-- Single-file edits
-- When you want faster responses
-- When running models locally (LM Studio)
-- When you prefer simpler, more predictable behavior
+Use this pattern when:
 
-## Feature Comparison
+- you want a clean transport boundary
+- the provider already emits structured events
+- you expect to unit test transport and provider logic independently
 
-| Feature | Agent Providers | Chat Providers |
-|---------|----------------|----------------|
-| MCP Support | Yes | No |
-| File Tools | Via MCP | Attached as context |
-| Multi-file Awareness | Native | Limited |
-| Session Resume | Yes | No |
-| Response Speed | Moderate | Fast |
-| Local Model Support | No | Yes (LM Studio) |
+`packages/runtime/src/ai/server/protocols/ProtocolInterface.ts` is the contract for this layer.
 
-## Implementation Details
+### 3. CLI-backed provider
 
-### Provider Architecture
+We currently have two CLI-backed sub-patterns:
 
-All AI providers extend from `BaseAIProvider`, which provides common functionality like tool registration, message logging, and event emission. Agent providers further extend from `BaseAgentProvider`, which adds agent-specific infrastructure:
+- **ACP CLI**: `OpenAICodexACPProvider`, `CopilotCLIProvider`
+- **CLI/server hybrid**: `OpenCodeProvider` starts a subprocess-backed local server and then speaks HTTP/SSE through its SDK client
 
-```
-BaseAIProvider (abstract)
-  ├── Chat providers (Claude, OpenAI, LM Studio)
-  └── BaseAgentProvider (agent-specific infrastructure)
-        ├── ClaudeCodeProvider
-        ├── OpenAICodexProvider
-        └── Future agent providers
-```
+For new CLI integrations, prefer a structured protocol like ACP or JSON-over-stdio. Avoid PTY scraping unless there is no viable alternative.
 
-**BaseAgentProvider** provides shared agent infrastructure:
-- Abort controller management
-- Session ID mapping (Nimbalyst session ID ↔ provider session ID)
-- Permission management (pending requests, session cache, resolve/reject lifecycle)
-- Permission response polling (for cross-device and mobile support)
-- Security logging
-- Best-effort message logging
-- Shared static injections (trust checker, permission pattern persistence)
+## Transcript Pipeline Requirements
 
-This architecture ensures all agent providers have consistent behavior for permissions, session management, and lifecycle handling.
+Adding an agent provider is not just a provider-class change. The transcript system expects raw provider messages to be reparsed into canonical events.
 
-### Provider Detection
+Current parser routing lives in:
 
-The codebase determines provider type using these flags in `ProviderCapabilities`:
+- `packages/runtime/src/ai/server/transcript/processDescriptor.ts`
+- `packages/runtime/src/ai/server/transcript/TranscriptTransformer.ts`
+- `packages/runtime/src/ai/server/transcript/projectRawMessages.ts`
 
-```typescript
-interface ProviderCapabilities {
-  supportsFileTools: boolean;  // true for agents, false for chat
-  mcpSupport: boolean;         // true for agents, false for chat
-  // ...
-}
-```
+Current provider-to-parser mapping is:
 
-### Key Files
+- `claude-code` -> `ClaudeCodeRawParser`
+- `openai-codex` -> `CodexRawParser`
+- `openai-codex-acp` -> `CodexACPRawParser`
+- `opencode` -> `OpenCodeRawParser`
+- `copilot-cli` -> `CopilotRawParser`
 
-- Base providers: `packages/runtime/src/ai/server/AIProvider.ts`, `packages/runtime/src/ai/server/providers/BaseAgentProvider.ts`
-- Agent provider implementations: `packages/runtime/src/ai/server/providers/ClaudeCodeProvider.ts`, `OpenAICodexProvider.ts`
-- Chat provider implementations: `packages/runtime/src/ai/server/providers/ClaudeProvider.ts`, etc.
-- Type definitions: `packages/runtime/src/ai/server/types.ts`
-- Provider factory: `packages/runtime/src/ai/server/ProviderFactory.ts`
+If a new provider emits a new raw event shape, it needs a parser and parser registration. If it deliberately reuses an existing shape, document that and route it to the existing parser explicitly.
 
-### Adding New Agent Providers
+## Adding A New Agent Provider
 
-To add a new agent provider:
+This is the practical checklist for adding another agent provider.
 
-1. Extend `BaseAgentProvider` instead of `BaseAIProvider`
-2. Implement required abstract methods:
-   - `getProviderName(): string` - Return the provider identifier
-   - `getProviderSessionData(sessionId: string): any` - Return provider session data with legacy key mapping
-   - `sendMessage(...)` - Implement the provider-specific streaming logic
-   - `initialize(config: ProviderConfig)` - Set up the provider
-3. Override `abort()` and `destroy()` if you need provider-specific cleanup (remember to call `super`)
-4. All shared functionality (permissions, sessions, polling, logging) is inherited automatically
+### 1. Add the provider ID to runtime types
 
-The base class provides default implementations for `getCapabilities()`, `setProviderSessionData()`, `resolveToolPermission()`, `rejectToolPermission()`, etc. Override these only if you need provider-specific behavior.
+Update `packages/runtime/src/ai/server/types.ts`:
 
-## Switching Between Modes
+- add the new ID to `AI_PROVIDER_TYPES`
+- update `isAgentProvider()`
+- update any provider-specific model normalization helpers if needed
 
-You cannot switch between Agent and Chat providers mid-session. Once a started session is using an agent provider, you also cannot switch it to a different agent provider such as Claude Agent to OpenAI Codex, or the reverse. Start a new session to change providers. This ensures consistent behavior and prevents context confusion.
+This file is the first place that should fail if a provider is only partially wired.
+
+### 2. Implement the provider class
+
+Create `packages/runtime/src/ai/server/providers/<YourProvider>.ts` and extend `BaseAgentProvider`.
+
+At minimum, implement:
+
+- `initialize(config)`
+- `sendMessage(...)`
+- `getCapabilities()`
+- `getProviderName()`
+- `getProviderSessionData(sessionId)`
+
+Typical expectations:
+
+- store and restore the upstream session/thread ID via `this.sessions`
+- log raw input/output events so transcript migration can rebuild canonical events
+- emit `promptAdditions` when document/system additions are injected
+- honor aborts through `this.abortController`
+
+If the provider has a clean transport boundary, also create a protocol adapter under `packages/runtime/src/ai/server/protocols/`.
+
+### 3. Register it in factory + model discovery
+
+Update:
+
+- `packages/runtime/src/ai/server/ProviderFactory.ts`
+- `packages/runtime/src/ai/server/ModelRegistry.ts`
+
+If the provider has fixed or synthetic models, surface them there. If it discovers models dynamically, keep that logic inside the provider and let `ModelRegistry` call into it.
+
+### 4. Wire transcript parsing
+
+Update parser selection and, if necessary, add a parser:
+
+- `packages/runtime/src/ai/server/transcript/processDescriptor.ts`
+- `packages/runtime/src/ai/server/transcript/TranscriptTransformer.ts`
+- `packages/runtime/src/ai/server/transcript/projectRawMessages.ts`
+- `packages/runtime/src/ai/server/transcript/parsers/*`
+
+If the provider emits edit events, make sure the parser can reconstruct stable `providerToolCallId` values. That is what keeps diff rendering, file attribution, and transcript replay coherent.
+
+### 5. Expose it through Electron settings and session creation
+
+Update Electron-side provider plumbing:
+
+- `packages/electron/src/renderer/store/atoms/appSettings.ts`
+- `packages/electron/src/renderer/components/Settings/SettingsView.tsx`
+- `packages/electron/src/renderer/components/Settings/SettingsSidebar.tsx`
+- `packages/electron/src/preload/index.ts`
+- `packages/electron/src/main/services/ai/AIService.ts`
+
+This usually includes:
+
+- default enabled/install state
+- model loading
+- connection testing
+- provider toggles
+- provider label/icon wiring
+- session creation union types and IPC typing
+
+### 6. Wire shared agent dependencies from Electron main
+
+Most agent providers need startup-time injections from `packages/electron/src/main/index.ts` and related services:
+
+- MCP config loader
+- shell environment loader
+- enhanced PATH loader
+- session naming server port
+- extension-dev server port
+- session-context server port
+- meta-agent server port
+- trust checker
+- permission pattern saver/checker
+- security logger
+
+If the provider supports native edit hooks, it may also need explicit file-write callbacks like the ACP Codex provider.
+
+### 7. Add tests at the right layers
+
+Minimum expected coverage:
+
+- provider unit tests in `packages/runtime/src/ai/server/providers/__tests__/`
+- transcript parser tests in `packages/runtime/src/ai/server/transcript/__tests__/`
+- model discovery or normalization tests if relevant
+- Electron-side behavior tests if the provider introduces new settings or lifecycle paths
+
+## Extra Guidance For CLI-Based Agent Providers
+
+If the new provider is driven by a CLI, there are a few extra requirements beyond the normal provider checklist.
+
+### Prefer structured CLI protocols
+
+Good:
+
+- ACP over stdio
+- JSON-RPC over stdio
+- newline-delimited JSON events
+- a local HTTP/SSE server spawned by the CLI
+
+Bad:
+
+- scraping ANSI terminal output
+- parsing human-readable TTY status text
+- relying on cursor movement or screen buffers
+
+The existing codebase is set up for structured transports. `CopilotCLIProvider` and `OpenAICodexACPProvider` are the closest templates for stdio/ACP integrations.
+
+### Add CLI installation metadata
+
+If we want the app to manage installation or detect presence, update:
+
+- `packages/electron/src/main/services/CLIManager.ts`
+
+That includes:
+
+- the provider's CLI package name
+- the executable command name
+- install/check/upgrade logic if the defaults are insufficient
+
+If the CLI needs custom path resolution, follow the Copilot pattern and add a provider-specific path loader.
+
+### Make Electron's environment usable
+
+GUI-launched Electron apps do not inherit a full shell environment. CLI-backed agents often fail unless they receive:
+
+- the user's login-shell env
+- an enhanced `PATH`
+- any provider-specific auth/config env vars
+
+Existing wiring for this already exists in `packages/electron/src/main/index.ts`. A new CLI provider should almost certainly receive the same injections.
+
+### Decide where auth lives
+
+Current CLI-backed agents fall into three auth patterns:
+
+- provider CLI login only: `copilot-cli`
+- CLI login with optional API key override: `openai-codex`
+- provider-owned config/auth file: `opencode`
+
+Document the auth contract clearly in the provider panel and keep the runtime consistent with it. Do not add `process.env` API key fallbacks.
+
+### Think about packaged builds early
+
+CLI providers that work in dev can still fail in packaged apps because of:
+
+- `asar` path resolution
+- missing bundled binaries
+- ESM dynamic import issues
+- executable location differences by platform
+
+`OpenAICodexProvider` is the main example of extra packaged-build work: it resolves the Codex SDK/binary differently when running from a packaged Electron app.
+
+## Suggested Templates
+
+Use these as starting points depending on the integration style:
+
+- **Anthropic/SDK-first agent**: `packages/runtime/src/ai/server/providers/ClaudeCodeProvider.ts`
+- **SDK with protocol adapter**: `packages/runtime/src/ai/server/providers/OpenAICodexProvider.ts`
+- **ACP / stdio CLI agent**: `packages/runtime/src/ai/server/providers/OpenAICodexACPProvider.ts`
+- **Open-source server-backed agent**: `packages/runtime/src/ai/server/providers/OpenCodeProvider.ts`
+- **Minimal CLI-auth ACP agent**: `packages/runtime/src/ai/server/providers/CopilotCLIProvider.ts`
+
+## Provider Switching Rules
+
+Started sessions cannot switch away from an agent provider or switch between agent providers after messages already exist. That rule is enforced by `shouldBlockStartedSessionProviderSwitch()` in `packages/runtime/src/ai/server/types.ts`.
+
+This is intentional. Agent sessions carry provider-specific thread/session state that is not safely interchangeable across providers or transports.

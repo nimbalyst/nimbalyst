@@ -180,7 +180,9 @@ export function parseCommandFile(
 
     return {
       name: commandName,
-      description: frontmatter.description,
+      description: typeof frontmatter.description === 'string' || typeof frontmatter.description === 'number'
+        ? String(frontmatter.description)
+        : extractBodyDescription(body),
       argumentHint: normalizeArgumentHint(frontmatter['argument-hint']),
       agentName: frontmatter.name,
       handoffs: frontmatter.handoffs,

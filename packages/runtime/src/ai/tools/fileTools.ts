@@ -2,8 +2,24 @@
  * File operation tools that use the FileSystemService abstraction
  */
 
-import type { ToolDefinition } from './index';
-import { getFileSystemService } from '../../core/FileSystemService';
+import type { ToolContext, ToolDefinition } from './index';
+import { getFileSystemService, getFileSystemServiceFor } from '../../core/FileSystemService';
+
+/**
+ * Resolve the FileSystemService for the workspace this tool call belongs
+ * to. Prefer the per-path registry when the dispatcher hands us an
+ * explicit `workspacePath`; fall back to the legacy global only when
+ * the call site genuinely has no workspace context. The fallback exists
+ * to keep older single-project paths working — multi-project rail
+ * dispatch always supplies the path.
+ */
+function resolveFileSystemServiceForCall(ctx?: ToolContext) {
+  if (ctx?.workspacePath) {
+    const scoped = getFileSystemServiceFor(ctx.workspacePath);
+    if (scoped) return scoped;
+  }
+  return getFileSystemService();
+}
 
 /**
  * Create file search tool
@@ -37,8 +53,8 @@ export const searchFilesTool: ToolDefinition = {
     },
     required: ['query']
   },
-  handler: async (args: any) => {
-    const fileSystemService = getFileSystemService();
+  handler: async (args: any, ctx?: ToolContext) => {
+    const fileSystemService = resolveFileSystemServiceForCall(ctx);
     if (!fileSystemService) {
       return {
         success: false,
@@ -88,8 +104,8 @@ export const listFilesTool: ToolDefinition = {
     },
     required: []
   },
-  handler: async (args: any) => {
-    const fileSystemService = getFileSystemService();
+  handler: async (args: any, ctx?: ToolContext) => {
+    const fileSystemService = resolveFileSystemServiceForCall(ctx);
     if (!fileSystemService) {
       return {
         success: false,
@@ -129,8 +145,8 @@ export const readFileTool: ToolDefinition = {
     },
     required: ['path']
   },
-  handler: async (args: any) => {
-    const fileSystemService = getFileSystemService();
+  handler: async (args: any, ctx?: ToolContext) => {
+    const fileSystemService = resolveFileSystemServiceForCall(ctx);
     if (!fileSystemService) {
       return {
         success: false,

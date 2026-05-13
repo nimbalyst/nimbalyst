@@ -168,7 +168,10 @@ export function PanelContainer({
   return (
     <div className="panel-container flex flex-col h-full w-full overflow-hidden" data-panel-id={panel.id} data-extension-id={panel.extensionId} data-theme={theme}>
       <PanelErrorBoundary panelId={panel.id}>
-        <PanelComponent host={host} />
+        {/* Key forces a fresh remount when the workspace switches so panels
+            (e.g. the git extension) re-read all per-workspace data instead
+            of holding state captured for the previous project. */}
+        <PanelComponent key={workspacePath} host={host} />
       </PanelErrorBoundary>
     </div>
   );

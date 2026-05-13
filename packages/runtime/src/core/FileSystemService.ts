@@ -72,8 +72,21 @@ export interface FileSystemService {
   }>;
 }
 
-// Registry for file system service
+// Registry for file system service.
+//
+// Two-tier registry:
+//
+// - The legacy global slot (`fileSystemService`) holds the service for the
+//   currently-visible workspace and is kept around for callers that
+//   genuinely have no workspace context (older single-project paths,
+//   embedded UI surfaces).
+// - The per-path map (`fileSystemServicesByPath`) holds every warm rail
+//   workspace's service. Callers that DO know which workspace they are
+//   acting on (chiefly the AI tool dispatcher running an inactive rail
+//   project's session) must resolve via this map so cross-workspace
+//   leaks via the global are impossible.
 let fileSystemService: FileSystemService | null = null;
+const fileSystemServicesByPath = new Map<string, FileSystemService>();
 
 export function setFileSystemService(service: FileSystemService): void {
   fileSystemService = service;
@@ -85,4 +98,16 @@ export function getFileSystemService(): FileSystemService | null {
 
 export function clearFileSystemService(): void {
   fileSystemService = null;
+}
+
+export function setFileSystemServiceFor(workspacePath: string, service: FileSystemService): void {
+  fileSystemServicesByPath.set(workspacePath, service);
+}
+
+export function getFileSystemServiceFor(workspacePath: string): FileSystemService | null {
+  return fileSystemServicesByPath.get(workspacePath) ?? null;
+}
+
+export function clearFileSystemServiceFor(workspacePath: string): void {
+  fileSystemServicesByPath.delete(workspacePath);
 }

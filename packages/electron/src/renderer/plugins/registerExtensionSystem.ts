@@ -598,15 +598,21 @@ function setupExtensionTestListeners(): void {
 
 /**
  * Set the workspace path for extension tool registration.
- * Should be called when workspace changes.
+ * Should be called when workspace changes (including rail switches in
+ * multi-project mode — every new path needs its own tool registration).
  */
 export function setExtensionWorkspacePath(workspacePath: string | null): void {
-  const wasNull = currentWorkspacePath === null;
+  const previous = currentWorkspacePath;
   currentWorkspacePath = workspacePath;
 
-  // If workspace path was just set (not null anymore), register extension tools
-  // This handles the case where tools were loaded before workspace was known
-  if (wasNull && workspacePath && window.electronAPI?.registerExtensionTools) {
+  // Register extension tools for every new workspace we see. The previous
+  // implementation only fired on the first non-null assignment, which left
+  // additional rail-warm projects without their MCP tools registered.
+  if (
+    workspacePath &&
+    workspacePath !== previous &&
+    window.electronAPI?.registerExtensionTools
+  ) {
     const tools = getMCPToolDefinitions();
     if (tools.length > 0) {
       console.log(`[ExtensionSystem] Registering ${tools.length} extension tools for workspace: ${workspacePath}`);

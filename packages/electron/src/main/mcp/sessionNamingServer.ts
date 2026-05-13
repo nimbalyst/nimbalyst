@@ -296,14 +296,14 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
         {
           name: "update_session_meta",
           description:
-            "Update session metadata. On the first call, set name, tags, and phase. On subsequent calls, update tags and/or phase. The name can only be set once -- if already set, the name is ignored but other fields are still applied. Always returns the full current session metadata.",
+            "Update session metadata. On the first call, set name, tags, and phase. On subsequent calls, update tags and/or phase. The name CAN be changed on later calls, but you should generally not rename a session once it has been named unless the user explicitly asks for a different name. Always returns the full current session metadata.",
           inputSchema: {
             type: "object",
             properties: {
               name: {
                 type: "string",
                 description:
-                  'A concise session name (2-5 words) with descriptive part first. Can only be set once per session. Examples: "Authentication bug fix", "Dark mode implementation", "Database layer refactor"',
+                  'A concise session name (2-5 words) with descriptive part first. Examples: "Authentication bug fix", "Dark mode implementation", "Database layer refactor". Only set this on the first call, or when the user explicitly asks you to rename the session.',
               },
               add: {
                 type: "array",
@@ -414,20 +414,16 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
           notes.push(`Set name: "${sessionName}"`);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : "Unknown error";
-          if (errorMessage.includes("already been named")) {
-            notes.push(`Note: Name already set, skipped.`);
-          } else {
-            console.error("[Session Naming MCP] Failed to update session title:", error);
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Error updating session title: ${errorMessage}`,
-                },
-              ],
-              isError: true,
-            };
-          }
+          console.error("[Session Naming MCP] Failed to update session title:", error);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Error updating session title: ${errorMessage}`,
+              },
+            ],
+            isError: true,
+          };
         }
       }
 

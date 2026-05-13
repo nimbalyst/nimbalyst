@@ -926,22 +926,17 @@ export class TeamTrackerRoom implements DurableObject {
       return;
     }
 
+    // Drop the entire DO storage so Cloudflare can reclaim the SQLite pages.
+    // Per-table DELETE leaves the SQLite file at high-water-mark.
     log.info('Tracker TTL expired, deleting data. Last activity:', lastActivity);
-    sql.exec(`DELETE FROM tracker_items`);
-    sql.exec(`DELETE FROM changelog`);
-    sql.exec(`DELETE FROM metadata`);
+    await this.state.storage.deleteAll();
+    this.initialized = false;
   }
 
   /**
    * Handle account deletion - purge all data and disconnect clients.
    */
-  private handleDeleteAccount(): Response {
-    const sql = this.state.storage.sql;
-
-    sql.exec(`DELETE FROM tracker_items`);
-    sql.exec(`DELETE FROM changelog`);
-    sql.exec(`DELETE FROM metadata`);
-
+  private async handleDeleteAccount(): Promise<Response> {
     for (const [ws] of this.connections) {
       try {
         ws.close(4003, 'Account deleted');
@@ -951,7 +946,8 @@ export class TeamTrackerRoom implements DurableObject {
     }
     this.connections.clear();
 
-    this.state.storage.deleteAlarm();
+    await this.state.storage.deleteAll();
+    this.initialized = false;
 
     return new Response(JSON.stringify({ deleted: true }), {
       headers: { 'Content-Type': 'application/json' },

@@ -280,6 +280,7 @@ export class TrackerSyncProvider {
     this.ws = ws;
 
     ws.addEventListener('open', () => {
+      if (this.ws !== ws) return;
       console.log('[TrackerSync] WebSocket connected, requesting sync...');
       this.reconnectAttempts = 0; // Reset on successful connection
       this.setStatus('syncing');
@@ -287,12 +288,14 @@ export class TrackerSyncProvider {
     });
 
     ws.addEventListener('message', (event) => {
+      if (this.ws !== ws) return;
       this.handleMessage(event);
     });
 
     let closeReceived = false;
 
     ws.addEventListener('error', (evt: any) => {
+      if (this.ws !== ws) return;
       console.error('[TrackerSync] WebSocket error:', evt?.message || '(no details)');
       // If close doesn't arrive within 2s, trigger reconnect manually.
       // Some environments don't fire close after error when connection never opened.
@@ -306,6 +309,10 @@ export class TrackerSyncProvider {
 
     ws.addEventListener('close', (event) => {
       closeReceived = true;
+      // Stale close from a socket we already replaced (e.g. via reconnectNow)
+      // must not call handleDisconnect() -- that would null out `this.ws` and
+      // clobber the new socket.
+      if (this.ws !== ws) return;
       console.log('[TrackerSync] WebSocket closed:', event.code, event.reason || '');
       this.handleDisconnect();
     });
@@ -327,18 +334,24 @@ export class TrackerSyncProvider {
   /**
    * Immediately reconnect, cancelling any pending backoff and resetting attempts.
    * Called externally when the network has been confirmed available (e.g. after
-   * the CollabV3 index has reached `synced`). Falls back to normal backoff if
-   * the connect attempt fails.
+   * the CollabV3 index has reached `synced`). This intentionally tears down any
+   * existing socket first so resume/wake can recover from half-open transports
+   * that still report OPEN at the WebSocket API layer.
+   *
+   * Falls back to normal backoff if the connect attempt fails.
    */
   reconnectNow(): void {
     if (this.destroyed) return;
-    // Already have a connection -- nothing to do. If the WS is open and healthy,
-    // we don't need to churn; if it's in a zombie state, disconnect() first.
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+
+    // A previous reconnectNow() already started a fresh handshake that hasn't
+    // resolved yet. Don't tear it down -- post-wake the broker fires several
+    // network-available events in a ~20s burst and we'd otherwise churn through
+    // half-finished sockets.
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) return;
 
     this.cancelReconnect(true);
 
-    // Tear down any half-open WS so connect() creates a fresh one.
+    // Tear down any existing WS so connect() creates a fresh one.
     if (this.ws) {
       try {
         this.ws.close();

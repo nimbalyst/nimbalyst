@@ -22,6 +22,7 @@ import { PersonalProjectSyncRoom } from './ProjectSyncRoom';
 import { parseAuth as parseAuthJWT, type AuthConfig, type AuthResult } from './auth';
 import { handleShareUpload, handleShareView, handleShareContent, handleShareList, handleShareDelete } from './share';
 import { handleAccountDeletion } from './accountDeletion';
+import { handleAdminCleanup } from './adminCleanup';
 import {
   handleDeleteDocumentAsset,
   handleGetDocumentAsset,
@@ -399,6 +400,12 @@ export default {
     // Viewer static assets (extension bundles, React deps, shell)
     if (url.pathname.startsWith('/viewer/')) {
       return handleViewerAsset(url.pathname, env);
+    }
+
+    // Admin DO cleanup -- gated by Cloudflare Access (worker verifies the
+    // Access JWT against CF_ACCESS_AUD). Called by scripts/cleanup-orphan-dos.mjs.
+    if (url.pathname === '/admin/cleanup-do' && request.method === 'POST') {
+      return handleAdminCleanup(request, env);
     }
 
     return new Response('Not Found', { status: 404 });

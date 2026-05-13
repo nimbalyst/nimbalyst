@@ -4,13 +4,19 @@
  * Manages the list of documents shared to team for the current workspace.
  * Backed by the TeamRoom Durable Object for real-time team-wide sync.
  * Falls back gracefully if team/auth is not available.
+ *
+ * Multi-project keep-warm: provider instances and per-workspace state are
+ * stored in maps keyed by workspace path. The active project's data is
+ * exposed via derived atoms so existing UI consumers do not need to change.
  */
 
 import { atom } from 'jotai';
+import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
 import type { TeamSyncProvider as TeamSyncProviderType } from '@nimbalyst/runtime/sync';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { collabKeyRotationEpochAtom } from './collabEditor';
+import { activeWorkspacePathAtom } from './openProjects';
 
 // ============================================================
 // Types
@@ -25,34 +31,92 @@ export interface SharedDocument {
   updatedAt: number;
 }
 
+type TeamSyncStatus = 'disconnected' | 'connecting' | 'syncing' | 'connected' | 'error';
+
 // ============================================================
-// Atoms
+// Per-workspace atom families
+// ============================================================
+
+const sharedDocumentsAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<SharedDocument[]>([])
+);
+
+const teamSyncStatusAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<TeamSyncStatus>('disconnected')
+);
+
+const workspaceHasTeamAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<boolean>(false)
+);
+
+// ============================================================
+// Public atoms — derived from the active workspace
 // ============================================================
 
 /**
- * List of shared collaborative documents for the current workspace.
+ * List of shared collaborative documents for the active workspace.
  * Populated from TeamRoom on connect, updated via broadcasts.
  */
-export const sharedDocumentsAtom = atom<SharedDocument[]>([]);
+export const sharedDocumentsAtom = atom<SharedDocument[], [SharedDocument[] | ((current: SharedDocument[]) => SharedDocument[])], void>(
+  (get) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return [];
+    return get(sharedDocumentsAtomFamily(path));
+  },
+  (get, set, valueOrUpdater) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return;
+    const target = sharedDocumentsAtomFamily(path);
+    if (typeof valueOrUpdater === 'function') {
+      set(target, valueOrUpdater(get(target)));
+    } else {
+      set(target, valueOrUpdater);
+    }
+  }
+);
 
 /**
- * Connection status for the team sync provider.
+ * Connection status for the active workspace's team sync provider.
  */
-export const teamSyncStatusAtom = atom<'disconnected' | 'connecting' | 'syncing' | 'connected' | 'error'>('disconnected');
+export const teamSyncStatusAtom = atom<TeamSyncStatus, [TeamSyncStatus], void>(
+  (get) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return 'disconnected';
+    return get(teamSyncStatusAtomFamily(path));
+  },
+  (get, set, value) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return;
+    set(teamSyncStatusAtomFamily(path), value);
+  }
+);
 
 /**
- * Whether the current workspace has an active team configured.
+ * Whether the active workspace has an active team configured.
  * Set to true when initSharedDocuments successfully resolves team config,
  * false when no team is found. Used to conditionally show team-only UI
  * (e.g., the collab mode nav button).
  */
-export const workspaceHasTeamAtom = atom(false);
+export const workspaceHasTeamAtom = atom<boolean, [boolean], void>(
+  (get) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return false;
+    return get(workspaceHasTeamAtomFamily(path));
+  },
+  (get, set, value) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return;
+    set(workspaceHasTeamAtomFamily(path), value);
+  }
+);
 
 /**
  * Pending document to auto-open in CollabMode after switching modes.
  * Set by "Share to Team" action, consumed by CollabMode on activation.
  * Cleared after consumption. Carries initialContent for first-time shares
  * so the collaborative document can be seeded with file content.
+ *
+ * Single-shot signal; not workspace-scoped.
  */
 export interface PendingCollabDocument {
   documentId: string;
@@ -61,18 +125,22 @@ export interface PendingCollabDocument {
 export const pendingCollabDocumentAtom = atom<PendingCollabDocument | null>(null);
 
 // ============================================================
-// Provider Instance (module-level singleton per workspace)
+// Provider Instances (per workspace)
 // ============================================================
 
-let activeProvider: TeamSyncProviderType | null = null;
-let activeWorkspacePath: string | null = null;
-let pendingRetryTimer: ReturnType<typeof setTimeout> | null = null;
+const providersByPath = new Map<string, TeamSyncProviderType>();
+const pendingRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 /**
- * Get the active TeamSyncProvider instance (if connected).
+ * Get the TeamSyncProvider instance for a workspace.
+ *
+ * @param workspacePath When omitted, returns the provider for the active
+ *   workspace. Pass an explicit path to address an inactive (warm) project.
  */
-export function getTeamSyncProvider(): TeamSyncProviderType | null {
-  return activeProvider;
+export function getTeamSyncProvider(workspacePath?: string): TeamSyncProviderType | null {
+  const path = workspacePath ?? store.get(activeWorkspacePathAtom);
+  if (!path) return null;
+  return providersByPath.get(path) ?? null;
 }
 
 // ============================================================
@@ -107,7 +175,6 @@ export async function registerDocumentInIndex(
   title: string,
   documentType: string = 'markdown'
 ): Promise<void> {
-  // Optimistic local update
   const now = Date.now();
   store.set(sharedDocumentsAtom, (current) => {
     const filtered = current.filter(d => d.documentId !== documentId);
@@ -121,10 +188,10 @@ export async function registerDocumentInIndex(
     }, ...filtered];
   });
 
-  // Register on server if connected
-  if (activeProvider) {
+  const provider = getTeamSyncProvider();
+  if (provider) {
     try {
-      await activeProvider.registerDocument(documentId, title, documentType);
+      await provider.registerDocument(documentId, title, documentType);
     } catch (err) {
       console.error('[collabDocuments] Failed to register in index:', err);
     }
@@ -155,9 +222,10 @@ export async function updateSharedDocumentTitle(
     }, ...filtered];
   });
 
-  if (activeProvider) {
+  const provider = getTeamSyncProvider();
+  if (provider) {
     try {
-      await activeProvider.updateDocumentTitle(documentId, title);
+      await provider.updateDocumentTitle(documentId, title);
     } catch (err) {
       console.error('[collabDocuments] Failed to update document title:', err);
     }
@@ -173,15 +241,14 @@ export async function updateSharedDocumentTitle(
  * Sends a docIndexRemove message to the TeamRoom via the provider.
  */
 export function removeSharedDocument(documentId: string): void {
-  // Optimistic local removal
   store.set(sharedDocumentsAtom, (current) =>
     current.filter(d => d.documentId !== documentId)
   );
 
-  // Remove on server if connected
-  if (activeProvider) {
+  const provider = getTeamSyncProvider();
+  if (provider) {
     try {
-      activeProvider.removeDocument(documentId);
+      provider.removeDocument(documentId);
     } catch (err) {
       console.error('[collabDocuments] Failed to remove document from index:', err);
     }
@@ -196,29 +263,23 @@ export function removeSharedDocument(documentId: string): void {
  * Initialize shared documents by connecting to the TeamRoom.
  * Resolves auth/keys via IPC, then creates and connects a TeamSyncProvider.
  * The TeamRoom provides both team state and document index in a single WebSocket.
+ *
+ * Multi-project: a provider is created per workspace path. Calling this for
+ * a workspace that already has a connected provider is a no-op. Switching
+ * the active project does not tear down inactive providers.
  */
 export async function initSharedDocuments(workspacePath: string, retryCount = 0): Promise<void> {
-  // If already connected for this workspace, skip
-  if (activeWorkspacePath === workspacePath && activeProvider) {
+  if (providersByPath.has(workspacePath)) {
     return;
   }
 
-  // Clean up previous connection
-  if (activeProvider) {
-    activeProvider.destroy();
-    activeProvider = null;
-    activeWorkspacePath = null;
+  const existingRetry = pendingRetryTimers.get(workspacePath);
+  if (existingRetry) {
+    clearTimeout(existingRetry);
+    pendingRetryTimers.delete(workspacePath);
   }
 
-  // Clear any pending retry
-  if (pendingRetryTimer) {
-    clearTimeout(pendingRetryTimer);
-    pendingRetryTimer = null;
-  }
-
-  // Resolve config from main process
   if (!window.electronAPI?.documentSync?.resolveIndexConfig) {
-    // console.log('[collabDocuments] No resolveIndexConfig API available');
     return;
   }
 
@@ -228,31 +289,26 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       const isNotAuthenticated = result.error?.includes('Not authenticated');
       const isNoTeam = result.error?.includes('No team found');
       const isTransient = result.error && !isNotAuthenticated && !isNoTeam;
-      if (isTransient) {
-        // console.log('[collabDocuments] Could not resolve index config:', result.error);
-      }
       if (!isTransient) {
-        store.set(workspaceHasTeamAtom, false);
+        store.set(workspaceHasTeamAtomFamily(workspacePath), false);
       }
       const maxRetries = 5;
       if (isTransient && retryCount < maxRetries) {
         const delayMs = Math.min(3000 * Math.pow(2, retryCount), 30000);
-        // console.log(`[collabDocuments] Will retry in ${delayMs}ms (attempt ${retryCount + 1}/${maxRetries})`);
-        pendingRetryTimer = setTimeout(() => {
-          pendingRetryTimer = null;
+        const timer = setTimeout(() => {
+          pendingRetryTimers.delete(workspacePath);
           initSharedDocuments(workspacePath, retryCount + 1);
         }, delayMs);
+        pendingRetryTimers.set(workspacePath, timer);
       }
       return;
     }
 
-    store.set(workspaceHasTeamAtom, true);
+    store.set(workspaceHasTeamAtomFamily(workspacePath), true);
     const { orgId, orgKeyBase64, serverUrl, userId } = result.config;
 
-    // Import the provider class from runtime
     const { TeamSyncProvider } = await import('@nimbalyst/runtime/sync');
 
-    // Reconstruct the CryptoKey from base64
     const keyBytes = Uint8Array.from(atob(orgKeyBase64), c => c.charCodeAt(0));
     const encryptionKey = await crypto.subtle.importKey(
       'raw',
@@ -276,9 +332,8 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       },
 
       onTeamStateLoaded: (state) => {
-        // Documents come as part of the full team state sync
         if (state.documents.length > 0) {
-          store.set(sharedDocumentsAtom, state.documents.map(d => ({
+          store.set(sharedDocumentsAtomFamily(workspacePath), state.documents.map(d => ({
             documentId: d.documentId,
             title: d.title,
             documentType: d.documentType,
@@ -290,7 +345,7 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       },
 
       onDocumentsLoaded: (documents) => {
-        store.set(sharedDocumentsAtom, documents.map(d => ({
+        store.set(sharedDocumentsAtomFamily(workspacePath), documents.map(d => ({
           documentId: d.documentId,
           title: d.title,
           documentType: d.documentType,
@@ -301,7 +356,7 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       },
 
       onDocumentChanged: (document) => {
-        store.set(sharedDocumentsAtom, (current) => {
+        store.set(sharedDocumentsAtomFamily(workspacePath), (current) => {
           const filtered = current.filter(d => d.documentId !== document.documentId);
           return [{
             documentId: document.documentId,
@@ -315,22 +370,18 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       },
 
       onDocumentRemoved: (documentId) => {
-        store.set(sharedDocumentsAtom, (current) =>
+        store.set(sharedDocumentsAtomFamily(workspacePath), (current) =>
           current.filter(d => d.documentId !== documentId)
         );
       },
 
       onMemberAdded: (_member) => {
-        // A new member was added to the org -- try to wrap the org key for them
-        // console.log('[collabDocuments] Member added, triggering auto-wrap for org:', orgId);
         (window as any).electronAPI.team.autoWrapNewMembers(orgId).catch((err: unknown) => {
           console.error('[collabDocuments] auto-wrap after memberAdded failed:', err);
         });
       },
 
       onIdentityKeyUploaded: (_userId) => {
-        // A member uploaded their identity key -- now we can wrap the org key for them
-        // console.log('[collabDocuments] Identity key uploaded, triggering auto-wrap for org:', orgId);
         (window as any).electronAPI.team.autoWrapNewMembers(orgId).catch((err: unknown) => {
           console.error('[collabDocuments] auto-wrap after identityKeyUploaded failed:', err);
         });
@@ -339,11 +390,6 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       onOrgKeyRotated: (fingerprint) => {
         // The org encryption key was rotated. ALL providers holding the old
         // key must be torn down and recreated with the new key.
-        // 1. Tell main process to fetch the new key from envelope
-        // 2. Destroy this TeamSyncProvider (holds old encryptionKey)
-        // 3. Reinitialize from scratch (will get new key from main process)
-        // 4. Tracker sync must also be restarted (separate IPC)
-        // console.log('[collabDocuments] Org key rotated, new fingerprint:', fingerprint, '-- tearing down all providers');
         errorNotificationService.showInfo(
           'Team encryption key updated',
           'Reconnecting with the new key...',
@@ -353,27 +399,15 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
         (window as any).electronAPI.invoke('team:handle-org-key-rotated', orgId, fingerprint)
           .then(async (result: { success: boolean; keyRefreshed?: boolean; error?: string }) => {
             if (result?.success && result.keyRefreshed) {
-              // Key is refreshed in main process. Now tear down and recreate
-              // all providers so they use the new key.
-              // console.log('[collabDocuments] Key refreshed, reinitializing all sync providers...');
-
-              // Destroy current TeamSyncProvider (holds old key)
-              destroyTeamSync();
-
-              // Reinitialize with new key from main process.
-              // Note: activeWorkspacePath was cleared by destroyTeamSync(),
-              // so we use the workspacePath captured in the closure.
+              destroyTeamSync(workspacePath);
               await initSharedDocuments(workspacePath);
 
-              // Tell main process to restart tracker sync with new key
               try {
                 (window as any).electronAPI.invoke('tracker-sync:restart-for-workspace', workspacePath);
               } catch (trackerErr) {
                 console.error('[collabDocuments] Failed to restart tracker sync:', trackerErr);
               }
 
-              // Bump the key rotation epoch so open CollaborativeTabEditor
-              // tabs re-fetch their encryption key and recreate providers
               store.set(collabKeyRotationEpochAtom, (prev: number) => prev + 1);
 
               errorNotificationService.showInfo(
@@ -400,30 +434,79 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       },
 
       onStatusChange: (status) => {
-        store.set(teamSyncStatusAtom, status);
+        store.set(teamSyncStatusAtomFamily(workspacePath), status);
       },
     });
 
-    activeProvider = provider;
-    activeWorkspacePath = workspacePath;
-
-    await provider.connect();
-    // console.log('[collabDocuments] Connected to TeamRoom for org:', orgId);
+    // Connect first; only cache the provider once it has actually attached.
+    // Caching before connect leaves a dead provider in the map if connect()
+    // throws, and `initSharedDocuments` short-circuits on subsequent calls
+    // for that path because `providersByPath.has(...)` returns true. The
+    // user is then unable to retry team sync for that workspace without
+    // reopening it.
+    try {
+      await provider.connect();
+      providersByPath.set(workspacePath, provider);
+    } catch (connectErr) {
+      provider.destroy();
+      throw connectErr;
+    }
   } catch (err) {
     console.error('[collabDocuments] Failed to initialize team sync:', err);
-    store.set(teamSyncStatusAtom, 'error');
+    store.set(teamSyncStatusAtomFamily(workspacePath), 'error');
   }
 }
 
 /**
- * Disconnect and clean up the team sync provider.
+ * Disconnect and clean up a workspace's team sync provider.
+ *
+ * @param workspacePath When omitted, destroys the active workspace's
+ *   provider. Pass an explicit path to tear down a warm (inactive) project,
+ *   for example when removing it from the project rail.
  */
-export function destroyTeamSync(): void {
-  if (activeProvider) {
-    activeProvider.destroy();
-    activeProvider = null;
-    activeWorkspacePath = null;
-    store.set(teamSyncStatusAtom, 'disconnected');
-    store.set(workspaceHasTeamAtom, false);
+export function destroyTeamSync(workspacePath?: string): void {
+  const path = workspacePath ?? store.get(activeWorkspacePathAtom);
+  if (!path) return;
+
+  const provider = providersByPath.get(path);
+  if (!provider) return;
+
+  provider.destroy();
+  providersByPath.delete(path);
+
+  const retryTimer = pendingRetryTimers.get(path);
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    pendingRetryTimers.delete(path);
   }
+
+  store.set(teamSyncStatusAtomFamily(path), 'disconnected');
+  store.set(workspaceHasTeamAtomFamily(path), false);
+}
+
+/**
+ * Drop every cached collab/team-sync slot for `workspacePath`. Use when a
+ * project is closed from the rail so we don't leak atom-family entries or
+ * a connected provider after `destroyTeamSync` has run.
+ */
+export function pruneCollabDocumentsWorkspaceState(workspacePath: string): void {
+  // Provider should already have been torn down via destroyTeamSync; if it
+  // is still around, clean it up now.
+  const provider = providersByPath.get(workspacePath);
+  if (provider) {
+    try {
+      provider.destroy();
+    } catch (err) {
+      console.error('[collabDocuments] destroy during prune failed:', err);
+    }
+    providersByPath.delete(workspacePath);
+  }
+  const retryTimer = pendingRetryTimers.get(workspacePath);
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    pendingRetryTimers.delete(workspacePath);
+  }
+  sharedDocumentsAtomFamily.remove(workspacePath);
+  teamSyncStatusAtomFamily.remove(workspacePath);
+  workspaceHasTeamAtomFamily.remove(workspacePath);
 }

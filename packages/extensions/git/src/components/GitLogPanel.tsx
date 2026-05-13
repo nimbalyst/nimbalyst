@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useFloating, offset, flip, shift, FloatingPortal,
   useDismiss, useInteractions, autoUpdate,
@@ -11,8 +11,7 @@ import { BranchPicker } from './BranchPicker';
 import { ChangesTab } from './ChangesTab';
 import { OutputTab } from './OutputTab';
 import { useOperationLog, getSuggestionForError } from '../hooks/useOperationLog';
-
-type GitTab = 'log' | 'changes' | 'output';
+import { usePanelState, readSelectedHash } from '../hooks/usePanelState';
 
 interface GitCommit {
   hash: string;
@@ -125,8 +124,9 @@ export function GitLogPanel({ host }: PanelHostProps) {
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ commit: GitCommit; x: number; y: number } | null>(null);
 
-  // Selection state
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  // Selection state - selected commit is persisted by hash via usePanelState;
+  // selectedIndex is derived from the current commits list so it stays in sync
+  // when commits load, are filtered, or new commits are pulled in.
   const [selectedDetail, setSelectedDetail] = useState<CommitDetail | null>(null);
   const [selectedLoading, setSelectedLoading] = useState(false);
   const tbodyRef = useRef<HTMLTableSectionElement>(null);
@@ -135,8 +135,30 @@ export function GitLogPanel({ host }: PanelHostProps) {
   const [detailWidth, setDetailWidth] = useState(() => host.storage.getGlobal<number>('detailWidth') ?? 340);
   const detailResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
-  // Tab state
-  const [activeTab, setActiveTab] = useState<GitTab>('log');
+  // Tab + selection state (persisted across panel close/open per workspace)
+  const { activeTab, selectedHash, setActiveTab, setSelectedHash } = usePanelState(workspacePath);
+  const selectedIndex = useMemo(() => {
+    if (!selectedHash) return null;
+    const idx = commits.findIndex(c => c.hash === selectedHash);
+    return idx >= 0 ? idx : null;
+  }, [selectedHash, commits]);
+  // Reads the live hash from the module store inside the updater so functional
+  // updates always see the current selection, even when called from handlers
+  // whose closures are otherwise stale.
+  const setSelectedIndex = useCallback(
+    (next: number | null | ((prev: number | null) => number | null)) => {
+      const liveHash = readSelectedHash(workspacePath);
+      const liveIndex = liveHash ? commits.findIndex(c => c.hash === liveHash) : -1;
+      const prev = liveIndex >= 0 ? liveIndex : null;
+      const resolved = typeof next === 'function' ? next(prev) : next;
+      if (resolved === null || !commits[resolved]) {
+        setSelectedHash(null);
+      } else {
+        setSelectedHash(commits[resolved].hash);
+      }
+    },
+    [workspacePath, commits, setSelectedHash],
+  );
   const { entries: logEntries, clearLog, withLog } = useOperationLog();
 
   // Changes tab: file mask filter (active value per-workspace, history shared globally)
@@ -493,14 +515,14 @@ export function GitLogPanel({ host }: PanelHostProps) {
     } else if (e.key === 'Escape') {
       setSelectedIndex(null);
     }
-  }, [commits.length]);
+  }, [commits.length, setSelectedIndex]);
 
   const handleRowClick = useCallback((index: number) => {
     setSelectedIndex(i => i === index ? null : index);
     // Dismiss hover card on click
     if (showTimerRef.current) { clearTimeout(showTimerRef.current); showTimerRef.current = null; }
     setHoveredHash(null);
-  }, []);
+  }, [setSelectedIndex]);
 
   const remoteStatus = status ? (
     status.ahead > 0 || status.behind > 0

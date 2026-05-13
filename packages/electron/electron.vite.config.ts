@@ -255,6 +255,17 @@ export default defineConfig({
         if (fs.existsSync(ghosttyWasm)) {
           targets.push({ src: toPosix(ghosttyWasm), dest: '', overwrite: true });
         }
+        // Copy prismjs core so index.html can load it as a classic <script>
+        // BEFORE any ESM module evaluates. Vite/esbuild's prebundling of
+        // @lexical/code (which transitively imports @lexical/code-prism) ends
+        // up reordering chunk imports so the prism-* language chunks evaluate
+        // before prismjs main, which the language files need to have set
+        // `window.Prism`. Loading prismjs as a classic script in the HTML
+        // sidesteps the reorder.
+        const prismCore = resolve(__dirname, '../../node_modules/prismjs/prism.js');
+        if (fs.existsSync(prismCore)) {
+          targets.push({ src: toPosix(prismCore), dest: '', overwrite: true });
+        }
         return viteStaticCopy({ targets });
       })()
     ].filter(Boolean),
@@ -289,10 +300,23 @@ export default defineConfig({
       }
     },
     resolve: {
-      alias: {
+      alias: [
         // Ensure renderer also points runtime imports at source
-        '@nimbalyst/runtime': runtimeSrcDir
-      },
+        { find: '@nimbalyst/runtime', replacement: runtimeSrcDir },
+        // Redirect `import ... from 'prismjs'` (exact match only) to a shim
+        // that returns the window.Prism instance loaded by the classic
+        // <script> tag in index.html. Avoids a second IIFE run on the ESM
+        // side that would create a separate Prism instance and orphan all
+        // the language registrations made by the prism-* chunks (which
+        // reference the bare `Prism` global pointing at the classic-script
+        // instance). The regex anchors to exact match so
+        // `prismjs/components/...` and `prismjs/themes/...` still resolve
+        // normally to the language/theme files in node_modules.
+        {
+          find: /^prismjs$/,
+          replacement: resolve(__dirname, 'src/renderer/utils/prismGlobalShim.ts')
+        }
+      ],
       dedupe: [
         'react',
         'react-dom',
@@ -396,7 +420,12 @@ export default defineConfig({
         'react-markdown',
         'remark-gfm',
         'react-syntax-highlighter',
-        // Prism language components for syntax highlighting
+        // Prism language components for syntax highlighting. Prism core
+        // itself is NOT prebundled here — it's loaded by the classic
+        // <script src="./prism.js"> tag in index.html (see resolve.alias
+        // for `prismjs` and viteStaticCopy entry for prism.js). The chunks
+        // below reference the bare `Prism` global, which the classic
+        // script guarantees is set before any module evaluates.
         'prismjs/components/prism-javascript',
         'prismjs/components/prism-typescript',
         'prismjs/components/prism-jsx',

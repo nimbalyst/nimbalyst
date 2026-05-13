@@ -7,6 +7,8 @@ import { app } from 'electron';
 import { getWorkspaceState, updateWorkspaceState, getTheme, getThemeSync, isCompletionSoundEnabled, setCompletionSoundEnabled, getCompletionSoundType, setCompletionSoundType, CompletionSoundType, getReleaseChannel, setReleaseChannel, ReleaseChannel, getRecentItems, getDefaultAIModel, setDefaultAIModel, getDefaultEffortLevel, setDefaultEffortLevel, isAnalyticsEnabled, setAnalyticsEnabled, getSessionSyncConfig, setSessionSyncConfig, SessionSyncConfig, isExtensionDevToolsEnabled, setExtensionDevToolsEnabled, getAppSetting, setAppSetting, getAlphaFeatures, setAlphaFeatures, getBetaFeatures, setBetaFeatures, getEnableAllBetaFeatures, setEnableAllBetaFeatures, getDeveloperFeatures, setDeveloperFeatures, isDeveloperFeatureAvailable, isShowTrayIcon, getDebugFlags, setDebugFlags, type DebugFlags } from '../utils/store';
 import { getEnhancedPath } from '../services/CLIManager';
 import { logger } from '../utils/logger';
+import { SessionNamingService } from '../services/SessionNamingService';
+import { setPreferredAgentLanguage } from '../utils/store';
 import { SoundNotificationService } from '../services/SoundNotificationService';
 import { autoUpdaterService } from '../services/autoUpdater';
 import type { OnboardingState } from '../utils/store';
@@ -76,6 +78,18 @@ export function registerSettingsHandlers() {
     safeHandle('spellcheck:set-enabled', (_event, enabled: boolean) => {
         session.defaultSession.setSpellCheckerEnabled(enabled);
         setAppSetting('spellcheckEnabled', enabled);
+    });
+
+    // Preferred agent language. Persists to the electron-store and pushes
+    // the new value into the runtime so providers pick it up on the next turn.
+    safeHandle('preferred-agent-language:set', (_event, language: unknown) => {
+        const value = typeof language === 'string' ? language : undefined;
+        setPreferredAgentLanguage(value);
+        SessionNamingService.getInstance().setLanguage(value);
+    });
+
+    safeHandle('preferred-agent-language:get', () => {
+        return getAppSetting<string>('preferredAgentLanguage') ?? '';
     });
 
     // Get the enhanced PATH that Nimbalyst uses for spawning processes
@@ -316,6 +330,47 @@ export function registerSettingsHandlers() {
         return getRecentItems('workspaces');
     });
 
+    // Multi-project rail (opt-in: hosts multiple projects in a single window)
+    safeHandle('app:get-multi-project-mode', async () => {
+        const { getMultiProjectMode } = await import('../utils/store');
+        return getMultiProjectMode();
+    });
+
+    safeHandle('app:set-multi-project-mode', async (_event, enabled: boolean) => {
+        const { setMultiProjectMode } = await import('../utils/store');
+        setMultiProjectMode(enabled);
+    });
+
+    safeHandle('app:get-open-projects', async () => {
+        const { getOpenProjectPaths } = await import('../utils/store');
+        return getOpenProjectPaths();
+    });
+
+    safeHandle('app:set-open-projects', async (_event, paths: string[]) => {
+        const { setOpenProjectPaths } = await import('../utils/store');
+        setOpenProjectPaths(Array.isArray(paths) ? paths : []);
+    });
+
+    safeHandle('app:get-active-project-path', async () => {
+        const { getActiveProjectPath } = await import('../utils/store');
+        return getActiveProjectPath();
+    });
+
+    safeHandle('app:set-active-project-path', async (_event, path: string | null) => {
+        const { setActiveProjectPath } = await import('../utils/store');
+        setActiveProjectPath(path);
+    });
+
+    safeHandle('app:get-restore-previous-projects', async () => {
+        const { getRestorePreviousProjectsOnLaunch } = await import('../utils/store');
+        return getRestorePreviousProjectsOnLaunch();
+    });
+
+    safeHandle('app:set-restore-previous-projects', async (_event, enabled: boolean) => {
+        const { setRestorePreviousProjectsOnLaunch } = await import('../utils/store');
+        setRestorePreviousProjectsOnLaunch(!!enabled);
+    });
+
     // Onboarding state
     safeHandle('onboarding:get', async () => {
         const { getOnboardingState } = await import('../utils/store');
@@ -395,6 +450,17 @@ export function registerSettingsHandlers() {
         return getClaudeCodeSettings();
     });
 
+    safeHandle('agentWorkflows:get-settings', async () => {
+        const {
+            getAgentWorkflowSourceSettings,
+            getAgentWorkflowExportSettings,
+        } = await import('../utils/store');
+        return {
+            sourceSettings: getAgentWorkflowSourceSettings(),
+            exportSettings: getAgentWorkflowExportSettings(),
+        };
+    });
+
     // Claude Code user-level environment variables (~/.claude/settings.json)
     safeHandle('claudeSettings:get-env', async () => {
         const { ClaudeSettingsManager } = await import('../services/ClaudeSettingsManager');
@@ -420,6 +486,28 @@ export function registerSettingsHandlers() {
         const { setClaudeCodeUserCommandsEnabled } = await import('../utils/store');
         setClaudeCodeUserCommandsEnabled(enabled);
         logger.store.info(`[SettingsHandlers] Claude Code user commands ${enabled ? 'enabled' : 'disabled'}`);
+    });
+
+    safeHandle('agentWorkflows:set-source-settings', async (_event, updates: {
+        workspaceClaudeCompatibilityEnabled?: boolean;
+        includeProjectClaudeSources?: boolean;
+        includeUserClaudeSources?: boolean;
+        extensionWorkflowsEnabled?: boolean;
+    }) => {
+        const { setAgentWorkflowSourceSettings } = await import('../utils/store');
+        const next = setAgentWorkflowSourceSettings(updates ?? {});
+        logger.store.info('[SettingsHandlers] Agent workflow source settings updated');
+        return next;
+    });
+
+    safeHandle('agentWorkflows:set-export-settings', async (_event, updates: {
+        codexEnabled?: boolean;
+        claudeGeneratedExtensionWorkflowsEnabled?: boolean;
+    }) => {
+        const { setAgentWorkflowExportSettings } = await import('../utils/store');
+        const next = setAgentWorkflowExportSettings(updates ?? {});
+        logger.store.info('[SettingsHandlers] Agent workflow export settings updated');
+        return next;
     });
 
     // Extension Development Kit (EDK) settings

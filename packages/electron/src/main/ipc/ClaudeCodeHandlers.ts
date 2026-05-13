@@ -4,7 +4,7 @@ import fs from 'fs';
 import { claudeCodeDetector } from '../services/ClaudeCodeDetector';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../utils/logger';
-import { setupClaudeCodeEnvironment, resolveNativeBinaryPath } from '@nimbalyst/runtime/electron/claudeCodeEnvironment';
+import { setupClaudeCodeEnvironment, resolveClaudeCodeExecutablePath } from '@nimbalyst/runtime/electron/claudeCodeEnvironment';
 import { AnalyticsService } from "../services/analytics/AnalyticsService.ts";
 import { shouldShowClaudeCodeWindowsWarning, dismissClaudeCodeWindowsWarning } from '../utils/store';
 import os from "os";
@@ -48,7 +48,10 @@ export function registerClaudeCodeHandlers() {
       // Build options for query - CRITICAL: pass env to options so SDK can find credentials
       // This is especially important on Intel Macs where HOME may not be set correctly
       // in packaged builds without explicitly passing the environment.
-      const nativeBinaryPath = resolveNativeBinaryPath();
+      const nativeBinaryPath = resolveClaudeCodeExecutablePath({
+        pathValue: env.PATH,
+        allowSystemFallback: true,
+      });
       const options: any = {
         env,
         ...(nativeBinaryPath ? { pathToClaudeCodeExecutable: nativeBinaryPath } : {}),
@@ -104,7 +107,10 @@ export function registerClaudeCodeHandlers() {
     try {
       const platform = process.platform;
       analytics.sendEvent('do_claude_code_login', {platform: platform});
-      const binaryPath = resolveNativeBinaryPath() ?? (platform === 'win32' ? findWindowsClaudeExecutable() : null);
+      const binaryPath = resolveClaudeCodeExecutablePath({
+        pathValue: setupClaudeCodeEnvironment().PATH,
+        allowSystemFallback: true,
+      }) ?? (platform === 'win32' ? findWindowsClaudeExecutable() : null);
       if (!binaryPath) {
         const expectedPkg = `@anthropic-ai/claude-agent-sdk-${platform}-${process.arch}`;
         throw new Error(`Claude Agent SDK native binary not found (looking for ${expectedPkg}, arch=${process.arch}). Check main.log for details.`);
@@ -164,7 +170,10 @@ end tell`;
     try {
       const platform = process.platform;
       analytics.sendEvent('do_claude_code_logout', {platform: platform});
-      const binaryPath = resolveNativeBinaryPath() ?? (platform === 'win32' ? findWindowsClaudeExecutable() : null);
+      const binaryPath = resolveClaudeCodeExecutablePath({
+        pathValue: setupClaudeCodeEnvironment().PATH,
+        allowSystemFallback: true,
+      }) ?? (platform === 'win32' ? findWindowsClaudeExecutable() : null);
       if (!binaryPath) {
         const expectedPkg = `@anthropic-ai/claude-agent-sdk-${platform}-${process.arch}`;
         throw new Error(`Claude Agent SDK native binary not found (looking for ${expectedPkg}, arch=${process.arch}). Check main.log for details.`);
@@ -261,4 +270,3 @@ function findWindowsClaudeExecutable(): string | null {
   log.error('[ClaudeCodeHandlers] Claude executable not found in any known location');
   return null;
 }
-

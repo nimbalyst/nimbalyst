@@ -394,13 +394,31 @@ export class CodexSDKProtocol implements AgentProtocol {
 
     // Extract systemPrompt from raw options and pass it as developer_instructions
     // This is the proper Codex SDK way to add custom instructions
-    const { systemPrompt, codexConfigOverrides: _codexConfigOverrides, effortLevel: _effortLevel, ...otherRawOptions } = options.raw || {};
+    const {
+      systemPrompt,
+      codexConfigOverrides: _codexConfigOverrides,
+      effortLevel: _effortLevel,
+      additionalDirectories: rawAdditionalDirectories,
+      ...otherRawOptions
+    } = options.raw || {};
+
+    // Sibling worktrees and the parent project root the agent is allowed to
+    // write to, in addition to workingDirectory. The Codex SDK forwards this
+    // to the CLI as repeated --add-dir flags. Sandboxed in workspace-write
+    // mode the CLI rejects all writes outside these roots. Issue #37 problem
+    // 1: orchestrator sessions could not edit sibling worktrees.
+    const additionalDirectories = Array.isArray(rawAdditionalDirectories)
+      ? (rawAdditionalDirectories as unknown[]).filter(
+          (entry): entry is string => typeof entry === 'string' && entry.length > 0,
+        )
+      : [];
 
     return {
       ...baseOptions,
       ...(systemPrompt ? { developer_instructions: systemPrompt } : {}),
       ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
       ...(options.disallowedTools ? { disallowedTools: options.disallowedTools } : {}),
+      ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
       ...otherRawOptions,
     };
   }

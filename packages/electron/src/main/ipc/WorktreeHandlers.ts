@@ -10,6 +10,7 @@ import log from 'electron-log/main';
 import simpleGit from 'simple-git';
 import { GitWorktreeService } from '../services/GitWorktreeService';
 import { WorktreeStore, createWorktreeStore } from '../services/WorktreeStore';
+import { createSuperLoopStore } from '../services/SuperLoopStore';
 import { getDatabase } from '../database/initialize';
 import { archiveProgressManager } from '../services/ArchiveProgressManager';
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
@@ -70,6 +71,25 @@ function emitTerminalListChanged(workspacePath: string): void {
   }
 }
 
+async function archiveSessionsForWorktree(
+  worktreeId: string,
+  sessionIds: string[],
+  archiveLogger: ReturnType<typeof log.scope>
+): Promise<number> {
+  let failedSessions = 0;
+
+  for (const sessionId of sessionIds) {
+    try {
+      await AISessionsRepository.updateMetadata(sessionId, { isArchived: true });
+    } catch (err) {
+      failedSessions++;
+      archiveLogger.error('Failed to archive session', { sessionId, worktreeId, error: err });
+    }
+  }
+
+  return failedSessions;
+}
+
 /**
  * Archive a single worktree and its sessions.
  *
@@ -100,6 +120,7 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
     }
 
     const worktreeStore = createWorktreeStore(db);
+    const superLoopStore = createSuperLoopStore(db);
     const worktree = await worktreeStore.get(worktreeId);
 
     if (!worktree) {
@@ -113,9 +134,21 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
       );
     }
 
-    // Already archived - but only skip if the directory is actually gone
+    const sessionIds = await worktreeStore.getWorktreeSessions(worktreeId);
+
+    // Already archived - but only skip if the directory is actually gone.
+    // We still reconcile linked sessions because older partial failures could
+    // leave the worktree archived while one or more sessions remain visible.
     if (worktree.isArchived) {
       if (!fs.existsSync(worktree.path)) {
+        const failedSessions = await archiveSessionsForWorktree(worktreeId, sessionIds, archiveLogger);
+        if (failedSessions > 0) {
+          throw new Error(`Failed to archive ${failedSessions} lingering session(s) for archived worktree ${worktreeId}`);
+        }
+        const existingLoop = await superLoopStore.getLoopByWorktreeId(worktreeId);
+        if (existingLoop && !existingLoop.isArchived) {
+          await superLoopStore.updateLoop(existingLoop.id, { isArchived: true });
+        }
         archiveLogger.info('Worktree already archived and directory removed, skipping', { worktreeId });
         return { success: true };
       }
@@ -128,7 +161,6 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
     const gitWorktreeService = new GitWorktreeService();
 
     // Step 1: Get all sessions for this worktree
-    const sessionIds = await worktreeStore.getWorktreeSessions(worktreeId);
     archiveLogger.info('Found sessions for worktree', { worktreeId, sessionCount: sessionIds.length });
 
     // Get worktree git status for analytics (before archiving)
@@ -176,16 +208,7 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
     // Step 3: Archive all sessions for this worktree immediately (fast feedback)
     archiveLogger.info('Archiving sessions for worktree', { worktreeId, sessionCount: sessionIds.length });
 
-    let failedSessions = 0;
-    for (const sessionId of sessionIds) {
-      try {
-        await AISessionsRepository.updateMetadata(sessionId, { isArchived: true });
-      } catch (err) {
-        failedSessions++;
-        archiveLogger.error('Failed to archive session', { sessionId, worktreeId, error: err });
-        // Continue archiving remaining sessions
-      }
-    }
+    const failedSessions = await archiveSessionsForWorktree(worktreeId, sessionIds, archiveLogger);
 
     if (failedSessions > 0) {
       archiveLogger.warn('Some sessions failed to archive', { worktreeId, failedCount: failedSessions, totalCount: sessionIds.length });
@@ -222,6 +245,10 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
 
         // Only mark as archived AFTER disk deletion is confirmed
         await worktreeStore.updateArchived(worktreeId, true);
+        const existingLoop = await superLoopStore.getLoopByWorktreeId(worktreeId);
+        if (existingLoop && !existingLoop.isArchived) {
+          await superLoopStore.updateLoop(existingLoop.id, { isArchived: true });
+        }
 
         archiveLogger.info('Worktree marked as archived in database', { worktreeId });
 

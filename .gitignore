@@ -158,6 +158,10 @@ worktrees/
 .nimbalyst/
 nimbalyst-local/
 
+# Nimbalyst-generated agent/skill/plugin compatibility shims (regenerated on launch)
+.agents/skills/.nimbalyst-generated/
+.claude/plugins/.nimbalyst-generated/
+
 # Personal/agent plan documents (Nimbalyst planning feature stores these at
 # workspace root; they're personal working files, not source).
 plans/
@@ -188,6 +192,8 @@ packages/electron/marketing/videos/
 
 # Test screenshots
 packages/electron/e2e/permissions/screenshots/
+packages/electron/e2e/smoke/screenshots/
+packages/electron/e2e/walkthroughs/screenshots/
 packages/ios/screenshots/
 
 # Auto-generated platform artifacts

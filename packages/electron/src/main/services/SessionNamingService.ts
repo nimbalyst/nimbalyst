@@ -1,5 +1,5 @@
 import { BrowserWindow } from 'electron';
-import { SessionManager, ClaudeCodeProvider, OpenAICodexProvider, OpenAICodexACPProvider, OpenCodeProvider } from '@nimbalyst/runtime/ai/server';
+import { SessionManager, ClaudeCodeProvider, OpenAICodexProvider, OpenAICodexACPProvider, OpenCodeProvider, setPreferredAgentLanguage as setRuntimePreferredAgentLanguage } from '@nimbalyst/runtime/ai/server';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import {
   startSessionNamingServer,
@@ -14,6 +14,7 @@ import {
 import { getDatabase } from '../database/initialize';
 import { createWorktreeStore } from './WorktreeStore';
 import { getSyncProvider } from './SyncManager';
+import { getPreferredAgentLanguage } from '../utils/store';
 
 /**
  * Service to manage the session naming MCP server
@@ -55,6 +56,12 @@ export class SessionNamingService {
         // Initialize session manager
         this.sessionManager = new SessionManager();
         await this.sessionManager.initialize();
+
+        // Push the configured preferred-agent language to the runtime so
+        // providers and prompt builders can read it without an electron-store
+        // dependency. Renderer changes call SessionNamingService.setLanguage()
+        // to keep this in sync at runtime.
+        setRuntimePreferredAgentLanguage(getPreferredAgentLanguage());
 
         // Set the update function that will be called by the MCP server
         // This is called once at startup and captures sessionManager in the closure
@@ -103,8 +110,10 @@ export class SessionNamingService {
             return;
           }
 
-          // Normal (non-blitz) session: update title and propagate to worktree
-          await sessionManager.updateSessionTitle(sessionId, title);
+          // Normal (non-blitz) session: update title and propagate to worktree.
+          // Renames are allowed; the agent prompt instructs the agent not to
+          // rename a session once it has been named unless the user asks.
+          await sessionManager.updateSessionTitle(sessionId, title, { force: true, markAsNamed: true });
           for (const window of windows) {
             window.webContents.send('session:title-updated', { sessionId, title });
           }
@@ -226,6 +235,15 @@ export class SessionNamingService {
     })();
 
     await this.starting;
+  }
+
+  /**
+   * Update the preferred agent language. The language is pushed into the
+   * runtime so providers and prompt builders read the new value on the next
+   * session turn (no restart required).
+   */
+  public setLanguage(language: string | undefined): void {
+    setRuntimePreferredAgentLanguage(language);
   }
 
   /**

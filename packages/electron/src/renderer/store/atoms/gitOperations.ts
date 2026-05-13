@@ -2,10 +2,16 @@
  * Git Operations Atoms
  *
  * State for git operations including commit state, staging, and git status.
+ *
+ * Multi-project rail: each open project keeps its own git state so the
+ * Git tab does not flash the previous project's status when the user
+ * switches via the rail. The bare atoms below are read+write proxies
+ * that resolve to the active workspace's family slot.
  */
 
 import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
+import { activeWorkspacePathAtom } from './openProjects';
 
 export interface GitStatus {
   branch: string;
@@ -23,32 +29,118 @@ export interface GitCommit {
   date: string;
 }
 
-/**
- * Git status for the current workspace.
- * Updated by file watcher when git state changes.
- */
-export const gitStatusAtom = atom<GitStatus | null>(null);
+// Per-workspace storage. The proxies below read/write the slot for the
+// active workspace path so existing call-sites do not need to change.
+
+const gitStatusAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<GitStatus | null>(null)
+);
+
+const gitCommitsAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<GitCommit[]>([])
+);
+
+const stagedFilesAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<Set<string>>(new Set<string>())
+);
+
+const commitMessageAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<string>('')
+);
+
+const isCommittingAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<boolean>(false)
+);
+
+/** Drop every git-operations slot held for a workspace path. */
+export function pruneGitOperationsWorkspaceState(workspacePath: string): void {
+  gitStatusAtomFamily.remove(workspacePath);
+  gitCommitsAtomFamily.remove(workspacePath);
+  stagedFilesAtomFamily.remove(workspacePath);
+  commitMessageAtomFamily.remove(workspacePath);
+  isCommittingAtomFamily.remove(workspacePath);
+}
 
 /**
- * Recent commits for the current workspace.
+ * Git status for the active workspace. Updated by file watcher / GitRefWatcher.
  */
-export const gitCommitsAtom = atom<GitCommit[]>([]);
+export const gitStatusAtom = atom<GitStatus | null, [GitStatus | null], void>(
+  (get) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return null;
+    return get(gitStatusAtomFamily(path));
+  },
+  (get, set, value) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return;
+    set(gitStatusAtomFamily(path), value);
+  }
+);
 
 /**
- * Files staged for commit.
- * Set of file paths that the user has checked in the UI.
+ * Recent commits for the active workspace.
  */
-export const stagedFilesAtom = atom<Set<string>>(new Set<string>());
+export const gitCommitsAtom = atom<GitCommit[], [GitCommit[]], void>(
+  (get) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return [];
+    return get(gitCommitsAtomFamily(path));
+  },
+  (get, set, value) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return;
+    set(gitCommitsAtomFamily(path), value);
+  }
+);
 
 /**
- * Commit message being composed.
+ * Files staged for commit. Set of file paths that the user has checked
+ * in the UI. Per workspace so each project keeps its own staging.
  */
-export const commitMessageAtom = atom<string>('');
+export const stagedFilesAtom = atom<Set<string>, [Set<string>], void>(
+  (get) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return new Set<string>();
+    return get(stagedFilesAtomFamily(path));
+  },
+  (get, set, value) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return;
+    set(stagedFilesAtomFamily(path), value);
+  }
+);
 
 /**
- * Whether a commit operation is in progress.
+ * Commit message being composed for the active workspace.
  */
-export const isCommittingAtom = atom<boolean>(false);
+export const commitMessageAtom = atom<string, [string], void>(
+  (get) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return '';
+    return get(commitMessageAtomFamily(path));
+  },
+  (get, set, value) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return;
+    set(commitMessageAtomFamily(path), value);
+  }
+);
+
+/**
+ * Whether a commit operation is in progress for the active workspace.
+ */
+export const isCommittingAtom = atom<boolean, [boolean], void>(
+  (get) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return false;
+    return get(isCommittingAtomFamily(path));
+  },
+  (get, set, value) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return;
+    set(isCommittingAtomFamily(path), value);
+  }
+);
 
 /**
  * Per-file staging state.

@@ -1,6 +1,7 @@
 ---
 packageVersion: 1.0.0
 packageId: core
+description: Create a tracking item in the Nimbalyst tracker system.
 ---
 # /track Command
 

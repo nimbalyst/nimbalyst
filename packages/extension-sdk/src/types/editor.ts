@@ -130,6 +130,36 @@ export interface EditorHost {
    */
   readonly readOnly?: boolean;
 
+  /**
+   * Whether the editor is rendered inline inside another document
+   * (i.e. as an embed in a markdown doc rather than as a full tab).
+   *
+   * Extensions can use this to suppress persistent chrome that doesn't make
+   * sense inside another doc (e.g., side panels, sticky toolbars). The
+   * `readOnly` flag is a separate axis; an embed is typically both `embedded`
+   * and `readOnly`, but an extension that opts into writable embeds will see
+   * `embedded` true and `readOnly` false.
+   *
+   * Defaults to false (undefined treated as false for backwards compatibility).
+   */
+  readonly embedded?: boolean;
+
+  /**
+   * Subscribe to changes to `readOnly`.
+   *
+   * Optional: hosts where `readOnly` never changes after construction
+   * (TabEditor, share viewer) omit this. Hosts that allow the user to
+   * flip between view and edit modes (the inline embed frame) implement
+   * it so extensions can react -- e.g. Excalidraw toggles
+   * `viewModeEnabled` so toolbars hide in view mode and reappear in
+   * edit mode without remounting the canvas.
+   *
+   * Extensions should read `host.readOnly` for the current value (it is
+   * a getter on reactive hosts) and subscribe here for subsequent flips.
+   * Returns an unsubscribe function.
+   */
+  onReadOnlyChanged?(callback: (readOnly: boolean) => void): () => void;
+
   // ============ THEME CHANGES ============
 
   /**

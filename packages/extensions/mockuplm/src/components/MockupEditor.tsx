@@ -25,7 +25,16 @@ import '@nimbalyst/runtime';
 
 export const MockupEditor = forwardRef<any, EditorHostProps>(function MockupEditor({ host }, ref) {
   const { filePath, fileName, isActive } = host;
-  const isReadOnlyViewer = host.readOnly === true;
+  // Reactive read-only state so the inline embed's View/Edit chrome toggle
+  // can flip us between the bare iframe viewer and the full editing UI
+  // without remounting (the iframe + drawing canvas keep their state).
+  const [isReadOnlyViewer, setIsReadOnlyViewer] = useState<boolean>(host.readOnly === true);
+  useEffect(() => {
+    setIsReadOnlyViewer(host.readOnly === true);
+    return host.onReadOnlyChanged?.((next) => {
+      setIsReadOnlyViewer(next);
+    });
+  }, [host]);
 
   // Refs for clearAllAnnotations (defined early so hook can reference)
   const iframeRef = useRef<HTMLIFrameElement>(null);

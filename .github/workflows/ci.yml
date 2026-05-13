@@ -28,7 +28,21 @@ jobs:
           cache: 'npm'
           cache-dependency-path: '**/package-lock.json'
 
+      # node_modules cache short-circuits `npm ci` (~75s -> ~5s) when the lock
+      # file is unchanged. We rely on exact-key match (no restore-keys) so we
+      # never run with a partially-stale tree -- on miss we just `npm ci`.
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+            packages/extensions/*/node_modules
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('**/package-lock.json') }}
+
       - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
       - name: Build extension-sdk
@@ -53,7 +67,18 @@ jobs:
           cache: 'npm'
           cache-dependency-path: '**/package-lock.json'
 
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+            packages/extensions/*/node_modules
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('**/package-lock.json') }}
+
       - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
       # Build packages that export types (required before typecheck)
@@ -64,7 +89,18 @@ jobs:
       - name: Public extension SDK smoke checks
         run: npm run extension-sdk:check-public
 
+      # Cache the runtime build output (~46s vite build). Key includes
+      # everything the build reads: runtime sources/config, extension-sdk
+      # sources (consumed via workspace), and the root lock file.
+      - name: Cache runtime build
+        id: cache-runtime-dist
+        uses: actions/cache@v4
+        with:
+          path: packages/runtime/dist
+          key: runtime-dist-${{ runner.os }}-node22-${{ hashFiles('packages/runtime/src/**', 'packages/runtime/vite.config.*', 'packages/runtime/package.json', 'packages/runtime/tsconfig*.json', 'packages/extension-sdk/src/**', 'package-lock.json') }}
+
       - name: Build runtime
+        if: steps.cache-runtime-dist.outputs.cache-hit != 'true'
         working-directory: packages/runtime
         run: npm run build
 
@@ -101,3 +137,51 @@ jobs:
       - name: TypeScript check - extensions/csv-spreadsheet
         working-directory: packages/extensions/csv-spreadsheet
         run: npx tsc --noEmit
+
+  # Cheap Ubuntu smoke that catches transcript bundle breakage from runtime
+  # changes without paying the 10x macOS multiplier. The full iOS simulator
+  # build still runs in ios-transcript-tests.yml on push to main and on PRs
+  # that touch packages/ios/**.
+  transcript-bundle:
+    name: Transcript Bundle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+            packages/extensions/*/node_modules
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build transcript bundle
+        run: npm run ios:build:transcript
+
+      - name: Verify transcript bundle output
+        run: |
+          if [ ! -f "packages/ios/dist-transcript/transcript.html" ]; then
+            echo "Error: transcript.html not found in packages/ios/dist-transcript/"
+            exit 1
+          fi
+          if [ ! -d "packages/ios/dist-transcript/assets" ]; then
+            echo "Error: assets folder not found in packages/ios/dist-transcript/"
+            exit 1
+          fi
+          du -sh packages/ios/dist-transcript

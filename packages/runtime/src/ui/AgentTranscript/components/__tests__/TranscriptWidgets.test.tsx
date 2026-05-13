@@ -17,10 +17,12 @@
 
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import * as rtl from '@testing-library/react';
 import { createStore, Provider as JotaiProvider } from 'jotai';
 import type { TranscriptViewMessage } from '../../../../ai/server/transcript/TranscriptProjector';
 import type { CustomToolWidgetProps } from '../CustomToolWidgets/index';
+
+const { render, screen, fireEvent } = rtl;
 
 // Mock clipboard
 vi.mock('../../../../utils/clipboard', () => ({
@@ -759,6 +761,8 @@ describe('AskUserQuestionWidget', () => {
       worktreeId: null,
       askUserQuestionSubmit: vi.fn().mockResolvedValue(undefined),
       askUserQuestionCancel: vi.fn().mockResolvedValue(undefined),
+      requestUserInputSubmit: vi.fn().mockResolvedValue(undefined),
+      requestUserInputCancel: vi.fn().mockResolvedValue(undefined),
       exitPlanModeApprove: vi.fn().mockResolvedValue(undefined),
       exitPlanModeStartNewSession: vi.fn().mockResolvedValue(undefined),
       exitPlanModeDeny: vi.fn().mockResolvedValue(undefined),
@@ -938,6 +942,31 @@ describe('GitCommitConfirmationWidget', () => {
     const widget = screen.getByTestId('git-commit-widget');
     expect(widget.dataset.state).toBe('cancelled');
     expect(screen.getByTestId('git-commit-cancelled')).toBeDefined();
+  });
+
+  it('renders error state from tool result', () => {
+    const message = makeToolMessage(
+      'git_commit_proposal',
+      {
+        commitMessage: 'feat: failing commit',
+        filesToStage: ['src/file.ts'],
+      },
+      { action: 'error', error: 'HOOK_DETAIL: lint failed' }
+    );
+    render(
+      <Wrapper>
+        <GitCommitConfirmationWidget
+          message={message}
+          isExpanded={false}
+          onToggle={() => {}}
+          sessionId="error-commit"
+        />
+      </Wrapper>
+    );
+    const widget = screen.getByTestId('git-commit-widget');
+    expect(widget.dataset.state).toBe('error');
+    expect(screen.getByText('Commit Failed')).toBeDefined();
+    expect(screen.getByTestId('git-commit-error').textContent).toContain('HOOK_DETAIL: lint failed');
   });
 
   it('returns null when no tool call', () => {
@@ -1623,4 +1652,3 @@ describe('EditorScreenshotWidget', () => {
     expect(img?.getAttribute('src')).toContain('data:image/png;base64,');
   });
 });
-

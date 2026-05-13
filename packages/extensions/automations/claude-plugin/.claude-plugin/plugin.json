@@ -1,0 +1,10 @@
+{
+  "name": "automations",
+  "version": "1.0.0",
+  "description": "Create and manage scheduled automations in Nimbalyst",
+  "author": {
+    "name": "Nimbalyst",
+    "url": "https://nimbalyst.com"
+  },
+  "keywords": ["automation", "schedule", "cron", "ai-task"]
+}

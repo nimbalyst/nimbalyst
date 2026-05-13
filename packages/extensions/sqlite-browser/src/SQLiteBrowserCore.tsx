@@ -61,6 +61,12 @@ export interface SQLiteBrowserCoreProps {
   emptyStateExtra?: React.ReactNode;
   /** Storage service for persisting query history */
   storage?: StorageService;
+  /**
+   * Read-only mode. Hides the Query pane (SQL textarea + run button) so
+   * the browser reads as a clean table viewer. The data is always
+   * inspect-only in this codebase -- this flag is purely a UI affordance.
+   */
+  readOnly?: boolean;
 }
 
 // ============================================================================
@@ -101,6 +107,7 @@ export function SQLiteBrowserCore({
   showHeader = true,
   emptyStateExtra,
   storage,
+  readOnly = false,
 }: SQLiteBrowserCoreProps) {
   // Unique ID for this component instance (for AI tool registration)
   const instanceId = useId();
@@ -118,6 +125,12 @@ export function SQLiteBrowserCore({
 
   // View mode
   const [viewMode, setViewMode] = useState<'browse' | 'query'>('browse');
+
+  // If the host flips to read-only while we're in the query pane, fall back
+  // to browse mode so the hidden Query button can't leave us stranded.
+  useEffect(() => {
+    if (readOnly && viewMode === 'query') setViewMode('browse');
+  }, [readOnly, viewMode]);
 
   // Query history
   const [queryHistory, setQueryHistory] = useState<QueryHistoryEntry[]>([]);
@@ -410,22 +423,25 @@ export function SQLiteBrowserCore({
                 <span className="text-[11px] text-nim-muted">{database.tables.length} table(s)</span>
               </div>
 
-              {/* Query section */}
-              <div className="p-2 border-b border-nim">
-                <button
-                  className={`flex items-center gap-2 w-full p-2 text-xs font-medium text-left border-none rounded cursor-pointer transition-all ${viewMode === 'query' ? 'bg-[var(--nim-primary)] text-white' : 'bg-transparent text-nim hover:bg-nim-hover'}`}
-                  onClick={() => {
-                    setViewMode('query');
-                    setSelectedTable(null);
-                  }}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0">
-                    <polyline points="4 17 10 11 4 5" />
-                    <line x1="12" y1="19" x2="20" y2="19" />
-                  </svg>
-                  Query
-                </button>
-              </div>
+              {/* Query section. Hidden in read-only mode so the browser
+               * reads as a clean table viewer without the SQL editor. */}
+              {!readOnly && (
+                <div className="p-2 border-b border-nim">
+                  <button
+                    className={`flex items-center gap-2 w-full p-2 text-xs font-medium text-left border-none rounded cursor-pointer transition-all ${viewMode === 'query' ? 'bg-[var(--nim-primary)] text-white' : 'bg-transparent text-nim hover:bg-nim-hover'}`}
+                    onClick={() => {
+                      setViewMode('query');
+                      setSelectedTable(null);
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0">
+                      <polyline points="4 17 10 11 4 5" />
+                      <line x1="12" y1="19" x2="20" y2="19" />
+                    </svg>
+                    Query
+                  </button>
+                </div>
+              )}
 
               {/* Tables section */}
               <div className="border-b border-nim last:border-b-0 flex-1 flex flex-col overflow-hidden">

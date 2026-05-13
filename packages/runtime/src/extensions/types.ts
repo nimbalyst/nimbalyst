@@ -27,6 +27,7 @@ export type {
   KeybindingContribution,
   NewFileMenuContribution,
   SlashCommandContribution,
+  AgentWorkflowsContribution,
   ClaudePluginContribution,
   ClaudePluginCommand,
   ClaudePluginAgent,

@@ -1,4 +1,5 @@
 import type { DocumentContext } from './types';
+import { getPreferredAgentLanguage } from './server/preferredAgentLanguageConfig';
 
 /**
  * Build session naming instructions section
@@ -15,7 +16,8 @@ function formatMcpToolReference(server: string, tool: string, style: ToolReferen
 
 function buildSessionNamingSection(
   style: ToolReferenceStyle = 'claude',
-  hasOutOfBandNaming: boolean = false
+  hasOutOfBandNaming: boolean = false,
+  preferredAgentLanguage?: string
 ): string {
   const toolReference = formatMcpToolReference('nimbalyst-session-naming', 'update_session_meta', style);
 
@@ -43,7 +45,11 @@ This is required so the session shows up correctly on the kanban board.`;
 
   const subsequentCallsSuffix = hasOutOfBandNaming
     ? ''
-    : ' The name can only be set once -- subsequent attempts are silently ignored while other fields are still applied.';
+    : ' The name CAN be changed on later calls, but you should generally not rename a session once it has been named -- only do so if the user explicitly asks for a different name.';
+
+  const languageGuidance = preferredAgentLanguage
+    ? `\n- Write the name in the user's preferred language: **${preferredAgentLanguage}** (BCP-47 / common language name)`
+    : '';
 
   return `
 
@@ -68,7 +74,7 @@ You do NOT need to call this on every message -- only when the nature of the wor
 
 - 2-5 words, concise and descriptive
 - Put the unique/descriptive part FIRST, action word LAST (noun-phrase style)
-- Based on what the USER asked for, not your solution
+- Based on what the USER asked for, not your solution${languageGuidance}
 
 Good examples: "Electron crash report analysis", "Dark mode implementation", "Database layer refactor"
 Bad examples: "Fix null check in handleAuth" (too specific), "Update code" (too vague)
@@ -107,6 +113,14 @@ export interface ClaudeCodePromptOptions {
    * false so the agent still sets a name via update_session_meta.
    */
   hasOutOfBandNaming?: boolean;
+  /**
+   * Preferred language for agent output (currently used only for the
+   * auto-generated session name). BCP-47 code or common name, e.g. "ja",
+   * "Japanese", "en", "fr". When set, the prompt tells the agent to write
+   * the session name in this language. Empty/undefined means no preference --
+   * the agent picks based on the conversation language.
+   */
+  preferredAgentLanguage?: string;
   /** @deprecated Use toolReferenceStyle instead */
   sessionNamingInstructionStyle?: ToolReferenceStyle;
   toolReferenceStyle?: ToolReferenceStyle;
@@ -139,6 +153,7 @@ export function buildClaudeCodeSystemPrompt(options: ClaudeCodePromptOptions): s
   const {
     hasSessionNaming = false,
     hasOutOfBandNaming = false,
+    preferredAgentLanguage,
     sessionNamingInstructionStyle,
     toolReferenceStyle = 'claude',
     worktreePath,
@@ -149,6 +164,8 @@ export function buildClaudeCodeSystemPrompt(options: ClaudeCodePromptOptions): s
   const effectiveToolReferenceStyle = sessionNamingInstructionStyle ?? toolReferenceStyle;
   const displayToUserTool = formatMcpToolReference('nimbalyst-mcp', 'display_to_user', effectiveToolReferenceStyle);
   const captureEditorScreenshotTool = formatMcpToolReference('nimbalyst-mcp', 'capture_editor_screenshot', effectiveToolReferenceStyle);
+  const askUserQuestionTool = formatMcpToolReference('nimbalyst-mcp', 'AskUserQuestion', effectiveToolReferenceStyle);
+  const promptForUserInputTool = formatMcpToolReference('nimbalyst-mcp', 'PromptForUserInput', effectiveToolReferenceStyle);
   const gitCommitProposalTool = formatMcpToolReference('nimbalyst-mcp', 'developer_git_commit_proposal', effectiveToolReferenceStyle);
 
   let prompt = `The following is an addendum to the above. Anything in the addendum supersedes the above.
@@ -156,6 +173,20 @@ export function buildClaudeCodeSystemPrompt(options: ClaudeCodePromptOptions): s
 
 You are an AI assistant integrated into the Nimbalyst editor, an AI-native workspace and code editor.
 When asked about your identity, be truthful about which AI model you are - do not claim to be a different model than you actually are.
+
+## Interactive User Input
+
+When you need input from the user to continue, do not guess and do not bury the question in a normal assistant reply. Use one of the interactive input tools so Nimbalyst can block the session and collect a structured answer.
+
+- ${askUserQuestionTool} - Use for 1-3 short multiple-choice questions when you need a concrete decision, confirmation, or disambiguation before proceeding
+- ${promptForUserInputTool} - Use when the input is richer than a flat list of options, such as selecting a subset, reordering items, editing a draft, or filling multiple fields
+
+Guidelines:
+- Use an interactive input tool when the next meaningful step is blocked on user-specific information or approval
+- Prefer ${askUserQuestionTool} for concise branching decisions with concrete options
+- Prefer ${promptForUserInputTool} for richer structured input
+- Keep questions short, specific, and easy to answer
+- Wait for the tool result before continuing with the blocked step
 
 ## Visual Communication
 
@@ -262,9 +293,12 @@ IMPORTANT: You are working in a git worktree at ${worktreePath}. This is an isol
 
 When asked to commit your work, use the ${gitCommitProposalTool} tool instead of using git commit from the command line. It stages and commits atomically, preventing conflicts when multiple sessions are working in the same repository. You may do other git operations from the command line as usual.`;
 
-  // Add session naming if available
+  // Add session naming if available. Fall back to the runtime config when
+  // the caller didn't pass an explicit language so we don't have to thread it
+  // through every provider's buildSystemPrompt path.
   if (hasSessionNaming) {
-    prompt += buildSessionNamingSection(effectiveToolReferenceStyle, hasOutOfBandNaming);
+    const effectiveLanguage = preferredAgentLanguage ?? getPreferredAgentLanguage();
+    prompt += buildSessionNamingSection(effectiveToolReferenceStyle, hasOutOfBandNaming, effectiveLanguage);
   }
 
   // Add voice mode context if applicable

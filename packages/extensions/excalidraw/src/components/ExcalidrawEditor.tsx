@@ -36,6 +36,19 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
   const themeInitial = (hostThemeInitial === 'dark' || hostThemeInitial === 'crystal-dark') ? 'dark' : 'light';
   const defaultBgRef = useRef(themeInitial === 'dark' ? '#1e1e1e' : '#ffffff');
 
+  // Honor host.readOnly via Excalidraw's `viewModeEnabled` (hides toolbars
+  // and disables editing while keeping pan/zoom). Reactive: subscribe to
+  // host.onReadOnlyChanged so the embed's View/Edit chrome toggle flips
+  // the canvas in place without forcing a remount.
+  const [readOnly, setReadOnly] = useState<boolean>(host.readOnly ?? false);
+  useEffect(() => {
+    setReadOnly(host.readOnly ?? false);
+    const unsub = host.onReadOnlyChanged?.((next) => {
+      setReadOnly(next);
+    });
+    return unsub;
+  }, [host]);
+
   // Excalidraw API reference (imperative -- the library owns all state)
   const excalidrawAPIRef = useRef<ExcalidrawImperativeAPI | null>(null);
 
@@ -267,7 +280,10 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
     );
   }
 
-  // Key by theme to force remount when theme changes
+  // Key by theme to force remount when theme changes. `viewModeEnabled`
+  // does NOT force remount -- the Excalidraw library accepts it as a live
+  // prop, so toggling it from the embed chrome flips toolbars on/off
+  // without losing the canvas state.
   return (
     <div className="excalidraw-editor w-full h-full" data-theme={theme}>
       <Excalidraw
@@ -279,6 +295,7 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
         }}
         initialData={initialData ?? undefined}
         theme={theme}
+        viewModeEnabled={readOnly}
       />
     </div>
   );

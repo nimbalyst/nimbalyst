@@ -50,6 +50,7 @@ import { FeatureUsageService, FEATURES } from '../FeatureUsageService.ts';
 import { historyManager } from '../../HistoryManager';
 import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
+import { getAgentWorkflowService } from '../AgentWorkflowService';
 import {
   shouldShowCommunityPopup,
   markCommunityPopupShown,
@@ -186,6 +187,14 @@ async function getWorkspacePathForSession(sessionId: string): Promise<string | n
 export class MessageStreamingHandler {
   private readonly svc: AIServiceInternal;
   private readonly unsubscribeBatchListener: () => void;
+  // Per-provider map of event -> currently-installed listener. Used by
+  // installListener so handle() can re-wire its own subscriptions on every
+  // ai:sendMessage call without nuking listeners owned by other modules.
+  // WeakMap so a discarded provider instance is garbage-collected normally.
+  private readonly providerListeners = new WeakMap<
+    AIProvider,
+    Map<string, (...args: any[]) => void>
+  >();
 
   constructor(service: AIService) {
     this.svc = service as unknown as AIServiceInternal;
@@ -205,7 +214,10 @@ export class MessageStreamingHandler {
       // [SessionManager] Rejecting session ... rejection logs because the
       // receiving window's renderer would call aiLoadSession with its own
       // workspace path. The session's workspace is immutable, so we cache the
-      // lookup. See docs/IPC_GUIDE.md "Workspace-Scoped IPC".
+      // lookup. findWindowByWorkspace is rail-aware, so it correctly resolves
+      // a window that hosts the session's project as a rail-warm
+      // (additionalWorkspacePaths) entry, not just as the active one.
+      // See docs/IPC_GUIDE.md "Workspace-Scoped IPC".
       void getWorkspacePathForSession(batch.sessionId).then((workspacePath) => {
         if (!workspacePath) {
           return;
@@ -224,6 +236,32 @@ export class MessageStreamingHandler {
   /** Used by AIService teardown to unwire the singleton batch listener. */
   destroy(): void {
     this.unsubscribeBatchListener();
+  }
+
+  /**
+   * Replace the previously-installed listener for this (provider, event) pair
+   * without touching listeners owned by other modules. handle() registers its
+   * subscriptions on every ai:sendMessage call against the same cached
+   * per-session provider instance, so it needs to remove its own prior
+   * listener but not the whole event channel (the old removeAllListeners
+   * pattern silently dropped any other module that started subscribing).
+   */
+  private installListener(
+    provider: AIProvider,
+    event: string,
+    listener: (...args: any[]) => void,
+  ): void {
+    let listeners = this.providerListeners.get(provider);
+    if (!listeners) {
+      listeners = new Map<string, (...args: any[]) => void>();
+      this.providerListeners.set(provider, listeners);
+    }
+    const previous = listeners.get(event);
+    if (previous) {
+      provider.off(event, previous);
+    }
+    listeners.set(event, listener);
+    provider.on(event, listener);
   }
 
   handle: SendMessageHandler = async (
@@ -600,15 +638,21 @@ export class MessageStreamingHandler {
     const toolHandler = this.svc.createToolHandler(event.sender, documentContext, session.id, effectiveWorkspacePath);
     provider.registerToolHandler(toolHandler);
 
-    // Listen for message:logged events and forward to renderer to trigger UI updates
-    // Skip hidden messages - they shouldn't trigger UI refreshes
+    // Listen for message:logged events and forward to renderer to trigger UI updates.
+    // Skip hidden messages - they shouldn't trigger UI refreshes.
+    //
+    // Multi-project rail: include the session's workspacePath in the payload
+    // so the renderer can route the reload to the correct workspace even
+    // when the session is in a project that is not currently visible. The
+    // renderer's session registry holds only the visible project's
+    // sessions, so it can't always resolve the path on its own.
     const onMessageLogged = (data: { sessionId: string; direction: string; hidden?: boolean }) => {
       if (data.hidden) return;
-      safeSend(event, 'ai:message-logged', data);
+      safeSend(event, 'ai:message-logged', { ...data, workspacePath: effectiveWorkspacePath });
     };
-    // Remove all previous listeners to avoid duplicates
-    provider.removeAllListeners('message:logged');
-    provider.on('message:logged', onMessageLogged);
+    // Replace this handler's previous 'message:logged' subscription only,
+    // so other modules subscribing to the same provider event stay wired.
+    this.installListener(provider, 'message:logged', onMessageLogged);
 
     // Forward provider-side title updates (from the SDK's generateSessionTitle
     // path) to all renderers so the session list updates in real time.
@@ -620,8 +664,7 @@ export class MessageStreamingHandler {
         }
       }
     };
-    provider.removeAllListeners('session:title-updated');
-    provider.on('session:title-updated', onSessionTitleUpdated);
+    this.installListener(provider, 'session:title-updated', onSessionTitleUpdated);
 
     // Forward provider-side metadata updates (e.g. tags/phase from the SDK's
     // out-of-band naming side-question and the default-phase fallback) to all
@@ -645,8 +688,7 @@ export class MessageStreamingHandler {
         });
       }
     };
-    provider.removeAllListeners('session:metadata-updated');
-    provider.on('session:metadata-updated', onSessionMetadataUpdated);
+    this.installListener(provider, 'session:metadata-updated', onSessionMetadataUpdated);
 
     // Helper to sync pending prompt state to mobile
     const syncPendingPrompt = (sessionId: string, hasPendingPrompt: boolean) => {
@@ -662,7 +704,7 @@ export class MessageStreamingHandler {
     // Listen for ExitPlanMode confirmation requests and forward to renderer
     const onExitPlanModeConfirm = async (data: { requestId: string; sessionId: string; planSummary: string; timestamp: number }) => {
       logger.main.info('[AIService] ExitPlanMode confirmation requested:', data.requestId);
-      safeSend(event, 'ai:exitPlanModeConfirm', data);
+      safeSend(event, 'ai:exitPlanModeConfirm', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, true);
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
@@ -683,13 +725,40 @@ export class MessageStreamingHandler {
         effectiveWorkspacePath
       );
     };
-    provider.removeAllListeners('exitPlanMode:confirm');
-    provider.on('exitPlanMode:confirm', onExitPlanModeConfirm);
+    this.installListener(provider, 'exitPlanMode:confirm', onExitPlanModeConfirm);
+
+    // Listen for ExitPlanMode resolutions (approve/deny) and flip session
+    // status back to 'running' so SessionStateManager emits session:streaming
+    // for every subscribed window. Required for the "Continued Planning"
+    // denial path in the multi-project rail: without this, state stays at
+    // waiting_for_input and the AGENT panel's "Thinking…" indicator does
+    // not re-appear when the SDK resumes streaming. Mirrors the
+    // askUserQuestion:answered and toolPermission:resolved patterns above.
+    const onExitPlanModeResolved = (data: {
+      requestId: string;
+      sessionId: string;
+      approved: boolean;
+      respondedBy?: 'desktop' | 'mobile';
+      timestamp: number;
+    }) => {
+      logger.main.info('[AIService] ExitPlanMode resolved:', data.requestId, 'approved=', data.approved);
+      syncPendingPrompt(data.sessionId, false);
+      TrayManager.getInstance().onPromptResolved(data.sessionId);
+
+      getSessionStateManager().updateActivity({
+        sessionId: data.sessionId,
+        status: 'running',
+        isStreaming: true,
+      }).catch((err) => {
+        logger.main.error('[AIService] Failed to update session status to running after ExitPlanMode resolve:', err);
+      });
+    };
+    this.installListener(provider, 'exitPlanMode:resolved', onExitPlanModeResolved);
 
     // Listen for AskUserQuestion requests and forward to renderer
     const onAskUserQuestion = async (data: { questionId: string; sessionId: string; questions: any[]; timestamp: number }) => {
       // logger.main.info('[AIService] AskUserQuestion requested:', data.questionId);
-      safeSend(event, 'ai:askUserQuestion', data);
+      safeSend(event, 'ai:askUserQuestion', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, true);
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
@@ -710,13 +779,12 @@ export class MessageStreamingHandler {
         effectiveWorkspacePath
       );
     };
-    provider.removeAllListeners('askUserQuestion:pending');
-    provider.on('askUserQuestion:pending', onAskUserQuestion);
+    this.installListener(provider, 'askUserQuestion:pending', onAskUserQuestion);
 
     // Listen for AskUserQuestion answers and forward to renderer to update tool call display
     const onAskUserQuestionAnswered = (data: { questionId: string; sessionId: string; questions: any[]; answers: Record<string, string>; timestamp: number }) => {
       // logger.main.info('[AIService] AskUserQuestion answered:', data.questionId);
-      safeSend(event, 'ai:askUserQuestionAnswered', data);
+      safeSend(event, 'ai:askUserQuestionAnswered', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, false);
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
@@ -727,8 +795,7 @@ export class MessageStreamingHandler {
         isStreaming: true,
       }).catch(() => {});
     };
-    provider.removeAllListeners('askUserQuestion:answered');
-    provider.on('askUserQuestion:answered', onAskUserQuestionAnswered);
+    this.installListener(provider, 'askUserQuestion:answered', onAskUserQuestionAnswered);
 
     // Listen for tool permission requests and forward to renderer
     const onToolPermissionPending = async (data: { requestId: string; sessionId: string; workspacePath: string; request: any; timestamp: number }) => {
@@ -758,13 +825,12 @@ export class MessageStreamingHandler {
         data.workspacePath
       );
     };
-    provider.removeAllListeners('toolPermission:pending');
-    provider.on('toolPermission:pending', onToolPermissionPending);
+    this.installListener(provider, 'toolPermission:pending', onToolPermissionPending);
 
     // Listen for tool permission resolved and forward to renderer
     const onToolPermissionResolved = (data: { requestId: string; sessionId: string; response: any; timestamp: number }) => {
       logger.main.info('[AIService] Tool permission resolved:', data.requestId);
-      safeSend(event, 'ai:toolPermissionResolved', data);
+      safeSend(event, 'ai:toolPermissionResolved', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, false);
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
@@ -775,8 +841,7 @@ export class MessageStreamingHandler {
         isStreaming: true,
       }).catch(() => {});
     };
-    provider.removeAllListeners('toolPermission:resolved');
-    provider.on('toolPermission:resolved', onToolPermissionResolved);
+    this.installListener(provider, 'toolPermission:resolved', onToolPermissionResolved);
 
     // Listen for prompt additions and forward to renderer for debug display
     const onPromptAdditions = (data: {
@@ -788,8 +853,7 @@ export class MessageStreamingHandler {
     }) => {
       safeSend(event, 'ai:promptAdditions', data);
     };
-    provider.removeAllListeners('promptAdditions');
-    provider.on('promptAdditions', onPromptAdditions);
+    this.installListener(provider, 'promptAdditions', onPromptAdditions);
 
     // Listen for expired session events and clear the providerSessionId from database
     // This ensures subsequent messages start fresh even after app restart
@@ -801,8 +865,7 @@ export class MessageStreamingHandler {
         logger.main.error('[AIService] Failed to clear expired providerSessionId:', error);
       }
     };
-    provider.removeAllListeners('session:providerSessionExpired');
-    provider.on('session:providerSessionExpired', onProviderSessionExpired);
+    this.installListener(provider, 'session:providerSessionExpired', onProviderSessionExpired);
 
     // Listen for provider session ID received and persist immediately
     // This ensures session can be resumed even if interrupted/cancelled
@@ -813,8 +876,7 @@ export class MessageStreamingHandler {
         logger.main.error('[AIService] Failed to persist providerSessionId:', error);
       }
     };
-    provider.removeAllListeners('session:providerSessionReceived');
-    provider.on('session:providerSessionReceived', onProviderSessionReceived);
+    this.installListener(provider, 'session:providerSessionReceived', onProviderSessionReceived);
 
     // Listen for teammate messages when the lead is idle (no active query).
     // When the lead is active, messages are delivered via interrupt + streamInput
@@ -868,8 +930,7 @@ export class MessageStreamingHandler {
         logger.main.error('[AIService] Failed to handle teammate message while idle:', error);
       }
     };
-    provider.removeAllListeners('teammate:messageWhileIdle');
-    provider.on('teammate:messageWhileIdle', onTeammateMessageWhileIdle);
+    this.installListener(provider, 'teammate:messageWhileIdle', onTeammateMessageWhileIdle);
 
     // Listen for all teammates completing. When the lead finished but teammates
     // were still active, endSession was deferred. Now that all teammates are
@@ -900,8 +961,7 @@ export class MessageStreamingHandler {
         soundService.playCompletionSound(workspacePath);
       }
     };
-    provider.removeAllListeners('teammates:allCompleted');
-    provider.on('teammates:allCompleted', onTeammatesAllCompleted);
+    this.installListener(provider, 'teammates:allCompleted', onTeammatesAllCompleted);
 
     // Track user @ mentions in the message
     try {
@@ -1117,6 +1177,14 @@ export class MessageStreamingHandler {
           await this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath, event);
         } catch (watcherError) {
           logger.main.error('[AIService] Failed to start Codex file cache:', watcherError);
+        }
+      }
+
+      if (session.provider === 'openai-codex' && effectiveWorkspacePath) {
+        try {
+          await getAgentWorkflowService(effectiveWorkspacePath).ensureCodexExports();
+        } catch (workflowError) {
+          logger.main.error('[AIService] Failed to sync Codex workflow exports:', workflowError);
         }
       }
 
@@ -1451,6 +1519,27 @@ export class MessageStreamingHandler {
                     const seenCount = (bashCommandOccurrences.get(commandItemId) ?? 0) + 1;
                     bashCommandOccurrences.set(commandItemId, seenCount);
                     pendingBashCommands.set(commandItemId, trackArgs.command);
+
+                    // First observation == item.started: capture each
+                    // referenced file's current disk content into the cache
+                    // BEFORE the bash command runs. This is the only
+                    // deterministic moment to record a true pre-edit baseline
+                    // for command_execution. Without it, item.completed below
+                    // would compare post-command disk content against a
+                    // tier-2 git-`startSha` baseline, falsely attributing
+                    // read-only commands (`sed -n`, `cat`, `nl`) on
+                    // working-tree-modified files as edits.
+                    if (seenCount === 1) {
+                      try {
+                        await this.svc.hooklessWatcher.captureBashPreEditSnapshots(
+                          session.id,
+                          workspacePath,
+                          trackArgs.command,
+                        );
+                      } catch (snapshotError) {
+                        logger.ai.warn('[AIService] Failed to seed bash pre-edit snapshots:', snapshotError);
+                      }
+                    }
 
                     if (seenCount >= 2 && !processedBashCommandItemIds.has(commandItemId)) {
                       const tracked = await this.svc.hooklessWatcher.trackBashEditsFromCommand(

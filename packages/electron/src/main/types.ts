@@ -17,7 +17,27 @@ export interface TabState {
 export interface WindowState {
     mode: 'document' | 'workspace' | 'agentic-coding';
     filePath: string | null;
+    /**
+     * The window's primary / create-time workspace path. Kept stable for
+     * legacy code that infers context from the window. When the user is in
+     * multi-project rail mode and switches projects, the visible project is
+     * tracked separately via `activeWorkspacePath`.
+     */
     workspacePath: string | null;
+    /**
+     * The workspace currently visible in this window. Defaults to
+     * `workspacePath` when the rail is off. Updated by
+     * `workspace:set-active` when the user clicks a different project in
+     * the rail.
+     */
+    activeWorkspacePath?: string | null;
+    /**
+     * Additional workspace paths kept warm in this window (the rail's
+     * inactive projects). Each path here gets its own DocumentService /
+     * FileSystemService / WorkspaceEventBus subscription so file watchers
+     * and document caches stay alive even when the project is hidden.
+     */
+    additionalWorkspacePaths?: string[];
     documentEdited: boolean;
 
     // Tab management (optional for backward compatibility)

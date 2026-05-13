@@ -10,6 +10,7 @@ import { logger } from '../utils/logger';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { GitStatusService } from '../services/GitStatusService';
 import { autoMatchTeamForWorkspace } from '../services/TeamService';
+import { updateTrackerSchemaWorkspace } from '../services/TrackerSchemaService';
 
 // Save session state
 export async function saveSessionState() {
@@ -171,6 +172,7 @@ export async function restoreSessionState(): Promise<boolean> {
                             // Yield before running background workspace matching so
                             // restored windows don't block the startup tick.
                             void autoMatchTeamForWorkspace(restoredWorkspacePath).catch(() => {});
+                            updateTrackerSchemaWorkspace(restoredWorkspacePath);
                         }, 0);
 
                         // Note: Workspace tabs will be restored by the workspace's own tab state management

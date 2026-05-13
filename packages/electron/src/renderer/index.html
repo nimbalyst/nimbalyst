@@ -11,6 +11,17 @@
     <script>window.esmsInitOptions = { shimMode: true };</script>
     <script async src="./es-module-shims.js"></script>
 
+    <!-- Load prismjs synchronously BEFORE any ESM module evaluates so that
+         window.Prism is set when the prism-* language chunks reference the
+         bare `Prism` global. Vite/esbuild prebundling of @lexical/code (via
+         @lexical/code-prism) reorders chunk imports such that prism-language
+         chunks evaluate before prismjs main, so the global must already be
+         present. The `prismjs` ESM specifier is aliased (in
+         electron.vite.config.ts) to a shim that re-exports this same
+         instance, preventing a second IIFE run that would orphan language
+         registrations on a stale instance. -->
+    <script src="./prism.js"></script>
+
     <script>
         // Determine theme FIRST, before any CSS - using SYNC API to prevent flash
         // IMPORTANT: getThemeSync() resolves 'system' to actual theme, so we get 'light' or 'dark' directly

@@ -9,26 +9,24 @@ import { Transformer } from '@lexical/markdown';
 // Core transformers that are always available
 import { CORE_TRANSFORMERS } from './core-transformers';
 
-// Plugin registry for dynamic transformers
-import { pluginRegistry } from '../plugins/PluginRegistry';
+// Extension contributions store -- where built-in extensions and the
+// renderer extension bridge publish their markdown transformers.
+import { getAllExtensionTransformers } from '../extensions/extensionContributionsStore';
 
 /**
  * Gets the complete set of transformers for the editor, including
- * both core transformers and those from enabled plugins.
+ * both core transformers and those contributed by enabled extensions.
  *
- * This is the recommended way to get transformers for editor operations
- * to ensure consistency with the plugin system.
+ * Order matters - more specific transformers should come before general
+ * ones. Extension transformers run first so they can override core
+ * behavior.
  *
- * Order matters - more specific transformers should come before general ones.
- * Plugin transformers are loaded first so they can override core behavior.
- *
- * @returns Complete transformer array including both plugin and core transformers
+ * @returns Complete transformer array including both extension and core
+ * transformers
  */
 export function getEditorTransformers(): Transformer[] {
   return [
-    // Plugin transformers come first (more specific)
-    ...pluginRegistry.getPluginTransformers(),
-    // Core transformers come last (more general)
+    ...getAllExtensionTransformers(),
     ...CORE_TRANSFORMERS,
   ];
 }
@@ -49,8 +47,6 @@ export function createTransformers(
   ];
 }
 
-// Re-export for convenience
-// Note: Use the enhanced versions instead ($convertFromEnhancedMarkdownString, $convertToEnhancedMarkdownString)
 export { MarkdownStreamProcessor, createHeadlessEditorFromEditor, markdownToJSONSync } from './MarkdownStreamProcessor';
 export type { InsertMode } from './MarkdownStreamProcessor';
 
@@ -103,7 +99,3 @@ export {
   detectMarkdownIndentSize,
   type NormalizerConfig,
 } from './MarkdownNormalizer';
-
-// Export OUR FORKED markdown import function - never use Lexical's!
-export { $convertFromMarkdownStringRexical } from './LexicalMarkdownImport';
-

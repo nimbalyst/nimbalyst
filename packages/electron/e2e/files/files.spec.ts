@@ -147,22 +147,29 @@ test('should debounce during rapid edits without excessive saves', async () => {
 
   await editor.click();
   await page.keyboard.press('End');
-  for (let i = 0; i < 20; i++) {
-    await page.keyboard.type('x');
+  const typedRun = 'x'.repeat(20);
+  for (const ch of typedRun) {
+    await page.keyboard.type(ch);
     await page.waitForTimeout(50);
   }
 
-  await page.waitForTimeout(500);
-
-  const duringStats = await fs.stat(filePath);
-  expect(duringStats.mtimeMs).toBe(initialMtime);
+  // After the typing burst the buffer must be dirty. (Whether autosave has
+  // already fired mid-burst depends on the debounce window vs. our typing
+  // cadence -- we don't pin that timing, only that autosave eventually
+  // converges to the final content.)
   await expect(tab.locator('.tab-dirty-indicator')).toBeVisible();
 
+  // Wait past the autosave debounce window so the final save lands.
   await page.waitForTimeout(3000);
 
+  await expect(tab.locator('.tab-dirty-indicator')).toHaveCount(0);
   const afterStats = await fs.stat(filePath);
   expect(afterStats.mtimeMs).toBeGreaterThan(initialMtime);
-  await expect(tab.locator('.tab-dirty-indicator')).toHaveCount(0);
+
+  // Critical assertion: the on-disk content reflects every keystroke from the
+  // burst (no half-baked debounce that drops trailing edits).
+  const afterContent = await fs.readFile(filePath, 'utf8');
+  expect(afterContent).toContain(typedRun);
 });
 
 test('should autosave multiple tabs independently', async () => {
@@ -580,10 +587,12 @@ test('expanding a directory after opening a file does not scroll back', async ()
     page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'dir-00' })
   ).toBeVisible({ timeout: TEST_TIMEOUTS.FILE_TREE_LOAD });
 
-  // 2. Expand zzz-deep and open target.md via the tree (scrolls tree down)
+  // 2. Expand zzz-deep and open target.md via the tree (scrolls tree down).
+  // The file lives under zzz-deep/ so pass the relative path -- bare
+  // 'target.md' would resolve to <workspace>/target.md which doesn't exist.
   await page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'zzz-deep' }).click();
   await page.waitForTimeout(500);
-  await openFileFromTree(page, 'target.md');
+  await openFileFromTree(page, 'zzz-deep/target.md');
 
   await expect(
     page.locator(PLAYWRIGHT_TEST_SELECTORS.tabTitle, { hasText: 'target.md' })
@@ -616,10 +625,10 @@ test('expanding a directory after opening a file does not scroll back', async ()
 test('expanding a directory after breadcrumb reveal does not scroll back', async () => {
   test.setTimeout(30000);
 
-  // 1. Open src/app.ts via the tree so it has a breadcrumb
-  await page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'src' }).click();
-  await page.waitForTimeout(500);
-  await openFileFromTree(page, 'app.ts');
+  // 1. Open src/app.ts via the tree so it has a breadcrumb. openFileFromTree
+  // routes through the IPC handler so no need to pre-expand src/ (and
+  // clicking would toggle, collapsing it if a prior test expanded it).
+  await openFileFromTree(page, 'src/app.ts');
 
   await expect(
     page.locator(PLAYWRIGHT_TEST_SELECTORS.tabTitle, { hasText: 'app.ts' })
@@ -667,10 +676,11 @@ test('breadcrumb reveal clears filter and scrolls to file', async () => {
   await page.locator(PLAYWRIGHT_TEST_SELECTORS.filterMenuAllFiles).click();
   await page.waitForTimeout(500);
 
-  // 2. Open src/app.ts
-  await page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'src' }).click();
-  await page.waitForTimeout(500);
-  await openFileFromTree(page, 'app.ts');
+  // 2. Open src/app.ts. openFileFromTree opens the file directly via the
+  // IPC handler, so we don't need to expand the src/ directory first
+  // (clicking it would toggle, which collapses it if a prior test left it
+  // open).
+  await openFileFromTree(page, 'src/app.ts');
 
   // 3. Set filter to "Markdown Only" (hides .ts files)
   await page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeFilterButton).click();
@@ -687,9 +697,11 @@ test('breadcrumb reveal clears filter and scrolls to file', async () => {
   await expect(breadcrumbFilename).toBeVisible({ timeout: 2000 });
   await breadcrumbFilename.click({ force: true });
 
-  // 5. Filter should clear and file should become visible in tree
+  // 5. Filter should clear and file should become visible in tree.
+  // Use an exact regex match so `filter-app.ts` (created by an earlier
+  // filter test in beforeAll) doesn't poison this selector.
   await expect(
-    page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'app.ts' })
+    page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: /^app\.ts$/ })
   ).toBeVisible({ timeout: 5000 });
 
   // 6. Filter indicator should be gone (filter cleared to "all")

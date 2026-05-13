@@ -219,8 +219,14 @@ interface BusEntry {
   refCount: number;
   /** Callbacks to invoke for each fs event, keyed by subscriber ID */
   listeners: Map<string, WorkspaceEventListener>;
-  /** The loaded .gitignore filter */
-  gitignoreFilter: Ignore;
+  /** Absolute (resolved) workspace path. Cached so isGitignoredScoped doesn't re-resolve per event. */
+  workspaceAbs: string;
+  /** Workspace-root .gitignore filter (or fallback patterns when none exists). */
+  workspaceGitignoreFilter: Ignore;
+  /** Lazily loaded nested-repo .gitignore filters, keyed by absolute git-root path. */
+  nestedGitignoreCache: Map<string, Ignore>;
+  /** Memoized git-root lookup keyed by directory, so the chokidar walk visits each ancestor at most once. */
+  gitRootDirCache: Map<string, string | null>;
   /** Event rate circuit breaker — kills the watcher if events flood in. */
   circuitBreaker: CircuitBreakerState;
   /** Absolute paths that bypass gitignore filtering. */
@@ -279,6 +285,118 @@ async function loadGitignoreFilter(workspacePath: string): Promise<Ignore> {
   } catch {
     return ignore().add(FALLBACK_IGNORE_PATTERNS);
   }
+}
+
+/**
+ * Synchronous loader for nested-repo `.gitignore`s. Used from the chokidar
+ * `ignored` callback, which must return synchronously, so the `Ignore` instance
+ * has to materialize on first miss without `await`. Returns an empty filter
+ * when the nested repo has no `.gitignore` — we don't fall back to the workspace
+ * patterns at the nested level because a nested repo's silence is its own choice.
+ */
+function loadGitignoreFilterSync(rootPath: string): Ignore {
+  const gitignorePath = path.join(rootPath, '.gitignore');
+  try {
+    const content = fs.readFileSync(gitignorePath, 'utf-8');
+    return ignore().add(content);
+  } catch {
+    return ignore();
+  }
+}
+
+/**
+ * Walk up from `dirname(absolutePath)` to find the deepest enclosing directory
+ * that contains a `.git` entry, bounded at `workspaceAbs`. Memoizes per-directory
+ * results so a chokidar walk over 100k entries does at most one `existsSync`
+ * per unique ancestor. Mirrors the boundary semantics of
+ * `GitStatusService.findGitRootForFile` — out-of-boundary inputs return null
+ * so we never resolve to an unrelated repo higher up the filesystem.
+ */
+function findGitRootForPathCached(
+  absolutePath: string,
+  workspaceAbs: string,
+  cache: Map<string, string | null>,
+): string | null {
+  const sep = process.platform === 'win32' ? '\\' : '/';
+  const boundaryWithSep = workspaceAbs.endsWith(sep) ? workspaceAbs : workspaceAbs + sep;
+  if (absolutePath !== workspaceAbs && !absolutePath.startsWith(boundaryWithSep)) {
+    return null;
+  }
+
+  const ancestorsVisited: string[] = [];
+  let dir = path.dirname(absolutePath);
+  let result: string | null = null;
+
+  while (true) {
+    const cached = cache.get(dir);
+    if (cached !== undefined) {
+      result = cached;
+      break;
+    }
+    ancestorsVisited.push(dir);
+
+    try {
+      if (fs.existsSync(path.join(dir, '.git'))) {
+        result = dir;
+        break;
+      }
+    } catch {
+      // ignore - keep walking
+    }
+
+    if (dir === workspaceAbs) {
+      result = null;
+      break;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      result = null;
+      break;
+    }
+    if (!parent.startsWith(boundaryWithSep) && parent !== workspaceAbs) {
+      result = null;
+      break;
+    }
+    dir = parent;
+  }
+
+  // Every ancestor we crossed shares the same owning root.
+  for (const visited of ancestorsVisited) {
+    cache.set(visited, result);
+  }
+  return result;
+}
+
+/**
+ * Returns true if `absolutePath` is gitignored under either the workspace-root
+ * `.gitignore` (existing behavior) or the nearest enclosing nested repo's
+ * `.gitignore`. Honors the layout from issue #207, where a non-git workspace
+ * root contains nested git repos with their own ignore rules.
+ */
+function isGitignoredScoped(
+  absolutePath: string,
+  workspaceAbs: string,
+  entry: BusEntry,
+): boolean {
+  const wsRel = path.relative(workspaceAbs, absolutePath).split(path.sep).join('/');
+  if (wsRel === '' || wsRel.startsWith('..')) return false;
+
+  if (entry.workspaceGitignoreFilter.ignores(wsRel) ||
+      entry.workspaceGitignoreFilter.ignores(wsRel + '/')) {
+    return true;
+  }
+
+  const owningRoot = findGitRootForPathCached(absolutePath, workspaceAbs, entry.gitRootDirCache);
+  if (!owningRoot || owningRoot === workspaceAbs) return false;
+
+  let nestedFilter = entry.nestedGitignoreCache.get(owningRoot);
+  if (!nestedFilter) {
+    nestedFilter = loadGitignoreFilterSync(owningRoot);
+    entry.nestedGitignoreCache.set(owningRoot, nestedFilter);
+  }
+  const rootRel = path.relative(owningRoot, absolutePath).split(path.sep).join('/');
+  if (rootRel === '' || rootRel.startsWith('..')) return false;
+  return nestedFilter.ignores(rootRel) || nestedFilter.ignores(rootRel + '/');
 }
 
 // ---------------------------------------------------------------------------
@@ -559,18 +677,6 @@ function closeWatcher(watcher: fs.FSWatcher | ChokidarFSWatcher): void {
 }
 
 /** Returns true if the relative path should be filtered out. */
-function shouldFilter(relativePath: string, ig: Ignore): boolean {
-  if (shouldIgnoreHardcoded(relativePath)) return true;
-  // .gitignore check - test both file and directory forms
-  if (ig.ignores(relativePath) || ig.ignores(relativePath + '/')) return true;
-  return false;
-}
-
-/** Returns true if the relative path is gitignored (but NOT hardcoded-ignored). */
-function isGitignored(relativePath: string, ig: Ignore): boolean {
-  return ig.ignores(relativePath) || ig.ignores(relativePath + '/');
-}
-
 /** Returns true if a file has a .md extension. */
 function isMarkdownFile(filePath: string): boolean {
   return path.extname(filePath).toLowerCase() === '.md';
@@ -668,7 +774,8 @@ function tripCircuitBreaker(key: string, entry: BusEntry): void {
   logger.main.error(
     `[WorkspaceEventBus] Circuit breaker tripped for "${key}" — ` +
     `received ${CIRCUIT_BREAKER_THRESHOLD} events in ${CIRCUIT_BREAKER_WINDOW_MS}ms. ` +
-    `Killing watcher to protect the process. This workspace may be too large or missing a .gitignore.`
+    `Killing watcher to protect the process. This workspace may be too large, ` +
+    `missing a .gitignore at the workspace root, or contain nested repos whose .gitignore is not honored.`
   );
   closeWatcher(entry.watcher);
   busEntries.delete(key);
@@ -686,7 +793,10 @@ function startRecursiveWatch(
     watcher: null!,
     refCount: 1,
     listeners: new Map([[subscriberId, listener]]),
-    gitignoreFilter: ig,
+    workspaceAbs: key,
+    workspaceGitignoreFilter: ig,
+    nestedGitignoreCache: new Map(),
+    gitRootDirCache: new Map(),
     circuitBreaker: cb,
     gitignoreBypassPaths: new Set(),
     replayBuffer: [],
@@ -712,10 +822,10 @@ function startRecursiveWatch(
 
       const absolutePath = path.join(workspacePath, filename);
 
-      // Stage 2: gitignore check with bypass support
+      // Stage 2: gitignore check (workspace + nested-repo) with bypass support
       let bypassed = false;
       let dropForNonStructureListeners = false;
-      if (isGitignored(relativePath, ig)) {
+      if (isGitignoredScoped(absolutePath, key, entry)) {
         const action = getGitignoreAction(absolutePath, entry);
         if (action === 'drop') {
           // Store in replay buffer for potential late bypass registration.
@@ -834,7 +944,10 @@ function startChokidarWatch(
       watcher: null!,
       refCount: 1,
       listeners: new Map([[subscriberId, listener]]),
-      gitignoreFilter: ig,
+      workspaceAbs: key,
+      workspaceGitignoreFilter: ig,
+      nestedGitignoreCache: new Map(),
+      gitRootDirCache: new Map(),
       circuitBreaker: cb,
       gitignoreBypassPaths: new Set(),
       replayBuffer: [],
@@ -849,7 +962,10 @@ function startChokidarWatch(
         const relativePath = path.relative(workspacePath, filePath);
         if (!relativePath) return false;
         if (shouldIgnoreHardcoded(relativePath)) return true;
-        if (!isGitignored(relativePath, ig)) return false;
+        // Honors workspace-root .gitignore AND any nested-repo .gitignore — so
+        // chokidar does not recurse into directories like a nested repo's
+        // ignored build-output tree (issue #207).
+        if (!isGitignoredScoped(filePath, key, entry)) return false;
         // Gitignored — let through if bypassed
         return getGitignoreAction(filePath, entry) === 'drop';
       },
@@ -882,7 +998,7 @@ function startChokidarWatch(
     const isBypassed = (filePath: string): boolean => {
       const relativePath = path.relative(workspacePath, filePath);
       if (!relativePath) return false;
-      return isGitignored(relativePath, ig);
+      return isGitignoredScoped(filePath, key, entry);
     };
 
     watcher

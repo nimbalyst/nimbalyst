@@ -1,20 +1,18 @@
 /**
- * Register the AIChatIntegrationPlugin with the Electron app
+ * Register the AI chat integration plugin as a renderer-contributed
+ * Lexical UI plugin. The component uses `useDocumentPath` so it must run
+ * inside the editor's React tree.
  */
 
-import { pluginRegistry, type PluginPackage } from '@nimbalyst/runtime';
-import { AIChatIntegrationPlugin } from '@nimbalyst/runtime/ai/plugins/AIChatIntegrationPlugin';
+import {
+  AIChatIntegrationPlugin,
+  registerExtensionEditorComponent,
+} from '@nimbalyst/runtime';
+import type { ComponentType } from 'react';
 
-// Create plugin package for AI Chat Integration
-const aiChatPluginPackage: PluginPackage = {
-  name: 'AIChatIntegrationPlugin',
-  Component: AIChatIntegrationPlugin,
-  nodes: [],
-  transformers: [],
-  enabledByDefault: true
-};
-
-// Register the plugin
 export function registerAIChatPlugin(): void {
-  pluginRegistry.register(aiChatPluginPackage);
+  registerExtensionEditorComponent({
+    name: 'ai-chat-integration',
+    Component: AIChatIntegrationPlugin as ComponentType<unknown>,
+  });
 }

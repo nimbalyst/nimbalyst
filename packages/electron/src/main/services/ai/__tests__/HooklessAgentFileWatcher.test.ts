@@ -1,9 +1,39 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { extractFilePathsFromCommand } from '../HooklessAgentFileWatcher';
+vi.mock('../../../utils/logger', () => ({
+  logger: {
+    main: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    ai: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  },
+}));
+
+vi.mock('../../../HistoryManager', () => ({
+  historyManager: {
+    listSnapshots: vi.fn().mockResolvedValue([]),
+    getLastReviewedTimestamp: vi.fn().mockResolvedValue(null),
+    getPendingTags: vi.fn().mockResolvedValue([]),
+    getTaggedFilesForSession: vi.fn().mockResolvedValue([]),
+    createTag: vi.fn(),
+  },
+}));
+
+vi.mock('@nimbalyst/runtime', () => ({
+  SessionFilesRepository: { addFileLink: vi.fn() },
+}));
+
+vi.mock('../../WorkspaceFileEditAttributionService', () => ({
+  workspaceFileEditAttributionService: { ingestWatcherEvent: vi.fn() },
+}));
+
+vi.mock('../../../file/WorkspaceEventBus', () => ({
+  addGitignoreBypass: vi.fn(),
+}));
+
+import { extractFilePathsFromCommand, HooklessAgentFileWatcher } from '../HooklessAgentFileWatcher';
+import { FileSnapshotCache } from '../../../file/FileSnapshotCache';
 
 describe('extractFilePathsFromCommand', () => {
   let workspaceRoot: string;
@@ -120,5 +150,82 @@ describe('extractFilePathsFromCommand', () => {
       workspaceRoot,
     );
     expect(result).toEqual([realFile]);
+  });
+});
+
+describe('HooklessAgentFileWatcher.captureBashPreEditSnapshots', () => {
+  let workspaceRoot: string;
+  let modifiedFile: string;
+  let modifiedFileRel: string;
+
+  beforeAll(async () => {
+    const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'hookless-seed-'));
+    workspaceRoot = await fs.promises.realpath(tmp);
+    const dir = path.join(workspaceRoot, 'packages', 'runtime', 'src');
+    await fs.promises.mkdir(dir, { recursive: true });
+    modifiedFile = path.join(dir, 'sdkOptionsBuilder.ts');
+    await fs.promises.writeFile(modifiedFile, 'working tree (modified) content\n');
+    modifiedFileRel = path.relative(workspaceRoot, modifiedFile);
+  });
+
+  afterAll(async () => {
+    await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  // Repro: a read-only `sed -n` against a file whose working-tree content
+  // differs from its baseline must NOT mark the file as edited. Before the
+  // fix, the cache miss tier-2 git-`startSha` fallback would supply the
+  // committed (pre-modification) content, currentContent would differ, and
+  // a session_files row would be inserted — even though the bash command
+  // never wrote anything.
+  it('seeds current disk content into the cache for files referenced by a Bash command', async () => {
+    const watcher = new HooklessAgentFileWatcher();
+    const cache = new FileSnapshotCache();
+    // Skip startSession (no need to scan a real git repo for this test);
+    // captureBashPreEditSnapshots does not require it.
+
+    // Inject a watcher entry directly so we don't have to spin up chokidar.
+    (watcher as any).watchers.set('session-1', {
+      cache,
+      watcher: { stop: vi.fn() },
+      workspacePath: workspaceRoot,
+    });
+
+    const command = `/bin/zsh -lc "sed -n '1,5p' ${modifiedFileRel}"`;
+    expect(cache.hasSnapshot(modifiedFile)).toBe(false);
+
+    await watcher.captureBashPreEditSnapshots('session-1', workspaceRoot, command);
+
+    expect(cache.hasSnapshot(modifiedFile)).toBe(true);
+    expect(await cache.getBeforeState(modifiedFile)).toBe('working tree (modified) content\n');
+  });
+
+  it('preserves an existing cache entry rather than overwriting (seed-if-missing)', async () => {
+    const watcher = new HooklessAgentFileWatcher();
+    const cache = new FileSnapshotCache();
+
+    // Pre-populate the cache as if an earlier write in this turn had set a
+    // pre-edit baseline. The seed must not clobber it — that would erase the
+    // baseline an in-flight write needs for its own attribution.
+    cache.updateSnapshot(modifiedFile, 'pre-edit-baseline-from-earlier-write');
+
+    (watcher as any).watchers.set('session-2', {
+      cache,
+      watcher: { stop: vi.fn() },
+      workspacePath: workspaceRoot,
+    });
+
+    const command = `/bin/zsh -lc "cat ${modifiedFileRel}"`;
+    await watcher.captureBashPreEditSnapshots('session-2', workspaceRoot, command);
+
+    expect(await cache.getBeforeState(modifiedFile)).toBe('pre-edit-baseline-from-earlier-write');
+  });
+
+  it('is a no-op when no watcher entry exists for the session', async () => {
+    const watcher = new HooklessAgentFileWatcher();
+    // Should not throw, even though `watchers` has no entry for the session.
+    await expect(
+      watcher.captureBashPreEditSnapshots('unknown-session', workspaceRoot, `cat ${modifiedFile}`),
+    ).resolves.toBeUndefined();
   });
 });

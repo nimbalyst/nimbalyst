@@ -425,10 +425,19 @@ export class MetaAgentService {
       promotedParent = resolved.promotedParent;
     }
 
+    // Inherit the caller's worktree by default. spawn_session means "continue
+    // work in the same checkout I'm in"; without this, a child created from a
+    // worktree-resident parent silently lands in the project root and any edits
+    // it makes go to the wrong tree. Skip inheritance only when the caller
+    // explicitly asked for a brand-new worktree (useWorktree=true).
+    const inheritedWorktreeId =
+      !args.useWorktree && parent.worktreeId ? parent.worktreeId : undefined;
+
     const childResult = await this.createChildSessionInternal(parentSessionId, workspaceId, {
       title: args.title,
       prompt: args.prompt,
       useWorktree: !!args.useWorktree,
+      worktreeId: inheritedWorktreeId,
       model: args.model,
       parentSessionIdOverride: workstreamId,
     });
@@ -452,9 +461,19 @@ export class MetaAgentService {
   }
 
   private async resolveOrCreateWorkstream(
-    parent: { id: string; title?: string; provider: string; model?: string | null; sessionType?: string; parentSessionId?: string | null },
+    parent: { id: string; title?: string; provider: string; model?: string | null; sessionType?: string; parentSessionId?: string | null; worktreeId?: string | null },
     workspaceId: string
-  ): Promise<{ workstreamId: string; promotedParent: boolean }> {
+  ): Promise<{ workstreamId: string | null; promotedParent: boolean }> {
+    // A worktree IS the workstream — the worktree row in the `worktrees` table is the
+    // container, and every session inside it is a flat sibling keyed by `worktree_id`.
+    // Never wrap a worktree-resident session in a `session_type='workstream'` row;
+    // that produces a forbidden third layer (worktree → workstream → session) and
+    // confuses every grouping derivation (worktreeGroupsData, FilesEditedSidebar,
+    // the workstream tab strip). Hard rule: two layers max.
+    if (parent.worktreeId) {
+      return { workstreamId: null, promotedParent: false };
+    }
+
     if (parent.parentSessionId) {
       return { workstreamId: parent.parentSessionId, promotedParent: false };
     }

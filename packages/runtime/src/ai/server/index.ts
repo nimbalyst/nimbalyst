@@ -13,3 +13,4 @@ export * from './providers/LMStudioProvider';
 export * from './providers/OpenCodeProvider';
 export * from './providers/CopilotCLIProvider';
 export * from './utils/errorDetection';
+export * from './preferredAgentLanguageConfig';

@@ -17,6 +17,7 @@ interface InstalledExtension {
 interface ExtensionSettings {
   enabled: boolean;
   claudePluginEnabled?: boolean;
+  agentWorkflowsEnabled?: boolean;
 }
 
 interface MarketplaceInstallRecord {
@@ -41,6 +42,7 @@ type ExtensionSource = 'marketplace' | 'github' | 'local' | 'built-in';
 interface ExtensionWithState extends InstalledExtension {
   enabled: boolean;
   claudePluginEnabled?: boolean;
+  agentWorkflowsEnabled?: boolean;
   source: ExtensionSource;
   installedAt?: string;
   installRecord?: MarketplaceInstallRecord;
@@ -66,11 +68,6 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Claude Code command settings
-  const [projectCommandsEnabled, setProjectCommandsEnabled] = useState(true);
-  const [userCommandsEnabled, setUserCommandsEnabled] = useState(true);
-  const [commandsLoading, setCommandsLoading] = useState(false);
-
   // Get extension settings panels from the loader
   const extensionSettingsPanels = useMemo(() => {
     const loader = getExtensionLoader();
@@ -91,7 +88,6 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
   // Load extensions and their enabled state
   useEffect(() => {
     loadExtensions();
-    loadClaudeCodeSettings();
   }, []);
 
   // Auto-select first extension when loaded
@@ -100,48 +96,6 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
       setSelectedId(extensions[0].id);
     }
   }, [extensions, selectedId]);
-
-  const loadClaudeCodeSettings = async () => {
-    try {
-      const settings = await window.electronAPI.claudeCode.getSettings();
-      setProjectCommandsEnabled(settings.projectCommandsEnabled);
-      setUserCommandsEnabled(settings.userCommandsEnabled);
-    } catch (err) {
-      console.error('Failed to load Claude Code settings:', err);
-    }
-  };
-
-  const handleProjectCommandsToggle = useCallback(async (enabled: boolean) => {
-    setCommandsLoading(true);
-    try {
-      await window.electronAPI.claudeCode.setProjectCommandsEnabled(enabled);
-      setProjectCommandsEnabled(enabled);
-      posthog?.capture('claude_code_project_commands_toggled', {
-        action: enabled ? 'enabled' : 'disabled',
-      });
-    } catch (err) {
-      console.error('Failed to toggle project commands:', err);
-      setError('Failed to update setting');
-    } finally {
-      setCommandsLoading(false);
-    }
-  }, [posthog]);
-
-  const handleUserCommandsToggle = useCallback(async (enabled: boolean) => {
-    setCommandsLoading(true);
-    try {
-      await window.electronAPI.claudeCode.setUserCommandsEnabled(enabled);
-      setUserCommandsEnabled(enabled);
-      posthog?.capture('claude_code_user_commands_toggled', {
-        action: enabled ? 'enabled' : 'disabled',
-      });
-    } catch (err) {
-      console.error('Failed to toggle user commands:', err);
-      setError('Failed to update setting');
-    } finally {
-      setCommandsLoading(false);
-    }
-  }, [posthog]);
 
   const loadExtensions = async () => {
     try {
@@ -183,6 +137,7 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
       const extensionsWithState: ExtensionWithState[] = installed.map(ext => {
         const extSettings = settings[ext.id];
         const claudePlugin = ext.manifest.contributions?.claudePlugin;
+        const agentWorkflows = ext.manifest.contributions?.agentWorkflows;
         const installRecord = installRecords[ext.id];
         const source: ExtensionSource = ext.isBuiltin
           ? 'built-in'
@@ -195,6 +150,7 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
           ...ext,
           enabled: extSettings?.enabled ?? true,
           claudePluginEnabled: extSettings?.claudePluginEnabled ?? claudePlugin?.enabledByDefault ?? true,
+          agentWorkflowsEnabled: extSettings?.agentWorkflowsEnabled ?? agentWorkflows?.enabledByDefault ?? true,
           source,
           installedAt: installRecord?.installedAt,
           installRecord,
@@ -275,6 +231,23 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
     }
   }, [posthog]);
 
+  const handleAgentWorkflowsToggle = useCallback(async (extensionId: string, enabled: boolean) => {
+    setProcessingId(extensionId);
+    setError(null);
+
+    try {
+      await window.electronAPI.extensions.setAgentWorkflowsEnabled(extensionId, enabled);
+      setExtensions(prev => prev.map(ext =>
+        ext.id === extensionId ? { ...ext, agentWorkflowsEnabled: enabled } : ext
+      ));
+    } catch (err) {
+      console.error(`Failed to ${enabled ? 'enable' : 'disable'} agent workflows:`, err);
+      setError(err instanceof Error ? err.message : `Failed to ${enabled ? 'enable' : 'disable'} agent workflows`);
+    } finally {
+      setProcessingId(null);
+    }
+  }, []);
+
   const handleUpdate = useCallback(async (ext: ExtensionWithState) => {
     if (!ext.registryEntry || !ext.availableUpdate) return;
     setProcessingId(ext.id);
@@ -354,7 +327,11 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
 
   if (loading) {
     return (
-      <div className="provider-panel">
+      <div
+        className="installed-extensions-panel provider-panel"
+        data-testid="installed-extensions-panel"
+        data-component="InstalledExtensionsPanel"
+      >
         <div className="flex items-center justify-center py-12 text-[var(--nim-text-muted)]">
           <p>Loading extensions...</p>
         </div>
@@ -363,7 +340,12 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
   }
 
   return (
-    <div className="provider-panel flex flex-col absolute inset-0 p-6">
+    <div
+      className="installed-extensions-panel provider-panel flex flex-col absolute inset-0 p-6"
+      data-testid="installed-extensions-panel"
+      data-component="InstalledExtensionsPanel"
+      data-source="packages/electron/src/renderer/components/Settings/panels/InstalledExtensionsPanel.tsx"
+    >
       {/* Header */}
       <div className="provider-panel-header mb-5 pb-4 border-b border-[var(--nim-border)] flex-shrink-0">
         <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-2 text-[var(--nim-text)]">Installed Extensions</h3>
@@ -376,43 +358,6 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
           <span>{error}</span>
         </div>
       )}
-
-      {/* Claude Code Commands Section - Compact horizontal layout */}
-      {/*<div className="mb-5 pb-4 border-b border-[var(--nim-border)]">*/}
-      {/*  <h4 className="text-sm font-semibold mb-3 text-[var(--nim-text)]">Claude Code Commands</h4>*/}
-      {/*  <div className="flex gap-3">*/}
-      {/*    <div className="flex-1 flex items-center justify-between p-3 rounded-lg bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)]">*/}
-      {/*      <div className="flex items-center gap-2">*/}
-      {/*        <span className="material-symbols-outlined text-base text-[var(--nim-text-muted)]">folder</span>*/}
-      {/*        <span className="text-sm font-medium text-[var(--nim-text)]">Project Commands</span>*/}
-      {/*      </div>*/}
-      {/*      <label className="provider-toggle">*/}
-      {/*        <input*/}
-      {/*          type="checkbox"*/}
-      {/*          checked={projectCommandsEnabled}*/}
-      {/*          onChange={(e) => handleProjectCommandsToggle(e.target.checked)}*/}
-      {/*          disabled={commandsLoading}*/}
-      {/*        />*/}
-      {/*        <span className="provider-toggle-slider"></span>*/}
-      {/*      </label>*/}
-      {/*    </div>*/}
-      {/*    <div className="flex-1 flex items-center justify-between p-3 rounded-lg bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)]">*/}
-      {/*      <div className="flex items-center gap-2">*/}
-      {/*        <span className="material-symbols-outlined text-base text-[var(--nim-text-muted)]">person</span>*/}
-      {/*        <span className="text-sm font-medium text-[var(--nim-text)]">User Commands</span>*/}
-      {/*      </div>*/}
-      {/*      <label className="provider-toggle">*/}
-      {/*        <input*/}
-      {/*          type="checkbox"*/}
-      {/*          checked={userCommandsEnabled}*/}
-      {/*          onChange={(e) => handleUserCommandsToggle(e.target.checked)}*/}
-      {/*          disabled={commandsLoading}*/}
-      {/*        />*/}
-      {/*        <span className="provider-toggle-slider"></span>*/}
-      {/*      </label>*/}
-      {/*    </div>*/}
-      {/*  </div>*/}
-      {/*</div>*/}
 
       {totalCount === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-center text-[var(--nim-text-muted)]">
@@ -598,6 +543,33 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
                     </div>
                   )}
 
+                  {selectedExtension.manifest.contributions?.agentWorkflows && (
+                    <div className="mb-5">
+                      <div className="text-xs font-semibold text-[var(--nim-text-muted)] uppercase tracking-wide mb-2.5">Agent Workflows</div>
+                      <div className="bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded-md p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--nim-text)]">
+                            <span className="material-symbols-outlined text-base text-[var(--nim-primary)]">hub</span>
+                            {selectedExtension.manifest.contributions.agentWorkflows.displayName || 'Agent Workflows'}
+                          </div>
+                          <ToggleSwitch
+                            checked={selectedExtension.agentWorkflowsEnabled ?? true}
+                            onChange={(checked) => handleAgentWorkflowsToggle(selectedExtension.id, checked)}
+                            disabled={processingId === selectedExtension.id || !selectedExtension.enabled}
+                          />
+                        </div>
+                        <div className="text-xs text-[var(--nim-text-muted)]">
+                          {selectedExtension.manifest.contributions.agentWorkflows.description || 'Provider-neutral workflows exported to Claude Code and Codex.'}
+                        </div>
+                        {!selectedExtension.enabled && (
+                          <div className="mt-2 text-xs text-[var(--nim-text-faint)] italic">
+                            Enable the extension to use these workflows
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Extension Info */}
                   <div className="mb-5">
                     <div className="text-xs font-semibold text-[var(--nim-text-muted)] uppercase tracking-wide mb-2.5">Extension Info</div>
@@ -640,6 +612,12 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
                             /{cmd.title}
                           </span>
                         ))}
+                        {selectedExtension.manifest.contributions.agentWorkflows && (
+                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)]">
+                            <span className="material-symbols-outlined text-sm">hub</span>
+                            {selectedExtension.manifest.contributions.agentWorkflows.displayName}
+                          </span>
+                        )}
                         {selectedExtension.manifest.contributions.nodes?.map((node, idx) => (
                           <span key={`node-${idx}`} className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)]">
                             <span className="material-symbols-outlined text-sm">widgets</span>

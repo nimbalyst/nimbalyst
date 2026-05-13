@@ -743,6 +743,7 @@ describe('OpenAICodexProvider', () => {
       // drain
     }
 
+    expect(codexConstructorOptions?.config?.show_raw_agent_reasoning).toBe(true);
     const mcpServers = codexConstructorOptions?.config?.mcp_servers as Record<string, any>;
     expect(mcpServers).toBeDefined();
     expect(Object.keys(mcpServers)).toEqual(
@@ -935,6 +936,7 @@ describe('OpenAICodexProvider', () => {
       // drain
     }
 
+    expect(codexConstructorOptions?.config?.show_raw_agent_reasoning).toBe(true);
     expect(codexConstructorOptions?.config?.mcp_servers?.supabase).toEqual({
       command: 'npx',
       args: ['-y', '@supabase/mcp'],

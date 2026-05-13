@@ -161,7 +161,34 @@ export class PersonalSessionRoom implements DurableObject {
       return this.handleDeleteAccount();
     }
 
+    // Admin cleanup probe -- returns last activity + whether storage holds data.
+    // Path includes /internal/ so the public /sync/ router blocks external access.
+    if (url.pathname.endsWith('/internal/staleness') && request.method === 'GET') {
+      return this.handleStaleness();
+    }
+
     return new Response('Expected WebSocket', { status: 400 });
+  }
+
+  /**
+   * Staleness probe for the admin cleanup endpoint. Returns the last
+   * `updated_at` recorded in metadata and whether the SQLite store has any rows.
+   */
+  private handleStaleness(): Response {
+    const sql = this.state.storage.sql;
+    const updatedAtRow = sql.exec<{ value: string }>(
+      `SELECT value FROM metadata WHERE key = 'updated_at'`
+    ).toArray()[0];
+    const messageCount = sql.exec<{ count: number }>(
+      `SELECT COUNT(*) as count FROM messages`
+    ).toArray()[0]?.count ?? 0;
+    const metadataCount = sql.exec<{ count: number }>(
+      `SELECT COUNT(*) as count FROM metadata`
+    ).toArray()[0]?.count ?? 0;
+    return new Response(JSON.stringify({
+      updatedAt: updatedAtRow ? parseInt(updatedAtRow.value, 10) : null,
+      hasData: messageCount > 0 || metadataCount > 0,
+    }), { headers: { 'Content-Type': 'application/json' } });
   }
 
   /**
@@ -629,14 +656,8 @@ export class PersonalSessionRoom implements DurableObject {
    * Handle account deletion - purge all data and disconnect clients.
    * Called internally by the account deletion cascade (not user-facing).
    */
-  private handleDeleteAccount(): Response {
-    const sql = this.state.storage.sql;
-
-    // Delete all messages and metadata
-    sql.exec(`DELETE FROM messages`);
-    sql.exec(`DELETE FROM metadata`);
-
-    // Close all WebSocket connections
+  private async handleDeleteAccount(): Promise<Response> {
+    // Close all WebSocket connections first so no writes race the delete.
     for (const [ws] of this.connections) {
       try {
         ws.close(4003, 'Account deleted');
@@ -646,8 +667,9 @@ export class PersonalSessionRoom implements DurableObject {
     }
     this.connections.clear();
 
-    // Cancel any TTL alarm
-    this.state.storage.deleteAlarm();
+    // Bulk-drop all storage. Per-table `DELETE FROM` previously hit the DO
+    // storage operation timeout on large sessions and reset the DO mid-delete.
+    await this.state.storage.deleteAll();
 
     return new Response(JSON.stringify({ deleted: true }), {
       headers: { 'Content-Type': 'application/json' },

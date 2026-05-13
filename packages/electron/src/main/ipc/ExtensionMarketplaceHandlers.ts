@@ -367,21 +367,36 @@ async function installFromGitHub(githubUrl: string): Promise<InstallResult> {
     // Copy to extensions directory (excluding .git and node_modules)
     await copyDirectory(sourceDir, installPath);
 
-    // Check if there's a dist/ directory; if not, check if there's a package.json and build
+    // Check if there's a dist/ directory; if not, surface the error to the
+    // user rather than silently registering an extension that cannot load.
+    // Auto-building is intentionally deferred (slow, error-prone, runs
+    // arbitrary npm scripts), so we ask the user to build locally first.
     const distPath = path.join(installPath, 'dist');
     try {
       await fs.access(distPath);
     } catch {
-      // No dist directory - check if there's a package.json to build
       const pkgJsonPath = path.join(installPath, 'package.json');
+      let hasPkgJson = false;
       try {
         await fs.access(pkgJsonPath);
-        logger.main.info(`[ExtMarketplace] Extension needs building - run 'npm install && npm run build' in ${installPath}`);
-        // We don't auto-build here because it could be slow and error-prone.
-        // The user can use the extension dev tools to build it.
+        hasPkgJson = true;
       } catch {
-        // No package.json either - extension might be pre-built or not need building
+        // No package.json either - extension might be pre-built or malformed
       }
+
+      // Clean up the partially-installed extension directory so the user
+      // can retry from a fresh state.
+      try {
+        await fs.rm(installPath, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        logger.main.warn(`[ExtMarketplace] Failed to clean up ${installPath} after dist/ check:`, cleanupErr);
+      }
+
+      const message = hasPkgJson
+        ? `Extension repository does not include a built dist/ directory. Clone the repo locally, run "npm install && npm run build", and install from the local folder.`
+        : `Extension repository does not include a dist/ directory or a package.json. The repo may be malformed or built artifacts may not be committed.`;
+      logger.main.info(`[ExtMarketplace] Aborting install of ${extensionId} from GitHub: ${message}`);
+      return { success: false, error: message };
     }
 
     // Track the install

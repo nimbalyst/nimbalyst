@@ -674,6 +674,7 @@ export class PGLiteDatabaseWorker {
     }
     const startTime = performance.now();
     const tableName = this.extractTableName(sql);
+    const operation = this.classifySqlOperation(sql);
     try {
       const result = await this.sendMessage('query', { sql, params });
       const duration = performance.now() - startTime;
@@ -681,7 +682,7 @@ export class PGLiteDatabaseWorker {
       this.lastExecMs = undefined;
 
       // Record stats with worker execution time for blocked calculation
-      this.stats.record(tableName, 'read', duration, execMs);
+      this.stats.record(tableName, operation, duration, execMs);
 
       // Log slow queries
       if (duration >= PGLiteDatabaseWorker.SLOW_QUERY_THRESHOLD_MS) {
@@ -698,10 +699,10 @@ export class PGLiteDatabaseWorker {
       const execMs = this.lastExecMs;
       this.lastExecMs = undefined;
       // Record stats even for failures
-      this.stats.record(tableName, 'read', duration, execMs);
+      this.stats.record(tableName, operation, duration, execMs);
       // Track database error
       this.analytics.sendEvent('database_error', {
-        operation: 'read',
+        operation,
         errorType: categorizeDBError(error),
         tableName
       });
@@ -780,6 +781,18 @@ export class PGLiteDatabaseWorker {
       if (match) return match[1];
     }
     return 'unknown';
+  }
+
+  /**
+   * Classify SQL as a read or write for stats reporting.
+   * Parameterized DML goes through query(), so infer from the leading verb.
+   */
+  private classifySqlOperation(sql: string): 'read' | 'write' {
+    const normalized = sql.replace(/^\s+/, '');
+    if (/^(INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|TRUNCATE|BEGIN|COMMIT|ROLLBACK)\b/i.test(normalized)) {
+      return 'write';
+    }
+    return 'read';
   }
 
   /**

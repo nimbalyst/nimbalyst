@@ -188,6 +188,102 @@ Extensions receive `EditorHost` and must:
 - Handle external file changes (hook does this automatically)
 - NEVER depend on parent re-rendering them
 
+## Contributing Lexical Extensions
+
+Extensions can extend the built-in Lexical (rich-text) editor by
+shipping their own `LexicalExtension` instances. The editor reads them
+from the runtime store and includes them in its extension graph;
+toggling an extension rebuilds the editor instance.
+
+### Manifest
+
+Declare the names of the `LexicalExtension` exports in your manifest:
+
+```json
+{
+  "contributions": {
+    "lexicalExtensions": ["MyEmojiExtension", "MyCommandPaletteExtension"]
+  }
+}
+```
+
+### Module exports
+
+Export each named extension from your extension's `lexicalExtensions`
+map. The SDK re-exports `defineExtension` / `configExtension` /
+`declarePeerDependency` from `@lexical/extension` so extensions don't
+need a direct dependency on the Lexical packages:
+
+```ts
+import { defineExtension } from '@nimbalyst/extension-sdk';
+import { $insertNodes, COMMAND_PRIORITY_EDITOR, createCommand } from 'lexical';
+
+const INSERT_EMOJI_COMMAND = createCommand('INSERT_EMOJI');
+
+export const MyEmojiExtension = defineExtension({
+  name: 'my-extension/emoji',
+  register: (editor) =>
+    editor.registerCommand(
+      INSERT_EMOJI_COMMAND,
+      () => {
+        editor.update(() => {
+          $insertNodes([/* ... */]);
+        });
+        return true;
+      },
+      COMMAND_PRIORITY_EDITOR,
+    ),
+});
+
+export default {
+  lexicalExtensions: {
+    MyEmojiExtension,
+  },
+};
+```
+
+### What a Lexical extension can do
+
+- **Register node classes** via `defineExtension({ nodes: [...] })`. The
+  Lexical builder resolves them topologically; no other registration is
+  needed.
+- **Register commands, listeners, transforms** in `register(editor)`.
+  Returning a cleanup function disposes them when the editor tears
+  down.
+- **Depend on other extensions** via `dependencies: [...]` and
+  `configExtension(other, { ... })` to override config.
+
+### Contributing markdown transformers and slash-picker entries
+
+These contributions don't fit cleanly into the `LexicalExtension` shape
+and use a parallel runtime store. The SDK exposes
+`setExtensionContributions(sourceName, { userCommands, markdownTransformers })`
+for extensions that need to add slash-picker entries or markdown
+import/export transformers. Publish from your extension's activation
+function:
+
+```ts
+import { setExtensionContributions } from '@nimbalyst/runtime';
+
+setExtensionContributions('my-extension', {
+  userCommands: [
+    {
+      title: 'Insert Emoji',
+      description: 'Insert an emoji at the cursor',
+      icon: 'emoji_emotions',
+      keywords: ['emoji', 'icon'],
+      command: INSERT_EMOJI_COMMAND,
+    },
+  ],
+  markdownTransformers: [EMOJI_TRANSFORMER],
+});
+```
+
+See `packages/runtime/src/editor/extensions/README.md` for the full
+runtime-side contract, including how renderer-side React UI plugins
+(typeahead menus, dialog hosts) register through
+`registerExtensionEditorComponent`.
+
 ## AI Completion API
 
 Extensions with `permissions.ai: true` can call AI chat/completion models directly. This is a stateless API -- no sessions are created in the session history.

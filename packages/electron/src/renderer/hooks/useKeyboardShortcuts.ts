@@ -9,6 +9,12 @@ import {
 import { setViewModeAtom, viewModeAtom } from '../store/atoms/agentMode';
 import { historyDialogFileAtom } from '../store';
 import { store } from '@nimbalyst/runtime/store';
+import {
+  multiProjectModeAtom,
+  openProjectsAtom,
+  activeWorkspacePathAtom,
+  closeOpenProjectAtom,
+} from '../store/atoms/openProjects';
 import posthog from 'posthog-js';
 
 interface KeyboardShortcutsOptions {
@@ -178,6 +184,42 @@ export function useKeyboardShortcuts({
           // Switch to agent mode first, then create worktree when ref becomes available
           pendingWorktreeCreationRef.current = true;
           setActiveMode('agent');
+        }
+      }
+
+      // Multi-project rail shortcuts (only when rail is enabled).
+      // Cmd/Ctrl+1..9 activates the Nth open project (1-indexed).
+      // Cmd/Ctrl+Shift+W closes the active project from the rail.
+      const isMultiProject = store.get(multiProjectModeAtom);
+      if (workspaceMode && isMultiProject && isAppModifier && !e.altKey) {
+        if (!e.shiftKey && /^[1-9]$/.test(e.key)) {
+          e.preventDefault();
+          e.stopPropagation();
+          const idx = parseInt(e.key, 10) - 1;
+          const projects = store.get(openProjectsAtom);
+          const target = projects[idx];
+          if (target) {
+            const currentActive = store.get(activeWorkspacePathAtom);
+            if (target.path !== currentActive) {
+              store.set(activeWorkspacePathAtom, target.path);
+              window.electronAPI?.invoke?.('workspace:set-active', { workspacePath: target.path }).catch(() => {});
+            }
+          }
+        }
+
+        if (e.shiftKey && e.key === 'W') {
+          e.preventDefault();
+          e.stopPropagation();
+          const activePath = store.get(activeWorkspacePathAtom);
+          const projects = store.get(openProjectsAtom);
+          if (activePath) {
+            const wasLast = projects.length <= 1;
+            store.set(closeOpenProjectAtom, activePath);
+            window.electronAPI?.invoke?.('workspace:unregister-additional', { workspacePath: activePath }).catch(() => {});
+            if (wasLast) {
+              window.electronAPI?.invoke?.('workspace:close-rail-window').catch(() => {});
+            }
+          }
         }
       }
     };

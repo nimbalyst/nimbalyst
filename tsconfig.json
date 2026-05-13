@@ -13,7 +13,9 @@
     "types": [],
     "paths": {
       "@nimbalyst/runtime": ["./packages/runtime/src/index.ts"],
-      "@nimbalyst/runtime/*": ["./packages/runtime/src/*"]
+      "@nimbalyst/runtime/*": ["./packages/runtime/src/*"],
+      "@nimbalyst/extension-sdk": ["./packages/extension-sdk/src/index.ts"],
+      "@nimbalyst/extension-sdk/*": ["./packages/extension-sdk/src/*"]
     }
   },
   "exclude": [

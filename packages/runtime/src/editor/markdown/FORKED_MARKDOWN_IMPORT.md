@@ -1,99 +1,81 @@
-# Forked Markdown Import - Critical Documentation
+# Markdown Fork Inventory
 
-## Why We Forked Lexical's Markdown Import
+## Current state
 
-Lexical's built-in `$convertFromMarkdownString` is hardcoded to expect 4-space indentation for nested lists. This is incompatible with our design decision to use 2-space indentation as our standard. The specific issues were:
+As of the Lexical 0.44.0 upgrade, we no longer fork the markdown importer. Both
+import and export call upstream `@lexical/markdown` directly:
 
-1. **Hardcoded 4-space assumption**: Lexical treats lines starting with 2-3 spaces as continuation paragraphs, not as indented list items
-2. **No configuration options**: Lexical doesn't provide any way to configure the indent size expectation
+- `$convertFromEnhancedMarkdownString` (in `EnhancedMarkdownImport.ts`) wraps
+  upstream `$convertFromMarkdownString` with frontmatter extraction, list-indent
+  normalization, and a small post-import pass that collapses upstream's
+  TabNodes back to plain text inside surrounding TextNodes.
+- `$convertToEnhancedMarkdownString` (in `EnhancedMarkdownExport.ts`) drives a
+  custom export traversal so we can support diff-aware export, frontmatter
+  emission, single-node export, and HTML numeric character references for
+  literal `*`/`_`. The traversal otherwise mirrors upstream `createMarkdownExport`.
 
-## What We Changed
+## What is still local-only
 
-1. **Copied `LexicalMarkdownImport.ts`**: Forked from `@lexical/markdown` module
-2. **Disabled aggressive line merging**: Added `DISABLE_LINE_MERGING` flag to prevent indented lines from being merged
-3. **Normalization layer**: Added `normalizeMarkdown` to convert any 2-4 space indents to our standard 2-space format before import
+| File | Reason |
+| --- | --- |
+| `EnhancedMarkdownImport.ts` | Frontmatter extraction; pre-import list-indent normalization; post-import TabNode collapse so the diff plugin's tree matcher doesn't have to know about TabNodes. |
+| `EnhancedMarkdownExport.ts` | Diff-aware export, single-node export, frontmatter emission, `rejectMode`, and the **NCR encoding for literal `*`/`_`** below. |
+| `MarkdownNormalizer.ts` | Detects and rewrites 2-/3-/4-space list indents to a consistent target indent before import. Upstream's importer accepts whatever indent the list-item regex matches; this layer keeps imported documents stable across mixed indent sources. |
+| `ListTransformers.ts` | Our 2-space house style for list export. Upstream still hardcodes `LIST_INDENT_SIZE = 4`, so this stays forked until upstream makes indent size configurable. |
+| `MarkdownTransformers.ts` | Mostly thin re-exports of upstream `BOLD_*`, `ITALIC_*`, `STRIKETHROUGH`, `HIGHLIGHT`, `INLINE_CODE`, plus our own `HEADING`, `QUOTE`, `CODE` (with a `'plain'` no-language sentinel) and `LINK` (regex with `(?<!!)` to skip image syntax). |
+| `MarkdownStreamProcessor.ts` | AI streaming markdown into a live editor; not in upstream. |
+| `FrontmatterUtils.ts` | YAML frontmatter parse/serialize and root-state storage; not in upstream. |
+| `HashtagTransformer.ts`, `HorizontalRuleTransformer.ts`, `core-transformers.ts` | Nimbalyst node + transformer composition; not in upstream. |
 
-## Files Involved
+## NCR encoding for literal `*` and `_`
 
-- `LexicalMarkdownImport.ts` - Our forked version of Lexical's markdown import
-- `EnhancedMarkdownImport.ts` - Uses our forked version, adds normalization
-- `MarkdownNormalizer.ts` - Handles converting various indent sizes to 2-space standard
-- `ListTransformers.ts` - Our custom list transformers that understand 2-space indents
+In `exportTextFormat` we encode literal asterisks and underscores in non-code
+text as `&#42;` / `&#95;` rather than backslash-escaping them as `\*` / `\_`.
 
-## How to Prevent Using Lexical's Version
+**Why:** upstream Lexical's CommonMark emphasis scanner (`isFlanking` /
+`canEmphasis` in `LexicalMarkdown.dev.js`) uses a `PUNCTUATION` regex that does
+not include `\`. When a delimiter run sits next to a backslash escape (e.g.
+`***\*syntax\****`), the secondary character of the flanking check is `\`,
+which is classified as non-punctuation, causing the close run to be marked
+non-flanking and the surrounding emphasis to be rejected on re-import.
 
-### Current Safeguards
+Numeric character references are inert to the emphasis scanner (they do not
+affect flanking) and are converted back to literal characters by upstream's
+`unescapeText` after emphasis processing, so a literal `*` adjacent to bold
+or italic markers round-trips losslessly. This is the **only** reason we no
+longer need a forked importer; without this export change, switching to
+upstream import re-introduces drift on real Nimbalyst plan documents.
 
-1. **Named differently**: Our function is called `$convertFromMarkdownStringRexical` to avoid confusion
-2. **Never import from `@lexical/markdown`** for the conversion functions
-3. **Always use our functions**:
-   - Primary: Use `$convertFromEnhancedMarkdownString` from `./EnhancedMarkdownImport` (includes normalization)
-   - Alternative: Use `$convertFromMarkdownStringRexical` from `./LexicalMarkdownImport` (raw forked version)
-   - NEVER: Use Lexical's `$convertFromMarkdownString` from `@lexical/markdown`
+## What was deleted
 
-### Recommended Linting Rule
+- `LexicalMarkdownImport.ts` — the old forked importer that disabled line
+  merging and ported upstream's CommonMark emphasis scanner to add `\` to its
+  `PUNCTUATION` regex.
+- `importTextFormatTransformer.ts`, `importTextMatchTransformer.ts`,
+  `importTextTransformers.ts` — copies of upstream internals that supported the
+  forked importer.
+- `utils.ts` — a stale copy of upstream's pre-`@lexical/markdown` "auto-format"
+  criteria system, plus duplicates of `transformersByType` and
+  `isEmptyParagraph`. Nothing live referenced its `MarkdownCriteria` exports.
 
-Add this ESLint rule to `.eslintrc.js`:
+## Taking upstream fixes
 
-```javascript
-module.exports = {
-  rules: {
-    'no-restricted-imports': [
-      'error',
-      {
-        paths: [
-          {
-            name: '@lexical/markdown',
-            importNames: ['$convertFromMarkdownString'],
-            message: 'Use our forked version from ./LexicalMarkdownImport or $convertFromEnhancedMarkdownString instead. See FORKED_MARKDOWN_IMPORT.md'
-          }
-        ]
-      }
-    ]
-  }
-};
-```
+Because import goes through upstream directly, future upstream markdown fixes
+are picked up by bumping `@lexical/markdown`. Things to re-audit on each bump:
 
-### Function Naming
-
-We've renamed our function to `$convertFromMarkdownStringRexical` to make it impossible to accidentally use Lexical's version. The "Rexical" suffix makes it clear this is our fork.
-
-## Taking Upstream Fixes
-
-When Lexical releases updates to their markdown module:
-
-1. **Check the changelog** for `@lexical/markdown`
-2. **Review changes** in their GitHub repo: https://github.com/facebook/lexical
-3. **Manually apply relevant fixes** to our `LexicalMarkdownImport.ts`
-
-### Key areas to watch for upstream fixes:
-
-- Security fixes
-- Performance improvements
-- New markdown features (e.g., new syntax support)
-- Bug fixes for edge cases
-
-### How to apply upstream changes:
-
-1. Compare their latest version with our fork
-2. Identify changes that don't conflict with our indent handling
-3. Manually port those changes while preserving our modifications
-4. Test thoroughly with our 2-space indent test suite
+1. Whether `unescapeText` still handles `&#NNN;` numeric character references
+   (used by our exporter's NCR encoding).
+2. Whether upstream's CommonMark `PUNCTUATION` regex now includes `\`. If yes,
+   the NCR encoding becomes optional and we can simplify `exportTextFormat`
+   back to standard backslash escaping.
+3. Whether `LIST_INDENT_SIZE` becomes configurable. If yes, `ListTransformers`
+   can collapse to a thin upstream wrapper.
+4. Whether upstream's `$normalizeMarkdownTextNode` (TabNode conversion) gets
+   an opt-out. If yes, the post-import `$collapseTabNodes` pass can be deleted.
 
 ## Testing
 
-Always run these tests after any changes:
-
-```bash
-npx vitest run four-space-indent.test.ts
-npx vitest run list-normalization-integration.test.ts
-npx vitest run ListTransformers.test.ts
-```
-
-## Future Considerations
-
-If Lexical ever adds configurable indent support, we could potentially switch back to their implementation. Until then, this fork is critical for our 2-space indent standard.
-
-## Contact
-
-If you have questions about this fork, reach out to the team or check the git history for context on specific changes.
+The corpus that motivated this work is in
+`__tests__/round-trip-corpus.test.ts`. Other regression coverage lives in
+`__tests__/four-space-indent.test.ts`, `__tests__/list-normalization-integration.test.ts`,
+`__tests__/ListTransformers.test.ts`, and `__tests__/blank-lines-regression.test.ts`.

@@ -20,6 +20,8 @@ import {
   type RendererFileTreeItem,
   type FlatTreeNode,
 } from '../store';
+import { dialogRef } from '../contexts/DialogContext';
+import { DIALOG_IDS } from '../dialogs/registry';
 
 interface FlatFileTreeProps {
   items: RendererFileTreeItem[];
@@ -422,18 +424,40 @@ export function FlatFileTree({
   const handleDelete = useCallback(async (filePath: string) => {
     const result = await window.electronAPI.deleteFile(filePath);
     if (!result.success) {
+      // The user just confirmed a delete; silent failure is the worst possible
+      // outcome. Surface the OS-level error (e.g. "Failed to move item to
+      // trash" when the trash folder is unwritable, common on Linux). See #195.
       console.error('Failed to delete file:', result.error);
+      dialogRef.current?.open(DIALOG_IDS.ERROR, {
+        title: 'Delete failed',
+        message: `Could not delete ${filePath.split(/[/\\]/).pop() || filePath}.`,
+        details: result.error || 'The OS did not provide a reason. Check that the file still exists and that the trash folder is writable.',
+      });
     }
   }, []);
 
   const handleDeleteMultiple = useCallback(async (filePaths: string[]) => {
+    const failures: Array<{ path: string; error?: string }> = [];
     for (const path of filePaths) {
       const result = await window.electronAPI.deleteFile(path);
       if (!result.success) {
         console.error('Failed to delete file:', path, result.error);
+        failures.push({ path, error: result.error });
       }
     }
     setSelectedPaths(new Set());
+    if (failures.length > 0) {
+      // Same silent-failure concern as handleDelete, but rolled up into a
+      // single summary dialog rather than one per failed file. See #195.
+      const failureSummary = failures
+        .map(f => `- ${f.path.split(/[/\\]/).pop() || f.path}: ${f.error || 'unknown error'}`)
+        .join('\n');
+      dialogRef.current?.open(DIALOG_IDS.ERROR, {
+        title: failures.length === filePaths.length ? 'Delete failed' : 'Some files could not be deleted',
+        message: `${failures.length} of ${filePaths.length} file${filePaths.length === 1 ? '' : 's'} could not be deleted.`,
+        details: failureSummary,
+      });
+    }
   }, [setSelectedPaths]);
 
   // == Drag and drop ==
@@ -444,19 +468,31 @@ export function FlatFileTree({
       return;
     }
 
+    // When the user drags an item that is part of the current multi-selection,
+    // include every selected path so the drop handler moves/copies them all
+    // in a single operation. When the dragged item is NOT in the selection
+    // (the user grabbed an unselected file/folder), drag only that item -
+    // matches the typical macOS Finder / Windows Explorer behaviour where
+    // dragging an unselected item ignores any prior selection. See #31.
+    const sourcePaths = selectedPaths.has(node.path) && selectedPaths.size > 1
+      ? Array.from(selectedPaths)
+      : [node.path];
+
     e.dataTransfer.effectAllowed = 'copyMove';
     e.dataTransfer.setData('text/plain', node.path);
     // Also set custom MIME type so AI input can accept this as an @-file mention
     e.dataTransfer.setData('application/x-nimbalyst-file-mention', node.path);
     setDragState({
-      sourcePaths: [node.path],
+      sourcePaths,
       dropTargetPath: null,
       isCopy: false,
     });
 
     // Custom drag image
     const dragImage = document.createElement('div');
-    dragImage.textContent = node.name;
+    dragImage.textContent = sourcePaths.length > 1
+      ? `${sourcePaths.length} items`
+      : node.name;
     dragImage.style.position = 'absolute';
     dragImage.style.top = '-1000px';
     dragImage.style.left = '-1000px';
@@ -583,30 +619,55 @@ export function FlatFileTree({
     }
 
     const isCopy = e.altKey || e.metaKey;
-    const sourcePath = dragState.sourcePaths[0];
-    if (!sourcePath || sourcePath === node.path) {
+    // Process every dragged path, not just the first. The previous code
+    // hardcoded `sourcePaths[0]` which silently dropped every other item
+    // in a multi-selection drag. See #31.
+    const sourcePaths = dragState.sourcePaths.filter(
+      (p) => p && p !== node.path
+    );
+    if (sourcePaths.length === 0) {
       setDragState(null);
       return;
     }
 
+    const action = isCopy ? 'copy' : 'move';
+    const failures: Array<{ path: string; error?: string }> = [];
+    let successCount = 0;
     try {
-      if (isCopy) {
-        const result = await window.electronAPI.copyFile(sourcePath, node.path);
-        if (!result.success) {
-          console.error('Failed to copy file:', result.error);
-        } else {
-          onRefreshFileTree?.();
-        }
-      } else {
-        const result = await window.electronAPI.moveFile(sourcePath, node.path);
-        if (!result.success) {
-          console.error('Failed to move file:', result.error);
-        } else {
-          onRefreshFileTree?.();
+      for (const sourcePath of sourcePaths) {
+        try {
+          const result = isCopy
+            ? await window.electronAPI.copyFile(sourcePath, node.path)
+            : await window.electronAPI.moveFile(sourcePath, node.path);
+          if (result.success) {
+            successCount++;
+          } else {
+            console.error(`Failed to ${action} file:`, sourcePath, result.error);
+            failures.push({ path: sourcePath, error: result.error });
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Error during ${action}:`, sourcePath, error);
+          failures.push({ path: sourcePath, error: message });
         }
       }
-    } catch (error) {
-      console.error('Error during drag and drop:', error);
+      if (successCount > 0) {
+        onRefreshFileTree?.();
+      }
+      if (failures.length > 0) {
+        // Same single-summary-dialog pattern as handleDeleteMultiple (#216)
+        // so users do not get one error dialog per failed file.
+        const failureSummary = failures
+          .map((f) => `- ${f.path.split(/[/\\]/).pop() || f.path}: ${f.error || 'unknown error'}`)
+          .join('\n');
+        const verb = isCopy ? 'copied' : 'moved';
+        const verbCap = isCopy ? 'Copy' : 'Move';
+        dialogRef.current?.open(DIALOG_IDS.ERROR, {
+          title: failures.length === sourcePaths.length ? `${verbCap} failed` : `Some files could not be ${verb}`,
+          message: `${failures.length} of ${sourcePaths.length} item${sourcePaths.length === 1 ? '' : 's'} could not be ${verb} into ${node.name}.`,
+          details: failureSummary,
+        });
+      }
     } finally {
       setDragState(null);
     }

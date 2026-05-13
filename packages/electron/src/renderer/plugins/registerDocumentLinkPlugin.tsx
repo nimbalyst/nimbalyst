@@ -1,29 +1,39 @@
 /**
- * Register the DocumentLinkPlugin with the Electron-specific document service
+ * Wire up the runtime's DocumentLinkPlugin against the electron document
+ * service and publish it as a renderer-contributed Lexical UI plugin.
+ *
+ * The plugin's headless concerns (markdown transformers, the
+ * `DocumentReferenceNode` registration) flow through the extension
+ * contributions stores instead of the deleted `pluginRegistry`.
  */
 
 import React, { useMemo } from 'react';
-import { pluginRegistry, type PluginPackage } from '@nimbalyst/runtime';
+import { defineExtension } from 'lexical';
 import {
   DocumentLinkPlugin,
   DocumentReferenceNode,
   DocumentReferenceTransformer,
-  LegacyDocumentReferenceTransformer
+  LegacyDocumentReferenceTransformer,
+  TypeaheadMenuPlugin,
+  registerExtensionEditorComponent,
+  setExtensionContributions,
+  setExtensionLexicalExtension,
+  useAnchorElem,
 } from '@nimbalyst/runtime';
 import { ElectronRendererDocumentService } from '../services/ElectronDocumentService';
-import { TypeaheadMenuPlugin, useAnchorElem } from '@nimbalyst/runtime';
 
-// Create the document service instance
+const SOURCE = 'document-link';
 const documentService = new ElectronRendererDocumentService();
 
-// Custom trigger function that allows dots in filenames
-// Based on createBasicTriggerFunction but excludes dots from punctuation
+// Custom trigger function that allows dots and hyphens in filenames so
+// `@README.md` and `@settings-atomwithstorage-rewrite.excalidraw` both
+// keep the typeahead open as the user types. Punctuation that would end a
+// reasonable filename token (parens, brackets, quotes, etc.) still ends
+// the match so the menu closes when the user moves on to other prose.
 function createDocumentLinkTrigger(trigger: string, { minLength = 0, maxLength = 75 }) {
-  // Punctuation WITHOUT dots - allows filenames like "test.md"
-  const PUNCTUATION_NO_DOT = String.raw`\,\+\*\?\$\|#{}\(\)\^\-\[\]\\\/!%'"~=<>_:;`;
-
+  const FILENAME_TERMINATORS = String.raw`\,\+\*\?\$\|#{}\(\)\^\[\]\\\/!%'"~=<>:;`;
   return (text: string) => {
-    const validChars = '[^' + trigger + PUNCTUATION_NO_DOT + '\\s]';
+    const validChars = '[^' + trigger + FILENAME_TERMINATORS + '\\s]';
     const regex = new RegExp(
       '(^|\\s|\\()(' +
         '[' +
@@ -52,33 +62,41 @@ function createDocumentLinkTrigger(trigger: string, { minLength = 0, maxLength =
   };
 }
 
-// Create a wrapper component that properly uses the hook
 function DocumentLinkPluginWrapper() {
-  // Create the trigger function that allows dots in filenames
-  const triggerFn = useMemo(() => createDocumentLinkTrigger('@', { minLength: 0, maxLength: 75 }), []);
+  const triggerFn = useMemo(
+    () => createDocumentLinkTrigger('@', { minLength: 0, maxLength: 75 }),
+    [],
+  );
   const anchorElem = useAnchorElem();
-
   return (
     <DocumentLinkPlugin
       documentService={documentService}
-      TypeaheadMenuPlugin={TypeaheadMenuPlugin as any}
+      TypeaheadMenuPlugin={TypeaheadMenuPlugin as React.ComponentType<unknown>}
       triggerFn={triggerFn}
       anchorElem={anchorElem || undefined}
     />
   );
 }
 
-// Create plugin package with the document service configured
-const documentLinkPluginPackage: PluginPackage = {
-  name: 'DocumentLinkPlugin',
-  Component: DocumentLinkPluginWrapper,
-  nodes: [DocumentReferenceNode],
-  // Include both main transformer (exports as markdown links) and legacy transformer (imports old format)
-  transformers: [DocumentReferenceTransformer, LegacyDocumentReferenceTransformer],
-  enabledByDefault: true
-};
-
-// Register the plugin
 export function registerDocumentLinkPlugin(): void {
-  pluginRegistry.register(documentLinkPluginPackage);
+  setExtensionLexicalExtension(
+    SOURCE,
+    defineExtension({
+      name: '@nimbalyst/document-link',
+      nodes: [DocumentReferenceNode],
+    }),
+  );
+  setExtensionContributions(SOURCE, {
+    markdownTransformers: [
+      // Main transformer exports as markdown links; the legacy transformer
+      // imports the old `[[wikilink]]`-style format produced before the
+      // CommonMark migration.
+      DocumentReferenceTransformer,
+      LegacyDocumentReferenceTransformer,
+    ],
+  });
+  registerExtensionEditorComponent({
+    name: SOURCE,
+    Component: DocumentLinkPluginWrapper as React.ComponentType<unknown>,
+  });
 }

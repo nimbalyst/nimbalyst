@@ -19,6 +19,17 @@ import { useEditorLifecycle, type EditorHostProps } from '@nimbalyst/extension-s
 export function DatamodelLMEditor({ host }: EditorHostProps) {
   const { filePath } = host;
 
+  // Reactive read-only state. In read-only mode (inline embeds, share
+  // viewer) we hide the toolbar so the schema graph reads cleanly.
+  // React Flow's pan / zoom stays available either way.
+  const [readOnly, setReadOnly] = useState<boolean>(host.readOnly ?? false);
+  useEffect(() => {
+    setReadOnly(host.readOnly ?? false);
+    return host.onReadOnlyChanged?.((next) => {
+      setReadOnly(next);
+    });
+  }, [host]);
+
   // Create a store instance for this editor (content lives here, not React state)
   const storeRef = useRef<DataModelStoreApi | null>(null);
   const canvasRef = useRef<DataModelCanvasRef>(null);
@@ -122,10 +133,12 @@ export function DatamodelLMEditor({ host }: EditorHostProps) {
   }
 
   return (
-    <div className="datamodel-editor" data-theme={theme}>
-      <DataModelToolbar store={store} onScreenshot={handleScreenshot} host={host} />
+    <div className="datamodel-editor" data-theme={theme} data-read-only={readOnly}>
+      {!readOnly && (
+        <DataModelToolbar store={store} onScreenshot={handleScreenshot} host={host} />
+      )}
       <ReactFlowProvider>
-        <DataModelCanvas ref={canvasRef} store={store} theme={theme} />
+        <DataModelCanvas ref={canvasRef} store={store} theme={theme} readOnly={readOnly} />
       </ReactFlowProvider>
     </div>
   );

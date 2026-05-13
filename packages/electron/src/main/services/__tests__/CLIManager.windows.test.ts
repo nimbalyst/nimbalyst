@@ -2,12 +2,18 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 const {
   execSyncMock,
+  execMock,
+  spawnMock,
   safeHandleMock,
   findExecutableInWindowsPathMock,
   getEnhancedWindowsPathMock,
   simpleGitMock,
 } = vi.hoisted(() => ({
   execSyncMock: vi.fn(),
+  execMock: vi.fn((_command: string, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+    callback(new Error('offline'), '', '');
+  }),
+  spawnMock: vi.fn(),
   safeHandleMock: vi.fn(),
   findExecutableInWindowsPathMock: vi.fn(),
   getEnhancedWindowsPathMock: vi.fn(),
@@ -22,8 +28,8 @@ vi.mock('electron', () => ({
 }));
 
 vi.mock('child_process', () => ({
-  spawn: vi.fn(),
-  exec: vi.fn(),
+  spawn: spawnMock,
+  exec: execMock,
   execSync: execSyncMock,
 }));
 
@@ -69,6 +75,8 @@ describe('CLIManager.checkClaudeCodeWindowsInstallation', () => {
       version: vi.fn().mockResolvedValue({ installed: false }),
     });
     execSyncMock.mockReset();
+    execMock.mockClear();
+    spawnMock.mockReset();
     safeHandleMock.mockReset();
   });
 
@@ -100,5 +108,60 @@ describe('CLIManager.checkClaudeCodeWindowsInstallation', () => {
       gitVersion: undefined,
       claudeCodeVersion: '1.2.3',
     });
+  });
+
+  it('detects a Windows Codex installation exposed as codex.cmd on PATH', async () => {
+    findExecutableInWindowsPathMock.mockImplementation((executables: string | string[]) => {
+      if (Array.isArray(executables) && executables.includes('codex.cmd')) {
+        return 'C:\\Users\\test\\AppData\\Roaming\\npm\\codex.cmd';
+      }
+      return 'C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd';
+    });
+
+    spawnMock.mockImplementation((command: string, args: string[], options?: { shell?: boolean; env?: Record<string, string> }) => {
+      expect(command).toBe('C:\\Users\\test\\AppData\\Roaming\\npm\\codex.cmd');
+      expect(args).toEqual(['--version']);
+      expect(options?.shell).toBe(false);
+      expect(options?.env?.PATH).toBe('C:\\Users\\test\\AppData\\Roaming\\npm;C:\\Program Files\\nodejs');
+
+      let stdoutHandler: ((data: Buffer | string) => void) | undefined;
+      let closeHandler: ((code: number) => void) | undefined;
+      const child = {
+        stdout: {
+          on: vi.fn((event: string, handler: (data: Buffer | string) => void) => {
+            if (event === 'data') stdoutHandler = handler;
+          }),
+        },
+        stderr: {
+          on: vi.fn(),
+        },
+        on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+          if (event === 'close') closeHandler = handler as (code: number) => void;
+        }),
+        kill: vi.fn(),
+      };
+
+      queueMicrotask(() => {
+        stdoutHandler?.('codex 0.12.3\n');
+        closeHandler?.(0);
+      });
+
+      return child as any;
+    });
+
+    const manager = new CLIManager();
+    const result = await manager.checkInstallation('openai-codex');
+
+    expect(result).toEqual({
+      installed: true,
+      version: '0.12.3',
+      updateAvailable: false,
+      path: 'C:\\Users\\test\\AppData\\Roaming\\npm\\codex.cmd',
+      latestVersion: undefined,
+    });
+    expect(findExecutableInWindowsPathMock).toHaveBeenCalledWith(
+      ['codex.cmd', 'codex.exe'],
+      'C:\\Users\\test\\AppData\\Roaming\\npm;C:\\Program Files\\nodejs'
+    );
   });
 });

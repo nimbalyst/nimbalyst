@@ -17,7 +17,7 @@ import {
 } from '@lexical/list';
 import {INSERT_EMBED_COMMAND} from '@lexical/react/LexicalAutoEmbedPlugin';
 import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
-import {INSERT_HORIZONTAL_RULE_COMMAND} from '@lexical/react/LexicalHorizontalRuleNode';
+import {INSERT_HORIZONTAL_RULE_COMMAND} from '@lexical/extension';
 import {$createHeadingNode, $createQuoteNode} from '@lexical/rich-text';
 import {$setBlocksType} from '@lexical/selection';
 import {INSERT_TABLE_COMMAND} from '@lexical/table';
@@ -36,7 +36,11 @@ import {INSERT_COLLAPSIBLE_COMMAND} from '../CollapsiblePlugin';
 import InsertLayoutDialog from '../LayoutPlugin/InsertLayoutDialog';
 import {INSERT_PAGE_BREAK} from '../PageBreakPlugin';
 import {InsertTableDialog} from '../TablePlugin/TablePlugin';
-import {pluginRegistry} from '../PluginRegistry';
+import {
+  getAllExtensionDynamicOptions,
+  getAllExtensionUserCommands,
+  subscribeToExtensionContributions,
+} from '../../extensions/extensionContributionsStore';
 import {INSERT_BOARD_COMMAND} from '../KanbanBoardPlugin/BoardCommands';
 import {
   TypeaheadMenuPlugin,
@@ -359,8 +363,8 @@ function getBaseOptions(editor: LexicalEditor, showModal: ShowModal): TypeaheadM
     //   onSelect: () =>
     //     editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'justify'),
     // },
-    // Add user commands from plugins
-    ...pluginRegistry.getAllUserCommands().map(
+    // Add user commands contributed by extensions
+    ...getAllExtensionUserCommands().map(
       (userCommand) => ({
         id: `plugin-${userCommand.title.toLowerCase().replace(/\s+/g, '-')}`,
         label: userCommand.title,
@@ -387,7 +391,7 @@ export default function ComponentPickerMenuPlugin({
   const [modal, showModal] = useModal();
   const [queryString, setQueryString] = useState<string | null>(null);
   const [pluginDynamicOptions, setPluginDynamicOptions] = useState<TypeaheadMenuOption[]>([]);
-  // Track registry changes to re-render when extensions are loaded
+  // Track contributions changes to re-render when extensions are loaded
   const [registryVersion, setRegistryVersion] = useState(0);
 
   // Ensure Material Symbols font is loaded
@@ -395,12 +399,11 @@ export default function ComponentPickerMenuPlugin({
     ensureMaterialSymbolsLoaded();
   }, []);
 
-  // Subscribe to plugin registry changes (e.g., when extensions load)
+  // Subscribe to extension contribution changes (e.g., when extensions load)
   useEffect(() => {
-    const unsubscribe = pluginRegistry.subscribe(() => {
+    return subscribeToExtensionContributions(() => {
       setRegistryVersion((v) => v + 1);
     });
-    return unsubscribe;
   }, []);
 
   // Fetch dynamic options from plugins when query changes
@@ -414,7 +417,7 @@ export default function ComponentPickerMenuPlugin({
       }
 
       try {
-        const dynamicOptions = await pluginRegistry.getDynamicOptions(queryString);
+        const dynamicOptions = await getAllExtensionDynamicOptions(queryString);
         if (!cancelled) {
           // Convert DynamicMenuOption to TypeaheadMenuOption
           const typeaheadOptions: TypeaheadMenuOption[] = dynamicOptions.map((opt) => ({

@@ -327,25 +327,62 @@ export function getExtensionSDKDocsPath(): string | null {
  * @returns Array of additional directory paths Claude should have access to
  */
 export function getAdditionalDirectoriesForWorkspace(workspacePath: string): string[] {
-  const additionalDirs: string[] = [];
+  const additionalDirs = new Set<string>();
+  const projectPath = resolveProjectPath(workspacePath);
 
-  // If this is a worktree, add the parent project directory
-  // This ensures Claude can access files in the main project if needed
-  // (e.g., for reading .claude/settings.json or shared configs)
+  // If this is a worktree, add the parent project directory so the agent can
+  // read shared configs (.claude/settings.json, package.json) and reach the
+  // shared .git common dir for operations like `git rebase --continue`.
   if (isWorktreePath(workspacePath)) {
-    const projectPath = resolveProjectPath(workspacePath);
-    additionalDirs.push(projectPath);
+    additionalDirs.add(projectPath);
   }
 
-  // If this is an extension project, add the SDK docs
-  // Check the resolved project path for extension detection
-  const projectPath = resolveProjectPath(workspacePath);
-  if (isExtensionProject(projectPath)) {
-    const sdkDocsPath = getExtensionSDKDocsPath();
-    if (sdkDocsPath) {
-      additionalDirs.push(sdkDocsPath);
+  // Include every sibling worktree for this project. Without this, an
+  // orchestrator session running in the parent project (or in one worktree)
+  // hits Codex's workspace-write sandbox the moment it tries to coordinate
+  // edits in a sibling worktree, and `--add-dir` is never set on the spawned
+  // CLI invocation. Listing the filesystem keeps this sync and self-contained
+  // (no DB query) and matches the existing worktree directory convention used
+  // by GitWorktreeService.
+  const siblingWorktrees = listSiblingWorktreePaths(projectPath);
+  for (const siblingPath of siblingWorktrees) {
+    if (siblingPath !== workspacePath) {
+      additionalDirs.add(siblingPath);
     }
   }
 
-  return additionalDirs;
+  if (isExtensionProject(projectPath)) {
+    const sdkDocsPath = getExtensionSDKDocsPath();
+    if (sdkDocsPath) {
+      additionalDirs.add(sdkDocsPath);
+    }
+  }
+
+  return Array.from(additionalDirs);
+}
+
+/**
+ * List full filesystem paths of every sibling worktree directory for a
+ * project, following Nimbalyst's `<project>_worktrees/<name>` convention.
+ * Returns an empty list if the worktrees directory does not exist or cannot
+ * be read. Sync so it can be used from the synchronous additionalDirectories
+ * loader contract.
+ */
+function listSiblingWorktreePaths(projectPath: string): string[] {
+  if (!projectPath) {
+    return [];
+  }
+  const projectName = path.basename(projectPath);
+  const worktreesDir = path.resolve(projectPath, '..', `${projectName}_worktrees`);
+  if (!fs.existsSync(worktreesDir)) {
+    return [];
+  }
+  try {
+    const entries = fs.readdirSync(worktreesDir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(worktreesDir, entry.name));
+  } catch {
+    return [];
+  }
 }

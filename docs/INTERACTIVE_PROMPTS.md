@@ -14,9 +14,34 @@ When Claude needs user input (AskUserQuestion, ExitPlanMode, GitCommitProposal, 
 | Prompt Type | Implementation | Message Type |
 | --- | --- | --- |
 | AskUserQuestion | `AskUserQuestionWidget` | `nimbalyst_tool_use` |
+| PromptForUserInput | `RequestUserInputWidget` | MCP `tool_use` |
 | ExitPlanMode | `ExitPlanModeWidget` | SDK `tool_use` |
 | GitCommitProposal | `GitCommitConfirmationWidget` | MCP `tool_use` |
 | ToolPermission | `ToolPermissionConfirmation` (legacy) | DB-backed atom |
+
+## PromptForUserInput
+
+`PromptForUserInput` is the generic structured-input tool. `One MCP call carries one or more typed fields composed in a single prompt, all rendered by RequestUserInputWidget.`
+
+**Why the wire-name isn't `RequestUserInput`:** the Codex CLI binary ships with its own built-in tool named `request_user_input` (gated to Plan mode). When our MCP server advertises `RequestUserInput`, Codex matches it against its built-in (snake_case match) and refuses the call in Default mode with `request_user_input is unavailable in Default mode`. The wire-name `PromptForUserInput` snake-cases to `prompt_for_user_input`, which is unique. Internal type names, IPC channels, atom keys, and promptType discriminators still use `request_user_input` — they're never seen by Codex.
+
+**Field types:**
+
+- `multiSelect` — checkbox list with rich rows (title, subtitle, badge, defaultChecked). Use for "pick a subset".
+- `singleSelect` — radio group with optional "Other" textarea fallback.
+- `reorder` — drag-to-reorder list with optional per-item delete affordance (`removable: true`). Answer payload returns `orderedIds` AND `removedIds` so the agent can act on both.
+- `editText` — inline Lexical editor seeded with markdown or plain text. Compact mode (no slash-menu, basic toolbar). The answer carries the serialized text plus an `edited` boolean.
+- `confirm` — single yes/no toggle.
+
+**Flow:**
+
+1. Agent calls `mcp__nimbalyst-mcp__RequestUserInput` with `{ fields: [...] }`.
+2. The MCP handler in `interactiveToolHandlers.ts` persists the SDK's `tool_use` chunk via the standard streaming path, fires `ai:requestUserInput` so voice mode can pick up the data, and waits for a response on `request-user-input-response:<sessionId>:<promptId>` with a DB-polling fallback.
+3. The widget renders pending state from `toolCall.arguments`; user edits live in `requestUserInputDraftAtom(toolCallId)` so they survive virtual-scroll and session switches.
+4. On submit/cancel, the widget calls `host.requestUserInputSubmit(promptId, answers)` / `host.requestUserInputCancel(promptId)`. The desktop host invokes `messages:respond-to-prompt` with promptType `request_user_input_request`, which writes a `request_user_input_response` row, fires the IPC channel, and clears the pending indicator.
+5. The MCP handler resolves and the agent receives the answer payload.
+
+**Voice mode:** the renderer computes a `voiceFriendly` hint (NOT trusted from the agent) and forwards it via `voice-mode:interactive-prompt`. Reorder fields > 6 items and editText with > 240 char drafts are flagged as not voice-friendly so the agent defers to the screen.
 
 ## Widget Pattern (preferred)
 

@@ -1226,7 +1226,7 @@ describe('TranscriptTransformer', () => {
   describe('Codex reasoning and todo_list transformation', () => {
     const CODEX_PROVIDER = 'openai-codex';
 
-    it('transforms Codex reasoning events as assistant messages', async () => {
+    it('transforms Codex reasoning events into assistant thinking messages', async () => {
       const rawStore = createMockRawStore([
         makeRawMessage({
           id: 1,
@@ -1250,10 +1250,12 @@ describe('TranscriptTransformer', () => {
       const events = await transcriptStore.getSessionEvents(SESSION_ID);
       const assistantEvents = events.filter((e) => e.eventType === 'assistant_message');
       expect(assistantEvents.length).toBeGreaterThanOrEqual(1);
-      const reasoningEvent = assistantEvents.find(
-        (e) => e.searchableText?.includes('Let me think about this problem.'),
-      );
+      const reasoningEvent = assistantEvents.find((e) => {
+        const payload = e.payload as Record<string, unknown>;
+        return payload.thinking === 'Let me think about this problem.';
+      });
       expect(reasoningEvent).toBeDefined();
+      expect(reasoningEvent?.searchableText).toBe('');
     });
 
     it('transforms Codex todo_list items as markdown assistant messages', async () => {

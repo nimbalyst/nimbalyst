@@ -99,6 +99,76 @@ describe('CodexSDKProtocol', () => {
     expect(emitted.some((event) => event.type === 'text' && event.content === '')).toBe(false);
   });
 
+  it('forwards raw.additionalDirectories to startThread so the CLI gets --add-dir', async () => {
+    const runStreamed = vi.fn(async () => ({
+      events: createAsyncEventStream([
+        {
+          type: 'item.completed',
+          item: { type: 'agent_message', text: 'ok' },
+        },
+      ]),
+    }));
+
+    const startThread = vi.fn((_options?: Record<string, unknown>) => ({
+      id: 'thread-add-dir',
+      runStreamed,
+    }));
+
+    const protocol = new CodexSDKProtocol(
+      'test-key',
+      async () =>
+        ({
+          Codex: class {
+            startThread = startThread;
+            resumeThread = vi.fn();
+          },
+        }) as any
+    );
+
+    await protocol.createSession({
+      workspacePath: '/projects/main',
+      raw: {
+        additionalDirectories: [
+          '/projects/main_worktrees/proud-gorge',
+          '/projects/main_worktrees/swift-falcon',
+          // Filtered: empty / non-string entries should not reach the SDK.
+          '',
+          undefined as unknown as string,
+        ],
+      },
+    } as any);
+
+    expect(startThread).toHaveBeenCalledTimes(1);
+    const passedOptions = startThread.mock.calls[0]![0] as Record<string, unknown>;
+    expect(passedOptions.workingDirectory).toBe('/projects/main');
+    expect(passedOptions.additionalDirectories).toEqual([
+      '/projects/main_worktrees/proud-gorge',
+      '/projects/main_worktrees/swift-falcon',
+    ]);
+  });
+
+  it('omits additionalDirectories when none are supplied', async () => {
+    const startThread = vi.fn((_options?: Record<string, unknown>) => ({
+      id: 't',
+      runStreamed: vi.fn(),
+    }));
+    const protocol = new CodexSDKProtocol(
+      'test-key',
+      async () =>
+        ({
+          Codex: class {
+            startThread = startThread;
+            resumeThread = vi.fn();
+          },
+        }) as any
+    );
+
+    await protocol.createSession({ workspacePath: '/projects/main' });
+
+    const passedOptions = startThread.mock.calls[0]![0] as Record<string, unknown>;
+    expect('additionalDirectories' in passedOptions).toBe(false);
+  });
+
   it('passes image attachments as structured local_image inputs', async () => {
     const runStreamed = vi.fn(async () => ({
       events: createAsyncEventStream([

@@ -208,7 +208,8 @@ export class CodexRawParser implements IRawMessageParser {
         if (ce.reasoning) {
           descriptors.push({
             type: 'assistant_message',
-            text: ce.reasoning,
+            text: '',
+            thinking: ce.reasoning,
             createdAt: msg.createdAt,
           });
         }

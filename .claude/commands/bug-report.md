@@ -1,3 +1,7 @@
+---
+description: Gather details and draft an actionable bug report for developers.
+---
+
 # Bug Report Assistant
 
 You are helping a product manager create a detailed, actionable bug report for developers. Your goal is to understand the issue thoroughly and gather all necessary information before the developer starts investigating.

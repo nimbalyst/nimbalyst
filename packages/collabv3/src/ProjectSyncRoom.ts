@@ -168,7 +168,30 @@ export class PersonalProjectSyncRoom implements DurableObject {
       return this.handleDeleteAccount();
     }
 
+    // Admin cleanup probe -- returns last activity + whether storage holds data.
+    // Path includes /internal/ so the public /sync/ router blocks external access.
+    if (url.pathname.endsWith('/internal/staleness') && request.method === 'GET') {
+      return this.handleStaleness();
+    }
+
     return new Response('Expected WebSocket', { status: 400 });
+  }
+
+  /**
+   * Staleness probe for the admin cleanup endpoint.
+   */
+  private handleStaleness(): Response {
+    const sql = this.state.storage.sql;
+    const updatedAtRow = sql.exec<{ value: string }>(
+      `SELECT value FROM metadata WHERE key = 'updated_at'`
+    ).toArray()[0];
+    const fileCount = sql.exec<{ count: number }>(
+      `SELECT COUNT(*) as count FROM files`
+    ).toArray()[0]?.count ?? 0;
+    return new Response(JSON.stringify({
+      updatedAt: updatedAtRow ? parseInt(updatedAtRow.value, 10) : null,
+      hasData: fileCount > 0,
+    }), { headers: { 'Content-Type': 'application/json' } });
   }
 
   private async handleWebSocketUpgrade(request: Request): Promise<Response> {
@@ -869,13 +892,8 @@ export class PersonalProjectSyncRoom implements DurableObject {
   // REST endpoints
   // ---------------------------------------------------------------------------
 
-  private handleDeleteAccount(): Response {
-    const sql = this.state.storage.sql;
-
-    sql.exec(`DELETE FROM files`);
-    sql.exec(`DELETE FROM yjs_updates`);
-    sql.exec(`DELETE FROM metadata`);
-
+  private async handleDeleteAccount(): Promise<Response> {
+    // Close all WebSocket connections first so no writes race the delete.
     for (const [ws] of this.connections) {
       try {
         ws.close(4003, 'Account deleted');
@@ -885,7 +903,9 @@ export class PersonalProjectSyncRoom implements DurableObject {
     }
     this.connections.clear();
 
-    this.state.storage.deleteAlarm();
+    // Bulk-drop all storage. Per-table `DELETE FROM` previously hit the DO
+    // storage operation timeout on large project syncs and reset the DO mid-delete.
+    await this.state.storage.deleteAll();
 
     return new Response(JSON.stringify({ deleted: true }), {
       headers: { 'Content-Type': 'application/json' },

@@ -44,8 +44,16 @@ import {
 import { workstreamActiveChildAtom, workstreamStateAtom } from './atoms/workstreamState';
 import { setWindowModeAtom } from './atoms/windowMode';
 import { triggerWorktreeRefreshAtom } from './atoms/gitOperations';
+import { multiProjectModeAtom, openProjectsAtom } from './atoms/openProjects';
+import {
+  markSessionStreamingAtom,
+  clearSessionStreamingAtom,
+  markSessionUnreadAtom,
+  clearSessionUnreadAtom,
+} from './atoms/sessionActivity';
 import type { TranscriptEvent } from '@nimbalyst/runtime/ai/server/transcript/types';
 import { TranscriptStreamAccumulator } from './transcriptStreamAccumulator';
+import { resolveOwnedWorkspacePath } from '../../shared/sessionWorkspaceRouting';
 
 /**
  * Per-session accumulator of canonical events received via IPC.
@@ -115,20 +123,42 @@ const READ_STATE_SYNC_DEBOUNCE_MS = 5000;
 
 // Active workspace-scoped subscription in main process.
 // Kept module-level so we can update routing without re-registering all IPC listeners.
-let subscribedWorkspacePath: string | undefined;
+//
+// Multi-project rail: in single-project mode the subscription is keyed to
+// the active workspace; in multi-project mode the subscription receives
+// events for every open (warm) project so a session that completes while
+// its project is hidden still flips the UI out of "Thinking…".
+let activeWorkspacePathSnapshot: string | null = null;
+let lastSubscriptionKey = '';
 
-function subscribeToSessionStateWorkspace(workspacePath?: string): void {
+function getCurrentSubscriptionPaths(): string[] | undefined {
+  const isMulti = store.get(multiProjectModeAtom);
+  if (isMulti) {
+    const open = store.get(openProjectsAtom);
+    if (open.length > 0) return open.map((p) => p.path);
+    return activeWorkspacePathSnapshot ? [activeWorkspacePathSnapshot] : undefined;
+  }
+  return activeWorkspacePathSnapshot ? [activeWorkspacePathSnapshot] : undefined;
+}
+
+function reconcileSessionStateSubscription(): void {
   if (!window.electronAPI?.sessionState) return;
 
-  if (subscribedWorkspacePath === workspacePath) {
-    return;
-  }
+  const paths = getCurrentSubscriptionPaths();
+  const key = paths ? [...paths].sort().join('\0') : '__no_filter__';
+  if (key === lastSubscriptionKey) return;
+  lastSubscriptionKey = key;
 
-  subscribedWorkspacePath = workspacePath;
-  window.electronAPI.sessionState.subscribe(workspacePath)
+  const arg: string | string[] | undefined = !paths
+    ? undefined
+    : paths.length === 1
+      ? paths[0]
+      : paths;
+
+  window.electronAPI.sessionState.subscribe(arg)
     .then((result: any) => {
-      if (!result.success) {
-        console.error('[sessionStateListeners] Failed to subscribe to session state manager:', result.error);
+      if (!result?.success) {
+        console.error('[sessionStateListeners] Failed to subscribe to session state manager:', result?.error);
       }
     })
     .catch((error: any) => {
@@ -137,7 +167,18 @@ function subscribeToSessionStateWorkspace(workspacePath?: string): void {
 }
 
 export function updateSessionStateListenerWorkspace(workspacePath: string): void {
-  subscribeToSessionStateWorkspace(workspacePath || undefined);
+  activeWorkspacePathSnapshot = workspacePath || null;
+  reconcileSessionStateSubscription();
+}
+
+// React to multi-project mode toggle / rail open-projects changes by
+// re-subscribing with the right set of workspace paths.
+let multiProjectSubscribersInstalled = false;
+function ensureMultiProjectSubscribers(): void {
+  if (multiProjectSubscribersInstalled) return;
+  multiProjectSubscribersInstalled = true;
+  store.sub(multiProjectModeAtom, reconcileSessionStateSubscription);
+  store.sub(openProjectsAtom, reconcileSessionStateSubscription);
 }
 
 /**
@@ -152,6 +193,11 @@ export function initSessionStateListeners(): () => void {
     return () => {};
   }
 
+  // Wire reconciliation against multi-project rail state so subscriptions
+  // include every warm project, not just the visible one.
+  ensureMultiProjectSubscribers();
+  reconcileSessionStateSubscription();
+
   /**
    * Handle session state change events.
    * These events come from the AI provider and track the session lifecycle.
@@ -165,22 +211,26 @@ export function initSessionStateListeners(): () => void {
     const { type, sessionId, workspacePath: eventWorkspacePath } = event;
     if (!sessionId) return;
 
-    const currentWorkspacePath = store.get(sessionListWorkspaceAtom);
     const registry = store.get(sessionRegistryAtom);
     const sessionMeta = registry.get(sessionId);
-    const ownedWorkspacePath = eventWorkspacePath || sessionMeta?.workspaceId || null;
+    const sessionWorkspacePath = sessionMeta?.workspaceId || null;
+    const ownedWorkspacePath = resolveOwnedWorkspacePath({
+      eventWorkspacePath,
+      sessionWorkspacePath,
+    });
 
-    // Ignore lifecycle events that aren't attributable to this window's workspace.
-    // Without an event-carried workspacePath or a registry hit, we can't safely
-    // assume the event belongs here -- defaulting to currentWorkspacePath would
-    // silently process events for other windows' sessions (the bug that caused
-    // [SessionManager] Rejecting session ... noise during streaming in another
-    // window). Source emitters should attach workspacePath to every event;
-    // see docs/IPC_GUIDE.md.
+    // The main-process subscription is scoped to the set of workspace paths
+    // this window actually hosts (single project or rail-warm) and does the
+    // worktree-aware routing (see SessionStateHandlers), so any event that
+    // reaches us here is intended for us. We don't re-filter by the visible
+    // project — that would drop lifecycle events for sessions in inactive
+    // rail projects, leaving the UI stuck on "Thinking…" after a session
+    // completed while its project was hidden.
+    //
+    // We still require an owned workspacePath (event-carried or registry
+    // hit). Falling back to the active project's path would silently process
+    // events for unrelated sessions whose owner is unknown to this window.
     if (!ownedWorkspacePath) {
-      return;
-    }
-    if (currentWorkspacePath && ownedWorkspacePath !== currentWorkspacePath) {
       return;
     }
 
@@ -190,18 +240,34 @@ export function initSessionStateListeners(): () => void {
       // Session is actively running
       case 'session:started':
         store.set(sessionProcessingAtom(sessionId), true);
+        store.set(markSessionStreamingAtom, { sessionId, workspacePath: resolvedWorkspacePath });
         break;
 
       case 'session:streaming':
         store.set(sessionProcessingAtom(sessionId), true);
-        // AI resumed streaming - no longer waiting for user input
-        store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+        // Intentionally do NOT clear sessionHasPendingInteractivePromptAtom here.
+        // session:streaming fires for any token chunk produced by the provider,
+        // including tail-end chunks that arrive after the model emits a tool_use
+        // for AskUserQuestion / ExitPlanMode / ToolPermission / GitCommitProposal.
+        // The pending flag is the responsibility of the explicit resolve events
+        // (ai:askUserQuestionAnswered, ai:exitPlanModeResolved,
+        // ai:toolPermissionResolved, ai:gitCommitProposalResolved, ai:sessionCancelled)
+        // and the terminal lifecycle events (session:completed/error/interrupted)
+        // below. Letting "streaming" clear it caused the warning indicator to
+        // flip back to a generic spinner mid-prompt — particularly visible in
+        // multi-project rail mode, where this window receives streaming events
+        // for sessions in inactive projects whose transcripts are not mounted
+        // and thus cannot re-derive the flag from messages.
+        store.set(markSessionStreamingAtom, { sessionId, workspacePath: resolvedWorkspacePath });
         break;
 
       // Session is waiting for user input (AskUserQuestion, ExitPlanMode, ToolPermission)
       case 'session:waiting':
         store.set(sessionProcessingAtom(sessionId), true);
         store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
+        // Treat "waiting on user" as still processing for rail badge purposes —
+        // the user typically hasn't switched away because of the prompt.
+        store.set(markSessionStreamingAtom, { sessionId, workspacePath: resolvedWorkspacePath });
         break;
 
       // Session has finished (successfully or with error)
@@ -211,6 +277,7 @@ export function initSessionStateListeners(): () => void {
         store.set(sessionProcessingAtom(sessionId), false);
         // Also clear pending interactive prompt state - if session ended, no longer waiting
         store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+        store.set(clearSessionStreamingAtom, { sessionId, workspacePath: resolvedWorkspacePath });
 
         // Clear any pending throttle timer for this session - the final reload below
         // will fetch the complete state, so a stale throttled reload is unnecessary
@@ -346,21 +413,22 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, direction, workspacePath: eventWorkspacePath } = data;
     if (!sessionId) return;
 
-    const currentWorkspacePath = store.get(sessionListWorkspaceAtom);
     const registry = store.get(sessionRegistryAtom);
     const sessionMeta = registry.get(sessionId);
+    // Prefer the workspacePath sent by main — it is the session's owning
+    // path (resolved against the worktree's parent workspace_id by the main
+    // process), which the registry only knows about while that project is
+    // the active one. After a rail switch the registry has been replaced
+    // with the new project's sessions and `sessionMeta?.workspaceId` is
+    // undefined, so a legacy fallback to the visible project would route
+    // the reload to the wrong workspace.
+    //
+    // Multi-project rail: any event we receive is intended for a workspace
+    // this window owns (the main process scopes the subscription). Don't
+    // re-filter against the visible project — that drops events for
+    // sessions in inactive rail projects and leaves their UI stale.
     const ownedWorkspacePath = eventWorkspacePath || sessionMeta?.workspaceId || null;
-
-    // Drop events that aren't attributable to this window's workspace.
-    // Falling back to currentWorkspacePath when neither the event nor the
-    // registry tells us who owns the session causes cross-window pollution
-    // (the markdowntests window reloading stravu-editor sessions and producing
-    // [SessionManager] Rejecting session ... noise). Source emitters should
-    // attach workspacePath; see docs/IPC_GUIDE.md.
     if (!ownedWorkspacePath) {
-      return;
-    }
-    if (currentWorkspacePath && ownedWorkspacePath !== currentWorkspacePath) {
       return;
     }
 
@@ -423,6 +491,7 @@ export function initSessionStateListeners(): () => void {
       // If this message is for a session that's not currently viewed, mark it as unread
       if (sessionId !== currentlyViewedSessionId) {
         store.set(sessionUnreadAtom(sessionId), true);
+        store.set(markSessionUnreadAtom, { sessionId, workspacePath });
 
         // Persist to database metadata for cross-device sync
         window.electronAPI?.invoke('ai:updateSessionMetadata', sessionId, {
@@ -435,6 +504,7 @@ export function initSessionStateListeners(): () => void {
         // devices (iOS) know the user is reading these messages in real time.
         // Without this, iOS would show the session as unread because it sees
         // lastMessageAt increasing but lastReadAt staying stale.
+        store.set(clearSessionUnreadAtom, { sessionId, workspacePath });
         const existingReadTimer = readStateSyncTimers.get(sessionId);
         if (existingReadTimer) {
           clearTimeout(existingReadTimer);
@@ -657,6 +727,40 @@ export function initSessionStateListeners(): () => void {
   };
 
   /**
+   * Handle RequestUserInput events globally.
+   * Push prompt data into the atom so voice mode can read it (and so the
+   * sidebar pending indicator lights up). The widget itself reads from
+   * `toolCall.arguments` -- this atom is for cross-cutting consumers.
+   */
+  const handleRequestUserInput = (data: { sessionId: string; promptId: string; args: any }) => {
+    const { sessionId, promptId, args } = data;
+    if (!sessionId || !promptId) return;
+    store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
+    const prompt: PendingPrompt = {
+      id: promptId,
+      sessionId,
+      promptType: 'request_user_input_request',
+      promptId,
+      data: { type: 'request_user_input_request', promptId, args },
+      createdAt: Date.now(),
+    };
+    const current = store.get(sessionPendingPromptsAtom(sessionId));
+    store.set(sessionPendingPromptsAtom(sessionId), [...current, prompt]);
+  };
+
+  /**
+   * Handle RequestUserInput resolved events globally.
+   * Clears pending interactive prompt indicator.
+   */
+  const handleRequestUserInputResolved = (data: { sessionId: string; promptId: string }) => {
+    const { sessionId, promptId } = data;
+    if (!sessionId) return;
+    store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+    const current = store.get(sessionPendingPromptsAtom(sessionId));
+    store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== promptId));
+  };
+
+  /**
    * Handle notification click events.
    * Switches to the session that was clicked in the OS notification.
    * If the session is a child of a workstream, selects the parent instead.
@@ -751,7 +855,8 @@ export function initSessionStateListeners(): () => void {
 
   // First, subscribe to the session state manager (IPC call to register this window).
   // Workspace can change during app lifetime; this is updated via updateSessionStateListenerWorkspace().
-  subscribeToSessionStateWorkspace(store.get(sessionListWorkspaceAtom) || undefined);
+  activeWorkspacePathSnapshot = store.get(sessionListWorkspaceAtom) || null;
+  reconcileSessionStateSubscription();
 
   // Fetch currently active sessions and restore their processing state
   // This handles the case where the renderer refreshes while sessions are running
@@ -793,6 +898,8 @@ export function initSessionStateListeners(): () => void {
   let cleanupToolPermissionResolved: (() => void) | undefined;
   let cleanupGitCommitProposal: (() => void) | undefined;
   let cleanupGitCommitProposalResolved: (() => void) | undefined;
+  let cleanupRequestUserInput: (() => void) | undefined;
+  let cleanupRequestUserInputResolved: (() => void) | undefined;
   let cleanupNotificationClicked: (() => void) | undefined;
   let cleanupSyncReadState: (() => void) | undefined;
   let cleanupSyncDraftInput: (() => void) | undefined;
@@ -812,6 +919,8 @@ export function initSessionStateListeners(): () => void {
     cleanupToolPermissionResolved = window.electronAPI.on('ai:toolPermissionResolved', handleToolPermissionResolved);
     cleanupGitCommitProposal = window.electronAPI.on('ai:gitCommitProposal', handleGitCommitProposal);
     cleanupGitCommitProposalResolved = window.electronAPI.on('ai:gitCommitProposalResolved', handleGitCommitProposalResolved);
+    cleanupRequestUserInput = window.electronAPI.on('ai:requestUserInput', handleRequestUserInput);
+    cleanupRequestUserInputResolved = window.electronAPI.on('ai:requestUserInputResolved', handleRequestUserInputResolved);
     cleanupNotificationClicked = window.electronAPI.on('notification-clicked', handleNotificationClicked);
     cleanupSyncReadState = window.electronAPI.on('sessions:sync-read-state', handleSyncReadState);
     cleanupSyncDraftInput = window.electronAPI.on('sessions:sync-draft-input', handleSyncDraftInput);
@@ -840,7 +949,8 @@ export function initSessionStateListeners(): () => void {
 
     window.electronAPI.sessionState?.removeStateChangeListener?.(handleStateChange);
     window.electronAPI.sessionState?.unsubscribe?.();
-    subscribedWorkspacePath = undefined;
+    activeWorkspacePathSnapshot = null;
+    lastSubscriptionKey = '';
     cleanupMessageLogged?.();
     cleanupMessagesLoggedBatch?.();
     cleanupTitleUpdated?.();
@@ -853,6 +963,8 @@ export function initSessionStateListeners(): () => void {
     cleanupToolPermissionResolved?.();
     cleanupGitCommitProposal?.();
     cleanupGitCommitProposalResolved?.();
+    cleanupRequestUserInput?.();
+    cleanupRequestUserInputResolved?.();
     cleanupNotificationClicked?.();
     cleanupSyncReadState?.();
     cleanupSyncDraftInput?.();

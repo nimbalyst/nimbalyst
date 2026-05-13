@@ -23,7 +23,9 @@
  */
 
 import { atom } from 'jotai';
+import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
+import { activeWorkspacePathAtom } from './openProjects';
 import type { ContentMode } from '../../types/WindowModeTypes';
 
 // ============================================================
@@ -95,13 +97,41 @@ const MAX_HISTORY_SIZE = 50;
 // State Atoms
 // ============================================================
 
-/**
- * The navigation history state.
- */
-const navigationHistoryAtom = atom<NavigationHistoryState>({
+const DEFAULT_NAVIGATION_HISTORY: NavigationHistoryState = {
   entries: [],
   currentIndex: -1,
-});
+};
+
+/**
+ * Per-workspace navigation history. Each open project keeps its own
+ * back/forward stack so switching between projects in the rail does not
+ * blow away history.
+ */
+const navigationHistoryAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<NavigationHistoryState>(DEFAULT_NAVIGATION_HISTORY)
+);
+
+/** Drop the cached navigation history slot for a workspace. */
+export function pruneNavigationHistoryWorkspaceState(workspacePath: string): void {
+  navigationHistoryAtomFamily.remove(workspacePath);
+}
+
+/**
+ * Read+write proxy that resolves to the active workspace's history slot.
+ * Existing call sites (push, goBack, goForward) keep working unchanged.
+ */
+const navigationHistoryAtom = atom<NavigationHistoryState, [NavigationHistoryState], void>(
+  (get) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return DEFAULT_NAVIGATION_HISTORY;
+    return get(navigationHistoryAtomFamily(path));
+  },
+  (get, set, value: NavigationHistoryState) => {
+    const path = get(activeWorkspacePathAtom);
+    if (!path) return;
+    set(navigationHistoryAtomFamily(path), value);
+  }
+);
 
 /**
  * Counter for tracking in-flight navigation restorations.
@@ -249,13 +279,17 @@ export const pushNavigationEntryAtom = atom(
       newEntries = newEntries.slice(-MAX_HISTORY_SIZE);
     }
 
+    const workspacePath = get(activeWorkspacePathAtom);
+
     set(navigationHistoryAtom, {
       entries: newEntries,
       currentIndex: newEntries.length - 1,
     });
 
-    // Schedule persistence
-    schedulePersist();
+    // Schedule persistence for the workspace that received the push.
+    if (workspacePath) {
+      schedulePersist(workspacePath);
+    }
   }
 );
 
@@ -396,26 +430,26 @@ export const goForwardAtom = atom(null, (get, set) => {
 // Persistence
 // ============================================================
 
-let currentWorkspacePath: string | null = null;
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
+// Per-workspace debounce timers. A push for project A should not be
+// cancelled when the user switches to project B before the timer fires.
+const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 /**
- * Schedule debounced persistence of navigation history.
+ * Schedule debounced persistence of navigation history for `workspacePath`.
  */
-function schedulePersist(): void {
-  if (!currentWorkspacePath) return;
-
-  if (persistTimer) {
-    clearTimeout(persistTimer);
+function schedulePersist(workspacePath: string): void {
+  const existing = persistTimers.get(workspacePath);
+  if (existing) {
+    clearTimeout(existing);
   }
 
-  persistTimer = setTimeout(async () => {
-    persistTimer = null;
+  const timer = setTimeout(async () => {
+    persistTimers.delete(workspacePath);
 
     try {
       if (!window.electronAPI?.invoke) return;
-      const state = store.get(navigationHistoryAtom);
-      await window.electronAPI.invoke('workspace:update-state', currentWorkspacePath!, {
+      const state = store.get(navigationHistoryAtomFamily(workspacePath));
+      await window.electronAPI.invoke('workspace:update-state', workspacePath, {
         navigationHistory: {
           entries: state.entries,
           currentIndex: state.currentIndex,
@@ -425,67 +459,69 @@ function schedulePersist(): void {
       console.error('[navigationHistory] Failed to persist:', err);
     }
   }, 500);
+
+  persistTimers.set(workspacePath, timer);
 }
 
 // ============================================================
 // Initialization
 // ============================================================
 
-// Guard against double-initialization (React StrictMode calls effects twice)
-let initPromise: Promise<void> | null = null;
-let initializedWorkspace: string | null = null;
+// Guard against double-initialization per workspace (React StrictMode calls
+// effects twice; in multi-project mode each open project has its own init).
+const initPromises = new Map<string, Promise<void>>();
 
 /**
  * Initialize navigation history from workspace state.
  * Call this when workspace path is known.
  *
- * Guarded against double-initialization - if called multiple times for the
- * same workspace, returns the existing promise.
+ * Guarded against double-initialization per workspace.
+ *
+ * @param workspacePath The workspace whose history should be loaded.
+ * @param options.setActive When true (default), this workspace becomes the
+ *   active path for the window. Pass `false` to warm-load history for the
+ *   project rail without stealing focus.
  */
-export async function initNavigationHistory(workspacePath: string): Promise<void> {
-  // If already initialized for this workspace, return existing promise
-  if (initializedWorkspace === workspacePath && initPromise) {
-    return initPromise;
+export async function initNavigationHistory(
+  workspacePath: string,
+  options: { setActive?: boolean } = {}
+): Promise<void> {
+  const { setActive = true } = options;
+  if (setActive) {
+    store.set(activeWorkspacePathAtom, workspacePath);
   }
 
-  // If initializing a different workspace, reset
-  if (initializedWorkspace !== workspacePath) {
-    initializedWorkspace = workspacePath;
-    initPromise = null;
-  }
+  const existing = initPromises.get(workspacePath);
+  if (existing) return existing;
 
-  currentWorkspacePath = workspacePath;
-
-  // Create the initialization promise
-  initPromise = (async () => {
+  const promise = (async () => {
     try {
       if (!window.electronAPI?.invoke) return;
       const workspaceState = await window.electronAPI.invoke('workspace:get-state', workspacePath) as { navigationHistory?: NavigationHistoryState } | undefined;
       const saved = workspaceState?.navigationHistory;
 
       if (saved && Array.isArray(saved.entries)) {
-        store.set(navigationHistoryAtom, {
+        store.set(navigationHistoryAtomFamily(workspacePath), {
           entries: saved.entries,
           currentIndex: saved.currentIndex ?? saved.entries.length - 1,
         });
-        console.log('[navigationHistory] Loaded', saved.entries.length, 'entries');
+        console.log('[navigationHistory] Loaded', saved.entries.length, 'entries for', workspacePath);
       }
     } catch (err) {
       console.error('[navigationHistory] Failed to load:', err);
     }
   })();
 
-  return initPromise;
+  initPromises.set(workspacePath, promise);
+  return promise;
 }
 
 /**
- * Clear navigation history (for testing or when workspace changes).
+ * Clear navigation history for the active workspace (for testing or reset).
  */
 export function clearNavigationHistory(): void {
-  store.set(navigationHistoryAtom, {
-    entries: [],
-    currentIndex: -1,
-  });
-  initPromise = null;
-  initializedWorkspace = null;
+  const workspacePath = store.get(activeWorkspacePathAtom);
+  if (!workspacePath) return;
+  store.set(navigationHistoryAtomFamily(workspacePath), DEFAULT_NAVIGATION_HISTORY);
+  initPromises.delete(workspacePath);
 }

@@ -1,41 +1,30 @@
 /**
- * Register the MockupPlugin with its Electron-specific platform service.
- *
- * This sets up the MockupPlatformService implementation that provides
- * the Electron-specific functionality for capturing screenshots and
- * opening mockups, and registers the plugin with the plugin registry.
+ * Set up the mockup platform service implementation, then publish the
+ * mockup Lexical extension + slash-picker entry into the runtime
+ * extension stores.
  */
 
 import {
-  setMockupPlatformService,
-  MockupPlugin,
-  MockupNode,
-  MOCKUP_TRANSFORMER,
   INSERT_MOCKUP_COMMAND,
+  MOCKUP_TRANSFORMER,
+  MockupLexicalExtension,
+  setExtensionContributions,
+  setExtensionLexicalExtension,
+  setMockupPlatformService,
 } from '@nimbalyst/runtime';
-import { pluginRegistry, type PluginPackage } from '@nimbalyst/runtime';
 import { MockupPlatformServiceImpl } from '../services/MockupPlatformServiceImpl';
 import { showMockupPickerMenu } from '../components/MockupPickerMenu';
 
-/**
- * Register the MockupPlugin with its platform service and the plugin registry.
- * Should be called once during app initialization.
- */
+const SOURCE = 'mockup';
+
 export function registerMockupPlugin(): void {
-  // Set up the platform service
   const service = MockupPlatformServiceImpl.getInstance();
-
-  // Override showMockupPicker to use our typeahead picker
   service.showMockupPicker = showMockupPickerMenu;
-
   setMockupPlatformService(service);
 
-  // Register the plugin with the plugin registry
-  const mockupPlugin: PluginPackage = {
-    name: 'MockupPlugin',
-    Component: MockupPlugin,
-    nodes: [MockupNode],
-    transformers: [MOCKUP_TRANSFORMER],
+  setExtensionLexicalExtension(SOURCE, MockupLexicalExtension);
+  setExtensionContributions(SOURCE, {
+    markdownTransformers: [MOCKUP_TRANSFORMER],
     userCommands: [
       {
         title: 'Mockup',
@@ -43,10 +32,7 @@ export function registerMockupPlugin(): void {
         icon: 'design_services',
         keywords: ['mockup', 'design', 'prototype', 'ui', 'layout'],
         command: INSERT_MOCKUP_COMMAND,
-        // When called without payload, the plugin calls showMockupPicker which opens the picker menu
       },
     ],
-    enabledByDefault: true,
-  };
-  pluginRegistry.register(mockupPlugin);
+  });
 }

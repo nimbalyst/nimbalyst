@@ -1857,6 +1857,46 @@ class PGLiteWorker {
       // Non-fatal
     }
 
+    // Remove accidental worktree workstreams: a worktree IS the workstream — the
+    // `worktrees` row is the container, and every session inside it is a flat
+    // sibling keyed by worktree_id. Older /launch-new-session and convert-to-
+    // workstream paths incorrectly created `session_type='workstream'` rows
+    // either inside a worktree (worktree_id set on the workstream) or as a
+    // hidden parent of worktree-resident children. These containers carry no
+    // user content (no messages of their own) — they exist only as a side
+    // effect of the bug — so we delete them outright rather than try to
+    // preserve them as flat sessions. The FK on parent_session_id is
+    // ON DELETE SET NULL, so children get auto-unparented (their worktree_id
+    // is unchanged), and the renderer's worktreeGroupsData re-groups them
+    // flat under the worktree.
+    //
+    // Safety guard: skip any workstream that somehow has its own messages.
+    // The bug should never have created one with messages, but a per-row
+    // check costs almost nothing and prevents accidental content loss on
+    // a stranger's database.
+    try {
+      await this.db.exec(`
+        DELETE FROM ai_sessions
+        WHERE session_type = 'workstream'
+          AND NOT EXISTS (
+            SELECT 1 FROM ai_agent_messages m WHERE m.session_id = ai_sessions.id
+          )
+          AND (
+            worktree_id IS NOT NULL
+            OR id IN (
+              SELECT DISTINCT parent_session_id
+              FROM ai_sessions
+              WHERE parent_session_id IS NOT NULL
+                AND worktree_id IS NOT NULL
+            )
+          );
+      `);
+      console.log('[PGLite Worker] Deleted accidental worktree workstreams (children auto-unparented via FK SET NULL)');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to delete worktree workstreams:', error);
+      // Non-fatal - bug only affects left-pane grouping, not data integrity
+    }
+
     // Migration: Add file_timestamp column to ai_tool_call_file_edits
     try {
       await this.db.exec(`

@@ -1,29 +1,28 @@
 /**
- * MockupPlugin - Lexical plugin for embedding mockups in documents.
- *
- * Provides:
- * - MockupNode for rendering mockup screenshots
- * - INSERT_MOCKUP_COMMAND for inserting mockups
- * - Markdown transformer for import/export
- *
- * The component picker integration (dynamic options for selecting/creating mockups)
- * is handled in the platform-specific registration code.
+ * MockupPlugin - exports the node, transformer, command, and a Lexical
+ * extension that registers `MockupNode` and the `INSERT_MOCKUP_COMMAND`
+ * handler. There is no React component because the plugin has no UI
+ * concerns of its own; the renderer-side `registerMockupPlugin` publishes
+ * this extension into the Lexical extension store and contributes the
+ * slash-picker entry via the contributions store.
  */
 
 import type { LexicalCommand } from 'lexical';
 
-import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import {
   $insertNodes,
   COMMAND_PRIORITY_EDITOR,
   createCommand,
+  defineExtension,
 } from 'lexical';
-import { useEffect } from 'react';
 
-import { hasMockupPlatformService, getMockupPlatformService } from './MockupPlatformService';
-import { $createMockupNode, MockupPayload } from './MockupNode';
+import {
+  getMockupPlatformService,
+  hasMockupPlatformService,
+} from './MockupPlatformService';
+import { $createMockupNode, MockupNode, MockupPayload } from './MockupNode';
+import { MOCKUP_TRANSFORMER } from './MockupTransformer';
 
-// Export all the pieces for use elsewhere
 export { MockupNode, $createMockupNode, $isMockupNode } from './MockupNode';
 export type { MockupPayload, SerializedMockupNode } from './MockupNode';
 export { MOCKUP_TRANSFORMER } from './MockupTransformer';
@@ -58,46 +57,34 @@ export async function generateMockupScreenshot(
     throw new Error('MockupPlatformService not available');
   }
 
-  const { getMockupPlatformService } = await import('./MockupPlatformService');
   const service = getMockupPlatformService();
 
-  // Extract mockup filename to use for screenshot name
-  const mockupFilename = mockupPath
-    .split('/')
-    .pop()
-    ?.replace('.mockup.html', '') || 'mockup';
+  const mockupFilename =
+    mockupPath.split('/').pop()?.replace('.mockup.html', '') || 'mockup';
 
-  // Determine the document directory and assets folder
   const documentDir = documentPath.substring(0, documentPath.lastIndexOf('/'));
   const assetsDir = `${documentDir}/assets`;
   const screenshotFilename = `${mockupFilename}.mockup.png`;
   const absoluteScreenshotPath = `${assetsDir}/${screenshotFilename}`;
 
-  // Capture the screenshot
   await service.captureScreenshot(mockupPath, absoluteScreenshotPath);
 
-  // Return relative path from document directory
   const screenshotPath = `assets/${screenshotFilename}`;
-
   return { screenshotPath, absoluteScreenshotPath };
 }
 
 /**
- * MockupPlugin component - registers the INSERT_MOCKUP_COMMAND handler.
- *
- * This handles inserting MockupNodes when the command is dispatched with a
- * valid payload. The component picker integration (dynamic mockup selection
- * menu) is handled in the platform-specific registration code.
+ * Lexical extension that registers `MockupNode` and the
+ * `INSERT_MOCKUP_COMMAND` handler. Pass to `setExtensionLexicalExtension`
+ * from the platform-side registrar.
  */
-export default function MockupPlugin(): null {
-  const [editor] = useLexicalComposerContext();
-
-  useEffect(() => {
-    return editor.registerCommand<MockupPayload | undefined>(
+export const MockupLexicalExtension = defineExtension({
+  name: '@nimbalyst/mockup',
+  nodes: [MockupNode],
+  register: (editor) =>
+    editor.registerCommand<MockupPayload | undefined>(
       INSERT_MOCKUP_COMMAND,
       (payload) => {
-        // If payload has mockupPath, insert the mockup node
-        // screenshotPath can be empty (will show loading state)
         if (payload?.mockupPath) {
           const mockupNode = $createMockupNode({
             ...payload,
@@ -106,20 +93,14 @@ export default function MockupPlugin(): null {
           $insertNodes([mockupNode]);
           return true;
         }
-
-        // No payload - show the mockup picker
         if (hasMockupPlatformService()) {
           const service = getMockupPlatformService();
           service.showMockupPicker();
         } else {
-          console.warn('[MockupPlugin] Platform service not available');
+          console.warn('[MockupExtension] Platform service not available');
         }
-
         return true;
       },
       COMMAND_PRIORITY_EDITOR,
-    );
-  }, [editor]);
-
-  return null;
-}
+    ),
+});

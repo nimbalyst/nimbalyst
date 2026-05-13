@@ -18,6 +18,18 @@ export interface AskUserQuestionResponse {
 }
 
 // ============================================================
+// RequestUserInput Types
+// ============================================================
+
+import type { RequestUserInputAnswer } from '../../../../ai/server/providers/shared/requestUserInputTypes';
+export type { RequestUserInputAnswer };
+
+export interface RequestUserInputResponse {
+  answers: Record<string, RequestUserInputAnswer>;
+  cancelled?: boolean;
+}
+
+// ============================================================
 // ExitPlanMode Types
 // ============================================================
 
@@ -73,6 +85,20 @@ export interface InteractiveWidgetHost {
    * Cancel an AskUserQuestion tool call
    */
   askUserQuestionCancel(questionId: string): Promise<void>;
+
+  // ============================================================
+  // RequestUserInput Operations
+  // ============================================================
+
+  /**
+   * Submit answers to a RequestUserInput tool call. Answers is keyed by field.id.
+   */
+  requestUserInputSubmit(promptId: string, answers: Record<string, RequestUserInputAnswer>): Promise<void>;
+
+  /**
+   * Cancel a RequestUserInput tool call.
+   */
+  requestUserInputCancel(promptId: string): Promise<void>;
 
   // ============================================================
   // ExitPlanMode Operations
@@ -208,6 +234,13 @@ export const noopInteractiveWidgetHost: InteractiveWidgetHost = {
   },
   askUserQuestionCancel: async () => {
     console.warn('[InteractiveWidgetHost] No host available for askUserQuestionCancel');
+  },
+
+  requestUserInputSubmit: async () => {
+    console.warn('[InteractiveWidgetHost] No host available for requestUserInputSubmit');
+  },
+  requestUserInputCancel: async () => {
+    console.warn('[InteractiveWidgetHost] No host available for requestUserInputCancel');
   },
 
   exitPlanModeApprove: async () => {

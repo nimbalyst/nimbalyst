@@ -48,17 +48,17 @@ export function MergeConflictDialog({
   return (
     <div className="merge-conflict-dialog-overlay nim-overlay" onClick={onCancel}>
       <div
-        className="merge-conflict-dialog w-full max-w-[520px] rounded-xl outline-none bg-[var(--nim-bg)] shadow-[0_8px_32px_rgba(0,0,0,0.24)]"
+        className="merge-conflict-dialog w-full max-w-[760px] max-h-[calc(100vh-2rem)] mx-4 flex flex-col rounded-xl outline-none bg-[var(--nim-bg)] shadow-[0_8px_32px_rgba(0,0,0,0.24)]"
         ref={dialogRef}
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="merge-conflict-dialog-header flex items-center gap-3 px-6 pt-5 pb-4 text-[var(--nim-text)]">
+        <div className="merge-conflict-dialog-header shrink-0 flex items-center gap-3 px-6 pt-5 pb-4 text-[var(--nim-text)]">
           <MaterialSymbol icon="warning" size={24} className="merge-conflict-dialog-icon-warning text-[var(--nim-warning)]" />
           <h2 className="m-0 text-lg font-semibold">Merge Conflict Detected</h2>
         </div>
 
-        <div className="merge-conflict-dialog-body px-6 pb-5">
+        <div className="merge-conflict-dialog-body flex-1 min-h-0 overflow-y-auto px-6 pb-5">
           <p className="m-0 mb-4 text-sm leading-relaxed text-[var(--nim-text-muted)]">
             Cannot merge worktree to <strong className="text-[var(--nim-text)] font-medium">{projectName}</strong> because there are unresolved merge conflicts in the main repository.
           </p>
@@ -108,7 +108,7 @@ export function MergeConflictDialog({
           </div>
         </div>
 
-        <div className="merge-conflict-dialog-footer flex justify-end gap-2 px-6 pt-4 pb-5 border-t border-[var(--nim-border)]">
+        <div className="merge-conflict-dialog-footer shrink-0 flex justify-end gap-2 px-6 pt-4 pb-5 border-t border-[var(--nim-border)]">
           <button
             type="button"
             className="merge-conflict-dialog-button merge-conflict-dialog-button--secondary nim-btn-secondary"

@@ -149,6 +149,27 @@ function getVendoredRipgrepDirs(): string[] {
   return dirs;
 }
 
+function findExecutableInPathEntries(
+  executableNames: string[],
+  pathValue: string
+): string | undefined {
+  const entries = pathValue
+    .split(path.delimiter)
+    .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1'))
+    .filter(Boolean);
+
+  for (const entry of entries) {
+    for (const executableName of executableNames) {
+      const candidate = path.join(entry, executableName);
+      if (fsSync.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return undefined;
+}
+
 interface InstallationStatus {
   installed: boolean;
   version?: string;
@@ -433,6 +454,116 @@ export class CLIManager {
     return { isPlatformWindows: true, gitVersion };
   }
 
+  private getCodexExecutableCandidates(enhancedPath: string): string[] {
+    const candidates = new Set<string>();
+    const addCandidate = (candidate: string | undefined) => {
+      if (!candidate) return;
+      candidates.add(candidate);
+    };
+
+    if (process.platform === 'win32') {
+      addCandidate(path.join(process.env.APPDATA || '', 'npm', 'codex.cmd'));
+      addCandidate(path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'codex.cmd'));
+      addCandidate(path.join(os.homedir(), '.openai', 'codex', 'bin', 'codex.exe'));
+      addCandidate(path.join(os.homedir(), '.openai', 'codex', 'bin', 'codex.cmd'));
+      addCandidate(findExecutableInWindowsPath(['codex.cmd', 'codex.exe'], enhancedPath) || undefined);
+      addCandidate('codex');
+      return Array.from(candidates);
+    }
+
+    addCandidate(path.join(os.homedir(), '.openai', 'codex', 'bin', 'codex'));
+    addCandidate(path.join(os.homedir(), '.local', 'bin', 'codex'));
+    addCandidate(path.join(os.homedir(), '.npm-global', 'bin', 'codex'));
+    addCandidate('/usr/local/bin/codex');
+    addCandidate('/opt/homebrew/bin/codex');
+    addCandidate(findExecutableInPathEntries(['codex'], enhancedPath));
+    addCandidate('codex');
+    return Array.from(candidates);
+  }
+
+  private async checkVersionedExecutableInstallation(
+    tool: CLITool,
+    executableCandidates: string[],
+    enhancedPath: string
+  ): Promise<InstallationStatus> {
+    for (const executablePath of executableCandidates) {
+      try {
+        const status = await new Promise<InstallationStatus>((resolve) => {
+          const checkProcess = executablePath === CLI_COMMANDS[tool]
+            ? spawn(executablePath, ['--version'], {
+                shell: true,
+                env: { ...process.env, PATH: enhancedPath },
+                stdio: ['ignore', 'pipe', 'pipe'],
+              })
+            : spawn(executablePath, ['--version'], {
+                shell: false,
+                env: { ...process.env, PATH: enhancedPath },
+                stdio: ['ignore', 'pipe', 'pipe'],
+              });
+
+          let output = '';
+          let errorOutput = '';
+          let settled = false;
+          const finish = async (result: InstallationStatus) => {
+            if (settled) return;
+            settled = true;
+            resolve(result);
+          };
+
+          checkProcess.stdout?.on('data', (data) => {
+            output += data.toString();
+          });
+
+          checkProcess.stderr?.on('data', (data) => {
+            errorOutput += data.toString();
+          });
+
+          checkProcess.on('close', async (code) => {
+            const combinedOutput = `${output}\n${errorOutput}`.trim();
+            if (code === 0 && combinedOutput) {
+              const versionMatch = combinedOutput.match(/(\d+\.\d+\.\d+)/);
+              const currentVersion = versionMatch ? versionMatch[1] : 'unknown';
+              const latestVersion = await this.getLatestVersion(tool);
+              const updateAvailable = !!(
+                latestVersion &&
+                currentVersion !== 'unknown' &&
+                this.isNewerVersion(latestVersion, currentVersion)
+              );
+
+              await finish({
+                installed: true,
+                version: currentVersion,
+                updateAvailable,
+                path: executablePath,
+                latestVersion: updateAvailable ? latestVersion : undefined,
+              });
+              return;
+            }
+
+            await finish({ installed: false });
+          });
+
+          checkProcess.on('error', async () => {
+            await finish({ installed: false });
+          });
+
+          setTimeout(() => {
+            checkProcess.kill();
+            void finish({ installed: false });
+          }, 5000);
+        });
+
+        if (status.installed) {
+          return status;
+        }
+      } catch {
+        // Continue checking other candidates
+      }
+    }
+
+    return { installed: false };
+  }
+
   async checkInstallation(tool: CLITool): Promise<InstallationStatus> {
     const command = CLI_COMMANDS[tool];
 
@@ -506,66 +637,11 @@ export class CLIManager {
 
     // Special handling for openai-codex - check common installation paths
     if (tool === 'openai-codex') {
-      const codexPaths = [
-        path.join(os.homedir(), '.nvm', 'versions', 'node', 'v22.15.1', 'bin', 'codex'),
-        path.join(os.homedir(), '.openai', 'codex', 'bin', 'codex'),
-        path.join(os.homedir(), '.local', 'bin', 'codex'),
-        '/usr/local/bin/codex',
-        '/opt/homebrew/bin/codex'
-      ];
-
-      for (const codexPath of codexPaths) {
-        try {
-          await fs.access(codexPath, fs.constants.X_OK);
-          // Found it, get version
-          const status = await new Promise<InstallationStatus>((resolve) => {
-            const checkProcess = spawn(codexPath, ['--version'], {
-              shell: false,
-              stdio: ['ignore', 'pipe', 'pipe']
-            });
-
-            let output = '';
-            checkProcess.stdout?.on('data', (data) => {
-              output += data.toString();
-            });
-
-            checkProcess.on('close', async (code) => {
-              if (code === 0 && output) {
-                const versionMatch = output.match(/(\d+\.\d+\.\d+)/);
-                const currentVersion = versionMatch ? versionMatch[1] : 'unknown';
-
-                // Check for latest version
-                const latestVersion = await this.getLatestVersion(tool);
-                const updateAvailable = !!(latestVersion && currentVersion !== 'unknown' &&
-                                      this.isNewerVersion(latestVersion, currentVersion));
-
-                resolve({
-                  installed: true,
-                  version: currentVersion,
-                  updateAvailable,
-                  path: codexPath,
-                  latestVersion: updateAvailable ? latestVersion : undefined
-                });
-              } else {
-                resolve({ installed: false });
-              }
-            });
-
-            checkProcess.on('error', () => {
-              resolve({ installed: false });
-            });
-
-            setTimeout(() => {
-              checkProcess.kill();
-              resolve({ installed: false });
-            }, 5000);
-          });
-
-          return status;
-        } catch (e) {
-          // Continue checking other paths
-        }
-      }
+      return this.checkVersionedExecutableInstallation(
+        tool,
+        this.getCodexExecutableCandidates(this.getEnhancedPath()),
+        this.getEnhancedPath()
+      );
     }
 
     // Default check for other tools

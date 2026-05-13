@@ -861,3 +861,125 @@ describe('TrackerSyncProvider delete', () => {
     expect(deleteMsg).toBeDefined();
   });
 });
+
+// ============================================================================
+// reconnectNow / wake-from-sleep recovery
+// ============================================================================
+
+describe('TrackerSyncProvider reconnectNow', () => {
+  it('forces a fresh socket even when the existing one reports OPEN (zombie wake-from-sleep case)', async () => {
+    const { provider, getWs } = await createTestProvider();
+
+    await provider.connect();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Reach 'connected' so the old code path's early-return condition is true.
+    const ws1 = getWs();
+    ws1.simulateMessage({
+      type: 'trackerSyncResponse',
+      items: [],
+      deletedItemIds: [],
+      sequence: 0,
+      hasMore: false,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(provider.getStatus()).toBe('connected');
+    expect(ws1.readyState).toBe(MockWebSocket.OPEN);
+
+    // Sanity: only one socket exists so far.
+    expect(mockWsInstances).toHaveLength(1);
+
+    // Wake-from-sleep: WS still reports OPEN but transport is dead.
+    // reconnectNow() must tear it down and create a fresh socket anyway.
+    provider.reconnectNow();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mockWsInstances).toHaveLength(2);
+    const ws2 = mockWsInstances[1];
+    expect(ws2).not.toBe(ws1);
+    expect(ws1.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
+  it('ignores a stale close from a torn-down socket and does not clobber the new socket', async () => {
+    const { provider, getWs } = await createTestProvider();
+
+    await provider.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    const ws1 = getWs();
+    ws1.simulateMessage({
+      type: 'trackerSyncResponse',
+      items: [],
+      deletedItemIds: [],
+      sequence: 0,
+      hasMore: false,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Force a fresh socket. The old ws1's close listener is still attached --
+    // its 'close' event fires synchronously inside .close() in our mock.
+    provider.reconnectNow();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mockWsInstances).toHaveLength(2);
+    const ws2 = mockWsInstances[1];
+
+    // Now simulate a delayed 'close' from the OLD socket arriving after we've
+    // already replaced it. Without the identity check this would call
+    // handleDisconnect() and null out the new socket.
+    ws1.simulateClose(1006, 'transport dead');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // ws2 must remain wired up: a sync response on it should still be processed.
+    ws2.simulateMessage({
+      type: 'trackerSyncResponse',
+      items: [],
+      deletedItemIds: [],
+      sequence: 0,
+      hasMore: false,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(provider.getStatus()).toBe('connected');
+    // No third socket should have been created from a phantom scheduleReconnect.
+    expect(mockWsInstances).toHaveLength(2);
+  });
+
+  it('skips when a previous reconnect handshake is still in CONNECTING', async () => {
+    // Use a sync buildUrl so connect() runs synchronously up to creating the
+    // WebSocket. This lets us observe the CONNECTING state before the mock's
+    // auto-open microtask fires.
+    const key = await generateTestKey();
+    const provider = new TrackerSyncProvider({
+      serverUrl: 'ws://localhost:9999',
+      getJwt: async () => 'test-jwt-token',
+      buildUrl: () => 'ws://localhost:9999/sync/room?token=t',
+      orgId: 'test-org',
+      encryptionKey: key,
+      userId: 'test-user',
+      projectId: 'test-project',
+      onStatusChange: () => {},
+      onItemUpserted: () => {},
+      onItemDeleted: () => {},
+    });
+
+    // Don't await -- we want to observe state mid-handshake, before the
+    // mock's queued open microtask runs.
+    void provider.connect();
+    expect(mockWsInstances).toHaveLength(1);
+    expect(mockWsInstances[0].readyState).toBe(MockWebSocket.CONNECTING);
+
+    // Burst of reconnectNow calls during the post-wake window. The fresh
+    // socket is still mid-handshake; tearing it down would just churn.
+    provider.reconnectNow();
+    provider.reconnectNow();
+    provider.reconnectNow();
+
+    // No additional sockets should have been created.
+    expect(mockWsInstances).toHaveLength(1);
+    expect(mockWsInstances[0].readyState).toBe(MockWebSocket.CONNECTING);
+
+    // Once the handshake completes, sync proceeds normally.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockWsInstances[0].readyState).toBe(MockWebSocket.OPEN);
+  });
+});

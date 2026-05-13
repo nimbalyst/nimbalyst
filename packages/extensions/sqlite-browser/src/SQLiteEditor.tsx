@@ -17,6 +17,18 @@ export function SQLiteEditor({ host }: EditorHostProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Reactive read-only state. The .db file is loaded as an in-memory
+  // sql.js handle and is never written back regardless, but the flag
+  // suppresses the Query pane (SQL editor + run button) so inline embeds
+  // read as a clean table viewer.
+  const [readOnly, setReadOnly] = useState<boolean>(host.readOnly ?? false);
+  useEffect(() => {
+    setReadOnly(host.readOnly ?? false);
+    return host.onReadOnlyChanged?.((next) => {
+      setReadOnly(next);
+    });
+  }, [host]);
+
   // Ref for cleanup (db state may be stale in unmount effect)
   const dbRef = useRef<Database | null>(null);
 
@@ -83,6 +95,7 @@ export function SQLiteEditor({ host }: EditorHostProps) {
       error={error}
       showHeader={false}
       storage={host.storage}
+      readOnly={readOnly}
     />
   );
 }

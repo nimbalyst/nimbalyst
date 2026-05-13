@@ -8,6 +8,11 @@ import { BrowserWindow } from 'electron';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import type { SessionStateEvent } from '@nimbalyst/runtime/ai/server/types/SessionState';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
+import { database } from '../database/PGLiteDatabaseWorker';
+import {
+  resolveOwnedWorkspacePath,
+  sessionEventMatchesWorkspace,
+} from '../../shared/sessionWorkspaceRouting';
 
 // Track if handlers are registered to prevent double registration
 let handlersRegistered = false;
@@ -17,6 +22,29 @@ const windowSubscriptions = new Map<number, () => void>();
 
 // Track sync subscription cleanup
 let syncSubscriptionCleanup: (() => void) | null = null;
+const sessionWorkspaceCache = new Map<string, string | null>();
+
+async function getCanonicalWorkspacePathForSession(sessionId: string): Promise<string | null> {
+  if (sessionWorkspaceCache.has(sessionId)) {
+    return sessionWorkspaceCache.get(sessionId) ?? null;
+  }
+
+  try {
+    const { rows } = await database.query<{ workspace_id: string | null }>(
+      `SELECT workspace_id
+       FROM ai_sessions
+       WHERE id = $1
+       LIMIT 1`,
+      [sessionId]
+    );
+    const workspacePath = rows[0]?.workspace_id ?? null;
+    sessionWorkspaceCache.set(sessionId, workspacePath);
+    return workspacePath;
+  } catch (error) {
+    console.error('[SessionStateHandlers] Failed to resolve canonical workspace path:', error);
+    return null;
+  }
+}
 
 export async function registerSessionStateHandlers() {
   if (handlersRegistered) {
@@ -66,7 +94,7 @@ export async function registerSessionStateHandlers() {
   });
 
   // Subscribe to state changes
-  safeHandle('ai-session-state:subscribe', async (event, workspacePath?: string) => {
+  safeHandle('ai-session-state:subscribe', async (event, workspacePath?: string | string[]) => {
     try {
       const window = BrowserWindow.fromWebContents(event.sender);
       if (!window) {
@@ -81,20 +109,58 @@ export async function registerSessionStateHandlers() {
         existingUnsubscribe();
       }
 
+      // Normalize the filter to a Set of allowed workspace paths. Multi-project
+      // rail windows host several projects at once and must keep receiving
+      // lifecycle events for each one, otherwise the UI gets stuck on
+      // "Thinking…" when a session in an inactive project completes.
+      const allowedPaths = Array.isArray(workspacePath)
+        ? new Set(workspacePath.filter((p): p is string => typeof p === 'string' && p.length > 0))
+        : workspacePath
+          ? new Set([workspacePath])
+          : null;
+
       // Create new subscription
       const unsubscribe = stateManager.subscribe((stateEvent: SessionStateEvent) => {
-        // Workspace-scoped subscription: only send events for the window's workspace.
-        // This prevents foreign session lifecycle events from triggering cross-workspace reloads.
-        if (workspacePath) {
-          if (!stateEvent.workspacePath || stateEvent.workspacePath !== workspacePath) {
-            return;
-          }
-        }
+        void (async () => {
+          let sessionWorkspacePath: string | null = null;
 
-        // Send event to renderer
-        if (!window.isDestroyed()) {
-          window.webContents.send('ai-session-state:event', stateEvent);
-        }
+          // Workspace-scoped subscription: only send events for workspaces this
+          // window cares about. Pass an empty/undefined filter to receive events
+          // for all workspaces. Multi-project rail windows host several projects
+          // at once, so `allowedPaths` may contain multiple entries; an event
+          // matches if it routes to ANY of them. Worktree sessions emit events
+          // from the worktree path while their canonical workspace_id is the
+          // parent project, so we resolve the session's canonical workspace
+          // first and let `sessionEventMatchesWorkspace` consider both.
+          if (allowedPaths) {
+            sessionWorkspacePath = await getCanonicalWorkspacePathForSession(stateEvent.sessionId);
+            let matched = false;
+            for (const subscribed of allowedPaths) {
+              if (sessionEventMatchesWorkspace({
+                subscribedWorkspacePath: subscribed,
+                eventWorkspacePath: stateEvent.workspacePath,
+                sessionWorkspacePath,
+              })) {
+                matched = true;
+                break;
+              }
+            }
+            if (!matched) {
+              return;
+            }
+          }
+
+          // Send event to renderer with the canonical workspace path when known.
+          if (!window.isDestroyed()) {
+            window.webContents.send('ai-session-state:event', {
+              ...stateEvent,
+              workspacePath: resolveOwnedWorkspacePath({
+                eventWorkspacePath: stateEvent.workspacePath,
+                sessionWorkspacePath,
+              }) ?? stateEvent.workspacePath,
+            });
+          }
+        })();
       });
 
       // Store unsubscribe function

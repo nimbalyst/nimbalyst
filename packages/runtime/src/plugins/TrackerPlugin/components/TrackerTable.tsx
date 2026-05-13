@@ -11,7 +11,7 @@ import type {
 } from '../../../core/DocumentService';
 import type { TrackerRecord } from '../../../core/TrackerRecord';
 import { trackerItemsByTypeAtom, trackerDataLoadedAtom } from '../trackerDataAtoms';
-import { EXTENSION_OWNED_KEYS } from '../documentHeader/frontmatterUtils';
+import { EXTENSION_OWNED_KEYS, LEGACY_KEY_TO_TYPE } from '../documentHeader/frontmatterUtils';
 import { getRecordTitle, getRecordStatus, getRecordPriority, getFieldByRole, resolveRoleFieldName } from '../trackerRecordAccessors';
 import { globalRegistry, parseDate } from '../models';
 import {usePostHog} from "posthog-js/react";
@@ -325,11 +325,10 @@ function formatObjectForStringField(value: Record<string, any>): string {
  *
  * Mirrors `detectTrackerFromFrontmatter` in `frontmatterUtils.ts`: extension-owned
  * keys (e.g. `automationStatus` for the automations extension) are checked before
- * `trackerStatus` so that documents written by an extension's flow without a
- * sibling `trackerStatus` block still surface in the Tracker view. Without this
- * mirror, automations created via the `/automation` command stayed invisible in
- * the Tracker even though `detectTrackerFromFrontmatter` already classified them
- * correctly elsewhere. See nimbalyst#67.
+ * `trackerStatus`, and legacy per-type keys (`planStatus`, `decisionStatus`, etc.)
+ * remain supported as a fallback. Without keeping this logic aligned, the Tracker
+ * view silently drops documents that the rest of the system still classifies as
+ * full-document tracker items. See nimbalyst#67 and nimbalyst#481.
  */
 export function resolveTrackerFrontmatter(frontmatter: Record<string, any> | undefined, trackerType: string): Record<string, any> | null {
   if (!frontmatter) return null;
@@ -352,6 +351,17 @@ export function resolveTrackerFrontmatter(frontmatter: Record<string, any> | und
       // Top-level fields are canonical, trackerStatus holds only `type`
       const { trackerStatus: _, ...topLevel } = frontmatter;
       return { ...trackerData, ...topLevel };
+    }
+  }
+
+  // Legacy fallback: older plan/decision/etc. docs still store their fields
+  // inside per-type nested keys instead of canonical top-level trackerStatus.
+  for (const [legacyKey, legacyType] of Object.entries(LEGACY_KEY_TO_TYPE)) {
+    if (legacyType !== trackerType) continue;
+    if (frontmatter[legacyKey] && typeof frontmatter[legacyKey] === 'object') {
+      const legacyData = frontmatter[legacyKey] as Record<string, any>;
+      const { [legacyKey]: _, trackerStatus: _ts, ...topLevel } = frontmatter;
+      return { ...legacyData, ...topLevel };
     }
   }
 

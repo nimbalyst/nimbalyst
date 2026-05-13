@@ -226,7 +226,7 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
                 createdAt: msg.createdAt,
               });
             } else if (block.type === 'tool_use') {
-              const toolDescriptors = this.parseToolUse(
+              const toolDescriptors = await this.parseToolUse(
                 msg,
                 block,
                 context,
@@ -328,12 +328,12 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
   // Tool handling helpers
   // ---------------------------------------------------------------------------
 
-  private parseToolUse(
+  private async parseToolUse(
     msg: RawMessage,
     block: any,
     context: ParseContext,
     parentToolUseId?: string,
-  ): CanonicalEventDescriptor[] {
+  ): Promise<CanonicalEventDescriptor[]> {
     const descriptors: CanonicalEventDescriptor[] = [];
     const toolName = block.name ?? 'unknown';
     const toolId: string | undefined = block.id;
@@ -385,6 +385,16 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
 
     // Deduplicate: SDK sends streaming + accumulated chunks with the same tool_use
     if (toolId && context.hasToolCall(toolId)) return [];
+
+    // Cross-batch dedup: a prior batch (or a synthetic nimbalyst_tool_use row
+    // written by an MCP handler such as developer_git_commit_proposal) may
+    // already have produced a canonical event for this provider tool-call id.
+    // Without this check the SDK's later assistant chunk for the same tool_use
+    // would create a duplicate. Parity with `parseNimbalystToolUse`.
+    if (toolId) {
+      const existing = await context.findByProviderToolCallId(toolId);
+      if (existing) return [];
+    }
 
     // Resolve parent subagent for nested tool calls
     const resolvedParent = parentToolUseId ?? block.parent_tool_use_id;

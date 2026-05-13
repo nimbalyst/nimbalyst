@@ -344,7 +344,13 @@ export class ToolExecutor extends EventEmitter {
         if (typeof tool.handler === 'function') {
           logger.ai.info(`[ToolExecutor] Executing tool with handler: ${name}`);
           try {
-            result = await tool.handler(args);
+            // Pass the executor's workspaceId as context so handlers that
+            // resolve workspace-scoped services (e.g. fileTools' search /
+            // list / read) hit the per-path FileSystemService registry
+            // instead of the runtime-global singleton — without this, an
+            // inactive rail project's session would route through the
+            // currently-visible project's service.
+            result = await tool.handler(args, { workspacePath: this.workspaceId });
           } catch (error) {
             logger.ai.error(`[ToolExecutor] Tool ${name} execution failed:`, error);
             throw error;

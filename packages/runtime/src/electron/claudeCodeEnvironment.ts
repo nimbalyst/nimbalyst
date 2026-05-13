@@ -3,6 +3,74 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 
+function isAsarPackagedPath(candidate: string): boolean {
+  const normalized = candidate.replace(/\\/g, '/');
+  return normalized.includes('/app.asar/') && !normalized.includes('/app.asar.unpacked/');
+}
+
+function getClaudeExecutableNameForPlatform(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? 'claude.exe' : 'claude';
+}
+
+function splitPathEntries(pathValue: string | undefined): string[] {
+  if (!pathValue) return [];
+  return pathValue
+    .split(path.delimiter)
+    .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1'))
+    .filter(Boolean);
+}
+
+function findExecutableInPathEntries(
+  executableNames: string[],
+  pathValue: string | undefined
+): string | undefined {
+  for (const entry of splitPathEntries(pathValue)) {
+    for (const executableName of executableNames) {
+      const candidate = path.join(entry, executableName);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function getSystemClaudeExecutableCandidates(pathValue?: string): string[] {
+  const platform = process.platform;
+  const homeDir = os.homedir();
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  const addCandidate = (candidate: string | undefined) => {
+    if (!candidate) return;
+    const normalized = path.normalize(candidate);
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    candidates.push(candidate);
+  };
+
+  if (platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(homeDir, 'AppData', 'Roaming');
+    const executableNames = ['claude.cmd', 'claude.exe'];
+    addCandidate(path.join(homeDir, '.local', 'bin', 'claude.exe'));
+    addCandidate(path.join(homeDir, '.local', 'bin', 'claude.cmd'));
+    addCandidate(path.join(appData, 'npm', 'claude.cmd'));
+    addCandidate(path.join(homeDir, 'AppData', 'Roaming', 'npm', 'claude.cmd'));
+    addCandidate(findExecutableInPathEntries(executableNames, pathValue ?? process.env.PATH));
+    return candidates;
+  }
+
+  const executableName = getClaudeExecutableNameForPlatform(platform);
+  addCandidate(path.join(homeDir, '.local', 'bin', executableName));
+  addCandidate(path.join(homeDir, '.npm-global', 'bin', executableName));
+  addCandidate(path.join(homeDir, 'bin', executableName));
+  addCandidate('/usr/local/bin/claude');
+  addCandidate('/opt/homebrew/bin/claude');
+  addCandidate('/usr/bin/claude');
+  addCandidate(findExecutableInPathEntries([executableName], pathValue ?? process.env.PATH));
+  return candidates;
+}
+
 /**
  * Resolve the path to the SDK's native binary for the current platform.
  *
@@ -15,7 +83,7 @@ import os from 'os';
 export function resolveNativeBinaryPath(): string | undefined {
   const platform = process.platform;
   const arch = process.arch;
-  const binaryName = platform === 'win32' ? 'claude.exe' : 'claude';
+  const binaryName = getClaudeExecutableNameForPlatform(platform);
   const packageName = `@anthropic-ai/claude-agent-sdk-${platform}-${arch}`;
 
   // Dev mode: require.resolve works fine
@@ -54,10 +122,55 @@ export function resolveNativeBinaryPath(): string | undefined {
 
   // Fallback: try require.resolve in case asar-unpacked layout differs
   try {
-    return require.resolve(`${packageName}/${binaryName}`);
+    const resolvedPath = require.resolve(`${packageName}/${binaryName}`);
+    if (isAsarPackagedPath(resolvedPath)) {
+      console.error(`[resolveNativeBinaryPath] Ignoring non-executable asar path from require.resolve: ${resolvedPath}`);
+      return undefined;
+    }
+    const resourcesRoot = path.dirname(appPath);
+    const normalizedResolvedPath = path.normalize(resolvedPath);
+    const normalizedResourcesRoot = path.normalize(resourcesRoot);
+    if (!normalizedResolvedPath.startsWith(`${normalizedResourcesRoot}${path.sep}`)) {
+      console.error(`[resolveNativeBinaryPath] Ignoring packaged fallback outside resources root: ${resolvedPath}`);
+      return undefined;
+    }
+    return resolvedPath;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Resolve a Claude executable path that is safe to hand to the SDK.
+ *
+ * By default this only returns the bundled unpacked native binary.
+ * Pass `allowSystemFallback: true` only for login/status-style flows where
+ * using a standalone Claude installation is acceptable.
+ *
+ * Agent sessions must not silently fall back to a standalone Claude CLI:
+ * prior NIM-838 investigation showed that packaged builds could then lose
+ * `--resume` semantics and break multi-turn sessions.
+ */
+export function resolveClaudeCodeExecutablePath(options?: {
+  pathValue?: string;
+  allowSystemFallback?: boolean;
+}): string | undefined {
+  const bundledPath = resolveNativeBinaryPath();
+  if (bundledPath) {
+    return bundledPath;
+  }
+
+  if (!options?.allowSystemFallback) {
+    return undefined;
+  }
+
+  for (const candidate of getSystemClaudeExecutableCandidates(options?.pathValue)) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
 }
 
 function getCandidateNodePaths(isPackaged: boolean): string[] {

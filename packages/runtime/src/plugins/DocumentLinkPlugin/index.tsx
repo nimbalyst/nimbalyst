@@ -3,6 +3,7 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import {
   $getSelection,
   $isRangeSelection,
+  $createParagraphNode,
   TextNode,
   $createTextNode,
   isDOMNode
@@ -13,6 +14,8 @@ import documentLinkStyles from './DocumentLinkPlugin.css?inline';
 import { TypeaheadMenuOption } from "../../editor";
 import { fuzzyFilterDocuments } from '../../utils/fuzzyMatch';
 import { MaterialSymbol } from "../../ui";
+import { $createEmbeddedFileNode } from '../../editor/plugins/EmbedPlugin/EmbeddedFileNode';
+import { isEmbeddableUrl } from '../../editor/plugins/EmbedPlugin/embeddableExtensions';
 
 const DOCUMENT_REFERENCE_STYLE_ID = 'document-reference-styles';
 
@@ -223,6 +226,34 @@ export function DocumentLinkPlugin({
       const docId = option.id.replace('doc-', '');
       const doc = documents.find(d => d.id === docId);
       if (!doc) return;
+
+      // Markdown link paths always use forward slashes regardless of OS.
+      const linkPath = doc.path.replace(/\\/g, '/');
+
+      // Embeddable files (e.g. `.excalidraw`) get inserted as block-level
+      // EmbeddedFileNodes so they render inline immediately. Other files
+      // use the existing inline DocumentReferenceNode.
+      if (isEmbeddableUrl(linkPath)) {
+        const embedNode = $createEmbeddedFileNode({
+          src: linkPath,
+          label: doc.name,
+          attrs: {},
+        });
+        // EmbeddedFileNode is block-level. Insert as a sibling of the
+        // current top-level block, then add a trailing paragraph so the
+        // caret has somewhere to land. If the original block is now empty
+        // (typeahead stripped the trigger and the line had nothing else),
+        // drop it so we don't leave a blank line above the embed.
+        const block = selection.anchor.getNode().getTopLevelElementOrThrow();
+        block.insertAfter(embedNode);
+        const trailing = $createParagraphNode();
+        embedNode.insertAfter(trailing);
+        trailing.select();
+        if (block.getChildrenSize() === 0) {
+          block.remove();
+        }
+        return;
+      }
 
       const replacementNode = $createDocumentReferenceNode(
         doc.id,

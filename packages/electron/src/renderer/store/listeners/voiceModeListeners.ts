@@ -281,7 +281,66 @@ function formatPromptForVoice(prompt: { promptType: string; promptId: string; da
     return `Commit proposal:${fileSummary} Commit message: "${titleLine}". Say "approve" to commit or "reject" to cancel.`;
   }
 
+  if (prompt.promptType === 'request_user_input_request') {
+    const args = prompt.data?.args || {};
+    const fields = Array.isArray(args.fields) ? args.fields : [];
+    const parts: string[] = [];
+    if (args.title) parts.push(args.title);
+    if (args.intro) parts.push(args.intro);
+    for (const f of fields) {
+      switch (f.type) {
+        case 'multiSelect': {
+          const items = (f.items || []).map((i: any) => i.title).join(', ');
+          parts.push(`Pick from: ${items}`);
+          break;
+        }
+        case 'singleSelect': {
+          const opts = (f.options || []).map((o: any) => o.label).join(', ');
+          parts.push(`Choose one: ${opts}`);
+          break;
+        }
+        case 'reorder': {
+          const items = (f.items || []).map((i: any) => i.title).join(', ');
+          parts.push(`Confirm or reorder: ${items}`);
+          break;
+        }
+        case 'editText':
+          parts.push(f.label || 'Edit text');
+          break;
+        case 'confirm':
+          parts.push(`Yes or no: ${f.label}`);
+          break;
+      }
+    }
+    return parts.join('. ') || 'The coding agent needs your input.';
+  }
+
   return 'The coding agent needs your input.';
+}
+
+/**
+ * Compute whether the voice agent can handle this prompt or should defer to
+ * the screen. Computed in the renderer (NOT trusted from the agent) to avoid
+ * a confused agent forcing voice into reading out a 50-item drag-to-order.
+ *
+ * Rules:
+ *  - reorder fields > 6 items defer
+ *  - editText with initialText > 240 chars defer
+ *  - everything else: voice-friendly
+ */
+function computeVoiceFriendly(prompt: { promptType: string; data: any }): boolean {
+  if (prompt.promptType !== 'request_user_input_request') return true;
+  const args = prompt.data?.args || {};
+  const fields = Array.isArray(args.fields) ? args.fields : [];
+  for (const f of fields) {
+    if (f.type === 'reorder' && Array.isArray(f.items) && f.items.length > 6) {
+      return false;
+    }
+    if (f.type === 'editText' && typeof f.initialText === 'string' && f.initialText.length > 240) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -803,6 +862,24 @@ export function initVoiceModeListeners(): () => void {
         return;
       }
 
+      // For RequestUserInput: the voice agent emits an answer keyed by
+      // field id. Persist via messages:respond-to-prompt directly so the
+      // response shape matches the durable contract (answers + cancelled).
+      if (payload.promptType === 'request_user_input_request') {
+        const answers = response?.answers && typeof response.answers === 'object'
+          ? response.answers
+          : {};
+        const cancelled = response?.cancelled === true;
+        window.electronAPI.invoke('messages:respond-to-prompt', {
+          sessionId: payload.sessionId,
+          promptId: payload.promptId,
+          promptType: 'request_user_input_request',
+          response: { answers, cancelled },
+          respondedBy: 'desktop',
+        });
+        return;
+      }
+
       // Use the respondToPromptAtom to persist and resolve the prompt
       store.set(respondToPromptAtom, {
         sessionId: payload.sessionId,
@@ -940,17 +1017,20 @@ export function initVoiceModeListeners(): () => void {
       // Forward the prompt content to the voice agent so it can speak it
       lastForwardedPromptId = latestPrompt.promptId;
       const description = formatPromptForVoice(latestPrompt);
+      const voiceFriendly = computeVoiceFriendly(latestPrompt);
       // console.log('[voiceModeListeners] Sending interactive-prompt IPC:', {
       //   sessionId: voiceSessionId,
       //   promptId: latestPrompt.promptId,
       //   promptType: latestPrompt.promptType,
       //   descriptionLength: description.length,
+      //   voiceFriendly,
       // });
       window.electronAPI.send('voice-mode:interactive-prompt', {
         sessionId: voiceSessionId,
         promptId: latestPrompt.promptId,
         promptType: latestPrompt.promptType,
         description,
+        voiceFriendly,
       });
     });
   }

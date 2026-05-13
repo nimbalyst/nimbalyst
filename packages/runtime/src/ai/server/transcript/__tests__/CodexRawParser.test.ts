@@ -140,6 +140,29 @@ describe('CodexRawParser', () => {
       });
     });
 
+    it('maps reasoning items to the thinking side-channel', async () => {
+      const parser = new CodexRawParser();
+      const msg = makeRawMessage({
+        content: JSON.stringify({
+          type: 'item.completed',
+          item: {
+            id: 'reasoning-1',
+            type: 'reasoning',
+            text: 'Let me think about this problem.',
+          },
+        }),
+      });
+
+      const descriptors = await parser.parseMessage(msg, makeContext());
+
+      expect(descriptors).toHaveLength(1);
+      expect(descriptors[0]).toMatchObject({
+        type: 'assistant_message',
+        text: '',
+        thinking: 'Let me think about this problem.',
+      });
+    });
+
     it('treats plain text output as assistant_message', async () => {
       const parser = new CodexRawParser();
       const msg = makeRawMessage({

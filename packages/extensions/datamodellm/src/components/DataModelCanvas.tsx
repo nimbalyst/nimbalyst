@@ -33,6 +33,13 @@ interface DataModelCanvasProps {
   theme: string;
   /** When true, hides interactive controls (minimap, zoom, background) for cleaner screenshots */
   screenshotMode?: boolean;
+  /**
+   * When true, the canvas is non-editable: nodes can't be dragged or
+   * connected, edges can't be added/removed, and selection is disabled.
+   * Pan / zoom / scroll still work so the user can navigate the diagram.
+   * Used by inline embeds when in view mode.
+   */
+  readOnly?: boolean;
 }
 
 export interface DataModelCanvasRef {
@@ -40,7 +47,11 @@ export interface DataModelCanvasRef {
 }
 
 export const DataModelCanvas = forwardRef<DataModelCanvasRef, DataModelCanvasProps>(
-  function DataModelCanvas({ store, theme, screenshotMode = false }, ref) {
+  function DataModelCanvas({ store, theme, screenshotMode = false, readOnly = false }, ref) {
+    // `screenshotMode` is the legacy aggressive lock-down (pan/zoom off,
+    // controls hidden, etc.); `readOnly` is the lighter "no edits but
+    // still navigate" mode. Treat editing handlers as gated by either.
+    const noEdits = screenshotMode || readOnly;
   // Use refs to ensure stable references
   const nodeTypesRef = useRef<NodeTypes>({ entity: EntityNode as any });
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -226,12 +237,12 @@ export const DataModelCanvas = forwardRef<DataModelCanvasRef, DataModelCanvasPro
       <ReactFlow
         nodes={localNodes}
         edges={localEdges}
-        onNodesChange={screenshotMode ? undefined : onNodesChange}
-        onEdgesChange={screenshotMode ? undefined : onEdgesChange}
-        onNodeDragStop={screenshotMode ? undefined : onNodeDragStop}
-        onNodeClick={screenshotMode ? undefined : onNodeClick}
-        onEdgeClick={screenshotMode ? undefined : onEdgeClick}
-        onPaneClick={screenshotMode ? undefined : onPaneClick}
+        onNodesChange={noEdits ? undefined : onNodesChange}
+        onEdgesChange={noEdits ? undefined : onEdgesChange}
+        onNodeDragStop={noEdits ? undefined : onNodeDragStop}
+        onNodeClick={noEdits ? undefined : onNodeClick}
+        onEdgeClick={noEdits ? undefined : onEdgeClick}
+        onPaneClick={noEdits ? undefined : onPaneClick}
         onMoveEnd={screenshotMode ? undefined : onMoveEnd}
         nodeTypes={nodeTypesRef.current}
         edgeTypes={edgeTypesRef.current}
@@ -239,11 +250,11 @@ export const DataModelCanvas = forwardRef<DataModelCanvasRef, DataModelCanvasPro
         fitView={entities.length > 0 && (screenshotMode || (state.viewport.x === 0 && state.viewport.y === 0))}
         minZoom={0.1}
         maxZoom={2}
-        snapToGrid={!screenshotMode}
+        snapToGrid={!noEdits}
         snapGrid={[20, 20]}
-        nodesDraggable={!screenshotMode}
-        nodesConnectable={!screenshotMode}
-        elementsSelectable={!screenshotMode}
+        nodesDraggable={!noEdits}
+        nodesConnectable={!noEdits}
+        elementsSelectable={!noEdits}
         panOnDrag={!screenshotMode}
         zoomOnScroll={!screenshotMode}
         zoomOnPinch={!screenshotMode}

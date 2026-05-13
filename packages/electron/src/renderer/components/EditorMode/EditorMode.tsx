@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
-import { useSetAtom, useAtomValue } from 'jotai';
+import { useSetAtom, useAtomValue, useAtom } from 'jotai';
 import type { ConfigTheme } from '@nimbalyst/runtime';
 import { useTabsActions, type TabData } from '../../contexts/TabsContext';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
@@ -29,6 +29,13 @@ import {
   collabConnectionStatusAtom,
   hasCollabUnsyncedChanges,
 } from '../../store/atoms/collabEditor';
+import {
+  sidebarWidthAtomFamily,
+  sidebarCollapsedAtomFamily,
+  sidebarPreCollapseWidthAtomFamily,
+  aiChatWidthAtomFamily,
+  aiChatCollapsedAtomFamily,
+} from '../../store/atoms/workspaceLayout';
 
 export interface EditorModeRef {
   closeActiveTab: () => void;
@@ -74,10 +81,12 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
   onOpenQuickSearch,
   onSwitchToAgentMode
 }, ref) {
-  // Sidebar state
-  const [sidebarWidth, setSidebarWidth] = useState<number>(250);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
-  const [preCollapseWidth, setPreCollapseWidth] = useState<number>(250);
+  // Sidebar state — kept in per-workspace atom families so each open
+  // project preserves its own width / collapse state when the project rail
+  // hides and re-shows it.
+  const [sidebarWidth, setSidebarWidth] = useAtom(sidebarWidthAtomFamily(workspacePath));
+  const [sidebarCollapsed, setSidebarCollapsed] = useAtom(sidebarCollapsedAtomFamily(workspacePath));
+  const [preCollapseWidth, setPreCollapseWidth] = useAtom(sidebarPreCollapseWidthAtomFamily(workspacePath));
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
 
   // Dirty state is tracked via ref to avoid re-render cascade
@@ -95,9 +104,10 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
   // Extension file types state
   const [extensionFileTypes, setExtensionFileTypes] = useState<ExtensionFileType[]>([]);
 
-  // AI Chat panel state
-  const [isAIChatCollapsed, setIsAIChatCollapsed] = useState(false);
-  const [aiChatWidth, setAIChatWidth] = useState<number>(350);
+  // AI Chat panel state — per-workspace so the rail-switch keeps each
+  // project's collapse and width preferences.
+  const [isAIChatCollapsed, setIsAIChatCollapsed] = useAtom(aiChatCollapsedAtomFamily(workspacePath));
+  const [aiChatWidth, setAIChatWidth] = useAtom(aiChatWidthAtomFamily(workspacePath));
 
   // Track active tab for document context (AI needs to know current file)
   // Uses ref to avoid re-rendering EditorMode on every tab switch

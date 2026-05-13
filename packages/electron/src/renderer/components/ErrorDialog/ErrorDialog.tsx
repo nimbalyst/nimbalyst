@@ -19,7 +19,7 @@ interface ErrorDialogProps {
   onClose: () => void;
   title: string;
   message: string;
-  details?: DiffErrorDetails;
+  details?: DiffErrorDetails | string;
 }
 
 export function ErrorDialog({ isOpen, onClose, title, message, details }: ErrorDialogProps) {
@@ -40,6 +40,14 @@ export function ErrorDialog({ isOpen, onClose, title, message, details }: ErrorD
 
   const handleCopyDetails = useCallback(() => {
     if (!details) return;
+
+    if (typeof details === 'string') {
+      copyToClipboard(details).then(() => {
+        setCopyFeedback(true);
+        setTimeout(() => setCopyFeedback(false), 2000);
+      });
+      return;
+    }
 
     const debugInfo = {
       error: {
@@ -124,7 +132,13 @@ ${r.newText}
             <p className="m-0 text-sm leading-relaxed text-[var(--nim-error)]">{message}</p>
           </div>
 
-          {details && (
+          {typeof details === 'string' && details && (
+            <div className="error-dialog-details mt-5">
+              <pre className="error-dialog-message-details m-0 p-3 rounded border border-[var(--nim-border)] bg-[var(--nim-code-bg)] text-[var(--nim-code-text)] font-mono text-xs leading-relaxed overflow-x-auto whitespace-pre-wrap break-words">{details}</pre>
+            </div>
+          )}
+
+          {details && typeof details !== 'string' && (
             <div className="error-dialog-details mt-5">
               <div className="error-dialog-actions mb-4 flex justify-end">
                 <button

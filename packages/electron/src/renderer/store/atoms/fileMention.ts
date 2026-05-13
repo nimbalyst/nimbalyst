@@ -63,6 +63,12 @@ export const fileMentionOptionsAtom = atomFamily((workspacePath: string) =>
   atom<TypeaheadOption[]>([])
 );
 
+/** Drop cached search state for a workspace path. */
+export function pruneFileMentionWorkspaceState(workspacePath: string): void {
+  documentsLoadingAtom.remove(workspacePath);
+  fileMentionOptionsAtom.remove(workspacePath);
+}
+
 // ============================================================
 // Helpers
 // ============================================================

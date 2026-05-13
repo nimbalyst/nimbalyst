@@ -1,51 +1,64 @@
 /**
- * Register the unified TrackerPlugin with the plugin registry
+ * Bootstrap the unified tracker plugin on the electron renderer. Loads
+ * tracker schemas from the main process (or local YAML in non-electron
+ * fallback) and publishes the tracker Lexical extension, slash-picker
+ * entries, and React UI component into the runtime extension stores.
  */
 
-import { pluginRegistry } from '@nimbalyst/runtime';
-import { trackerPluginPackage, loadBuiltinTrackers, globalRegistry, parseTrackerYAML } from '@nimbalyst/runtime';
-import { getDocumentService } from '../services/RendererDocumentService';
+import {
+  TRACKER_ITEM_TRANSFORMERS,
+  TRACKER_USER_COMMANDS,
+  TrackerLexicalExtension,
+  TrackerPlugin,
+  globalRegistry,
+  loadBuiltinTrackers,
+  parseTrackerYAML,
+  registerExtensionEditorComponent,
+  setExtensionContributions,
+  setExtensionLexicalExtension,
+} from '@nimbalyst/runtime';
+import type { ComponentType } from 'react';
 import * as path from 'path';
+import { getDocumentService } from '../services/RendererDocumentService';
+
+const SOURCE = 'tracker';
 
 export async function registerTrackerPlugin(workspacePath?: string | null): Promise<void> {
   // Try to fetch schemas from main-process TrackerSchemaService (authoritative source).
   // Falls back to local loading if the IPC API is not available.
-  const api = (window as any).electronAPI;
+  const api = (window as { electronAPI?: { trackerSchema?: {
+    getAll?: () => Promise<unknown[]>;
+    onChanged?: (cb: (schemas: unknown[]) => void) => void;
+  } } }).electronAPI;
+
   if (api?.trackerSchema?.getAll) {
     try {
       const schemas = await api.trackerSchema.getAll();
       if (schemas && schemas.length > 0) {
-        for (const schema of schemas) {
+        for (const schema of schemas as Parameters<typeof globalRegistry.register>[0][]) {
           globalRegistry.register(schema);
         }
-        // console.log(`[TrackerPlugin] Loaded ${schemas.length} schemas from main process`);
-
-        // Subscribe to schema changes from main process
-        api.trackerSchema.onChanged?.((updatedSchemas: any[]) => {
-          for (const schema of updatedSchemas) {
+        api.trackerSchema.onChanged?.((updatedSchemas) => {
+          for (const schema of updatedSchemas as Parameters<typeof globalRegistry.register>[0][]) {
             globalRegistry.register(schema);
           }
         });
       } else {
-        // Main process had no schemas yet, fall back to local loading
         loadBuiltinTrackers();
       }
     } catch {
-      // IPC failed, fall back to local loading
       loadBuiltinTrackers();
     }
   } else {
-    // No IPC API available (e.g., mobile), load locally
     loadBuiltinTrackers();
 
     if (workspacePath && window.electronAPI?.readFileContent) {
       try {
         const trackersDir = `${workspacePath}/.nimbalyst/trackers`;
         const files = await window.electronAPI.getFolderContents(trackersDir);
-        const yamlFiles = files.filter(f =>
-          f.type === 'file' && (f.name.endsWith('.yaml') || f.name.endsWith('.yml'))
+        const yamlFiles = files.filter(
+          (f) => f.type === 'file' && (f.name.endsWith('.yaml') || f.name.endsWith('.yml')),
         );
-
         for (const file of yamlFiles) {
           try {
             const filePath = path.join(trackersDir, file.name);
@@ -64,15 +77,25 @@ export async function registerTrackerPlugin(workspacePath?: string | null): Prom
     }
   }
 
-  // Register the unified tracker plugin
-  pluginRegistry.register(trackerPluginPackage);
+  // Publish the Lexical extension (registers `TrackerItemNode`),
+  // markdown transformers, slash-picker entries, and React UI plugin.
+  setExtensionLexicalExtension(SOURCE, TrackerLexicalExtension);
+  setExtensionContributions(SOURCE, {
+    markdownTransformers: TRACKER_ITEM_TRANSFORMERS,
+    userCommands: TRACKER_USER_COMMANDS,
+  });
+  registerExtensionEditorComponent({
+    name: SOURCE,
+    Component: TrackerPlugin as ComponentType<unknown>,
+  });
 
-  // Expose globalRegistry on window for cross-component access
-  (window as any).__trackerRegistry = globalRegistry;
+  // Expose tracker registry and document service on window for
+  // cross-component access. Matches the prior shape so consumers
+  // (TrackerBottomPanel, ad-hoc renderer code) keep working.
+  (window as { __trackerRegistry?: typeof globalRegistry }).__trackerRegistry = globalRegistry;
 
-  // Expose document service on window for TrackerBottomPanel and other components
   const documentService = getDocumentService();
   if (documentService) {
-    (window as any).documentService = documentService;
+    (window as { documentService?: typeof documentService }).documentService = documentService;
   }
 }

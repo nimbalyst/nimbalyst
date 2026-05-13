@@ -188,6 +188,19 @@ export interface ExtensionContributions {
   /** Markdown transformers for Lexical */
   transformers?: string[];
 
+  /**
+   * `LexicalExtension` instances contributed by the extension (see
+   * `@lexical/extension`). Names refer to exports on the module's
+   * `lexicalExtensions` record. Each contributed extension is added to
+   * the host editor's extension graph at construction time; toggling an
+   * extension on or off rebuilds the editor instance.
+   *
+   * This is the supported path for shipping Lexical functionality from
+   * an extension. Use `defineExtension` from `lexical` to build the
+   * extension object.
+   */
+  lexicalExtensions?: string[];
+
   /** Components mounted by the host at app level */
   hostComponents?: string[];
 
@@ -196,6 +209,9 @@ export interface ExtensionContributions {
 
   /** Claude Code plugin metadata */
   claudePlugin?: ClaudePluginContribution;
+
+  /** Provider-neutral agent workflows exported to supported agent providers */
+  agentWorkflows?: AgentWorkflowsContribution;
 
   /**
    * Non-file-based panels (e.g., database browser, deployment dashboard).
@@ -315,6 +331,25 @@ export interface ClaudePluginAgent {
 
   /** Human-readable description */
   description: string;
+}
+
+/**
+ * Provider-neutral agent workflow contribution.
+ * The directory should contain `commands/` and/or `skills/` subdirectories
+ * using the familiar Claude-compatible markdown formats.
+ */
+export interface AgentWorkflowsContribution {
+  /** Path to the workflow root relative to extension root */
+  path: string;
+
+  /** Human-readable name for settings and diagnostics UI */
+  displayName: string;
+
+  /** Description for settings and diagnostics UI */
+  description?: string;
+
+  /** Whether these workflows are enabled by default */
+  enabledByDefault?: boolean;
 }
 
 /**
@@ -474,6 +509,18 @@ export interface ExtensionModule {
 
   /** Markdown transformers for Lexical */
   transformers?: Record<string, unknown>;
+
+  /**
+   * `LexicalExtension` instances exported by the extension module. Keys
+   * match names listed in `contributions.lexicalExtensions`. Each value
+   * should be the return value of `defineExtension(...)` from `lexical`.
+   *
+   * The host treats the values as opaque (`unknown`) at this layer so the
+   * extension SDK does not have to pin a specific version of
+   * `@lexical/extension`. The host validates and consumes them through
+   * the editor's `LexicalExtensionComposer` pipeline.
+   */
+  lexicalExtensions?: Record<string, unknown>;
 
   /** Components that render inside the host editor */
   hostComponents?: Record<string, ComponentType>;

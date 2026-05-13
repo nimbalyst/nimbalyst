@@ -25,30 +25,20 @@ export async function fetchSlashCommandEntries(options: {
     return [];
   }
 
-  let sdkCommands: string[] = [];
-  let sdkSkills: string[] = [];
-
   try {
-    const sdkResult = await window.electronAPI.invoke('ai:getSlashCommands', {
+    const workflowResult = await window.electronAPI.invoke('ai:getAgentWorkflows', {
+      workspacePath,
       sessionId,
       provider: resolvedProvider,
     });
-    if (sdkResult?.success && Array.isArray(sdkResult.commands)) {
-      sdkCommands = sdkResult.commands;
-      sdkSkills = Array.isArray(sdkResult.skills) ? sdkResult.skills : [];
+    if (workflowResult?.success && Array.isArray(workflowResult.workflows)) {
+      return workflowResult.workflows;
     }
-  } catch (sdkError) {
-    console.warn('[slashCommandAutocomplete] Failed to get provider slash commands:', sdkError);
+  } catch (workflowError) {
+    console.warn('[slashCommandAutocomplete] Failed to get agent workflows:', workflowError);
   }
 
-  const commands = await window.electronAPI.invoke('slash-command:list', {
-    workspacePath,
-    provider: resolvedProvider,
-    sdkCommands,
-    sdkSkills,
-  });
-
-  return Array.isArray(commands) ? commands : [];
+  return [];
 }
 
 function getCommandIcon(command: SlashCommandEntry): string {

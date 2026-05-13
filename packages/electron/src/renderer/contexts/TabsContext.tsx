@@ -4,6 +4,13 @@
  * This context exists to prevent re-render cascades. When tabs change,
  * only components that explicitly subscribe to tabs will re-render,
  * not the entire EditorMode tree.
+ *
+ * Multi-project keep-warm: persistent tab state is stored in a module-level
+ * registry keyed by workspace path. When a TabsProvider for a given path
+ * is mounted, unmounted, and re-mounted (e.g. when the project rail hides
+ * and re-shows a project), it picks up the same slot — tabs survive the
+ * remount. Providers with `disablePersistence` get a fresh ephemeral slot
+ * scoped to that instance.
  */
 
 import React, { createContext, useContext, useRef, useCallback, useSyncExternalStore, useMemo } from 'react';
@@ -70,6 +77,76 @@ function simpleHash(str: string): string {
   return hash.toString(16);
 }
 
+// ---------------------------------------------------------------------------
+// Per-key state registry
+// ---------------------------------------------------------------------------
+
+/**
+ * State held outside the React tree so it survives unmounts and re-mounts.
+ * One slot per workspace path (persistent providers) or per ephemeral
+ * provider instance (disablePersistence).
+ */
+interface TabsStateSlot {
+  store: TabsStore;
+  snapshot: TabsStore;
+  listeners: Set<() => void>;
+  tabIdCounter: number;
+  hasRestored: boolean;
+  lastSavedState: string;
+  reopening: boolean;
+}
+
+function createEmptySlot(): TabsStateSlot {
+  const empty: TabsStore = {
+    tabs: new Map(),
+    tabOrder: [],
+    activeTabId: null,
+    closedTabs: [],
+  };
+  return {
+    store: empty,
+    snapshot: empty,
+    listeners: new Set(),
+    tabIdCounter: 0,
+    hasRestored: false,
+    lastSavedState: '',
+    reopening: false,
+  };
+}
+
+const persistentSlots = new Map<string, TabsStateSlot>();
+
+function getPersistentSlot(workspacePath: string): TabsStateSlot {
+  let slot = persistentSlots.get(workspacePath);
+  if (!slot) {
+    slot = createEmptySlot();
+    persistentSlots.set(workspacePath, slot);
+  }
+  return slot;
+}
+
+/**
+ * Drop the persistent tabs slot for `workspacePath`. Called when the user
+ * closes a project from the rail so the slot, listeners, and snapshot
+ * memory are released — without this the module-level map grows
+ * unbounded across long-running sessions.
+ *
+ * Re-opening the same workspace later allocates a fresh slot; tabs that
+ * were persisted to workspace-settings still rehydrate via the normal
+ * restore path.
+ */
+export function pruneTabsSlot(workspacePath: string): void {
+  const slot = persistentSlots.get(workspacePath);
+  if (!slot) return;
+  slot.listeners.clear();
+  persistentSlots.delete(workspacePath);
+}
+
+/** Test seam: snapshot the live persistent slot map size. */
+export function getPersistentTabsSlotCount(): number {
+  return persistentSlots.size;
+}
+
 interface TabsProviderProps {
   children: React.ReactNode;
   workspacePath: string | null;
@@ -86,29 +163,28 @@ export function TabsProvider({
   getNavigationState,
   disablePersistence = false
 }: TabsProviderProps) {
-  // if (import.meta.env.DEV) console.log('[TabsProvider] render');
-  // Store state in refs to avoid re-renders
-  // We keep mutable state in storeRef and create immutable snapshots for useSyncExternalStore
-  const storeRef = useRef<TabsStore>({
-    tabs: new Map(),
-    tabOrder: [],
-    activeTabId: null,
-    closedTabs: []
-  });
+  // Resolve the state slot for this provider. Persistent providers share a
+  // slot per workspacePath so the rail can hide/reshow a project without
+  // losing tabs. Ephemeral providers (disablePersistence) get a fresh slot
+  // bound to this React instance via ref.
+  const ephemeralSlotRef = useRef<TabsStateSlot | null>(null);
+  const slot = useMemo<TabsStateSlot>(() => {
+    if (disablePersistence || !workspacePath) {
+      if (!ephemeralSlotRef.current) {
+        ephemeralSlotRef.current = createEmptySlot();
+      }
+      return ephemeralSlotRef.current;
+    }
+    return getPersistentSlot(workspacePath);
+  }, [disablePersistence, workspacePath]);
 
-  // Immutable snapshot for useSyncExternalStore - only updated when notify() is called
-  const snapshotRef = useRef<TabsStore>(storeRef.current);
+  // Mirror to a ref so callbacks always see the latest slot without needing
+  // to be re-created (and without forcing a re-render on every consumer).
+  const slotRef = useRef(slot);
+  slotRef.current = slot;
 
-  const listenersRef = useRef<Set<() => void>>(new Set());
-  const tabIdCounter = useRef(0);
   const onTabCloseRef = useRef(onTabClose);
   const getNavigationStateRef = useRef(getNavigationState);
-  const hasRestoredRef = useRef(false);
-  const lastSavedStateRef = useRef<string>('');
-  const reopeningRef = useRef(false);
-  const prevActiveTabIdRef = useRef<string | null>(null);
-
-  // Keep refs updated
   onTabCloseRef.current = onTabClose;
   getNavigationStateRef.current = getNavigationState;
 
@@ -116,37 +192,43 @@ export function TabsProvider({
 
   // Notify all subscribers - creates a new snapshot so useSyncExternalStore detects the change
   const notify = useCallback(() => {
-    console.log('[TABS] notify() called');
-    // Create a new snapshot object so reference comparison detects the change
-    snapshotRef.current = {
-      tabs: new Map(storeRef.current.tabs),
-      tabOrder: [...storeRef.current.tabOrder],
-      activeTabId: storeRef.current.activeTabId,
-      closedTabs: [...storeRef.current.closedTabs]
+    const s = slotRef.current;
+    s.snapshot = {
+      tabs: new Map(s.store.tabs),
+      tabOrder: [...s.store.tabOrder],
+      activeTabId: s.store.activeTabId,
+      closedTabs: [...s.store.closedTabs]
     };
-    listenersRef.current.forEach(listener => listener());
+    s.listeners.forEach(listener => listener());
   }, []);
 
-  // Subscribe function for useSyncExternalStore
+  // Subscribe function for useSyncExternalStore.
+  // Depends on `slot` so consumers re-subscribe when the workspace switches —
+  // otherwise listeners stay attached to the previous workspace's slot and
+  // never fire for the new one (TabBar froze on the prior project's
+  // activeTabId, breadcrumb/editor showed the real file).
   const subscribe = useCallback((callback: () => void) => {
-    listenersRef.current.add(callback);
+    slot.listeners.add(callback);
     return () => {
-      listenersRef.current.delete(callback);
+      slot.listeners.delete(callback);
     };
-  }, []);
+  }, [slot]);
 
-  // Get current snapshot - returns the immutable snapshot
-  const getSnapshot = useCallback(() => snapshotRef.current, []);
+  // Get current snapshot - returns the immutable snapshot.
+  // Identity changes with `slot` so useSyncExternalStore detects the
+  // workspace switch and re-renders consumers against the new slot.
+  const getSnapshot = useCallback(() => slot.snapshot, [slot]);
 
   // Generate unique tab ID
   const generateTabId = useCallback((): string => {
-    tabIdCounter.current += 1;
-    return `tab-${Date.now()}-${tabIdCounter.current}`;
+    const s = slotRef.current;
+    s.tabIdCounter += 1;
+    return `tab-${Date.now()}-${s.tabIdCounter}`;
   }, []);
 
   // Remove a tab
   const removeTab = useCallback((tabId: string): void => {
-    const store = storeRef.current;
+    const store = slotRef.current.store;
     const tab = store.tabs.get(tabId);
     if (!tab) return;
 
@@ -184,7 +266,7 @@ export function TabsProvider({
 
   // Add a tab
   const addTab = useCallback((filePath: string, content: string = '', switchToTab: boolean = true): string | null => {
-    const store = storeRef.current;
+    const store = slotRef.current.store;
 
     // Check if tab already exists
     const existingTab = Array.from(store.tabs.values()).find(tab => tab.filePath === filePath);
@@ -231,7 +313,7 @@ export function TabsProvider({
 
   // Switch to a tab
   const switchTab = useCallback((tabId: string): void => {
-    const store = storeRef.current;
+    const store = slotRef.current.store;
     if (!store.tabs.has(tabId) || store.activeTabId === tabId) return;
 
     store.activeTabId = tabId;
@@ -242,7 +324,7 @@ export function TabsProvider({
   // Only notifies subscribers if structural changes occurred (filePath, fileName changed)
   // Metadata changes (isDirty, lastSaved, content) don't trigger re-renders
   const updateTab = useCallback((tabId: string, updates: Partial<TabData>): void => {
-    const store = storeRef.current;
+    const store = slotRef.current.store;
     const tab = store.tabs.get(tabId);
     if (!tab) return;
 
@@ -261,7 +343,7 @@ export function TabsProvider({
 
   // Toggle pin status
   const togglePin = useCallback((tabId: string): void => {
-    const store = storeRef.current;
+    const store = slotRef.current.store;
     const tab = store.tabs.get(tabId);
     if (!tab) return;
 
@@ -304,7 +386,7 @@ export function TabsProvider({
 
   // Reorder tabs
   const reorderTabs = useCallback((fromIndex: number, toIndex: number): void => {
-    const store = storeRef.current;
+    const store = slotRef.current.store;
     if (fromIndex === toIndex) return;
 
     const newOrder = [...store.tabOrder];
@@ -317,7 +399,7 @@ export function TabsProvider({
 
   // Find tab by path
   const findTabByPath = useCallback((filePath: string): TabData | undefined => {
-    return Array.from(storeRef.current.tabs.values()).find(tab => tab.filePath === filePath);
+    return Array.from(slotRef.current.store.tabs.values()).find(tab => tab.filePath === filePath);
   }, []);
 
   // Save tab state
@@ -327,12 +409,12 @@ export function TabsProvider({
 
   // Get tab state
   const getTabState = useCallback((tabId: string): TabData | undefined => {
-    return storeRef.current.tabs.get(tabId);
+    return slotRef.current.store.tabs.get(tabId);
   }, []);
 
   // Close all tabs
   const closeAllTabs = useCallback((): void => {
-    const store = storeRef.current;
+    const store = slotRef.current.store;
     Array.from(store.tabs.keys()).forEach(tabId => {
       removeTab(tabId);
     });
@@ -340,7 +422,7 @@ export function TabsProvider({
 
   // Close saved tabs (checks Jotai atoms for dirty state - source of truth)
   const closeSavedTabs = useCallback((): void => {
-    const store = storeRef.current;
+    const store = slotRef.current.store;
     Array.from(store.tabs.values())
       .filter(tab => {
         const editorKey = makeEditorKey(tab.filePath);
@@ -352,12 +434,13 @@ export function TabsProvider({
 
   // Reopen last closed tab
   const reopenLastClosedTab = useCallback(async (fileSelectFn: (filePath: string) => Promise<void>): Promise<void> => {
-    if (reopeningRef.current) return;
+    const slotState = slotRef.current;
+    if (slotState.reopening) return;
 
-    const store = storeRef.current;
+    const store = slotState.store;
     if (store.closedTabs.length === 0) return;
 
-    reopeningRef.current = true;
+    slotState.reopening = true;
 
     try {
       let newClosedTabs = [...store.closedTabs];
@@ -398,7 +481,7 @@ export function TabsProvider({
         notify();
       }
     } finally {
-      reopeningRef.current = false;
+      slotState.reopening = false;
     }
   }, [addTab, notify, updateTab]);
 
@@ -406,15 +489,20 @@ export function TabsProvider({
   React.useEffect(() => {
     if (disablePersistence || !workspacePath || !window.electronAPI?.invoke) return;
 
+    const slotState = slotRef.current;
+    // Only restore once per slot — keeps tabs alive when the rail re-shows
+    // a workspace whose TabsProvider was previously unmounted.
+    if (slotState.hasRestored) return;
+
     const timer = setTimeout(async () => {
       try {
         const workspaceState = await window.electronAPI!.invoke('workspace:get-state', workspacePath);
         const savedState = workspaceState?.tabs;
 
         if (savedState?.tabs?.length > 0) {
-          hasRestoredRef.current = true;
+          slotState.hasRestored = true;
 
-          const store = storeRef.current;
+          const store = slotState.store;
           const restoredTabs = new Map<string, TabData>();
           const restoredOrder: string[] = [];
 
@@ -456,8 +544,6 @@ export function TabsProvider({
           }
 
           notify();
-
-          console.log('[TABS] Restored', restoredTabs.size, 'tabs, active:', savedState.activeTabId);
         }
       } catch (error) {
         console.error('[TABS] Failed to restore tab state:', error);
@@ -472,9 +558,10 @@ export function TabsProvider({
     if (disablePersistence || !workspacePath || !window.electronAPI?.invoke) return;
 
     const saveState = async () => {
-      const store = storeRef.current;
+      const slotState = slotRef.current;
+      const store = slotState.store;
 
-      if (!hasRestoredRef.current && store.tabs.size === 0) return;
+      if (!slotState.hasRestored && store.tabs.size === 0) return;
 
       const tabsArray = store.tabOrder
         .map(id => store.tabs.get(id))
@@ -510,13 +597,13 @@ export function TabsProvider({
       };
 
       const stateString = JSON.stringify(stateToSave);
-      if (stateString !== lastSavedStateRef.current) {
+      if (stateString !== slotState.lastSavedState) {
         try {
           await window.electronAPI!.invoke('workspace:update-state', workspacePath, {
             tabs: stateToSave,
             navigationHistory: stateToSave.navigationState
           });
-          lastSavedStateRef.current = stateString;
+          slotState.lastSavedState = stateString;
         } catch (error) {
           console.error('[TABS] Failed to save tab state:', error);
         }
@@ -525,7 +612,7 @@ export function TabsProvider({
 
     // Subscribe to changes for saving
     const unsubscribe = subscribe(() => {
-      if (storeRef.current.tabs.size > 0) {
+      if (slotRef.current.store.tabs.size > 0) {
         saveState();
       }
     });

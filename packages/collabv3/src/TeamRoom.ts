@@ -1066,21 +1066,16 @@ export class TeamRoom implements DurableObject {
   // Account Deletion & Status
   // ==========================================================================
 
-  private handleDeleteAccount(): Response {
-    const sql = this.state.storage.sql;
-
-    sql.exec(`DELETE FROM team_metadata`);
-    sql.exec(`DELETE FROM member_roles`);
-    sql.exec(`DELETE FROM identity_keys`);
-    sql.exec(`DELETE FROM key_envelopes`);
-    sql.exec(`DELETE FROM document_index`);
-    sql.exec(`DELETE FROM metadata`);
-
+  private async handleDeleteAccount(): Promise<Response> {
+    // Close all WebSocket connections first so no writes race the delete.
     for (const [ws] of this.connections) {
       try { ws.close(4003, 'Account deleted'); } catch { /* noop */ }
     }
     this.connections.clear();
-    this.state.storage.deleteAlarm();
+
+    // Bulk-drop all storage. Per-table `DELETE FROM` previously hit the DO
+    // storage operation timeout on large teams and reset the DO mid-delete.
+    await this.state.storage.deleteAll();
 
     return this.jsonOk({ deleted: true });
   }

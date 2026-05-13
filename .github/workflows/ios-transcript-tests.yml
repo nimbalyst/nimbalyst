@@ -7,11 +7,14 @@ on:
       - 'packages/ios/**'
       - 'packages/runtime/**'
       - '.github/workflows/ios-transcript-tests.yml'
+  # macOS minutes bill 10x Ubuntu minutes, so on PRs we only run the full
+  # simulator job when iOS itself changes. Runtime changes are covered on
+  # PRs by the cheap Ubuntu `transcript-bundle` job in ci.yml, and re-run
+  # in full here on push to main.
   pull_request:
     branches: [main]
     paths:
       - 'packages/ios/**'
-      - 'packages/runtime/**'
       - '.github/workflows/ios-transcript-tests.yml'
 
 env:

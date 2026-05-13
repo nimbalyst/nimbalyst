@@ -244,6 +244,22 @@ export class CopilotACPProtocol implements AgentProtocol {
         raw: { result },
       };
     } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+
+      // The Copilot ACP server keeps sessions live in-process. When the session
+      // was created earlier in this same process, `session/load` fails with
+      // "Session <id> is already loaded". That is not a real failure -- the
+      // session is ready for `session/prompt`. Falling back to createSession
+      // here would discard all conversation context, breaking multi-turn chat.
+      if (/already loaded/i.test(msg)) {
+        console.log('[COPILOT-ACP] Session already loaded, reusing:', sessionId);
+        return {
+          id: sessionId,
+          platform: this.platform,
+          raw: { alreadyLoaded: true },
+        };
+      }
+
       console.warn('[COPILOT-ACP] Resume failed, creating new session:', error);
       return this.createSession(options);
     }

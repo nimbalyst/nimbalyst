@@ -9,10 +9,13 @@ import {
     type NodeKey,
     type SerializedTextNode,
     $applyNodeReplacement,
+    $createTextNode,
     TextNode,
 } from "lexical";
+import {$createLinkNode} from "@lexical/link";
 
 import {TextMatchTransformer} from "@lexical/markdown";
+import {isEmbeddableUrl} from "../../editor/plugins/EmbedPlugin/embeddableExtensions";
 
 export type SerializedDocumentReferenceNode = Spread<
     {
@@ -211,6 +214,24 @@ export const DocumentReferenceTransformer: TextMatchTransformer = {
     replace: (textNode, match) => {
         const [, name, path] = match;
 
+        // Hand-off to the embed pipeline for links to file types an
+        // extension has registered as embeddable (e.g. `.excalidraw`,
+        // `.csv`). We create a normal LinkNode here instead of a
+        // DocumentReferenceNode -- the EmbedExtension's LinkNode transform
+        // then upgrades paragraph-isolated embeddable links into block-
+        // level EmbeddedFileNodes. Doing it this way means we don't try
+        // to embed inside a TextMatchTransformer (which can only produce
+        // inline nodes) and the existing `embed=false` opt-out keeps
+        // working.
+        if (isEmbeddableUrl(path)) {
+            const linkNode = $createLinkNode(path);
+            const linkTextNode = $createTextNode(name);
+            linkTextNode.setFormat(textNode.getFormat());
+            linkNode.append(linkTextNode);
+            textNode.replace(linkNode);
+            return linkTextNode;
+        }
+
         // Normalize the path (remove leading ./ if present)
         const normalizedPath = path.startsWith('./') ? path.slice(2) : path;
         // Extract filename from path
@@ -219,6 +240,7 @@ export const DocumentReferenceTransformer: TextMatchTransformer = {
         const documentId = normalizedPath;
         const documentReferenceNode = $createDocumentReferenceNode(documentId, fileName, normalizedPath, undefined);
         textNode.replace(documentReferenceNode);
+        return documentReferenceNode;
     },
     trigger: ')',
     type: 'text-match',

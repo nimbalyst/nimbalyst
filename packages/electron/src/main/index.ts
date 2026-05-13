@@ -35,6 +35,7 @@ import { registerPermissionHandlers } from './ipc/PermissionHandlers';
 import { registerGitStatusHandlers } from './ipc/GitStatusHandlers';
 import { registerGitHandlers } from './ipc/GitHandlers';
 import { registerProjectSelectionHandlers } from './ipc/ProjectSelectionHandlers';
+import { registerMultiProjectRailHandlers } from './ipc/MultiProjectRailHandlers';
 import { registerUsageAnalyticsHandlers } from './ipc/UsageAnalyticsHandlers';
 import { registerWorktreeHandlers } from './ipc/WorktreeHandlers';
 import { registerWakeupHandlers } from './ipc/WakeupHandlers';
@@ -108,6 +109,7 @@ import { claudeUsageService } from './services/ClaudeUsageService';
 import { registerCodexUsageHandlers } from './ipc/CodexUsageHandlers';
 import { codexUsageService } from './services/CodexUsageService';
 import { registerExtensionHandlers, getClaudePluginPaths, initializeExtensionFileTypes } from './ipc/ExtensionHandlers';
+import { getAgentWorkflowService } from './services/AgentWorkflowService';
 import { queueMarketplaceInstallRequest, registerExtensionMarketplaceHandlers, runExtensionAutoUpdate } from './ipc/ExtensionMarketplaceHandlers';
 import { getRegisteredExtensions } from './extensions/RegisteredFileTypes';
 import { ClaudeCodeProvider, OpenAICodexProvider, OpenAICodexACPProvider, OpenCodeProvider, CopilotCLIProvider } from '@nimbalyst/runtime/ai/server';
@@ -191,6 +193,15 @@ let isAppRestarting = false;
 /** Check if the app is in a restart flow (session state already saved) */
 export function isRestarting(): boolean {
     return isAppRestarting;
+}
+
+/**
+ * Mark the app as restarting. Set by code paths that have already persisted
+ * session state and don't want window-close handlers to clobber it as
+ * windows tear down (e.g. auto-update quit-and-install, MCP restart).
+ */
+export function setRestarting(value: boolean): void {
+    isAppRestarting = value;
 }
 
 // Track app start time for memory monitoring
@@ -742,6 +753,7 @@ async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
         } else {
             // Create new workspace window for this workspace
             workspaceWindow = createWindow(false, true, workspacePath);
+            updateTrackerSchemaWorkspace(workspacePath);
             workspaceWindow.once('ready-to-show', async () => {
                 workspaceWindow!.show();
                 // Window state is already set by createWindow with workspace path
@@ -763,6 +775,7 @@ async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
                 logger.main.info(`Opening suggested workspace: ${suggestedWorkspace}`);
                 addToRecentItems('workspaces', suggestedWorkspace, path.basename(suggestedWorkspace));
                 const newWindow = createWindow(false, true, suggestedWorkspace);
+                updateTrackerSchemaWorkspace(suggestedWorkspace);
                 newWindow.once('ready-to-show', async () => {
                     newWindow.show();
                     await loadFileIntoWindow(newWindow, filePath);
@@ -773,6 +786,7 @@ async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
                 logger.main.info(`Using file directory as workspace: ${fileDir}`);
                 addToRecentItems('workspaces', fileDir, path.basename(fileDir));
                 const newWindow = createWindow(false, true, fileDir);
+                updateTrackerSchemaWorkspace(fileDir);
                 newWindow.once('ready-to-show', async () => {
                     newWindow.show();
                     await loadFileIntoWindow(newWindow, filePath);
@@ -1100,6 +1114,7 @@ app.whenReady().then(async () => {
     await registerUsageAnalyticsHandlers();
     registerAttachmentHandlers();
     registerProjectSelectionHandlers();
+    registerMultiProjectRailHandlers();
     registerClaudeCodeHandlers();
     initializeClaudeCodeSessionHandlers();  // Initialize Claude Code session import
     registerAnalyticsHandlers();
@@ -1259,7 +1274,12 @@ app.whenReady().then(async () => {
     // Inject extension plugins loader into ClaudeCodeProvider
     // This allows extensions to provide Claude SDK plugins with custom commands/agents
     // Uses main-process-native implementation that reads extension manifests directly
-    ClaudeCodeProvider.setExtensionPluginsLoader(getClaudePluginPaths);
+    ClaudeCodeProvider.setExtensionPluginsLoader(async (workspacePath?: string) => {
+        if (!workspacePath) {
+            return getClaudePluginPaths(workspacePath);
+        }
+        return getAgentWorkflowService(workspacePath).getClaudeProviderPluginPaths();
+    });
 
     // ScheduleWakeup handler: the CLI emits ScheduleWakeup tool calls but its tool_result is
     // informational only. Re-queue the prompt at fire time via SessionWakeupScheduler.
@@ -1398,9 +1418,13 @@ app.whenReady().then(async () => {
       });
     }
 
-    // Inject additional directories loader
-    // This allows Claude to access SDK docs when working on extension projects
+    // Inject additional directories loader. Adds the parent project root and
+    // sibling worktrees so agents can read shared configs, traverse the .git
+    // common dir from a worktree, and (for Codex) escape its workspace-write
+    // sandbox when an orchestrator session needs to edit sibling worktrees.
+    // Issue #37 problem 1.
     ClaudeCodeProvider.setAdditionalDirectoriesLoader(getAdditionalDirectoriesForWorkspace);
+    OpenAICodexProvider.setAdditionalDirectoriesLoader(getAdditionalDirectoriesForWorkspace);
 
     // Wire shared permission infrastructure for all agent providers.
     // Both Claude Code and OpenAI Codex use the same pattern storage,
@@ -1742,25 +1766,8 @@ app.whenReady().then(async () => {
     const sessionRestored = shouldSkipSessionRestore ? false : await restoreSessionState();
     markEnd('session-restore');
 
-    // Set up a loader that reads customClaudeCodePath fresh from the store on each query,
-    // so changes in the UI take effect without restarting the app. The workspace path is
-    // required: getAIProviderOverridesWithWorktreeFallback handles direct overrides plus
-    // worktree-to-parent inheritance. Only fall through to the global setting when no
-    // project-level override exists at all (which is the intended fallback, not a routing
-    // failure). A missing workspacePath here would mean an upstream wiring bug, so throw.
-    ClaudeCodeProvider.setCustomClaudeCodePathLoader((workspacePath: string) => {
-      if (!workspacePath) {
-        throw new Error('[ClaudeCodeProvider] customClaudeCodePathLoader called without a workspacePath');
-      }
-
-      const projectOverride = getAIProviderOverridesWithWorktreeFallback(workspacePath)?.customClaudeCodePath;
-      if (projectOverride !== undefined) {
-        return projectOverride;
-      }
-
-      return (store.get('customClaudeCodePath', '') as string) || '';
-    });
-    logger.main.info('[ClaudeCodeProvider] Initialized customClaudeCodePath loader (workspace-aware)');
+    // Note: customClaudeCodePathLoader is now set up in AIService constructor,
+    // where it has direct access to the ai-settings store that owns this value.
 
     // Close splash screen now that initialization is done and a real window is about to show.
     // The last restored window activates the app via its own ready-to-show handler.

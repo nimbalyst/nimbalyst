@@ -57,7 +57,7 @@ import {
   $convertToEnhancedMarkdownString,
 } from '../../markdown';
 import {INSERT_EMBED_COMMAND} from '@lexical/react/LexicalAutoEmbedPlugin';
-import {INSERT_HORIZONTAL_RULE_COMMAND} from '@lexical/react/LexicalHorizontalRuleNode';
+import {INSERT_HORIZONTAL_RULE_COMMAND} from '@lexical/extension';
 import {$isHeadingNode} from '@lexical/rich-text';
 import {
   $getSelectionStyleValueForProperty,

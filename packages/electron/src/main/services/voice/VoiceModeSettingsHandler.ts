@@ -2,9 +2,11 @@
  * IPC handlers for Voice Mode settings
  */
 
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, systemPreferences, shell } from 'electron';
 import Store from 'electron-store';
 import { safeHandle } from '../../utils/ipcRegistry';
+
+type MicAccessStatus = 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown';
 
 interface SystemPromptConfig {
   prepend?: string;
@@ -68,6 +70,39 @@ export function initVoiceModeSettingsHandler() {
         submitDelayMs: 3000,
       };
     }
+  });
+
+  /**
+   * Read the current OS-level microphone access status without prompting.
+   *
+   * Why: the audio-input entitlement is intentionally omitted so background
+   * agent processes never trigger a system mic prompt. That means the renderer
+   * can't rely on getUserMedia to surface "denied" cleanly -- we need to
+   * inspect the OS state directly and offer the user a deep link to System
+   * Settings when access isn't granted.
+   */
+  safeHandle('voice-mode:get-mic-status', async () => {
+    const platform = process.platform;
+    if (platform !== 'darwin' && platform !== 'win32') {
+      return { status: 'granted' as MicAccessStatus, platform };
+    }
+    const status = systemPreferences.getMediaAccessStatus('microphone') as MicAccessStatus;
+    return { status, platform };
+  });
+
+  /**
+   * Open the macOS System Settings pane for microphone privacy.
+   *
+   * Why: shell.openExternal handles the x-apple.systempreferences scheme on
+   * macOS, but we want a dedicated channel so it's a no-op on other platforms
+   * rather than a broken hyperlink.
+   */
+  safeHandle('voice-mode:open-mic-settings', async () => {
+    if (process.platform === 'darwin') {
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+      return { success: true };
+    }
+    return { success: false, error: `unsupported platform: ${process.platform}` };
   });
 
   /**

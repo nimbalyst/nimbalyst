@@ -43,6 +43,7 @@ import type { TranscriptViewMessage } from '../../../../ai/server/transcript/Tra
 // Re-export widgets
 export { EditorScreenshotWidget, MockupScreenshotWidget } from './EditorScreenshotWidget';
 export { AskUserQuestionWidget } from './AskUserQuestionWidget';
+export { RequestUserInputWidget } from './RequestUserInputWidget';
 export { VisualDisplayWidget } from './VisualDisplayWidget';
 export { BashWidget } from './BashWidget';
 export { GitCommitConfirmationWidget } from './GitCommitConfirmationWidget';
@@ -114,6 +115,7 @@ const WINDOWS_SHELL_NAME_REGEX = /^(?:"?[A-Za-z]:\\[^"]*\\)?(?:powershell|pwsh|c
 // Import custom widgets
 import { EditorScreenshotWidget } from './EditorScreenshotWidget';
 import { AskUserQuestionWidget } from './AskUserQuestionWidget';
+import { RequestUserInputWidget } from './RequestUserInputWidget';
 import { VisualDisplayWidget } from './VisualDisplayWidget';
 import { BashWidget } from './BashWidget';
 import { GitCommitConfirmationWidget } from './GitCommitConfirmationWidget';
@@ -142,6 +144,19 @@ export const CUSTOM_TOOL_WIDGETS: CustomToolWidgetRegistry = {
   'AskUserQuestion': AskUserQuestionWidget,
   'mcp__nimbalyst__AskUserQuestion': AskUserQuestionWidget,
   'mcp__nimbalyst-mcp__AskUserQuestion': AskUserQuestionWidget,
+
+  // PromptForUserInput tool - generic structured-input prompt with typed fields
+  // (multiSelect, singleSelect, reorder, editText, confirm).
+  // The wire-name is `PromptForUserInput` rather than `RequestUserInput` to
+  // avoid colliding with Codex CLI's built-in `request_user_input` tool which
+  // is gated to Plan mode (snake_case match).
+  'PromptForUserInput': RequestUserInputWidget,
+  'mcp__nimbalyst__PromptForUserInput': RequestUserInputWidget,
+  'mcp__nimbalyst-mcp__PromptForUserInput': RequestUserInputWidget,
+  // Back-compat: any historical sessions that recorded the old name still render.
+  'RequestUserInput': RequestUserInputWidget,
+  'mcp__nimbalyst__RequestUserInput': RequestUserInputWidget,
+  'mcp__nimbalyst-mcp__RequestUserInput': RequestUserInputWidget,
 
   // ExitPlanMode tool - interactive confirmation widget for exiting planning mode
   'ExitPlanMode': ExitPlanModeWidget,

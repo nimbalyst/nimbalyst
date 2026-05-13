@@ -54,6 +54,7 @@ import {
 import {
   handleAskUserQuestion,
   handleGitCommitProposal,
+  handleRequestUserInput,
   getInteractiveToolSchemas,
 } from "./tools/interactiveToolHandlers";
 import {
@@ -383,6 +384,9 @@ function createSharedMcpServer(
 
         case "AskUserQuestion":
           return handleAskUserQuestion(args, sessionId, request);
+
+        case "PromptForUserInput":
+          return handleRequestUserInput(args, sessionId, workspacePath, request);
 
         case "get_session_edited_files":
           return handleGetSessionEditedFiles(sessionId);

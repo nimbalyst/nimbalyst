@@ -1,3 +1,7 @@
+---
+name: social-response
+description: Draft a response to a user reaching out on Discord or another social channel
+---
 # /social-response Command
 
 Draft a response to a user reaching out on Discord or another social channel.

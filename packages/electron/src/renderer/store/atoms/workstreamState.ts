@@ -599,17 +599,21 @@ export const convertToWorkstreamAtom = atom(
       sessionId,
       parentId,
       siblingId,
-    }: { sessionId: string; parentId: string; siblingId: string }
+    }: { sessionId: string; parentId: string; siblingId?: string }
   ) => {
     // Get the current session's state to preserve UI settings
     const currentState = get(workstreamStateAtom(sessionId));
 
-    // Create parent workstream state, inheriting UI settings from the original session
+    // Create parent workstream state, inheriting UI settings from the original session.
+    // When siblingId is omitted (drag-drop conversion) the original session is the only
+    // child and becomes the active child.
+    const childSessionIds = siblingId ? [sessionId, siblingId] : [sessionId];
+    const activeChildId = siblingId ?? sessionId;
     set(workstreamStateAtom(parentId), {
       id: parentId,
       type: 'workstream',
-      childSessionIds: [sessionId, siblingId],
-      activeChildId: siblingId,
+      childSessionIds,
+      activeChildId,
       worktreeId: null,
       worktreePath: null,
       // Inherit UI state from original session
@@ -645,8 +649,10 @@ export const convertToWorkstreamAtom = atom(
       fileScopeMode: 'all-changes',
     });
 
-    // Initialize sibling state
-    set(workstreamStateAtom(siblingId), createDefaultState(siblingId));
+    // Initialize sibling state (only when a sibling was created)
+    if (siblingId) {
+      set(workstreamStateAtom(siblingId), createDefaultState(siblingId));
+    }
   }
 );
 

@@ -279,7 +279,10 @@ function normalizeSchemaFileName(type: string, fileName?: string): string {
 }
 
 function refreshWorkspaceSchemasIfCurrent(workspacePath: string): void {
-  if (workspacePath !== currentWorkspacePath) return;
+  // Also load when currentWorkspacePath is null -- no workspace has been set yet
+  // (happens when upsertWorkspaceTrackerSchema is called before any workspace window opens).
+  if (currentWorkspacePath !== null && workspacePath !== currentWorkspacePath) return;
+  currentWorkspacePath = workspacePath;
   loadWorkspaceSchemas(workspacePath);
   watchSchemaDirectory(workspacePath);
   notifySchemaChanged();

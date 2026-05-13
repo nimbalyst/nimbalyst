@@ -25,17 +25,51 @@ These transformers require specific plugins to be loaded:
 - **COLLAPSIBLE_TRANSFORMER** - Collapsible sections (requires CollapsiblePlugin)
 - **ExcalidrawTransform** - Diagrams (requires ExcalidrawPlugin)
 
-## Current Usage
+## Supported entry points
 
-Currently, all transformers are loaded together:
+All Nimbalyst code converts between markdown and Lexical state through the
+**Enhanced** wrappers; do not call `$convertFromMarkdownString` /
+`$convertToMarkdownString` from `@lexical/markdown` directly. The wrappers
+extract YAML frontmatter, normalize 2-/3-/4-space list indents to a consistent
+target before import, encode literal `*`/`_` as HTML numeric character
+references on export so upstream's CommonMark importer can re-import them
+losslessly, and collapse upstream's TabNodes back to plain `\t` text so the
+diff plugin's tree matcher does not have to know about TabNodes.
 
-```typescript
-import { NIMBALYST_TRANSFORMERS } from '@/markdown';
+```ts
+import {
+  $convertFromEnhancedMarkdownString,
+  $convertToEnhancedMarkdownString,
+  $convertNodeToEnhancedMarkdownString,
+  $convertSelectionToEnhancedMarkdownString,
+  getEditorTransformers,
+} from '@nimbalyst/runtime/editor';
 
-// Use in markdown conversion
-$convertFromEnhancedMarkdownString(content, NIMBALYST_TRANSFORMERS);
-$convertToEnhancedMarkdownString(NIMBALYST_TRANSFORMERS);
+// Full-document import (frontmatter + normalization)
+$convertFromEnhancedMarkdownString(content, getEditorTransformers());
+
+// Full-document export (frontmatter, NCR encoding, diff-aware traversal)
+$convertToEnhancedMarkdownString(getEditorTransformers(), {
+  shouldPreserveNewLines: true,
+});
+
+// Single-node export (e.g. for diff matching, tracker cells)
+$convertNodeToEnhancedMarkdownString(getEditorTransformers(), node, true);
+
+// Selection export (e.g. clipboard / "send selection to AI")
+$convertSelectionToEnhancedMarkdownString(getEditorTransformers(), selection, true);
 ```
+
+The electron renderer enforces this with an eslint rule
+(`no-restricted-imports` in `packages/electron/eslint.config.mjs`) that blocks
+named imports of `$convertFromMarkdownString` and `$convertToMarkdownString`
+from `@lexical/markdown`. Streaming AI imports go through
+`MarkdownStreamProcessor` which is already a thin wrapper over the same entry
+points.
+
+For the deeper rationale (why the `&#42;` encoding is needed, what stays
+forked, and what to re-audit on each upstream bump) see
+[`FORKED_MARKDOWN_IMPORT.md`](./FORKED_MARKDOWN_IMPORT.md).
 
 ## Future Plugin-Based Architecture
 

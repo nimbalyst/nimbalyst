@@ -178,6 +178,12 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   // alternative resolution path using process.resourcesPath.
   private static sdkModuleLoader: (() => Promise<CodexSdkModuleLike>) | null = null;
 
+  // Additional writable directories loader (injected from electron main process).
+  // Returns paths like sibling worktrees and the parent project root that the
+  // Codex SDK should pass to the CLI as --add-dir entries so workspace-write
+  // sandbox does not block edits to those directories. Issue #37 problem 1.
+  private static additionalDirectoriesLoader: ((workspacePath: string) => string[]) | null = null;
+
   constructor(config?: { apiKey?: string }, deps?: OpenAICodexProviderDeps) {
     super();
     const apiKey = config?.apiKey || '';
@@ -300,6 +306,10 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
   public static setEnhancedPathLoader(loader: (() => string) | null): void {
     OpenAICodexProvider.enhancedPathLoader = loader;
+  }
+
+  public static setAdditionalDirectoriesLoader(loader: ((workspacePath: string) => string[]) | null): void {
+    OpenAICodexProvider.additionalDirectoriesLoader = loader;
   }
 
   public static setSdkModuleLoader(loader: (() => Promise<CodexSdkModuleLike>) | null): void {
@@ -878,6 +888,15 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
       const resolvedModel = await this.getConfiguredModel();
 
+      // Sibling worktrees and the parent project root the agent is allowed to
+      // write to, in addition to its workingDirectory. Without this, Codex's
+      // workspace-write sandbox blocks orchestrator edits across worktrees and
+      // `git rebase --continue` from inside a worktree (the .git common dir
+      // sits outside the worktree). Issue #37 problem 1.
+      const additionalDirectories = OpenAICodexProvider.additionalDirectoriesLoader
+        ? OpenAICodexProvider.additionalDirectoriesLoader(workspacePath)
+        : [];
+
       const sessionOptions = {
         workspacePath,
         model: resolvedModel,
@@ -893,6 +912,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
           codexConfigOverrides: this.buildCodexConfigOverrides(mcpServers),
           ...(codexEnv ? { codexEnv } : {}),
           ...(this.config?.effortLevel ? { effortLevel: this.config.effortLevel } : {}),
+          ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
         },
       };
 
@@ -1560,13 +1580,17 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       }
     }
 
-    if (Object.keys(codexMcpServers).length === 0) {
-      return undefined;
+    const configOverrides: Record<string, unknown> = {
+      // Codex SDK documents this config flag as the switch for surfacing
+      // raw agent reasoning in streamed events.
+      show_raw_agent_reasoning: true,
+    };
+
+    if (Object.keys(codexMcpServers).length > 0) {
+      configOverrides.mcp_servers = codexMcpServers;
     }
 
-    return {
-      mcp_servers: codexMcpServers,
-    };
+    return configOverrides;
   }
 
   private toCodexServerName(serverName: string, usedServerNames: Set<string>): string {

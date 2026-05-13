@@ -12,6 +12,7 @@ export function getInteractiveToolSchemas(sessionId: string | undefined) {
   if (!sessionId) return [];
 
   return [
+    requestUserInputSchema(),
     {
       name: "AskUserQuestion",
       description:
@@ -498,6 +499,46 @@ export async function handleGitCommitProposal(
   // Persist the proposal to database for durability
   try {
     const now = new Date();
+
+    // Synthesize a nimbalyst_tool_use row so the transcript parser can produce
+    // a tool_call_started canonical event for the widget before the SDK's
+    // own assistant chunk (which carries the same tool_use block) clears
+    // the AgentMessageWriteQueue. The queue holds non-blocking chunk writes
+    // for up to 200ms of idle, and once the SDK pauses here waiting for the
+    // user response no further chunks arrive to drive a flush -- so without
+    // this synthetic write the widget would not appear until the next
+    // explicit `flushPendingWrites()` (turn end, abort, etc.).
+    //
+    // Same shape AskUserQuestion uses. Keyed by the SDK's toolUseId; the
+    // parser's existing cross-batch dedup (findByProviderToolCallId) keeps
+    // the later SDK chunk from creating a duplicate canonical event.
+    if (toolUseId) {
+      try {
+        await AgentMessagesRepository.create({
+          sessionId: targetSessionId,
+          source: "claude-code",
+          direction: "output",
+          content: JSON.stringify({
+            type: "nimbalyst_tool_use",
+            id: toolUseId,
+            name: "developer_git_commit_proposal",
+            input: {
+              filesToStage: proposalArgs.filesToStage,
+              commitMessage: proposalArgs.commitMessage,
+              reasoning: proposalArgs.reasoning,
+            },
+          }),
+          hidden: false,
+          createdAt: now,
+        });
+      } catch (err) {
+        console.warn(
+          "[MCP Server] Failed to persist synthetic developer_git_commit_proposal tool_use:",
+          err
+        );
+      }
+    }
+
     await AgentMessagesRepository.create({
       sessionId: targetSessionId,
       source: "mcp",
@@ -562,149 +603,123 @@ export async function handleGitCommitProposal(
     const filePaths = proposalArgs.filesToStage!.map(getFilePath);
     const commitMessage = proposalArgs.commitMessage!;
 
+    const {
+      createGitCommitProposalResponse,
+      executeGitCommit,
+    } = await import("../../services/GitCommitService");
+
+    let commitResult: {
+      success: boolean;
+      commitHash?: string;
+      commitDate?: string;
+      error?: string;
+    };
     try {
-      const simpleGit = (await import("simple-git")).default;
-      const { gitOperationLock } = await import(
-        "../../services/GitOperationLock"
-      );
-
-      const commitResult = await gitOperationLock.withLock(
+      commitResult = await executeGitCommit(
         workspacePath,
-        "git:commit",
-        async () => {
-          const git = simpleGit(workspacePath);
-
-          // Reset staging area, then add only selected files
-          try {
-            await git.reset(["HEAD"]);
-          } catch {
-            // May fail in fresh repo with no commits - that's OK
-          }
-          // Use --all so deletions are staged correctly. Plain `git add <path>`
-          // errors with "pathspec did not match any files" when the proposal
-          // includes deleted files (e.g., during renames).
-          await git.add(["--all", "--", ...filePaths]);
-          return await git.commit(commitMessage);
-        }
+        commitMessage,
+        filePaths,
+        { logContext: "[git:auto-commit]" }
       );
-
-      // Get commit date
-      let commitDate: string | undefined;
-      if (commitResult.commit) {
-        try {
-          const git = simpleGit(workspacePath);
-          const showResult = await git.show([
-            commitResult.commit,
-            "--no-patch",
-            "--format=%aI",
-          ]);
-          commitDate = showResult.trim();
-        } catch {
-          // Non-critical
-        }
-      }
-
-      const response = {
-        action: (commitResult.commit
-          ? "committed"
-          : "cancelled") as "committed" | "cancelled",
-        commitHash: commitResult.commit || undefined,
-        commitDate,
-        error: commitResult.commit
-          ? undefined
-          : "No changes were committed",
-        filesCommitted: commitResult.commit ? filePaths : undefined,
-        commitMessage: commitResult.commit ? commitMessage : undefined,
-      };
-
-      // Persist the response to DB
-      const { database } = await import(
-        "../../database/PGLiteDatabaseWorker"
-      );
-      const timestamp = Date.now();
-      const responseContent = {
-        type: "git_commit_proposal_response",
-        proposalId,
-        ...response,
-        respondedAt: timestamp,
-        respondedBy: "auto_commit",
-      };
-      await database.query(
-        `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [
-          targetSessionId,
-          "nimbalyst",
-          "output",
-          JSON.stringify(responseContent),
-          new Date(timestamp),
-          false,
-        ]
-      );
-
-      // Notify renderer to clear the pending interactive prompt indicator
-      if (commitWindow && !commitWindow.isDestroyed()) {
-        commitWindow.webContents.send("ai:gitCommitProposalResolved", {
-          sessionId: targetSessionId,
-          proposalId,
-        });
-        commitWindow.webContents.send("mcp:gitCommitProposal", {
-          proposalId,
-          workspacePath,
-          sessionId: targetSessionId,
-          filesToStage: proposalArgs.filesToStage,
-          commitMessage: proposalArgs.commitMessage,
-          reasoning: proposalArgs.reasoning,
-        });
-      }
-
-      console.log(
-        `[MCP Server] Auto-commit completed: ${commitResult.commit || "no changes"}`
-      );
-
-      if (response.action === "committed" && response.commitHash) {
-        // Link commit to tracker items via session (fire-and-forget)
-        import("../../services/CommitTrackerLinker").then(({ commitTrackerLinker }) => {
-          commitTrackerLinker.linkBySession(
-            response.commitHash!,
-            commitMessage,
-            targetSessionId,
-            workspacePath,
-          ).catch((err) => console.error("[MCP Server] Commit-tracker linking failed:", err));
-        }).catch(() => { /* CommitTrackerLinker not available */ });
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Auto-committed ${filePaths.length} file(s).\nCommit hash: ${
-                response.commitHash
-              }${
-                response.commitDate
-                  ? `\nCommit date: ${response.commitDate}`
-                  : ""
-              }\nCommit message: ${commitMessage}`,
-            },
-          ],
-          isError: false,
-        };
-      } else {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Auto-commit failed: ${
-                response.error || "No changes were committed"
-              }`,
-            },
-          ],
-          isError: true,
-        };
-      }
     } catch (error) {
       console.error("[MCP Server] Auto-commit failed:", error);
-      // Fall through to manual mode on error
+      commitResult = {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
+
+    const response = createGitCommitProposalResponse(
+      commitResult,
+      filePaths,
+      commitMessage
+    );
+
+    // Persist the response to DB
+    const { database } = await import(
+      "../../database/PGLiteDatabaseWorker"
+    );
+    const timestamp = Date.now();
+    const responseContent = {
+      type: "git_commit_proposal_response",
+      proposalId,
+      ...response,
+      respondedAt: timestamp,
+      respondedBy: "auto_commit",
+    };
+    await database.query(
+      `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        targetSessionId,
+        "nimbalyst",
+        "output",
+        JSON.stringify(responseContent),
+        new Date(timestamp),
+        false,
+      ]
+    );
+
+    // Notify renderer to clear the pending interactive prompt indicator
+    if (commitWindow && !commitWindow.isDestroyed()) {
+      commitWindow.webContents.send("ai:gitCommitProposalResolved", {
+        sessionId: targetSessionId,
+        proposalId,
+        workspacePath,
+      });
+      commitWindow.webContents.send("mcp:gitCommitProposal", {
+        proposalId,
+        workspacePath,
+        sessionId: targetSessionId,
+        filesToStage: proposalArgs.filesToStage,
+        commitMessage: proposalArgs.commitMessage,
+        reasoning: proposalArgs.reasoning,
+      });
+    }
+
+    console.log(
+      `[MCP Server] Auto-commit completed: ${commitResult.commitHash || "no changes"}`
+    );
+
+    if (response.action === "committed" && response.commitHash) {
+      // Link commit to tracker items via session (fire-and-forget)
+      import("../../services/CommitTrackerLinker").then(({ commitTrackerLinker }) => {
+        commitTrackerLinker.linkBySession(
+          response.commitHash!,
+          commitMessage,
+          targetSessionId,
+          workspacePath,
+        ).catch((err) => console.error("[MCP Server] Commit-tracker linking failed:", err));
+      }).catch(() => { /* CommitTrackerLinker not available */ });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Auto-committed ${filePaths.length} file(s).\nCommit hash: ${
+              response.commitHash
+            }${
+              response.commitDate
+                ? `\nCommit date: ${response.commitDate}`
+                : ""
+            }\nCommit message: ${commitMessage}`,
+          },
+        ],
+        isError: false,
+      };
+    }
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Auto-commit failed: ${
+            response.error || "No changes were committed"
+          }`,
+        },
+      ],
+      isError: true,
+    };
   }
 
   // Show OS notification if app is backgrounded
@@ -735,7 +750,7 @@ export async function handleGitCommitProposal(
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
     type CommitResult = {
-      action: "committed" | "cancelled";
+      action: "committed" | "cancelled" | "error";
       commitHash?: string;
       commitDate?: string;
       error?: string;
@@ -884,5 +899,407 @@ export async function handleGitCommitProposal(
       commitMessage: proposalArgs.commitMessage,
       reasoning: proposalArgs.reasoning,
     });
+  });
+}
+
+// ============================================================
+// RequestUserInput
+// ============================================================
+//
+// Generic structured-input prompt with typed fields. The widget renders the
+// fields and collects answers. Response delivery follows the durable-prompts
+// pattern: IPC fast-path on `request-user-input-response:<sessionId>:<promptId>`,
+// and a DB polling fallback that watches for a `request_user_input_response`
+// message in `ai_agent_messages`.
+
+// IMPORTANT: This is a flat union schema, not `oneOf` over discriminated
+// sub-schemas. OpenAI's function-calling schema converter (used by Codex when
+// translating MCP tool schemas) does not handle `oneOf` cleanly and collapses
+// it to a generic type -- in practice the agent saw `fields: string[]` and had
+// to guess the real shape. A single object with a `type` enum and all
+// properties optional is less strict but Codex/OpenAI consume it correctly.
+//
+// Per-type validation happens in the runtime widget and tool handler, not the
+// schema. Field-type-specific required properties are documented in the
+// description text so the agent gets it right.
+const REQUEST_USER_INPUT_FIELD_SCHEMA = {
+  type: "object",
+  description:
+    "One field in a structured prompt. The `type` discriminator determines which other properties apply. Required-by-type:\n" +
+    "  - multiSelect: items[]; optional minSelected, maxSelected\n" +
+    "  - singleSelect: options[]; optional allowOther\n" +
+    "  - reorder: items[]; optional minItems\n" +
+    "  - editText: initialText; optional format ('markdown'|'plain'), placeholder, minLength, maxLength\n" +
+    "  - confirm: optional defaultValue (boolean)",
+  properties: {
+    type: {
+      type: "string",
+      enum: ["multiSelect", "singleSelect", "reorder", "editText", "confirm"],
+      description: "Field type discriminator.",
+    },
+    id: {
+      type: "string",
+      description: "Stable key the agent uses to find this field's answer in the response payload.",
+    },
+    label: { type: "string", description: "Short label shown above the control." },
+    description: { type: "string", description: "Optional longer explanation." },
+
+    // multiSelect / reorder share `items`. multiSelect items use defaultChecked
+    // and badge; reorder items use removable. Extra properties on the wrong
+    // field type are ignored.
+    items: {
+      type: "array",
+      description:
+        "For multiSelect and reorder fields. multiSelect items: { id, title, subtitle?, badge?, defaultChecked? }. reorder items: { id, title, subtitle?, removable? }.",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          title: { type: "string" },
+          subtitle: { type: "string" },
+          badge: { type: "string", description: "multiSelect only: short label like '3 unread' or 'abandoned'." },
+          defaultChecked: { type: "boolean", description: "multiSelect only: pre-check this item." },
+          removable: { type: "boolean", description: "reorder only: show a delete affordance for this item." },
+        },
+        required: ["id", "title"],
+      },
+    },
+
+    // multiSelect bounds.
+    minSelected: { type: "integer", minimum: 0, description: "multiSelect: floor on selections (default 0)." },
+    maxSelected: { type: "integer", minimum: 0, description: "multiSelect: ceiling (default = items.length)." },
+
+    // reorder bound.
+    minItems: { type: "integer", minimum: 0, description: "reorder: floor when items have removable: true (default 0)." },
+
+    // singleSelect.
+    options: {
+      type: "array",
+      description: "For singleSelect: array of { id, label, description? }.",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          label: { type: "string" },
+          description: { type: "string" },
+        },
+        required: ["id", "label"],
+      },
+    },
+    allowOther: { type: "boolean", description: "singleSelect: show an 'Other' textarea fallback." },
+
+    // editText.
+    initialText: { type: "string", description: "editText: the seed text the user will edit." },
+    format: {
+      type: "string",
+      enum: ["markdown", "plain"],
+      description: "editText: how to interpret initialText and serialize the answer (default 'markdown').",
+    },
+    placeholder: { type: "string", description: "editText: placeholder text when empty." },
+    minLength: { type: "integer", minimum: 0, description: "editText: minimum length to allow submit." },
+    maxLength: { type: "integer", minimum: 1, description: "editText: maximum length." },
+
+    // confirm.
+    defaultValue: { type: "boolean", description: "confirm: initial state (default false)." },
+  },
+  required: ["type", "id", "label"],
+};
+
+function requestUserInputSchema() {
+  return {
+    // NOTE: Do NOT rename to anything that snake_cases to `request_user_input` --
+    // that collides with a Codex CLI built-in tool gated to Plan mode and the
+    // agent gets refused with "request_user_input is unavailable in Default mode".
+    name: "PromptForUserInput",
+    description: `Ask the user for structured input via a composable widget. One prompt can carry multiple typed fields, all rendered together; the agent receives one answer payload keyed by field id.
+
+Each field is an object with { type, id, label, description?, ... }. The "fields" argument is an ARRAY OF OBJECTS, never an array of strings.
+
+Field types and per-type required properties:
+- multiSelect — checkbox list with rich rows. Required: items: [{ id, title, subtitle?, badge?, defaultChecked? }, ...]. Optional: minSelected, maxSelected. Use for "pick a subset".
+- singleSelect — radio group. Required: options: [{ id, label, description? }, ...]. Optional: allowOther: true to show an "Other" textarea. Use for branching choices.
+- reorder — drag-to-reorder list with optional per-item delete. Required: items: [{ id, title, subtitle?, removable? }, ...]. Optional: minItems (floor when items are removable). Use when the user expresses a permutation.
+- editText — inline rich-text editor seeded with a draft. Required: initialText. Optional: format ("markdown" | "plain", default "markdown"), placeholder, minLength, maxLength. Use when you have a draft the user should edit before send.
+- confirm — yes/no toggle. Optional: defaultValue. Use for binary confirmations.
+
+Example call:
+  PromptForUserInput({
+    title: "Cleanup sessions",
+    intro: "Found 3 stale sessions.",
+    fields: [
+      {
+        type: "multiSelect",
+        id: "sessionsToArchive",
+        label: "Sessions",
+        items: [
+          { id: "s1", title: "Refactor settings", subtitle: "47d ago", defaultChecked: true },
+          { id: "s2", title: "Sync warning", subtitle: "33d ago" }
+        ]
+      }
+    ]
+  })
+
+Prefer this tool over AskUserQuestion when input is richer than a flat list of options (order, removal, freeform edits, items with subtitles/badges, or multi-field composition).`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Overall prompt title" },
+        intro: { type: "string", description: "1-2 sentences of context above the fields" },
+        fields: {
+          type: "array",
+          minItems: 1,
+          items: REQUEST_USER_INPUT_FIELD_SCHEMA,
+        },
+        submitLabel: { type: "string", description: 'Submit button label (default "Confirm")' },
+        cancelLabel: { type: "string", description: 'Cancel button label (default "Cancel")' },
+      },
+      required: ["fields"],
+    },
+  };
+}
+
+export function getRequestUserInputResponseChannel(
+  sessionId: string,
+  promptId: string,
+): string {
+  return `request-user-input-response:${sessionId || "unknown"}:${promptId}`;
+}
+
+export async function handleRequestUserInput(
+  args: any,
+  sessionId: string | undefined,
+  workspacePath: string | undefined,
+  request: any,
+): Promise<McpToolResult> {
+  const fields = Array.isArray(args?.fields) ? args.fields : [];
+  if (fields.length === 0) {
+    return {
+      content: [
+        { type: "text", text: "Error: at least one field is required in RequestUserInput" },
+      ],
+      isError: true,
+    };
+  }
+
+  const promptId =
+    extractToolUseIdFromMcpRequest(request) ||
+    `rui-${sessionId || "unknown"}-${Date.now()}`;
+  const responseChannel = getRequestUserInputResponseChannel(sessionId || "unknown", promptId);
+
+  console.log(
+    `[MCP Server] RequestUserInput waiting for response: promptId=${promptId}, sessionId=${sessionId}`,
+  );
+
+  // Update session status so all windows show the pending indicator.
+  if (sessionId) {
+    getSessionStateManager().updateActivity({
+      sessionId,
+      status: "waiting_for_input",
+    }).catch((err) => {
+      console.error("[MCP Server] Failed to update session status:", err);
+    });
+  }
+
+  // Notify renderer so the widget can pick up the prompt data immediately
+  // (used for voice forwarding -- the widget itself reads from the tool call).
+  try {
+    if (workspacePath) {
+      const targetWindowId = await findWindowIdForWorkspacePath(workspacePath);
+      if (targetWindowId) {
+        const targetWindow = BrowserWindow.fromId(targetWindowId);
+        if (targetWindow && !targetWindow.isDestroyed()) {
+          targetWindow.webContents.send("ai:requestUserInput", {
+            sessionId,
+            promptId,
+            args,
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[MCP Server] RequestUserInput: failed to notify renderer:", err);
+  }
+
+  // Show OS notification if the app is backgrounded.
+  let sessionTitle = "AI Session";
+  if (sessionId) {
+    try {
+      const session = await AISessionsRepository.get(sessionId);
+      if (session?.title) sessionTitle = session.title;
+    } catch {
+      // Ignore - use default title.
+    }
+    notificationService.showBlockedNotification(
+      sessionId,
+      sessionTitle,
+      "question",
+      workspacePath ?? "",
+    );
+    TrayManager.getInstance().onPromptCreated(sessionId);
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    const settle = async (
+      result: { answers?: Record<string, unknown>; cancelled?: boolean; respondedBy?: "desktop" | "mobile" },
+      source: string,
+    ) => {
+      if (settled) return;
+      settled = true;
+
+      console.log(
+        `[MCP Server] RequestUserInput settled via ${source}: promptId=${promptId}, cancelled=${result?.cancelled}`,
+      );
+
+      if (sessionId) {
+        getSessionStateManager().updateActivity({
+          sessionId,
+          status: "running",
+          isStreaming: true,
+        }).catch(() => {});
+        TrayManager.getInstance().onPromptResolved(sessionId);
+        // Notify renderer to clear the pending indicator and remove from atom.
+        try {
+          BrowserWindow.getAllWindows().forEach((w) => {
+            if (!w.isDestroyed()) {
+              w.webContents.send("ai:requestUserInputResolved", {
+                sessionId,
+                promptId,
+              });
+            }
+          });
+        } catch {
+          // Non-fatal.
+        }
+      }
+
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      ipcMain.removeListener(responseChannel, onResponse);
+
+      const cancelled = result?.cancelled === true;
+      const answers = result?.answers && typeof result.answers === "object"
+        ? result.answers
+        : {};
+      const respondedBy = result?.respondedBy || "desktop";
+      const respondedAt = Date.now();
+
+      // Persist a synthetic tool_result keyed by the same providerToolCallId
+      // (`promptId`) so the canonical transcript event for this tool call gets
+      // its `result` populated immediately. Without this, the widget relies on
+      // the SDK subprocess to emit its own tool_result block; if the subprocess
+      // exits between resolving the MCP call and flushing that chunk (e.g. the
+      // turn was cancelled, the session was stopped, the pipe broke), the
+      // tool_use canonical event stays "pending" forever and the widget shows
+      // the input mode again on remount. The SDK's later real tool_result is
+      // an idempotent re-update on the same row, so duplicates are harmless.
+      if (sessionId) {
+        try {
+          await AgentMessagesRepository.create({
+            sessionId,
+            source: "claude-code",
+            direction: "output",
+            createdAt: new Date(respondedAt),
+            content: JSON.stringify({
+              type: "nimbalyst_tool_result",
+              tool_use_id: promptId,
+              result: JSON.stringify({
+                cancelled,
+                answers: cancelled ? {} : answers,
+                respondedBy,
+                respondedAt,
+              }),
+              is_error: cancelled,
+            }),
+          });
+        } catch (err) {
+          console.warn("[MCP Server] Failed to persist synthetic RequestUserInput tool_result:", err);
+        }
+      }
+
+      if (cancelled) {
+        resolve({
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                cancelled: true,
+                respondedBy,
+                respondedAt,
+              }),
+            },
+          ],
+          isError: true,
+        });
+        return;
+      }
+
+      resolve({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              answers,
+              respondedBy,
+              respondedAt,
+            }),
+          },
+        ],
+        isError: false,
+      });
+    };
+
+    const onResponse = (
+      _event: unknown,
+      result: {
+        answers?: Record<string, unknown>;
+        cancelled?: boolean;
+        respondedBy?: "desktop" | "mobile";
+      },
+    ) => settle(result, "ipc");
+
+    ipcMain.on(responseChannel, onResponse);
+
+    // Database polling fallback for resilience to IPC drops.
+    if (sessionId) {
+      const POLL_INTERVAL = 1000;
+      const MAX_POLL_TIME = 10 * 60 * 1000;
+      const pollStart = Date.now();
+
+      pollTimer = setInterval(async () => {
+        if (settled || Date.now() - pollStart > MAX_POLL_TIME) {
+          if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+          }
+          return;
+        }
+
+        try {
+          const messages = await AgentMessagesRepository.list(sessionId, { limit: 20 });
+          for (const msg of messages) {
+            try {
+              const content = JSON.parse(msg.content);
+              if (content.type === "request_user_input_response" && content.promptId === promptId) {
+                if (content.cancelled) {
+                  settle({ cancelled: true, respondedBy: content.respondedBy }, "db-poll");
+                } else {
+                  settle({ answers: content.answers, respondedBy: content.respondedBy }, "db-poll");
+                }
+                return;
+              }
+            } catch {
+              // Not valid JSON, skip.
+            }
+          }
+        } catch {
+          // Database error, keep polling.
+        }
+      }, POLL_INTERVAL);
+    }
   });
 }

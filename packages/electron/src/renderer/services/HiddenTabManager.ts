@@ -94,6 +94,19 @@ class HiddenTabManager {
       return;
     }
 
+    // No extension owns this file extension -- it's handled by a built-in editor
+    // (e.g. Lexical for .md, Monaco for .ts). The bridge calls ensureEditor for any
+    // tool invocation that has a resolved filePath, including filesystem-only tools
+    // whose active tab happens to be a built-in-editor file. Returning here lets the
+    // tool run with editorAPI === undefined; the bridge tolerates that and the tool's
+    // own handler decides whether it needs an editor API. See issue #217.
+    const fileName = filePath.split('/').pop() || filePath;
+    const firstDotIndex = fileName.indexOf('.');
+    const fileExtension = firstDotIndex >= 0 ? fileName.slice(firstDotIndex) : '';
+    if (fileExtension && !getExtensionLoader().findEditorForExtension(fileExtension)) {
+      return;
+    }
+
     // Evict oldest if at capacity
     if (this.editors.size >= MAX_HIDDEN_EDITORS) {
       this.evictOldest();

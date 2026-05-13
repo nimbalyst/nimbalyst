@@ -64,12 +64,32 @@ function getFilePath(file: FileInput): string {
 // Directory Tree Types and Helpers
 // ============================================================
 
-interface DirectoryNode {
+export interface DirectoryNode {
   path: string;
   displayPath: string;
   files: string[];
   subdirectories: Map<string, DirectoryNode>;
   fileCount: number;
+}
+
+/**
+ * Comparator: sort DirectoryNodes alphabetically by displayPath.
+ * Used by renderDirectoryNode for deterministic tree rendering.
+ */
+export function compareSubdirectoriesByDisplayPath(a: DirectoryNode, b: DirectoryNode): number {
+  return a.displayPath.localeCompare(b.displayPath);
+}
+
+/**
+ * Comparator: sort file path strings alphabetically by basename.
+ * Used by renderDirectoryNode so files within a directory render in
+ * alphabetical order regardless of how the model ordered them in
+ * `filesToStage`.
+ */
+export function compareFilesByBasename(a: string, b: string): number {
+  const aBase = a.substring(a.lastIndexOf('/') + 1);
+  const bBase = b.substring(b.lastIndexOf('/') + 1);
+  return aBase.localeCompare(bBase);
 }
 
 /**
@@ -441,6 +461,12 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
       if (action === 'cancelled' || action === 'canceled') {
         return { type: 'cancelled' as const };
       }
+      if (action === 'error' || action === 'failed') {
+        return {
+          type: 'error' as const,
+          error: structuredResult.error || toolResult || 'Commit failed',
+        };
+      }
     }
 
     if (structuredResult?.error) {
@@ -726,14 +752,20 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
     const allSelected = selectedCount === filesInDir.length;
     const someSelected = selectedCount > 0 && !allSelected;
 
+    // Sort subdirectories by displayPath and files by basename so the
+    // tree renders deterministically rather than in the order the model
+    // emitted paths in filesToStage. Folders-before-files convention is
+    // preserved by rendering subdirectories before files at each site.
+    const sortedSubdirectories = Array.from(node.subdirectories.values())
+      .sort(compareSubdirectoriesByDisplayPath);
+    const sortedFiles = [...node.files].sort(compareFilesByBasename);
+
     // Root node - just render children
     if (!node.displayPath) {
       return (
         <>
-          {Array.from(node.subdirectories.values()).map(subdir =>
-            renderDirectoryNode(subdir)
-          )}
-          {node.files.map(file => renderFile(file))}
+          {sortedSubdirectories.map(subdir => renderDirectoryNode(subdir))}
+          {sortedFiles.map(file => renderFile(file))}
         </>
       );
     }
@@ -785,10 +817,8 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
 
         {isExpanded && hasContent && (
           <div className="git-commit-widget__directory-children mt-0.5 pl-4">
-            {Array.from(node.subdirectories.values()).map(subdir =>
-              renderDirectoryNode(subdir)
-            )}
-            {node.files.map(file => renderFile(file, true))}
+            {sortedSubdirectories.map(subdir => renderDirectoryNode(subdir))}
+            {sortedFiles.map(file => renderFile(file, true))}
           </div>
         )}
       </div>
@@ -965,7 +995,10 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
             )}
           </div>
         ) : (
-          <div className="git-commit-widget__error-content p-2 bg-[color-mix(in_srgb,var(--nim-error)_8%,var(--nim-bg))] text-[var(--nim-error)] text-[0.8125rem]">
+          <div
+            data-testid="git-commit-error"
+            className="git-commit-widget__error-content p-2 bg-[color-mix(in_srgb,var(--nim-error)_8%,var(--nim-bg))] text-[var(--nim-error)] text-[0.8125rem]"
+          >
             {result.error}
           </div>
         )}

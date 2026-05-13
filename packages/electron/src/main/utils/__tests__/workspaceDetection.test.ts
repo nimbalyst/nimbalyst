@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { resolveProjectPath, isWorktreePath } from '../workspaceDetection';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import {
+  resolveProjectPath,
+  isWorktreePath,
+  getAdditionalDirectoriesForWorkspace,
+} from '../workspaceDetection';
 
 describe('resolveProjectPath', () => {
   it('returns the same path for regular workspaces', () => {
@@ -74,5 +81,62 @@ describe('isWorktreePath', () => {
 
   it('does not match paths that just contain _worktrees in the middle', () => {
     expect(isWorktreePath('/path/to/project_worktrees_backup/folder')).toBe(false);
+  });
+});
+
+describe('getAdditionalDirectoriesForWorkspace', () => {
+  let tmpRoot: string;
+  let projectPath: string;
+  let worktreesDir: string;
+
+  beforeEach(() => {
+    // Real filesystem fixture so the sync fs.readdirSync path is exercised
+    // end-to-end. The function is called from a synchronous loader and must
+    // tolerate a missing _worktrees dir without blowing up.
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-add-dirs-'));
+    projectPath = path.join(tmpRoot, 'project');
+    fs.mkdirSync(projectPath);
+    worktreesDir = path.join(tmpRoot, 'project_worktrees');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('returns an empty list for a project with no worktrees and no extension marker', () => {
+    expect(getAdditionalDirectoriesForWorkspace(projectPath)).toEqual([]);
+  });
+
+  it('returns sibling worktree paths when called from the parent project root', () => {
+    fs.mkdirSync(worktreesDir);
+    fs.mkdirSync(path.join(worktreesDir, 'proud-gorge'));
+    fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
+
+    const dirs = getAdditionalDirectoriesForWorkspace(projectPath);
+    expect(dirs.sort()).toEqual([
+      path.join(worktreesDir, 'proud-gorge'),
+      path.join(worktreesDir, 'swift-falcon'),
+    ].sort());
+  });
+
+  it('returns the parent project plus other sibling worktrees when called from a worktree', () => {
+    fs.mkdirSync(worktreesDir);
+    const cwd = path.join(worktreesDir, 'proud-gorge');
+    fs.mkdirSync(cwd);
+    fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
+
+    const dirs = getAdditionalDirectoriesForWorkspace(cwd);
+    expect(dirs.sort()).toEqual([
+      projectPath,
+      path.join(worktreesDir, 'swift-falcon'),
+    ].sort());
+    // The current worktree itself must not appear -- it is already the
+    // workingDirectory, and re-listing it would just add noise.
+    expect(dirs).not.toContain(cwd);
+  });
+
+  it('survives a missing _worktrees directory', () => {
+    // No worktrees dir created. Should not throw, just return empty.
+    expect(getAdditionalDirectoriesForWorkspace(projectPath)).toEqual([]);
   });
 });

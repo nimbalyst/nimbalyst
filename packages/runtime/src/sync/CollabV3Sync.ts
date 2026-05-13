@@ -3267,9 +3267,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
     /** Attempt to reconnect the index connection when network becomes available */
     async reconnectIndex(): Promise<void> {
-      // Already connected, nothing to do
-      if (indexWs && indexConnected) {
-        console.log('[CollabV3] reconnectIndex called but already connected');
+      // A previous reconnectIndex() already started a fresh handshake that
+      // hasn't resolved yet. Don't tear it down -- post-wake the broker fires
+      // several network-available events in a ~20s burst and we'd otherwise
+      // churn through half-finished sockets.
+      if (indexWs && !indexConnected && indexWs.readyState === WebSocket.CONNECTING) {
+        console.log('[CollabV3] reconnectIndex() - handshake already in flight, skipping');
         return;
       }
 
@@ -3280,6 +3283,26 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         indexReconnectTimer = null;
       }
       indexReconnectAttempts = 0;
+
+      // Force-close the current socket, even if it still reports OPEN.
+      // After laptop sleep the WebSocket layer can stay "connected" while the
+      // underlying transport is dead. This explicit reconnect path exists to
+      // recover from exactly that half-open state.
+      if (indexWs) {
+        console.log('[CollabV3] reconnectIndex() - forcing fresh index socket (readyState:', indexWs.readyState, ')');
+        try {
+          indexWs.onclose = null;
+          indexWs.onerror = null;
+          indexWs.close();
+        } catch (_) {
+          /* ignore close errors */
+        }
+        indexWs = null;
+      }
+      indexConnected = false;
+      clearIndexReady();
+      stopPingInterval();
+      stopDeviceAnnounceInterval();
 
       console.log('[CollabV3] Network available, attempting to reconnect index...');
       try {
