@@ -28,7 +28,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
 import type { CustomToolWidgetProps } from './index';
-import { interactiveWidgetHostAtom } from '../../../../store/atoms/interactiveWidgetHost';
+import { interactiveWidgetHostAtom, getInteractiveWidgetHost } from '../../../../store/atoms/interactiveWidgetHost';
 import type { PermissionScope } from './InteractiveWidgetHost';
 import { unwrapShellCommand } from '../../utils/unwrapShellCommand';
 
@@ -163,16 +163,20 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
   const [localResult, setLocalResult] = useState<{ decision: 'allow' | 'deny'; scope: PermissionScope; cancelled?: boolean } | null>(null);
   const [isAllowingAllDomains, setIsAllowingAllDomains] = useState(false);
 
-  // Handle deny
+  // All handlers read the host imperatively at click time so a stale-null
+  // captured value from useAtomValue (e.g. caught during the brief gap
+  // between SessionTranscript's effect cleanup and re-set) doesn't bail
+  // the click before the live host can answer. See #276.
   const handleDeny = useCallback(async () => {
-    if (!host || hasResponded || !isPending) return;
+    const liveHost = host || getInteractiveWidgetHost(sessionId);
+    if (!liveHost || hasResponded || !isPending) return;
 
     setIsSubmitting(true);
     setLocalResult({ decision: 'deny', scope: 'once' });
     setHasResponded(true);
 
     try {
-      await host.toolPermissionSubmit(requestId, { decision: 'deny', scope: 'once' });
+      await liveHost.toolPermissionSubmit(requestId, { decision: 'deny', scope: 'once' });
     } catch (error) {
       console.error('[ToolPermissionWidget] Failed to deny:', error);
       setLocalResult(null);
@@ -180,18 +184,19 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
     } finally {
       setIsSubmitting(false);
     }
-  }, [host, requestId, hasResponded, isPending]);
+  }, [host, sessionId, requestId, hasResponded, isPending]);
 
   // Handle allow once
   const handleAllowOnce = useCallback(async () => {
-    if (!host || hasResponded || !isPending) return;
+    const liveHost = host || getInteractiveWidgetHost(sessionId);
+    if (!liveHost || hasResponded || !isPending) return;
 
     setIsSubmitting(true);
     setLocalResult({ decision: 'allow', scope: 'once' });
     setHasResponded(true);
 
     try {
-      await host.toolPermissionSubmit(requestId, { decision: 'allow', scope: 'once' });
+      await liveHost.toolPermissionSubmit(requestId, { decision: 'allow', scope: 'once' });
     } catch (error) {
       console.error('[ToolPermissionWidget] Failed to allow once:', error);
       setLocalResult(null);
@@ -199,18 +204,19 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
     } finally {
       setIsSubmitting(false);
     }
-  }, [host, requestId, hasResponded, isPending]);
+  }, [host, sessionId, requestId, hasResponded, isPending]);
 
   // Handle allow session
   const handleAllowSession = useCallback(async () => {
-    if (!host || hasResponded || !isPending) return;
+    const liveHost = host || getInteractiveWidgetHost(sessionId);
+    if (!liveHost || hasResponded || !isPending) return;
 
     setIsSubmitting(true);
     setLocalResult({ decision: 'allow', scope: 'session' });
     setHasResponded(true);
 
     try {
-      await host.toolPermissionSubmit(requestId, { decision: 'allow', scope: 'session' });
+      await liveHost.toolPermissionSubmit(requestId, { decision: 'allow', scope: 'session' });
     } catch (error) {
       console.error('[ToolPermissionWidget] Failed to allow session:', error);
       setLocalResult(null);
@@ -218,18 +224,19 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
     } finally {
       setIsSubmitting(false);
     }
-  }, [host, requestId, hasResponded, isPending]);
+  }, [host, sessionId, requestId, hasResponded, isPending]);
 
   // Handle allow always
   const handleAllowAlways = useCallback(async () => {
-    if (!host || hasResponded || !isPending) return;
+    const liveHost = host || getInteractiveWidgetHost(sessionId);
+    if (!liveHost || hasResponded || !isPending) return;
 
     setIsSubmitting(true);
     setLocalResult({ decision: 'allow', scope: 'always' });
     setHasResponded(true);
 
     try {
-      await host.toolPermissionSubmit(requestId, { decision: 'allow', scope: 'always' });
+      await liveHost.toolPermissionSubmit(requestId, { decision: 'allow', scope: 'always' });
     } catch (error) {
       console.error('[ToolPermissionWidget] Failed to allow always:', error);
       setLocalResult(null);
@@ -237,25 +244,26 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
     } finally {
       setIsSubmitting(false);
     }
-  }, [host, requestId, hasResponded, isPending]);
+  }, [host, sessionId, requestId, hasResponded, isPending]);
 
   // Handle allow all domains (WebFetch only)
   const handleAllowAllDomains = useCallback(async () => {
-    if (!host || hasResponded || !isPending) return;
+    const liveHost = host || getInteractiveWidgetHost(sessionId);
+    if (!liveHost || hasResponded || !isPending) return;
 
     setIsAllowingAllDomains(true);
     setLocalResult({ decision: 'allow', scope: 'always-all' });
     setHasResponded(true);
 
     try {
-      await host.toolPermissionSubmit(requestId, { decision: 'allow', scope: 'always-all' });
+      await liveHost.toolPermissionSubmit(requestId, { decision: 'allow', scope: 'always-all' });
     } catch (error) {
       console.error('[ToolPermissionWidget] Failed to allow all domains:', error);
       setLocalResult(null);
       setHasResponded(false);
       setIsAllowingAllDomains(false);
     }
-  }, [host, requestId, hasResponded, isPending]);
+  }, [host, sessionId, requestId, hasResponded, isPending]);
 
   // Determine display state
   const displayResult = localResult || completedState;
@@ -332,30 +340,21 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
     );
   }
 
-  // If no host available, show non-interactive pending state
-  if (!host) {
-    return (
-      <div
-        data-testid="tool-permission-widget"
-        data-state="pending"
-        className="tool-permission-widget rounded-lg bg-nim-secondary border border-nim-primary overflow-hidden"
-      >
-        <div className="flex items-center gap-2 py-3 px-4 bg-nim-tertiary">
-          <span className="w-5 h-5 text-nim-primary shrink-0">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
-              <path d="M12.5 7H3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              <path d="M5.5 4L3.5 7l2 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              <rect x="1" y="2" width="14" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-            </svg>
-          </span>
-          <span className="text-sm font-semibold text-nim flex-1">
-            Allow this tool?
-          </span>
-          <span data-testid="tool-permission-pending" className="text-xs text-nim-muted">Waiting...</span>
-        </div>
-      </div>
-    );
-  }
+  // Previously: when `host` was null we rendered a button-less "Waiting..."
+  // shell. That trapped users when SessionTranscript's host-attaching effect
+  // re-ran (cleanup nulls the atom, the new effect re-sets it on the next
+  // commit) and a permission request rendered during the gap, or when the
+  // session was mounted in a context that hadn't installed a host yet.
+  // The dialog had no controls to approve, deny, or cancel and stayed stuck
+  // indefinitely. See #276.
+  //
+  // Fix: fall through to the full interactive UI even when `host` is null.
+  // Click handlers read the host imperatively via getInteractiveWidgetHost
+  // at click time, so a transient atom-null doesn't poison the click. When
+  // `host` stays null at click time (rare; only if SessionTranscript truly
+  // never mounted for this session), the buttons are visibly disabled with
+  // a "Reconnecting to permission backend..." note instead of an invisible
+  // no-op. See `hostUnavailable` below.
 
   // Show interactive UI for pending request
   return (
@@ -460,6 +459,20 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
             {rawCommand || toolName}
           </code>
         </div>
+
+        {/* Host-unavailable note: shown when useAtomValue captured a null
+            host. Click handlers fall back to getInteractiveWidgetHost at
+            click time so a transient null does not stop the click, but the
+            user gets a visible signal in case the host never attaches. */}
+        {!host && (
+          <div
+            data-testid="tool-permission-host-reconnecting"
+            className="text-[11px] text-nim-muted bg-nim-tertiary border border-nim rounded px-2 py-1.5"
+          >
+            Reconnecting to permission backend. Buttons will work once the
+            session view is fully loaded.
+          </div>
+        )}
 
         {/* Actions row */}
         <div className="flex items-center gap-2 flex-wrap pt-2 border-t border-nim">
