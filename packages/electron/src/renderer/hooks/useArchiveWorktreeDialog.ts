@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { errorNotificationService } from '../services/ErrorNotificationService';
 
 export interface ArchiveWorktreeDialogState {
   worktreeId: string;
@@ -96,8 +97,15 @@ export function useArchiveWorktreeDialog(): UseArchiveWorktreeDialogResult {
           // console.log('[useArchiveWorktreeDialog] Auto-archive succeeded');
           return true;
         }
+        // Backend rejected the archive (e.g. worktree row missing, filesystem
+        // error renaming the worktree dir). Previously logged silently; now
+        // surfaced so the user knows why nothing visible happened. See #282.
+        const msg = result.error ? String(result.error) : 'The backend rejected the auto-archive.';
+        errorNotificationService.showError(`Failed to archive "${worktreeName}"`, msg);
         console.error('[useArchiveWorktreeDialog] Auto-archive failed:', result.error);
       } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        errorNotificationService.showError(`Failed to archive "${worktreeName}"`, msg);
         console.error('[useArchiveWorktreeDialog] Auto-archive failed:', error);
       }
       // Fall through to show dialog on archive error
@@ -124,15 +132,23 @@ export function useArchiveWorktreeDialog(): UseArchiveWorktreeDialogResult {
   const confirmArchive = useCallback(async (workspacePath: string, onSuccess?: () => void) => {
     if (!dialogState) return;
 
+    const worktreeName = dialogState.worktreeName;
     try {
       const result = await window.electronAPI.worktreeArchive(dialogState.worktreeId, workspacePath);
 
       if (result.success) {
         onSuccess?.();
       } else {
+        // The user clicked Confirm on the dialog. Previously the dialog
+        // simply closed with no UI feedback on failure, which reads as
+        // "Archive did nothing". Surface the rejection. See #282.
+        const msg = result.error ? String(result.error) : 'The backend rejected the archive.';
+        errorNotificationService.showError(`Failed to archive "${worktreeName}"`, msg);
         console.error('[useArchiveWorktreeDialog] Failed to archive worktree:', result.error);
       }
     } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      errorNotificationService.showError(`Failed to archive "${worktreeName}"`, msg);
       console.error('[useArchiveWorktreeDialog] Failed to archive worktree:', error);
     } finally {
       setDialogState(null);
