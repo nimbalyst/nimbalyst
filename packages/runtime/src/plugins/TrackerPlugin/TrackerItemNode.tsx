@@ -1,9 +1,12 @@
 import {
   $applyNodeReplacement,
+  $createParagraphNode,
   $createTextNode,
   ElementNode,
   LexicalNode,
   NodeKey,
+  ParagraphNode,
+  RangeSelection,
   SerializedElementNode,
   Spread,
   $getNodeByKey,
@@ -330,6 +333,23 @@ export class TrackerItemNode extends ElementNode {
     return false;
   }
 
+  // Without this, pressing Enter on a tracker-item line at the end of the
+  // document is a no-op: Lexical's default RichText KEY_ENTER_COMMAND handler
+  // calls insertNewAfter on the parent ElementNode and bails when the result
+  // is null. The base ElementNode implementation returns null, so the cursor
+  // has nowhere to go and the keypress is silently swallowed. Mirror the
+  // HeadingNode/QuoteNode pattern from @lexical/rich-text: a new empty
+  // paragraph below the tracker item. Tested behavior for #263.
+  insertNewAfter(
+    _selection: RangeSelection | null,
+    restoreSelection = true,
+  ): ParagraphNode {
+    const newElement = $createParagraphNode();
+    const direction = this.getDirection();
+    newElement.setDirection(direction);
+    this.insertAfter(newElement, restoreSelection);
+    return newElement;
+  }
 
 }
 

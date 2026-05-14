@@ -129,50 +129,84 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function trimmedString(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+/**
+ * Recursively descend a Codex SDK event/object looking for assistant text.
+ *
+ * Mirrors `getTextCandidate` from
+ * `packages/runtime/src/ai/server/providers/codex/textExtraction.ts` so the
+ * meta-agent's extraction stays structurally identical to the canonical
+ * parser used by codexEventParser and the transcript renderer. The previous
+ * bespoke implementation only inspected `item.text` / `item.content`
+ * shallowly, so Codex SDK events for `send_prompt` follow-up turns whose
+ * assistant text lived under `item.message`, `item.delta`, or
+ * `item.output_text` returned null. The meta-agent's `extractLastAgentResponse`
+ * then walked further back through the message log and surfaced a stale
+ * older turn instead. Fixes #270.
+ *
+ * Keep in sync with the canonical textExtraction.ts. Cross-package deep
+ * imports aren't available, so the algorithm is inlined here.
+ */
+function getCodexTextCandidate(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? value : null;
+  }
+
+  if (Array.isArray(value)) {
+    return getCodexTextFromContentArray(value);
+  }
+
+  if (value && typeof value === 'object') {
+    const item = value as Record<string, unknown>;
+    return (
+      getCodexTextCandidate(item.text) ??
+      getCodexTextCandidate(item.message) ??
+      getCodexTextCandidate(item.content) ??
+      getCodexTextCandidate(item.delta) ??
+      getCodexTextCandidate(item.output_text) ??
+      null
+    );
+  }
+
+  return null;
 }
 
-function extractFromContentArray(value: unknown): string | null {
-  if (!Array.isArray(value)) return null;
-  const parts: string[] = [];
-  for (const block of value) {
-    if (typeof block === 'string') {
-      const t = block.trim();
-      if (t) parts.push(t);
-      continue;
-    }
-    if (!isObject(block)) continue;
-    const blockType = block.type;
-    if ((blockType === 'text' || blockType === 'output_text') && typeof block.text === 'string') {
-      const t = block.text.trim();
-      if (t) parts.push(t);
-      continue;
-    }
-    const direct = trimmedString(block.text) ?? trimmedString(block.content) ?? trimmedString(block.value);
-    if (direct) parts.push(direct);
-  }
+function getCodexTextFromContentArray(content: unknown[]): string | null {
+  const parts = content
+    .map((entry) => {
+      if (typeof entry === 'string') return entry;
+      if (entry && typeof entry === 'object') {
+        const block = entry as Record<string, unknown>;
+        if (typeof block.text === 'string') return block.text;
+        if (typeof block.content === 'string') return block.content;
+        if (typeof block.value === 'string') return block.value;
+        if (block.type === 'text' && typeof block.text === 'string') return block.text;
+      }
+      return '';
+    })
+    .filter(Boolean);
   return parts.length > 0 ? parts.join('\n') : null;
 }
 
 /**
  * Extract assistant text from a Codex / OpenCode raw SDK event.
  *
- * Mirrors the subset of shapes that codexEventParser.parseCodexEvent treats
- * as text-bearing. Tool calls, usage, and reasoning-without-text are
- * intentionally ignored -- the meta-agent only cares about user-visible
- * assistant prose for its summaries.
+ * Delegates to the canonical extraction algorithm so the meta-agent's
+ * summaries pick up the same text the renderer does, including `send_prompt`
+ * follow-up turns that emit text in nested message/delta/output_text fields.
  */
 function extractCodexText(record: Record<string, unknown>): string | null {
   const eventType = typeof record.type === 'string' ? record.type : '';
 
+  // task_complete emits last_agent_message directly on the event
   if (eventType === 'task_complete') {
-    const text = trimmedString(record.last_agent_message);
+    const text = getCodexTextCandidate(record.last_agent_message);
     if (text) return text;
   }
 
+  // item.*  events (item.completed, item.updated, *.message, agent_message,
+  // reasoning, etc.). The canonical parser passes the entire item record to
+  // getTextCandidate so nested shapes are caught.
   const item = record.item;
   if (isObject(item)) {
     const itemType = typeof item.type === 'string' ? item.type : '';
@@ -183,35 +217,26 @@ function extractCodexText(record: Record<string, unknown>): string | null {
       eventType === 'item.completed' ||
       eventType === 'item.updated';
     if (isMessageLike) {
-      const text = trimmedString(item.text) ?? extractFromContentArray(item.content);
+      const text = getCodexTextCandidate(item);
       if (text) return text;
     }
   }
 
+  // event_msg envelope (older Codex SDK shape, kept for compatibility)
   if (eventType === 'event_msg' && isObject(record.payload)) {
     const payload = record.payload as Record<string, unknown>;
     const payloadType = typeof payload.type === 'string' ? payload.type : '';
     if (payloadType.includes('message') || payloadType.includes('text')) {
-      const text =
-        trimmedString(payload.text) ??
-        trimmedString(payload.delta) ??
-        trimmedString(payload.message) ??
-        extractFromContentArray(payload.content);
+      const text = getCodexTextCandidate(payload);
       if (text) return text;
     }
   }
 
-  if (record.delta != null) {
-    const deltaText = trimmedString(record.delta);
-    if (deltaText) return deltaText;
-    if (isObject(record.delta)) {
-      const text = trimmedString((record.delta as Record<string, unknown>).text) ??
-        extractFromContentArray((record.delta as Record<string, unknown>).content);
-      if (text) return text;
-    }
-  }
+  // Top-level delta / text fallbacks (streaming updates, plain text events)
+  const delta = getCodexTextCandidate(record.delta);
+  if (delta) return delta;
 
-  const direct = trimmedString(record.text);
+  const direct = getCodexTextCandidate(record.text);
   if (direct) return direct;
 
   return null;
