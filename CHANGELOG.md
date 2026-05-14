@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- Right-click Archive on a session in the session history sidebar now surfaces backend rejections as a visible error notification instead of failing silently. The renderer's `handleArchiveSession` and `handleArchiveMetaAgentSession` were only catching thrown errors; when the IPC handler returned a `{success: false, error}` envelope (e.g. the session-provider-switch guard rejecting the update, or a DB write failing), the optimistic UI removed the session locally but the DB was never updated, so the session reappeared on the next refresh and the user saw "Archive did nothing" with no feedback. Both handlers now check `result.success === false` and show the rejection message via `errorNotificationService`. Behaviour on the happy path is unchanged. (#282 observability)
 
 ### Removed
 <!-- Removed features go here -->
