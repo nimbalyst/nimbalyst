@@ -165,6 +165,47 @@ planStatus:
     expect(secondExport).toBe(firstExport);
   });
 
+  // Regression coverage for nimbalyst#86. The custom LINK transformer in
+  // MarkdownTransformers.ts captured the URL with its surrounding angle
+  // brackets when the markdown used the CommonMark `[text](<url>)` form,
+  // producing a LinkNode with an href of `<https://...>` that browsers
+  // reject. The link rendered as unclickable raw text. The fix strips the
+  // angle-bracket delimiters before constructing the LinkNode. These
+  // round-trip cases lock in the cleaned-up href and the export form
+  // (export drops the brackets, matching Typora / VS Code / GitHub).
+  it('imports a bare angle-bracket link and exports it without the brackets', () => {
+    const markdown = '[Link 1](<https://example.com/path?t=13m43s>)';
+    const exported = roundTripOnce(markdown);
+    expect(exported).toBe('[Link 1](https://example.com/path?t=13m43s)');
+  });
+
+  it('imports an angle-bracket link mid-sentence after quoted text', () => {
+    const markdown =
+      '"some quoted text" [Link 1](<https://example.com/path?t=13m43s>)';
+    const exported = roundTripOnce(markdown);
+    expect(exported).toBe(
+      '"some quoted text" [Link 1](https://example.com/path?t=13m43s)',
+    );
+  });
+
+  it('imports two angle-bracket links separated by a pipe', () => {
+    const markdown =
+      '[Link 1](<https://example.com/path?t=1m0s>) | [Link 2](<https://example.com/path?t=5m30s>)';
+    const exported = roundTripOnce(markdown);
+    expect(exported).toBe(
+      '[Link 1](https://example.com/path?t=1m0s) | [Link 2](https://example.com/path?t=5m30s)',
+    );
+  });
+
+  it('still imports plain `[text](url)` links unchanged (regression guard)', () => {
+    // The angle-bracket strip is conditional on both `<` and `>` bookending
+    // the URL. A plain URL must NOT be modified, and a URL that only happens
+    // to start with `<` (theoretical) must NOT lose its first character.
+    const markdown = '[plain](https://example.com/path)';
+    const exported = roundTripOnce(markdown);
+    expect(exported).toBe(markdown);
+  });
+
   it('exports a single node as the node itself, not just its children', () => {
     const markdown = '# Upgrade Heading';
     const editor = createMarkdownEditor();

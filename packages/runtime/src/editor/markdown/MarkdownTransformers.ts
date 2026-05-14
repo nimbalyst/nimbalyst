@@ -305,12 +305,28 @@ export const LINK: TextMatchTransformer = {
   // Note: These regexes must NOT match:
   // 1. Images like ![alt](src) - handled by negative lookbehind (?<!!)
   // 2. Linked images like [![alt](src)](url) - handled by negative lookahead (?!!\[)
+  //
+  // The URL capture group accepts a leading `<` and trailing `>` because the
+  // CommonMark spec allows `[text](<url>)` to delimit URLs that contain
+  // spaces, balanced parens, or special characters (e.g. Obsidian emits this
+  // form for timestamp-anchor links like `[Link](<https://example.com/path?t=13m43s>)`).
+  // The angle brackets are delimiters per CommonMark, NOT part of the URL,
+  // so the captured value is unwrapped in `replace` before being passed to
+  // `$createLinkNode`. Without this strip the LinkNode would carry an href
+  // of `<https://...>` which browsers reject as malformed, and the editor
+  // would render the link text as unclickable raw text. See nimbalyst#86.
   importRegExp:
     /(?<!!)(?:\[(?!!\[)([^\]]+)\])(?:\(([^\s\)]+)(?:\s+"([^"]*)")?\))/,
   regExp:
     /(?<!!)(?:\[(?!!\[)([^\]]+)\])(?:\(([^\s\)]+)(?:\s+"([^"]*)")?\))$/,
   replace: (textNode, match) => {
-    const [, linkText, linkUrl, linkTitle] = match;
+    const [, linkText, rawUrl, linkTitle] = match;
+    // CommonMark `<url>` form: strip the angle-bracket delimiters before
+    // constructing the LinkNode so the href is a real URL.
+    const linkUrl =
+      rawUrl && rawUrl.startsWith('<') && rawUrl.endsWith('>')
+        ? rawUrl.slice(1, -1)
+        : rawUrl;
     const linkNode = $createLinkNode(linkUrl, {title: linkTitle});
     const linkTextNode = $createTextNode(linkText);
     linkTextNode.setFormat(textNode.getFormat());

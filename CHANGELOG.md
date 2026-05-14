@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- CommonMark angle-bracket inline links now render as clickable hyperlinks in the Lexical document editor. The custom `LINK` text-match transformer in `MarkdownTransformers.ts` captured the URL with its surrounding `<` and `>` delimiters when the markdown used the `[text](<url>)` form (the CommonMark form for URLs that contain spaces, balanced parens, or special characters; Obsidian emits this shape for timestamp-anchor links like `[Link](<https://example.com/path?t=13m43s>)`). The angle-bracket characters were passed through to `$createLinkNode`, producing an href of `<https://...>` that browsers reject, so the link rendered as unclickable raw text mid-sentence. The transformer now strips the delimiters before constructing the `LinkNode`. Plain `[text](url)` links are unchanged. Export normalizes to the plain form (consistent with Typora / VS Code / GitHub). (#86)
 
 ### Removed
 <!-- Removed features go here -->
