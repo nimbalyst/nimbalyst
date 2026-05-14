@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import type { DocumentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources';
 import { buildUserMessageAddition } from '../documentContextUtils';
 import type { DocumentContext } from '../../types';
@@ -107,7 +108,14 @@ export async function prepareClaudeCodeAttachments(
         const filename = attachment.filename || path.basename(attachment.filepath);
 
         if (textContent.length > largeAttachmentCharThreshold) {
-          const tmpFilePath = path.join('/tmp', `nimbalyst-attachment-${Date.now()}-${filename}`);
+          // Use os.tmpdir() for cross-platform temp directory resolution. The
+          // previous hardcoded '/tmp' produced literal Windows paths like
+          // `\tmp\nimbalyst-attachment-...txt` that do not resolve, so the
+          // agent received a path it could not Read and either failed the
+          // turn or wasted turns globbing for the file. AttachmentProcessor
+          // already uses os.tmpdir(); this brings the duplicate path-build
+          // here in line. See nimbalyst#269.
+          const tmpFilePath = path.join(os.tmpdir(), `nimbalyst-attachment-${Date.now()}-${filename}`);
           await fs.promises.writeFile(tmpFilePath, textContent, 'utf-8');
           largeAttachmentFilePaths.push({ filename, filepath: tmpFilePath });
         } else {

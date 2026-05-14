@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- Large pasted-text attachments now use the platform tmpdir on Windows. The `claude-code` attachment preparation in `messagePreparation.ts` was hardcoding `path.join('/tmp', ...)` when writing over-threshold documents to disk, producing literal `\tmp\nimbalyst-attachment-...txt` paths on Windows that the agent's Read tool could not resolve. The agent then either failed the turn or wasted turns globbing the workspace, AppData\Local\Temp, and Downloads looking for the file. Switched to `os.tmpdir()` so Windows receives a real `C:\Users\<user>\AppData\Local\Temp\...` path while macOS / Linux keep their native temp roots. `AttachmentProcessor.processDocument` already used `os.tmpdir()`; this brings the duplicate path-builder in line. (#269)
 
 ### Removed
 <!-- Removed features go here -->
