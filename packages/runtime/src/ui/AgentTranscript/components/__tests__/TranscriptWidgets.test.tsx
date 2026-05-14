@@ -479,7 +479,13 @@ describe('ToolPermissionWidget', () => {
     ToolPermissionWidget = mod.ToolPermissionWidget;
   });
 
-  it('renders pending state without host (shows "Waiting...")', () => {
+  it('renders pending state with action buttons and reconnecting note when host is null', () => {
+    // Before #276: the widget rendered a button-less "Waiting..." shell when
+    // the interactiveWidgetHost atom captured a null host, leaving the user
+    // stuck with no way to approve or deny. After: the full interactive
+    // action row renders, plus a visible "Reconnecting" note so the user
+    // knows what's happening. Click handlers fall back to an imperative
+    // host lookup at click time, so the buttons stay actionable.
     const message = makeToolMessage('ToolPermission', {
       requestId: 'req-1',
       toolName: 'Bash',
@@ -498,7 +504,9 @@ describe('ToolPermissionWidget', () => {
     );
     expect(screen.getByTestId('tool-permission-widget')).toBeDefined();
     expect(screen.getByTestId('tool-permission-widget').dataset.state).toBe('pending');
-    expect(screen.getByText('Waiting...')).toBeDefined();
+    expect(screen.getByTestId('tool-permission-host-reconnecting')).toBeDefined();
+    expect(screen.getByTestId('tool-permission-deny')).toBeDefined();
+    expect(screen.getByTestId('tool-permission-allow-once')).toBeDefined();
   });
 
   it('renders granted state from tool result', () => {

@@ -2851,14 +2851,25 @@ export class AIService {
           return { success: true, provider };
         }
 
-        // For OpenCode, verify the CLI is installed
+        // For OpenCode, verify the CLI is installed. Electron's spawn
+        // inherits a restricted PATH that does not include version-manager
+        // bin directories (nvm, asdf, Volta, fnm). When the user installs
+        // opencode-ai under nvm the binary lives at
+        // ~/.nvm/versions/node/<version>/bin/opencode and naked execSync
+        // returns "command not found" -- the user sees "OpenCode CLI not
+        // found" even though `opencode` resolves fine in their shell.
+        // CLIManager.getEnhancedPath() already builds the augmented PATH
+        // used by every other CLI check; route through it here too.
+        // See nimbalyst#184.
         if (provider === 'opencode') {
           try {
             const { execSync } = await import('child_process');
+            const { getEnhancedPath } = await import('../CLIManager');
+            const enhancedPath = getEnhancedPath();
             const version = execSync('opencode --version', {
               encoding: 'utf8',
               timeout: 5000,
-              env: process.env as Record<string, string>,
+              env: { ...process.env, PATH: enhancedPath } as Record<string, string>,
               stdio: ['pipe', 'pipe', 'pipe'],
             }).trim();
             return { success: true, provider, version };

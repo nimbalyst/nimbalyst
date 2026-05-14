@@ -43,6 +43,7 @@ import { AlphaBadge } from '../common/AlphaBadge';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
 import { usePostHog } from 'posthog-js/react';
 import { WorkspaceSummaryHeader, generateWorkspaceAccentColor } from '../WorkspaceSummaryHeader';
+import { errorNotificationService } from '../../services/ErrorNotificationService';
 import './SessionHistory.css';
 
 // SessionItem is the shared SessionMeta type from the store atoms.
@@ -708,8 +709,22 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
   };
 
   const handleArchiveSession = async (sessionId: string) => {
+    // The IPC handler at packages/electron/src/main/ipc/SessionHandlers.ts:472
+    // returns `{success: true}` on the happy path and `{success: false, error}`
+    // on validation/DB failures (e.g. session-provider-switch guard, session
+    // not found, store write failure). We previously only caught throws,
+    // which meant a returned `{success: false}` envelope still produced the
+    // optimistic UI removal even though the DB write didn't happen — the
+    // session reappeared on next refresh and the user saw "Archive does
+    // nothing" with no clue why. See #282.
     try {
-      await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
+      const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
+      if (result && typeof result === 'object' && result.success === false) {
+        const message = (result.error && String(result.error)) || 'The backend rejected the archive request.';
+        errorNotificationService.showError('Failed to archive session', message);
+        console.error('[SessionHistory] Archive rejected by backend:', message);
+        return;
+      }
       // Update atom state immediately for instant feedback (optimistic update)
       // If not showing archived, this effectively removes it from view
       updateSessionStore({ sessionId, updates: { isArchived: true } });
@@ -720,6 +735,8 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
         onSessionArchive(sessionId);
       }
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errorNotificationService.showError('Failed to archive session', message);
       console.error('[SessionHistory] Failed to archive session:', err);
     }
   };
@@ -736,15 +753,34 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
   const handleArchiveMetaAgentSession = useCallback(async (metaSessionId: string) => {
     const sessionIds = getMetaAgentGroupSessionIds(metaSessionId);
     try {
-      await Promise.all(
+      const results = await Promise.all(
         sessionIds.map(sessionId => window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true }))
       );
+      // Same rejection-surfacing as handleArchiveSession: if any per-session
+      // archive came back `{success: false}`, surface it rather than silently
+      // proceeding with the optimistic UI update. See #282.
+      const failures = results
+        .map((r, i) => ({ r, sessionId: sessionIds[i] }))
+        .filter(({ r }) => r && typeof r === 'object' && r.success === false);
+      if (failures.length > 0) {
+        const message = failures
+          .map(({ r, sessionId }) => `${sessionId}: ${(r && r.error && String(r.error)) || 'rejected'}`)
+          .join('\n');
+        errorNotificationService.showError(
+          `Failed to archive meta-agent session (${failures.length} of ${sessionIds.length} rejected)`,
+          message,
+        );
+        console.error('[SessionHistory] Meta-agent archive rejected by backend:', failures);
+        return;
+      }
       sessionIds.forEach(sessionId => {
         updateSessionStore({ sessionId, updates: { isArchived: true } });
         onSessionArchive?.(sessionId);
       });
       setSessions(prev => prev.filter(session => !sessionIds.includes(session.id)));
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errorNotificationService.showError('Failed to archive meta-agent session', message);
       console.error('[SessionHistory] Failed to archive meta-agent session:', err);
     }
   }, [getMetaAgentGroupSessionIds, onSessionArchive, updateSessionStore]);

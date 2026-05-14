@@ -366,7 +366,20 @@ export class ClaudeSDKProtocol implements AgentProtocol {
   }
 
   /**
-   * Build document content blocks from attachments
+   * Build document content blocks from attachments.
+   *
+   * Two attachment shapes produce document blocks:
+   *
+   * 1. PDFs (`attachment.type === 'pdf'`): base64 source with
+   *    `media_type: 'application/pdf'`.
+   * 2. Text documents (`attachment.type === 'document'`): handled by the
+   *    `AttachmentProcessor` text path which base64-encodes the file
+   *    contents; we decode and emit a text-source document so Claude treats
+   *    the file contents as in-line context. Before this fix the text
+   *    branch was missing, so document attachments were silently dropped
+   *    and only the `@filename` text token reached the agent. The agent
+   *    then tried to resolve the filename as a path and reported "file does
+   *    not exist." See #239.
    */
   private buildDocumentBlocks(attachments?: any[]): DocumentBlockParam[] {
     if (!attachments || attachments.length === 0) {
@@ -385,6 +398,27 @@ export class ClaudeSDKProtocol implements AgentProtocol {
             data: attachment.base64Data,
           },
           title: attachment.filename || 'document.pdf',
+        });
+        continue;
+      }
+      if (attachment.type === 'document' && attachment.base64Data) {
+        // AttachmentProcessor base64-encodes text content; decode for the
+        // text-source document block so the agent sees the actual content.
+        let textContent: string;
+        try {
+          textContent = Buffer.from(attachment.base64Data, 'base64').toString('utf-8');
+        } catch (err) {
+          console.error('[ClaudeSDKProtocol] Failed to decode document attachment:', err);
+          continue;
+        }
+        documentBlocks.push({
+          type: 'document',
+          source: {
+            type: 'text',
+            media_type: 'text/plain',
+            data: textContent,
+          } as DocumentBlockParam['source'],
+          title: attachment.filename || 'document.txt',
         });
       }
     }

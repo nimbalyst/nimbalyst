@@ -148,6 +148,27 @@ export class ClaudeProvider extends BaseAIProvider {
               } catch (error) {
                 console.error('[ClaudeProvider] Failed to read PDF attachment:', error);
               }
+            } else if (attachment.type === 'document') {
+              // Text document attachment. Without this branch the only signal
+              // that reaches Claude is the `@filename` token rendered into
+              // msg.content, and the agent reports "file does not exist." See
+              // nimbalyst#239. Emit a text-source document block so the file
+              // contents land in-context the same way the claude-code path
+              // (messagePreparation.ts) handles documents.
+              try {
+                const textContent = await fs.readFile(attachment.filepath, 'utf-8');
+                content.push({
+                  type: 'document',
+                  source: {
+                    type: 'text',
+                    media_type: 'text/plain',
+                    data: textContent
+                  },
+                  title: attachment.filename
+                });
+              } catch (error) {
+                console.error('[ClaudeProvider] Failed to read document attachment:', error);
+              }
             }
           }
 
@@ -220,6 +241,25 @@ export class ClaudeProvider extends BaseAIProvider {
             });
           } catch (error) {
             console.error('[ClaudeProvider] Failed to read PDF attachment:', error);
+          }
+        } else if (attachment.type === 'document') {
+          // Text document attachment on the current outgoing message. Mirrors
+          // the past-message branch above. Without this, only the `@filename`
+          // token reaches Claude and the agent answers "file does not exist."
+          // See nimbalyst#239.
+          try {
+            const textContent = await fs.readFile(attachment.filepath, 'utf-8');
+            content.push({
+              type: 'document',
+              source: {
+                type: 'text',
+                media_type: 'text/plain',
+                data: textContent
+              },
+              title: attachment.filename
+            });
+          } catch (error) {
+            console.error('[ClaudeProvider] Failed to read document attachment:', error);
           }
         }
       }

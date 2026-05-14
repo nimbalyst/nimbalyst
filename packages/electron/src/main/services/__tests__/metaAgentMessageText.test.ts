@@ -158,6 +158,90 @@ describe('extractMessageText', () => {
     });
   });
 
+  // Regression coverage for #270: the meta-agent's get_session_result returned
+  // a stale lastResponse on send_prompt follow-up turns because the old
+  // bespoke Codex extractor only descended into item.text / item.content
+  // shallowly. The canonical codexEventParser walks item.message,
+  // item.delta, item.output_text recursively; this suite locks the meta-agent
+  // text extractor to that same contract.
+  describe('Codex follow-up turn shapes (issue #270)', () => {
+    it('extracts text from item.message on item.completed', () => {
+      const text = extractMessageText(JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'item_2',
+          type: 'agent_message',
+          message: 'Follow-up reply via item.message',
+        },
+      }));
+      expect(text).toBe('Follow-up reply via item.message');
+    });
+
+    it('extracts text from item.delta on item.updated', () => {
+      const text = extractMessageText(JSON.stringify({
+        type: 'item.updated',
+        item: {
+          id: 'item_3',
+          type: 'response_message',
+          delta: 'Streaming chunk content',
+        },
+      }));
+      expect(text).toBe('Streaming chunk content');
+    });
+
+    it('extracts text from item.output_text on item.completed', () => {
+      const text = extractMessageText(JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'item_4',
+          type: 'agent_message',
+          output_text: 'Reply via output_text',
+        },
+      }));
+      expect(text).toBe('Reply via output_text');
+    });
+
+    it('extracts nested text from item.content array of {type, text} blocks', () => {
+      const text = extractMessageText(JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'item_5',
+          type: 'agent_message',
+          content: [
+            { type: 'text', text: 'First sentence' },
+            { type: 'text', text: 'Second sentence' },
+          ],
+        },
+      }));
+      expect(text).toBe('First sentence\nSecond sentence');
+    });
+
+    it('extracts text from event_msg payload.message', () => {
+      const text = extractMessageText(JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'response_message',
+          message: 'Payload-shaped follow-up reply',
+        },
+      }));
+      expect(text).toBe('Payload-shaped follow-up reply');
+    });
+
+    it('still extracts text from the original item.completed + item.text shape', () => {
+      // Regression guard for the shape that already worked, so the refactor
+      // does not break what the OP saw on initial-turn responses.
+      const text = extractMessageText(JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'item_1',
+          type: 'agent_message',
+          text: 'Initial-turn reply via item.text',
+        },
+      }));
+      expect(text).toBe('Initial-turn reply via item.text');
+    });
+  });
+
   describe('system reminder filtering', () => {
     it('returns null when metadata.promptType is system_reminder', () => {
       const text = extractMessageText(
