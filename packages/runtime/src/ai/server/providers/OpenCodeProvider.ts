@@ -219,7 +219,19 @@ export class OpenCodeProvider extends BaseAgentProvider {
     }));
 
     const config = await OpenCodeProvider.configLoader?.().catch(() => null);
-    if (!config?.provider) {
+    if (!config) {
+      // No file found or unreadable. Surface this in the log so the user can
+      // tell the difference between "I have no providers configured" and
+      // "Nimbalyst can't find the file you wrote". See #284.
+      if (OpenCodeProvider.configLoader) {
+        // eslint-disable-next-line no-console -- runtime package logger is renderer-only
+        console.warn(
+          '[OpenCode] configLoader returned null. opencode.json was not found or could not be parsed. Configured providers will not appear in the model picker.'
+        );
+      }
+      return presets;
+    }
+    if (!config.provider) {
       return presets;
     }
 
