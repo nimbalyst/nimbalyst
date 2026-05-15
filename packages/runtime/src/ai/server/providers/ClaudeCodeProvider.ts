@@ -708,10 +708,26 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // the "Stream closed" tool permission errors.
       let resultReceivedTime: number | null = null;
       let resultReceivedChunkCount: number | null = null;
-      // 5 seconds matches the parent investigation's tunable. If diagnostic
-      // logs still show STREAM_CLOSED_DIAGNOSTIC after RESULT_MESSAGE_RECEIVED,
-      // bump this. Don't go too high or interrupted/idle turns will linger.
-      const PROMPT_GRACE_MS = 5000;
+      // Grace window after `type: 'result'` before the controller ends the
+      // prompt iterable and the SDK closes the binary's stdin pipe.
+      //
+      // Originally 5 seconds. Bumped to 30 seconds in the #320 follow-up
+      // after reporters hit "Tool permission request failed: Error: Stream
+      // closed" on sessions with 15-25+ accumulated tracker tasks. The
+      // binary's task-list `<system-reminder>` hook serializes that many
+      // tasks slowly enough that the result chunk lands well before the
+      // hook finishes; the hook then tries to write the reminder over a
+      // stdin that the previous 5s timer had already closed and throws,
+      // ending the prompt controller and turning every subsequent
+      // permission-requiring tool into "Stream closed".
+      //
+      // The reset-on-activity branch below still resets the timer on every
+      // post-result chunk, so a turn that genuinely keeps streaming work
+      // never hits the timer. Interrupted / idle turns linger for the
+      // grace window; 30s is the trade-off for the task-list-heavy case.
+      // If diagnostic logs still show STREAM_CLOSED_DIAGNOSTIC after
+      // RESULT_MESSAGE_RECEIVED on a session with this fix, bump further.
+      const PROMPT_GRACE_MS = 30_000;
       const armPromptEndTimer = (reason: string) => {
         if (this.promptEndTimer) {
           clearTimeout(this.promptEndTimer);

@@ -2419,6 +2419,115 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
   // Check if we have an active search query
   const hasSearchQuery = searchQuery.trim().length > 0;
 
+  // Pre-render the "new session / worktree / terminal / blitz" dropdown so that
+  // both the empty-state early-return AND the main return can mount it. Before
+  // #306 this JSX lived only inside the main return; clicking the + button when
+  // all sessions were archived (so the empty-state branch fired) opened the
+  // dropdown state but the JSX never rendered, and the user saw nothing happen
+  // unless they used Ctrl+N. The dropdown is `position: fixed` against the
+  // viewport so re-rendering it from either return path produces identical
+  // visual placement. Reported by @TaiwanTammy on #306.
+  const newDropdownPortal = newDropdownOpen && newDropdownPosition && (
+    <div
+      ref={newDropdownMenuRef}
+      className="session-history-new-menu fixed min-w-40 bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded overflow-hidden z-[1000] shadow-[0_4px_12px_rgba(0,0,0,0.15)] whitespace-nowrap"
+      style={{
+        right: `${window.innerWidth - newDropdownPosition.x}px`,
+        top: `${newDropdownPosition.y}px`
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {onNewSession && (
+        <button
+          className="session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)] [&>span]:flex-1"
+          data-testid="new-session-button"
+          onClick={() => { onNewSession(); setNewDropdownOpen(false); setNewDropdownPosition(null); }}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+          <span>New Session</span>
+          <span className="session-history-new-option-shortcut flex-none text-[11px] text-[var(--nim-text-muted)] opacity-70">{getShortcutDisplay(KeyboardShortcuts.file.newSession)}</span>
+        </button>
+      )}
+      {onNewWorktreeSession && (
+        <button
+          className={`session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)] [&>span]:flex-1 ${!isGitRepo ? 'opacity-50 cursor-not-allowed hover:bg-transparent' : ''}`}
+          data-testid="new-worktree-session-button"
+          onClick={() => { if (isGitRepo) { onNewWorktreeSession(); setNewDropdownOpen(false); setNewDropdownPosition(null); } }}
+          disabled={!isGitRepo}
+          title={!isGitRepo ? 'Worktrees require a git repository' : undefined}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M5 13v-2.5a1.5 1.5 0 0 1 1.5-1.5h3"/>
+            <path d="M9.5 9V4.5"/>
+            <circle cx="5" cy="4.5" r="1.5"/>
+            <circle cx="9.5" cy="4.5" r="1.5"/>
+            <path d="M5 6v2.5a1.5 1.5 0 0 0 1.5 1.5"/>
+            <path d="M12 7v4M10 9h4"/>
+          </svg>
+          <span>New Worktree</span>
+          <span className="session-history-new-option-shortcut flex-none text-[11px] text-[var(--nim-text-muted)] opacity-70">{getShortcutDisplay(KeyboardShortcuts.window.newWorktree)}</span>
+        </button>
+      )}
+      {onNewBlitz && (
+        <button
+          className={`session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)] ${!isGitRepo ? 'opacity-50 cursor-not-allowed hover:bg-transparent' : ''}`}
+          data-testid="new-blitz-button"
+          onClick={() => { if (isGitRepo) { onNewBlitz(); setNewDropdownOpen(false); setNewDropdownPosition(null); } }}
+          disabled={!isGitRepo}
+          title={!isGitRepo ? 'Blitz requires a git repository' : undefined}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M9 2L4 9h4l-1 5 5-7H8l1-5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <span className="flex-1">New Blitz</span>
+          <AlphaBadge size="xs" />
+        </button>
+      )}
+      {onNewTerminal && (
+        <button
+          className="session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)] [&>span]:flex-1"
+          data-testid="new-terminal-button"
+          onClick={() => { onNewTerminal(); setNewDropdownOpen(false); setNewDropdownPosition(null); }}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M3 5L7 9L3 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M9 13H13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+          <span>New Terminal</span>
+        </button>
+      )}
+      {isSuperLoopsAvailable && (
+        <button
+          className={`session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)] ${!isGitRepo ? 'opacity-50 cursor-not-allowed hover:bg-transparent' : ''}`}
+          data-testid="new-super-loop-button"
+          onClick={() => { if (isGitRepo) { openSuperLoopDialog(); setNewDropdownOpen(false); setNewDropdownPosition(null); } }}
+          disabled={!isGitRepo}
+          title={!isGitRepo ? 'Super Loops require a git repository' : undefined}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M13 5.5H9.5M13 5.5L10.5 3M13 5.5L10.5 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M3 10.5H6.5M3 10.5L5.5 8M3 10.5L5.5 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <span className="flex-1">New Super Loop</span>
+          <AlphaBadge size="xs" />
+        </button>
+      )}
+      {isMetaAgentEnabled && (
+        <button
+          className="session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)]"
+          data-testid="new-meta-agent-button"
+          onClick={() => { void handleNewMetaAgent(); setNewDropdownOpen(false); setNewDropdownPosition(null); }}
+        >
+          <MaterialSymbol icon="hub" size={14} />
+          <span className="flex-1">New Meta Agent</span>
+          <AlphaBadge size="xs" />
+        </button>
+      )}
+    </div>
+  );
+
   if (sessions.length === 0 && !hasSearchQuery) {
     // No sessions at all - show simple empty state without search
     return (
@@ -2483,6 +2592,11 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
             Create a new session to get started
           </p>
         </div>
+        {/* Mount the new-session dropdown here too. Without this, clicking +
+            in the empty state opens the dropdown state but the JSX is missing
+            from this return path - the previous render site was only in the
+            main return below. See #306. */}
+        {newDropdownPortal}
       </div>
     );
   }
@@ -3084,107 +3198,9 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
       {/* New Super Loop dialog */}
       <NewSuperLoopDialog workspacePath={workspacePath} />
 
-      {/* New dropdown menu - fixed position outside main container */}
-      {newDropdownOpen && newDropdownPosition && (
-        <div
-          ref={newDropdownMenuRef}
-          className="session-history-new-menu fixed min-w-40 bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded overflow-hidden z-[1000] shadow-[0_4px_12px_rgba(0,0,0,0.15)] whitespace-nowrap"
-          style={{
-            right: `${window.innerWidth - newDropdownPosition.x}px`,
-            top: `${newDropdownPosition.y}px`
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {onNewSession && (
-            <button
-              className="session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)] [&>span]:flex-1"
-              data-testid="new-session-button"
-              onClick={() => { onNewSession(); setNewDropdownOpen(false); setNewDropdownPosition(null); }}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
-              <span>New Session</span>
-              <span className="session-history-new-option-shortcut flex-none text-[11px] text-[var(--nim-text-muted)] opacity-70">{getShortcutDisplay(KeyboardShortcuts.file.newSession)}</span>
-            </button>
-          )}
-          {onNewWorktreeSession && (
-            <button
-              className={`session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)] [&>span]:flex-1 ${!isGitRepo ? 'opacity-50 cursor-not-allowed hover:bg-transparent' : ''}`}
-              data-testid="new-worktree-session-button"
-              onClick={() => { if (isGitRepo) { onNewWorktreeSession(); setNewDropdownOpen(false); setNewDropdownPosition(null); } }}
-              disabled={!isGitRepo}
-              title={!isGitRepo ? 'Worktrees require a git repository' : undefined}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M5 13v-2.5a1.5 1.5 0 0 1 1.5-1.5h3"/>
-                <path d="M9.5 9V4.5"/>
-                <circle cx="5" cy="4.5" r="1.5"/>
-                <circle cx="9.5" cy="4.5" r="1.5"/>
-                <path d="M5 6v2.5a1.5 1.5 0 0 0 1.5 1.5"/>
-                <path d="M12 7v4M10 9h4"/>
-              </svg>
-              <span>New Worktree</span>
-              <span className="session-history-new-option-shortcut flex-none text-[11px] text-[var(--nim-text-muted)] opacity-70">{getShortcutDisplay(KeyboardShortcuts.window.newWorktree)}</span>
-            </button>
-          )}
-          {onNewBlitz && (
-            <button
-              className={`session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)] ${!isGitRepo ? 'opacity-50 cursor-not-allowed hover:bg-transparent' : ''}`}
-              data-testid="new-blitz-button"
-              onClick={() => { if (isGitRepo) { onNewBlitz(); setNewDropdownOpen(false); setNewDropdownPosition(null); } }}
-              disabled={!isGitRepo}
-              title={!isGitRepo ? 'Blitz requires a git repository' : undefined}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M9 2L4 9h4l-1 5 5-7H8l1-5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-              <span className="flex-1">New Blitz</span>
-              <AlphaBadge size="xs" />
-            </button>
-          )}
-          {onNewTerminal && (
-            <button
-              className="session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)] [&>span]:flex-1"
-              data-testid="new-terminal-button"
-              onClick={() => { onNewTerminal(); setNewDropdownOpen(false); setNewDropdownPosition(null); }}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M3 5L7 9L3 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M9 13H13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-              <span>New Terminal</span>
-            </button>
-          )}
-          {isSuperLoopsAvailable && (
-            <button
-              className={`session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)] ${!isGitRepo ? 'opacity-50 cursor-not-allowed hover:bg-transparent' : ''}`}
-              data-testid="new-super-loop-button"
-              onClick={() => { if (isGitRepo) { openSuperLoopDialog(); setNewDropdownOpen(false); setNewDropdownPosition(null); } }}
-              disabled={!isGitRepo}
-              title={!isGitRepo ? 'Super Loops require a git repository' : undefined}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M13 5.5H9.5M13 5.5L10.5 3M13 5.5L10.5 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M3 10.5H6.5M3 10.5L5.5 8M3 10.5L5.5 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-              <span className="flex-1">New Super Loop</span>
-              <AlphaBadge size="xs" />
-            </button>
-          )}
-          {isMetaAgentEnabled && (
-            <button
-              className="session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)]"
-              data-testid="new-meta-agent-button"
-              onClick={() => { void handleNewMetaAgent(); setNewDropdownOpen(false); setNewDropdownPosition(null); }}
-            >
-              <MaterialSymbol icon="hub" size={14} />
-              <span className="flex-1">New Meta Agent</span>
-              <AlphaBadge size="xs" />
-            </button>
-          )}
-        </div>
-      )}
+      {/* New dropdown menu - extracted to `newDropdownPortal` above so the
+          empty-state early-return can also mount it. See #306. */}
+      {newDropdownPortal}
     </div>
   );
 };

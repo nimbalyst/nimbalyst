@@ -41,6 +41,7 @@ import TableHoverActionsPlugin from './plugins/TableHoverActionsPlugin';
 import ToolbarPlugin from './plugins/ToolbarPlugin';
 import TreeViewPlugin from './plugins/TreeViewPlugin';
 import { SelectionAlwaysOnDisplay } from './plugins/SelectionAlwaysOnDisplayPlugin';
+import ListEnterFormatClearPlugin from './plugins/ListEnterFormatClearPlugin';
 import ContentEditable from './ui/ContentEditable';
 import { AnchorProvider } from './context/AnchorContext';
 import { FrontmatterProvider } from './context/FrontmatterContext';
@@ -261,6 +262,7 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
               ErrorBoundary={LexicalErrorBoundary}
             />
             <MarkdownShortcutPlugin />
+            <ListEnterFormatClearPlugin />
             {isCodeHighlighted && (
               <Suspense fallback={null}>
                 <CodeHighlightPlugin />
