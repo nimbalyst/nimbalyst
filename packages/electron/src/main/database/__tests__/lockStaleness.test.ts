@@ -92,11 +92,13 @@ describe('decideLockIsRunning (issue #272)', () => {
     });
   });
 
-  describe('EPERM + fresh timestamp (genuine live sibling)', () => {
-    it('treats EPERM as RUNNING when lock is younger than the grace window', () => {
+  describe('EPERM + fresh timestamp (ambiguous - ask the user)', () => {
+    it('returns decision=ambiguous when lock is younger than the grace window (Greg #316 review)', () => {
       // A sibling Nimbalyst running under another user/profile that
       // happens to share this PGLite path. Lock was acquired 10s ago,
-      // within the 60s grace. Block the launch.
+      // within the 60s grace. Could also be a fast PID reuse if the
+      // original Nimbalyst wrote the lock <60s before crash. Cannot
+      // tell from kill(0) alone - ask the user via dialog.
       const killFn = vi.fn(() => {
         throw makeKillError('EPERM');
       });
@@ -106,8 +108,13 @@ describe('decideLockIsRunning (issue #272)', () => {
         killFn,
         now: NOW,
       });
+      expect(result.decision).toBe('ambiguous');
+      // isRunning stays true for backwards compatibility with callers
+      // that have not yet been updated to consume `decision`.
       expect(result.isRunning).toBe(true);
-      expect(result.reason).toMatch(/live sibling/);
+      expect(result.reason).toMatch(/Ambiguous/);
+      expect(result.lockPid).toBe(9999);
+      expect(result.lockAgeMs).toBe(10_000);
     });
 
     it('uses a custom grace window when caller overrides it', () => {

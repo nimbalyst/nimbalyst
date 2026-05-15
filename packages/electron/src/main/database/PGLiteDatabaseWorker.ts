@@ -546,6 +546,76 @@ export class PGLiteDatabaseWorker {
       logger.main.error('[PGLite Worker] Failed to initialize:', error);
       this.initPromise = null;
 
+      // Check for the AMBIGUOUS branch FIRST (its error message also contains
+      // the string "DATABASE_LOCKED" so the simpler check below would match
+      // it otherwise). The ambiguous branch fires when worker.js could not
+      // signal the lock holder via `kill(0)` (EPERM) AND the lock timestamp
+      // is fresh enough that we cannot rule out a real sibling instance.
+      // Per @ghinkle's review on the closed PR #316: ask the user instead of
+      // guessing. See #272 for the original Windows-pid-reuse hazard.
+      if (error?.code === 'DATABASE_LOCKED_AMBIGUOUS') {
+        if (process.env.PLAYWRIGHT === '1') {
+          // Tests should never hit this; if they do, surface the ambiguity
+          // rather than silently force-unlocking which could mask a real
+          // dual-instance race in test setup.
+          console.error('FATAL: Ambiguous database-lock state in Playwright. Refusing to force-unlock.');
+          process.exit(1);
+        }
+        const lockPid = (error as any).lockPid;
+        const lockTimestamp = (error as any).lockTimestamp;
+        const lockHostname = (error as any).lockHostname;
+        const lockFilePath = (error as any).lockFilePath as string | undefined;
+        const response = await dialog.showMessageBox({
+          type: 'question',
+          title: 'Nimbalyst - Database Locked (Ambiguous)',
+          message: 'Cannot tell whether another Nimbalyst is already running.',
+          detail:
+            `Nimbalyst found a database lock from a few seconds ago and cannot confirm whether ` +
+            `the process holding it (PID ${lockPid}, host ${lockHostname}, acquired ${lockTimestamp}) ` +
+            `is still alive. Two scenarios are equally likely:\n\n` +
+            `  1. Another Nimbalyst window is open under a different user account or privilege level. ` +
+            `Opening anyway will run two instances against the same database and may corrupt data.\n\n` +
+            `  2. A previous Nimbalyst crashed less than a minute ago and the OS has already reused ` +
+            `the original PID for a system process. In this case the lock is safe to clear.\n\n` +
+            `If unsure, choose Cancel and look for another Nimbalyst window before retrying.`,
+          buttons: ['Cancel', 'Open Anyway (clear lock)'],
+          defaultId: 0,
+          cancelId: 0,
+        }).catch(() => ({ response: 0 } as Electron.MessageBoxReturnValue));
+
+        if (response.response === 1 && lockFilePath) {
+          this.analytics.sendEvent('database_lock_ambiguous_force_unlock', { lockPid });
+          try {
+            const fs = await import('fs');
+            fs.unlinkSync(lockFilePath);
+            logger.main.info(`[PGLite Worker] User chose to force-unlock; removed ${lockFilePath}. Retrying init.`);
+            // Recreate worker + retry init. INIT_TIMEOUT_MS covers the
+            // post-force-unlock recovery path (#238 lesson).
+            await this.recreateWorkerAndReinit();
+            this.initialized = true;
+            return;
+          } catch (unlockErr) {
+            logger.main.error('[PGLite Worker] Force-unlock failed:', unlockErr);
+            this.showErrorAndQuit(
+              'Database Locked',
+              'Could not clear the database lock.',
+              `Removing the lock file failed: ${this.formatError(unlockErr)}\n\n` +
+              `If another Nimbalyst window is open, close it manually before retrying.`
+            );
+            throw new HandledError('DATABASE_LOCKED_AMBIGUOUS_UNLOCK_FAILED');
+          }
+        }
+
+        // User cancelled - quit cleanly without removing the lock.
+        this.analytics.sendEvent('database_lock_ambiguous_cancel', { lockPid });
+        this.showErrorAndQuit(
+          'Database Locked',
+          'Nimbalyst cannot start while the database lock state is uncertain.',
+          'Close any other Nimbalyst windows you have open and try again. If you are sure no other Nimbalyst is running, restart this machine to clear any stale system locks.'
+        );
+        throw new HandledError('DATABASE_LOCKED_AMBIGUOUS');
+      }
+
       // Check for database locked error (another instance running)
       if (error?.message?.includes('DATABASE_LOCKED') || error?.message?.includes('locked by another process')) {
         if (process.env.PLAYWRIGHT === '1') {
