@@ -13,12 +13,13 @@ import {
   categorizeDownloadDuration,
   classifyUpdateError,
   isWindowsRenameLockError,
+  shouldShowAvailableToast,
 } from './autoUpdaterUtils';
 
 // Re-export the pure utilities so callers that already pulled them from this
 // module keep working. Unit tests should import from `autoUpdaterUtils`
 // directly to avoid the Electron app-global load chain.
-export { classifyUpdateError, categorizeDownloadDuration, isWindowsRenameLockError };
+export { classifyUpdateError, categorizeDownloadDuration, isWindowsRenameLockError, shouldShowAvailableToast };
 
 // Reminder suppression duration: 24 hours
 const REMINDER_SUPPRESSION_DURATION_MS = 24 * 60 * 60 * 1000;
@@ -48,8 +49,18 @@ export class AutoUpdaterService {
     log.transports.file.level = 'info';
     autoUpdater.logger = log;
 
-    // Configure auto-updater
-    autoUpdater.autoDownload = false;
+    // Configure auto-updater.
+    //
+    // autoDownload = true: follow-up to #314 / #245 where Greg signed off with
+    //   "I'll accept this to avoid the error conditions, but plan to move
+    //   toward auto-download in the future."
+    // Background-poll updates now download silently so the user only sees
+    // the "Ready to install" toast once the bytes are on disk. The
+    // `update-toast:show-available` toast that previously asked the user
+    // to click "Download" is gated below on `wasManualCheck` so the manual
+    // "Check for Updates" path still confirms the find before the download
+    // proceeds. See `shouldShowAvailableToast` in autoUpdaterUtils.ts.
+    autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
 
     // Configure feed URL based on release channel
@@ -108,14 +119,24 @@ export class AutoUpdaterService {
       // `update_toast_shown` analytics after passing suppression checks --
       // firing here would over-count by ~14x because update-available
       // re-fires every hourly auto-check even when the toast is suppressed.
-      this.sendToFrontmostWindow('update-toast:show-available', {
-        currentVersion: app.getVersion(),
-        newVersion: info.version,
-        releaseNotes: releaseNotes,
-        releaseDate: info.releaseDate,
-        releaseChannel: channel,
-        isManualCheck: wasManualCheck
-      });
+      //
+      // Gated on `wasManualCheck` because `autoDownload = true` (#314 follow-up)
+      // means the download starts on its own after this event. On the
+      // background-poll path the user only needs the post-download "Ready"
+      // toast; on the manual-check path we still fire the available toast so
+      // the user's "Check for Updates" click gets a visible confirmation
+      // before the renderer transitions through 'downloading' on the
+      // first progress event.
+      if (shouldShowAvailableToast(wasManualCheck)) {
+        this.sendToFrontmostWindow('update-toast:show-available', {
+          currentVersion: app.getVersion(),
+          newVersion: info.version,
+          releaseNotes: releaseNotes,
+          releaseDate: info.releaseDate,
+          releaseChannel: channel,
+          isManualCheck: wasManualCheck
+        });
+      }
 
       this.sendToAllWindows('update-available', info);
     });

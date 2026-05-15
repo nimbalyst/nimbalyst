@@ -61,3 +61,27 @@ export function isWindowsRenameLockError(err: Error): boolean {
   if (/\bEBUSY\b/i.test(msg)) return true;
   return false;
 }
+
+/**
+ * Decide whether the renderer should be told to show the `update-toast:show-available`
+ * toast when `update-available` fires under the auto-download policy (#245 follow-up
+ * to Greg's #314 sign-off: "plan to move toward auto-download in the future").
+ *
+ * With `autoUpdater.autoDownload = true` the download starts on its own immediately
+ * after `update-available` fires. The "Update available, click Download" toast is
+ * therefore redundant on the background-poll path -- the user only needs to see
+ * the "Ready to install" toast that follows `update-downloaded`.
+ *
+ * On the manual-check path the user explicitly clicked "Check for Updates" and
+ * expects acknowledgement that an update was found. The toast still fires there
+ * and the renderer transitions through 'available' -> 'downloading' -> 'ready'
+ * via the progress and downloaded events that come in afterwards.
+ *
+ * Pure function so the gating logic stays unit-testable without booting an
+ * Electron app global. Single argument now, but kept as a named function so
+ * the policy can grow (channel filters, dismissal suppression, etc.) without
+ * touching the call site.
+ */
+export function shouldShowAvailableToast(wasManualCheck: boolean): boolean {
+  return wasManualCheck;
+}
