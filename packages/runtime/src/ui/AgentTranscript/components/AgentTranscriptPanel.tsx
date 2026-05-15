@@ -472,6 +472,11 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   );
 });
 
+const getSessionStatus = (sessionData: SessionData): string | undefined => {
+  const status = sessionData.metadata?.sessionStatus;
+  return typeof status === 'string' ? status : undefined;
+};
+
 /**
  * Memoized version of AgentTranscriptPanel.
  * This prevents unnecessary re-renders when parent components re-render
@@ -527,14 +532,19 @@ export const AgentTranscriptPanel = React.memo(
     // Provider changed - must re-render
     if (prevData.provider !== nextData.provider) return false;
 
-    // Metadata changed - check reference
-    if (prevData.metadata !== nextData.metadata) return false;
+    // Only re-render for metadata fields that actually affect transcript rendering.
+    // A full metadata reference check caused idle-session churn (read-state, updatedAt, etc.)
+    // which remounted virtualized rows and dropped text selection.
+    if (getSessionStatus(prevData) !== getSessionStatus(nextData)) return false;
 
     // Document context changed - check reference
     if (prevData.documentContext !== nextData.documentContext) return false;
 
     // Token usage changed - check reference
     if (prevData.tokenUsage !== nextData.tokenUsage) return false;
+
+    // Worker status affects inline transcript state even when messages don't change.
+    if (prevProps.currentTeammates !== nextProps.currentTeammates) return false;
 
     // App start time changed - must re-render (restart indicator)
     if (prevProps.appStartTime !== nextProps.appStartTime) return false;

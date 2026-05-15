@@ -18,6 +18,7 @@ import { isToolLikeMessage } from '../utils/messageTypeHelpers';
 import { getCustomToolWidget, ToolWidgetErrorBoundary, type ToolCallDiffResult } from './CustomToolWidgets';
 import { ToolCallChanges } from './ToolCallChanges';
 import { setSessionIsAtBottom, getSessionIsAtBottom } from '../../../store/atoms/transcriptScroll';
+import { isAppleMobileWebKit } from '../../../utils/platform';
 
 // Per-session VList cache - survives component remounts so returning to a session
 // doesn't re-measure all items from scratch
@@ -134,6 +135,55 @@ const injectRichTranscriptStyles = () => {
       max-width: 72rem;
     }
 
+    /* Flat-list (content-visibility) mode. The container scrolls, each top-level
+       row is hinted to the browser so paint and layout can be skipped while it
+       is far from the viewport. The DOM nodes stay mounted so the Selection API
+       preserves drag-selection across scroll. */
+    .rich-transcript-flat-list {
+      display: flex;
+      flex-direction: column;
+      max-width: 64rem;
+      margin: 0 auto;
+      padding: 0 0.75rem;
+    }
+    .rich-transcript-content.compact .rich-transcript-flat-list {
+      max-width: 72rem;
+    }
+    .rich-transcript-flat-list > * {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 90px;
+    }
+    /* Chat-bottom layout: when transcript content is shorter than the
+       scrollable viewport, push it against the bottom so the latest message
+       sits next to the input. When content overflows, this is a no-op and
+       normal top-to-bottom scrolling takes over. */
+    .rich-transcript-scroll-container.flat {
+      display: flex;
+      flex-direction: column;
+    }
+    .rich-transcript-scroll-container.flat > .rich-transcript-content {
+      margin-top: auto;
+    }
+    /* Scroll-container scrollbar styling, mirrors the VList rule above so the
+       flat-list path shares the same thin themed scrollbar. */
+    .rich-transcript-scroll-container.flat {
+      scrollbar-width: thin;
+      scrollbar-color: var(--nim-scrollbar-thumb) transparent;
+    }
+    .rich-transcript-scroll-container.flat::-webkit-scrollbar {
+      width: 8px;
+    }
+    .rich-transcript-scroll-container.flat::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .rich-transcript-scroll-container.flat::-webkit-scrollbar-thumb {
+      background-color: var(--nim-scrollbar-thumb);
+      border-radius: 4px;
+    }
+    .rich-transcript-scroll-container.flat::-webkit-scrollbar-thumb:hover {
+      background-color: var(--nim-scrollbar-thumb-hover);
+    }
+
     /* Copy button hover visibility */
     .rich-transcript-message-copy-action {
       opacity: 0;
@@ -182,11 +232,11 @@ const injectRichTranscriptStyles = () => {
     }
 
     /* Scroll-ready fade-in transition to prevent flash when switching sessions */
-    .rich-transcript-vlist-wrapper {
+    .rich-transcript-messages-wrapper {
       opacity: 0;
       transition: opacity 0.15s ease-out;
     }
-    .rich-transcript-vlist-wrapper.scroll-ready {
+    .rich-transcript-messages-wrapper.scroll-ready {
       opacity: 1;
     }
   `;
@@ -591,6 +641,35 @@ const looksLikeJson = (value: string) => {
   return (trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'));
 };
 
+const getTranscriptMessageKey = (
+  sessionId: string,
+  message: TranscriptViewMessage,
+  index: number
+): string => {
+  const stableId =
+    Number.isFinite(message.id) ? `id-${message.id}` :
+    Number.isFinite(message.sequence) ? `seq-${message.sequence}` :
+    `idx-${index}`;
+  return `${sessionId}-${stableId}`;
+};
+
+const getTranscriptToolKey = (
+  toolMsg: TranscriptViewMessage,
+  fallbackIndex: number,
+  depth: number
+): string => {
+  const stableId =
+    toolMsg.toolCall?.providerToolCallId ||
+    toolMsg.subagentId ||
+    (Number.isFinite(toolMsg.id) ? `id-${toolMsg.id}` : null) ||
+    (Number.isFinite(toolMsg.sequence) ? `seq-${toolMsg.sequence}` : null) ||
+    `idx-${fallbackIndex}`;
+  // Append fallbackIndex as a tiebreaker. Some providers report the same
+  // providerToolCallId for both a parent tool and a derived/echo row at the
+  // same depth, which would collide if we keyed by stableId alone.
+  return `tool-${depth}-${stableId}-i${fallbackIndex}`;
+};
+
 const stableSerialize = (value: unknown): string => {
   if (value === null || value === undefined) return String(value);
   if (typeof value !== 'object') return JSON.stringify(value);
@@ -979,7 +1058,19 @@ export const RichTranscriptView = React.forwardRef<
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const viewRootRef = useRef<HTMLDivElement>(null);
   const vlistRef = useRef<VListHandle>(null);
+  const flatListRef = useRef<HTMLDivElement>(null);
+  const flatBottomSentinelRef = useRef<HTMLDivElement>(null);
   const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  // Virtualization vs. flat content-visibility rendering.
+  // iOS WebKit lands `content-visibility: auto` in iOS 18 but selection
+  // extension into skipped content is rougher than Chromium, so we keep the
+  // existing virtua path for iPhone/iPad/iPod and let Chromium-based hosts
+  // (Electron, Capacitor Android) render the full list with content-visibility.
+  // Selection on iOS is rare enough that the tradeoff is worth it; on desktop
+  // selection is the primary complaint and content-visibility preserves DOM
+  // node identity across scroll so the browser's Selection API keeps working.
+  const useVirtualization = useMemo(() => isAppleMobileWebKit(), []);
 
   const settings = propsSettings || defaultSettings;
 
@@ -1045,7 +1136,6 @@ export const RichTranscriptView = React.forwardRef<
     }
     return 'Thinking...';
   }, [isProcessing, isWaitingForResponse, runningTeammates, sessionStatus, waitingForNoun]);
-
 
   // Compute effective target index for prompt additions display
   // Use the stored messageIndex if valid, otherwise find the last user message
@@ -1153,46 +1243,65 @@ export const RichTranscriptView = React.forwardRef<
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            if (vlistRef.current && pendingPermissionIndices.length > 0) {
+            if (pendingPermissionIndices.length === 0) return;
+            let anyVisible = false;
+            if (useVirtualization) {
+              if (!vlistRef.current) return;
               const offset = vlistRef.current.scrollOffset;
               const viewportSize = vlistRef.current.viewportSize;
               const firstVisibleIdx = vlistRef.current.findItemIndex(offset);
               const lastVisibleIdx = vlistRef.current.findItemIndex(offset + viewportSize);
-              const anyVisible = pendingPermissionIndices.some(
+              anyVisible = pendingPermissionIndices.some(
                 idx => idx >= firstVisibleIdx && idx <= lastVisibleIdx
               );
-              pendingPermissionsVisibleRef.current = anyVisible;
-              setShowPermissionBanner(!anyVisible);
+            } else {
+              const container = scrollContainerRef.current;
+              if (!container) return;
+              const containerRect = container.getBoundingClientRect();
+              anyVisible = pendingPermissionIndices.some(idx => {
+                const el = messageRefs.current.get(idx);
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                return r.bottom > containerRect.top && r.top < containerRect.bottom;
+              });
             }
+            pendingPermissionsVisibleRef.current = anyVisible;
+            setShowPermissionBanner(!anyVisible);
           });
         });
       });
     }
-  }, [pendingPermissionIndices, sessionId]);
+  }, [pendingPermissionIndices, sessionId, useVirtualization]);
 
   // Expose scroll method via ref
   React.useImperativeHandle(ref, () => ({
     scrollToMessage: (index: number) => {
-      if (vlistRef.current) {
+      if (useVirtualization) {
+        if (!vlistRef.current) return;
         vlistRef.current.scrollToIndex(index, { align: 'center' });
-        // Add highlight after scroll
-        setTimeout(() => {
-          const messageDiv = messageRefs.current.get(index);
-          if (messageDiv) {
-            messageDiv.classList.add('highlight-message');
-            setTimeout(() => {
-              messageDiv.classList.remove('highlight-message');
-            }, 2000);
-          }
-        }, 100);
+      } else {
+        const messageDiv = messageRefs.current.get(index);
+        messageDiv?.scrollIntoView({ block: 'center', behavior: 'auto' });
       }
+      // Highlight after scroll settles
+      setTimeout(() => {
+        const messageDiv = messageRefs.current.get(index);
+        if (messageDiv) {
+          messageDiv.classList.add('highlight-message');
+          setTimeout(() => {
+            messageDiv.classList.remove('highlight-message');
+          }, 2000);
+        }
+      }, 100);
     },
     scrollToTop: () => {
-      if (vlistRef.current) {
-        vlistRef.current.scrollToIndex(0, { align: 'start' });
+      if (useVirtualization) {
+        vlistRef.current?.scrollToIndex(0, { align: 'start' });
+      } else if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = 0;
       }
     }
-  }), []);
+  }), [useVirtualization]);
 
   // Reset scroll-ready state when session changes or container hides
   useEffect(() => {
@@ -1212,15 +1321,26 @@ export const RichTranscriptView = React.forwardRef<
     // Single RAF: wrapper is opacity:0 until scroll-ready, so intermediate state is invisible.
     // With itemSize hint + cache, VList can estimate scroll position accurately on first try.
     requestAnimationFrame(() => {
-      if (vlistRef.current) {
-        vlistRef.current.scrollToIndex(messages.length - 1, { align: 'end' });
+      if (useVirtualization) {
+        vlistRef.current?.scrollToIndex(messages.length - 1, { align: 'end' });
+      } else {
+        // content-visibility: auto rows use the intrinsic-size placeholder
+        // (90px) until they are first painted, so scrollHeight is under-
+        // estimated at first paint. scrollIntoView on a bottom sentinel
+        // forces the browser to measure the path to the sentinel and place
+        // the latest message at the viewport's bottom edge -- reliable.
+        flatBottomSentinelRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
       }
-      // Let VList settle, then reveal
+      // Let layout settle, then reveal -- and re-pin to bottom in case
+      // content-visibility expanded any rows after our first scroll.
       requestAnimationFrame(() => {
+        if (!useVirtualization) {
+          flatBottomSentinelRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
+        }
         setIsScrollReady(true);
       });
     });
-  }, [sessionId, isContainerVisible]); // Re-run when session changes or container becomes visible
+  }, [sessionId, isContainerVisible, useVirtualization]); // Re-run when session changes or container becomes visible
 
   // Auto-scroll to bottom when messages change (if user was at bottom)
   useEffect(() => {
@@ -1228,26 +1348,74 @@ export const RichTranscriptView = React.forwardRef<
     const wasAtBottom = getSessionIsAtBottom(sessionId);
 
     requestAnimationFrame(() => {
-      if (vlistRef.current) {
+      if (useVirtualization) {
+        if (!vlistRef.current) return;
         const scrollSize = vlistRef.current.scrollSize;
         const viewportSize = vlistRef.current.viewportSize;
         const scrollOffset = vlistRef.current.scrollOffset;
         const distanceFromBottom = scrollSize - scrollOffset - viewportSize;
         const isCurrentlyAtBottom = distanceFromBottom < 100;
 
-        // Auto-scroll if user was at bottom (from atom state) or is currently at bottom
-        const shouldAutoScroll = wasAtBottom || isCurrentlyAtBottom;
-
-        if (shouldAutoScroll) {
+        if (wasAtBottom || isCurrentlyAtBottom) {
           // Account for the "Thinking..." indicator which is an extra item after messages
           const lastIndex = isWaitingForResponse ? messages.length : messages.length - 1;
           vlistRef.current.scrollToIndex(lastIndex, { align: 'end' });
-          // Update atom to reflect we're now at bottom
+          setSessionIsAtBottom(sessionId, true);
+        }
+      } else {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+        const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        const isCurrentlyAtBottom = distanceFromBottom < 100;
+
+        if (wasAtBottom || isCurrentlyAtBottom) {
+          flatBottomSentinelRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
           setSessionIsAtBottom(sessionId, true);
         }
       }
     });
-  }, [messages, isWaitingForResponse, sessionId]);
+  }, [messages, isWaitingForResponse, sessionId, useVirtualization]);
+
+  // Flat-list mode: bind a scroll handler to the container to mirror the
+  // tracking that VList does internally (isAtBottom atom, scroll-to-bottom
+  // button visibility, permission banner visibility).
+  useEffect(() => {
+    if (useVirtualization) return;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      const scrollSize = container.scrollHeight;
+      const viewportSize = container.clientHeight;
+      const scrollOffset = container.scrollTop;
+      const distanceFromBottom = scrollSize - scrollOffset - viewportSize;
+      const isAtBottom = distanceFromBottom < 50;
+      setSessionIsAtBottom(sessionId, isAtBottom);
+      if (scrollButtonRef.current) {
+        const show = distanceFromBottom > viewportSize;
+        scrollButtonRef.current.style.opacity = show ? '1' : '0';
+        scrollButtonRef.current.style.pointerEvents = show ? '' : 'none';
+      }
+      if (pendingPermissionIndices.length > 0) {
+        const containerRect = container.getBoundingClientRect();
+        const anyVisible = pendingPermissionIndices.some(idx => {
+          const el = messageRefs.current.get(idx);
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          return r.bottom > containerRect.top && r.top < containerRect.bottom;
+        });
+        if (pendingPermissionsVisibleRef.current !== anyVisible) {
+          pendingPermissionsVisibleRef.current = anyVisible;
+          setShowPermissionBanner(!anyVisible);
+        }
+      } else if (showPermissionBanner) {
+        setShowPermissionBanner(false);
+      }
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [useVirtualization, sessionId, pendingPermissionIndices, showPermissionBanner]);
 
 
   // Listen for routed search events from AgentWorkstreamPanel
@@ -1286,12 +1454,15 @@ export const RichTranscriptView = React.forwardRef<
   }, [sessionId, showSearchBar]);
 
   const scrollToBottom = useCallback(() => {
-    if (vlistRef.current) {
+    if (useVirtualization) {
+      if (!vlistRef.current) return;
       // Account for the "Thinking..." indicator which is an extra item after messages
       const lastIndex = isWaitingForResponse ? messages.length : messages.length - 1;
       vlistRef.current.scrollToIndex(lastIndex, { align: 'end' });
+    } else {
+      flatBottomSentinelRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
     }
-  }, [messages.length, isWaitingForResponse]);
+  }, [messages.length, isWaitingForResponse, useVirtualization]);
 
   const toggleMessageCollapse = (index: number) => {
     setCollapsedMessages(prev => {
@@ -1444,6 +1615,7 @@ export const RichTranscriptView = React.forwardRef<
 
     const tool = toolMsg.toolCall;
     const toolId = tool.providerToolCallId || tool.toolName || `tool-${toolIndex}`;
+    const toolRenderKey = getTranscriptToolKey(toolMsg, toolIndex, depth);
     const isExpanded = expandedTools.has(toolId);
     const isSubAgent = toolMsg.type === 'subagent';
     const isTeammate = isSubAgent && !!(toolMsg.subagent?.teammateName || toolMsg.subagent?.teamName);
@@ -1453,7 +1625,7 @@ export const RichTranscriptView = React.forwardRef<
     if (CustomWidget) {
       return (
         <div
-          key={`tool-${toolIndex}-${depth}`}
+          key={toolRenderKey}
           className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`}
           style={{ marginLeft: depth > 0 ? '1rem' : '0' }}
         >
@@ -1480,7 +1652,7 @@ export const RichTranscriptView = React.forwardRef<
     if (tool.toolName === 'file_change' && getToolCallDiffs) {
       return (
         <div
-          key={`tool-${toolIndex}-${depth}`}
+          key={toolRenderKey}
           className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`}
           style={{ marginLeft: depth > 0 ? '1rem' : '0' }}
         >
@@ -1503,7 +1675,7 @@ export const RichTranscriptView = React.forwardRef<
     if (editTool && editEntries.length > 0) {
       return (
         <div
-          key={`tool-${toolIndex}-${depth}`}
+          key={toolRenderKey}
           className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`}
           style={{ marginLeft: depth > 0 ? '1rem' : '0' }}
         >
@@ -1537,7 +1709,7 @@ export const RichTranscriptView = React.forwardRef<
           : 'rich-transcript-tool-card rounded border border-[var(--nim-border)] overflow-hidden bg-[var(--nim-bg-secondary)]';
 
     return (
-      <div key={`tool-${toolIndex}-${depth}`} className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`} style={{ marginLeft: depth > 0 ? '1rem' : '0' }}>
+      <div key={toolRenderKey} className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`} style={{ marginLeft: depth > 0 ? '1rem' : '0' }}>
         <div className={cardClass}>
           <button onClick={() => toggleToolExpand(toolId)} className="rich-transcript-tool-button w-full py-1 px-2 flex items-center gap-1.5 text-left border-none cursor-pointer text-sm bg-transparent">
             {isTeammate ? (
@@ -1754,6 +1926,320 @@ export const RichTranscriptView = React.forwardRef<
     );
   };
 
+  // Rendered message rows. Computed once and reused by both the VList path
+  // (iOS WKWebView) and the flat-list / content-visibility path (Chromium hosts).
+  // Each row's outer div carries `data-message-index` and registers its DOM
+  // node in `messageRefs` so imperative scroll and selection helpers work in
+  // both modes.
+  const renderedMessages = messages.map((message, index) => {
+    const messageKey = getTranscriptMessageKey(sessionId, message, index);
+    // Skip tool calls superseded by a later event with the same providerToolCallId
+    if (supersededToolIndices.has(index)) {
+      return <div key={messageKey} style={{ display: 'none' }} />;
+    }
+
+    const isUser = message.type === 'user_message';
+    const isTool = isToolLikeMessage(message);
+    const isCollapsed = collapsedMessages.has(index);
+
+    // Hide assistant/tool messages that sit between agent notifications.
+    // These are the agent's internal processing turns after receiving a teammate/sub-agent
+    // message - they appear as dark bars with scrollbars and add visual noise.
+    // NEVER hide interactive tool widgets (ToolPermission, ExitPlanMode, etc.) that require user action.
+    // Also never hide assistant messages that would carry interactive widgets in toolMessagesBefore.
+    if (message.type === 'assistant_message' || isToolLikeMessage(message)) {
+      const isInteractiveWidget = isToolLikeMessage(message) && message.toolCall?.toolName &&
+        INTERACTIVE_WIDGET_TOOLS.has(message.toolCall.toolName);
+      // For assistant messages, check if preceding tool messages contain interactive widgets
+      let hasInteractiveToolsBefore = false;
+      if (message.type === 'assistant_message') {
+        let checkPrev = index - 1;
+        while (checkPrev >= 0 && isToolLikeMessage(messages[checkPrev])) {
+          if (messages[checkPrev].toolCall?.toolName && INTERACTIVE_WIDGET_TOOLS.has(messages[checkPrev].toolCall!.toolName!)) {
+            hasInteractiveToolsBefore = true;
+            break;
+          }
+          checkPrev--;
+        }
+      }
+      if (!isInteractiveWidget && !hasInteractiveToolsBefore) {
+        // Walk back to find the nearest user message (skipping tool and assistant messages)
+        let prevIdx = index - 1;
+        while (prevIdx >= 0 && messages[prevIdx].type !== 'user_message') prevIdx--;
+        if (prevIdx >= 0 && messages[prevIdx].metadata?.isTeammateMessage) {
+          // The most recent user message before this is a teammate notification.
+          // Only hide empty processing turns (no substantive content).
+          const hasNoContent = !message.text?.trim();
+          if (hasNoContent) {
+            return <div key={messageKey} style={{ display: 'none' }} />;
+          }
+        }
+      }
+    }
+
+    // Find tool messages that should be grouped with this message
+    const toolMessagesBefore: { message: TranscriptViewMessage, index: number }[] = [];
+    if (message.type === 'assistant_message') {
+      let checkIdx = index - 1;
+      while (checkIdx >= 0 && isToolLikeMessage(messages[checkIdx])) {
+        toolMessagesBefore.unshift({ message: messages[checkIdx], index: checkIdx });
+        checkIdx--;
+      }
+    }
+
+    // Skip rendering tool messages - they'll be rendered with their assistant message
+    if (isTool) {
+      let nextIndex = index + 1;
+      while (nextIndex < messages.length && isToolLikeMessage(messages[nextIndex])) {
+        nextIndex++;
+      }
+      if (nextIndex < messages.length && messages[nextIndex].type === 'assistant_message') {
+        // Return empty div for virtualization (can't return null)
+        return <div key={messageKey} style={{ display: 'none' }} />;
+      }
+    }
+
+    // Check if this is the start of a new message group
+    let effectivePrevMessage = null;
+    let checkIdx = index - 1;
+    while (checkIdx >= 0 && isToolLikeMessage(messages[checkIdx])) {
+      checkIdx--;
+    }
+    if (checkIdx >= 0) {
+      effectivePrevMessage = messages[checkIdx];
+    }
+    const isNewGroup = !effectivePrevMessage || effectivePrevMessage.type !== message.type;
+
+    // Render orphaned tool calls.
+    // When settings.showToolCalls is false, hide non-interactive tool
+    // rows from the chat view but always render interactive widgets
+    // (ToolPermission / ExitPlanMode / AskUserQuestion /
+    // GitCommitProposal) so the user can still act on prompts.
+    if (isTool && message.toolCall) {
+      const toolName = message.toolCall.toolName;
+      const isInteractiveWidget = toolName ? INTERACTIVE_WIDGET_TOOLS.has(toolName) : false;
+      if (!settings.showToolCalls && !isInteractiveWidget) {
+        return null;
+      }
+      return (
+        <div key={messageKey} className="rich-transcript-tool-container orphan ml-6 mb-2">
+          {renderToolCard(message, index, 0)}
+        </div>
+      );
+    }
+
+    // Render teammate/sub-agent messages as compact inline notifications
+    if (isUser && message.metadata?.isTeammateMessage) {
+      const teammateName = (message.metadata?.teammateName as string) || 'agent';
+      const label = `Received message from agent ${teammateName}`;
+      const content = message.text?.trim();
+      // Show first line as preview (truncated)
+      const firstLine = content?.split('\n')[0] || '';
+      const preview = firstLine.length > 100 ? firstLine.slice(0, 100) + '...' : firstLine;
+      const hasMoreContent = content && (content.includes('\n') || content.length > 100);
+      return (
+        <div
+          key={messageKey}
+          data-message-index={index}
+          ref={(el) => {
+            if (el) messageRefs.current.set(index, el);
+          }}
+          className="rich-transcript-message rich-transcript-teammate-notification rounded-md relative max-w-full overflow-x-hidden break-words mb-1"
+        >
+          {hasMoreContent ? (
+            <details>
+              <summary className="flex items-center gap-1.5 py-0.5 text-xs text-[var(--nim-text-faint)] hover:text-[var(--nim-text-muted)]">
+                <MaterialSymbol icon="chevron_right" size={14} className="teammate-chevron transition-transform shrink-0 w-3.5" />
+                <span className="flex-1 truncate">{label}: {preview}</span>
+                <span className="text-[10px] shrink-0">{formatMessageTime(message.createdAt?.getTime() ?? 0)}</span>
+              </summary>
+              <div className="teammate-content ml-5 mt-1 mb-0.5">
+                <MarkdownRenderer content={content} isUser={false} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />
+              </div>
+            </details>
+          ) : (
+            <div className="flex items-center gap-1.5 py-0.5 text-xs text-[var(--nim-text-faint)]">
+              <MaterialSymbol icon="chevron_right" size={14} className="shrink-0 w-3.5 invisible" />
+              <span className="flex-1 truncate">{label}: {content}</span>
+              <span className="text-[10px] shrink-0">{formatMessageTime(message.createdAt?.getTime() ?? 0)}</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if ((message.type === 'system_message' && message.systemMessage?.systemType !== 'error') || (message.metadata?.promptType as string) === 'system_reminder') {
+      return (
+        <div
+          key={messageKey}
+          data-message-index={index}
+          ref={(el) => {
+            if (el) messageRefs.current.set(index, el);
+          }}
+        >
+          <SystemReminderCard message={message} />
+        </div>
+      );
+    }
+
+    return (
+      <div
+        key={messageKey}
+        data-message-index={index}
+        ref={(el) => {
+          if (el) messageRefs.current.set(index, el);
+        }}
+        className={`rich-transcript-message rounded-md relative max-w-full overflow-x-hidden break-words mb-2 ${isUser ? 'user bg-[var(--nim-bg-secondary)]' : 'assistant bg-[var(--nim-bg)]'} ${settings.compactMode ? 'compact p-2' : 'normal p-3'} ${!isNewGroup ? 'continuation -mt-1' : ''}`}
+      >
+        {/* Restart indicator line (dev mode only) - rendered before the first message after restart */}
+        {restartAfterIndex >= 0 && index === restartAfterIndex && (
+          <div className="flex items-center gap-3 mb-3">
+            <div className="flex-1 h-px bg-[var(--nim-error)]" />
+            <span className="text-[11px] font-medium text-[var(--nim-error)] whitespace-nowrap">
+              Nimbalyst restarted {formatMessageTime(appStartTime!)}
+            </span>
+            <div className="flex-1 h-px bg-[var(--nim-error)]" />
+          </div>
+        )}
+        {isNewGroup && (
+          <div className="rich-transcript-message-header flex items-center gap-2 mb-1.5">
+            <div className={`rich-transcript-message-avatar w-7 h-7 rounded-full shrink-0 flex items-center justify-center ${isUser ? 'user' : 'assistant'}`}>
+              {isUser ? (
+                <MaterialSymbol icon="person" size={18} />
+              ) : (
+                <ProviderIcon provider={provider || 'claude-code'} size={18} />
+              )}
+            </div>
+            <div className="rich-transcript-message-meta flex-1 flex items-baseline gap-2">
+              <span className="rich-transcript-message-sender font-medium text-[var(--nim-text)] text-sm">
+                {isUser ? 'You' : getProviderDisplayName(provider)}
+              </span>
+              {isUser && message.mode === 'planning' && (
+                <span
+                  className="text-[10px] rounded-full font-medium"
+                  style={{ backgroundColor: '#3b82f6', color: 'white', padding: '2px 6px' }}
+                >
+                  Plan
+                </span>
+              )}
+              <span className="rich-transcript-message-time text-xs text-[var(--nim-text-faint)]">
+                {formatMessageTime(message.createdAt?.getTime() ?? 0)}
+              </span>
+            </div>
+            <div className="rich-transcript-message-actions flex items-center gap-1">
+              {(message.text ?? '').length > 200 && (
+                <button
+                  onClick={() => toggleMessageCollapse(index)}
+                  className="rich-transcript-collapse-button p-1 rounded-md bg-transparent border-none text-[var(--nim-text-faint)] cursor-pointer transition-colors hover:bg-[var(--nim-bg-secondary)] hover:text-[var(--nim-text-muted)]"
+                  title={isCollapsed ? "Show full message" : "Collapse message"}
+                >
+                  {isCollapsed ? (
+                    <MaterialSymbol icon="visibility" size={16} />
+                  ) : (
+                    <MaterialSymbol icon="visibility_off" size={16} />
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {toolMessagesBefore.length > 0 && (() => {
+          // Filter out non-interactive tool messages when settings.showToolCalls
+          // is off; always keep interactive widgets so the user can act on prompts.
+          const visibleToolMessages = settings.showToolCalls
+            ? toolMessagesBefore
+            : toolMessagesBefore.filter(
+                ({ message: toolMsg }) =>
+                  !!toolMsg.toolCall?.toolName && INTERACTIVE_WIDGET_TOOLS.has(toolMsg.toolCall.toolName)
+              );
+          if (visibleToolMessages.length === 0) return null;
+          return (
+            <div className={`rich-transcript-tool-messages flex flex-col gap-2 mb-1.5 ${isNewGroup ? 'indented ml-6' : ''}`}>
+              {visibleToolMessages.map(({ message: toolMsg, index: toolIndex }) =>
+                renderToolCard(toolMsg, toolIndex, 0)
+              )}
+            </div>
+          );
+        })()}
+
+        <div className={`rich-transcript-message-content relative ${isNewGroup ? 'ml-6' : 'no-indent ml-0'}`}>
+          {/* Copy button - shows on hover */}
+          <div className="rich-transcript-message-copy-action absolute -top-1 right-0 z-[1]">
+            <button
+              onClick={() => copyTranscriptViewMessageContent(message, index)}
+              className={`rich-transcript-copy-button p-1.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)] ${copiedMessageIndex === index ? 'copied' : ''}`}
+              title="Copy as Markdown"
+            >
+              {copiedMessageIndex === index ? (
+                <MaterialSymbol icon="check" size={16} className="text-[var(--nim-success)]" />
+              ) : (
+                <MaterialSymbol icon="content_copy" size={16} className="text-[var(--nim-text-faint)]" />
+              )}
+            </button>
+          </div>
+          <MessageSegment
+            message={message}
+            isUser={isUser}
+            isCollapsed={isCollapsed}
+            showToolCalls={false}
+            showThinking={settings.showThinking}
+            expandedTools={expandedTools}
+            onToggleToolExpand={toggleToolExpand}
+            documentContext={documentContext}
+            shouldShowLoginWidget={shouldShowLoginWidgetForIndex(index)}
+            sessionId={sessionId}
+            isLastMessage={index === messages.length - 1}
+            onOpenFile={onOpenFile}
+            onOpenSession={onOpenSession}
+            onCompact={onCompact}
+            provider={provider}
+          />
+        </div>
+
+        {/* Show elapsed time at the end of a completed assistant turn */}
+        {!isUser && (() => {
+          // Check if this is the last message in the assistant group
+          let nextNonToolIdx = index + 1;
+          while (nextNonToolIdx < messages.length && isToolLikeMessage(messages[nextNonToolIdx])) {
+            nextNonToolIdx++;
+          }
+          const isEndOfGroup = nextNonToolIdx >= messages.length || messages[nextNonToolIdx].type !== 'assistant_message';
+          if (!isEndOfGroup) return null;
+          // Don't show for the last assistant group if still streaming
+          if (isWaitingForResponse && nextNonToolIdx >= messages.length) return null;
+          // Find the preceding user-input message that triggered this turn
+          // Only consider genuine user input (isUserInput), not system-generated user-role messages
+          let startIdx = index - 1;
+          while (startIdx >= 0 && !(messages[startIdx].type === 'user_message')) {
+            startIdx--;
+          }
+          if (startIdx < 0) return null; // No preceding user input message
+          const startTimestamp = messages[startIdx].createdAt?.getTime() ?? 0;
+          const endTimestamp = message.createdAt?.getTime() ?? 0;
+          const duration = formatDuration(startTimestamp, endTimestamp);
+          if (!duration || duration === '0ms') return null;
+          const finishedAt = formatTurnFinishedAt(endTimestamp);
+          const fileStats = computeTurnFileStats(messages, startIdx, index);
+          return (
+            <div className="rich-transcript-turn-elapsed text-xs text-[var(--nim-text-faint)] mt-2 ml-6">
+              Finished in {duration}
+              {finishedAt && <span> {finishedAt}</span>}
+              {fileStats && (
+                <span>
+                  {' · '}{fileStats.filesModified} file{fileStats.filesModified !== 1 ? 's' : ''}
+                  {fileStats.linesAdded > 0 && <span className="text-[var(--nim-success)] opacity-60"> +{fileStats.linesAdded}</span>}
+                  {fileStats.linesRemoved > 0 && <span className="text-[var(--nim-error)] opacity-60"> -{fileStats.linesRemoved}</span>}
+                </span>
+              )}
+            </div>
+          );
+        })()}
+
+      </div>
+    );
+  });
+
   return (
     <div ref={viewRootRef} className="rich-transcript-view h-full flex flex-col bg-[var(--nim-bg)] relative overflow-x-hidden select-text">
       {/* Search Bar */}
@@ -1763,8 +2249,10 @@ export const RichTranscriptView = React.forwardRef<
         containerRef={scrollContainerRef}
         onClose={() => setShowSearchBar(false)}
         onScrollToMessage={(index) => {
-          if (vlistRef.current) {
-            vlistRef.current.scrollToIndex(index, { align: 'center' });
+          if (useVirtualization) {
+            vlistRef.current?.scrollToIndex(index, { align: 'center' });
+          } else {
+            messageRefs.current.get(index)?.scrollIntoView({ block: 'center', behavior: 'auto' });
           }
         }}
       />
@@ -1805,8 +2293,11 @@ export const RichTranscriptView = React.forwardRef<
       )}
 
       {/* Messages */}
-      <div ref={scrollContainerRef} className="rich-transcript-scroll-container flex-1 overflow-hidden relative">
-        <div className={`rich-transcript-content mx-auto py-1 h-full ${settings.compactMode ? 'compact' : 'normal'}`}>
+      <div
+        ref={scrollContainerRef}
+        className={`rich-transcript-scroll-container flex-1 relative ${useVirtualization ? 'overflow-hidden' : 'flat overflow-y-auto overflow-x-hidden'}`}
+      >
+        <div className={`rich-transcript-content mx-auto py-1 ${useVirtualization ? 'h-full' : ''} ${settings.compactMode ? 'compact' : 'normal'}`}>
           {messages.length === 0 && !isWaitingForResponse ? (
             <div className="rich-transcript-empty flex flex-col items-center p-8 px-4 h-full max-w-4xl mx-auto">
               <div className="rich-transcript-empty-content flex-1 flex flex-col justify-center max-w-[400px] text-left">
@@ -1824,13 +2315,15 @@ export const RichTranscriptView = React.forwardRef<
               </div>
               {renderEmptyExtra?.()}
             </div>
-          ) : !isContainerVisible ? (
+          ) : useVirtualization && !isContainerVisible ? (
             /* Skip VList rendering when container is hidden (display:none parent).
                VList with 0 height renders ALL items instead of virtualizing,
-               causing massive DOM bloat and style recalculation. */
+               causing massive DOM bloat and style recalculation. The flat-list
+               path is unaffected -- content-visibility already skips paint for
+               offscreen rows. */
             null
-          ) : (
-            <div className={`rich-transcript-messages rich-transcript-vlist-wrapper flex flex-col max-w-full overflow-x-hidden h-full ${isScrollReady ? 'scroll-ready' : ''}`}>
+          ) : useVirtualization ? (
+            <div className={`rich-transcript-messages rich-transcript-messages-wrapper flex flex-col max-w-full overflow-x-hidden h-full ${isScrollReady ? 'scroll-ready' : ''}`}>
               <VList
                   ref={vlistRef}
                   className="rich-transcript-vlist !h-full !w-full"
@@ -1869,313 +2362,7 @@ export const RichTranscriptView = React.forwardRef<
                     }
                   }}
                 >
-                  {messages.map((message, index) => {
-                    // Skip tool calls superseded by a later event with the same providerToolCallId
-                    if (supersededToolIndices.has(index)) {
-                      return <div key={`${sessionId}-${index}`} style={{ display: 'none' }} />;
-                    }
-
-                    const isUser = message.type === 'user_message';
-                    const isTool = isToolLikeMessage(message);
-                    const isCollapsed = collapsedMessages.has(index);
-
-                    // Hide assistant/tool messages that sit between agent notifications.
-                    // These are the agent's internal processing turns after receiving a teammate/sub-agent
-                    // message - they appear as dark bars with scrollbars and add visual noise.
-                    // NEVER hide interactive tool widgets (ToolPermission, ExitPlanMode, etc.) that require user action.
-                    // Also never hide assistant messages that would carry interactive widgets in toolMessagesBefore.
-                    if (message.type === 'assistant_message' || isToolLikeMessage(message)) {
-                      const isInteractiveWidget = isToolLikeMessage(message) && message.toolCall?.toolName &&
-                        INTERACTIVE_WIDGET_TOOLS.has(message.toolCall.toolName);
-                      // For assistant messages, check if preceding tool messages contain interactive widgets
-                      let hasInteractiveToolsBefore = false;
-                      if (message.type === 'assistant_message') {
-                        let checkPrev = index - 1;
-                        while (checkPrev >= 0 && isToolLikeMessage(messages[checkPrev])) {
-                          if (messages[checkPrev].toolCall?.toolName && INTERACTIVE_WIDGET_TOOLS.has(messages[checkPrev].toolCall!.toolName!)) {
-                            hasInteractiveToolsBefore = true;
-                            break;
-                          }
-                          checkPrev--;
-                        }
-                      }
-                      if (!isInteractiveWidget && !hasInteractiveToolsBefore) {
-                        // Walk back to find the nearest user message (skipping tool and assistant messages)
-                        let prevIdx = index - 1;
-                        while (prevIdx >= 0 && messages[prevIdx].type !== 'user_message') prevIdx--;
-                        if (prevIdx >= 0 && messages[prevIdx].metadata?.isTeammateMessage) {
-                          // The most recent user message before this is a teammate notification.
-                          // Only hide empty processing turns (no substantive content).
-                          const hasNoContent = !message.text?.trim();
-                          if (hasNoContent) {
-                            return <div key={`${sessionId}-${index}`} style={{ display: 'none' }} />;
-                          }
-                        }
-                      }
-                    }
-
-                    // Find tool messages that should be grouped with this message
-                    const toolMessagesBefore: { message: TranscriptViewMessage, index: number }[] = [];
-                    if (message.type === 'assistant_message') {
-                      let checkIdx = index - 1;
-                      while (checkIdx >= 0 && isToolLikeMessage(messages[checkIdx])) {
-                        toolMessagesBefore.unshift({ message: messages[checkIdx], index: checkIdx });
-                        checkIdx--;
-                      }
-                    }
-
-                    // Skip rendering tool messages - they'll be rendered with their assistant message
-                    if (isTool) {
-                      let nextIndex = index + 1;
-                      while (nextIndex < messages.length && isToolLikeMessage(messages[nextIndex])) {
-                        nextIndex++;
-                      }
-                      if (nextIndex < messages.length && messages[nextIndex].type === 'assistant_message') {
-                        // Return empty div for virtualization (can't return null)
-                        return <div key={`${sessionId}-${index}`} style={{ display: 'none' }} />;
-                      }
-                    }
-
-                    // Check if this is the start of a new message group
-                    let effectivePrevMessage = null;
-                    let checkIdx = index - 1;
-                    while (checkIdx >= 0 && isToolLikeMessage(messages[checkIdx])) {
-                      checkIdx--;
-                    }
-                    if (checkIdx >= 0) {
-                      effectivePrevMessage = messages[checkIdx];
-                    }
-                    const isNewGroup = !effectivePrevMessage || effectivePrevMessage.type !== message.type;
-
-                    // Render orphaned tool calls.
-                    // When settings.showToolCalls is false, hide non-interactive tool
-                    // rows from the chat view but always render interactive widgets
-                    // (ToolPermission / ExitPlanMode / AskUserQuestion /
-                    // GitCommitProposal) so the user can still act on prompts.
-                    if (isTool && message.toolCall) {
-                      const toolName = message.toolCall.toolName;
-                      const isInteractiveWidget = toolName ? INTERACTIVE_WIDGET_TOOLS.has(toolName) : false;
-                      if (!settings.showToolCalls && !isInteractiveWidget) {
-                        return null;
-                      }
-                      return (
-                        <div key={`${sessionId}-${index}`} className="rich-transcript-tool-container orphan ml-6 mb-2">
-                          {renderToolCard(message, index, 0)}
-                        </div>
-                      );
-                    }
-
-                    // Render teammate/sub-agent messages as compact inline notifications
-                    if (isUser && message.metadata?.isTeammateMessage) {
-                      const teammateName = (message.metadata?.teammateName as string) || 'agent';
-                      const label = `Received message from agent ${teammateName}`;
-                      const content = message.text?.trim();
-                      // Show first line as preview (truncated)
-                      const firstLine = content?.split('\n')[0] || '';
-                      const preview = firstLine.length > 100 ? firstLine.slice(0, 100) + '...' : firstLine;
-                      const hasMoreContent = content && (content.includes('\n') || content.length > 100);
-                      return (
-                        <div
-                          key={`${sessionId}-${index}`}
-                          data-message-index={index}
-                          ref={(el) => {
-                            if (el) messageRefs.current.set(index, el);
-                          }}
-                          className="rich-transcript-message rich-transcript-teammate-notification rounded-md relative max-w-full overflow-x-hidden break-words mb-1"
-                        >
-                          {hasMoreContent ? (
-                            <details>
-                              <summary className="flex items-center gap-1.5 py-0.5 text-xs text-[var(--nim-text-faint)] hover:text-[var(--nim-text-muted)]">
-                                <MaterialSymbol icon="chevron_right" size={14} className="teammate-chevron transition-transform shrink-0 w-3.5" />
-                                <span className="flex-1 truncate">{label}: {preview}</span>
-                                <span className="text-[10px] shrink-0">{formatMessageTime(message.createdAt?.getTime() ?? 0)}</span>
-                              </summary>
-                              <div className="teammate-content ml-5 mt-1 mb-0.5">
-                                <MarkdownRenderer content={content} isUser={false} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />
-                              </div>
-                            </details>
-                          ) : (
-                            <div className="flex items-center gap-1.5 py-0.5 text-xs text-[var(--nim-text-faint)]">
-                              <MaterialSymbol icon="chevron_right" size={14} className="shrink-0 w-3.5 invisible" />
-                              <span className="flex-1 truncate">{label}: {content}</span>
-                              <span className="text-[10px] shrink-0">{formatMessageTime(message.createdAt?.getTime() ?? 0)}</span>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    }
-
-                    if ((message.type === 'system_message' && message.systemMessage?.systemType !== 'error') || (message.metadata?.promptType as string) === 'system_reminder') {
-                      return (
-                        <div
-                          key={`${sessionId}-${index}`}
-                          data-message-index={index}
-                          ref={(el) => {
-                            if (el) messageRefs.current.set(index, el);
-                          }}
-                        >
-                          <SystemReminderCard message={message} />
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div
-                        key={`${sessionId}-${index}`}
-                        data-message-index={index}
-                        ref={(el) => {
-                          if (el) messageRefs.current.set(index, el);
-                        }}
-                        className={`rich-transcript-message rounded-md relative max-w-full overflow-x-hidden break-words mb-2 ${isUser ? 'user bg-[var(--nim-bg-secondary)]' : 'assistant bg-[var(--nim-bg)]'} ${settings.compactMode ? 'compact p-2' : 'normal p-3'} ${!isNewGroup ? 'continuation -mt-1' : ''}`}
-                      >
-                        {/* Restart indicator line (dev mode only) - rendered before the first message after restart */}
-                        {restartAfterIndex >= 0 && index === restartAfterIndex && (
-                          <div className="flex items-center gap-3 mb-3">
-                            <div className="flex-1 h-px bg-[var(--nim-error)]" />
-                            <span className="text-[11px] font-medium text-[var(--nim-error)] whitespace-nowrap">
-                              Nimbalyst restarted {formatMessageTime(appStartTime!)}
-                            </span>
-                            <div className="flex-1 h-px bg-[var(--nim-error)]" />
-                          </div>
-                        )}
-                        {isNewGroup && (
-                          <div className="rich-transcript-message-header flex items-center gap-2 mb-1.5">
-                            <div className={`rich-transcript-message-avatar w-7 h-7 rounded-full shrink-0 flex items-center justify-center ${isUser ? 'user' : 'assistant'}`}>
-                              {isUser ? (
-                                <MaterialSymbol icon="person" size={18} />
-                              ) : (
-                                <ProviderIcon provider={provider || 'claude-code'} size={18} />
-                              )}
-                            </div>
-                            <div className="rich-transcript-message-meta flex-1 flex items-baseline gap-2">
-                              <span className="rich-transcript-message-sender font-medium text-[var(--nim-text)] text-sm">
-                                {isUser ? 'You' : getProviderDisplayName(provider)}
-                              </span>
-                              {isUser && message.mode === 'planning' && (
-                                <span
-                                  className="text-[10px] rounded-full font-medium"
-                                  style={{ backgroundColor: '#3b82f6', color: 'white', padding: '2px 6px' }}
-                                >
-                                  Plan
-                                </span>
-                              )}
-                              <span className="rich-transcript-message-time text-xs text-[var(--nim-text-faint)]">
-                                {formatMessageTime(message.createdAt?.getTime() ?? 0)}
-                              </span>
-                            </div>
-                            <div className="rich-transcript-message-actions flex items-center gap-1">
-                              {(message.text ?? '').length > 200 && (
-                                <button
-                                  onClick={() => toggleMessageCollapse(index)}
-                                  className="rich-transcript-collapse-button p-1 rounded-md bg-transparent border-none text-[var(--nim-text-faint)] cursor-pointer transition-colors hover:bg-[var(--nim-bg-secondary)] hover:text-[var(--nim-text-muted)]"
-                                  title={isCollapsed ? "Show full message" : "Collapse message"}
-                                >
-                                  {isCollapsed ? (
-                                    <MaterialSymbol icon="visibility" size={16} />
-                                  ) : (
-                                    <MaterialSymbol icon="visibility_off" size={16} />
-                                  )}
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                        {toolMessagesBefore.length > 0 && (() => {
-                          // Filter out non-interactive tool messages when settings.showToolCalls
-                          // is off; always keep interactive widgets so the user can act on prompts.
-                          const visibleToolMessages = settings.showToolCalls
-                            ? toolMessagesBefore
-                            : toolMessagesBefore.filter(
-                                ({ message: toolMsg }) =>
-                                  !!toolMsg.toolCall?.toolName && INTERACTIVE_WIDGET_TOOLS.has(toolMsg.toolCall.toolName)
-                              );
-                          if (visibleToolMessages.length === 0) return null;
-                          return (
-                            <div className={`rich-transcript-tool-messages flex flex-col gap-2 mb-1.5 ${isNewGroup ? 'indented ml-6' : ''}`}>
-                              {visibleToolMessages.map(({ message: toolMsg, index: toolIndex }) =>
-                                renderToolCard(toolMsg, toolIndex, 0)
-                              )}
-                            </div>
-                          );
-                        })()}
-
-                        <div className={`rich-transcript-message-content relative ${isNewGroup ? 'ml-6' : 'no-indent ml-0'}`}>
-                          {/* Copy button - shows on hover */}
-                          <div className="rich-transcript-message-copy-action absolute -top-1 right-0 z-[1]">
-                            <button
-                              onClick={() => copyTranscriptViewMessageContent(message, index)}
-                              className={`rich-transcript-copy-button p-1.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)] ${copiedMessageIndex === index ? 'copied' : ''}`}
-                              title="Copy as Markdown"
-                            >
-                              {copiedMessageIndex === index ? (
-                                <MaterialSymbol icon="check" size={16} className="text-[var(--nim-success)]" />
-                              ) : (
-                                <MaterialSymbol icon="content_copy" size={16} className="text-[var(--nim-text-faint)]" />
-                              )}
-                            </button>
-                          </div>
-                          <MessageSegment
-                            message={message}
-                            isUser={isUser}
-                            isCollapsed={isCollapsed}
-                            showToolCalls={false}
-                            showThinking={settings.showThinking}
-                            expandedTools={expandedTools}
-                            onToggleToolExpand={toggleToolExpand}
-                            documentContext={documentContext}
-                            shouldShowLoginWidget={shouldShowLoginWidgetForIndex(index)}
-                            sessionId={sessionId}
-                            isLastMessage={index === messages.length - 1}
-                            onOpenFile={onOpenFile}
-                            onOpenSession={onOpenSession}
-                            onCompact={onCompact}
-                            provider={provider}
-                          />
-                        </div>
-
-                        {/* Show elapsed time at the end of a completed assistant turn */}
-                        {!isUser && (() => {
-                          // Check if this is the last message in the assistant group
-                          let nextNonToolIdx = index + 1;
-                          while (nextNonToolIdx < messages.length && isToolLikeMessage(messages[nextNonToolIdx])) {
-                            nextNonToolIdx++;
-                          }
-                          const isEndOfGroup = nextNonToolIdx >= messages.length || messages[nextNonToolIdx].type !== 'assistant_message';
-                          if (!isEndOfGroup) return null;
-                          // Don't show for the last assistant group if still streaming
-                          if (isWaitingForResponse && nextNonToolIdx >= messages.length) return null;
-                          // Find the preceding user-input message that triggered this turn
-                          // Only consider genuine user input (isUserInput), not system-generated user-role messages
-                          let startIdx = index - 1;
-                          while (startIdx >= 0 && !(messages[startIdx].type === 'user_message')) {
-                            startIdx--;
-                          }
-                          if (startIdx < 0) return null; // No preceding user input message
-                          const startTimestamp = messages[startIdx].createdAt?.getTime() ?? 0;
-                          const endTimestamp = message.createdAt?.getTime() ?? 0;
-                          const duration = formatDuration(startTimestamp, endTimestamp);
-                          if (!duration || duration === '0ms') return null;
-                          const finishedAt = formatTurnFinishedAt(endTimestamp);
-                          const fileStats = computeTurnFileStats(messages, startIdx, index);
-                          return (
-                            <div className="rich-transcript-turn-elapsed text-xs text-[var(--nim-text-faint)] mt-2 ml-6">
-                              Finished in {duration}
-                              {finishedAt && <span> {finishedAt}</span>}
-                              {fileStats && (
-                                <span>
-                                  {' · '}{fileStats.filesModified} file{fileStats.filesModified !== 1 ? 's' : ''}
-                                  {fileStats.linesAdded > 0 && <span className="text-[var(--nim-success)] opacity-60"> +{fileStats.linesAdded}</span>}
-                                  {fileStats.linesRemoved > 0 && <span className="text-[var(--nim-error)] opacity-60"> -{fileStats.linesRemoved}</span>}
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })()}
-
-                      </div>
-                    );
-                  })}
+                  {renderedMessages}
                   {/* Restart indicator at bottom when all messages precede the restart (dev mode only) */}
                   {restartAtBottom && (
                     <div key="restart-bottom" className="flex items-center gap-3 my-2 px-3">
@@ -2198,6 +2385,35 @@ export const RichTranscriptView = React.forwardRef<
                   )}
               </VList>
             </div>
+          ) : (
+            <div className={`rich-transcript-messages rich-transcript-messages-wrapper flex flex-col max-w-full overflow-x-hidden ${isScrollReady ? 'scroll-ready' : ''}`}>
+              <div ref={flatListRef} className="rich-transcript-flat-list">
+                {renderedMessages}
+                {restartAtBottom && (
+                  <div key="restart-bottom" className="flex items-center gap-3 my-2 px-3">
+                    <div className="flex-1 h-px bg-[var(--nim-error)]" />
+                    <span className="text-[11px] font-medium text-[var(--nim-error)] whitespace-nowrap">
+                      Nimbalyst restarted {formatMessageTime(appStartTime!)}
+                    </span>
+                    <div className="flex-1 h-px bg-[var(--nim-error)]" />
+                  </div>
+                )}
+                {isWaitingForResponse && (
+                  <div key="waiting" className="rich-transcript-waiting flex items-center gap-2 text-[var(--nim-text-muted)] italic py-2 px-4 mb-2">
+                    <div className="rich-transcript-waiting-dots flex gap-1">
+                      <div className="rich-transcript-waiting-dot w-2 h-2 rounded-full bg-[var(--nim-primary)]" />
+                      <div className="rich-transcript-waiting-dot w-2 h-2 rounded-full bg-[var(--nim-primary)]" />
+                      <div className="rich-transcript-waiting-dot w-2 h-2 rounded-full bg-[var(--nim-primary)]" />
+                    </div>
+                    <span className="rich-transcript-waiting-text">{waitingText}</span>
+                  </div>
+                )}
+                {/* Zero-height bottom sentinel used by scrollIntoView({ block: 'end' })
+                    to reliably pin the bottom of the transcript even when
+                    content-visibility hasn't measured every row yet. */}
+                <div ref={flatBottomSentinelRef} aria-hidden="true" style={{ height: 0 }} />
+              </div>
+            </div>
           )}
         </div>
 
@@ -2206,7 +2422,12 @@ export const RichTranscriptView = React.forwardRef<
           <div className="sticky bottom-12 flex justify-center z-10 pointer-events-none">
             <button
               onClick={() => {
-                vlistRef.current?.scrollToIndex(pendingPermissionIndices[0], { align: 'center' });
+                const targetIdx = pendingPermissionIndices[0];
+                if (useVirtualization) {
+                  vlistRef.current?.scrollToIndex(targetIdx, { align: 'center' });
+                } else {
+                  messageRefs.current.get(targetIdx)?.scrollIntoView({ block: 'center', behavior: 'auto' });
+                }
               }}
               className="pointer-events-auto flex items-center gap-2 px-4 py-2 bg-[var(--nim-primary)] text-white rounded-full shadow-lg text-sm font-medium cursor-pointer border-none transition-all hover:brightness-110"
             >

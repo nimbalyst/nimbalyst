@@ -55,7 +55,6 @@ import {
 import type { TranscriptEvent } from '@nimbalyst/runtime/ai/server/transcript/types';
 import { TranscriptStreamAccumulator } from './transcriptStreamAccumulator';
 import { resolveOwnedWorkspacePath } from '../../shared/sessionWorkspaceRouting';
-import { transcriptSelectionTrace } from '@nimbalyst/runtime/utils/debugFlags';
 
 /**
  * Per-session accumulator of canonical events received via IPC.
@@ -489,12 +488,6 @@ export function initSessionStateListeners(): () => void {
     }
 
     const workspacePath = ownedWorkspacePath;
-
-    transcriptSelectionTrace('sessionStateListeners.messageLogged', {
-      sessionId,
-      direction,
-      workspacePath,
-    });
 
     // Throttle session data reload per session (leading + trailing edge).
     // During active streaming, message-logged fires on every chunk which would
@@ -945,13 +938,6 @@ export function initSessionStateListeners(): () => void {
   // ---------------------------------------------------------------------------
   const handleTranscriptEvent = (transcriptEvent: TranscriptEvent) => {
     if (!transcriptEvent.sessionId) return;
-    transcriptSelectionTrace('sessionStateListeners.transcriptEvent', {
-      sessionId: transcriptEvent.sessionId,
-      eventType: transcriptEvent.eventType,
-      eventId: transcriptEvent.id,
-      parentEventId: transcriptEvent.parentEventId ?? null,
-      sequence: transcriptEvent.sequence,
-    });
     // The accumulator decides whether the change is a cheap in-place patch
     // or requires a full re-projection, then flushes once per animation
     // frame. See `transcriptStreamAccumulator.ts` for the rationale.
