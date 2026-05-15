@@ -400,7 +400,7 @@ export const SessionQuickOpen: React.FC<SessionQuickOpenProps> = ({
         <div className="session-quick-open-results flex-1 overflow-y-auto min-h-[200px]">
           {/* File typeahead dropdown */}
           {showTypeahead && (
-            <ul className="session-quick-open-typeahead list-none m-0 p-0">
+            <ul className={`session-quick-open-typeahead list-none m-0 p-0 ${mouseHasMoved ? '' : 'pointer-events-none'}`}>
               {fileOptions.length === 0 ? (
                 <li className="py-6 px-4 text-center text-[var(--nim-text-faint)] text-sm">
                   {fileSearchQuery ? 'No files found' : 'Type to search files...'}
@@ -451,7 +451,10 @@ export const SessionQuickOpen: React.FC<SessionQuickOpenProps> = ({
             </div>
           )}
           {!showTypeahead && displaySessions.length > 0 && (
-            <ul className="session-quick-open-list list-none m-0 p-0" ref={resultsListRef}>
+            <ul
+              className={`session-quick-open-list list-none m-0 p-0 ${mouseHasMoved ? '' : 'pointer-events-none'}`}
+              ref={resultsListRef}
+            >
               {displaySessions.map((session, index) => (
                 <li
                   key={session.id}

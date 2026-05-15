@@ -1,8 +1,6 @@
-import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
-import { useAtomValue } from 'jotai';
-import { ProviderIcon, MaterialSymbol } from '@nimbalyst/runtime';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, memo } from 'react';
+import { ProviderIcon } from '@nimbalyst/runtime';
 import { getRelativeTimeString } from '../utils/dateFormatting';
-import { sessionOrChildProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom } from '../store';
 
 interface PromptItem {
   id: string;
@@ -14,50 +12,62 @@ interface PromptItem {
   parentSessionId?: string | null;
 }
 
-/**
- * Status indicator that shows processing, pending prompt, or unread status.
- * Only re-renders when this session's state changes.
- */
-const PromptStatusIndicator = memo<{ sessionId: string }>(({ sessionId }) => {
-  const isProcessing = useAtomValue(sessionOrChildProcessingAtom(sessionId));
-  const hasPendingPrompt = useAtomValue(sessionPendingPromptAtom(sessionId));
-  const hasUnread = useAtomValue(sessionUnreadAtom(sessionId));
-
-  // Priority: processing > pending prompt > unread
-  if (isProcessing) {
-    return (
-      <div
-        className="prompt-quick-open-status processing flex items-center justify-center w-5 h-5 text-[var(--nim-primary)] opacity-80"
-        title="Processing..."
-      >
-        <MaterialSymbol icon="progress_activity" size={14} className="animate-spin" />
-      </div>
-    );
+const extractPromptText = (content: string): string => {
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed.prompt) return parsed.prompt;
+  } catch {
+    // Not JSON, return as-is
   }
+  return content;
+};
 
-  if (hasPendingPrompt) {
-    return (
-      <div
-        className="prompt-quick-open-status pending-prompt flex items-center justify-center w-5 h-5 text-[var(--nim-warning)] animate-pulse"
-        title="Waiting for your response"
-      >
-        <MaterialSymbol icon="help" size={14} />
+const truncatePrompt = (text: string, maxLength = 120): string => {
+  const extracted = extractPromptText(text);
+  if (extracted.length <= maxLength) return extracted;
+  return extracted.substring(0, maxLength) + '...';
+};
+
+interface PromptRowProps {
+  prompt: PromptItem;
+  index: number;
+  isSelected: boolean;
+  onSelect: (index: number) => void;
+  onHover: (index: number) => void;
+}
+
+const PromptRow = memo<PromptRowProps>(({ prompt, index, isSelected, onSelect, onHover }) => {
+  return (
+    <li
+      className={`prompt-quick-open-item py-3 px-4 cursor-pointer border-l-[3px] border-transparent transition-all duration-100 flex items-start gap-3 hover:bg-[var(--nim-bg-hover)] ${
+        isSelected ? 'selected bg-[rgba(0,122,255,0.1)] !border-l-[#007aff]' : ''
+      }`}
+      onClick={() => onSelect(index)}
+      onMouseEnter={() => onHover(index)}
+    >
+      <div className="prompt-quick-open-item-content flex-1 min-w-0">
+        <div className="prompt-quick-open-item-text text-sm text-[var(--nim-text)] leading-[1.4] mb-1 overflow-hidden text-ellipsis line-clamp-2">
+          {truncatePrompt(prompt.content)}
+        </div>
+        <div className="prompt-quick-open-item-meta text-xs text-[var(--nim-text-faint)] flex items-center gap-2">
+          <span className="prompt-quick-open-session-title flex items-center gap-1.5 overflow-hidden text-ellipsis whitespace-nowrap">
+            <span className="prompt-quick-open-item-icon shrink-0 inline-flex items-center justify-center text-[var(--nim-text-muted)]">
+              <ProviderIcon provider={prompt.provider || 'claude'} size={12} />
+            </span>
+            {prompt.sessionTitle}
+            {prompt.parentSessionId && (
+              <span className="prompt-quick-open-badge workstream-badge shrink-0 text-[10px] py-0.5 px-1.5 bg-[var(--nim-primary)] text-white rounded font-semibold">
+                In Workstream
+              </span>
+            )}
+          </span>
+          <span className="prompt-quick-open-time shrink-0 ml-auto">
+            {getRelativeTimeString(prompt.createdAt)}
+          </span>
+        </div>
       </div>
-    );
-  }
-
-  if (hasUnread) {
-    return (
-      <div
-        className="prompt-quick-open-status unread flex items-center justify-center w-5 h-5 text-[var(--nim-primary)]"
-        title="Unread response"
-      >
-        <MaterialSymbol icon="circle" size={8} fill />
-      </div>
-    );
-  }
-
-  return null;
+    </li>
+  );
 });
 
 interface PromptQuickOpenProps {
@@ -79,25 +89,16 @@ export const PromptQuickOpen: React.FC<PromptQuickOpenProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [allPrompts, setAllPrompts] = useState<PromptItem[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
   const [mouseHasMoved, setMouseHasMoved] = useState(false);
+  const [copiedPromptId, setCopiedPromptId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const resultsListRef = useRef<HTMLUListElement>(null);
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 
   // Filter prompts in-memory by content (fast, no database query)
   const displayPrompts = useMemo(() => {
-    const extractPromptText = (content: string): string => {
-      // Try to parse as JSON first (some prompts are stored as {"prompt": "..."})
-      try {
-        const parsed = JSON.parse(content);
-        if (parsed.prompt) {
-          return parsed.prompt;
-        }
-      } catch {
-        // Not JSON, return as-is
-      }
-      return content;
-    };
-
     if (!searchQuery.trim()) {
       return allPrompts;
     }
@@ -108,10 +109,18 @@ export const PromptQuickOpen: React.FC<PromptQuickOpenProps> = ({
     });
   }, [searchQuery, allPrompts]);
 
+  // Reset list + flip loading flag synchronously before paint so the empty state
+  // never flashes "No recent prompts" while the IPC call is in flight.
+  useLayoutEffect(() => {
+    if (isOpen && workspacePath) {
+      setAllPrompts([]);
+      setIsLoading(true);
+    }
+  }, [isOpen, workspacePath]);
+
   // Load all prompts from canonical transcript events when modal opens
   useEffect(() => {
     if (isOpen && workspacePath) {
-      setAllPrompts([]);
       window.electronAPI.ai
         .listUserPrompts(workspacePath)
         .then((result: { success: boolean; prompts: PromptItem[] }) => {
@@ -121,6 +130,9 @@ export const PromptQuickOpen: React.FC<PromptQuickOpenProps> = ({
         })
         .catch(() => {
           // Silently fail - prompts list will remain empty
+        })
+        .finally(() => {
+          setIsLoading(false);
         });
     }
   }, [isOpen, workspacePath]);
@@ -164,6 +176,15 @@ export const PromptQuickOpen: React.FC<PromptQuickOpenProps> = ({
     if (!isOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        const prompt = displayPrompts[selectedIndex];
+        if (prompt) {
+          handleCopyPrompt(prompt);
+        }
+        return;
+      }
+
       switch (e.key) {
         case 'ArrowDown':
           e.preventDefault();
@@ -192,29 +213,61 @@ export const PromptQuickOpen: React.FC<PromptQuickOpenProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, selectedIndex, displayPrompts, onClose]);
 
+  // Clear any pending "copied" feedback timer on unmount or modal close
+  useEffect(() => {
+    if (!isOpen) {
+      if (copiedTimeoutRef.current) {
+        clearTimeout(copiedTimeoutRef.current);
+        copiedTimeoutRef.current = null;
+      }
+      setCopiedPromptId(null);
+    }
+    return () => {
+      if (copiedTimeoutRef.current) {
+        clearTimeout(copiedTimeoutRef.current);
+      }
+    };
+  }, [isOpen]);
+
   const handlePromptSelect = (sessionId: string, createdAt: number) => {
     onSessionSelect(sessionId, createdAt);
     onClose();
   };
 
-  const extractPromptText = (content: string): string => {
-    // Try to parse as JSON first (some prompts are stored as {"prompt": "..."})
-    try {
-      const parsed = JSON.parse(content);
-      if (parsed.prompt) {
-        return parsed.prompt;
-      }
-    } catch {
-      // Not JSON, return as-is
+  const handleCopyPrompt = (prompt: PromptItem) => {
+    const text = extractPromptText(prompt.content);
+    void navigator.clipboard.writeText(text);
+    setCopiedPromptId(prompt.id);
+    if (copiedTimeoutRef.current) {
+      clearTimeout(copiedTimeoutRef.current);
     }
-    return content;
+    copiedTimeoutRef.current = setTimeout(() => {
+      setCopiedPromptId(null);
+      copiedTimeoutRef.current = null;
+    }, 1200);
   };
 
-  const truncatePrompt = (text: string, maxLength: number = 120): string => {
-    const extracted = extractPromptText(text);
-    if (extracted.length <= maxLength) return extracted;
-    return extracted.substring(0, maxLength) + '...';
-  };
+  // Stable callbacks for PromptRow so React.memo can bail out on unchanged rows.
+  // Latest values are read through refs so the callback identities never change.
+  const displayPromptsRef = useRef(displayPrompts);
+  displayPromptsRef.current = displayPrompts;
+  const mouseHasMovedRef = useRef(mouseHasMoved);
+  mouseHasMovedRef.current = mouseHasMoved;
+  const handlePromptSelectRef = useRef(handlePromptSelect);
+  handlePromptSelectRef.current = handlePromptSelect;
+
+  const onRowSelect = useCallback((index: number) => {
+    const prompt = displayPromptsRef.current[index];
+    if (prompt) {
+      handlePromptSelectRef.current(prompt.sessionId, prompt.createdAt);
+    }
+  }, []);
+
+  const onRowHover = useCallback((index: number) => {
+    if (mouseHasMovedRef.current) {
+      setSelectedIndex(index);
+    }
+  }, []);
 
   if (!isOpen) return null;
 
@@ -225,6 +278,14 @@ export const PromptQuickOpen: React.FC<PromptQuickOpenProps> = ({
         onClick={onClose}
       />
       <div className="prompt-quick-open-modal fixed top-[20%] left-1/2 -translate-x-1/2 w-[90%] max-w-[700px] max-h-[60vh] flex flex-col overflow-hidden rounded-lg z-[99999] bg-[var(--nim-bg)] border border-[var(--nim-border)] shadow-[0_20px_60px_rgba(0,0,0,0.3)]">
+        {copiedPromptId && (
+          <div
+            className="prompt-quick-open-copied-toast absolute top-2 left-1/2 -translate-x-1/2 z-10 py-1 px-3 rounded-full text-[11px] font-medium bg-[var(--nim-success)] text-white shadow"
+            data-testid="prompt-quick-open-copied-toast"
+          >
+            Copied to clipboard
+          </div>
+        )}
         <div className="prompt-quick-open-header p-3 border-b border-[var(--nim-border)]">
           <div className="text-[11px] font-medium text-[var(--nim-text-faint)] uppercase tracking-wide mb-2">Prompts</div>
           <input
@@ -240,48 +301,26 @@ export const PromptQuickOpen: React.FC<PromptQuickOpenProps> = ({
         <div className="prompt-quick-open-results flex-1 overflow-y-auto min-h-[200px]">
           {displayPrompts.length === 0 ? (
             <div className="prompt-quick-open-empty p-10 text-center text-[var(--nim-text-faint)]">
-              {searchQuery ? 'No prompts found' : 'No recent prompts'}
+              {isLoading
+                ? 'Loading…'
+                : searchQuery
+                  ? 'No prompts found'
+                  : 'No recent prompts'}
             </div>
           ) : (
-            <ul className="prompt-quick-open-list list-none m-0 p-0" ref={resultsListRef}>
+            <ul
+              className={`prompt-quick-open-list list-none m-0 p-0 ${mouseHasMoved ? '' : 'pointer-events-none'}`}
+              ref={resultsListRef}
+            >
               {displayPrompts.map((prompt, index) => (
-                <li
+                <PromptRow
                   key={prompt.id}
-                  className={`prompt-quick-open-item py-3 px-4 cursor-pointer border-l-[3px] border-transparent transition-all duration-100 flex items-start gap-3 hover:bg-[var(--nim-bg-hover)] ${
-                    index === selectedIndex ? 'selected bg-[rgba(0,122,255,0.1)] !border-l-[#007aff]' : ''
-                  }`}
-                  onClick={() => handlePromptSelect(prompt.sessionId, prompt.createdAt)}
-                  onMouseEnter={() => {
-                    if (mouseHasMoved) {
-                      setSelectedIndex(index);
-                    }
-                  }}
-                >
-                  <div className="prompt-quick-open-item-icon shrink-0 flex items-center justify-center pt-0.5 text-[var(--nim-text-muted)]">
-                    <ProviderIcon provider={prompt.provider || 'claude'} size={16} />
-                  </div>
-                  <div className="prompt-quick-open-item-content flex-1 min-w-0">
-                    <div className="prompt-quick-open-item-text text-sm text-[var(--nim-text)] leading-[1.4] mb-1 overflow-hidden text-ellipsis line-clamp-2">
-                      {truncatePrompt(prompt.content)}
-                    </div>
-                    <div className="prompt-quick-open-item-meta text-xs text-[var(--nim-text-faint)] flex items-center gap-2">
-                      <span className="prompt-quick-open-session-title flex items-center gap-1.5 overflow-hidden text-ellipsis whitespace-nowrap">
-                        {prompt.sessionTitle}
-                        {prompt.parentSessionId && (
-                          <span className="prompt-quick-open-badge workstream-badge shrink-0 text-[10px] py-0.5 px-1.5 bg-[var(--nim-primary)] text-white rounded font-semibold">
-                            In Workstream
-                          </span>
-                        )}
-                      </span>
-                      <span className="prompt-quick-open-time shrink-0 ml-auto">
-                        {getRelativeTimeString(prompt.createdAt)}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="prompt-quick-open-item-right shrink-0 flex items-center gap-1.5 ml-auto">
-                    <PromptStatusIndicator sessionId={prompt.sessionId} />
-                  </div>
-                </li>
+                  prompt={prompt}
+                  index={index}
+                  isSelected={index === selectedIndex}
+                  onSelect={onRowSelect}
+                  onHover={onRowHover}
+                />
               ))}
             </ul>
           )}
@@ -293,6 +332,10 @@ export const PromptQuickOpen: React.FC<PromptQuickOpenProps> = ({
           </span>
           <span className="prompt-quick-open-hint text-[11px] text-[var(--nim-text-faint)] flex items-center gap-1">
             <kbd className="py-0.5 px-1.5 bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded font-mono text-[10px] text-[var(--nim-text)]">Enter</kbd> Open
+          </span>
+          <span className="prompt-quick-open-hint text-[11px] text-[var(--nim-text-faint)] flex items-center gap-1">
+            <kbd className="py-0.5 px-1.5 bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded font-mono text-[10px] text-[var(--nim-text)]">{isMac ? '⌘' : 'Ctrl'}</kbd>
+            <kbd className="py-0.5 px-1.5 bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded font-mono text-[10px] text-[var(--nim-text)]">Enter</kbd> Copy
           </span>
           <span className="prompt-quick-open-hint text-[11px] text-[var(--nim-text-faint)] flex items-center gap-1">
             <kbd className="py-0.5 px-1.5 bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded font-mono text-[10px] text-[var(--nim-text)]">Esc</kbd> Close

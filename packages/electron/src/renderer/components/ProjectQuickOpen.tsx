@@ -171,7 +171,7 @@ export const ProjectQuickOpen: React.FC<ProjectQuickOpenProps> = ({
           )}
           {displayProjects.length > 0 && (
             <ul
-              className="project-quick-open-list list-none m-0 p-0"
+              className={`project-quick-open-list list-none m-0 p-0 ${mouseHasMoved ? '' : 'pointer-events-none'}`}
               ref={resultsListRef}
             >
               {displayProjects.map((project, index) => (

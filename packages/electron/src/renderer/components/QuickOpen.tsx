@@ -505,7 +505,10 @@ export const QuickOpen: React.FC<QuickOpenProps> = ({
               {searchQuery ? 'No files found' : 'No recent files'}
             </div>
           ) : (
-            <ul className="quick-open-list list-none m-0 p-0" ref={resultsListRef}>
+            <ul
+              className={`quick-open-list list-none m-0 p-0 ${mouseHasMoved ? '' : 'pointer-events-none'}`}
+              ref={resultsListRef}
+            >
               {displayFiles.map((file, index) => (
                 <li
                   key={`${file.path}-${index}`}
