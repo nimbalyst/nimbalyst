@@ -1,13 +1,19 @@
 /**
- * CodexRawParser -- parses OpenAI Codex / OpenCode raw messages into
- * canonical event descriptors.
+ * CodexRawParser -- parses OpenAI Codex SDK / OpenCode raw messages into
+ * canonical event descriptors. (LEGACY -- retained for old sessions.)
  *
- * Extracted from TranscriptTransformer.transformCodexOutputMessage().
- * Handles Codex SDK event formats including todo_list, tool calls,
- * text, errors, usage, and reasoning.
+ * **Status**: the default codex transport is now app-server, which writes
+ * raw messages in a different shape and routes through `CodexAppServerRawParser`.
+ * This parser is selected per-message by `CodexRawParserDispatcher` only when
+ * `metadata.transport !== 'app-server'` (the historical default, including
+ * pre-migration sessions).
  *
- * Also used for OpenCode since both providers share the same
- * AgentProtocol event format for raw messages.
+ * Do not remove without first migrating old sessions away from the SDK raw
+ * format. See `nimbalyst-local/plans/codex-app-server-protocol-migration.md`.
+ *
+ * Handles Codex SDK event formats including todo_list, tool calls, text,
+ * errors, usage, and reasoning. Also used for OpenCode since both providers
+ * share the same AgentProtocol event format for raw messages.
  */
 
 import type { RawMessage } from '../TranscriptTransformer';
@@ -91,6 +97,8 @@ export class CodexRawParser implements IRawMessageParser {
           descriptors.push({
             type: 'user_message',
             text: content,
+            mode: (msg.metadata?.mode as 'agent' | 'planning') ?? 'agent',
+            attachments: msg.metadata?.attachments as any,
             createdAt: msg.createdAt,
           });
         }

@@ -82,6 +82,40 @@ describe('CodexACPProtocol', () => {
       fs.rmSync(workspacePath, { recursive: true, force: true });
     }
   }, 15000);
+
+  it('inlines document attachments as additional text prompt blocks', async () => {
+    const protocol = new CodexACPProtocol('test-key', {
+      command: process.execPath,
+      args: [fixturePath()],
+    });
+    const attachmentPath = path.join(os.tmpdir(), `codex-acp-doc-${Date.now()}.txt`);
+    fs.writeFileSync(attachmentPath, 'prompt attachment body', 'utf-8');
+
+    try {
+      const blocks = await (protocol as any).buildPromptBlocks({
+        content: 'Review @notes.txt',
+        attachments: [
+          {
+            id: 'doc-1',
+            filename: 'notes.txt',
+            filepath: attachmentPath,
+            mimeType: 'text/plain',
+            size: 22,
+            type: 'document',
+            addedAt: Date.now(),
+          },
+        ],
+      });
+
+      expect(blocks).toEqual([
+        { type: 'text', text: 'Review @notes.txt' },
+        { type: 'text', text: '<file name="notes.txt">\nprompt attachment body\n</file>' },
+      ]);
+    } finally {
+      fs.rmSync(attachmentPath, { force: true });
+      protocol.destroy();
+    }
+  });
 });
 
 describe('appendBoundedTail', () => {

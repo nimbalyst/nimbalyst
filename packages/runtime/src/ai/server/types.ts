@@ -385,7 +385,7 @@ export interface ProviderSettings {
 }
 
 export interface StreamChunk {
-  type: 'text' | 'tool_call' | 'tool_error' | 'error' | 'complete' | 'stream_edit_start' | 'stream_edit_content' | 'stream_edit_end' | 'pre_edit_snapshot';
+  type: 'text' | 'tool_call' | 'tool_error' | 'error' | 'complete' | 'stream_edit_start' | 'stream_edit_content' | 'stream_edit_end' | 'pre_edit_snapshot' | 'post_edit_snapshot';
   content?: string;
   isSystem?: boolean; // For system messages like slash command output
   toolCall?: {
@@ -454,6 +454,36 @@ export interface StreamChunk {
     entries: Array<{
       path: string;
       content: string | null;
+      kind?: string;
+    }>;
+    /**
+     * When true, `MessageStreamingHandler` must use `entries[].content` as the
+     * pre-edit baseline VERBATIM and skip its `FileSnapshotCache` fallback
+     * lookup. Used by the codex app-server transport, where the pre-edit
+     * content is computed deterministically by reverse-applying the patch
+     * diff text against the post-edit disk state -- a cache lookup at that
+     * point would clobber correct content with whatever chokidar happened to
+     * observe (often the post-edit body for fresh gitignored files).
+     *
+     * The legacy SDK transport leaves this undefined (false), preserving its
+     * cache-prefers behavior for the race-prone item.started disk-read path.
+     */
+    authoritative?: boolean;
+  };
+  /**
+   * Post-edit snapshot delivered by providers that have a clean tool-completion
+   * signal (currently OpenAICodex `file_change` via `item.completed`). Carries
+   * the on-disk content of each affected path AFTER the agent applied its
+   * patch. The host writes a local-history `ai-edit` snapshot with this
+   * content so the session-aware diff can show a stable AI-output baseline
+   * even after the user later modifies the file. Mirrors Claude's
+   * `createTurnEndSnapshots` for the Codex provider.
+   */
+  postEditSnapshot?: {
+    toolUseId: string;
+    entries: Array<{
+      path: string;
+      content: string;
       kind?: string;
     }>;
   };

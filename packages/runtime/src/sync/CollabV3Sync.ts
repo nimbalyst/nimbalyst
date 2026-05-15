@@ -17,6 +17,7 @@
  */
 
 import type { AgentMessage } from '../ai/server/types';
+import { truncateContentForSync } from './syncContentTruncator';
 import type {
   SyncConfig,
   SyncStatus,
@@ -1121,9 +1122,17 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     message: AgentMessage,
     key: CryptoKey
   ): Promise<EncryptedMessage> {
+    // Trim large tool_result payloads before encryption so the SessionRoom
+    // doesn't store full Bash/Read/Grep output for every step. Local raw log
+    // keeps the unmodified content -- this only changes what crosses the wire.
+    const { content: truncatedContent } = truncateContentForSync(
+      message.content,
+      message.source,
+    );
+
     // Include hidden flag in encrypted content so it syncs to mobile
     const content = JSON.stringify({
-      content: message.content,
+      content: truncatedContent,
       metadata: message.metadata,
       hidden: message.hidden ?? false,
     });
@@ -2091,14 +2100,22 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         try {
           // First update metadata if provided
           if (metadata) {
+            const wireMetadata: Partial<SessionMetadata> = {
+              provider: metadata.provider,
+              model: metadata.model,
+              mode: metadata.mode as 'agent' | 'planning' | undefined,
+            };
+            // Title must be encrypted on the wire. The server stores ciphertext
+            // only; sending plaintext here would leak titles into DO SQLite
+            // (see also IndexRoom.encrypted_title for the index-side equivalent).
+            if (metadata.title && config.encryptionKey) {
+              const { encryptedTitle, titleIv } = await encryptTitle(metadata.title, config.encryptionKey);
+              wireMetadata.encryptedTitle = encryptedTitle;
+              wireMetadata.titleIv = titleIv;
+            }
             const metadataMsg: ClientMessage = {
               type: 'updateMetadata',
-              metadata: {
-                title: metadata.title,
-                provider: metadata.provider,
-                model: metadata.model,
-                mode: metadata.mode as 'agent' | 'planning' | undefined,
-              },
+              metadata: wireMetadata,
             };
             ws.send(JSON.stringify(metadataMsg));
           }

@@ -82,22 +82,44 @@ export const UnifiedOnboarding: React.FC<UnifiedOnboardingProps> = ({
   // Force showing all fields for testing
   const [forceShowAllFields, setForceShowAllFields] = useState<boolean>(false);
 
-  // Check for existing user on open
+  // Check for existing user on open.
+  //
+  // Defense-in-depth for issue #260: the dialog must remain interactive even
+  // if the main process never answers. Race the IPC against a 3s timeout and
+  // fall back to the new-user path on timeout. The mode-card click handlers
+  // are pure local setState and do not depend on this result, so this fallback
+  // strictly widens the "interactive" set of states. Logs timing so we can
+  // see in nimbalyst-debug.log whether the IPC actually resolved.
   useEffect(() => {
-    if (isOpen) {
-      const checkExistingUser = async () => {
-        try {
-          const state = await window.electronAPI.invoke('onboarding:get');
-          // If user has already provided their role, they're an existing user
-          const hasExistingData = !!(state.userRole && state.userRole !== 'skipped');
-          setIsExistingUser(hasExistingData);
-        } catch (error) {
-          console.error('Failed to check onboarding state:', error);
+    if (!isOpen) return;
+    const t0 = performance.now();
+    let cancelled = false;
+    const checkExistingUser = async () => {
+      try {
+        const result = await Promise.race([
+          window.electronAPI.invoke('onboarding:get').then((state) => ({ kind: 'ok' as const, state })),
+          new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 3000)),
+        ]);
+        if (cancelled) return;
+        const elapsed = Math.round(performance.now() - t0);
+        if (result.kind === 'timeout') {
+          console.warn(`[UnifiedOnboarding] onboarding:get timed out after ${elapsed}ms; using new-user fallback`);
           setIsExistingUser(false);
+          return;
         }
-      };
-      checkExistingUser();
-    }
+        console.log(`[UnifiedOnboarding] onboarding:get resolved in ${elapsed}ms`);
+        const hasExistingData = !!(result.state?.userRole && result.state.userRole !== 'skipped');
+        setIsExistingUser(hasExistingData);
+      } catch (error) {
+        if (cancelled) return;
+        console.error('[UnifiedOnboarding] onboarding:get failed:', error);
+        setIsExistingUser(false);
+      }
+    };
+    checkExistingUser();
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen]);
 
   // Reset state when dialog opens

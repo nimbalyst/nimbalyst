@@ -118,4 +118,13 @@ export class TranscriptMigrationService {
     // No-op: the transformer now handles all sessions uniformly.
     // Previously this set LIVE_WRITE_VERSION to skip transformer processing.
   }
+
+  /**
+   * DEV/TESTING: Force a full reparse of one session's canonical events.
+   * See TranscriptTransformer.forceReparseSession for details. Destructive
+   * -- callers MUST gate exposure on dev mode.
+   */
+  async forceReparseSession(sessionId: string, provider: string): Promise<boolean> {
+    return this.transformer.forceReparseSession(sessionId, provider);
+  }
 }

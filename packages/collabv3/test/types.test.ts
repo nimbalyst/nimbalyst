@@ -73,7 +73,8 @@ describe('Message protocol', () => {
       type: 'syncResponse',
       messages: [],
       metadata: {
-        title: 'Test Session',
+        encryptedTitle: 'base64-encrypted-title',
+        titleIv: 'base64-title-iv',
         provider: 'claude',
         encryptedProjectId: 'base64-encrypted-project-id',
         projectIdIv: 'base64-iv',
@@ -86,7 +87,8 @@ describe('Message protocol', () => {
 
     expect(msg.type).toBe('syncResponse');
     if (msg.type === 'syncResponse') {
-      expect(msg.metadata?.title).toBe('Test Session');
+      expect(msg.metadata?.encryptedTitle).toBe('base64-encrypted-title');
+      expect(msg.metadata?.titleIv).toBe('base64-title-iv');
     }
   });
 

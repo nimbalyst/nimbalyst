@@ -1160,6 +1160,42 @@ export class HistoryManager {
    * With the unique constraint, there's only ONE pending tag per file.
    * It will be either a pre-edit tag or an incremental-approval tag.
    */
+  /**
+   * Fetch the most recent snapshot content for (filePath, sessionId,
+   * snapshotType). Used by session-aware diff IPC to retrieve the pre-edit
+   * baseline (snapshotType='pre-edit') or the AI's post-edit output
+   * (snapshotType='ai-edit') for the active session.
+   */
+  async getLatestSnapshotContent(
+    filePath: string,
+    sessionId: string,
+    snapshotType: SnapshotType | 'pre-edit',
+  ): Promise<string | null> {
+    try {
+      if (!database.isInitialized()) {
+        await database.initialize();
+      }
+      const result = await database.query<{ content: Buffer }>(
+        `
+          SELECT content
+          FROM document_history
+          WHERE file_path = $1
+            AND metadata->>'sessionId' = $2
+            AND metadata->>'type' = $3
+          ORDER BY timestamp DESC
+          LIMIT 1
+        `,
+        [filePath, sessionId, snapshotType],
+      );
+      if (result.rows.length === 0) return null;
+      const decompressed = await gunzip(result.rows[0].content);
+      return decompressed.toString('utf-8');
+    } catch (error) {
+      logger.main.error('[HistoryManager] getLatestSnapshotContent failed:', error);
+      return null;
+    }
+  }
+
   async getDiffBaseline(filePath: string): Promise<{ content: string; tagType: 'pre-edit' | 'incremental-approval' } | null> {
     try {
       // SIMPLIFIED: With the unique constraint, there's only ONE pending tag per file

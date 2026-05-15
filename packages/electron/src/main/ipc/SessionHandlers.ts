@@ -686,9 +686,18 @@ export async function registerSessionHandlers() {
     });
 
     // List child sessions for a parent session
-    safeHandle('sessions:list-children', async (event, parentSessionId: string, workspacePath: string) => {
+    safeHandle('sessions:list-children', async (
+        event,
+        parentSessionId: string,
+        workspacePath: string,
+        options?: { includeArchived?: boolean }
+    ) => {
         try {
             const { database } = await import('../database/PGLiteDatabaseWorker');
+            const includeArchived = options?.includeArchived === true;
+            const archivedFilter = includeArchived
+                ? ''
+                : 'AND (s.is_archived = FALSE OR s.is_archived IS NULL)';
 
             const { rows } = await database.query<any>(
                 `SELECT s.id, s.provider, s.model, s.session_type, s.mode, s.agent_role, s.created_by_session_id, s.title, s.workspace_id,
@@ -698,6 +707,7 @@ export async function registerSessionHandlers() {
                  FROM ai_sessions s
                  LEFT JOIN ai_agent_messages m ON s.id = m.session_id AND m.direction = 'input' AND (m.hidden = FALSE OR m.hidden IS NULL)
                  WHERE s.parent_session_id = $1 AND s.workspace_id = $2
+                   ${archivedFilter}
                  GROUP BY s.id, s.provider, s.model, s.session_type, s.mode, s.agent_role, s.created_by_session_id, s.title, s.workspace_id,
                           s.worktree_id, s.parent_session_id, s.created_at, s.updated_at, s.is_archived, s.is_pinned,
                           s.metadata
@@ -1572,6 +1582,50 @@ export async function registerSessionHandlers() {
 
         const viewModel = TranscriptProjector.project(tailEvents);
         return viewModel.messages;
+    });
+
+    // DEV/TESTING ONLY: Force a single session's canonical events to be
+    // dropped and reparsed from raw messages. Used when iterating on parser
+    // fixes to verify against an existing session WITHOUT bumping
+    // TranscriptTransformer.CURRENT_VERSION (which would reparse every
+    // session in the database).
+    //
+    // Destructive (drops and rewrites canonical events) -- gated on dev mode
+    // so it cannot be invoked from a packaged build.
+    safeHandle('transcript:force-reparse-session', async (_event, sessionId: string) => {
+        if (process.env.NODE_ENV === 'production') {
+            throw new Error('transcript:force-reparse-session is dev-only');
+        }
+        if (!sessionId) {
+            throw new Error('sessionId is required');
+        }
+        if (!TranscriptMigrationRepository.hasService()) {
+            throw new Error('TranscriptMigrationService not initialized');
+        }
+
+        const session = await AISessionsRepository.get(sessionId);
+        if (!session) {
+            throw new Error(`Session ${sessionId} not found`);
+        }
+
+        const provider = session.provider ?? 'unknown';
+        const migrationService = TranscriptMigrationRepository.getService();
+        await migrationService.forceReparseSession(sessionId, provider);
+
+        // Nudge any open renderer view of this session to reload from DB so the
+        // user sees the reparse result without manually switching sessions. The
+        // existing ai:message-logged listener routes through the throttled
+        // reload pipeline.
+        for (const window of BrowserWindow.getAllWindows()) {
+            if (!window.isDestroyed()) {
+                window.webContents.send('ai:message-logged', {
+                    sessionId,
+                    direction: 'output',
+                });
+            }
+        }
+
+        return { success: true, sessionId, provider };
     });
 }
 
