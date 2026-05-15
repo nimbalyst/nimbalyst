@@ -65,6 +65,7 @@ import {
     updateWorkspaceState,
     runMigrations,
     getAppSetting,
+    getClaudeCodeSettings,
     store
 } from './utils/store';
 import { getAIProviderOverridesWithWorktreeFallback } from './utils/aiSettingsMerge';
@@ -114,6 +115,7 @@ import { queueMarketplaceInstallRequest, registerExtensionMarketplaceHandlers, r
 import { getRegisteredExtensions } from './extensions/RegisteredFileTypes';
 import { ClaudeCodeProvider, OpenAICodexProvider, OpenAICodexACPProvider, OpenCodeProvider, CopilotCLIProvider } from '@nimbalyst/runtime/ai/server';
 import { matchesAllowPattern } from '@nimbalyst/runtime/ai/server/permissions/toolPermissionHelpers';
+import { resolveCodexPreEditHookScriptPath } from './services/ai/codexPreEditHookPath';
 import { sessionFileTracker } from './services/SessionFileTracker';
 import { historyManager } from './HistoryManager';
 import { readFileContentOrNull } from './services/ai/aiServiceUtils';
@@ -1316,7 +1318,6 @@ app.whenReady().then(async () => {
     // Inject Claude Code settings loader
     // This allows user/project commands to be enabled/disabled via settings
     ClaudeCodeProvider.setClaudeCodeSettingsLoader(async () => {
-        const { getClaudeCodeSettings } = await import('./utils/store');
         return getClaudeCodeSettings();
     });
 
@@ -1426,6 +1427,32 @@ app.whenReady().then(async () => {
     // Issue #37 problem 1.
     ClaudeCodeProvider.setAdditionalDirectoriesLoader(getAdditionalDirectoriesForWorkspace);
     OpenAICodexProvider.setAdditionalDirectoriesLoader(getAdditionalDirectoriesForWorkspace);
+
+    // Wire the Codex PreToolUse hook (LEGACY -- only consulted by the SDK
+    // transport, which is no longer the default). The hook script ships
+    // under packages/electron/resources/ and is invoked synchronously by
+    // Codex before every apply_patch, snapshotting each affected path's
+    // pre-edit content to a per-session sidecar dir under userData. The
+    // provider reads from the sidecar at item.started time, bypassing the
+    // race where Codex emits item.started after the patch is already on
+    // disk. The new app-server transport recovers pre-edit content from the
+    // diff text in item/completed and does not need this hook.
+    OpenAICodexProvider.setPreEditHookScriptPathResolver(resolveCodexPreEditHookScriptPath);
+    OpenAICodexProvider.setPreEditSidecarDirResolver((sessionId: string) => {
+      if (!sessionId) return undefined;
+      const safeId = sessionId.replace(/[^A-Za-z0-9_-]/g, '_');
+      return join(app.getPath('userData'), 'codex-pre-edit-snapshots', safeId);
+    });
+
+    // Codex transport selection. Default to 'app-server' for new sessions
+    // unless the user has explicitly opted into the legacy 'sdk' transport
+    // via the `openaiCodex.transport` app setting (the documented escape
+    // hatch). Captured at provider-construct time per session so a settings
+    // change takes effect on the next codex session without an app restart.
+    OpenAICodexProvider.setCodexTransportResolver(() => {
+      const setting = getAppSetting<{ transport?: 'sdk' | 'app-server' }>('openaiCodex')?.transport;
+      return setting === 'sdk' ? 'sdk' : 'app-server';
+    });
 
     // Wire shared permission infrastructure for all agent providers.
     // Both Claude Code and OpenAI Codex use the same pattern storage,

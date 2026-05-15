@@ -34,7 +34,7 @@ import { createDatabaseBrowserWindow } from '../window/DatabaseBrowserWindow';
 import { createDeveloperDashboardWindow } from '../window/DeveloperDashboardWindow';
 import { runDiffErgonomicsHarness } from '../file/DiffErgonomicsFixture';
 import { loadFileIntoWindow } from '../file/FileOperations';
-import { getRecentItems, clearRecentItems, addToRecentItems, getTheme, setTheme, store, getWorkspaceState, getWorkspaceWindowState, isExtensionDevToolsEnabled } from '../utils/store';
+import { getRecentItems, clearRecentItems, addToRecentItems, getTheme, setTheme, store, getWorkspaceState, getWorkspaceWindowState, isExtensionDevToolsEnabled, setWorktreeOnboardingShown } from '../utils/store';
 import { updateWindowTitleBars, updateNativeTheme } from '../theme/ThemeManager';
 import { refreshWorkspaceFileTree } from '../file/FileWatcherDebug';
 import { getFolderContents } from '../utils/FileTree';
@@ -1440,8 +1440,7 @@ export async function createApplicationMenu() {
                         },
                         {
                             label: 'Reset Worktree Onboarding',
-                            click: async () => {
-                                const { setWorktreeOnboardingShown } = await import('../utils/store');
+                            click: () => {
                                 setWorktreeOnboardingShown(false);
                             }
                         },

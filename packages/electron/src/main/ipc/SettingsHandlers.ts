@@ -4,11 +4,42 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
-import { getWorkspaceState, updateWorkspaceState, getTheme, getThemeSync, isCompletionSoundEnabled, setCompletionSoundEnabled, getCompletionSoundType, setCompletionSoundType, CompletionSoundType, getReleaseChannel, setReleaseChannel, ReleaseChannel, getRecentItems, getDefaultAIModel, setDefaultAIModel, getDefaultEffortLevel, setDefaultEffortLevel, isAnalyticsEnabled, setAnalyticsEnabled, getSessionSyncConfig, setSessionSyncConfig, SessionSyncConfig, isExtensionDevToolsEnabled, setExtensionDevToolsEnabled, getAppSetting, setAppSetting, getAlphaFeatures, setAlphaFeatures, getBetaFeatures, setBetaFeatures, getEnableAllBetaFeatures, setEnableAllBetaFeatures, getDeveloperFeatures, setDeveloperFeatures, isDeveloperFeatureAvailable, isShowTrayIcon, getDebugFlags, setDebugFlags, type DebugFlags } from '../utils/store';
+import {
+    getWorkspaceState, updateWorkspaceState,
+    getTheme, getThemeSync,
+    isCompletionSoundEnabled, setCompletionSoundEnabled,
+    getCompletionSoundType, setCompletionSoundType, CompletionSoundType,
+    getReleaseChannel, setReleaseChannel, ReleaseChannel,
+    getRecentItems,
+    getDefaultAIModel, setDefaultAIModel,
+    getDefaultEffortLevel, setDefaultEffortLevel,
+    isAnalyticsEnabled, setAnalyticsEnabled,
+    getSessionSyncConfig, setSessionSyncConfig, SessionSyncConfig,
+    isExtensionDevToolsEnabled, setExtensionDevToolsEnabled,
+    getAppSetting, setAppSetting,
+    getAlphaFeatures, setAlphaFeatures,
+    getBetaFeatures, setBetaFeatures,
+    getEnableAllBetaFeatures, setEnableAllBetaFeatures,
+    getDeveloperFeatures, setDeveloperFeatures, isDeveloperFeatureAvailable,
+    isShowTrayIcon,
+    getDebugFlags, setDebugFlags, type DebugFlags,
+    setPreferredAgentLanguage,
+    getMultiProjectMode, setMultiProjectMode,
+    getOpenProjectPaths, setOpenProjectPaths,
+    getActiveProjectPath, setActiveProjectPath,
+    getRestorePreviousProjectsOnLaunch, setRestorePreviousProjectsOnLaunch,
+    getOnboardingState, updateOnboardingState,
+    isDeveloperMode, setDeveloperMode,
+    isFeatureWalkthroughCompleted, setFeatureWalkthroughCompleted,
+    isWorktreeOnboardingShown, setWorktreeOnboardingShown,
+    getClaudeCodeSettings,
+    setClaudeCodeProjectCommandsEnabled, setClaudeCodeUserCommandsEnabled,
+    getAgentWorkflowSourceSettings, getAgentWorkflowExportSettings,
+    setAgentWorkflowSourceSettings, setAgentWorkflowExportSettings,
+} from '../utils/store';
 import { getEnhancedPath } from '../services/CLIManager';
 import { logger } from '../utils/logger';
 import { SessionNamingService } from '../services/SessionNamingService';
-import { setPreferredAgentLanguage } from '../utils/store';
 import { SoundNotificationService } from '../services/SoundNotificationService';
 import { autoUpdaterService } from '../services/autoUpdater';
 import type { OnboardingState } from '../utils/store';
@@ -332,86 +363,91 @@ export function registerSettingsHandlers() {
 
     // Multi-project rail (opt-in: hosts multiple projects in a single window)
     safeHandle('app:get-multi-project-mode', async () => {
-        const { getMultiProjectMode } = await import('../utils/store');
         return getMultiProjectMode();
     });
 
     safeHandle('app:set-multi-project-mode', async (_event, enabled: boolean) => {
-        const { setMultiProjectMode } = await import('../utils/store');
         setMultiProjectMode(enabled);
     });
 
     safeHandle('app:get-open-projects', async () => {
-        const { getOpenProjectPaths } = await import('../utils/store');
         return getOpenProjectPaths();
     });
 
     safeHandle('app:set-open-projects', async (_event, paths: string[]) => {
-        const { setOpenProjectPaths } = await import('../utils/store');
         setOpenProjectPaths(Array.isArray(paths) ? paths : []);
     });
 
     safeHandle('app:get-active-project-path', async () => {
-        const { getActiveProjectPath } = await import('../utils/store');
         return getActiveProjectPath();
     });
 
     safeHandle('app:set-active-project-path', async (_event, path: string | null) => {
-        const { setActiveProjectPath } = await import('../utils/store');
         setActiveProjectPath(path);
     });
 
     safeHandle('app:get-restore-previous-projects', async () => {
-        const { getRestorePreviousProjectsOnLaunch } = await import('../utils/store');
         return getRestorePreviousProjectsOnLaunch();
     });
 
     safeHandle('app:set-restore-previous-projects', async (_event, enabled: boolean) => {
-        const { setRestorePreviousProjectsOnLaunch } = await import('../utils/store');
         setRestorePreviousProjectsOnLaunch(!!enabled);
     });
 
-    // Onboarding state
+    // Onboarding state.
+    //
+    // Diagnostic timing is emitted here because issue #260 reports a beach-ball
+    // hang on the developer-vs-standard mode picker, where this IPC is the
+    // suspected stall point on cold start. The renderer races this call against
+    // a timeout (see useOnboarding.ts), so we want a main-side breadcrumb that
+    // tells us whether the handler ever ran and how long the underlying store
+    // read took. Logs the elapsed time at info level so it lands in main.log on
+    // packaged builds.
     safeHandle('onboarding:get', async () => {
-        const { getOnboardingState } = await import('../utils/store');
-        return getOnboardingState();
+        const t0 = Date.now();
+        try {
+            const state = getOnboardingState();
+            const elapsed = Date.now() - t0;
+            if (elapsed > 50) {
+                logger.main.warn(`[SettingsHandlers] onboarding:get slow read: ${elapsed}ms`);
+            } else {
+                logger.main.info(`[SettingsHandlers] onboarding:get ok (${elapsed}ms)`);
+            }
+            return state;
+        } catch (err) {
+            logger.main.error('[SettingsHandlers] onboarding:get failed:', err);
+            throw err;
+        }
     });
 
     safeHandle('onboarding:update', async (_event, state: Partial<OnboardingState>) => {
-        const { updateOnboardingState } = await import('../utils/store');
         updateOnboardingState(state);
     });
 
     // Developer mode (global app setting)
     safeHandle('developer-mode:get', async () => {
-        const { isDeveloperMode } = await import('../utils/store');
         return isDeveloperMode();
     });
 
     safeHandle('developer-mode:set', async (_event, enabled: boolean) => {
-        const { setDeveloperMode } = await import('../utils/store');
         setDeveloperMode(enabled);
     });
 
     // Feature walkthrough state (shown on first launch)
     safeHandle('feature-walkthrough:is-completed', async () => {
-        const { isFeatureWalkthroughCompleted } = await import('../utils/store');
         return isFeatureWalkthroughCompleted();
     });
 
     safeHandle('feature-walkthrough:set-completed', async (_event, completed: boolean) => {
-        const { setFeatureWalkthroughCompleted } = await import('../utils/store');
         setFeatureWalkthroughCompleted(completed);
     });
 
     // Worktree onboarding state
     safeHandle('worktree-onboarding:is-shown', async () => {
-        const { isWorktreeOnboardingShown } = await import('../utils/store');
         return isWorktreeOnboardingShown();
     });
 
     safeHandle('worktree-onboarding:set-shown', async (_event: Electron.IpcMainInvokeEvent, shown: boolean) => {
-        const { setWorktreeOnboardingShown } = await import('../utils/store');
         setWorktreeOnboardingShown(shown);
     });
 
@@ -446,15 +482,10 @@ export function registerSettingsHandlers() {
 
     // Claude Code settings
     safeHandle('claudeCode:get-settings', async () => {
-        const { getClaudeCodeSettings } = await import('../utils/store');
         return getClaudeCodeSettings();
     });
 
     safeHandle('agentWorkflows:get-settings', async () => {
-        const {
-            getAgentWorkflowSourceSettings,
-            getAgentWorkflowExportSettings,
-        } = await import('../utils/store');
         return {
             sourceSettings: getAgentWorkflowSourceSettings(),
             exportSettings: getAgentWorkflowExportSettings(),
@@ -477,13 +508,11 @@ export function registerSettingsHandlers() {
     });
 
     safeHandle('claudeCode:set-project-commands-enabled', async (_event, enabled: boolean) => {
-        const { setClaudeCodeProjectCommandsEnabled } = await import('../utils/store');
         setClaudeCodeProjectCommandsEnabled(enabled);
         logger.store.info(`[SettingsHandlers] Claude Code project commands ${enabled ? 'enabled' : 'disabled'}`);
     });
 
     safeHandle('claudeCode:set-user-commands-enabled', async (_event, enabled: boolean) => {
-        const { setClaudeCodeUserCommandsEnabled } = await import('../utils/store');
         setClaudeCodeUserCommandsEnabled(enabled);
         logger.store.info(`[SettingsHandlers] Claude Code user commands ${enabled ? 'enabled' : 'disabled'}`);
     });
@@ -494,7 +523,6 @@ export function registerSettingsHandlers() {
         includeUserClaudeSources?: boolean;
         extensionWorkflowsEnabled?: boolean;
     }) => {
-        const { setAgentWorkflowSourceSettings } = await import('../utils/store');
         const next = setAgentWorkflowSourceSettings(updates ?? {});
         logger.store.info('[SettingsHandlers] Agent workflow source settings updated');
         return next;
@@ -504,7 +532,6 @@ export function registerSettingsHandlers() {
         codexEnabled?: boolean;
         claudeGeneratedExtensionWorkflowsEnabled?: boolean;
     }) => {
-        const { setAgentWorkflowExportSettings } = await import('../utils/store');
         const next = setAgentWorkflowExportSettings(updates ?? {});
         logger.store.info('[SettingsHandlers] Agent workflow export settings updated');
         return next;

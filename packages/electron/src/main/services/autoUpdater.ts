@@ -9,6 +9,16 @@ import { AnalyticsService } from './analytics/AnalyticsService';
 import { hasActiveStreamingSessions } from '../ipc/SessionStateHandlers';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { getDatabase } from '../database/initialize';
+import {
+  categorizeDownloadDuration,
+  classifyUpdateError,
+  isWindowsRenameLockError,
+} from './autoUpdaterUtils';
+
+// Re-export the pure utilities so callers that already pulled them from this
+// module keep working. Unit tests should import from `autoUpdaterUtils`
+// directly to avoid the Electron app-global load chain.
+export { classifyUpdateError, categorizeDownloadDuration, isWindowsRenameLockError };
 
 // Reminder suppression duration: 24 hours
 const REMINDER_SUPPRESSION_DURATION_MS = 24 * 60 * 60 * 1000;
@@ -18,45 +28,11 @@ const GITHUB_UPDATE_PROVIDER = {
   repo: 'nimbalyst'
 };
 
-/**
- * Categorize download duration for analytics
- */
-function getDurationCategory(durationMs: number): string {
-  if (durationMs < 30000) return 'fast';       // < 30 seconds
-  if (durationMs < 120000) return 'medium';    // 30s - 2 minutes
-  return 'slow';                                // > 2 minutes
-}
-
-/**
- * Classify update errors for analytics
- */
-function classifyUpdateError(error: Error): string {
-  const message = error.message.toLowerCase();
-  if (message.includes('network') || message.includes('enotfound') || message.includes('timeout') || message.includes('econnrefused')) {
-    return 'network';
-  }
-  if (message.includes('permission') || message.includes('eacces')) {
-    return 'permission';
-  }
-  if (message.includes('disk') || message.includes('space') || message.includes('enospc')) {
-    return 'disk_space';
-  }
-  if (message.includes('signature') || message.includes('verify') || message.includes('certificate') || message.includes('cert')) {
-    return 'signature';
-  }
-  return 'unknown';
-}
-
-// Antivirus on Windows often holds a transient handle on the freshly-downloaded
-// installer, causing electron-updater's temp -> final rename to fail with EPERM
-// (occasionally EBUSY). The fix is to wait briefly and retry the download once.
-function isWindowsRenameLockError(err: Error): boolean {
-  if (process.platform !== 'win32') return false;
-  const msg = err.message || '';
-  if (/\bEPERM\b.*\brename\b/i.test(msg)) return true;
-  if (/\bEBUSY\b/i.test(msg)) return true;
-  return false;
-}
+// classifyUpdateError, categorizeDownloadDuration, isWindowsRenameLockError
+// moved to ./autoUpdaterUtils so unit tests can import them without pulling
+// in this module's Electron-app-global load chain (see #245). Alias keeps
+// the original call-site name (`getDurationCategory`) in scope.
+const getDurationCategory = categorizeDownloadDuration;
 
 export class AutoUpdaterService {
   private updateCheckInterval: NodeJS.Timeout | null = null;
@@ -636,24 +612,26 @@ export class AutoUpdaterService {
 
   private async checkAndDownloadLatest() {
     try {
-      log.info('Re-checking for latest version before download...');
-
-      // Check for the absolute latest version
-      const result = await autoUpdater.checkForUpdates();
-
-      if (result && result.updateInfo) {
-        log.info(`Latest version found: ${result.updateInfo.version}, downloading...`);
-
-        // Download the latest version that was just checked
-        // Progress events will update the toast automatically
-        await autoUpdater.downloadUpdate();
-      } else {
-        log.info('No update found during re-check');
-        // Show up-to-date toast (rare edge case - update was released then pulled)
-        this.sendToFrontmostWindow('update-toast:up-to-date');
-      }
+      // Previously this method called `autoUpdater.checkForUpdates()` immediately
+      // before `downloadUpdate()` to "get the absolute latest version" - but on
+      // macOS each `checkForUpdates()` call spins up a new Squirrel.Mac proxy
+      // server, and the new proxy tears down the prior one that the original
+      // `update-available` event had already handed Squirrel's `SQRLUpdater` a
+      // reference to. By the time `quitAndInstall` fires, Squirrel's internal
+      // downloader points at a closed proxy and rejects the install with
+      // "The command is disabled and cannot be executed." adambhenry hit
+      // exactly this on macOS arm64 (#245); the race is sensitive to process
+      // scheduling so arm64 reproduces it more reliably than x86_64.
+      //
+      // The `update-available` event has already populated `pendingUpdateInfo`
+      // with the version that triggered this download path. Go straight to
+      // `downloadUpdate()` and let the existing event handlers keep the toast
+      // in sync. The single-check flow does not break the proxy lifecycle and
+      // matches how Squirrel.Mac is documented to be driven.
+      log.info('Starting update download (single-check path to avoid Squirrel.Mac proxy race)...');
+      await autoUpdater.downloadUpdate();
     } catch (error) {
-      log.error('Failed to check and download latest:', error);
+      log.error('Failed to download latest:', error);
       this.sendToFrontmostWindow('update-toast:error', {
         message: error instanceof Error ? error.message : 'Failed to download the update'
       });

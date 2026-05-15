@@ -761,6 +761,24 @@ interface ElectronAPI {
       mimeType: string;
       fileName: string;
     }) => Promise<{ success: boolean; assetId?: string; uri?: string; error?: string }>;
+    migrateLocalAssets: (payload: {
+      workspacePath: string;
+      orgId: string;
+      documentId: string;
+      sourceFilePath: string;
+      markdown: string;
+    }) => Promise<{
+      success: boolean;
+      rewrittenMarkdown?: string;
+      results?: Array<
+        | { ref: string; status: 'ok'; uri: string; bytes: number }
+        | { ref: string; status: 'missing' }
+        | { ref: string; status: 'rejected'; reason: string }
+        | { ref: string; status: 'skipped'; reason: string }
+        | { ref: string; status: 'failed'; error: string }
+      >;
+      error?: string;
+    }>;
     gcAssets: (payload: {
       orgId: string;
       documentId: string;

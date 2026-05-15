@@ -19,6 +19,7 @@ import { TranscriptWriter } from './TranscriptWriter';
 import type { ITranscriptEventStore, TranscriptEvent } from './types';
 import { ClaudeCodeRawParser } from './parsers/ClaudeCodeRawParser';
 import { CodexRawParser } from './parsers/CodexRawParser';
+import { CodexRawParserDispatcher } from './parsers/CodexRawParserDispatcher';
 import { CodexACPRawParser } from './parsers/CodexACPRawParser';
 import { CopilotRawParser } from './parsers/CopilotRawParser';
 import { OpenCodeRawParser } from './parsers/OpenCodeRawParser';
@@ -189,6 +190,25 @@ export class TranscriptTransformer {
    */
   async ensureTransformed(sessionId: string, provider: string): Promise<boolean> {
     return this.ensureUpToDate(sessionId, provider);
+  }
+
+  /**
+   * DEV/TESTING: Force a full reparse of one session's canonical events.
+   *
+   * Wipes existing canonical events for the session and re-runs the parser
+   * from scratch on the raw message log. Use this when iterating on parser
+   * changes locally to verify the fix against an existing session WITHOUT
+   * bumping CURRENT_VERSION (which would reparse every session).
+   *
+   * Not safe to wire up as a user-facing action -- it's destructive (drops
+   * canonical events and rewrites them) and exists only for parser
+   * development. Gate any IPC that exposes it on dev mode.
+   */
+  async forceReparseSession(sessionId: string, provider: string): Promise<boolean> {
+    return this.withSessionLock(sessionId, async () => {
+      await this.transcriptStore.deleteSessionEvents(sessionId);
+      return this.transformFromBeginning(sessionId, provider);
+    });
   }
 
   /**
@@ -388,7 +408,11 @@ export class TranscriptTransformer {
       return new CopilotRawParser();
     }
     if (provider === 'openai-codex') {
-      return new CodexRawParser();
+      // Dispatches per-message between the SDK parser (legacy default) and
+      // the app-server parser based on `metadata.transport`. Old sessions
+      // with no transport tag stay on the SDK parser; new app-server sessions
+      // route to the new parser. No CURRENT_VERSION bump required.
+      return new CodexRawParserDispatcher();
     }
     if (provider === 'openai-codex-acp') {
       return new CodexACPRawParser();

@@ -68,6 +68,34 @@ describe('CodexRawParser', () => {
         text: 'Plain prompt',
       });
     });
+
+    it('preserves attachments for plain text input prompts', async () => {
+      const parser = new CodexRawParser();
+      const attachments = [
+        {
+          id: 'att-1',
+          filename: 'notes.txt',
+          filepath: '/tmp/notes.txt',
+          mimeType: 'text/plain',
+          size: 42,
+          type: 'document',
+        },
+      ];
+      const msg = makeRawMessage({
+        direction: 'input',
+        content: 'Review @notes.txt',
+        metadata: { attachments, mode: 'agent' },
+      });
+
+      const descriptors = await parser.parseMessage(msg, makeContext());
+
+      expect(descriptors).toHaveLength(1);
+      expect(descriptors[0]).toMatchObject({
+        type: 'user_message',
+        text: 'Review @notes.txt',
+        attachments,
+      });
+    });
   });
 
   describe('output messages', () => {

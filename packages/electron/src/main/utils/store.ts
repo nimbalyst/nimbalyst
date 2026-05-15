@@ -99,6 +99,15 @@ interface AppStoreSchema {
     // Enable user-level commands (~/.claude/commands/)
     userCommandsEnabled?: boolean;
   };
+  // OpenAI Codex settings
+  openaiCodex?: {
+    // Which codex transport to use for new sessions. 'app-server' (default)
+    // drives `codex app-server --listen stdio://` directly via JSON-RPC v2,
+    // which provides full unified-diff text per file_change for deterministic
+    // pre-edit baselines. 'sdk' is the legacy `codex exec --experimental-json`
+    // path retained as an escape hatch.
+    transport?: 'sdk' | 'app-server';
+  };
   // Unified agent workflow registry source settings
   agentWorkflowSources?: {
     workspaceClaudeCompatibilityEnabled?: boolean;

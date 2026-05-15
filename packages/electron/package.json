@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.60.1",
+  "version": "0.60.2",
   "private": true,
   "license": "MIT",
   "description": "Electron app for Nimbalyst",
@@ -58,7 +58,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@monaco-editor/react": "^4.7.0",
     "@nimbalyst/runtime": "*",
-    "@openai/codex-sdk": "^0.128.0",
+    "@openai/codex-sdk": "^0.130.0",
     "@stytch/vanilla-js": "^5.42.0",
     "@types/glob": "^8.1.0",
     "@types/js-yaml": "^4.0.9",
@@ -285,6 +285,10 @@
       {
         "from": "resources/trayTemplate@2x.png",
         "to": "trayTemplate@2x.png"
+      },
+      {
+        "from": "resources/codex-pre-edit-hook.mjs",
+        "to": "codex-pre-edit-hook.mjs"
       },
       {
         "from": "../extensions",

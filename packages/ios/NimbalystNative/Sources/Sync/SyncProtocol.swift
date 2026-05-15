@@ -375,8 +375,15 @@ struct ServerMessageEntry: Codable {
 }
 
 /// Session metadata returned with syncResponse.
+///
+/// Titles are E2E encrypted: the server only ever returns ciphertext under
+/// `encryptedTitle` / `titleIv`. The session list pulls decrypted titles
+/// from the IndexRoom path; this struct does not currently surface a title
+/// to the UI, but the fields are declared so future consumers can decrypt
+/// without re-introducing a plaintext server-side field.
 struct SessionRoomMetadata: Codable {
-    let title: String?
+    let encryptedTitle: String?
+    let titleIv: String?
     let provider: String?
     let model: String?
     let mode: String?
