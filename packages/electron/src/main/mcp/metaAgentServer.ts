@@ -322,7 +322,13 @@ function createMetaAgentMcpServer(
               },
               model: {
                 type: "string",
-                description: "Optional explicit model identifier. Defaults to the caller's provider/model defaults.",
+                description:
+                  "Optional explicit model identifier (e.g. 'claude-code:opus'). When omitted, the new session uses the global default model unless inheritModel=true. Wins over inheritModel when both are set.",
+              },
+              inheritModel: {
+                type: "boolean",
+                description:
+                  "Default false. When true and `model` is not set, the spawned session uses the caller's model so it stays on the same provider/model (e.g. opus stays on opus). Ignored when `model` is provided explicitly.",
               },
               notifyOnComplete: {
                 type: "boolean",

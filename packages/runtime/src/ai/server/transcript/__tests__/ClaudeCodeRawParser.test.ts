@@ -433,6 +433,100 @@ describe('ClaudeCodeRawParser', () => {
       expect(descriptors).toHaveLength(0);
     });
 
+    it('emits result chunk text on resume when num_turns is 0 (unknown slash command)', async () => {
+      // Regression: on a resumed session, suppressResultChunkText is set to
+      // avoid duplicating prior assistant text. But a turn with num_turns===0
+      // (e.g. "Unknown command: /foo") has zero assistant chunks and the result
+      // text is the only signal of what happened. Suppressing it leaves the
+      // turn rendered as completely blank UI, hiding the failure.
+      const parser = new ClaudeCodeRawParser();
+      parser.setSuppressResultChunkText(true); // resume batch
+
+      const descriptors = await parser.parseMessage(
+        makeRawMessage({
+          content: JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            num_turns: 0,
+            result: 'Unknown command: /nimbalyst-planning:launch-new-session',
+          }),
+        }),
+        makeContext(),
+      );
+
+      expect(descriptors).toHaveLength(1);
+      expect(descriptors[0]).toMatchObject({
+        type: 'assistant_message',
+        text: 'Unknown command: /nimbalyst-planning:launch-new-session',
+      });
+    });
+
+    it('emits result chunk text with num_turns 0 even after prior turns produced text in the same batch', async () => {
+      // Regression: in a full-session reparse, processedTextMessageIds
+      // accumulates across all turns processed in the batch. By the time we
+      // reach a later turn's result chunk, it's non-empty -- but a result
+      // chunk with num_turns===0 belongs to a turn that ran zero assistant
+      // turns, so its text cannot duplicate anything from prior turns.
+      const parser = new ClaudeCodeRawParser();
+
+      // Prior turn produces assistant text.
+      await parser.parseMessage(
+        makeRawMessage({
+          content: JSON.stringify({
+            type: 'assistant',
+            message: { id: 'msg-1', content: [{ type: 'text', text: 'Plan written.' }] },
+          }),
+        }),
+        makeContext(),
+      );
+
+      // Later turn: unknown slash command, num_turns 0, only a result chunk.
+      const descriptors = await parser.parseMessage(
+        makeRawMessage({
+          id: 99,
+          content: JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            num_turns: 0,
+            result: 'Unknown command: /nimbalyst-planning:launch-new-session',
+          }),
+        }),
+        makeContext(),
+      );
+
+      expect(descriptors).toHaveLength(1);
+      expect(descriptors[0]).toMatchObject({
+        type: 'assistant_message',
+        text: 'Unknown command: /nimbalyst-planning:launch-new-session',
+      });
+    });
+
+    it('still suppresses result chunk text on resume when num_turns > 0', async () => {
+      // The carve-out above is gated on num_turns===0. A resumed turn that
+      // actually ran assistant turns must still suppress its result echo to
+      // avoid duplicating text already produced via assistant chunks in
+      // prior batches.
+      const parser = new ClaudeCodeRawParser();
+      parser.setSuppressResultChunkText(true);
+
+      const descriptors = await parser.parseMessage(
+        makeRawMessage({
+          content: JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            num_turns: 3,
+            result: 'Final assistant response',
+          }),
+        }),
+        makeContext(),
+      );
+
+      expect(descriptors).toHaveLength(0);
+    });
+
     it('parses nimbalyst_tool_use', async () => {
       const parser = new ClaudeCodeRawParser();
       const msg = makeRawMessage({

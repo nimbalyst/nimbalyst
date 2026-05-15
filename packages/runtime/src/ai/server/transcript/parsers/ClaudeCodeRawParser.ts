@@ -269,14 +269,27 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
         parsed.type === 'result'
         && typeof parsed.result === 'string'
         && parsed.result.trim().length > 0
-        && this.processedTextMessageIds.size === 0
-        && !this.suppressResultChunkText
+        && (
+          parsed.num_turns === 0
+          || (this.processedTextMessageIds.size === 0 && !this.suppressResultChunkText)
+        )
       ) {
         // Slash command turns (e.g. unknown /foo) can produce ONLY a result chunk
         // with the final text. For regular assistant turns the result chunk
         // duplicates text already emitted via `type: 'assistant'` messages, so
         // only backfill when no assistant text was seen IN THIS BATCH and no
         // prior batch produced assistant text (suppressResultChunkText).
+        //
+        // Why num_turns===0 short-circuits both gates: a turn with num_turns===0
+        // means the SDK ran ZERO assistant turns this invocation -- the result
+        // chunk is the entire output of the turn (e.g. "Unknown command: /foo")
+        // and cannot duplicate text from anywhere. The processedTextMessageIds
+        // check is too coarse here: in a full-session reparse it accumulates
+        // across earlier turns, so by the time we reach a later turn's result
+        // chunk it's already non-empty. Likewise, suppressResultChunkText is
+        // set globally for resume batches. Without the num_turns===0 carve-out,
+        // unknown-slash-command turns render as a completely blank turn,
+        // hiding the failure.
         descriptors.push({
           type: 'assistant_message',
           text: parsed.result,

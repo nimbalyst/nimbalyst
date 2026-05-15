@@ -85,29 +85,28 @@ export function OpenAICodexPanel({
         onChange={setUsageIndicatorEnabled}
       />
 
-      <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)]">
-        <h4 className="provider-panel-section-title text-base font-semibold mb-3 text-[var(--nim-text)]">
-          ACP Transport <span className="text-xs font-normal text-[var(--nim-text-muted)]">(experimental)</span>
-        </h4>
-        <p className="text-[13px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">
-          When enabled, <strong>OpenAI Codex (ACP)</strong> becomes available as a separate provider
-          in the model selector. ACP gives Nimbalyst native file-edit hooks for accurate pre-edit
-          baselines, exact diffs in the transcript, and reliable session-linked local history.
-        </p>
-        <p className="text-[13px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">
-          You can keep both transports enabled and choose per session. Experimental: transcript reload
-          and packaged-build support are still being validated. Requires the bundled
-          <code className="text-[12px] font-mono mx-1">@zed-industries/codex-acp</code> binary
-          (installed automatically with Nimbalyst).
-        </p>
-        <SettingsToggle
-          variant="enable"
-          name="Enable ACP transport"
-          description="Adds 'OpenAI Codex (ACP)' as a peer provider"
-          checked={acpEnabled}
-          onChange={handleAcpToggle}
-        />
-      </div>
+      {acpEnabled && (
+        <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)]">
+          <h4 className="provider-panel-section-title text-base font-semibold mb-3 text-[var(--nim-text)]">
+            ACP Transport <span className="text-xs font-normal text-[var(--nim-text-muted)]">(legacy)</span>
+          </h4>
+          <p className="text-[13px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">
+            <strong>OpenAI Codex (ACP)</strong> is already enabled for this installation, but new Codex
+            sessions now use the app-server transport through the main <strong>OpenAI Codex</strong> provider.
+          </p>
+          <p className="text-[13px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">
+            This toggle is hidden by default for new users. Disable ACP here if you no longer need the
+            separate legacy provider in the model selector.
+          </p>
+          <SettingsToggle
+            variant="enable"
+            name="Enable ACP transport"
+            description="Keeps the separate 'OpenAI Codex (ACP)' legacy provider available"
+            checked={acpEnabled}
+            onChange={handleAcpToggle}
+          />
+        </div>
+      )}
 
       {config.enabled && (
         <>

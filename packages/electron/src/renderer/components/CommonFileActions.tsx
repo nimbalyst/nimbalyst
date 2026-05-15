@@ -17,6 +17,7 @@ import { useAtomValue } from 'jotai';
 import { useFileActions } from '../hooks/useFileActions';
 import { registerDocumentInIndex, pendingCollabDocumentAtom, workspaceHasTeamAtom } from '../store/atoms/collabDocuments';
 import { setWindowModeAtom } from '../store/atoms/windowMode';
+import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
 
 interface CommonFileActionsProps {
   filePath: string;
@@ -47,7 +48,9 @@ export function CommonFileActions({
   const actions = useFileActions(filePath, fileName);
   const hasTeam = useAtomValue(workspaceHasTeamAtom);
   const handleShareToTeam = useCallback(async () => {
-    // Read file content to seed the collaborative document on first share
+    const { errorNotificationService } = await import('../services/ErrorNotificationService');
+
+    // Read file content to seed the collaborative document on first share.
     let initialContent: string | undefined;
     try {
       if (window.electronAPI?.invoke) {
@@ -60,6 +63,76 @@ export function CommonFileActions({
       console.warn('Failed to read file content for share:', err);
     }
 
+    // Pre-seed migration of pasted image attachments. Local refs like
+    // `assets/<hash>.png` only exist on this user's disk; without migration
+    // collaborators see broken images. We upload through the encrypted
+    // collab-asset path and rewrite the markdown before it ever reaches the
+    // Y.Doc. Best-effort: failures are reported in the toast but don't
+    // block the share unless every asset failed.
+    const workspacePath = store.get(activeWorkspacePathAtom);
+    const documentSync = window.electronAPI?.documentSync;
+    let migratedContent = initialContent;
+    let migrationToast: { kind: 'ok' | 'partial' | 'no-assets' | 'unavailable' | 'total-failure'; message?: string; failedCount?: number; okCount?: number } = { kind: 'no-assets' };
+
+    if (initialContent && workspacePath && documentSync?.open && documentSync?.migrateLocalAssets) {
+      try {
+        const openResult = await documentSync.open(workspacePath, fileName, fileName);
+        if (!openResult.success || !openResult.config) {
+          throw new Error(openResult.error || 'Failed to open collab document for migration');
+        }
+        const { orgId, documentId } = openResult.config;
+        try {
+          const migration = await documentSync.migrateLocalAssets({
+            workspacePath,
+            orgId,
+            documentId,
+            sourceFilePath: filePath,
+            markdown: initialContent,
+          });
+          if (migration.success && migration.rewrittenMarkdown !== undefined && migration.results) {
+            const okCount = migration.results.filter(r => r.status === 'ok').length;
+            const failedCount = migration.results.filter(
+              r => r.status === 'failed' || r.status === 'missing' || r.status === 'rejected',
+            ).length;
+            const attempted = okCount + failedCount;
+            if (attempted > 0 && okCount === 0) {
+              migrationToast = { kind: 'total-failure', failedCount };
+            } else {
+              migratedContent = migration.rewrittenMarkdown;
+              migrationToast =
+                attempted === 0
+                  ? { kind: 'no-assets' }
+                  : failedCount > 0
+                  ? { kind: 'partial', okCount, failedCount }
+                  : { kind: 'ok', okCount };
+            }
+          } else if (!migration.success) {
+            migrationToast = { kind: 'unavailable', message: migration.error };
+          }
+        } finally {
+          // Drop the migration-pass registration. CollabMode will reopen the
+          // doc when its tab mounts; otherwise we'd permanently inflate the
+          // sender refcount by 1.
+          await documentSync.closeDoc(documentId).catch(() => {});
+        }
+      } catch (err) {
+        console.warn('[ShareToTeam] Asset migration failed:', err);
+        migrationToast = {
+          kind: 'unavailable',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    if (migrationToast.kind === 'total-failure') {
+      errorNotificationService.showError(
+        'Could not share to team',
+        `All ${migrationToast.failedCount ?? ''} attached images failed to upload. Check your connection and try again.`,
+        { duration: 8000 },
+      );
+      return;
+    }
+
     // Register in the doc index (optimistic local update is synchronous,
     // server registration happens in background)
     registerDocumentInIndex(fileName, fileName, 'markdown').catch(error => {
@@ -67,18 +140,42 @@ export function CommonFileActions({
     });
 
     // Set the pending document so CollabMode auto-opens it (with content for seeding)
-    store.set(pendingCollabDocumentAtom, { documentId: fileName, initialContent });
+    store.set(pendingCollabDocumentAtom, { documentId: fileName, initialContent: migratedContent });
 
     // Switch to collab mode immediately
     store.set(setWindowModeAtom, 'collab');
 
-    import('../services/ErrorNotificationService').then(({ errorNotificationService }) => {
-      errorNotificationService.showInfo(
-        'Shared to team',
-        `"${fileName}" is now a collaborative document.`,
-        { duration: 4000 }
-      );
-    });
+    switch (migrationToast.kind) {
+      case 'ok':
+        errorNotificationService.showInfo(
+          'Shared to team',
+          `"${fileName}" is now a collaborative document. Migrated ${migrationToast.okCount} attachment${migrationToast.okCount === 1 ? '' : 's'}.`,
+          { duration: 4000 },
+        );
+        break;
+      case 'partial':
+        errorNotificationService.showWarning(
+          'Shared with missing attachments',
+          `"${fileName}" was shared but ${migrationToast.failedCount} attachment${migrationToast.failedCount === 1 ? '' : 's'} failed to upload.`,
+          { duration: 8000 },
+        );
+        break;
+      case 'unavailable':
+        errorNotificationService.showWarning(
+          'Shared to team',
+          `"${fileName}" is now collaborative, but image attachments could not be migrated${migrationToast.message ? `: ${migrationToast.message}` : '.'}`,
+          { duration: 8000 },
+        );
+        break;
+      case 'no-assets':
+      default:
+        errorNotificationService.showInfo(
+          'Shared to team',
+          `"${fileName}" is now a collaborative document.`,
+          { duration: 4000 },
+        );
+        break;
+    }
   }, [filePath, fileName]);
 
   const Item = useButtons ? 'button' : 'div';

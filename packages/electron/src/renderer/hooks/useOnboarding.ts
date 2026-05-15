@@ -269,11 +269,29 @@ export function useOnboarding({
       // Small delay to let other windows start up first
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      // Check if unified onboarding has been completed
-      const state = await window.electronAPI.invoke('onboarding:get');
+      // Check if unified onboarding has been completed. Race against a 3s
+      // timeout - defense-in-depth for issue #260, where a cold-start hang
+      // would otherwise leave this hook awaiting forever and the dialog
+      // would never open. On timeout we conservatively assume "not
+      // completed" so the dialog opens and the user is unblocked. Logs the
+      // elapsed time so we can correlate against the main-side handler log.
+      const t0 = performance.now();
+      const result = await Promise.race([
+        window.electronAPI.invoke('onboarding:get').then((s) => ({ kind: 'ok' as const, state: s })),
+        new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 3000)),
+      ]);
+      const elapsed = Math.round(performance.now() - t0);
+      let state: { unifiedOnboardingCompleted?: boolean } | null;
+      if (result.kind === 'timeout') {
+        console.warn(`[useOnboarding] onboarding:get timed out after ${elapsed}ms; proceeding to show dialog`);
+        state = null;
+      } else {
+        console.log(`[useOnboarding] onboarding:get resolved in ${elapsed}ms (completed=${!!result.state?.unifiedOnboardingCompleted})`);
+        state = result.state;
+      }
 
       // Only check the new unified onboarding flag
-      if (state.unifiedOnboardingCompleted) {
+      if (state?.unifiedOnboardingCompleted) {
         // Onboarding already done, check platform warnings
         checkWindowsWarning();
         checkRosettaWarning();

@@ -60,6 +60,7 @@ import {
   SessionOptions,
   ToolResult,
 } from './ProtocolInterface';
+import { buildDocumentAttachmentPromptText } from '../providers/codex/documentAttachmentPrompt';
 import type { ToolPermissionScope } from '../providers/ProviderPermissionMixin';
 
 interface ACPToolPermissionRequest {
@@ -1013,6 +1014,14 @@ export class CodexACPProtocol implements AgentProtocol {
     });
 
     for (const attachment of message.attachments ?? []) {
+      if (attachment.type === 'document' && attachment.filepath) {
+        blocks.push({
+          type: 'text',
+          text: await buildDocumentAttachmentPromptText(attachment),
+        });
+        continue;
+      }
+
       if (attachment.type !== 'image' || !attachment.filepath) {
         continue;
       }

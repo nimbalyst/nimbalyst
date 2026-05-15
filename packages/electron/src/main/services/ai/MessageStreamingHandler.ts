@@ -1229,7 +1229,7 @@ export class MessageStreamingHandler {
             // that previously ran at item.completed and produced
             // empty-baseline diffs for any path the cache hadn't seen.
             if (chunk.preEditSnapshot) {
-              const { toolUseId, entries } = chunk.preEditSnapshot;
+              const { toolUseId, entries, authoritative } = chunk.preEditSnapshot;
 
               // Worktree adoption: any change path may live under a
               // worktree the session hasn't adopted yet. Adopt before
@@ -1249,17 +1249,23 @@ export class MessageStreamingHandler {
                 }
               }
 
-              // For 'update' kind entries, prefer the FileSnapshotCache as
-              // the baseline source: it holds the file content captured at
-              // session-start (or earliest observation of the file), which
-              // is guaranteed pre-edit. Disk-read at item.started can race
-              // with Codex applying its patch synchronously -- when that
-              // race lands, `entry.content` IS the post-edit body, the tag
-              // baseline equals the new content, and DocumentModel's
-              // empty-diff guard skips creating a DiffSession (the editor
-              // never enters diff mode). For 'add' kind, the provider
-              // already forces empty content; pass it through unchanged.
-              const watcherEntryForBaseline = this.svc.hooklessWatcher.getEntry(session.id);
+              // Baseline source policy (per-transport):
+              // - SDK transport (authoritative === undefined/false): the
+              //   provider's disk-read at item.started races with Codex's
+              //   apply_patch, so for 'update' kinds we prefer
+              //   FileSnapshotCache (session-start snapshot, guaranteed
+              //   pre-edit). For 'add', the provider already forces empty.
+              // - App-server transport (authoritative === true): the
+              //   provider reverse-applies the codex diff against post-apply
+              //   disk content to recover pre-edit deterministically. That
+              //   content is authoritative; the cache lookup must NOT
+              //   override it (on fresh gitignored sessions chokidar may
+              //   only have observed the post-edit write, which would
+              //   clobber correct content with the post-edit body -- the
+              //   all-green diff regression the migration was built to fix).
+              const watcherEntryForBaseline = authoritative
+                ? null
+                : this.svc.hooklessWatcher.getEntry(session.id);
               for (const entry of entries) {
                 if (!entry?.path) continue;
                 const absPath = path.isAbsolute(entry.path)
@@ -1270,7 +1276,7 @@ export class MessageStreamingHandler {
 
                 let baselineContent: string = entry.content ?? '';
                 const isAddKind = entry.kind === 'add' || entry.kind === 'create' || entry.kind === 'new';
-                if (!isAddKind && watcherEntryForBaseline) {
+                if (!authoritative && !isAddKind && watcherEntryForBaseline) {
                   try {
                     const cached = await watcherEntryForBaseline.cache.getBeforeState(absPath);
                     if (typeof cached === 'string') {
@@ -1321,6 +1327,42 @@ export class MessageStreamingHandler {
                       preEditError,
                     );
                   }
+                }
+              }
+            }
+            break;
+
+          case 'post_edit_snapshot':
+            // OpenAICodexProvider yields this on `item.completed` for a
+            // `file_change` -- AFTER Codex has applied the patch on disk. The
+            // chunk carries each affected path's post-edit content. We write
+            // it as an `ai-edit` history snapshot tagged with the session ID
+            // so session-aware diffs can render pre-edit -> post-edit even
+            // after the user later modifies the file (current-disk
+            // comparison would otherwise conflate AI and user changes).
+            // This is the codex analogue of Claude's
+            // AgentToolHooks.createTurnEndSnapshots, which the codex
+            // pipeline doesn't go through.
+            if (chunk.postEditSnapshot) {
+              const { toolUseId, entries } = chunk.postEditSnapshot;
+              for (const entry of entries) {
+                if (!entry?.path) continue;
+                const absPath = path.isAbsolute(entry.path)
+                  ? path.normalize(entry.path)
+                  : path.resolve(effectiveWorkspacePath, entry.path);
+                try {
+                  await historyManager.createSnapshot(
+                    absPath,
+                    entry.content,
+                    'ai-edit',
+                    `AI edit (session: ${session.id})`,
+                    { sessionId: session.id, toolUseId },
+                  );
+                } catch (postEditError) {
+                  logger.ai.error(
+                    '[AIService] post_edit_snapshot ai-edit write failed',
+                    postEditError,
+                  );
                 }
               }
             }

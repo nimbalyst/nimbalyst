@@ -162,12 +162,32 @@ export const FilesEditedSidebar: React.FC<FilesEditedSidebarProps> = React.memo(
   const handleGetDiff = useCallback(async (filePath: string) => {
     const gitWorkspacePath = worktreePath || workspacePath;
     if (!gitWorkspacePath) return null;
+    // Prefer session-aware diff (pre-edit baseline vs ai-edit snapshot) when an
+    // active session has touched this file. Falls back to git's working-tree
+    // diff when no session baseline exists. Without this, gitignored or
+    // untracked files always render as fully-added (all green) because
+    // git:file-diff synthesizes against /dev/null. See NIM-586.
+    if (activeSessionId) {
+      try {
+        const sessionDiff = await window.electronAPI.invoke(
+          'session:file-diff',
+          gitWorkspacePath,
+          activeSessionId,
+          filePath,
+        ) as { unifiedDiff: string; isBinary: boolean; source: string };
+        if (sessionDiff?.unifiedDiff && sessionDiff.unifiedDiff.trim().length > 0) {
+          return { unifiedDiff: sessionDiff.unifiedDiff, isBinary: sessionDiff.isBinary };
+        }
+      } catch {
+        // Fall through to git diff on any session-diff failure.
+      }
+    }
     return await window.electronAPI.invoke(
       'git:file-diff',
       gitWorkspacePath,
       { path: filePath, group: 'working' as const }
     ) as { unifiedDiff: string; isBinary: boolean };
-  }, [worktreePath, workspacePath]);
+  }, [activeSessionId, worktreePath, workspacePath]);
 
   const setGroupByDirectory = useCallback((value: boolean) => {
     if (effectiveWorkspacePath) {

@@ -17,6 +17,7 @@ import { logger } from '../utils/logger';
 import { findWindowByWorkspace } from '../window/WindowManager';
 import { PGLiteDatabaseWorker, database } from '../database/PGLiteDatabaseWorker';
 import { DatabaseBackupService } from './database/DatabaseBackupService';
+import { encodeWorkspaceDir } from './ClaudeCodeSessionScanner';
 
 // Import store utilities - we'll need to access the underlying stores directly
 import {
@@ -32,14 +33,6 @@ function workspaceKey(workspacePath: string): string {
   const normalized = path.normalize(workspacePath).replace(/\/+$/, '');
   const base64 = Buffer.from(normalized).toString('base64url');
   return `ws:${base64}`;
-}
-
-/**
- * Escape an absolute path for Claude Code's directory naming convention.
- * /Users/foo/bar -> -Users-foo-bar
- */
-function escapePathForClaude(absolutePath: string): string {
-  return absolutePath.replace(/\//g, '-');
 }
 
 /**
@@ -175,8 +168,8 @@ export class ProjectMigrationService {
 
       // Step 3: Rename Claude Code session directory
       const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
-      oldClaudePath = path.join(claudeProjectsDir, escapePathForClaude(oldPath));
-      newClaudePath = path.join(claudeProjectsDir, escapePathForClaude(newPath));
+      oldClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(oldPath));
+      newClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(newPath));
 
       if (existsSync(oldClaudePath)) {
         logger.main.info('[ProjectMigration] Renaming Claude session directory...');
@@ -294,8 +287,8 @@ export class ProjectMigrationService {
 
       // Step 3: Rename Claude Code session directory
       const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
-      oldClaudePath = path.join(claudeProjectsDir, escapePathForClaude(oldPath));
-      newClaudePath = path.join(claudeProjectsDir, escapePathForClaude(newPath));
+      oldClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(oldPath));
+      newClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(newPath));
 
       if (existsSync(oldClaudePath)) {
         logger.main.info('[ProjectMigration] Renaming Claude session directory...');

@@ -19,8 +19,30 @@ import { track } from './analytics';
 
 const log = createLogger('PersonalSessionRoom');
 
-/** Session TTL: 30 days in milliseconds */
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * Session TTL in milliseconds. Was 30 days; dropped to 14 days on 2026-05-14
+ * after a storage audit showed essentially all PersonalSessionRoom storage is
+ * sessions in the 7-30d bucket — shortening the TTL is the only meaningful
+ * lever to cut the bill. Sessions whose last message is older than this get
+ * alarm-expired and their storage reclaimed.
+ */
+const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Per-session storage cap. When `sql.databaseSize` crosses this after an
+ * append, the room evicts the oldest `STORAGE_EVICTION_FRACTION` of messages
+ * (FIFO by sequence) to bring usage back down. The desktop's local raw log is
+ * the source of truth; the SessionRoom is a sync surface, so dropping the
+ * oldest tail on the server is acceptable -- mobile pagination simply won't
+ * reach evicted messages.
+ *
+ * Note: SQLite `DELETE` doesn't return pages to the OS, so eviction reclaims
+ * space lazily as new inserts reuse freed pages. The cap still acts as a real
+ * ceiling on net growth -- the room can grow into its freed pages but not
+ * past the cap.
+ */
+const STORAGE_CAP_BYTES = 50 * 1024 * 1024;
+const STORAGE_EVICTION_FRACTION = 0.25;
 
 interface ConnectionState {
   auth: AuthContext;
@@ -122,6 +144,12 @@ export class PersonalSessionRoom implements DurableObject {
       sql.exec(`DELETE FROM metadata`);
     }
 
+    // Migration: Drop any legacy plaintext `title` rows. Titles are E2E
+    // encrypted and live under `encrypted_title` + `title_iv`. Older clients
+    // sent plaintext titles via updateMetadata; this purges them on first
+    // load so the room can never serve plaintext to anyone again.
+    sql.exec(`DELETE FROM metadata WHERE key = 'title'`);
+
     // Bootstrap TTL alarm for existing sessions that don't have one yet
     const existingAlarm = await this.state.storage.getAlarm();
     if (!existingAlarm) {
@@ -172,22 +200,51 @@ export class PersonalSessionRoom implements DurableObject {
 
   /**
    * Staleness probe for the admin cleanup endpoint. Returns the last
-   * `updated_at` recorded in metadata and whether the SQLite store has any rows.
+   * `updated_at` recorded in metadata, whether the SQLite store has any rows,
+   * and per-DO size/age stats so the cleanup script can aggregate a storage
+   * picture across the namespace (totals, histograms, top-N largest). Returning
+   * the stats inline avoids a second per-DO round trip.
+   *
+   * `messageBytes` / `metadataBytes` are payload bytes summed via SQLite
+   * LENGTH(); `databaseSize` is the total physical bytes Cloudflare bills for
+   * (pages + indexes + free space), which is usually larger than the payload sum.
    */
   private handleStaleness(): Response {
     const sql = this.state.storage.sql;
     const updatedAtRow = sql.exec<{ value: string }>(
       `SELECT value FROM metadata WHERE key = 'updated_at'`
     ).toArray()[0];
-    const messageCount = sql.exec<{ count: number }>(
-      `SELECT COUNT(*) as count FROM messages`
-    ).toArray()[0]?.count ?? 0;
-    const metadataCount = sql.exec<{ count: number }>(
-      `SELECT COUNT(*) as count FROM metadata`
-    ).toArray()[0]?.count ?? 0;
+    const messageStats = sql.exec<{
+      count: number;
+      bytes: number;
+      minCreated: number | null;
+      maxCreated: number | null;
+    }>(
+      `SELECT
+        COUNT(*) as count,
+        COALESCE(SUM(LENGTH(encrypted_content) + LENGTH(iv) + LENGTH(COALESCE(metadata_json, ''))), 0) as bytes,
+        MIN(created_at) as minCreated,
+        MAX(created_at) as maxCreated
+       FROM messages`
+    ).toArray()[0];
+    const metadataStats = sql.exec<{ count: number; bytes: number }>(
+      `SELECT
+        COUNT(*) as count,
+        COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0) as bytes
+       FROM metadata`
+    ).toArray()[0];
+    const messageCount = messageStats?.count ?? 0;
+    const metadataCount = metadataStats?.count ?? 0;
     return new Response(JSON.stringify({
       updatedAt: updatedAtRow ? parseInt(updatedAtRow.value, 10) : null,
       hasData: messageCount > 0 || metadataCount > 0,
+      databaseSize: sql.databaseSize,
+      messageCount,
+      messageBytes: messageStats?.bytes ?? 0,
+      metadataCount,
+      metadataBytes: metadataStats?.bytes ?? 0,
+      oldestMessageAt: messageStats?.minCreated ?? null,
+      newestMessageAt: messageStats?.maxCreated ?? null,
     }), { headers: { 'Content-Type': 'application/json' } });
   }
 
@@ -435,6 +492,11 @@ export class PersonalSessionRoom implements DurableObject {
     // Update metadata timestamp
     this.setMetadataValue('updated_at', String(Date.now()));
 
+    // Bound runaway sessions before they get billed for hundreds of MB. The
+    // check runs every append (cheap: databaseSize is a synchronous getter)
+    // so we react the moment we cross the line.
+    this.enforceStorageCap();
+
     // Analytics: track message appended
     track(this.env, 'message_append', [connState.auth.userId, this.state.id.toString()], [storedMessage.encryptedContent.length]);
 
@@ -457,9 +519,24 @@ export class PersonalSessionRoom implements DurableObject {
     connState: ConnectionState,
     updates: Partial<SessionMetadata>
   ): Promise<void> {
-    const now = Date.now();
+    // Defense-in-depth: titles are E2E encrypted. Old clients may still send a
+    // plaintext `title`; we drop it on the floor so it never lands in storage
+    // or in the broadcast we re-emit. The wire-protocol path of record is
+    // encryptedTitle + titleIv, stored as `encrypted_title` / `title_iv`.
+    const sanitized = { ...updates } as Partial<SessionMetadata> & { title?: unknown };
+    delete sanitized.title;
 
-    for (const [key, value] of Object.entries(updates)) {
+    const storageMap: Record<string, string | undefined> = {
+      encrypted_title: sanitized.encryptedTitle,
+      title_iv: sanitized.titleIv,
+    };
+    for (const [storageKey, value] of Object.entries(storageMap)) {
+      if (value !== undefined) {
+        this.setMetadataValue(storageKey, value);
+      }
+    }
+    for (const [key, value] of Object.entries(sanitized)) {
+      if (key === 'encryptedTitle' || key === 'titleIv') continue;
       if (value !== undefined) {
         this.setMetadataValue(key, typeof value === 'string' ? value : JSON.stringify(value));
       }
@@ -475,7 +552,7 @@ export class PersonalSessionRoom implements DurableObject {
     this.broadcast(
       {
         type: 'metadataBroadcast',
-        metadata: { ...updates },
+        metadata: sanitized,
         fromConnectionId: this.getConnectionId(ws),
       },
       ws
@@ -521,11 +598,12 @@ export class PersonalSessionRoom implements DurableObject {
     }
 
     return {
-      title: metadata.title ?? 'Untitled',
       provider: metadata.provider ?? 'unknown',
       model: metadata.model,
       mode: metadata.mode as SessionMetadata['mode'],
       // Server stores encrypted values opaquely - pass through as-is
+      encryptedTitle: metadata.encrypted_title,
+      titleIv: metadata.title_iv,
       encryptedProjectId: metadata.encrypted_project_id ?? '',
       projectIdIv: metadata.project_id_iv ?? '',
       createdAt: parseInt(metadata.created_at ?? '0', 10),
@@ -533,6 +611,51 @@ export class PersonalSessionRoom implements DurableObject {
       // Include executing state for mobile sync
       isExecuting: metadata.isExecuting === 'true',
     };
+  }
+
+  /**
+   * Enforce the per-session storage cap. Called after each message insert.
+   * When `sql.databaseSize` exceeds STORAGE_CAP_BYTES, deletes the oldest
+   * `STORAGE_EVICTION_FRACTION` of messages by sequence so the cap acts as
+   * a real net ceiling. The deletion is by *count* (not by byte target)
+   * because we can't introspect encrypted row sizes cheaply; with the
+   * client-side block truncation in place, message sizes are bounded enough
+   * that "drop oldest 25% by count" tracks "drop oldest 25% by bytes" well.
+   *
+   * No broadcast: clients will discover the missing tail next time they sync
+   * with a cursor that's older than the new minimum sequence.
+   */
+  private enforceStorageCap(): void {
+    const sql = this.state.storage.sql;
+    const databaseSize = sql.databaseSize;
+    if (databaseSize <= STORAGE_CAP_BYTES) return;
+
+    const countRow = sql.exec<{ count: number }>(
+      `SELECT COUNT(*) as count FROM messages`,
+    ).toArray()[0];
+    const messageCount = countRow?.count ?? 0;
+    if (messageCount <= 1) return;
+
+    const evictCount = Math.max(1, Math.floor(messageCount * STORAGE_EVICTION_FRACTION));
+    const cutoffRow = sql.exec<{ sequence: number }>(
+      `SELECT sequence FROM messages ORDER BY sequence ASC LIMIT 1 OFFSET ?`,
+      evictCount,
+    ).toArray()[0];
+    if (!cutoffRow) return;
+
+    sql.exec(`DELETE FROM messages WHERE sequence < ?`, cutoffRow.sequence);
+    const sizeAfter = sql.databaseSize;
+    const remainingRow = sql.exec<{ count: number }>(
+      `SELECT COUNT(*) as count FROM messages`,
+    ).toArray()[0];
+    log.info('Storage cap hit, evicted oldest messages', {
+      roomId: this.state.id.toString(),
+      sizeBefore: databaseSize,
+      sizeAfter,
+      evicted: evictCount,
+      remaining: remainingRow?.count ?? 0,
+      newMinSequence: cutoffRow.sequence,
+    });
   }
 
   /**
@@ -646,10 +769,13 @@ export class PersonalSessionRoom implements DurableObject {
       return;
     }
 
-    // Session is expired - delete all data
+    // Session is expired - reclaim ALL storage including SQLite pages. Was
+    // previously `DELETE FROM messages; DELETE FROM metadata`, which only
+    // emptied rows and left the SQLite shell on disk (showing up as orphan
+    // residuals to the admin cleanup script). `deleteAll()` releases the
+    // actual pages back to the DO storage layer.
     log.info('Session TTL expired, deleting data. Last activity:', lastActivity);
-    sql.exec(`DELETE FROM messages`);
-    sql.exec(`DELETE FROM metadata`);
+    await this.state.storage.deleteAll();
   }
 
   /**

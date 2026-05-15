@@ -1,3 +1,6 @@
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAICodexProvider } from '../OpenAICodexProvider';
 import * as codexBinaryPath from '../codex/codexBinaryPath';
@@ -450,6 +453,82 @@ describe('OpenAICodexProvider', () => {
         },
       }
     );
+  });
+
+  it('does not append unsupported-attachment hints for text documents', async () => {
+    const tmpFile = path.join(os.tmpdir(), `nimbalyst-codex-provider-doc-${Date.now()}.txt`);
+    await fs.writeFile(tmpFile, 'provider attachment body', 'utf-8');
+
+    const createSession = vi.fn(async () => ({
+      id: 'thread-document-forward',
+      platform: 'codex-sdk',
+      raw: { thread: { runStreamed: vi.fn() } },
+    }));
+    const sendMessage = vi.fn((_session, _message) => createAsyncEventStream([
+      {
+        type: 'complete',
+        content: 'done',
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      },
+    ]));
+    const protocol = {
+      platform: 'codex-sdk',
+      createSession,
+      resumeSession: vi.fn(),
+      forkSession: vi.fn(),
+      sendMessage,
+      abortSession: vi.fn(),
+      cleanupSession: vi.fn(),
+    } as any;
+
+    const provider = new OpenAICodexProvider(
+      { apiKey: 'test-key' },
+      {
+        protocol,
+      }
+    );
+
+    await provider.initialize({
+      apiKey: 'test-key',
+      model: 'openai-codex:gpt-5',
+    });
+
+    const attachments = [
+      {
+        id: 'doc-1',
+        filename: 'notes.txt',
+        filepath: tmpFile,
+        mimeType: 'text/plain',
+        size: 24,
+        type: 'document' as const,
+        addedAt: Date.now(),
+      },
+    ];
+
+    try {
+      for await (const _chunk of provider.sendMessage(
+        'Review @notes.txt',
+        undefined,
+        'session-document-forward',
+        [],
+        process.cwd(),
+        attachments
+      )) {
+        // drain
+      }
+
+      expect(sendMessage).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          content: expect.not.stringContaining('Attached files:'),
+          attachments,
+          sessionId: 'session-document-forward',
+          mode: 'agent',
+        })
+      );
+    } finally {
+      await fs.unlink(tmpFile).catch(() => {});
+    }
   });
 
   it('passes packaged codexPathOverride into SDK construction when available', async () => {
@@ -1063,6 +1142,72 @@ describe('OpenAICodexProvider', () => {
     // Text chunks are also yielded alongside canonical events so AIService
     // can populate fullResponse for OS notification bodies.
     expect(chunks.some((chunk) => chunk.type === 'text')).toBe(true);
+  });
+
+  it('reuses the same live ProtocolSession across consecutive turns on one Nimbalyst session', async () => {
+    // Mock protocol -- the cache lives at the provider layer, so we want to
+    // pin down its create/resume/reuse behavior without depending on the SDK
+    // loader path. The bug we're protecting against: every turn calling
+    // protocol.resumeSession, which spawns a new child each time and orphans
+    // the previous one (high-severity finding from the codex app-server
+    // smoke-test review on 2026-05-14).
+    const createSession = vi.fn(async () => ({
+      id: 'thread-reuse',
+      platform: 'codex-app-server',
+      raw: { fake: true },
+    }));
+    const resumeSession = vi.fn();
+    const cleanupSession = vi.fn();
+    const sendMessage = vi.fn((_session, _message) => createAsyncEventStream([
+      {
+        type: 'complete',
+        content: 'ok',
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      },
+    ]));
+    const protocol = {
+      platform: 'codex-app-server',
+      createSession,
+      resumeSession,
+      forkSession: vi.fn(),
+      sendMessage,
+      abortSession: vi.fn(),
+      cleanupSession,
+    } as any;
+
+    const provider = new OpenAICodexProvider(
+      { apiKey: 'test-key' },
+      { protocol },
+    );
+    await provider.initialize({ apiKey: 'test-key', model: 'openai-codex:gpt-5' });
+
+    // Turn 1.
+    for await (const _ of provider.sendMessage('first', undefined, 'session-reuse', [], process.cwd())) {
+      // drain
+    }
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(resumeSession).not.toHaveBeenCalled();
+
+    // Turn 2 -- must reuse the cached ProtocolSession, NOT call resumeSession
+    // (which on the app-server transport would spawn another child).
+    for await (const _ of provider.sendMessage('second', undefined, 'session-reuse', [], process.cwd())) {
+      // drain
+    }
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(resumeSession).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+
+    // Both turns should have used the SAME ProtocolSession object the protocol
+    // handed us on turn 1.
+    const turn1Session = sendMessage.mock.calls[0][0];
+    const turn2Session = sendMessage.mock.calls[1][0];
+    expect(turn2Session).toBe(turn1Session);
+
+    // cleanupSession on the provider must release the cached protocol session
+    // so the codex child process actually dies.
+    provider.cleanupSession('session-reuse');
+    expect(cleanupSession).toHaveBeenCalledTimes(1);
+    expect(cleanupSession).toHaveBeenCalledWith(turn1Session);
   });
 
   it('denies Codex turns when workspace is not trusted', async () => {

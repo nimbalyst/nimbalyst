@@ -935,7 +935,12 @@ export const loadSessionChildrenAtom = atom(
     }
 
     try {
-      const result = await window.electronAPI.invoke('sessions:list-children', parentSessionId, workspacePath);
+      const result = await window.electronAPI.invoke(
+        'sessions:list-children',
+        parentSessionId,
+        workspacePath,
+        { includeArchived: false }
+      );
       // console.log('[loadSessionChildrenAtom] IPC result:', result);
       if (result.success && Array.isArray(result.children)) {
         const childIds = result.children.map((c: any) => c.id);

@@ -16,7 +16,7 @@
 import type { SessionStore } from '@nimbalyst/runtime';
 import type { DeviceInfo } from '@nimbalyst/runtime/sync';
 import * as syncModule from '@nimbalyst/runtime/sync';
-import { getSessionSyncConfig, getReleaseChannel, type SessionSyncConfig } from '../utils/store';
+import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, store, type SessionSyncConfig } from '../utils/store';
 import { logger } from '../utils/logger';
 import { getCredentials } from './CredentialService';
 import { getStytchUserId, isAuthenticated, getPersonalOrgId, getPersonalUserId, resolvePersonalUserId, getPersonalSessionJwt, refreshPersonalSession } from './StytchAuthService';
@@ -422,7 +422,6 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     // If the config didn't have a persisted personalOrgId, persist it now
     // so future restarts/re-logins use the correct value.
     if (!config.personalOrgId && personalOrgId) {
-      const { setSessionSyncConfig, getSessionSyncConfig } = await import('../utils/store');
       const currentConfig = getSessionSyncConfig();
       if (currentConfig) {
         setSessionSyncConfig({
@@ -551,7 +550,6 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         // logger.main.info(`[SyncManager] Local has ${allLocalSessions.length} sessions (query took ${localTime.toFixed(1)}ms)`);
 
         // Get enabled projects filter (if configured)
-        const { store } = await import('../utils/store');
         const syncSettings = store.get('sessionSync');
         const enabledProjects = syncSettings?.enabledProjects ?? [];
         // logger.main.info(`[SyncManager] Enabled projects filter: ${JSON.stringify(enabledProjects)}`);
@@ -973,7 +971,6 @@ export async function triggerIncrementalSync(): Promise<void> {
     // logger.main.info(`[SyncManager] Triggered sync: local has ${allLocalSessions.length} sessions (query took ${localTime.toFixed(1)}ms)`);
 
     // Get enabled projects filter
-    const { store } = await import('../utils/store');
     const syncSettings = store.get('sessionSync');
     const enabledProjects = syncSettings?.enabledProjects ?? [];
     // logger.main.info(`[SyncManager] Triggered sync: enabled projects: ${JSON.stringify(enabledProjects)}`);
@@ -1103,7 +1100,6 @@ async function getAvailableModelsForMobile(): Promise<{ models: Array<{ id: stri
   try {
     const Store = (await import('electron-store')).default;
     const { ModelRegistry } = await import('@nimbalyst/runtime/ai/server/ModelRegistry');
-    const { getDefaultAIModel } = await import('../utils/store');
 
     const aiStore = new Store<Record<string, unknown>>({ name: 'ai-settings' });
     const apiKeys = aiStore.get('apiKeys', {}) as Record<string, string>;
