@@ -156,6 +156,12 @@ const AgentTranscriptPanelComponent = React.forwardRef<
 
   // Resize logic
   const [isDragging, setIsDragging] = useState(false);
+
+  // Mirror the find-in-page search bar visibility from RichTranscriptView so
+  // FloatingTranscriptActions can shift down when the search bar is open.
+  // Without this, the phase pill overlaps the search bar's right-side controls
+  // (chevron, list, case-sensitive, close) on narrow widths. See #309.
+  const [searchBarVisible, setSearchBarVisible] = useState(false);
   const startXRef = useRef(0);
   const startWidthRef = useRef(sidebarWidth);
 
@@ -363,6 +369,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
           getToolCallDiffs={getToolCallDiffs}
           renderEmbeddedFile={renderEmbeddedFile}
           canEmbedFile={canEmbedFile}
+          onSearchBarVisibilityChange={setSearchBarVisible}
         />
 
         {/* Floating Actions - show based on showFloatingActions prop */}
@@ -375,6 +382,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
             currentPhase={currentPhase}
             phaseColumns={phaseColumns}
             onSetPhase={onSetPhase}
+            searchBarVisible={searchBarVisible}
           />
         )}
 

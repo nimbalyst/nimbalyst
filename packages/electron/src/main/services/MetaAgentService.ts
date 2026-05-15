@@ -68,6 +68,12 @@ interface SpawnSessionArgs {
   useWorktree?: boolean;
   model?: string;
   /**
+   * When true and `model` is not explicitly set, the new session uses the
+   * caller's model instead of the global app default. Ignored if `model` is
+   * provided explicitly.
+   */
+  inheritModel?: boolean;
+  /**
    * If false (the default for /launch-new-session), the parent will not receive
    * `[Child Session Update]` notifications when the spawned session completes,
    * errors, or waits for input. Use this for fire-and-forget hand-offs where the
@@ -433,12 +439,19 @@ export class MetaAgentService {
     const inheritedWorktreeId =
       !args.useWorktree && parent.worktreeId ? parent.worktreeId : undefined;
 
+    // Resolve effective model: explicit `model` wins; otherwise `inheritModel`
+    // copies the caller's model so the new session keeps the same provider/model
+    // (e.g. opus stays on opus). Falling through to undefined lets
+    // createChildSessionInternal use the global default.
+    const effectiveModel =
+      args.model ?? (args.inheritModel ? parent.model ?? undefined : undefined);
+
     const childResult = await this.createChildSessionInternal(parentSessionId, workspaceId, {
       title: args.title,
       prompt: args.prompt,
       useWorktree: !!args.useWorktree,
       worktreeId: inheritedWorktreeId,
-      model: args.model,
+      model: effectiveModel,
       parentSessionIdOverride: workstreamId,
     });
 

@@ -58,14 +58,23 @@ When the user types `/launch-new-session [task description]`:
    set `true` if the user's phrasing implies they want the result back in this
    session ("...and tell me when it's done", "...and bring back the answer").
 
-5. **Call `spawn_session`** with:
+5. **Decide on model.** By default the new session uses the app's global default
+   model. Override only when the user asks for it:
+   - If the user names a model ("...with opus", "...using sonnet"), pass that as
+     `model` (e.g. `model: "claude-code:opus"`).
+   - If the user says "same model", "keep the current model", or similar, pass
+     `inheritModel: true` so the new session uses the caller's model.
+   - `model` wins over `inheritModel` when both are set.
+
+6. **Call `spawn_session`** with:
    - `prompt`: the handoff brief from step 1
    - `title`: a short descriptive title (e.g. "Finish auth tests")
    - `isolated`: per step 2 (omit to use the default)
    - `useWorktree`: per step 3
    - `notifyOnComplete`: per step 4 (omit to use the default)
+   - `model` / `inheritModel`: per step 5 (omit both to use the global default)
 
-6. **Report back to the user** with:
+7. **Report back to the user** with:
    - The new session id
    - A one-line summary of what was handed off
    - The mode used: "sibling under workstream X", "isolated top-level session",

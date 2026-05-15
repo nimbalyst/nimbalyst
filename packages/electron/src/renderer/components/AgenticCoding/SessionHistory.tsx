@@ -2171,7 +2171,12 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
         const results = await Promise.all(
           workstreamSessionsNeedingFetch.map(async (session) => {
             try {
-              const result = await window.electronAPI.invoke('sessions:list-children', session.id, workspacePath);
+              const result = await window.electronAPI.invoke(
+                'sessions:list-children',
+                session.id,
+                workspacePath,
+                { includeArchived: showArchived }
+              );
               if (!result.success || !Array.isArray(result.children)) {
                 return null;
               }
@@ -2244,7 +2249,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
     fetchChildren();
 
     return () => { isMounted = false; };
-  }, [sessions, collapsedGroups, workspacePath, workstreamChildrenCache, sessionRegistry]);
+  }, [sessions, collapsedGroups, workspacePath, workstreamChildrenCache, sessionRegistry, showArchived]);
 
   if (loading) {
     return (

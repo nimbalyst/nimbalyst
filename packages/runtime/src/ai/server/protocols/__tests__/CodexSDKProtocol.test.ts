@@ -1,3 +1,6 @@
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { describe, it, expect, vi } from 'vitest';
 import { CodexSDKProtocol } from '../CodexSDKProtocol';
 
@@ -221,5 +224,66 @@ describe('CodexSDKProtocol', () => {
       { type: 'text', text: 'Describe this image' },
       { type: 'local_image', path: '/tmp/ui.png' },
     ], expect.any(Object));
+  });
+
+  it('inlines document attachments as additional text inputs', async () => {
+    const tmpFile = path.join(os.tmpdir(), `nimbalyst-codex-sdk-doc-${Date.now()}.txt`);
+    await fs.writeFile(tmpFile, 'attached notes', 'utf-8');
+
+    const runStreamed = vi.fn(async () => ({
+      events: createAsyncEventStream([
+        {
+          type: 'item.completed',
+          item: {
+            type: 'agent_message',
+            text: 'processed document',
+          },
+        },
+      ]),
+    }));
+
+    const startThread = vi.fn(() => ({
+      id: 'thread-document-input',
+      runStreamed,
+    }));
+
+    const protocol = new CodexSDKProtocol(
+      'test-key',
+      async () =>
+        ({
+          Codex: class {
+            startThread = startThread;
+            resumeThread = vi.fn();
+          },
+        }) as any
+    );
+
+    try {
+      const session = await protocol.createSession({ workspacePath: process.cwd() });
+
+      for await (const _event of protocol.sendMessage(session, {
+        content: 'Review @notes.txt',
+        attachments: [
+          {
+            id: 'doc-1',
+            filename: 'notes.txt',
+            filepath: tmpFile,
+            mimeType: 'text/plain',
+            size: 14,
+            type: 'document',
+            addedAt: Date.now(),
+          },
+        ],
+      })) {
+        // drain
+      }
+
+      expect(runStreamed).toHaveBeenCalledWith([
+        { type: 'text', text: 'Review @notes.txt' },
+        { type: 'text', text: '<file name="notes.txt">\nattached notes\n</file>' },
+      ], expect.any(Object));
+    } finally {
+      await fs.unlink(tmpFile).catch(() => {});
+    }
   });
 });

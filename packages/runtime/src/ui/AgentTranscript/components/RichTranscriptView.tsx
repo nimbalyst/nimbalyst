@@ -456,6 +456,14 @@ interface RichTranscriptViewProps {
    * runtime asks without crossing the package boundary.
    */
   canEmbedFile?: (filePath: string) => boolean;
+  /**
+   * Optional: callback fired when the transcript find-in-page search bar
+   * shows or hides. The parent uses this to shift `FloatingTranscriptActions`
+   * (which sits absolutely-positioned at top-right of the same container)
+   * down so the phase pill no longer overlaps the search bar's chevron / list
+   * / close buttons on narrow widths. See #309.
+   */
+  onSearchBarVisibilityChange?: (visible: boolean) => void;
   // Note: Interactive widgets read their host from interactiveWidgetHostAtom(sessionId)
 }
 
@@ -949,12 +957,21 @@ export const extractEditsFromToolMessage = (message: TranscriptViewMessage): any
 export const RichTranscriptView = React.forwardRef<
   { scrollToMessage: (index: number) => void; scrollToTop: () => void },
   RichTranscriptViewProps
->(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, appStartTime, getToolCallDiffs, renderEmbeddedFile, canEmbedFile }, ref) => {
+>(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, appStartTime, getToolCallDiffs, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange }, ref) => {
   const [collapsedMessages, setCollapsedMessages] = useState<Set<number>>(new Set());
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollButtonRef = useRef<HTMLDivElement>(null);
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [showSearchBar, setShowSearchBar] = useState(false);
+
+  // Notify the parent when the find-in-page search bar visibility changes
+  // so it can shift `FloatingTranscriptActions` (sibling, absolutely positioned
+  // at top-right of the same container) down and avoid the pill-over-buttons
+  // overlap reported in #309.
+  useEffect(() => {
+    onSearchBarVisibilityChange?.(showSearchBar);
+  }, [showSearchBar, onSearchBarVisibilityChange]);
+
   const pendingPermissionsVisibleRef = useRef(true);
   const [showPermissionBanner, setShowPermissionBanner] = useState(false);
   const [isScrollReady, setIsScrollReady] = useState(false);

@@ -342,7 +342,8 @@ class CodexUsageServiceImpl {
 
   /**
    * Extract rate_limits from a single JSONL event if it's a token_count event
-   * with non-null primary data.
+   * with non-null primary data. Delegates to the pure `filterRateLimitsByExpiry`
+   * helper below so the expiry logic stays unit-testable. See #120.
    */
   private extractRateLimitsFromEvent(event: Record<string, unknown>): CodexRateLimits | null {
     const tokenCountPayload = this.getTokenCountPayload(event);
@@ -351,7 +352,7 @@ class CodexUsageServiceImpl {
     const rateLimits = tokenCountPayload.rate_limits as CodexRateLimits | undefined;
     if (!rateLimits?.primary) return null;
 
-    return rateLimits;
+    return filterRateLimitsByExpiry(rateLimits, Date.now() / 1000);
   }
 
   private extractTokenUsageFromEvent(event: Record<string, unknown>): CodexTokenUsage | null {
@@ -412,3 +413,47 @@ class CodexUsageServiceImpl {
 
 // Singleton instance
 export const codexUsageService = new CodexUsageServiceImpl();
+
+/**
+ * Drop expired buckets from a CodexRateLimits block.
+ *
+ * Each window (primary 5h, secondary 7d) carries its own `resets_at` Unix-seconds
+ * timestamp. After that moment the window resets and the historical `used_percent`
+ * no longer matches reality - but the JSONL session file that produced the line is
+ * never rewritten, so the same stale value keeps coming back from the
+ * scan-backward loop in `extractUsageSnapshotFromFile`. That is the bug behind
+ * #120: indicator sat at 91% indefinitely after the 5-hour window reset and the
+ * user's real usage was 0%.
+ *
+ * Returns null when both windows are absent or expired so the caller can keep
+ * scanning older lines for a still-active block. If nothing is active anywhere,
+ * the higher-level snapshot falls through to `limitsAvailable: false` and the
+ * renderer shows `--` rather than a stale percentage.
+ *
+ * Exported for unit-testing. Production callers pass `Date.now() / 1000`.
+ */
+export function filterRateLimitsByExpiry(
+  rateLimits: CodexRateLimits,
+  nowSeconds: number
+): CodexRateLimits | null {
+  const primary = rateLimits.primary ?? null;
+  const secondary = rateLimits.secondary ?? null;
+
+  const primaryActive =
+    primary !== null &&
+    (typeof primary.resets_at !== 'number' || primary.resets_at > nowSeconds);
+  const secondaryActive =
+    secondary !== null &&
+    (typeof secondary.resets_at !== 'number' || secondary.resets_at > nowSeconds);
+
+  if (!primaryActive && !secondaryActive) return null;
+
+  return {
+    ...rateLimits,
+    primary: primaryActive ? primary : null,
+    secondary: secondaryActive ? secondary : null,
+  };
+}
+
+// Exported only for tests. Do not consume from production code.
+export type { CodexRateLimits };

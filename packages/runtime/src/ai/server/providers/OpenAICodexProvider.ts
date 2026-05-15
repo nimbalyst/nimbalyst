@@ -17,7 +17,8 @@ import {
   ChatAttachment,
 } from '../types';
 import { CodexSDKProtocol } from '../protocols/CodexSDKProtocol';
-import { ProtocolEvent, ProtocolSession } from '../protocols/ProtocolInterface';
+import { CodexAppServerProtocol, type CodexAppServerHostBindings } from '../protocols/CodexAppServerProtocol';
+import { AgentProtocol, ProtocolEvent, ProtocolSession } from '../protocols/ProtocolInterface';
 import { ToolPermissionService } from '../permissions/ToolPermissionService';
 import { PermissionMode, TrustChecker, PermissionPatternSaver, PermissionPatternChecker, SecurityLogger } from './ProviderPermissionMixin';
 import { CodexSdkModuleLike, loadCodexSdkModule } from './codex/codexSdkLoader';
@@ -28,10 +29,36 @@ import { safeJSONSerialize } from '../../../utils/serialization';
 import { AskUserQuestionPrompt, AskUserQuestionPromptOption } from './shared/askUserQuestionTypes';
 import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
 import { buildCodexToolLookupId } from '../toolLookupIds';
+import { reverseCodexPatch, type CodexPatchKind } from './codex/patchReverse';
+
+/**
+ * Codex transport selection.
+ *
+ * - `sdk`: the original `@openai/codex-sdk`-driven `codex exec --experimental-json`
+ *   flow. Stable, fully featured. Limitation: file_change events do not carry
+ *   the patch diff text, so host-side pre-edit baselines race apply_patch.
+ * - `app-server`: drives `codex app-server --listen stdio://` directly via
+ *   JSON-RPC v2. Emits the full patch diff per file_change item, which lets us
+ *   recover pre-edit content deterministically by reverse-applying hunks. This
+ *   is the default end state -- see `nimbalyst-local/plans/codex-app-server-protocol-migration.md`.
+ */
+export type CodexTransport = 'sdk' | 'app-server';
+
+/**
+ * Codex protocol surface used by `OpenAICodexProvider`. Strictly a superset of
+ * `AgentProtocol` plus a few optional knobs used during API-key rotation; the
+ * provider duck-types `setApiKey` since not every backend has a notion of a
+ * separate API key (e.g. ChatGPT-account auth flows through `~/.codex/auth.json`).
+ */
+export interface CodexProtocol extends AgentProtocol {
+  setApiKey?(apiKey: string): void;
+}
 
 interface OpenAICodexProviderDeps {
-  protocol?: CodexSDKProtocol;
+  protocol?: CodexProtocol;
   permissionService?: ToolPermissionService;
+  /** Override the active transport for this provider instance (overrides the static resolver). */
+  transport?: CodexTransport;
   // Legacy: for existing tests that mock the SDK loader
   loadSdkModule?: () => Promise<CodexSdkModuleLike>;
   resolveCodexPathOverride?: () => string | undefined;
@@ -95,7 +122,8 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     'status',
   ];
 
-  private readonly protocol: CodexSDKProtocol;
+  private readonly protocol: CodexProtocol;
+  private readonly transport: CodexTransport;
   private readonly permissionService: ToolPermissionService;
   private readonly mcpConfigService: McpConfigService;
   private readonly pendingAskUserQuestions = new Map<string, PendingAskUserQuestionEntry>();
@@ -123,12 +151,30 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    */
   private readonly fileChangePreEditSnapshottedIds = new Map<string, Set<string>>();
 
+  /**
+   * In-memory cache of live `ProtocolSession` objects, keyed by Nimbalyst
+   * session id. This is the lifecycle the codex app-server protocol is designed
+   * around: one child process per session, reused across turns. Without this
+   * cache, every turn calls `protocol.resumeSession` which spawns a *new*
+   * child, orphaning the previous one (the protocol does not own the threadId
+   * persistence, so it has no way to know it has already spawned a child for
+   * this session).
+   *
+   * `this.sessions` (`ProviderSessionManager`) is a separate, serializable
+   * mapping of Nimbalyst session id -> codex thread id; that one persists
+   * across Nimbalyst restarts so we can `resumeSession` after a relaunch.
+   * `liveProtocolSessions` is in-memory only.
+   */
+  private readonly liveProtocolSessions = new Map<string, ProtocolSession>();
+
   // Analytics initialization data, captured during first sendMessage call
   private _initData: {
     model: string;
     mcpServerCount: number;
     isResumedThread: boolean;
     permissionMode: string | null;
+    /** Which codex transport drove this session ('sdk' or 'app-server'). */
+    transport: CodexTransport;
   } | null = null;
 
   // Shared MCP server port (injected from electron main process)
@@ -184,14 +230,73 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   // sandbox does not block edits to those directories. Issue #37 problem 1.
   private static additionalDirectoriesLoader: ((workspacePath: string) => string[]) | null = null;
 
+  // Codex PreToolUse hook config (injected from electron main process).
+  // When set, every Codex session is configured with a PreToolUse hook
+  // matching `^apply_patch$` that snapshots each affected file's pre-edit
+  // content to a per-session sidecar dir BEFORE Codex applies the patch.
+  // This is the only way to capture true pre-edit content reliably -- the
+  // item.started disk-read races with Codex applying its patch synchronously,
+  // especially in the first turn of a freshly-spawned session before
+  // FileSnapshotCache has had a chance to seed. See codex PR #18391.
+  //
+  // Returns the absolute path to the bundled hook script, or undefined when
+  // the host hasn't wired this up (e.g., tests or older electron builds).
+  private static preEditHookScriptPathResolver: (() => string | undefined) | null = null;
+
+  // Returns the absolute sidecar dir for a given session id. The hook script
+  // reads this path from the NIMBALYST_PRE_EDIT_DIR env var and writes one
+  // JSON file per affected path. The host reads from the same dir at
+  // item.started to populate pre-edit baselines.
+  private static preEditSidecarDirResolver: ((sessionId: string) => string | undefined) | null = null;
+
+  // Resolves the active codex transport from settings at provider-construct
+  // time. Each new session reads this anew, so a settings change between
+  // sessions takes effect on the next session.
+  //
+  // Defaults to `sdk` when no resolver is registered (back-compat for unit
+  // tests and pre-migration code paths).
+  private static codexTransportResolver: (() => CodexTransport) | null = null;
+
+  public static setCodexTransportResolver(resolver: (() => CodexTransport) | null): void {
+    OpenAICodexProvider.codexTransportResolver = resolver;
+  }
+
+  // Host-supplied dispatcher that maps codex's server-to-client approval/
+  // dynamic-tool RPCs onto Nimbalyst's permission system. Only consulted for
+  // the `app-server` transport.
+  private static appServerHostBindings: CodexAppServerHostBindings | null = null;
+
+  public static setAppServerHostBindings(bindings: CodexAppServerHostBindings | null): void {
+    OpenAICodexProvider.appServerHostBindings = bindings;
+  }
+
   constructor(config?: { apiKey?: string }, deps?: OpenAICodexProviderDeps) {
     super();
     const apiKey = config?.apiKey || '';
+
+    // Resolve transport: explicit dep > registered resolver > default 'sdk'.
+    // Captured at construct time; each new provider instance reads the
+    // resolver anew so a settings change takes effect on the next session.
+    //
+    // The in-code default is 'sdk' so unit tests (and any future library
+    // consumers) get the SDK transport without needing to spawn a codex
+    // binary at construction. The Electron host overrides this via
+    // `setCodexTransportResolver` to default to 'app-server' in production,
+    // honoring the `aiProviders.openai-codex.transport` setting when set.
+    this.transport =
+      deps?.transport ?? OpenAICodexProvider.codexTransportResolver?.() ?? 'sdk';
 
     // Initialize protocol (or use injected for testing)
     // Support legacy loadSdkModule and resolveCodexPathOverride for existing tests
     if (deps?.protocol) {
       this.protocol = deps.protocol;
+    } else if (this.transport === 'app-server') {
+      this.protocol = new CodexAppServerProtocol({
+        apiKey,
+        resolveCodexPathOverride: resolvePackagedCodexBinaryPath,
+        host: OpenAICodexProvider.appServerHostBindings ?? undefined,
+        clientInfo: { name: 'nimbalyst', version: process.env.NIMBALYST_VERSION ?? '0.0.0' },
+      });
     } else if (deps?.loadSdkModule || deps?.resolveCodexPathOverride) {
       const loadSdk = deps.loadSdkModule ?? loadCodexSdkModule;
       const resolveCodexPath = deps.resolveCodexPathOverride ?? resolvePackagedCodexBinaryPath;
@@ -316,10 +421,18 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     OpenAICodexProvider.sdkModuleLoader = loader;
   }
 
+  public static setPreEditHookScriptPathResolver(resolver: (() => string | undefined) | null): void {
+    OpenAICodexProvider.preEditHookScriptPathResolver = resolver;
+  }
+
+  public static setPreEditSidecarDirResolver(resolver: ((sessionId: string) => string | undefined) | null): void {
+    OpenAICodexProvider.preEditSidecarDirResolver = resolver;
+  }
+
   async initialize(config: ProviderConfig): Promise<void> {
     this.config = config;
     const apiKey = config.apiKey || '';
-    if (typeof (this.protocol as Partial<CodexSDKProtocol>).setApiKey === 'function') {
+    if (this.protocol.setApiKey) {
       this.protocol.setApiKey(apiKey);
     }
   }
@@ -795,7 +908,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     const isMetaAgent = agentRole === 'meta-agent';
     const systemPrompt = this.buildSystemPrompt(documentContext, isMetaAgent);
     const { userMessageAddition, messageWithContext } = buildUserMessageAddition(message, documentContext);
-    const unsupportedAttachmentHints = attachments?.filter((attachment) => attachment.type !== 'image');
+    const unsupportedAttachmentHints = attachments?.filter(
+      (attachment) => attachment.type !== 'image' && attachment.type !== 'document'
+    );
     const messageWithAttachmentHints = this.appendAttachmentHints(messageWithContext, unsupportedAttachmentHints);
 
     // Emit prompt additions for UI
@@ -865,12 +980,21 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         return;
       }
 
-      // Get or create protocol session
+      // Get or create protocol session.
+      //
+      // Order of preference:
+      //   1. A live cached `ProtocolSession` (same Nimbalyst process, prior
+      //      turn already spawned the child). Reuse it -- this is the
+      //      "one child per session" invariant the protocol assumes.
+      //   2. A persisted thread id (`this.sessions.getSessionId`) from a prior
+      //      Nimbalyst process. Call `resumeSession` to attach to it.
+      //   3. Otherwise, `createSession`.
+      const cachedLiveSession = sessionId ? this.liveProtocolSessions.get(sessionId) : undefined;
       const existingSessionId = this.sessions.getSessionId(sessionId || '');
       console.log('[CODEX] Session lookup:', {
         sessionId,
         existingSessionId,
-        action: existingSessionId ? 'RESUME' : 'CREATE'
+        action: cachedLiveSession ? 'REUSE' : (existingSessionId ? 'RESUME' : 'CREATE'),
       });
 
       const mcpServers = await this.mcpConfigService.getMcpServersConfig({
@@ -884,7 +1008,34 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       // Build environment for the Codex CLI binary.
       // Electron GUI apps have a minimal process.env (missing docker, homebrew, nvm, etc.).
       // Merge in shell env vars and the enhanced PATH so the Codex agent can see system tools.
-      const codexEnv = OpenAICodexProvider.buildCodexEnvironment();
+      let codexEnv = OpenAICodexProvider.buildCodexEnvironment();
+
+      // Layer session-specific env vars for the PreToolUse hook. The hook
+      // script reads NIMBALYST_PRE_EDIT_DIR to know where to write per-path
+      // pre-edit snapshots, and ELECTRON_RUN_AS_NODE makes process.execPath
+      // (an Electron binary) run as plain Node so we don't have to ship a
+      // separate Node runtime. When the resolver isn't wired up (tests, older
+      // electron builds) the hook is simply not configured.
+      const sidecarDir = sessionId
+        ? OpenAICodexProvider.preEditSidecarDirResolver?.(sessionId)
+        : undefined;
+      if (sidecarDir) {
+        const baseEnv: Record<string, string> = codexEnv ? { ...codexEnv } : {};
+        if (!codexEnv) {
+          // No prior env override -- start from process.env minus undefineds.
+          for (const [key, value] of Object.entries(process.env)) {
+            if (value !== undefined) {
+              baseEnv[key] = value;
+            }
+          }
+        }
+        baseEnv.NIMBALYST_PRE_EDIT_DIR = sidecarDir;
+        baseEnv.ELECTRON_RUN_AS_NODE = '1';
+        codexEnv = baseEnv;
+        console.log('[CODEX] Pre-edit hook env configured:', { sessionId, sidecarDir });
+      } else if (sessionId) {
+        console.log('[CODEX] Pre-edit hook sidecar dir resolver returned undefined', { sessionId });
+      }
 
       const resolvedModel = await this.getConfiguredModel();
 
@@ -916,17 +1067,35 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         },
       };
 
-      const isResumedThread = !!existingSessionId;
-      const session = isResumedThread
-        ? await this.protocol.resumeSession(existingSessionId, sessionOptions)
-        : await this.protocol.createSession(sessionOptions);
+      let session: ProtocolSession;
+      let isResumedThread: boolean;
+      if (cachedLiveSession) {
+        session = cachedLiveSession;
+        isResumedThread = true;
+      } else if (existingSessionId) {
+        session = await this.protocol.resumeSession(existingSessionId, sessionOptions);
+        isResumedThread = true;
+      } else {
+        session = await this.protocol.createSession(sessionOptions);
+        isResumedThread = false;
+      }
+      // Stash live sessions so future turns on the same Nimbalyst session reuse
+      // the same child. Skip when sessionId is absent (anonymous turns -- nothing
+      // to key by) and when we just hit the cache (no-op).
+      if (sessionId && !cachedLiveSession) {
+        this.liveProtocolSessions.set(sessionId, session);
+      }
 
-      // Store initialization data for analytics (picked up by AIService)
+      // Store initialization data for analytics (picked up by AIService).
+      // `transport` lets us bucket sessions by which codex transport drove
+      // them, so we can compare reliability/quality between sdk and app-server
+      // during the rollout.
       this._initData = {
         model: resolvedModel,
         mcpServerCount: Object.keys(mcpServers).length,
         isResumedThread,
         permissionMode: permissionDecision.permissionMode ?? null,
+        transport: this.transport,
       };
 
       console.log('[CODEX] Session after create/resume:', {
@@ -978,23 +1147,39 @@ export class OpenAICodexProvider extends BaseAgentProvider {
           }
         }
 
-        // Pre-edit snapshot for `file_change`. The codex-sdk emits
-        // `item.started` BEFORE applying the patch on disk, which gives us
-        // the only deterministic moment to capture the real pre-edit
-        // baseline -- no watcher, no FileSnapshotCache, no
-        // recoverBaselineFromHistory fallback (those all break for
-        // gitignored or post-boot-created files). Dedup by itemId per
-        // session protects against the SDK ever emitting item.started
-        // twice; combined with the cross-turn clear above, this also
-        // ensures distinct turns reusing the same raw item id each get
-        // their own snapshot.
-        try {
-          const preEditChunk = await this.maybeBuildFileChangePreEditSnapshot(event, sessionId);
-          if (preEditChunk) {
-            yield preEditChunk;
+        // The pre/post-edit snapshot pipeline diverges per transport:
+        //   - SDK transport: `item.started` for `file_change` is the only
+        //     deterministic-ish moment to read pre-edit content; disk reads
+        //     here race apply_patch and rely on FileSnapshotCache fallbacks.
+        //   - App-server transport: `item/completed` carries the full unified
+        //     diff text per change. Reading disk at item/completed is always
+        //     race-free (the patch is on disk), and reverse-applying the diff
+        //     recovers the pre-edit content deterministically.
+        //
+        // Route by `metadata.transport` set by `CodexAppServerProtocol`.
+        const isAppServerEvent = event.type === 'raw_event'
+          && (event as { metadata?: { transport?: string } }).metadata?.transport === 'app-server';
+        if (isAppServerEvent) {
+          try {
+            const { preEdit, postEdit } = await this.maybeBuildAppServerFileChangeSnapshots(event, sessionId);
+            if (preEdit) yield preEdit;
+            if (postEdit) yield postEdit;
+          } catch (err) {
+            console.warn('[CODEX][APPSERVER] snapshot build failed (non-fatal):', err);
           }
-        } catch {
-          // never let snapshot work break the stream
+        } else {
+          try {
+            const preEditChunk = await this.maybeBuildFileChangePreEditSnapshot(event, sessionId);
+            if (preEditChunk) yield preEditChunk;
+          } catch {
+            // never let snapshot work break the stream
+          }
+          try {
+            const postEditChunk = await this.maybeBuildFileChangePostEditSnapshot(event, sessionId);
+            if (postEditChunk) yield postEditChunk;
+          } catch {
+            // never let snapshot work break the stream
+          }
         }
 
         // Store EACH raw event immediately as a separate database row
@@ -1109,12 +1294,30 @@ export class OpenAICodexProvider extends BaseAgentProvider {
           type: 'error',
           error: errorMessage,
         };
+        // The child may be dead (RPC timeout, write-to-closed-stdin, codex
+        // crash). Drop the cached session so the next turn spawns fresh
+        // instead of failing on a stale handle. We leave the persisted
+        // threadId in place so the fresh spawn can still resumeSession.
+        this.evictLiveProtocolSession(sessionId);
       }
     } finally {
       if (this.abortController === abortController) {
         this.abortController = null;
       }
     }
+  }
+
+  /**
+   * Drop and kill the cached `ProtocolSession` for a Nimbalyst session, if any.
+   * Used on stream errors (likely-dead child) and from `cleanupSession`.
+   */
+  private evictLiveProtocolSession(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    const cached = this.liveProtocolSessions.get(sessionId);
+    if (!cached) return;
+    this.liveProtocolSessions.delete(sessionId);
+    try { this.protocol.cleanupSession(cached); }
+    catch (err) { console.warn('[CODEX] protocol.cleanupSession threw during eviction:', err); }
   }
 
   /**
@@ -1429,10 +1632,18 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    * Call this when a session is deleted or no longer needed.
    */
   cleanupSession(sessionId: string): void {
+    this.evictLiveProtocolSession(sessionId);
     this.sessions.deleteSession(sessionId);
   }
 
   destroy(): void {
+    // Tear down every live ProtocolSession so we don't orphan codex child
+    // processes when the provider is replaced (e.g., on API key rotation).
+    for (const session of this.liveProtocolSessions.values()) {
+      try { this.protocol.cleanupSession(session); }
+      catch (err) { console.warn('[CODEX] protocol.cleanupSession threw during destroy():', err); }
+    }
+    this.liveProtocolSessions.clear();
     // Clear permission service caches
     this.permissionService.clearSessionCache();
     // Call base class destroy (calls abort, sessions.clear, permissions.clearSessionCache, removeAllListeners)
@@ -1588,6 +1799,38 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
     if (Object.keys(codexMcpServers).length > 0) {
       configOverrides.mcp_servers = codexMcpServers;
+    }
+
+    // Register a PreToolUse hook for apply_patch that snapshots pre-edit
+    // content to a per-session sidecar BEFORE Codex applies the patch. This
+    // sidesteps the item.started race -- by the time we observe item.started
+    // in the SDK stream, the patch may already be on disk. The hook fires
+    // synchronously inside the codex process before any disk write, so the
+    // captured content is guaranteed pre-edit.
+    const hookScriptPath = OpenAICodexProvider.preEditHookScriptPathResolver?.();
+    if (hookScriptPath) {
+      const hookCommand = `"${process.execPath}" "${hookScriptPath}"`;
+      configOverrides.hooks = {
+        PreToolUse: [
+          {
+            matcher: '^apply_patch$',
+            hooks: [
+              {
+                type: 'command',
+                // ELECTRON_RUN_AS_NODE=1 (set in buildCodexEnvironment when a
+                // sidecar dir is configured) lets process.execPath run the
+                // script as plain Node. Quoting both paths defensively in case
+                // they contain spaces (common on macOS for packaged builds in
+                // ~/Applications and ~/Library/Application Support).
+                command: hookCommand,
+              },
+            ],
+          },
+        ],
+      };
+      console.log('[CODEX] PreToolUse hook configured:', { command: hookCommand });
+    } else {
+      console.log('[CODEX] PreToolUse hook resolver returned undefined; pre-edit race protection not configured');
     }
 
     return configOverrides;
@@ -1815,7 +2058,46 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     event: ProtocolEvent,
     sessionId: string
   ): Promise<void> {
-    if (event.type !== 'raw_event' || !event.metadata?.rawEvent) {
+    if (event.type !== 'raw_event') {
+      return;
+    }
+
+    const transport = (event.metadata as { transport?: string } | undefined)?.transport;
+
+    // App-server transport: the protocol emits {method, params} under metadata
+    // rather than a single rawEvent. Persist it in a transport-tagged shape so
+    // the dispatching parser can pick the right reader.
+    if (transport === 'app-server') {
+      const method = (event.metadata as { method?: string }).method;
+      const params = (event.metadata as { params?: unknown }).params;
+      if (!method) return;
+      const synthesizedRaw = { method, params };
+      const content = JSON.stringify(synthesizedRaw);
+      const rawItemId = this.extractAppServerItemId(params);
+      const editGroupId = rawItemId
+        ? this.getOrMintCodexEditGroupId(sessionId, rawItemId)
+        : undefined;
+      const metadata: Record<string, unknown> = {
+        eventType: method,
+        codexProvider: true,
+        transport: 'app-server',
+      };
+      if (editGroupId) metadata.editGroupId = editGroupId;
+      await this.logAgentMessage(
+        sessionId,
+        this.getProviderName(),
+        'output',
+        content,
+        metadata,
+        false,
+        undefined,
+        false,
+      );
+      return;
+    }
+
+    // SDK transport (legacy): preserves the existing rawEvent shape.
+    if (!event.metadata?.rawEvent) {
       return;
     }
 
@@ -1855,6 +2137,19 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
     // Detect todo_list items and update session metadata so sidebar widgets display them
     this.handleTodoListEvent(event.metadata.rawEvent, sessionId);
+  }
+
+  /**
+   * Extract the codex item id (e.g. `call_xxx`) from an app-server notification's
+   * params payload. Returns undefined for notifications that don't carry an item.
+   */
+  private extractAppServerItemId(params: unknown): string | undefined {
+    if (!params || typeof params !== 'object') return undefined;
+    const item = (params as { item?: unknown }).item;
+    if (!item || typeof item !== 'object') return undefined;
+    const id = (item as { id?: unknown }).id;
+    if (typeof id === 'string' && id) return id;
+    return undefined;
   }
 
   /**
@@ -1967,27 +2262,58 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     seen.add(itemId);
 
     const fs = await import('fs');
+    const cryptoMod = await import('crypto');
+    const pathMod = await import('path');
     const editGroupId = this.getOrMintCodexEditGroupId(sessionId, itemId);
+    const sidecarDir = OpenAICodexProvider.preEditSidecarDirResolver?.(sessionId);
     const entries: Array<{ path: string; content: string | null; kind?: string }> = [];
     for (const change of rawItem.changes) {
       const filePath = change?.path;
       if (typeof filePath !== 'string' || !filePath) continue;
       const kind = change?.kind;
       let content: string | null = null;
-      // For new-file creation (kind='add'), Codex writes the file BEFORE
-      // emitting item.started -- the opposite of kind='update'. Reading
-      // disk now would capture the post-edit body and the diff would come
-      // back empty. Force empty baseline for adds; for updates, read the
-      // real pre-edit content from disk.
-      if (kind === 'add' || kind === 'create' || kind === 'new') {
-        content = '';
-      } else {
+      // Authoritative source: the PreToolUse hook snapshots each affected
+      // path's true pre-edit content to a per-session sidecar BEFORE Codex
+      // applies the patch. That sidecar entry beats any disk read, because
+      // item.started can race with the patch being applied and disk reads
+      // here would capture post-edit content. After consuming, delete the
+      // sidecar entry so a later patch on the same path picks up its own
+      // hook-captured baseline rather than this stale one.
+      if (sidecarDir) {
+        const hash = cryptoMod.createHash('sha1').update(filePath).digest('hex');
+        const sidecarPath = pathMod.join(sidecarDir, `${hash}.json`);
         try {
-          content = fs.readFileSync(filePath, 'utf8');
+          const raw = fs.readFileSync(sidecarPath, 'utf8');
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed.content === 'string') {
+            content = parsed.content;
+          }
+          try {
+            fs.unlinkSync(sidecarPath);
+          } catch {
+            // Best-effort cleanup; staleness is corrected by the next hook fire.
+          }
         } catch {
-          // ENOENT for an update means the path was relocated or never
-          // existed; fall back to empty baseline so the diff still renders.
+          // Sidecar missing -- hook may not be wired or the patch came in
+          // before the hook landed. Fall through to the disk-read path.
+        }
+      }
+      if (content === null) {
+        // For new-file creation (kind='add'), Codex writes the file BEFORE
+        // emitting item.started -- the opposite of kind='update'. Reading
+        // disk now would capture the post-edit body and the diff would come
+        // back empty. Force empty baseline for adds; for updates, read the
+        // real pre-edit content from disk.
+        if (kind === 'add' || kind === 'create' || kind === 'new') {
           content = '';
+        } else {
+          try {
+            content = fs.readFileSync(filePath, 'utf8');
+          } catch {
+            // ENOENT for an update means the path was relocated or never
+            // existed; fall back to empty baseline so the diff still renders.
+            content = '';
+          }
         }
       }
       entries.push({ path: filePath, content, kind });
@@ -2001,6 +2327,195 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         entries,
       },
     };
+  }
+
+  /**
+   * Build a `post_edit_snapshot` StreamChunk from a Codex SDK event when it is
+   * an `item.completed` for a `file_change`. Reads each affected path from
+   * disk RIGHT NOW so the host can write an `ai-edit` history snapshot
+   * carrying the AI's output content. This gives session-aware diffs a stable
+   * "after" side that survives later user edits, mirroring Claude's
+   * `AgentToolHooks.createTurnEndSnapshots`.
+   *
+   * Skips `delete` kinds — the file no longer exists on disk, and an empty
+   * snapshot would just look like an unrelated truncation.
+   */
+  private async maybeBuildFileChangePostEditSnapshot(
+    event: ProtocolEvent,
+    sessionId: string | undefined,
+  ): Promise<StreamChunk | null> {
+    if (!sessionId) return null;
+    const rawAny = (event as { metadata?: { rawEvent?: unknown } })?.metadata?.rawEvent as
+      | { type?: string; item?: { type?: string; id?: string; status?: string; changes?: Array<{ path?: string; kind?: string }> } }
+      | undefined;
+    if (rawAny?.type !== 'item.completed') return null;
+    const rawItem = rawAny.item;
+    if (rawItem?.type !== 'file_change') return null;
+    if (!Array.isArray(rawItem.changes) || rawItem.changes.length === 0) return null;
+    const itemId = rawItem.id;
+    if (typeof itemId !== 'string' || !itemId) return null;
+
+    const editGroupId = this.lookupCodexEditGroupId(sessionId, itemId);
+    if (!editGroupId) return null;
+
+    const fs = await import('fs');
+    const entries: Array<{ path: string; content: string; kind?: string }> = [];
+    for (const change of rawItem.changes) {
+      const filePath = change?.path;
+      if (typeof filePath !== 'string' || !filePath) continue;
+      const kind = change?.kind;
+      // Skip deletes: the path is gone post-apply, and an empty ai-edit
+      // snapshot would conflate "file deleted" with "file emptied."
+      if (kind === 'delete' || kind === 'remove') continue;
+      try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        entries.push({ path: filePath, content, kind });
+      } catch {
+        // File missing post-apply (race / move / failed patch) — skip silently.
+      }
+    }
+    if (entries.length === 0) return null;
+
+    return {
+      type: 'post_edit_snapshot',
+      postEditSnapshot: {
+        toolUseId: editGroupId,
+        entries,
+      },
+    };
+  }
+
+  /**
+   * App-server transport pre/post-edit snapshot builder.
+   *
+   * On `item/completed` for a `fileChange` item, the app-server protocol
+   * attaches a `fileChangeBaselines` array to the raw event metadata. Each
+   * entry carries the affected path, the patch kind, the full unified-diff
+   * text, and a pre-computed `preEditContent` for `add`/`delete` kinds
+   * (the `update` kind needs the post-edit content to reverse-apply).
+   *
+   * This method:
+   *   - dedupes per-(session, itemId) so a turn that re-yields the same
+   *     item.completed (defensive) doesn't double-write
+   *   - reads post-edit content from disk for `update` kinds (race-free
+   *     because the patch is definitely on disk at item.completed time)
+   *   - reverse-applies the diff via `reverseCodexPatch` to recover pre-edit
+   *     content for `update` kinds
+   *   - returns both the `pre_edit_snapshot` and `post_edit_snapshot` chunks
+   *     so the host's existing `MessageStreamingHandler` plumbing fires
+   *     unchanged
+   */
+  private async maybeBuildAppServerFileChangeSnapshots(
+    event: ProtocolEvent,
+    sessionId: string | undefined,
+  ): Promise<{ preEdit: StreamChunk | null; postEdit: StreamChunk | null }> {
+    const empty = { preEdit: null, postEdit: null };
+    if (!sessionId) return empty;
+
+    const metadata = (event as { metadata?: Record<string, unknown> }).metadata;
+    if (!metadata) return empty;
+    const method = metadata.method as string | undefined;
+    const params = metadata.params as Record<string, unknown> | undefined;
+    if (method !== 'item/completed' || !params) return empty;
+
+    const item = params.item as
+      | { id?: string; type?: string; status?: string; changes?: Array<{ path: string; kind: { type: string; move_path?: string | null }; diff: string }> }
+      | undefined;
+    if (!item || item.type !== 'fileChange') return empty;
+    if (!Array.isArray(item.changes) || item.changes.length === 0) return empty;
+    const itemId = item.id;
+    if (!itemId) return empty;
+
+    // Diagnostic: confirms the app-server pre/post-edit pipeline fired.
+    // Keep this terse -- one line per file_change item -- so production logs
+    // stay scannable. Verbose `diffPreviews` removed; if you need them for
+    // debugging, set debugFlags.diffTrace in app settings (TODO -- not wired).
+    console.log('[CODEX][APPSERVER] file_change ' + JSON.stringify({
+      sessionId,
+      itemId,
+      kinds: item.changes.map(c => c.kind?.type),
+      paths: item.changes.map(c => c.path),
+    }));
+
+    // Dedup -- guard against any defensive re-emission of item.completed for
+    // the same item id. Reuses the existing per-session set the SDK path uses.
+    let seen = this.fileChangePreEditSnapshottedIds.get(sessionId);
+    if (!seen) {
+      seen = new Set<string>();
+      this.fileChangePreEditSnapshottedIds.set(sessionId, seen);
+    }
+    if (seen.has(itemId)) return empty;
+    seen.add(itemId);
+
+    const editGroupId = this.getOrMintCodexEditGroupId(sessionId, itemId);
+
+    const fs = await import('fs');
+
+    const preEntries: Array<{ path: string; content: string | null; kind?: string }> = [];
+    const postEntries: Array<{ path: string; content: string; kind?: string }> = [];
+
+    for (const change of item.changes) {
+      const filePath = change?.path;
+      if (typeof filePath !== 'string' || !filePath) continue;
+      const kindStr = change.kind?.type ?? 'update';
+
+      if (kindStr === 'add') {
+        // Pre-edit: file did not exist. Post-edit: codex emits the raw final
+        // file content as `diff` for adds (not a unified diff).
+        preEntries.push({ path: filePath, content: '', kind: 'add' });
+        postEntries.push({ path: filePath, content: change.diff ?? '', kind: 'add' });
+        continue;
+      }
+
+      if (kindStr === 'delete') {
+        // Pre-edit: reconstructed from the `-` lines in the diff. Post-edit:
+        // the path no longer exists; skip post-edit entry like the SDK path does.
+        const result = reverseCodexPatch(change.diff, null, 'delete');
+        const preContent = result.ok ? result.preEditContent : null;
+        preEntries.push({ path: filePath, content: preContent ?? '', kind: 'delete' });
+        continue;
+      }
+
+      // 'update' (with optional move_path). Read post-edit content from disk
+      // -- at item/completed time the patch is on disk, so this is race-free.
+      // For renames, `move_path` is the destination; read THAT and apply the
+      // pre-edit content under the ORIGINAL path so the diff makes sense.
+      const movePath = change.kind?.move_path ?? null;
+      const postPath = typeof movePath === 'string' && movePath ? movePath : filePath;
+      let postContent: string;
+      try {
+        postContent = fs.readFileSync(postPath, 'utf8');
+      } catch {
+        // File missing post-apply -- skip both sides; nothing useful to write.
+        continue;
+      }
+      const result = reverseCodexPatch(change.diff, postContent, 'update');
+      const preContent = result.ok ? (result.preEditContent ?? '') : '';
+      preEntries.push({ path: filePath, content: preContent, kind: 'update' });
+      postEntries.push({ path: postPath, content: postContent, kind: 'update' });
+    }
+
+    const preEdit: StreamChunk | null = preEntries.length === 0
+      ? null
+      : {
+          type: 'pre_edit_snapshot',
+          preEditSnapshot: {
+            toolUseId: editGroupId,
+            entries: preEntries,
+            // App-server pre-edit content is reverse-applied from the codex diff
+            // against the post-apply disk state. It is deterministic and
+            // authoritative -- MessageStreamingHandler must NOT clobber it
+            // with whatever FileSnapshotCache observed via chokidar (which on
+            // fresh gitignored sessions is the post-edit body, producing
+            // all-green diffs).
+            authoritative: true,
+          },
+        };
+    const postEdit: StreamChunk | null = postEntries.length === 0
+      ? null
+      : { type: 'post_edit_snapshot', postEditSnapshot: { toolUseId: editGroupId, entries: postEntries } };
+
+    return { preEdit, postEdit };
   }
 
   /**

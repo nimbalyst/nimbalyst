@@ -127,18 +127,21 @@ class PGLiteWorker {
             }
           }
 
-          // Check if the process is still running
+          // Check if the process is still running. The decision is
+          // extracted to ./lockStaleness.js so it can be unit-tested
+          // without spawning a real worker thread. See nimbalyst#272 for
+          // the Windows-pid-reuse hazard the timestamp gate guards
+          // against.
+          const { decideLockIsRunning } = require('./lockStaleness');
           let isRunning = false;
           if (!isStaleFromReboot) {
-            try {
-              // process.kill with signal 0 tests if process exists without killing it
-              process.kill(lockPid, 0);
-              isRunning = true;
-            } catch (e) {
-              // ESRCH: No such process (stale lock from crash)
-              // EPERM: Process exists but we can't signal it (still running, different user)
-              isRunning = e.code === 'EPERM';
-            }
+            const decision = decideLockIsRunning({
+              lockPid,
+              lockTimestamp,
+              killFn: process.kill.bind(process),
+            });
+            isRunning = decision.isRunning;
+            console.log(`[PGLite Worker] Lock liveness check: ${decision.reason}`);
           }
 
           if (isRunning) {

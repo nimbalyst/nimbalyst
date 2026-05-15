@@ -156,6 +156,14 @@ interface FloatingTranscriptActionsProps {
   phaseColumns?: PhaseColumn[];
   /** Callback when phase is changed. If not provided, the phase button is hidden. */
   onSetPhase?: (phase: string | null) => void;
+  /**
+   * Whether the transcript find-in-page search bar is currently visible.
+   * The search bar is a `sticky top-0` element occupying ~44px at the top of
+   * the same container these floating actions sit in. When it is visible,
+   * shift the actions down so the phase pill no longer overlaps the search
+   * bar's right-side controls on narrow widths. See #309.
+   */
+  searchBarVisible?: boolean;
 }
 
 export const FloatingTranscriptActions: React.FC<FloatingTranscriptActionsProps> = ({
@@ -166,6 +174,7 @@ export const FloatingTranscriptActions: React.FC<FloatingTranscriptActionsProps>
   currentPhase,
   phaseColumns,
   onSetPhase,
+  searchBarVisible = false,
 }) => {
   const [showPhaseMenu, setShowPhaseMenu] = useState(false);
   const phaseButtonRef = useRef<HTMLButtonElement>(null);
@@ -191,7 +200,11 @@ export const FloatingTranscriptActions: React.FC<FloatingTranscriptActionsProps>
   const currentPhaseCol = phaseColumns?.find(c => c.value === currentPhase);
 
   return (
-    <div className="floating-transcript-actions absolute top-1.5 right-3 flex gap-2 z-[100] pointer-events-none">
+    <div
+      className={`floating-transcript-actions absolute right-3 flex gap-2 z-[100] pointer-events-none transition-all duration-150 ${
+        searchBarVisible ? 'top-14' : 'top-1.5'
+      }`}
+    >
       {/* Phase Picker Button */}
       {onSetPhase && phaseColumns && (
         <div className="relative inline-flex">

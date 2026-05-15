@@ -18,6 +18,21 @@ import { DatabaseBackupService } from '../services/database/DatabaseBackupServic
  */
 export class HandledError extends Error {}
 
+/**
+ * Extended timeout for the worker `init` message. The init path runs
+ * PGLite WAL recovery after an unclean shutdown plus schema migration
+ * and, if corruption is detected, the auto-recovery flow. The default
+ * 30s sendMessage timeout was tripping on the first relaunch after a
+ * force-close on slower machines (see #238) even though the second
+ * relaunch consistently succeeded - the recovery had simply not
+ * finished within 30s. 120s covers the observed recovery window
+ * while still surfacing a genuinely-deadlocked init within 2 minutes
+ * rather than waiting forever.
+ *
+ * Exported so unit tests can pin the value if reasoning ever shifts.
+ */
+export const INIT_TIMEOUT_MS = 120_000;
+
 // Helper to categorize database errors
 function categorizeDBError(error: any): string {
   const message = error?.message?.toLowerCase() || String(error).toLowerCase();
@@ -240,7 +255,10 @@ export class PGLiteDatabaseWorker {
    */
   private async recreateWorkerAndReinit(): Promise<void> {
     this.createWorker();
-    await this.sendMessage('init');
+    // Use the same extended timeout as the cold-start path - recreate
+    // is invoked from the backup-restore recovery flow, where the just-
+    // restored DB also needs to replay WAL on first open. See #238.
+    await this.sendMessage('init', undefined, INIT_TIMEOUT_MS);
   }
 
   /**
@@ -368,8 +386,23 @@ export class PGLiteDatabaseWorker {
       // Create the worker
       this.createWorker();
 
-      // Initialize database in worker
-      const initResult = await this.sendMessage('init');
+      // Initialize database in worker.
+      //
+      // The init path is heavier than other ops: it may run PGLite's WAL
+      // recovery after an unclean shutdown, replay the schema migration
+      // path, and (if corruption is detected) run the auto-recovery flow
+      // below. With the default 30s sendMessage timeout, the FIRST relaunch
+      // after a force-close was hitting "Request init timed out" while the
+      // worker was still mid-recovery; a SECOND relaunch then succeeded
+      // because recovery had already completed in the background. See #238
+      // (shayliraz reported the exact two-relaunch pattern on Windows 11).
+      //
+      // 120s covers the recovery window we have signal for. If init is
+      // genuinely deadlocked (worker bug) we still surface the failure
+      // within 2 minutes rather than waiting forever; the user-facing
+      // modal copy then matches reality. The constant lives at module
+      // scope so it can be referenced from `recreateWorkerAndReinit` too.
+      const initResult = await this.sendMessage('init', undefined, INIT_TIMEOUT_MS);
 
       // Check if database was recovered from corruption
       if (initResult.recovered) {

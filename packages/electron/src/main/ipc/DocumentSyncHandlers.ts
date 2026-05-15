@@ -7,7 +7,7 @@
  */
 
 import { net } from 'electron';
-import { randomUUID } from 'crypto';
+import * as fs from 'fs/promises';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { isAuthenticated, getStytchUserId, getUserEmail, getAuthState, getPersonalSessionJwt, refreshPersonalSession } from '../services/StytchAuthService';
@@ -23,7 +23,26 @@ import {
   clearCollabAssetSender,
 } from '../protocols/collabAssetProtocol';
 import { deleteRemovedAssets } from '../services/CollabAssetGC';
+import { encryptAndUploadCollabAsset } from '../services/CollabAssetUploader';
+import {
+  scanMarkdownImageRefs,
+  resolveAssetRef,
+  rewriteMarkdownImageRefs,
+} from '../services/markdownAssetScanner';
 import WebSocket from 'ws';
+
+/** Max concurrent uploads in a single migrate-local-assets pass. Keeps a    */
+/** multi-image share from saturating the collab worker.                    */
+const MIGRATE_UPLOAD_CONCURRENCY = 3;
+
+/** Per-asset outcome reported back to the renderer. Renderer surfaces      */
+/** "failed" and "missing" entries in the share toast.                       */
+export type AssetMigrationResult =
+  | { ref: string; status: 'ok'; uri: string; bytes: number }
+  | { ref: string; status: 'missing' }
+  | { ref: string; status: 'rejected'; reason: string }
+  | { ref: string; status: 'skipped'; reason: string }
+  | { ref: string; status: 'failed'; error: string };
 
 // WebSocket proxy: browser WebSocket to sync.nimbalyst.com fails due to
 // Cloudflare proxy configuration. We create WebSockets in the main process
@@ -232,71 +251,138 @@ export function registerDocumentSyncHandlers(): void {
       return { success: false, error: 'Document not open in this window' };
     }
 
-    try {
-      const orgKey = await getOrgKey(payload.orgId);
-      if (!orgKey) {
-        return { success: false, error: 'No org encryption key cached' };
-      }
+    return encryptAndUploadCollabAsset({
+      orgId: payload.orgId,
+      documentId: payload.documentId,
+      fileBytes: payload.fileBytes,
+      mimeType: payload.mimeType,
+      fileName: payload.fileName,
+      syncHttpUrl: getSyncHttpUrl(),
+    });
+  });
 
-      const orgJwt = await getOrgScopedJwt(payload.orgId);
-      const assetId = randomUUID();
-
-      // Encrypt body
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const ciphertext = await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv },
-        orgKey,
-        payload.fileBytes
-      );
-
-      // Encrypt metadata (filename only, for now)
-      const metaIv = crypto.getRandomValues(new Uint8Array(12));
-      const metaPlain = new TextEncoder().encode(JSON.stringify({ name: payload.fileName }));
-      const metaCipher = await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv: metaIv },
-        orgKey,
-        metaPlain as BufferSource
-      );
-
-      const fingerprint = getOrgKeyFingerprint(payload.orgId);
-
-      const httpUrl = getSyncHttpUrl();
-      const url =
-        `${httpUrl}/api/collab/docs/${encodeURIComponent(payload.documentId)}` +
-        `/assets/${encodeURIComponent(assetId)}`;
-      const headers: Record<string, string> = {
-        Authorization: `Bearer ${orgJwt}`,
-        'X-Collab-Asset-Iv': Buffer.from(iv).toString('base64'),
-        'X-Collab-Asset-Metadata': Buffer.from(metaCipher).toString('base64'),
-        'X-Collab-Asset-Metadata-Iv': Buffer.from(metaIv).toString('base64'),
-        'X-Collab-Asset-Mime-Type': payload.mimeType || 'application/octet-stream',
-        'X-Collab-Asset-Plaintext-Size': String(payload.fileBytes.byteLength),
+  /**
+   * Walk a markdown file for local image references, upload each one through
+   * the encrypted collab-asset path, and return the rewritten markdown plus
+   * a per-asset result list. The "pre-seed migration pass" used by Share to
+   * Team so collaborators can actually see the originator's pasted images.
+   *
+   * Sender authorization: identical to `upload-asset` -- the requesting
+   * WebContents must have called `document-sync:open` for this doc first.
+   */
+  safeHandle('document-sync:migrate-local-assets', async (event, payload: {
+    workspacePath: string;
+    orgId: string;
+    documentId: string;
+    sourceFilePath: string;
+    markdown: string;
+  }) => {
+    if (!isAuthenticated()) {
+      return { success: false, error: 'Not authenticated' };
+    }
+    if (!payload?.workspacePath || !payload?.orgId || !payload?.documentId
+        || !payload?.sourceFilePath || typeof payload.markdown !== 'string') {
+      return {
+        success: false,
+        error: 'workspacePath, orgId, documentId, sourceFilePath, and markdown required',
       };
-      if (fingerprint) {
-        headers['X-Collab-Asset-Key-Fingerprint'] = fingerprint;
-      }
+    }
+    if (!isCollabAssetDocumentRegisteredForSender(event.sender.id, payload.orgId, payload.documentId)) {
+      return { success: false, error: 'Document not open in this window' };
+    }
 
-      const resp = await net.fetch(url, {
-        method: 'PUT',
-        headers,
-        body: ciphertext,
-      });
-
-      if (!resp.ok) {
-        const errText = await resp.text().catch(() => '');
-        logger.main.warn('[DocumentSyncHandlers] upload-asset failed', resp.status, errText);
-        return { success: false, error: errText || `Upload failed (${resp.status})` };
-      }
-
+    const refs = scanMarkdownImageRefs(payload.markdown);
+    if (refs.length === 0) {
       return {
         success: true,
-        assetId,
-        uri: `collab-asset://doc/${payload.documentId}/asset/${assetId}`,
+        rewrittenMarkdown: payload.markdown,
+        results: [] as AssetMigrationResult[],
       };
-    } catch (err) {
-      logger.main.error('[DocumentSyncHandlers] upload-asset threw', err);
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
+
+    const syncHttpUrl = getSyncHttpUrl();
+    const results: AssetMigrationResult[] = new Array(refs.length);
+    const substitutions = new Map<string, string>();
+
+    async function processRef(index: number): Promise<void> {
+      const ref = refs[index];
+      const resolution = resolveAssetRef(ref, payload.sourceFilePath, payload.workspacePath);
+
+      if (resolution.kind === 'skip') {
+        results[index] = { ref, status: 'skipped', reason: resolution.reason };
+        return;
+      }
+      if (resolution.kind === 'rejected') {
+        results[index] = { ref, status: 'rejected', reason: resolution.reason };
+        return;
+      }
+
+      let bytes: Buffer;
+      try {
+        bytes = await fs.readFile(resolution.absolutePath);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === 'ENOENT') {
+          results[index] = { ref, status: 'missing' };
+        } else {
+          results[index] = {
+            ref,
+            status: 'failed',
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+        return;
+      }
+
+      // Slice into an ArrayBuffer view so we hand the encrypt path a stable
+      // backing buffer that exactly matches the file bytes (Node Buffers can
+      // share a larger pool-allocated backing store).
+      const arrayBuffer = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer;
+
+      const upload = await encryptAndUploadCollabAsset({
+        orgId: payload.orgId,
+        documentId: payload.documentId,
+        fileBytes: arrayBuffer,
+        mimeType: resolution.mimeType,
+        fileName: resolution.fileName,
+        syncHttpUrl,
+      });
+
+      if (!upload.success) {
+        results[index] = { ref, status: 'failed', error: upload.error };
+        return;
+      }
+
+      substitutions.set(ref, upload.uri);
+      results[index] = {
+        ref,
+        status: 'ok',
+        uri: upload.uri,
+        bytes: bytes.byteLength,
+      };
+    }
+
+    // Bounded concurrency: pull-from-queue workers so a 50-image share does
+    // not fan out 50 simultaneous TLS handshakes against the collab worker.
+    let cursor = 0;
+    const workers: Promise<void>[] = [];
+    const workerCount = Math.min(MIGRATE_UPLOAD_CONCURRENCY, refs.length);
+    for (let w = 0; w < workerCount; w++) {
+      workers.push((async () => {
+        while (true) {
+          const i = cursor++;
+          if (i >= refs.length) return;
+          await processRef(i);
+        }
+      })());
+    }
+    await Promise.all(workers);
+
+    const rewrittenMarkdown = rewriteMarkdownImageRefs(payload.markdown, substitutions);
+    return { success: true, rewrittenMarkdown, results };
   });
 
   /**

@@ -486,9 +486,20 @@ export interface EncryptedMessage {
   metadata: Record<string, never>;
 }
 
-/** Session metadata (stored alongside messages in PersonalSessionRoom) */
+/**
+ * Session metadata (stored alongside messages in PersonalSessionRoom).
+ *
+ * Titles are E2E encrypted: clients send `encryptedTitle` + `titleIv`, the
+ * server stores ciphertext only, and clients decrypt for display. There is
+ * no plaintext `title` on this interface by design -- a plaintext title
+ * would leak into DO SQLite where the server (and anyone with admin access
+ * to the DO) could read it.
+ */
 export interface SessionMetadata {
-  title: string;
+  /** Encrypted title (base64, AES-GCM) */
+  encryptedTitle?: string;
+  /** IV for title decryption (base64) */
+  titleIv?: string;
   provider: string;
   model?: string;
   mode?: 'agent' | 'planning';
