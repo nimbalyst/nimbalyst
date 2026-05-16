@@ -22,14 +22,17 @@ interface LMStudioConfig extends ProviderConfig {
 export class LMStudioProvider extends BaseAIProvider {
   private baseUrl: string = 'http://127.0.0.1:8234';
   private abortController: AbortController | null = null;
-  
+  private resolvedModel: string | null = null;
+
+  // DEFAULT_MODEL is a UI placeholder — the actual model is resolved from
+  // LM Studio's /v1/models endpoint during initialize() and stored in resolvedModel.
   static readonly DEFAULT_MODEL = 'lmstudio:local-model';
 
   async initialize(config: LMStudioConfig): Promise<void> {
     this.config = config;
     this.baseUrl = config.baseUrl || 'http://127.0.0.1:8234';
-    
-    // Test connection to LMStudio
+
+    // Test connection and discover the actual loaded model
     try {
       const response = await fetch(`${this.baseUrl}/v1/models`, {
         signal: AbortSignal.timeout(5000) // 5 second timeout
@@ -37,11 +40,20 @@ export class LMStudioProvider extends BaseAIProvider {
       if (!response.ok) {
         throw new Error(`LMStudio server not responding at ${this.baseUrl}. Please ensure LMStudio is running and has a model loaded.`);
       }
+
+      // Discover the actual model ID from LM Studio instead of using "local-model"
+      const data = await response.json();
+      if (data.data && data.data.length > 0) {
+        this.resolvedModel = data.data[0].id;
+        console.log(`[LMStudio] Resolved model: ${this.resolvedModel}`);
+      } else {
+        throw new Error(`LMStudio is running but no model is loaded. Please load a model in LMStudio first.`);
+      }
     } catch (error: any) {
       if (error.cause?.code === 'ECONNREFUSED' || error.message?.includes('fetch failed')) {
         throw new Error(`Cannot connect to LMStudio at ${this.baseUrl}. Please ensure:\n1. LMStudio is running\n2. A model is loaded in LMStudio\n3. The local server is started (look for "Local Server" in LMStudio)`);
       }
-      throw new Error(`Failed to connect to LMStudio at ${this.baseUrl}: ${error.message || error}`);
+      throw error;
     }
   }
 
@@ -201,7 +213,7 @@ export class LMStudioProvider extends BaseAIProvider {
 
     // Log the request for debugging
     const requestBody: any = {
-      model: this.config.model || 'local-model',
+      model: this.resolvedModel || this.config.model || 'local-model',
       messages: apiMessages,
       max_tokens: this.config.maxTokens || 4096,
       temperature: this.config.temperature || 0.7,
@@ -802,13 +814,7 @@ export class LMStudioProvider extends BaseAIProvider {
    * Get default models
    */
   static getDefaultModels(): AIModel[] {
-    return [{
-      id: ModelIdentifier.create('lmstudio', 'local-model').combined,
-      name: 'Local Model',
-      provider: 'lmstudio' as const,
-      maxTokens: 4096,
-      contextWindow: 4096
-    }];
+    return [];
   }
 
   /**
