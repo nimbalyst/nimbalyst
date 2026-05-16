@@ -9,61 +9,98 @@
  *
  * Decision rule:
  *   - If `process.kill(lockPid, 0)` does NOT throw -> the lock holder is
- *     alive and we own it; another instance is running.
+ *     alive and we own it; another instance is running. Decision: 'running'.
  *   - If it throws ESRCH -> no such process; the lock is stale, the prior
- *     instance crashed without releasing.
+ *     instance crashed without releasing. Decision: 'stale'.
  *   - If it throws EPERM -> ambiguous on Windows. Either a sibling
  *     Nimbalyst we cannot signal (e.g. different user, different
  *     privilege level) OR a system / service process that happened to
  *     reuse the PID after the original Nimbalyst process died (the
  *     #272 case). Disambiguate by lock age:
- *       * Lock timestamp younger than `staleGraceMs` (default 60s):
- *         treat as alive. A genuine competing instance just acquired the
- *         lock during the current launch attempt.
- *       * Lock timestamp older than `staleGraceMs`: treat as stale. The
- *         original lock holder is long dead; PID has been reused.
- *   - Any other thrown error code: fail closed (treat as running) so we
- *     never clobber a potentially-live sibling's lock on an
+ *       * Lock timestamp older than `staleGraceMs` (default 60s):
+ *         decision: 'stale'. The original lock holder is long dead;
+ *         PID has been reused.
+ *       * Lock timestamp younger than `staleGraceMs`: decision:
+ *         'ambiguous'. Could be a genuine sibling that just acquired
+ *         the lock OR PID reuse on a slow-disk machine where the
+ *         original lock was written less than 60s before crash.
+ *         Caller should ask the user. Per @ghinkle's review on the
+ *         closed PR #316.
+ *       * No timestamp / unparseable: decision: 'stale' (legacy lock
+ *         files predate the timestamp field and are by definition old).
+ *   - Any other thrown error code: decision: 'running'. Fail closed so
+ *     we never clobber a potentially-live sibling's lock on an
  *     unrecognised failure.
  *
- * Returns `{ isRunning, reason }`. `reason` is informational and is
- * logged by the caller. Pure function: no fs, no os, no global state.
+ * Returns `{ decision, reason, lockPid, lockAgeMs }`. `reason` is
+ * informational and is logged by the caller. `lockPid` and `lockAgeMs`
+ * are surfaced so a dialog can show them to the user when the decision
+ * is 'ambiguous'. Pure function: no fs, no os, no global state.
+ *
+ * `isRunning` is also returned for backwards compatibility with callers
+ * that haven't been updated to consume the new ternary decision; it is
+ * `true` for both 'running' and 'ambiguous' (the historical conservative
+ * default before the dialog branch existed). New code should use
+ * `decision` directly.
  */
 
 const DEFAULT_STALE_LOCK_GRACE_MS = 60_000;
 
 function decideLockIsRunning({ lockPid, lockTimestamp, killFn, now = Date.now(), staleGraceMs = DEFAULT_STALE_LOCK_GRACE_MS }) {
+  const parsedLockTime =
+    lockTimestamp && lockTimestamp !== 'unknown'
+      ? new Date(lockTimestamp).getTime()
+      : NaN;
+  const lockAgeMs = Number.isFinite(parsedLockTime) ? now - parsedLockTime : Number.POSITIVE_INFINITY;
+
   try {
     killFn(lockPid, 0);
-    return { isRunning: true, reason: 'kill(0) succeeded; lock holder is alive and signalable' };
+    return {
+      decision: 'running',
+      isRunning: true,
+      reason: 'kill(0) succeeded; lock holder is alive and signalable',
+      lockPid,
+      lockAgeMs,
+    };
   } catch (e) {
     if (e && e.code === 'ESRCH') {
-      return { isRunning: false, reason: 'ESRCH: no such process; lock is stale' };
+      return {
+        decision: 'stale',
+        isRunning: false,
+        reason: 'ESRCH: no such process; lock is stale',
+        lockPid,
+        lockAgeMs,
+      };
     }
     if (e && e.code === 'EPERM') {
-      const parsedLockTime =
-        lockTimestamp && lockTimestamp !== 'unknown'
-          ? new Date(lockTimestamp).getTime()
-          : NaN;
-      const lockAgeMs = Number.isFinite(parsedLockTime) ? now - parsedLockTime : Number.POSITIVE_INFINITY;
       if (!Number.isFinite(lockAgeMs) || lockAgeMs > staleGraceMs) {
         return {
+          decision: 'stale',
           isRunning: false,
           reason:
             `EPERM on PID ${lockPid} but lock timestamp is ${Math.round(lockAgeMs / 1000)}s old ` +
             `(> ${staleGraceMs / 1000}s grace). Treating as stale (Windows pid-reuse hazard).`,
+          lockPid,
+          lockAgeMs,
         };
       }
       return {
+        decision: 'ambiguous',
         isRunning: true,
         reason:
           `EPERM on PID ${lockPid} and lock timestamp is ${Math.round(lockAgeMs / 1000)}s old ` +
-          `(within ${staleGraceMs / 1000}s grace). Treating as a live sibling instance.`,
+          `(within ${staleGraceMs / 1000}s grace). Ambiguous: could be a live sibling or a fast PID reuse. ` +
+          `Asking the user.`,
+        lockPid,
+        lockAgeMs,
       };
     }
     return {
+      decision: 'running',
       isRunning: true,
       reason: `unrecognised process.kill error (${e && e.code}); failing closed to protect live sibling`,
+      lockPid,
+      lockAgeMs,
     };
   }
 }

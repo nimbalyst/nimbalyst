@@ -30,17 +30,39 @@ export interface DecideLockIsRunningArgs {
   now?: number;
   /**
    * Grace window inside the EPERM branch. A lock younger than this is
-   * assumed to belong to a genuinely-competing sibling instance;
-   * anything older is treated as PID reuse. Default 60_000 ms.
+   * routed to 'ambiguous' (caller asks the user) instead of being
+   * assumed stale; anything older is treated as PID reuse. Default
+   * 60_000 ms.
    */
   staleGraceMs?: number;
 }
 
+/**
+ * Ternary decision surface. Caller maps each value to behaviour:
+ *   'running'   -> refuse to open the database; show DATABASE_LOCKED error
+ *   'stale'     -> proceed; remove the stale lock file and re-acquire
+ *   'ambiguous' -> ask the user (the lock is fresh but we cannot signal
+ *                  the PID owner; could be a real sibling or a fast PID
+ *                  reuse). Per @ghinkle's review on closed PR #316.
+ */
+export type LockLivenessDecision = 'running' | 'stale' | 'ambiguous';
+
 export interface DecideLockIsRunningResult {
-  /** True iff the prior lock holder is presumed alive. */
+  /** Ternary decision the caller routes on. */
+  decision: LockLivenessDecision;
+  /**
+   * Backwards-compatible boolean for callers that have not yet been
+   * updated to consume `decision`. True for both 'running' and
+   * 'ambiguous' (matches the historical conservative default before
+   * the ambiguous branch existed). New code should use `decision`.
+   */
   isRunning: boolean;
   /** Human-readable explanation. Caller logs this verbatim. */
   reason: string;
+  /** Echoed from the input for dialog rendering. */
+  lockPid: number;
+  /** How long ago the lock was written, in ms. `Infinity` if unknown. */
+  lockAgeMs: number;
 }
 
 export function decideLockIsRunning(

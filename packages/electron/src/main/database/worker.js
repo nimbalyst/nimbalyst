@@ -131,21 +131,28 @@ class PGLiteWorker {
           // extracted to ./lockStaleness.js so it can be unit-tested
           // without spawning a real worker thread. See nimbalyst#272 for
           // the Windows-pid-reuse hazard the timestamp gate guards
-          // against.
+          // against, and the closed PR #316 review thread for the
+          // 'ambiguous' branch that asks the user instead of guessing.
           const { decideLockIsRunning } = require('./lockStaleness');
-          let isRunning = false;
-          if (!isStaleFromReboot) {
-            const decision = decideLockIsRunning({
+          let livenessDecision = 'stale';
+          let livenessReason = '';
+          if (isStaleFromReboot) {
+            livenessDecision = 'stale';
+            livenessReason = 'lock predates last reboot';
+          } else {
+            const result = decideLockIsRunning({
               lockPid,
               lockTimestamp,
               killFn: process.kill.bind(process),
             });
-            isRunning = decision.isRunning;
-            console.log(`[PGLite Worker] Lock liveness check: ${decision.reason}`);
+            livenessDecision = result.decision;
+            livenessReason = result.reason;
+            console.log(`[PGLite Worker] Lock liveness check: ${result.reason}`);
           }
 
-          if (isRunning) {
-            // Another instance is actually running - block!
+          if (livenessDecision === 'running') {
+            // Another instance is confirmed alive (kill(0) succeeded, OR
+            // unrecognised errno). Refuse the launch unconditionally.
             const error = new Error(
               `Database is locked by another Nimbalyst process.\n\n` +
               `Lock holder PID: ${lockPid}\n` +
@@ -157,12 +164,35 @@ class PGLiteWorker {
             error.code = 'DATABASE_LOCKED';
             error.lockPid = lockPid;
             return { acquired: false, error };
-          } else {
-            // Process is dead - stale lock from a crash
-            console.log(`[PGLite Worker] Removing stale lock file from crashed process (PID ${lockPid} no longer running)`);
-            console.log(`[PGLite Worker] Previous lock was acquired at: ${lockTimestamp}`);
-            fs.unlinkSync(this.lockFilePath);
           }
+          if (livenessDecision === 'ambiguous') {
+            // EPERM with a fresh timestamp (<60s old). Either a live
+            // sibling we cannot signal (different user / privilege level)
+            // OR a fast PID reuse on a slow-disk machine where the
+            // original lock was written less than 60s before crash.
+            // Surface a distinct error code so the main process can show
+            // a dialog letting the user choose between "Open Anyway"
+            // (force-unlock) and "Cancel". Per @ghinkle's review on the
+            // closed PR #316.
+            const error = new Error(
+              `Cannot tell whether another Nimbalyst is running.\n\n` +
+              `Lock holder PID: ${lockPid}\n` +
+              `Lock acquired: ${lockTimestamp}\n` +
+              `Lock host: ${lockHostname}\n\n` +
+              `Reason: ${livenessReason}`
+            );
+            error.code = 'DATABASE_LOCKED_AMBIGUOUS';
+            error.lockPid = lockPid;
+            error.lockFilePath = this.lockFilePath;
+            error.lockTimestamp = lockTimestamp;
+            error.lockHostname = lockHostname;
+            return { acquired: false, error };
+          }
+          // livenessDecision === 'stale'. Process is dead, or lock
+          // predates the last reboot, or EPERM with a stale timestamp.
+          console.log(`[PGLite Worker] Removing stale lock file from crashed process (PID ${lockPid} no longer running)`);
+          console.log(`[PGLite Worker] Previous lock was acquired at: ${lockTimestamp}`);
+          fs.unlinkSync(this.lockFilePath);
         }
       }
 
