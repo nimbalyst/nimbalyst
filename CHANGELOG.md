@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- CSV editor currency, percent, and number column formats now render. `formatCellValue` in `packages/extensions/csv-spreadsheet/src/utils/formatters.ts` existed but was dead code; `generateColumns` in `SpreadsheetEditor.tsx` now wires it into a RevoGrid `cellTemplate` for non-text formats so `0.123` with a percentage format renders `12.3%` and `1234.56` with a USD format renders `$1,234.56`. Edit mode is untouched because RevoGrid's editor reads `editCell.val` from the raw source via `getCellRaw`, not via `cellTemplate`; copy / cut / save-to-CSV also read source data, so the clipboard and on-disk file still carry the raw value. Scope deliberately covers all three non-text formats because the dead-code root cause is identical; the issue body called out currency and percent specifically. Fixes sub-bug 4 of #329; sub-bugs 2 (cell label drift), 3 (diff state), 5 (Cmd+B/U) remain follow-ups. 18 new tests in `formatters.test.ts`. (#329)
 
 ### Removed
 <!-- Removed features go here -->

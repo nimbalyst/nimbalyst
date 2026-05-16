@@ -22,7 +22,7 @@ import { UndoRedoPlugin } from '../plugins/UndoRedoPlugin';
 import { columnIndexToLetter, columnLetterToIndex, generateColumnHeaders, parseCSV } from '../utils/csvParser';
 import { computeDiff, getCellDiffClass, getCellPreviousValue } from '../utils/diffCompute';
 import { isFormula } from '../utils/formulaEngine';
-import { getColumnTypeName } from '../utils/formatters';
+import { formatCellValue, getColumnTypeName } from '../utils/formatters';
 import { FormulaBar, type FormulaBarHandle } from './FormulaBar';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { ColumnFormatDialog } from './ColumnFormatDialog';
@@ -84,12 +84,26 @@ function generateColumns(
     const alignClass = getColumnAlignmentClass(format);
     const width = columnWidths[index] ?? DEFAULT_COLUMN_WIDTH;
 
+    const needsDisplayFormat =
+      format && (format.type === 'currency' || format.type === 'percentage' || format.type === 'number');
+
     return {
       prop: letter,
       name: letter,
       size: width,
       editor: 'sheets',
       ...(index < frozenColumnCount ? { pin: 'colPinStart' as const } : {}),
+      ...(needsDisplayFormat
+        ? {
+            // Format display only; edit mode reads the raw source value via editCell.val,
+            // so source data is unchanged and double-click editing shows the unformatted number.
+            cellTemplate: (h, props) => {
+              const raw = props.model?.[props.prop as string];
+              const value = typeof raw === 'string' || typeof raw === 'number' ? raw : null;
+              return h('span', {}, formatCellValue(value, format));
+            },
+          }
+        : {}),
       cellProperties: (cellData: { model: Record<string, unknown>; rowIndex: number }) => {
         const classes: Record<string, boolean> = {};
 
