@@ -24,6 +24,7 @@ import {
   $isTextNode,
   LexicalNode,
 } from 'lexical';
+import { isTableRowOversized } from './tableRowSizeGuard';
 
 // Import transformers from editor
 import { getEditorTransformers } from '../../markdown';
@@ -190,6 +191,9 @@ const $createTableCell = (textContent: string): TableCellNode => {
 };
 
 const mapToTableCells = (textContent: string): Array<TableCellNode> | null => {
+  if (isTableRowOversized(textContent)) {
+    return null;
+  }
   const match = textContent.match(TABLE_ROW_REG_EXP);
   if (!match || !match[1]) {
     return null;

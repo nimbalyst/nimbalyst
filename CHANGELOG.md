@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
+- Crash-on-load loop on markdown files with extremely wide table rows. The `TABLE_TRANSFORMER` `$createTableCell` path in `packages/runtime/src/editor/plugins/TablePlugin/TableTransformer.ts` recursively calls `$convertFromEnhancedMarkdownString` for each cell on the main thread inside a single Lexical `editor.update()` transaction. With many large cells (reporter's repro: 83 rows of ~5,451 chars each, 5 cells of ~1,090 chars per row), cumulative synchronous Lexical node allocation exhausts the V8 heap and trips a TurboFan integrity-level assertion (`SIGTRAP`). The default `restoreTabs: true` preference then re-opens the same file on every relaunch and the loop repeats until the user manually deletes the file. New `tableRowSizeGuard.ts` exports `MAX_TABLE_ROW_BYTES = 5_000` and `isTableRowOversized()`; `mapToTableCells` returns `null` for rows above the threshold so the row falls through to plain markdown text rendering instead of triggering the recursive cell parse. Per-row guard only; a residual class of many-narrow-rows tables can still pressure heap and is not addressed by this fix. 9 unit tests pin the threshold and boundary behaviour. Reported by @aawbeck with crash log + repro file. (#321)
 <!-- Bug fixes go here -->
 
 ### Removed
