@@ -78,6 +78,7 @@ import { registerClaudeCodePluginHandlers } from './ipc/ClaudeCodePluginHandlers
 import { registerExportHandlers } from './ipc/ExportHandlers';
 import { registerShareHandlers } from './ipc/ShareHandlers';
 import { MCPConfigService } from './services/MCPConfigService';
+import { setMcpConfigServiceGetter } from './mcpConfigServiceRef';
 import { registerDatabaseBrowserHandlers } from './ipc/DatabaseBrowserHandlers';
 import { registerTerminalHandlers, shutdownTerminalHandlers } from './ipc/TerminalHandlers';
 import { AIService } from './services/ai/AIService';
@@ -338,12 +339,12 @@ let mcpHttpServer: any = null;
 let mcpConfigService: MCPConfigService | null = null;
 let mcpConfigServiceCleanedUp = false;
 
-/**
- * Get the MCP config service instance (for use by other modules)
- */
-export function getMcpConfigService(): MCPConfigService | null {
-    return mcpConfigService;
-}
+// Publish a closure over the local variable so other modules can read the
+// live MCPConfigService without back-importing this entry-point file (which
+// would drag the whole app graph in at module load). See mcpConfigServiceRef.
+setMcpConfigServiceGetter(() => mcpConfigService);
+
+export { getMcpConfigService } from './mcpConfigServiceRef';
 
 // Set custom userData path if RUN_ONE_DEV_MODE environment variable is set
 // This allows running a dev instance alongside a production build without conflicts

@@ -22,7 +22,7 @@ import { navigationHistoryService } from '../services/NavigationHistoryService';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { FeatureTrackingService } from '../services/analytics/FeatureTrackingService';
 import { ExtensionLogService } from '../services/ExtensionLogService';
-import { getMcpConfigService } from '../index';
+import { getMcpConfigService } from '../mcpConfigServiceRef';
 import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
 import { windows, windowStates, anyWindowReferencesWorkspace } from './windowState';
 
