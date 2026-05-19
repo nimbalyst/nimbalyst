@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, KeyboardEvent, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import React, { useRef, useEffect, KeyboardEvent, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { GenericTypeahead, TypeaheadOption } from '../Typeahead/GenericTypeahead';
 import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type SlashTypeaheadScope, TriggerMatch } from '../Typeahead/typeaheadUtils';
@@ -7,7 +7,7 @@ import { readClipboard, type ChatAttachment } from '@nimbalyst/runtime';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
 import type { EffortLevel } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
-import { ModeTag, AIMode } from './ModeTag';
+import { ModeTag, AIMode, nextMode } from './ModeTag';
 import { ModelSelector } from './ModelSelector';
 import { EffortLevelSelector } from './EffortLevelSelector';
 import { registerPendingVoiceCommandSetter } from './VoiceModeButton.tsx';
@@ -33,6 +33,7 @@ import {
   searchSessionMentionAtom,
   sessionRegistryAtom,
 } from '../../store';
+import { workspacePermissionsAtomFamily } from '../../store/atoms/appSettings';
 import { useAIInputUndo } from '../../hooks/useAIInputUndo';
 import type { AIInputSnapshot } from '../../store/atoms/aiInputUndo';
 
@@ -176,6 +177,19 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     // Voice mode state - derived from centralized atom
     const voiceActiveSessionId = useAtomValue(voiceActiveSessionIdAtom);
     const isVoiceActive = voiceActiveSessionId === sessionId;
+
+    // Workspace permissions atom (used to detect Auto + bypass-all conflict).
+    // Falls back to empty-string key when no workspacePath; the default state
+    // returns permissionMode = null so the badge stays hidden.
+    const workspacePermissionsAtom = useMemo(
+      () => workspacePermissionsAtomFamily(workspacePath ?? ''),
+      [workspacePath],
+    );
+    const workspacePermissions = useAtomValue(workspacePermissionsAtom);
+    const showAutoBypassWarning =
+      provider === 'claude-code'
+      && mode === 'auto'
+      && workspacePermissions.permissionMode === 'bypass-all';
 
     // Undo/redo stack for the input. Snapshots include text, attachments, and
     // cursor; boundary events (paste, drop, typeahead, attachment add/remove,
@@ -749,10 +763,12 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         return;
       }
 
-      // Handle Shift+Tab to toggle plan mode (only for Claude Code provider)
+      // Handle Shift+Tab to cycle session modes (only for Claude Code provider).
+      // claude-code: Plan -> Agent -> Auto -> Plan.
+      // Other providers do not get Shift+Tab — gated below.
       if (e.key === 'Tab' && e.shiftKey && provider === 'claude-code' && onModeChange && mode) {
         e.preventDefault();
-        onModeChange(mode === 'planning' ? 'agent' : 'planning');
+        onModeChange(nextMode(mode, provider));
         return;
       }
 
@@ -1249,7 +1265,21 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
             alignItems: 'center',
             gap: '8px',
           }}>
-{onModeChange && provider === 'claude-code' && mode && <ModeTag mode={mode} onModeChange={onModeChange} />}
+{onModeChange && provider === 'claude-code' && mode && <ModeTag mode={mode} onModeChange={onModeChange} provider={provider} />}
+            {showAutoBypassWarning && (
+              <HelpTooltip testId="auto-bypass-warning">
+                <span
+                  data-testid="auto-bypass-warning"
+                  className="auto-bypass-warning inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-amber-700 bg-amber-100 dark:text-amber-300 dark:bg-amber-900/40"
+                  role="status"
+                  aria-label="Workspace Bypass All is on, but Auto mode classifier escalates destructive operations to a permission prompt"
+                  title="Workspace 'Bypass All' is on, but Auto mode's classifier runs first and escalates destructive operations to a permission prompt."
+                >
+                  <span aria-hidden>!</span>
+                  <span>bypass</span>
+                </span>
+              </HelpTooltip>
+            )}
 
             {onModelChange && (
               <HelpTooltip testId="model-picker">

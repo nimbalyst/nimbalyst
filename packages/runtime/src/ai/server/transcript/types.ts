@@ -25,7 +25,7 @@ export type TranscriptEventType =
 // ---------------------------------------------------------------------------
 
 export interface UserMessagePayload {
-  mode: 'agent' | 'planning';
+  mode: 'agent' | 'planning' | 'auto';
   inputType: 'user' | 'system_message';
   attachments?: Array<{
     id: string;
@@ -38,7 +38,7 @@ export interface UserMessagePayload {
 }
 
 export interface AssistantMessagePayload {
-  mode: 'agent' | 'planning';
+  mode: 'agent' | 'planning' | 'auto';
   /**
    * Extended-thinking output. Stored on the assistant_message payload so we
    * can render it without introducing a new event_type (the
@@ -54,7 +54,7 @@ export interface AssistantMessagePayload {
 }
 
 export interface SystemMessagePayload {
-  systemType: 'status' | 'slash_command' | 'error' | 'init';
+  systemType: 'status' | 'slash_command' | 'error' | 'init' | 'permission_denied';
   statusCode?: string;
   /** Marks an authentication failure so the UI can render the login widget. */
   isAuthError?: boolean;
@@ -63,6 +63,20 @@ export interface SystemMessagePayload {
    * Lets the UI pick a friendlier label than the raw reminder body.
    */
   reminderKind?: string;
+  /**
+   * Permission-denied fields. Populated when systemType === 'permission_denied'.
+   * Emitted by the SDK when a tool call is auto-denied WITHOUT an interactive
+   * prompt (deny rule, dontAsk mode, headless auto-deny, or -- rarely -- the
+   * auto-mode classifier short-circuiting). The common auto-mode path for
+   * destructive tools is escalation to the normal permission prompt, not this
+   * deny short-circuit. See @anthropic-ai/claude-agent-sdk
+   * SDKPermissionDeniedMessage.
+   */
+  deniedToolName?: string;
+  deniedReason?: string;
+  /** Discriminator: 'classifier' | 'mode' | 'rule' | 'asyncAgent' */
+  deniedReasonType?: string;
+  deniedInput?: Record<string, unknown>;
 }
 
 export interface ToolCallPayload {

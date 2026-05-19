@@ -21,7 +21,7 @@ interface ResolveImmediateToolDecisionDeps {
     input: any,
     options: { signal: AbortSignal; toolUseID?: string },
   ) => Promise<ToolDecision>;
-  setCurrentMode: (mode: 'planning' | 'agent') => void;
+  setCurrentMode: (mode: 'planning' | 'agent' | 'auto') => void;
   logSecurity: (message: string, data?: Record<string, unknown>) => void;
 }
 

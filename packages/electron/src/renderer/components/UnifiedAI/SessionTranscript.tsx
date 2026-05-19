@@ -121,7 +121,7 @@ function makeOptimisticError(text: string, extra?: Partial<TranscriptViewMessage
 
 function makeOptimisticUserMessage(
   text: string,
-  mode?: 'agent' | 'planning',
+  mode?: 'agent' | 'planning' | 'auto',
   attachments?: ChatAttachment[],
 ): TranscriptViewMessage {
   return {
@@ -945,7 +945,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     const message = '/compact';
     const userMessage = makeOptimisticUserMessage(
       message,
-      aiMode as 'agent' | 'planning' | undefined,
+      aiMode as 'agent' | 'planning' | 'auto' | undefined,
     );
     updateSessionStore({
       sessionId,
@@ -1028,13 +1028,20 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   }, [sessionId, setIsArchived]);
 
   const handleAIModeChange = useCallback(async (newMode: AIMode) => {
+    const previousMode = aiMode;
     setAiMode(newMode);
     try {
       await window.electronAPI.invoke('sessions:update-metadata', sessionId, { mode: newMode });
+      posthog?.capture('ai_mode_changed', {
+        from: previousMode,
+        to: newMode,
+        provider: provider ?? null,
+        session_id: sessionId,
+      });
     } catch (error) {
       console.error('[SessionTranscript] Failed to update mode:', error);
     }
-  }, [sessionId, setAiMode]);
+  }, [aiMode, sessionId, setAiMode, posthog, provider]);
 
   const handleModelChange = useCallback(async (modelId: string) => {
     const previousModel = currentModel;

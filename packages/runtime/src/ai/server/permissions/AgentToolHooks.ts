@@ -69,14 +69,14 @@ export interface AgentToolHooksOptions {
   patternSaver?: (workspacePath: string, pattern: string) => Promise<void>;
 
   /**
-   * Current mode ('planning' | 'agent')
+   * Current mode ('planning' | 'agent' | 'auto')
    */
-  getCurrentMode?: () => 'planning' | 'agent' | undefined;
+  getCurrentMode?: () => 'planning' | 'agent' | 'auto' | undefined;
 
   /**
    * Set current mode
    */
-  setCurrentMode?: (mode: 'planning' | 'agent' | undefined) => void;
+  setCurrentMode?: (mode: 'planning' | 'agent' | 'auto' | undefined) => void;
 
   /**
    * Get pending ExitPlanMode confirmations map
@@ -156,8 +156,8 @@ export class AgentToolHooks {
   private readonly trustChecker?: TrustChecker;
   private readonly patternChecker?: (workspacePath: string, pattern: string) => Promise<boolean>;
   private readonly patternSaver?: (workspacePath: string, pattern: string) => Promise<void>;
-  private readonly getCurrentMode?: () => 'planning' | 'agent' | undefined;
-  private readonly setCurrentMode?: (mode: 'planning' | 'agent' | undefined) => void;
+  private readonly getCurrentMode?: () => 'planning' | 'agent' | 'auto' | undefined;
+  private readonly setCurrentMode?: (mode: 'planning' | 'agent' | 'auto' | undefined) => void;
   private readonly getPendingExitPlanModeConfirmations?: () => Map<string, {
     resolve: (value: { approved: boolean; clearContext?: boolean; feedback?: string }) => void;
     reject: (reason?: any) => void;

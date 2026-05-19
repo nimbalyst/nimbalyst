@@ -185,8 +185,12 @@ export const HelpContent: Record<string, HelpEntry> = {
     body: 'Type your message or paste images and files. The AI has full context of your project.',
   },
   'plan-mode-toggle': {
-    title: 'Plan vs Agent Mode',
-    body: 'Toggle between Plan and Agent modes. Plan mode creates structured plans before the AI writes code. Agent mode executes changes directly.',
+    title: 'Session Mode',
+    body: 'Cycle through Plan, Agent, and Auto modes (Shift+Tab; Auto is Claude Code only). Plan: read-only planning. Agent: full tool access with explicit approval on every tool. Auto: SDK classifier approves safe operations silently and falls back to the normal permission prompt for destructive or uncertain ones.',
+  },
+  'auto-bypass-warning': {
+    title: 'Auto + Bypass conflict',
+    body: 'Workspace permission mode is "Bypass All", but Auto mode\'s classifier escalates destructive operations to a permission prompt before Bypass All ever runs. Switch to Agent mode for unconditional Bypass behavior.',
   },
   'attach-files-input': {
     title: 'Attach Files & Images',

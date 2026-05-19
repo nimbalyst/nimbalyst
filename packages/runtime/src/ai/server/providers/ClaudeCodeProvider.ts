@@ -139,7 +139,7 @@ export interface ScheduleWakeupRequest {
 }
 
 export class ClaudeCodeProvider extends BaseAgentProvider {
-  private currentMode?: 'planning' | 'agent'; // Track session mode for prompt customization and tool filtering
+  private currentMode?: 'planning' | 'agent' | 'auto'; // Track session mode for prompt customization and tool filtering
   private slashCommands: string[] = []; // Available slash commands from SDK
   private skills: string[] = []; // Available user-invocable skills from SDK
 

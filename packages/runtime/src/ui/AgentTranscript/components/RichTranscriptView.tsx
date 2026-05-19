@@ -410,6 +410,48 @@ const REMINDER_KIND_LABELS: Record<string, string> = {
   session_naming: 'Session metadata reminder',
 };
 
+const REASON_TYPE_LABELS: Record<string, string> = {
+  classifier: 'Auto-mode classifier',
+  mode: 'Permission mode',
+  rule: 'Permission rule',
+  asyncAgent: 'Async agent',
+};
+
+const PermissionDeniedCard: React.FC<{
+  message: TranscriptViewMessage;
+}> = ({ message }) => {
+  const payload = message.systemMessage;
+  const toolName = payload?.deniedToolName ?? 'unknown tool';
+  const reason = payload?.deniedReason;
+  const reasonType = payload?.deniedReasonType;
+  const reasonLabel = (reasonType && REASON_TYPE_LABELS[reasonType]) ?? reasonType ?? 'SDK';
+
+  return (
+    <div
+      data-testid="permission-denied-card"
+      className="permission-denied-card ml-6 mb-2 rounded-md border border-[var(--nim-error)] bg-[var(--nim-error-bg,rgba(239,68,68,0.08))] px-3 py-2"
+    >
+      <div className="flex items-center gap-2 text-xs text-[var(--nim-error)]">
+        <MaterialSymbol icon="block" size={14} />
+        <span className="font-semibold uppercase tracking-[0.08em]">Tool denied</span>
+        <span className="text-[var(--nim-text-muted)]">·</span>
+        <code className="text-[11px] font-mono text-[var(--nim-text)]">{toolName}</code>
+        <span className="ml-auto text-[10px] text-[var(--nim-text-faint)]">
+          {formatMessageTime(message.createdAt?.getTime() ?? 0)}
+        </span>
+      </div>
+      {reason && (
+        <p className="m-0 mt-1.5 text-[0.875rem] leading-relaxed text-[var(--nim-text-muted)] whitespace-normal break-words">
+          {reason}
+        </p>
+      )}
+      <p className="m-0 mt-1 text-[10px] uppercase tracking-wide text-[var(--nim-text-faint)]">
+        Source: {reasonLabel}
+      </p>
+    </div>
+  );
+};
+
 const SystemReminderCard: React.FC<{
   message: TranscriptViewMessage;
 }> = ({ message }) => {
@@ -2174,6 +2216,20 @@ export const RichTranscriptView = React.forwardRef<
               <span className="text-[10px] shrink-0">{formatMessageTime(message.createdAt?.getTime() ?? 0)}</span>
             </div>
           )}
+        </div>
+      );
+    }
+
+    if (message.type === 'system_message' && message.systemMessage?.systemType === 'permission_denied') {
+      return (
+        <div
+          key={messageKey}
+          data-message-index={index}
+          ref={(el) => {
+            if (el) messageRefs.current.set(index, el);
+          }}
+        >
+          <PermissionDeniedCard message={message} />
         </div>
       );
     }
