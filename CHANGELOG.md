@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- Windows release build no longer fails the runtime `vite build` with `[postcss] Cannot read properties of undefined (reading 'blocklist')`. The shared root `postcss.config.js` was computing the absolute path to `tailwind.config.ts` via `new URL('./tailwind.config.ts', import.meta.url).pathname`. On Windows that returns a leading-slash path like `/D:/a/nimbalyst/nimbalyst/tailwind.config.ts`, which Node's filesystem APIs reject; tailwind silently fails to load its config, and the next reader trips on `undefined.blocklist` inside `setupContextUtils.js`. Switched to `fileURLToPath(new URL(...))` so the resolved path is platform-correct.
 
 ### Removed
 <!-- Removed features go here -->
