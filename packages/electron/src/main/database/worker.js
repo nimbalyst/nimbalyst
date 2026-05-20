@@ -616,12 +616,12 @@ class PGLiteWorker {
         END IF;
 
         -- Migration (issue #371): widen the existing mode CHECK constraint to
-        -- include 'auto'. Guarded by inspecting pg_constraint.consrc so it
-        -- only runs once: any subsequent boot sees 'auto' in the constraint
-        -- definition and skips the block entirely. Without this guard the
-        -- original constraint rejects UPDATEs to 'auto', the write fails
-        -- silently in PGLiteSessionStore, and the renderer's optimistic mode
-        -- gets clobbered on the next session reload.
+        -- include 'auto'. Guarded by inspecting pg_get_constraintdef(c.oid)
+        -- so it only runs once: any subsequent boot sees 'auto' in the
+        -- constraint definition and skips the block entirely. Without this
+        -- guard the original constraint rejects UPDATEs to 'auto', the write
+        -- fails silently in PGLiteSessionStore, and the renderer's
+        -- optimistic mode gets clobbered on the next session reload.
         IF EXISTS (
           SELECT 1
           FROM pg_constraint c

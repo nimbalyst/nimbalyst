@@ -331,8 +331,13 @@ export class AgentToolHooks {
         return {};
       }
 
+      // Only re-prompt when the SDK explicitly flags the classifier as the
+      // source. A missing/undefined `reason_type` is treated as non-classifier
+      // (e.g. SDK deny rule, dontAsk mode, headless auto-deny that omit it)
+      // so deny rules and explicit denies keep their terminal behaviour
+      // instead of being silently re-prompted.
       const reasonType = input.reason_type as string | undefined;
-      if (reasonType && reasonType !== 'classifier') {
+      if (reasonType !== 'classifier') {
         return {};
       }
 

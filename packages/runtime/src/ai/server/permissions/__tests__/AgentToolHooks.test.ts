@@ -187,6 +187,31 @@ describe('AgentToolHooks', () => {
       expect(options.logAgentMessage).not.toHaveBeenCalled();
     });
 
+    it('returns no-op when reason_type is missing (defensive default)', async () => {
+      const pending = new Map();
+      const options = createMockOptions({
+        getCurrentMode: () => 'auto',
+        getPendingToolPermissions: () => pending as any,
+      });
+      const hooks = new AgentToolHooks(options);
+      const hook = hooks.createPermissionDeniedHook();
+
+      const result = await hook(
+        {
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          reason: 'denied for some reason',
+          // intentionally no reason_type
+        },
+        'tool-use-denied-missing-reason-type',
+        { signal: new AbortController().signal }
+      );
+
+      expect(result).toEqual({});
+      expect(options.emit).not.toHaveBeenCalled();
+      expect(options.logAgentMessage).not.toHaveBeenCalled();
+    });
+
     it('returns no-op for non-classifier deny sources even in auto mode', async () => {
       const pending = new Map();
       const options = createMockOptions({
