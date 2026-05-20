@@ -126,10 +126,6 @@ jobs:
         working-directory: packages/extensions/extension-dev-kit
         run: npx tsc --noEmit
 
-      - name: TypeScript check - collabv3
-        working-directory: packages/collabv3
-        run: npx tsc --noEmit
-
       - name: TypeScript check - extensions/datamodellm
         working-directory: packages/extensions/datamodellm
         run: npx tsc --noEmit
@@ -185,3 +181,21 @@ jobs:
             exit 1
           fi
           du -sh packages/ios/dist-transcript
+
+  # Note: the collaborative E2E specs in packages/electron/e2e/tracker/
+  # (tracker-sync-collab.spec.ts, tracker-content-collab.spec.ts) are not
+  # run in CI. They drive a real wrangler-dev TrackerRoom/DocumentRoom
+  # from the nimbalyst-collab sibling repo, which is a separate project
+  # and is not checked out here. The specs self-skip unless
+  # RUN_COLLAB_TESTS=1 is set.
+  #
+  # To run them locally:
+  #   1. Check out nimbalyst-collab as a sibling directory:
+  #        git clone <nimbalyst-collab-url> ../nimbalyst-collab
+  #        cd ../nimbalyst-collab && npm install
+  #   2. From stravu-editor, start the dev server (npm run dev).
+  #   3. RUN_COLLAB_TESTS=1 npx playwright test \
+  #        e2e/tracker/tracker-sync-collab.spec.ts
+  #
+  # Override the server location with COLLAB_SERVER_PATH (relative to
+  # the public repo root) if your nimbalyst-collab checkout is elsewhere.

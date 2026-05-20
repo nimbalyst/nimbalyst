@@ -140,6 +140,30 @@ npm run deploy:production
 
 The deploy script bumps the version in `package.json`, passes it to the Worker as a build-time define, and runs `wrangler deploy`.
 
+## Cloudflare account isolation
+
+This Worker deploys to the **Nimbalyst** Cloudflare account
+(`454b0e55f2d7f9abc0d52d4217ecdc3c`). Every npm script and shell script
+that shells out to wrangler sets:
+
+```
+XDG_CONFIG_HOME="$HOME/.config/nimbalyst"
+```
+
+Wrangler reads its OAuth tokens from `~/.config/nimbalyst/.wrangler/`,
+isolated from any other Cloudflare accounts on this machine. The same
+`XDG_CONFIG_HOME` is reused by `packages/collabv3` and
+`packages/collabv3-metrics` so one `npm run login` covers all three.
+
+Always go through the npm scripts. Running `wrangler` directly from the
+shell will use the default config dir and may pick a different account.
+
+```bash
+npm run login        # one-time: sign in to the Nimbalyst account
+npm run whoami       # sanity-check the active account
+npm run wrangler -- <subcommand>   # any unaliased wrangler command
+```
+
 ## Infrastructure Setup (one-time)
 
 These steps create the Cloudflare resources referenced in `wrangler.toml`.

@@ -114,6 +114,8 @@ export class CopilotCLIProvider extends BaseAgentProvider {
   private static extensionDevServerPort: number | null = null;
   private static sessionContextServerPort: number | null = null;
   private static metaAgentServerPort: number | null = null;
+  private static settingsServerPort: number | null = null;
+  private static settingsAgentToolsDisabledLoader: (() => boolean) | null = null;
   // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers (Issue #146)
   private static mcpAuthToken: string | null = null;
 
@@ -134,6 +136,8 @@ export class CopilotCLIProvider extends BaseAgentProvider {
       superLoopProgressServerPort: null,
       sessionContextServerPort: CopilotCLIProvider.sessionContextServerPort,
       metaAgentServerPort: CopilotCLIProvider.metaAgentServerPort,
+      settingsServerPort: CopilotCLIProvider.settingsServerPort,
+      settingsAgentToolsDisabledLoader: CopilotCLIProvider.settingsAgentToolsDisabledLoader,
       mcpAuthToken: CopilotCLIProvider.mcpAuthToken,
       mcpConfigLoader: CopilotCLIProvider.mcpConfigLoader,
       extensionPluginsLoader: null,
@@ -170,6 +174,14 @@ export class CopilotCLIProvider extends BaseAgentProvider {
 
   public static setMetaAgentServerPort(port: number | null): void {
     CopilotCLIProvider.metaAgentServerPort = port;
+  }
+
+  public static setSettingsServerPort(port: number | null): void {
+    CopilotCLIProvider.settingsServerPort = port;
+  }
+
+  public static setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void {
+    CopilotCLIProvider.settingsAgentToolsDisabledLoader = loader;
   }
 
   public static setMcpAuthToken(token: string | null): void {

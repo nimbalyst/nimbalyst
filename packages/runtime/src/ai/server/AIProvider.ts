@@ -86,6 +86,15 @@ export interface AIProvider extends EventEmitter {
   abort(): void;
 
   /**
+   * Gracefully interrupt the current turn so the next queued prompt can fire
+   * immediately. Providers that support true mid-stream interrupt (Claude Code)
+   * override this to wrap up cleanly without killing the subprocess; others
+   * fall back to the default `abort()` and rely on the caller to trigger the
+   * next queued prompt. The return value lets the caller distinguish the two.
+   */
+  interruptCurrentTurn(): Promise<{ method: 'interrupt' | 'abort' }>;
+
+  /**
    * Get the capabilities of this provider
    */
   getCapabilities(): ProviderCapabilities;
@@ -173,6 +182,19 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
   ): AsyncIterableIterator<StreamChunk>;
   abstract abort(): void;
   abstract getCapabilities(): ProviderCapabilities;
+
+  /**
+   * Default graceful-interrupt: hard abort. Providers with a real graceful
+   * interrupt (e.g. ClaudeCodeProvider) override this to wrap up the current
+   * turn without killing the subprocess. Callers use the returned `method` to
+   * decide whether they should also explicitly trigger queue processing
+   * (always do, since both paths land in the same completion event in the
+   * end).
+   */
+  async interruptCurrentTurn(): Promise<{ method: 'interrupt' | 'abort' }> {
+    this.abort();
+    return { method: 'abort' };
+  }
 
   registerToolHandler(handler: ToolHandler): void {
     this.toolHandler = handler;

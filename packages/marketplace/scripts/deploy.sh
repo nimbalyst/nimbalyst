@@ -4,6 +4,11 @@
 
 set -e
 
+# Pin wrangler's config dir to the Nimbalyst OAuth profile so deploys can't
+# accidentally land on whatever Cloudflare account is selected in the
+# default config. Mirrors the npm scripts in package.json.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config/nimbalyst}"
+
 BUMP_TYPE="${1:-patch}"
 shift || true
 

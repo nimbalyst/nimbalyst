@@ -438,7 +438,6 @@ export function convertFullDocumentToTrackerItems(metadata: any[], trackerType: 
           lastIndexed: (actualDate || new Date(0)).toISOString(),
         },
         fields,
-        fieldUpdatedAt: {},
       } satisfies TrackerRecord;
     });
 }

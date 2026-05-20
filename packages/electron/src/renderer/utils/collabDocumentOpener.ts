@@ -36,6 +36,15 @@ export interface CollabDocumentConfig {
   /** Org key fingerprint for key epoch enforcement on document writes. */
   orgKeyFingerprint?: string;
   /**
+   * Logical document type (e.g. 'markdown', 'excalidraw', 'mindmap'). Used by
+   * `CollaborativeTabEditor` to route to the right editor branch (built-in
+   * Lexical for markdown, extension component for others).
+   *
+   * Defaults to 'markdown' when omitted to preserve backward compatibility
+   * for existing shared docs created before the type field existed.
+   */
+  documentType?: string;
+  /**
    * Factory for creating WebSocket connections.
    * When running in Electron, this proxies WebSocket connections through
    * the main process (Node.js) to work around Cloudflare blocking
@@ -300,6 +309,7 @@ export async function resolveCollabConfigForUri(
   uri: string,
   documentId: string,
   title?: string,
+  documentType?: string,
 ): Promise<CollabDocumentConfig | null> {
   if (!window.electronAPI?.documentSync) return null;
 
@@ -312,6 +322,7 @@ export async function resolveCollabConfigForUri(
       workspacePath,
       documentId,
       title,
+      documentType,
     );
 
     if (!result.success || !result.config) {
@@ -320,6 +331,7 @@ export async function resolveCollabConfigForUri(
     }
 
     const { orgId, title: resolvedTitle, orgKeyBase64, orgKeyFingerprint, serverUrl, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+    const resolvedDocumentType = documentType ?? result.config.documentType;
     const documentKey = await importOrgKeyFromBase64(orgKeyBase64);
     const hasWsProxy = !!window.electronAPI?.documentSync?.wsConnect;
 
@@ -328,6 +340,7 @@ export async function resolveCollabConfigForUri(
       orgId,
       documentId,
       title: resolvedTitle,
+      documentType: resolvedDocumentType,
       documentKey,
       orgKeyFingerprint,
       serverUrl,
@@ -375,6 +388,11 @@ export async function openCollabDocumentViaIPC(options: {
   documentId: string;
   title?: string;
   initialContent?: string;
+  /**
+   * Logical document type used by CollaborativeTabEditor to route to the
+   * right editor branch (default: 'markdown' if omitted).
+   */
+  documentType?: string;
   addTab: (filePath: string, content?: string, switchToTab?: boolean) => string | null;
 }): Promise<string> {
   if (!window.electronAPI?.documentSync) {
@@ -385,6 +403,7 @@ export async function openCollabDocumentViaIPC(options: {
     options.workspacePath,
     options.documentId,
     options.title,
+    options.documentType,
   );
 
   if (!result.success || !result.config) {
@@ -392,6 +411,7 @@ export async function openCollabDocumentViaIPC(options: {
   }
 
   const { orgId, documentId, title, orgKeyBase64, serverUrl, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+  const documentType = options.documentType ?? result.config.documentType;
 
   // Reconstruct CryptoKey from raw base64
   const documentKey = await importOrgKeyFromBase64(orgKeyBase64);
@@ -409,6 +429,7 @@ export async function openCollabDocumentViaIPC(options: {
     orgId,
     documentId,
     title,
+    documentType,
     documentKey,
     serverUrl,
     userId,

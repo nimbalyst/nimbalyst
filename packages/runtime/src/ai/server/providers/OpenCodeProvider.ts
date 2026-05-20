@@ -82,6 +82,8 @@ export class OpenCodeProvider extends BaseAgentProvider {
   private static extensionDevServerPort: number | null = null;
   private static superLoopProgressServerPort: number | null = null;
   private static sessionContextServerPort: number | null = null;
+  private static settingsServerPort: number | null = null;
+  private static settingsAgentToolsDisabledLoader: (() => boolean) | null = null;
   // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers (Issue #146)
   private static mcpAuthToken: string | null = null;
 
@@ -112,6 +114,8 @@ export class OpenCodeProvider extends BaseAgentProvider {
       extensionDevServerPort: OpenCodeProvider.extensionDevServerPort,
       superLoopProgressServerPort: OpenCodeProvider.superLoopProgressServerPort,
       sessionContextServerPort: OpenCodeProvider.sessionContextServerPort,
+      settingsServerPort: OpenCodeProvider.settingsServerPort,
+      settingsAgentToolsDisabledLoader: OpenCodeProvider.settingsAgentToolsDisabledLoader,
       mcpAuthToken: OpenCodeProvider.mcpAuthToken,
       mcpConfigLoader: OpenCodeProvider.mcpConfigLoader,
       extensionPluginsLoader: null,
@@ -147,6 +151,14 @@ export class OpenCodeProvider extends BaseAgentProvider {
 
   public static setSessionContextServerPort(port: number | null): void {
     OpenCodeProvider.sessionContextServerPort = port;
+  }
+
+  public static setSettingsServerPort(port: number | null): void {
+    OpenCodeProvider.settingsServerPort = port;
+  }
+
+  public static setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void {
+    OpenCodeProvider.settingsAgentToolsDisabledLoader = loader;
   }
 
   public static setMcpAuthToken(token: string | null): void {

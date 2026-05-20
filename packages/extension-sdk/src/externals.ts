@@ -24,6 +24,11 @@ export const REQUIRED_EXTERNALS = [
   '@lexical/react/useLexicalNodeSelection',
   '@lexical/utils',
   '@lexical/markdown',
+
+  // yJS - collaboration bindings share the host's Y.Doc instance.
+  // `instanceof Y.Doc` checks fail if an extension bundles its own yjs
+  // copy, so this MUST be externalized (same constraint as React).
+  'yjs',
 ] as const;
 
 /**
@@ -32,6 +37,9 @@ export const REQUIRED_EXTERNALS = [
 export const EXTERNAL_PATTERNS = [
   /^@lexical\//,
   /^@nimbalyst\/runtime/,
+  // y-protocols ships submodules like `y-protocols/awareness` and
+  // `y-protocols/sync`. All of them must resolve to the host's copy.
+  /^y-protocols(\/.*)?$/,
 ] as const;
 
 /**

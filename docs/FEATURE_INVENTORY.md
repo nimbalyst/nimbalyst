@@ -7,7 +7,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - **Lexical rich text editor** (`.md`, `.txt`, `.mdc`) -- WYSIWYG with markdown shortcuts, slash commands, embedded diagrams, collaborative editing
 - **Monaco code editor** (all code file types) -- syntax highlighting, IntelliSense, multi-cursor
 - **CSV spreadsheet editor** (`.csv`, `.tsv`) -- formula support, sorting, filtering
-- **Excalidraw diagram editor** (`.excalidraw`) -- whiteboard-style diagramming with Mermaid import and AI tools
+- **Excalidraw diagram editor** (`.excalidraw`) -- whiteboard-style diagramming with Mermaid import, AI tools, and real-time multi-client Share-to-Team collab
 - **DataModelLM editor** (`.prisma`, `.datamodel`) -- visual ER diagrams with export to SQL/JSON/DBML
 - **MockupLM editor** (`.mockup.html`) -- visual HTML/CSS mockup rendering with annotation layer
 - **PDF viewer** (`.pdf`)
@@ -211,6 +211,8 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Shared document list
 - Key envelope distribution for new members
 - Durable Objects per entity (session, document, tracker, team, index)
+- **Extension-provided collab editors** — SDK `useCollaborativeEditor` hook lets any extension (Excalidraw shipped; others can opt in via `collaboration.supported` manifest flag) share its file type to team with real-time multi-client editing, cursors, and selection
+- **Client-side snapshot compaction** — connected clients periodically send `docCompact` so initial sync stays fast as edit history grows (single-elector by lowest userId)
 
 ## Tracker System
 
@@ -273,6 +275,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Session context (summaries, workstream overview, recent sessions, edited files, scheduled wakeups)
 - Session naming (name, tags, phase)
 - Meta-agent (`create_session`, `spawn_session`, `send_prompt`, `respond_to_prompt`, `get_session_status`, `get_session_result`, `list_spawned_sessions`, `list_worktrees`) — lets a session spawn and orchestrate child, sibling, or isolated sessions
+- Settings control (`settings_get_overview`, `workspace_create`, `workspace_open`, `sync_set_for_project`, `appearance_set_theme`, `analytics_set_enabled`, `ai_set_default_model`, `features_toggle`, `extension_set_enabled`, `tracker_set_sync_policy`, etc.) — lets the agent change Nimbalyst settings through a curated, allow-listed surface; never exposes API keys or auth credentials; kill-switch via `settingsAgentToolsDisabled`
 - Developer tools (extension lifecycle, database query, log access, renderer eval, environment info)
 - Super Loop progress reporting
 - Display tools (charts, images inline in transcript)

@@ -15,7 +15,14 @@ import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { RevoGrid, type RevoGridCustomEvent, type ColumnRegular } from '@revolist/react-datagrid';
 import type { RevoGridElement } from '../revogrid-types';
 import type { EditorHostProps, NormalizedSelectionRange, ColumnFormat, DiffState, CellDiff } from '../types';
-import { useEditorLifecycle, readClipboard, type DiffConfig } from '@nimbalyst/extension-sdk';
+import {
+  useEditorLifecycle,
+  useCollaborativeEditor,
+  readClipboard,
+  type DiffConfig,
+} from '@nimbalyst/extension-sdk';
+import { CsvBinding } from '../collab/csvBinding';
+import { isCsvYDocEmpty, seedCsvYDoc, getYCsv } from '../collab/seed';
 import { useSpreadsheetMetadata } from '../hooks/useSpreadsheetMetadata';
 import { createGridOperations, type GridOperations } from '../utils/gridOperations';
 import { UndoRedoPlugin } from '../plugins/UndoRedoPlugin';
@@ -404,6 +411,85 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
       }
     },
   });
+
+  // ---- Collaborative wiring (no-op when host.collaboration is undefined) ---
+  // CSV uses a single Y.Text for the whole document (see csvBinding.ts for
+  // the reasoning). Local edits are pushed via a debounced poll because
+  // RevoGrid lacks a single "any mutation" event to hook into. Remote
+  // Y.Text changes flow back through the existing applyContent path so
+  // every existing format/header/metadata invariant is preserved.
+  const collabBindingRef = useRef<CsvBinding | null>(null);
+  const collabActiveRef = useRef(false);
+  const { isCollaborative: isCollabActive } = useCollaborativeEditor(host, {
+    isEmpty: isCsvYDocEmpty,
+    initializeFromContent: seedCsvYDoc,
+    createBinding: ({ yDoc, awareness }) => {
+      // Initial baseline = whatever Y.Text already has (the seed we just
+      // wrote OR the content sync'd from another client).
+      const initial = getYCsv(yDoc).toString();
+      const binding = new CsvBinding(
+        yDoc,
+        initial,
+        {
+          getCurrentCsv: async () => {
+            const gridOps = gridOpsRef.current;
+            if (!gridOps) return initial;
+            return await gridOps.toCSV();
+          },
+          onRemoteContent: (content: string) => {
+            // Route through the same applyContent path the host uses for
+            // external file changes. The grid is reloaded; metadata gets
+            // re-parsed; selection survives if the cell still exists.
+            const { data } = parseCSV(content);
+            const gridData = convertToGridSource(data.rows, data.headerRowCount);
+            const grid = revoGridRef.current;
+            if (grid) {
+              grid.source = gridData.source;
+              grid.pinnedTopSource = gridData.pinnedTop;
+            }
+            spreadsheetMetaRef.current.loadFromCSV(content);
+            spreadsheetMetaRef.current.markClean();
+            collabBindingRef.current?.noteAppliedRemote(content);
+          },
+        },
+        awareness,
+      );
+      collabBindingRef.current = binding;
+      collabActiveRef.current = true;
+      return {
+        destroy: () => {
+          // Flush any pending sync so a closing tab doesn't drop the last
+          // edit. Fire-and-forget; the binding is about to be destroyed
+          // either way.
+          void binding.syncNow().catch(() => {});
+          binding.destroy();
+          collabBindingRef.current = null;
+          collabActiveRef.current = false;
+        },
+      };
+    },
+  });
+
+  // Forward local edits into the Y.Text. RevoGrid has no single "data
+  // mutation" event we can hook, so we poll on a 1s cadence. The binding's
+  // internal diff check is the actual sync gate -- when content hasn't
+  // changed, syncNow is a quick string-compare + no Y.Text writes.
+  useEffect(() => {
+    if (!isCollabActive) return;
+    const id = setInterval(() => {
+      collabBindingRef.current?.scheduleSync();
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isCollabActive]);
+
+  // Publish selection/edit cell to awareness.
+  useEffect(() => {
+    if (!isCollabActive) return;
+    const binding = collabBindingRef.current;
+    if (!binding) return;
+    const sel = selectedCellRef.current ?? null;
+    binding.setLocalAwareness({ selectedCell: sel, editingCell: sel });
+  }, [isCollabActive]);
 
   // Stable editors object
   const editors = useMemo(() => ({ sheets: SheetsTextEditor }), []);

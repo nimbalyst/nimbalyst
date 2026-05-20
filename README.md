@@ -138,11 +138,13 @@ Major workspaces:
 - `packages/ios` — Native iOS app (SwiftUI)
 - `packages/electron` — Desktop application (Electron)
 - `packages/runtime` — Cross-platform runtime services (AI, sync, Lexical editor)
+- `packages/collab-protocol` — Wire-format types for the collaboration sync protocol (shared with the sync server)
 - `packages/extension-sdk` — Extension development kit
 - `packages/extensions` — Built-in extensions
-- `packages/collabv3` — Collaboration server (AGPL-3.0; see License below)
 
-For deeper architecture and contributor guidance, see [CLAUDE.md](./CLAUDE.md) and the docs under [`docs/`](./docs). For contribution rules, the DCO sign-off requirement, and the `packages/collabv3/` carve-out, see [CONTRIBUTING.md](./CONTRIBUTING.md).
+The collaboration sync server (talked to at `wss://sync.nimbalyst.com`) is a separate project.
+
+For deeper architecture and contributor guidance, see [CLAUDE.md](./CLAUDE.md) and the docs under [`docs/`](./docs). For contribution rules and the DCO sign-off requirement, see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Community
 
@@ -152,12 +154,11 @@ For deeper architecture and contributor guidance, see [CLAUDE.md](./CLAUDE.md) a
 
 ## License
 
-Nimbalyst is **dual-licensed**:
+This repository is licensed under the **MIT License** — see [LICENSE](./LICENSE).
 
-- The repository is licensed under the **MIT License** by default — see [LICENSE](./LICENSE).
-- The contents of [`packages/collabv3/`](./packages/collabv3/) (the multi-tenant collaboration server) are licensed under the **GNU Affero General Public License v3.0**, or, at your option, a separate commercial license from Nimbalyst Inc. — see [`packages/collabv3/LICENSE`](./packages/collabv3/LICENSE).
+The collaboration sync server (the Cloudflare Worker that powers `wss://sync.nimbalyst.com`) is a separate project. Clients in this repo talk to it over the wire protocol defined in [`packages/collab-protocol/`](./packages/collab-protocol/).
 
-For an explanation of the dual structure and contact information, see [LICENSING.md](./LICENSING.md).
+For licensing context and contact information, see [LICENSING.md](./LICENSING.md).
 
 ## Acknowledgments
 

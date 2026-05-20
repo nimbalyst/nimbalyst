@@ -68,6 +68,7 @@ import {
     runMigrations,
     getAppSetting,
     getClaudeCodeSettings,
+    isSettingsAgentToolsDisabled,
     store
 } from './utils/store';
 import { getAIProviderOverridesWithWorktreeFallback } from './utils/aiSettingsMerge';
@@ -84,6 +85,7 @@ import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesF
 import { cliManager, initEnhancedPath, getEnhancedPath, getShellEnvironment } from './services/CLIManager';
 import { registerWorkspaceWindow, registerExtensionTools, shutdownHttpServer, startMcpHttpServer, updateDocumentState } from './mcp/httpServer';
 import { startSessionContextServer, cleanupSessionContextServer, shutdownSessionContextServer } from './mcp/sessionContextServer';
+import { startSettingsServer, shutdownSettingsServer } from './mcp/settingsServer';
 import { generateMcpAuthToken, getMcpAuthToken } from './mcp/mcpAuth';
 import {
   registerNimAssetSchemeAsPrivileged,
@@ -1630,6 +1632,21 @@ app.whenReady().then(async () => {
     aiService = new AIService(runtimeSessionStore);
     markEnd('ai-service-init');
 
+    // Recovery sweep: any queued_prompts row that was 'executing' when the
+    // app shut down is now invisible to listPending and effectively stuck.
+    // Reset all such rows back to 'pending' so the queue auto-trigger /
+    // explicit triggerQueueProcessing can pick them up. Single broad sweep
+    // is simpler than per-session bookkeeping and is idempotent.
+    try {
+      const { getQueuedPromptsStore } = await import('./services/RepositoryManager');
+      const rolledBack = await getQueuedPromptsStore().rollbackAllExecuting();
+      if (rolledBack > 0) {
+        logger.main.info(`[Main] Boot sweep: rolled back ${rolledBack} stuck queued prompt(s) from previous run`);
+      }
+    } catch (rollbackErr) {
+      logger.main.error('[Main] Boot sweep rollbackAllExecuting failed:', rollbackErr);
+    }
+
     // Check for pending restart continuations and queue continuation prompts
     await checkForRestartContinuation(aiService);
 
@@ -1719,6 +1736,30 @@ app.whenReady().then(async () => {
         CopilotCLIProvider.setSessionContextServerPort(result.port);
     } catch (error) {
         logger.mcp.error('Failed to start session context MCP server:', error);
+    }
+
+    // Start settings control MCP server (lets agents inspect/change Nimbalyst settings).
+    // Port is injected into the standard providers; the meta-agent profile excludes
+    // this namespace via McpConfigService.
+    try {
+        const result = await startSettingsServer();
+        ClaudeCodeProvider.setSettingsServerPort(result.port);
+        OpenAICodexProvider.setSettingsServerPort(result.port);
+        OpenAICodexACPProvider.setSettingsServerPort(result.port);
+        OpenCodeProvider.setSettingsServerPort(result.port);
+        CopilotCLIProvider.setSettingsServerPort(result.port);
+
+        // Kill-switch loader: read fresh from the store on every config build
+        // so flipping `settingsAgentToolsDisabled` in Settings > Advanced takes
+        // effect on the next session start without an app restart.
+        const killSwitch = () => isSettingsAgentToolsDisabled();
+        ClaudeCodeProvider.setSettingsAgentToolsDisabledLoader(killSwitch);
+        OpenAICodexProvider.setSettingsAgentToolsDisabledLoader(killSwitch);
+        OpenAICodexACPProvider.setSettingsAgentToolsDisabledLoader(killSwitch);
+        OpenCodeProvider.setSettingsAgentToolsDisabledLoader(killSwitch);
+        CopilotCLIProvider.setSettingsAgentToolsDisabledLoader(killSwitch);
+    } catch (error) {
+        logger.mcp.error('Failed to start settings MCP server:', error);
     }
 
     try {
@@ -2469,6 +2510,21 @@ app.on('before-quit', async (event) => {
         console.log('[QUIT] Session context MCP server shutdown complete');
     } catch (error) {
         console.error('[QUIT] Error closing session context MCP server:', error);
+    }
+
+    try {
+        // Shutdown settings control MCP server
+        const shutdownPromise = shutdownSettingsServer();
+        const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 500));
+        await Promise.race([shutdownPromise, timeoutPromise]);
+        ClaudeCodeProvider.setSettingsServerPort(null);
+        OpenAICodexProvider.setSettingsServerPort(null);
+        OpenAICodexACPProvider.setSettingsServerPort(null);
+        OpenCodeProvider.setSettingsServerPort(null);
+        CopilotCLIProvider.setSettingsServerPort(null);
+        console.log('[QUIT] Settings MCP server shutdown complete');
+    } catch (error) {
+        console.error('[QUIT] Error closing settings MCP server:', error);
     }
 
     try {

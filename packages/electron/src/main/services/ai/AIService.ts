@@ -1228,7 +1228,14 @@ export class AIService {
 
       // Initialize mobile session control handler (cancel, question responses, etc.)
       // This is in a separate module to keep AIService focused
-      initMobileSessionControlHandler(syncProvider, findWindowByWorkspace);
+      initMobileSessionControlHandler(syncProvider, findWindowByWorkspace, {
+        triggerQueuedPromptProcessing: (sessionId, workspacePath) =>
+          this.triggerQueuedPromptProcessingForSession(sessionId, workspacePath),
+        rollbackExecutingPrompts: async (sessionId) => {
+          const { getQueuedPromptsStore } = await import('../RepositoryManager');
+          return getQueuedPromptsStore().rollbackExecuting(sessionId);
+        },
+      });
     } catch (error) {
       logger.main.error('[AIService] Failed to initialize mobile sync handler:', error);
     }
@@ -2529,6 +2536,21 @@ export class AIService {
           reason: 'user_cancel'
         });
 
+        // Defensive cleanup: if the in-flight turn was processing a queued
+        // prompt, drop the in-memory guard and reset any DB row stuck in
+        // 'executing' so the queue isn't permanently wedged after cancel.
+        this.sessionsProcessingQueue.delete(sessionId);
+        try {
+          const { getQueuedPromptsStore } = await import('../RepositoryManager');
+          const queueStore = getQueuedPromptsStore();
+          const rolledBack = await queueStore.rollbackExecuting(sessionId);
+          if (rolledBack > 0) {
+            logger.main.info(`[AIService] cancelRequest: rolled back ${rolledBack} executing prompt(s) for session ${sessionId}`);
+          }
+        } catch (rollbackErr) {
+          logger.main.error('[AIService] cancelRequest: rollbackExecuting failed:', rollbackErr);
+        }
+
         provider.abort();
         // console.log(`[AIService] Cancelled request for session ${sessionId}`);
         this.analytics.sendEvent('cancel_ai_request', {provider: providerType})
@@ -2538,10 +2560,17 @@ export class AIService {
       return { success: false, error: 'No active provider for session' };
     });
 
-    // Interrupt the current turn (graceful) so queued prompts are processed sooner.
-    // Unlike cancelRequest (abort), this uses the SDK's interrupt() which stops the
-    // current turn but keeps the session alive. The completion handler will fire
-    // normally and process the next queued prompt.
+    // Interrupt the current turn (graceful when possible) so queued prompts
+    // are processed sooner. Providers that support a true mid-stream interrupt
+    // (Claude Code) wrap up cleanly; others fall back to abort() via the
+    // BaseAIProvider default. Returns { method } so the renderer can
+    // distinguish the two paths.
+    //
+    // Defensive cleanup runs before the interrupt: clear the in-memory
+    // sessionsProcessingQueue guard and rollback any PGLite rows stuck in
+    // 'executing' so a hung abort can't permanently wedge the queue. The
+    // renderer follows up with an explicit ai:triggerQueueProcessing call,
+    // which is idempotent against the natural completion-handler path.
     safeHandle('ai:interruptCurrentTurn', async (_event, sessionId: string) => {
       if (!sessionId) {
         throw new Error('Session ID is required to interrupt');
@@ -2554,19 +2583,25 @@ export class AIService {
       }
 
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      if (provider && typeof (provider as any).interruptCurrentTurn === 'function') {
-        await (provider as any).interruptCurrentTurn();
-        logger.main.info(`[AIService] Interrupted current turn for session ${sessionId}`);
-        return { success: true };
+      if (!provider) {
+        return { success: false, error: 'No active provider for session' };
       }
 
-      // Fallback to abort for providers that don't support interrupt
-      if (provider) {
-        provider.abort();
-        return { success: true };
+      this.sessionsProcessingQueue.delete(sessionId);
+      try {
+        const { getQueuedPromptsStore } = await import('../RepositoryManager');
+        const queueStore = getQueuedPromptsStore();
+        const rolledBack = await queueStore.rollbackExecuting(sessionId);
+        if (rolledBack > 0) {
+          logger.main.info(`[AIService] interruptCurrentTurn: rolled back ${rolledBack} executing prompt(s) for session ${sessionId}`);
+        }
+      } catch (rollbackErr) {
+        logger.main.error('[AIService] interruptCurrentTurn: rollbackExecuting failed:', rollbackErr);
       }
 
-      return { success: false, error: 'No active provider for session' };
+      const result = await provider.interruptCurrentTurn();
+      logger.main.info(`[AIService] Interrupted current turn for session ${sessionId} (method=${result.method})`);
+      return { success: true, method: result.method };
     });
 
     // Settings handlers

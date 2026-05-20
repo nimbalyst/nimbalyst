@@ -10,7 +10,14 @@ import { useEffect, useRef, useCallback, useState, forwardRef } from 'react';
 import { Excalidraw, exportToBlob } from '@excalidraw/excalidraw';
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
 import type { ExcalidrawImperativeAPI, AppState, BinaryFiles } from '@excalidraw/excalidraw/types/types';
-import { useEditorLifecycle, type EditorHostProps } from '@nimbalyst/extension-sdk';
+import {
+  useEditorLifecycle,
+  useCollaborativeEditor,
+  type EditorHostProps,
+} from '@nimbalyst/extension-sdk';
+import * as Y from 'yjs';
+import { ExcalidrawBinding } from '../collab/excalidrawBindings';
+import { isExcalidrawYDocEmpty, seedExcalidrawYDoc } from '../collab/seed';
 import type { ExcalidrawFile } from '../types';
 
 // Default empty Excalidraw file
@@ -227,6 +234,54 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
     }
   }, [markDirty]);
 
+  // ---- Collaborative wiring (no-op when host.collaboration is undefined) ---
+  // The binding wraps the imperative Excalidraw API and routes local edits
+  // into the shared Y.Doc + remote Y.Doc changes back onto the canvas. The
+  // hook runs createBinding ONCE per host, after sync completes and after
+  // first-time seeding (if needed).
+  const excalidrawDomRef = useRef<HTMLDivElement | null>(null);
+  const bindingRef = useRef<ExcalidrawBinding | null>(null);
+  const { isCollaborative, status: collabStatus } = useCollaborativeEditor(host, {
+    isEmpty: isExcalidrawYDocEmpty,
+    initializeFromContent: seedExcalidrawYDoc,
+    createBinding: ({ yDoc, awareness }) => {
+      const api = excalidrawAPIRef.current;
+      if (!api) {
+        // Should not happen: Excalidraw's onMount callback fires synchronously
+        // and the SDK hook only invokes createBinding after sync completes,
+        // which is comfortably after the canvas has mounted. Guard anyway.
+        return { destroy: () => {} };
+      }
+      const undoManager = new Y.UndoManager(yDoc.getArray('elements'));
+      const binding = new ExcalidrawBinding(
+        yDoc.getArray('elements'),
+        yDoc.getMap('assets'),
+        api,
+        awareness,
+        excalidrawDomRef.current
+          ? { excalidrawDom: excalidrawDomRef.current, undoManager }
+          : undefined,
+      );
+      bindingRef.current = binding;
+      return {
+        destroy: () => {
+          binding.destroy();
+          undoManager.destroy();
+          bindingRef.current = null;
+        },
+      };
+    },
+  });
+  // Forward pointer updates to awareness when in collab mode. Excalidraw's
+  // onPointerUpdate fires very frequently; the binding internally throttles
+  // through y-protocols / DocumentSyncProvider (~2Hz).
+  const onPointerUpdate = useCallback(
+    (payload: Parameters<NonNullable<Parameters<typeof Excalidraw>[0]['onPointerUpdate']>>[0]) => {
+      bindingRef.current?.onPointerUpdate(payload);
+    },
+    [],
+  );
+
   // Create a wrapper around the Excalidraw API that adds screenshot export capability.
   // This keeps Excalidraw-specific export logic in the extension rather than the host.
   const createWrappedAPI = useCallback((api: ExcalidrawImperativeAPI) => {
@@ -285,10 +340,16 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
   // prop, so toggling it from the embed chrome flips toolbars on/off
   // without losing the canvas state.
   return (
-    <div className="excalidraw-editor w-full h-full" data-theme={theme}>
+    <div
+      className="excalidraw-editor w-full h-full"
+      data-theme={theme}
+      ref={excalidrawDomRef}
+      data-collab-status={isCollaborative ? collabStatus : undefined}
+    >
       <Excalidraw
         key={theme}
         onChange={onChange}
+        onPointerUpdate={isCollaborative ? onPointerUpdate : undefined}
         excalidrawAPI={(api: any) => {
           excalidrawAPIRef.current = api;
           if (api) host.registerEditorAPI(createWrappedAPI(api));

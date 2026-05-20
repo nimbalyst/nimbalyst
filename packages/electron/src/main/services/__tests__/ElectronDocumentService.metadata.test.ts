@@ -2,6 +2,26 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+
+// ElectronDocumentService transitively imports TrackerSyncManager, which pulls
+// in the database initializer and the workspace watcher chain. Those modules
+// touch Electron's `app` global at module load (auto-updater singleton,
+// `app.on('before-quit')`, `app.isPackaged`) which is undefined in vitest's
+// node environment. Mock the upstream modules so the import chain evaluates
+// cleanly -- matches the pattern used in the sibling inlineIdentity and
+// trackerSync tests.
+vi.mock('../../database/PGLiteDatabaseWorker', () => ({
+  database: {
+    query: vi.fn(),
+  },
+}));
+
+vi.mock('../TrackerSyncManager', () => ({
+  syncTrackerItem: vi.fn(),
+  unsyncTrackerItem: vi.fn(),
+  isTrackerSyncActive: vi.fn(() => false),
+}));
+
 import { ElectronDocumentService } from '../ElectronDocumentService';
 import type { MetadataChangeEvent } from '@nimbalyst/runtime';
 

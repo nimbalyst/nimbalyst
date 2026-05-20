@@ -97,6 +97,7 @@ export function registerDocumentSyncHandlers(): void {
     workspacePath: string;
     documentId: string;
     title?: string;
+    documentType?: string;
   }) => {
     if (!isAuthenticated()) {
       return { success: false, error: 'Not authenticated. Sign in first.' };
@@ -204,6 +205,7 @@ export function registerDocumentSyncHandlers(): void {
         orgId,
         documentId: payload.documentId,
         title: payload.title || payload.documentId,
+        documentType: payload.documentType,
         orgKeyBase64,
         orgKeyFingerprint: orgKeyFp,
         serverUrl,
@@ -591,6 +593,7 @@ export function registerDocumentSyncHandlers(): void {
 
     const rawBytes = await crypto.subtle.exportKey('raw', encryptionKey);
     const orgKeyBase64 = Buffer.from(rawBytes).toString('base64');
+    const orgKeyFingerprint = await getOrgKeyFingerprint(orgId);
     const serverUrl = getSyncWsUrl();
 
     // logger.main.info('[DocumentSyncHandlers] Resolved doc index config', { orgId, serverUrl, userId });
@@ -600,6 +603,7 @@ export function registerDocumentSyncHandlers(): void {
       config: {
         orgId,
         orgKeyBase64,
+        orgKeyFingerprint,
         serverUrl,
         userId,
         userName: getUserDisplayName(userId),

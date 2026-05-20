@@ -36,7 +36,21 @@ import * as lexicalMarkdown from '@lexical/markdown';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 // Import screenshot service and document path context from runtime
-import { screenshotService, useDocumentPath, useEditorLifecycle } from '@nimbalyst/runtime';
+import {
+  screenshotService,
+  useDocumentPath,
+  useEditorLifecycle,
+  useCollaborativeEditor,
+  COLLAB_INIT_ORIGIN,
+} from '@nimbalyst/runtime';
+
+// yJS singletons shared with extensions: the host's Y.Doc passes by reference
+// across the EditorHost.collaboration surface, so `instanceof Y.Doc` checks
+// must succeed across the host/extension boundary -- only one yjs instance
+// allowed at runtime, same constraint as React. Imported as namespaces to
+// suppress tree-shaking in production.
+import * as Y from 'yjs';
+import * as yProtocolsAwareness from 'y-protocols/awareness';
 
 // Import editor components for sharing with extensions
 // MonacoEditor is self-contained; MarkdownEditor uses a configured wrapper
@@ -135,6 +149,11 @@ ${exportNames.map((name) => `export const ${name} = __mod?.${name};`).join('\n')
 
     imports['pdfjs-dist'] = createModuleUrl('pdfjs-dist', deps['pdfjs-dist']);
     imports['virtua'] = createModuleUrl('virtua', deps.virtua);
+    imports['yjs'] = createModuleUrl('yjs', deps.yjs);
+    imports['y-protocols/awareness'] = createModuleUrl(
+      'y-protocols/awareness',
+      deps['y-protocols/awareness'],
+    );
 
     imports['@nimbalyst/editor-context'] = createModuleUrl(
       '@nimbalyst/editor-context',
@@ -424,6 +443,11 @@ CHECK:
       // These are accessed directly from __nimbalyst_extensions rather than ES imports
       'pdfjs-dist': pdfjsLib,
       virtua: virtua,
+      // yJS - shared instance required so Y.Doc identity matches across the
+      // host/extension boundary for collaborative editors. y-protocols/awareness
+      // is a submodule export so it gets its own import-map entry below.
+      yjs: Y,
+      'y-protocols/awareness': yProtocolsAwareness,
       // Document path context for extensions
       '@nimbalyst/editor-context': { useDocumentPath },
       // Runtime UI components
@@ -443,6 +467,8 @@ CHECK:
         MaterialSymbol,
         useDocumentPath,
         useEditorLifecycle,
+        useCollaborativeEditor,
+        COLLAB_INIT_ORIGIN,
         // Editor components - extensions can use these instead of bundling their own
         // MarkdownEditor is the configured wrapper with platform features (image handling, toolbar)
         MarkdownEditor: NimbalystMarkdownEditor,

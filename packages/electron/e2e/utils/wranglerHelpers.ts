@@ -8,9 +8,39 @@
  */
 
 import { spawn, execSync, type ChildProcess } from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 
 const READY_TIMEOUT = 20_000;
+
+/**
+ * Path to the collabv3 server package the helper should `wrangler dev` against.
+ *
+ * The collab server lives in a separate sibling repo (`nimbalyst-collab`).
+ * The default assumes both repos are checked out as siblings:
+ * `~/sources/stravu-editor` and `~/sources/nimbalyst-collab`.
+ *
+ * Override with `COLLAB_SERVER_PATH=/abs/or/relative/path/to/collabv3` when
+ * running the gated `RUN_COLLAB_TESTS=1` specs from a different checkout.
+ * The path is resolved relative to the public repo root.
+ */
+function resolveCollabDir(): string {
+  // __dirname = packages/electron/e2e/utils  ->  4 levels up = repo root
+  const repoRoot = path.resolve(__dirname, '..', '..', '..', '..');
+  const override = process.env.COLLAB_SERVER_PATH;
+  const target = override
+    ? path.resolve(repoRoot, override)
+    : path.resolve(repoRoot, '..', 'nimbalyst-collab', 'packages', 'collabv3');
+
+  if (!fs.existsSync(path.join(target, 'wrangler.toml'))) {
+    throw new Error(
+      `[wranglerHelpers] Collab server not found at ${target}.\n` +
+        `Set COLLAB_SERVER_PATH to point at your nimbalyst-collab/packages/collabv3 checkout, ` +
+        `or skip these tests by unsetting RUN_COLLAB_TESTS.`,
+    );
+  }
+  return target;
+}
 
 let wranglerProcess: ChildProcess | null = null;
 let activePort: number | null = null;
@@ -23,8 +53,7 @@ let activePort: number | null = null;
 export async function startWrangler(port: number): Promise<void> {
   if (wranglerProcess) return;
 
-  // Resolve collabv3 package dir: e2e/utils -> e2e -> electron -> packages -> collabv3
-  const collabDir = path.resolve(__dirname, '..', '..', '..', 'collabv3');
+  const collabDir = resolveCollabDir();
 
   // Apply D1 migrations before starting the dev server
   execSync('npx wrangler d1 migrations apply nimbalyst-collabv3 --local', {

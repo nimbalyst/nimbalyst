@@ -170,6 +170,35 @@ async function copyDirectory(src: string, dest: string): Promise<void> {
   }
 }
 
+interface ParsedManifest {
+  id?: string;
+  name?: string;
+  version?: string;
+  main?: string;
+  contributions?: Record<string, unknown>;
+}
+
+// Mirrors onlyThemes / onlyClaudePlugin validation in ExtensionLoader.ts: these
+// extension shapes have no JS to run, so a dist/ directory is not required.
+function isManifestOnlyExtension(manifest: ParsedManifest): boolean {
+  const c = manifest.contributions;
+  if (!c) return false;
+
+  const onlyClaudePlugin = c.claudePlugin &&
+    !c.customEditors && !c.documentHeaders && !c.aiTools && !c.slashCommands &&
+    !c.nodes && !c.transformers && !c.hostComponents && !c.panels &&
+    !c.settingsPanel && !c.newFileMenu && !c.configuration && !c.themes;
+
+  const onlyThemes = c.themes &&
+    !c.claudePlugin && !c.customEditors && !c.documentHeaders && !c.aiTools &&
+    !c.slashCommands && !c.nodes && !c.transformers && !c.hostComponents &&
+    !c.panels && !c.settingsPanel && !c.newFileMenu && !c.configuration;
+
+  const noMain = typeof manifest.main !== 'string' || !manifest.main;
+
+  return Boolean((onlyClaudePlugin || onlyThemes) && noMain);
+}
+
 /**
  * Download a file using Electron's net module.
  * Returns the path to the downloaded temp file.
@@ -341,7 +370,7 @@ async function installFromGitHub(githubUrl: string): Promise<InstallResult> {
       return { success: false, error: 'No manifest.json found in repository. Is this a Nimbalyst extension?' };
     }
 
-    let manifest: { id?: string; name?: string; version?: string };
+    let manifest: ParsedManifest;
     try {
       manifest = JSON.parse(manifestContent);
     } catch {
@@ -367,36 +396,40 @@ async function installFromGitHub(githubUrl: string): Promise<InstallResult> {
     // Copy to extensions directory (excluding .git and node_modules)
     await copyDirectory(sourceDir, installPath);
 
-    // Check if there's a dist/ directory; if not, surface the error to the
-    // user rather than silently registering an extension that cannot load.
-    // Auto-building is intentionally deferred (slow, error-prone, runs
-    // arbitrary npm scripts), so we ask the user to build locally first.
-    const distPath = path.join(installPath, 'dist');
-    try {
-      await fs.access(distPath);
-    } catch {
-      const pkgJsonPath = path.join(installPath, 'package.json');
-      let hasPkgJson = false;
+    // Theme-only / claudePlugin-only extensions have no JS to run, so dist/
+    // is not required. Mirrors onlyThemes / onlyClaudePlugin in ExtensionLoader.ts.
+    if (!isManifestOnlyExtension(manifest)) {
+      // Check if there's a dist/ directory; if not, surface the error to the
+      // user rather than silently registering an extension that cannot load.
+      // Auto-building is intentionally deferred (slow, error-prone, runs
+      // arbitrary npm scripts), so we ask the user to build locally first.
+      const distPath = path.join(installPath, 'dist');
       try {
-        await fs.access(pkgJsonPath);
-        hasPkgJson = true;
+        await fs.access(distPath);
       } catch {
-        // No package.json either - extension might be pre-built or malformed
-      }
+        const pkgJsonPath = path.join(installPath, 'package.json');
+        let hasPkgJson = false;
+        try {
+          await fs.access(pkgJsonPath);
+          hasPkgJson = true;
+        } catch {
+          // No package.json either - extension might be pre-built or malformed
+        }
 
-      // Clean up the partially-installed extension directory so the user
-      // can retry from a fresh state.
-      try {
-        await fs.rm(installPath, { recursive: true, force: true });
-      } catch (cleanupErr) {
-        logger.main.warn(`[ExtMarketplace] Failed to clean up ${installPath} after dist/ check:`, cleanupErr);
-      }
+        // Clean up the partially-installed extension directory so the user
+        // can retry from a fresh state.
+        try {
+          await fs.rm(installPath, { recursive: true, force: true });
+        } catch (cleanupErr) {
+          logger.main.warn(`[ExtMarketplace] Failed to clean up ${installPath} after dist/ check:`, cleanupErr);
+        }
 
-      const message = hasPkgJson
-        ? `Extension repository does not include a built dist/ directory. Clone the repo locally, run "npm install && npm run build", and install from the local folder.`
-        : `Extension repository does not include a dist/ directory or a package.json. The repo may be malformed or built artifacts may not be committed.`;
-      logger.main.info(`[ExtMarketplace] Aborting install of ${extensionId} from GitHub: ${message}`);
-      return { success: false, error: message };
+        const message = hasPkgJson
+          ? `Extension repository does not include a built dist/ directory. Clone the repo locally, run "npm install && npm run build", and install from the local folder.`
+          : `Extension repository does not include a dist/ directory or a package.json. The repo may be malformed or built artifacts may not be committed.`;
+        logger.main.info(`[ExtMarketplace] Aborting install of ${extensionId} from GitHub: ${message}`);
+        return { success: false, error: message };
+      }
     }
 
     // Track the install

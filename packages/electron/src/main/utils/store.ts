@@ -122,6 +122,9 @@ interface AppStoreSchema {
   };
   // Extension Development Kit (EDK) - enables MCP tools for building/reloading extensions
   extensionDevToolsEnabled?: boolean;
+  // Kill-switch for the `nimbalyst-settings` MCP server that lets agents change Nimbalyst
+  // settings. Default false (MCP enabled). Set true from Settings > Advanced to disable.
+  settingsAgentToolsDisabled?: boolean;
   // Share encryption keys: maps sessionId -> base64 AES-256 key (for re-sharing with stable URLs)
   shareKeys?: Record<string, string>;
   // Share expiration preference: number of days (1, 7, 30). Max 30 days.
@@ -1599,6 +1602,17 @@ export function isExtensionDevToolsEnabled(): boolean {
 
 export function setExtensionDevToolsEnabled(enabled: boolean): void {
   getAppStore().set('extensionDevToolsEnabled', enabled);
+}
+
+// Settings Control MCP kill-switch. The MCP is on by default; flipping this
+// to true makes McpConfigService omit `nimbalyst-settings` from the agent's
+// MCP config.
+export function isSettingsAgentToolsDisabled(): boolean {
+  return getAppStore().get('settingsAgentToolsDisabled', false);
+}
+
+export function setSettingsAgentToolsDisabled(disabled: boolean): void {
+  getAppStore().set('settingsAgentToolsDisabled', disabled);
 }
 
 export function getExtensionConfiguration(extensionId: string): Record<string, unknown> {

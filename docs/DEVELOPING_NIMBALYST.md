@@ -68,7 +68,12 @@ The main gotcha is that **PGLite has to be isolated per Electron instance**:
 - The default test helpers use a temp test database.
 - If a test needs multiple Electron apps or custom state, give each instance its own `NIMBALYST_USER_DATA_PATH` and set `preserveTestDatabase: true`.
 
-`packages/electron/e2e/tracker/tracker-sync-collab.spec.ts` is the reference pattern for this.
+Two-Electron sync E2E coverage is being rebuilt against the new
+`TrackerSyncEngine` (phase 3 of the tracker sync redesign); see
+`design/Collaboration/tracker-sync-redesign.md`. The runtime-level
+contract is covered today by
+`packages/runtime/src/sync/__tests__/TrackerSyncEngine.integration.test.ts`,
+which runs two clients against an in-memory `FakeTrackerRoom`.
 
 ## Easy Things to Forget
 

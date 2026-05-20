@@ -112,6 +112,30 @@ const AWARENESS_THROTTLE_MS = 500;
 const AWARENESS_STALE_TIMEOUT_MS = 30_000;
 
 /**
+ * Compaction thresholds.
+ *
+ * The server stores every encrypted Yjs update forever unless a client sends
+ * `docCompact`. Without compaction, initial sync downloads the full update
+ * history every time, so heavy docs (and any non-markdown collab doc that
+ * generates many small ops, e.g. Excalidraw drags) become slow to open.
+ *
+ * Triggers (whichever fires first while we are the elector):
+ *   1. >= COMPACTION_UPDATE_THRESHOLD updates since last snapshot
+ *   2. >= COMPACTION_TIME_MIN_UPDATES updates AND
+ *      >= COMPACTION_TIME_THRESHOLD_MS since last attempt
+ *
+ * Election: lowest userId (string compare) among the local user and all remote
+ * users we currently see in awareness. If a remote client hasn't broadcast
+ * awareness yet, we may briefly think we are elector when we aren't -- the
+ * server accepts the second snapshot harmlessly (older snapshot row is
+ * dropped by `DELETE FROM snapshots WHERE replaces_up_to < ?`).
+ */
+const COMPACTION_UPDATE_THRESHOLD = 200;
+const COMPACTION_TIME_THRESHOLD_MS = 5 * 60 * 1000;
+const COMPACTION_TIME_MIN_UPDATES = 20;
+const COMPACTION_CHECK_INTERVAL_MS = 60 * 1000;
+
+/**
  * A buffered remote update: the raw Yjs update bytes plus metadata.
  * Used by the review gate to track which remote changes are unreviewed.
  */
@@ -168,6 +192,16 @@ export class DocumentSyncProvider {
   private static readonly RECONNECT_BASE_MS = 1000;
   private static readonly RECONNECT_MAX_MS = 30_000;
   private static readonly REPLAY_ACK_TIMEOUT_MS = 10_000;
+
+  // Compaction state
+  /**
+   * Server sequence covered by the latest snapshot we know about. Updated
+   * when (a) we apply a server snapshot during sync, and (b) we send our
+   * own `docCompact`. Used to compute how many updates have accumulated.
+   */
+  private lastSnapshotSeq = 0;
+  private lastCompactionAttemptAt = 0;
+  private compactionTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: DocumentSyncConfig) {
     this.config = config;
@@ -280,6 +314,7 @@ export class DocumentSyncProvider {
     this.requeueInflightPendingUpdate();
     this.stopAwarenessCleanup();
     this.clearAwarenessThrottle();
+    this.stopCompactionTimer();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -607,6 +642,7 @@ export class DocumentSyncProvider {
         }
       }
       this.lastSeq = Math.max(this.lastSeq, msg.snapshot.replacesUpTo);
+      this.lastSnapshotSeq = Math.max(this.lastSnapshotSeq, msg.snapshot.replacesUpTo);
     }
 
     // Apply incremental updates, per-update tolerant of decryption failures.
@@ -663,6 +699,8 @@ export class DocumentSyncProvider {
         // a previous connection failed before the update could be sent.
         await this.pushLocalState(msg);
       }
+
+      this.startCompactionTimer();
     }
 
   }
@@ -939,6 +977,7 @@ export class DocumentSyncProvider {
     this.requeueInflightPendingUpdate();
     this.stopAwarenessCleanup();
     this.clearAwarenessThrottle();
+    this.stopCompactionTimer();
     // Clear awareness states on disconnect
     this.awarenessStates.clear();
     this.awarenessTimestamps.clear();
@@ -1152,6 +1191,97 @@ export class DocumentSyncProvider {
 
   private notifyReviewStateChange(): void {
     this.config.onReviewStateChange?.(this.getReviewGateState());
+  }
+
+  // --------------------------------------------------------------------------
+  // Compaction
+  // --------------------------------------------------------------------------
+
+  private startCompactionTimer(): void {
+    if (this.compactionTimer) return;
+    // First eligibility window doesn't fire immediately -- give awareness from
+    // other clients time to flow so the election picks a stable elector.
+    this.lastCompactionAttemptAt = Date.now();
+    this.compactionTimer = setInterval(() => {
+      void this.maybeCompact();
+    }, COMPACTION_CHECK_INTERVAL_MS);
+  }
+
+  private stopCompactionTimer(): void {
+    if (this.compactionTimer) {
+      clearInterval(this.compactionTimer);
+      this.compactionTimer = null;
+    }
+  }
+
+  /**
+   * Lowest userId wins. Awareness misses (a connected user who hasn't sent
+   * awareness yet) can briefly cause both candidates to elect themselves;
+   * the server tolerates duplicate snapshots (older row is dropped by
+   * `DELETE FROM snapshots WHERE replaces_up_to < ?`).
+   */
+  private amCompactionElector(): boolean {
+    let lowest = this.config.userId;
+    for (const remoteUserId of this.awarenessStates.keys()) {
+      if (remoteUserId < lowest) lowest = remoteUserId;
+    }
+    return lowest === this.config.userId;
+  }
+
+  private async maybeCompact(): Promise<void> {
+    if (this.destroyed) return;
+    if (!this.synced) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    // Skip while we have unacked local writes -- otherwise the snapshot would
+    // include local state beyond `replacesUpTo`, and that state would also
+    // appear in the subsequent update once acked, doubling the payload (benign
+    // for CRDTs but wasteful).
+    if (this.queuedPendingUpdate || this.inflightPendingUpdate) return;
+    if (this.replayingClientUpdateId) return;
+
+    const updatesSinceSnapshot = this.lastSeq - this.lastSnapshotSeq;
+    if (updatesSinceSnapshot <= 0) return;
+
+    const now = Date.now();
+    const timeSinceLastAttempt = now - this.lastCompactionAttemptAt;
+    const updateThresholdReached =
+      updatesSinceSnapshot >= COMPACTION_UPDATE_THRESHOLD;
+    const timeThresholdReached =
+      updatesSinceSnapshot >= COMPACTION_TIME_MIN_UPDATES &&
+      timeSinceLastAttempt >= COMPACTION_TIME_THRESHOLD_MS;
+
+    if (!updateThresholdReached && !timeThresholdReached) return;
+
+    if (!this.amCompactionElector()) return;
+
+    await this.sendCompactionSnapshot();
+  }
+
+  private async sendCompactionSnapshot(): Promise<void> {
+    const currentSeq = this.lastSeq;
+    const stateBytes = Y.encodeStateAsUpdate(this.ydoc);
+
+    try {
+      const { encrypted, iv } = await encryptBinary(
+        stateBytes,
+        this.config.documentKey
+      );
+      this.send({
+        type: 'docCompact',
+        encryptedState: encrypted,
+        iv,
+        replacesUpTo: currentSeq,
+        orgKeyFingerprint: this.config.orgKeyFingerprint,
+      });
+      this.lastSnapshotSeq = currentSeq;
+      this.lastCompactionAttemptAt = Date.now();
+      console.log(
+        `[DocumentSync] Sent docCompact: replacesUpTo=${currentSeq}, snapshotBytes=${stateBytes.byteLength}`
+      );
+    } catch (err) {
+      // Optimistic: leave lastSnapshotSeq untouched so the next check retries.
+      console.warn('[DocumentSync] Failed to send compaction snapshot:', err);
+    }
   }
 }
 

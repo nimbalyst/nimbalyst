@@ -1,9 +1,24 @@
 /**
  * CollaborativeTabEditor
  *
- * A tab editor for collaborative documents backed by DocumentSyncProvider.
- * Much simpler than TabEditor -- no autosave, no file watcher, no history
- * snapshots, no conflict dialog. Content syncs via Y.Doc over WebSocket.
+ * Tab shell for collaborative documents backed by DocumentSyncProvider.
+ * No autosave, no file watcher, no history snapshots, no conflict dialog --
+ * content syncs via Y.Doc over the encrypted WebSocket.
+ *
+ * The shell owns the DocumentSyncProvider lifecycle (creation, destruction,
+ * key-rotation re-resolve, asset service, status/awareness atom wiring) and
+ * dispatches to a branch component based on the document's logical type:
+ *
+ *   - 'markdown'  -> MarkdownCollabBranch: Lexical + CollabLexicalProvider +
+ *                    LexicalDiffHeaderAdapter. The legacy code path; stays
+ *                    special-cased and is not migrated onto the SDK hook.
+ *   - 'excalidraw' / 'mindmap' / etc.
+ *                 -> ExtensionCollabBranch: looks up the custom editor
+ *                    registration whose manifest declares
+ *                    `collaboration.supported: true`, builds an EditorHost
+ *                    with `host.collaboration` populated, and renders the
+ *                    extension component. The extension uses the SDK's
+ *                    `useCollaborativeEditor` hook to wire its binding.
  *
  * State management:
  * - Connection status uses a Jotai atom family (keyed by filePath) so status
@@ -12,7 +27,7 @@
  * - Awareness uses a Jotai atom family so only the avatar component re-renders
  *   when remote users join/leave/move cursors.
  * - Provider readiness uses a ref + one-time state flip (false -> true) that
- *   gates the initial MarkdownEditor mount. After that, no more re-renders.
+ *   gates the initial editor mount. After that, no more re-renders.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -22,7 +37,6 @@ import { LexicalDiffHeaderAdapter } from '../UnifiedDiffHeader';
 import { DocumentSyncProvider } from '@nimbalyst/runtime/sync';
 import { CollabLexicalProvider } from '@nimbalyst/runtime/sync';
 import type { EditorHost, ExtensionStorage } from '@nimbalyst/runtime';
-import type { DocumentSyncStatus } from '@nimbalyst/runtime/sync';
 import type { CollabDocumentConfig } from '../../utils/collabDocumentOpener';
 import { resolveCollabConfigForUri } from '../../utils/collabDocumentOpener';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
@@ -37,6 +51,14 @@ import {
 } from '../../store/atoms/collabEditor';
 import { documentSyncRegistry } from '../../store/atoms/documentSyncRegistry';
 import { CollabAssetService } from '../../services/CollabAssetService';
+import { customEditorRegistry } from '../CustomEditors';
+import type { CustomEditorRegistration } from '../CustomEditors/types';
+import {
+  createCollaborationContext,
+  createCollabExtensionHost,
+  createExtensionAwarenessBridge,
+  notifyCollabStatus,
+} from './collabExtensionHost';
 
 interface CollaborativeTabEditorProps {
   /** The collab:// URI for this document */
@@ -236,8 +258,14 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         if (isActiveRef.current && window.electronAPI?.setDocumentEdited) {
           window.electronAPI.setDocumentEdited(hasCollabUnsyncedChanges(status));
         }
-        // Forward to CollabLexicalProvider
+        // Forward to CollabLexicalProvider (markdown path) and to any SDK
+        // subscribers registered via host.collaboration.onStatusChange
+        // (extension path). Both fan-outs are no-ops when the corresponding
+        // branch isn't active.
         collabProviderRef.current?.handleStatusChange(status);
+        if (syncProviderRef.current) {
+          notifyCollabStatus(syncProviderRef.current, status);
+        }
       },
       initialPendingUpdateBase64: activeConfig.pendingUpdateBase64,
       onPendingUpdateChange: async (pendingUpdateBase64) => {
@@ -431,6 +459,22 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     };
   }, [activeConfig]);
 
+  // ---- Branch selection ---------------------------------------------------
+  const documentType = activeConfig.documentType ?? 'markdown';
+  const extensionRegistration: CustomEditorRegistration | null = useMemo(() => {
+    if (documentType === 'markdown') return null;
+    // Look up by the share filename, which carries the extension (e.g.
+    // `MyDrawing.excalidraw`). Falls back to `<title>.<documentType>` so
+    // recipients of a doc shared with a bare title still get routed to
+    // the right editor.
+    const lookupName =
+      fileName.includes('.') ? fileName : `${activeConfig.title}.${documentType}`;
+    const match = customEditorRegistry.findRegistrationForFile(lookupName);
+    if (!match) return null;
+    if (!match.collaboration?.supported) return null;
+    return match;
+  }, [documentType, fileName, activeConfig.title]);
+
   return (
     <div className="collaborative-tab-editor" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Connection status bar -- subscribes to Jotai atom, isolated re-renders */}
@@ -438,7 +482,11 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
 
       {/* Editor area */}
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        {providerReadyRef.current ? (
+        {!providerReadyRef.current ? (
+          <div className="flex items-center justify-center h-full text-nim-muted">
+            Connecting to document...
+          </div>
+        ) : documentType === 'markdown' ? (
           <DocumentPathProvider documentPath={filePath}>
             {/* Accept/reject bar when an AI edit is pending review. Mirrors
                 the TabEditor markdown branch. */}
@@ -457,12 +505,102 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
               />
             </div>
           </DocumentPathProvider>
+        ) : extensionRegistration && syncProviderRef.current ? (
+          <ExtensionCollabBranch
+            registration={extensionRegistration}
+            syncProvider={syncProviderRef.current}
+            filePath={filePath}
+            fileName={fileName}
+            isActive={isActive}
+            activeConfig={activeConfig}
+            onDirtyChange={onDirtyChange}
+          />
         ) : (
           <div className="flex items-center justify-center h-full text-nim-muted">
-            Connecting to document...
+            No editor available for document type: {documentType}
           </div>
         )}
       </div>
     </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Extension branch (Excalidraw, Mindmap, etc.)
+// ---------------------------------------------------------------------------
+
+interface ExtensionCollabBranchProps {
+  registration: CustomEditorRegistration;
+  syncProvider: DocumentSyncProvider;
+  filePath: string;
+  fileName: string;
+  isActive: boolean;
+  activeConfig: CollabDocumentConfig;
+  onDirtyChange?: (isDirty: boolean) => void;
+}
+
+const ExtensionCollabBranch: React.FC<ExtensionCollabBranchProps> = ({
+  registration,
+  syncProvider,
+  filePath,
+  fileName,
+  isActive,
+  activeConfig,
+  onDirtyChange,
+}) => {
+  // Build the y-protocols Awareness + DocumentSync bridge.
+  // Created once per provider instance; recreated when activeConfig changes
+  // (which already recreates the syncProvider above).
+  const bridgeRef = useRef<ReturnType<typeof createExtensionAwarenessBridge> | null>(null);
+  if (!bridgeRef.current) {
+    bridgeRef.current = createExtensionAwarenessBridge({
+      syncProvider,
+      yDoc: syncProvider.getYDoc(),
+      user: {
+        id: activeConfig.userId,
+        name: activeConfig.userName ?? activeConfig.userId,
+        color: '#3A8FD6',
+      },
+    });
+  }
+  useEffect(() => {
+    return () => {
+      bridgeRef.current?.destroy();
+      bridgeRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const collaboration = useMemo(
+    () =>
+      createCollaborationContext({
+        syncProvider,
+        awareness: bridgeRef.current!.awareness,
+        activeConfig,
+      }),
+    [syncProvider, activeConfig]
+  );
+
+  const host = useMemo(
+    () =>
+      createCollabExtensionHost({
+        filePath,
+        fileName,
+        isActive,
+        workspaceId: activeConfig.workspacePath,
+        activeConfig,
+        collaboration,
+        onDirtyChange,
+      }),
+    [filePath, fileName, isActive, activeConfig, collaboration, onDirtyChange]
+  );
+
+  const ExtensionEditor = registration.component;
+  return (
+    <DocumentPathProvider documentPath={filePath}>
+      <div style={{ flex: 1, overflow: 'hidden' }}>
+        <ExtensionEditor host={host} />
+      </div>
+    </DocumentPathProvider>
   );
 };

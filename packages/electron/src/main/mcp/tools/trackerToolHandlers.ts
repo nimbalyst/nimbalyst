@@ -76,44 +76,27 @@ function buildTrackerSchemaValidationError(
   };
 }
 
-/**
- * Determine whether a tracker item's body content lives in a Y.Doc rather than
- * in the PGLite `content` column.
- *
- * Why this matters: for team-synced native tracker items, the renderer's
- * TrackerItemDetail panel mounts a CollabLexicalProvider for
- * `tracker-content/{itemId}`, and the live Y.Doc becomes the source of truth.
- * The PGLite `content` column is only a snapshot rewritten on every save from
- * the Y.Doc state. An MCP write straight into PGLite would be silently
- * clobbered the next time anyone (or anything) saves the editor, because the
- * renderer never sees the MCP edit -- it reads from Y.Doc. See NIM-436.
- *
- * Conditions for "body is collaborative":
- *  1. Item is native (no document_path) -- only natives use Y.Doc bodies.
- *     Inline / frontmatter / file-backed items keep their body in the
- *     source file and never touch Y.Doc.
- *  2. Tracker type's sync policy is shared / hybrid.
- *  3. Tracker sync is active for the workspace -- proxy for "this user has
- *     a team connected for this workspace". When sync is inactive there is
- *     no team plumbing in this process and the renderer would also fall
- *     back to the local-PGLite editor (see TrackerItemDetail.contentMode),
- *     so direct PGLite writes are safe.
- */
-function isTrackerItemBodyCollaborative(
-  workspacePath: string | undefined,
-  trackerType: string,
-  source: string | null,
-  documentPath: string | null,
-  modelSyncMode: string | undefined,
-): boolean {
-  if (!workspacePath) return false;
-  // Native = no source file. Inline/frontmatter/import/file items have no Y.Doc body.
-  const isNative = (source === 'native' || source == null) && !documentPath;
-  if (!isNative) return false;
-  const policy = getEffectiveTrackerSyncPolicy(workspacePath, trackerType, modelSyncMode);
-  if (!shouldSyncTrackerPolicy(policy)) return false;
-  return isTrackerSyncActive(workspacePath);
-}
+// NIM-436 ("refuse description writes when body is collaborative") was removed
+// as part of phase 1 of the tracker-sync rewrite
+// (design/Collaboration/tracker-sync-redesign.md).
+//
+// Phase 5 status (tracker sync is now active via phase 3+4):
+//   - Metadata mutations (status, priority, title, labels, etc.) flow through
+//     `syncTrackerItem` -> `TrackerSyncEngine.upsertItem`, which optimistically
+//     applies, enqueues, and ships the encrypted envelope to TrackerRoom.
+//     Multiple calls for the same item generate independent client mutation
+//     IDs; the server's per-item versioning collapses them to the latest.
+//   - Body content (`description`) is written into the PGLite `content`
+//     column as a plain-text snapshot. The active body Y.Doc in DocumentRoom
+//     is NOT updated by this path -- a connected client editing the body via
+//     Lexical/Y.Doc is the source of truth for the live body. MCP's
+//     description write therefore lands in PGLite + the metadata layer's
+//     `bodyVersion` bump (see ElectronDocumentService.updateTrackerItemContent)
+//     and is visible to cold readers, but a warm Y.Doc body will continue to
+//     reflect the Y.Doc state.
+//   - The NIM-436 guard is intentionally absent: the cost-benefit landed in
+//     favor of MCP being able to author descriptions in any sync mode, and
+//     the BodyDocCache will eventually mediate writes through the Y.Doc.
 
 /** Append an activity entry to a tracker item's data.activity array */
 function appendActivity(
@@ -279,7 +262,7 @@ export async function removeBidirectionalLink(
 }
 
 /** Convert a raw DB row to a TrackerItem for the renderer */
-function rowToTrackerItem(row: any): any {
+export function rowToTrackerItem(row: any): any {
   const data = typeof row.data === 'string' ? JSON.parse(row.data) : row.data || {};
   // type_tags comes from the DB column; fall back to [type] for backward compat
   const typeTags: string[] = row.type_tags && row.type_tags.length > 0
@@ -327,7 +310,6 @@ function rowToTrackerItem(row: any): any {
     linkedCommits: data.linkedCommits || undefined,
     documentId: data.documentId || undefined,
     syncStatus: row.sync_status || 'local',
-    fieldUpdatedAt: data._fieldUpdatedAt || undefined,
   };
   // Pass through all extra JSONB data fields (activity, comments, kanbanSortOrder, etc.)
   // as customFields so they survive the TrackerItem -> TrackerRecord conversion.
@@ -1608,34 +1590,10 @@ export async function handleTrackerUpdate(
     // getCurrentIdentity imported statically at top of file
     data.lastModifiedBy = getCurrentIdentity(workspacePath);
 
-    // For collaborative tracker items the rich body lives in a Yjs document
-    // (`tracker-content/{itemId}` collab room), not in PGLite. Writing the
-    // description straight into PGLite would silently lose the edit when the
-    // renderer's next debounced save serialises the unchanged Y.Doc back over
-    // it (NIM-436). Refuse the description write and surface a structured
-    // skip so the caller can decide what to do (e.g., post a comment, or ask
-    // the user to make the body edit interactively). All other field updates
-    // (status, priority, etc.) still flow through normally because they sync
-    // via the tracker JSONB / field-level LWW path, not Y.Doc.
-    const itemModel = globalRegistry.get(row.type);
-    const bodyIsCollab = isTrackerItemBodyCollaborative(
-      workspacePath,
-      row.type,
-      row.source ?? null,
-      row.document_path ?? null,
-      itemModel?.sync?.mode,
-    );
-    let descriptionSkipped: { reason: string } | null = null;
-    if (bodyIsCollab && args.description !== undefined) {
-      descriptionSkipped = {
-        reason:
-          "This tracker item's body lives in a collaborative Y.Doc, not the local database. " +
-          "Writing the description through MCP would be silently overwritten by the next " +
-          "renderer save. Skip-applied; use tracker_add_comment, or have the user edit the " +
-          "body in the tracker detail panel instead.",
-      };
-      delete args.description;
-    }
+    // Description writes go straight to PGLite. Phase 5 routes them through
+    // `updateTrackerItemContent` below so the body-version bump propagates to
+    // peers via the metadata layer. See the block comment near the top of this
+    // file for the full Phase 5 / NIM-436 status.
 
     // Resolve role-based field names for the item's type
     const rf = (role: string, fallback: string) => getTrackerRoleField(row.type, role as any) ?? fallback;
@@ -1696,23 +1654,6 @@ export async function handleTrackerUpdate(
     if (args.fields && typeof args.fields === 'object') {
       for (const [key, value] of Object.entries(args.fields)) {
         if (value === undefined) continue;
-        // Same Y.Doc-vs-PGLite hazard as args.description above: a generic
-        // `fields.description` write on a collab item would create a divergent
-        // JSONB snapshot that the renderer never picks up. Skip it here so
-        // there is no path -- explicit arg or generic bag -- that bypasses
-        // the collab body authority.
-        if (bodyIsCollab && key === 'description') {
-          if (!descriptionSkipped) {
-            descriptionSkipped = {
-              reason:
-                "This tracker item's body lives in a collaborative Y.Doc, not the local database. " +
-                "Writing the description through MCP would be silently overwritten by the next " +
-                "renderer save. Skip-applied; use tracker_add_comment, or have the user edit the " +
-                "body in the tracker detail panel instead.",
-            };
-          }
-          continue;
-        }
         const oldVal = data[key];
         if (oldVal !== value) {
           changes[key] = { from: oldVal, to: value };
@@ -1821,14 +1762,31 @@ export async function handleTrackerUpdate(
       [JSON.stringify(data), row.id]
     );
 
-    // Update content if description changed
+    // Update content if description changed. Phase 5: bump body_version and
+    // write the matching tracker_body_cache snapshot, mirroring
+    // ElectronDocumentService.updateTrackerItemContent. The bumped version
+    // travels through the metadata sync envelope (syncTrackerItem below picks
+    // it up from the refreshed row) so cold peers learn the body changed.
     if (args.description !== undefined) {
       const normalizedContent = args.description.replace(/\\n/g, '\n');
       const contentJson = JSON.stringify(normalizedContent);
-      await db.query(
-        `UPDATE tracker_items SET content = $1 WHERE id = $2`,
+      const bumpResult = await db.query<{ body_version: string | number | null }>(
+        `UPDATE tracker_items
+            SET content = $1,
+                body_version = COALESCE(body_version, 0) + 1
+          WHERE id = $2
+          RETURNING body_version`,
         [contentJson, row.id]
       );
+      const newBodyVersion = Number(bumpResult.rows[0]?.body_version ?? 0);
+      if (newBodyVersion > 0) {
+        await db.query(
+          `INSERT INTO tracker_body_cache (item_id, body_version, content, cached_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (item_id, body_version) DO NOTHING`,
+          [row.id, newBodyVersion, contentJson]
+        );
+      }
     }
 
     // Handle archive state -- use document service for file writeback
@@ -1914,17 +1872,11 @@ export async function handleTrackerUpdate(
       title: data[rf('title', 'title')],
       changes,
     };
-    if (descriptionSkipped) {
-      structured.skippedFields = { description: descriptionSkipped.reason };
-    }
 
     const summaryLines = [
       `Updated tracker item ${getTrackerDisplayRef({ id: row.id, issueKey: postSyncRow?.issue_key ?? refreshedRow?.issue_key ?? row.issue_key ?? undefined })}:`,
       ...updateSummaryParts,
     ];
-    if (descriptionSkipped) {
-      summaryLines.push(`- **Description**: NOT applied -- ${descriptionSkipped.reason}`);
-    }
 
     return {
       content: [
@@ -2311,11 +2263,6 @@ export async function handleTrackerAddComment(
     // Also stamp lastModifiedBy and record activity
     data.lastModifiedBy = authorIdentity;
     appendActivity(data, authorIdentity, 'commented');
-
-    // Stamp field-level LWW timestamp for sync conflict resolution
-    const fieldUpdatedAt = data._fieldUpdatedAt || {};
-    fieldUpdatedAt.comments = Date.now();
-    data._fieldUpdatedAt = fieldUpdatedAt;
 
     await db.query(
       `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,

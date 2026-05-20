@@ -9,4 +9,8 @@ export type {
   EditorContext,
   DiffConfig,
   DiffResult,
+  CollaborationContext,
+  CollaborationStatus,
+  CollaboratorInfo,
+  StandardAwarenessState,
 } from '@nimbalyst/extension-sdk';

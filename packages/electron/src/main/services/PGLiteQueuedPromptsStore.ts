@@ -65,6 +65,21 @@ export interface QueuedPromptsStore {
   /** Delete a queued prompt */
   delete(id: string): Promise<void>;
 
+  /**
+   * Reset any rows stuck in 'executing' back to 'pending' for the given
+   * session. Used on interrupt/cancel and at app startup so a hang or
+   * crash mid-execute can't leave a prompt permanently invisible to
+   * listPending. Returns the number of rows that were rolled back. Pass
+   * sessionId='*' (or use rollbackAllExecuting) to sweep every session.
+   */
+  rollbackExecuting(sessionId: string): Promise<number>;
+
+  /**
+   * Reset every row stuck in 'executing' back to 'pending'. Intended for
+   * the one-shot recovery sweep at app startup.
+   */
+  rollbackAllExecuting(): Promise<number>;
+
   /** Delete all completed/failed prompts older than a certain age */
   cleanup(olderThanMs: number): Promise<number>;
 }
@@ -243,6 +258,39 @@ export function createPGLiteQueuedPromptsStore(
       );
 
       console.log(`[QueuedPromptsStore] Deleted prompt ${id}`);
+    },
+
+    async rollbackExecuting(sessionId: string): Promise<number> {
+      await ensureReady();
+
+      const { rows } = await db.query<{ id: string }>(
+        `UPDATE queued_prompts
+         SET status = 'pending', claimed_at = NULL
+         WHERE session_id = $1 AND status = 'executing'
+         RETURNING id`,
+        [sessionId]
+      );
+
+      if (rows.length > 0) {
+        console.log(`[QueuedPromptsStore] Rolled back ${rows.length} executing prompt(s) for session ${sessionId}`);
+      }
+      return rows.length;
+    },
+
+    async rollbackAllExecuting(): Promise<number> {
+      await ensureReady();
+
+      const { rows } = await db.query<{ id: string }>(
+        `UPDATE queued_prompts
+         SET status = 'pending', claimed_at = NULL
+         WHERE status = 'executing'
+         RETURNING id`
+      );
+
+      if (rows.length > 0) {
+        console.log(`[QueuedPromptsStore] Boot sweep: rolled back ${rows.length} executing prompt(s) across all sessions`);
+      }
+      return rows.length;
     },
 
     async cleanup(olderThanMs: number): Promise<number> {

@@ -91,11 +91,7 @@ export function ClaudeCodePanel({
   // Plan tracking toggle - stores plans in nimbalyst-local/plans/ with tracking frontmatter
   const [planTrackingEnabled, setPlanTrackingEnabledState] = useState(true);
 
-  // Detect Windows platform using navigator.platform (client-side, no IPC needed)
-  const isWindowsPlatform = navigator.platform === 'Win32';
-
-  // Detect macOS platform (usage indicator only available on macOS)
-  const isMacOS = navigator.platform.toLowerCase().includes('mac');
+  const isWindowsPlatform = process.platform === 'win32';
 
   // Load environment variables
   const loadEnvVars = useCallback(async () => {
@@ -338,16 +334,14 @@ export function ClaudeCodePanel({
         }}
       />
 
-      {/* Usage Indicator Toggle - macOS only */}
-      {isMacOS && (
-        <SettingsToggle
-          variant="enable"
-          name="Show Usage Indicator"
-          description="Display API usage limits in the navigation gutter"
-          checked={usageIndicatorEnabled}
-          onChange={setUsageIndicatorEnabled}
-        />
-      )}
+      {/* Usage Indicator Toggle */}
+      <SettingsToggle
+        variant="enable"
+        name="Show Usage Indicator"
+        description="Display API usage limits in the navigation gutter"
+        checked={usageIndicatorEnabled}
+        onChange={setUsageIndicatorEnabled}
+      />
 
       {/* Custom Claude Installation */}
       <div className="provider-enable flex flex-col gap-2 py-4 mb-4 border-b border-[var(--nim-border)]">

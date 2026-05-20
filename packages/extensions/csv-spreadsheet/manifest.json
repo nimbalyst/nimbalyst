@@ -40,7 +40,11 @@
         "displayName": "Spreadsheet Editor",
         "component": "SpreadsheetEditor",
         "supportsSourceMode": true,
-        "supportsTranscriptEmbed": true
+        "supportsTranscriptEmbed": true,
+        "collaboration": {
+          "supported": true,
+          "awarenessFields": ["selectedCell", "editingCell"]
+        }
       }
     ],
     "fileIcons": {

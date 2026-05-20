@@ -725,8 +725,13 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     if (contentMode !== 'collaborative' || !collabConfig || collabLoading) return null;
     if (!contentLoaded) return null;
     const mdContent = contentMarkdown;
+    // Prefer the body-cache cold paint when the hook supplies it (the
+    // `tracker_body_cache` row matching the current body_version). Fall
+    // back to the per-item PGLite markdown for new items that have never
+    // been saved (no cache row yet).
+    const hookInitial = collabConfig.initialEditorState;
     console.log('[TrackerItemDetail] Building collab editor config',
-      { itemId: item?.id, shouldBootstrap: collabConfig.shouldBootstrap, mdContentLen: mdContent?.length ?? 0 });
+      { itemId: item?.id, shouldBootstrap: collabConfig.shouldBootstrap, mdContentLen: mdContent?.length ?? 0, hasHookInitial: !!hookInitial });
     return {
       isRichText: true,
       editable: true,
@@ -736,16 +741,17 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       markdownOnly: true,
       collaboration: {
         ...collabConfig,
-        initialEditorState: mdContent
-          ? () => {
-              console.log('[TrackerItemDetail] initialEditorState fn CALLED',
-                { itemId: item?.id, mdContentLen: mdContent.length });
-              const root = $getRoot();
-              root.clear();
-              $convertFromEnhancedMarkdownString(mdContent, getEditorTransformers());
-              console.log('[TrackerItemDetail] seeded editor root, children:', root.getChildrenSize());
-            }
-          : undefined,
+        initialEditorState: hookInitial
+          ?? (mdContent
+            ? () => {
+                console.log('[TrackerItemDetail] initialEditorState fn CALLED',
+                  { itemId: item?.id, mdContentLen: mdContent.length });
+                const root = $getRoot();
+                root.clear();
+                $convertFromEnhancedMarkdownString(mdContent, getEditorTransformers());
+                console.log('[TrackerItemDetail] seeded editor root, children:', root.getChildrenSize());
+              }
+            : undefined),
       },
       onGetContent: (getContentFn: () => string) => {
         getContentFnRef.current = getContentFn;

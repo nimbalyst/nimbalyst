@@ -146,8 +146,16 @@ export interface TrackerItem {
   assigneeId?: string;
   /** @deprecated Use reporterEmail instead. Org member ID, per-team scoped. */
   reporterId?: string;
-  /** Labels for categorization */
+  /** Labels for categorization (projection of non-tombstoned entries in `labelsMap`). */
   labels?: string[];
+  /**
+   * Add-wins CRDT map for labels. Each `LabelEntry` has a stable per-element
+   * ID; concurrent additions across peers all survive after union. Tombstoned
+   * entries are excluded from the `labels` projection. Optional because
+   * legacy items written before the CRDT shipped have only `labels`.
+   * See `trackerLabels.ts` for the merge / diff helpers.
+   */
+  labelsMap?: Record<string, { value: string; id: string; tombstone?: true }>;
   /** Linked AI session IDs */
   linkedSessions?: string[];
   /** Linked git commit SHA (deprecated: use linkedCommits) */
@@ -159,9 +167,14 @@ export interface TrackerItem {
   /** Sync status: local (never synced), synced (up to date), pending (queued for sync) */
   syncStatus?: TrackerItemSyncStatus;
 
-  // Field-level LWW timestamps (persisted for sync conflict resolution)
-  /** Per-field timestamps for Last-Write-Wins conflict resolution during sync */
-  fieldUpdatedAt?: Record<string, number>;
+  /**
+   * Body Y.Doc version pointer. Bumped on every body save (phase 4b of
+   * the tracker sync redesign, see D5). Carried through the sync wire
+   * envelope so remote clients can invalidate stale cached body
+   * snapshots without re-reading the Y.Doc. Zero for items whose body
+   * has never been written.
+   */
+  bodyVersion?: number;
 }
 
 /**

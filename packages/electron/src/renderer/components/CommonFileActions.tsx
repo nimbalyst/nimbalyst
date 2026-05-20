@@ -10,7 +10,7 @@
  * Each consumer provides CSS classes to match their own styling.
  */
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { store } from '@nimbalyst/runtime/store';
 import { useAtomValue } from 'jotai';
@@ -18,6 +18,28 @@ import { useFileActions } from '../hooks/useFileActions';
 import { registerDocumentInIndex, pendingCollabDocumentAtom, workspaceHasTeamAtom } from '../store/atoms/collabDocuments';
 import { setWindowModeAtom } from '../store/atoms/windowMode';
 import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
+import { customEditorRegistry } from './CustomEditors';
+
+/**
+ * Derive the logical collab document type from a filename. Returns the file
+ * extension without the leading dot (e.g. 'excalidraw', 'mindmap') for
+ * extension-handled types, 'markdown' for `.md`/`.markdown`, or null if the
+ * file is not eligible for collab share. Compound suffixes (`.mockup.html`)
+ * are not yet collab-supported and return null.
+ */
+function deriveCollabDocumentType(fileName: string): string | null {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
+  // Look up by full filename via the registry so multi-segment extensions
+  // (`.reddit.watch.json`) match the longest registered suffix.
+  const registration = customEditorRegistry.findRegistrationForFile(lower);
+  if (registration?.collaboration?.supported) {
+    const dot = lower.lastIndexOf('.');
+    if (dot < 0) return null;
+    return lower.slice(dot + 1);
+  }
+  return null;
+}
 
 interface CommonFileActionsProps {
   filePath: string;
@@ -47,8 +69,19 @@ export function CommonFileActions({
 }: CommonFileActionsProps) {
   const actions = useFileActions(filePath, fileName);
   const hasTeam = useAtomValue(workspaceHasTeamAtom);
+  const collabDocumentType = useMemo(
+    () => deriveCollabDocumentType(fileName),
+    [fileName]
+  );
   const handleShareToTeam = useCallback(async () => {
     const { errorNotificationService } = await import('../services/ErrorNotificationService');
+
+    if (!collabDocumentType) {
+      // Defensive: button is gated on this being non-null, but guard anyway.
+      console.warn('[CommonFileActions] No collab document type for:', fileName);
+      return;
+    }
+    const documentType = collabDocumentType;
 
     // Read file content to seed the collaborative document on first share.
     let initialContent: string | undefined;
@@ -69,12 +102,22 @@ export function CommonFileActions({
     // collab-asset path and rewrite the markdown before it ever reaches the
     // Y.Doc. Best-effort: failures are reported in the toast but don't
     // block the share unless every asset failed.
+    //
+    // Markdown only -- non-markdown asset shapes (Excalidraw's inline
+    // base64 images, mindmap's no-attachments) are handled differently or
+    // not at all; we skip the markdown rewriter for them entirely.
     const workspacePath = store.get(activeWorkspacePathAtom);
     const documentSync = window.electronAPI?.documentSync;
     let migratedContent = initialContent;
     let migrationToast: { kind: 'ok' | 'partial' | 'no-assets' | 'unavailable' | 'total-failure'; message?: string; failedCount?: number; okCount?: number } = { kind: 'no-assets' };
 
-    if (initialContent && workspacePath && documentSync?.open && documentSync?.migrateLocalAssets) {
+    if (
+      documentType === 'markdown' &&
+      initialContent &&
+      workspacePath &&
+      documentSync?.open &&
+      documentSync?.migrateLocalAssets
+    ) {
       try {
         const openResult = await documentSync.open(workspacePath, fileName, fileName);
         if (!openResult.success || !openResult.config) {
@@ -135,12 +178,16 @@ export function CommonFileActions({
 
     // Register in the doc index (optimistic local update is synchronous,
     // server registration happens in background)
-    registerDocumentInIndex(fileName, fileName, 'markdown').catch(error => {
+    registerDocumentInIndex(fileName, fileName, documentType).catch(error => {
       console.error('Failed to register document in index:', error);
     });
 
     // Set the pending document so CollabMode auto-opens it (with content for seeding)
-    store.set(pendingCollabDocumentAtom, { documentId: fileName, initialContent: migratedContent });
+    store.set(pendingCollabDocumentAtom, {
+      documentId: fileName,
+      initialContent: migratedContent,
+      documentType,
+    });
 
     // Switch to collab mode immediately
     store.set(setWindowModeAtom, 'collab');
@@ -176,7 +223,7 @@ export function CommonFileActions({
         );
         break;
     }
-  }, [filePath, fileName]);
+  }, [filePath, fileName, collabDocumentType]);
 
   const Item = useButtons ? 'button' : 'div';
 
@@ -231,8 +278,10 @@ export function CommonFileActions({
         </Item>
       )}
 
-      {/* Share to Team (collaborative editing - conditional on file type and team connection) */}
-      {actions.isShareable && hasTeam && (
+      {/* Share to Team -- shown only when the file's type is actually
+          collab-supported (built-in markdown, or an extension that declares
+          `collaboration.supported: true`) AND the workspace has a team. */}
+      {collabDocumentType && hasTeam && (
         <Item
           className={menuItemClass}
           onClick={() => { handleShareToTeam(); onClose(); }}

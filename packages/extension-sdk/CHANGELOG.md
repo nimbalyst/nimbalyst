@@ -8,10 +8,27 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 
 | SDK version | Minimum Nimbalyst app version |
 | --- | --- |
+| 0.2.0 | 0.58.5 |
 | 0.1.5 | 0.58.5 |
 | 0.1.0 | 0.58.5 |
 
 ## [Unreleased]
+
+## [0.2.0]
+
+Adds opt-in collaborative editing for custom editors. Backwards-compatible: extensions built against 0.2.0 continue to work on older Nimbalyst hosts -- the collaboration hook detects the absence of `host.collaboration` and reports `isCollaborative: false` so the editor falls back to local-only editing.
+
+### Added
+
+- `useCollaborativeEditor(host, options)` hook for wiring a custom editor to a shared Y.Doc through `host.collaboration`. Handles binding lifecycle, awareness, status, and the empty-doc seed path.
+- `CollaborationContext` type on `EditorHost.collaboration` exposing the Y.Doc, awareness, doc id, local user info, and connection status.
+- Manifest field `contributions.customEditors[].collaboration = { supported: boolean, awarenessFields?: string[] }` so extensions declare collab support and the awareness shape they publish.
+- `yjs` and `y-protocols` declared as optional peer dependencies, externalized by the host so a single Y.Doc instance is shared with the rest of Nimbalyst (mismatched copies fragment the document).
+
+### Notes
+
+- Existing extensions need no changes; if `collaboration.supported` is absent the editor continues to be loaded as before.
+- See `docs/COLLABORATION_GUIDE.md` for the binding pattern (Excalidraw and CSV are reference implementations).
 
 ## [0.1.5]
 

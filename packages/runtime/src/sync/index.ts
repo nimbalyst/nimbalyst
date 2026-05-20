@@ -89,24 +89,95 @@ export type {
   KeyEnvelope,
 } from './ECDHKeyManager';
 
-export {
-  TrackerSyncProvider,
-  mergeTrackerItems,
-} from './TrackerSync';
-
-export {
-  trackerItemToPayload,
-  payloadToTrackerItem,
-} from './trackerSyncTypes';
+// ============================================================================
+// Tracker sync (rewrite in progress)
+// ============================================================================
+//
+// The TrackerSyncProvider / trackerSyncTypes module has been removed as part
+// of the tracker sync rewrite (see design/Collaboration/tracker-sync-redesign.md
+// and the phase-1 deletion described there).
+//
+// Phase 1 exports the metadata-layer wire protocol as type-only declarations
+// from `./trackerProtocol`. The phase-3 client engine
+// (`TrackerSyncEngine`, replaces `TrackerSyncProvider`) will be added when
+// phase 3 lands.
 
 export type {
-  TrackerSyncConfig,
-  TrackerSyncStatus,
+  TeamProjectId,
+  TrackerRoomId,
+  SyncId,
+  EncryptedTrackerItemEnvelope,
   TrackerItemPayload,
-  TrackerSyncResult,
-  TrackerComment,
+  TrackerCommentEntry,
+  TrackerIdentity,
+  TrackerPayloadSystem,
+  LabelEntry,
+  TrackerClientMessage,
+  TrackerServerMessage,
+  TrackerSyncRequestMessage,
+  TrackerMutationRequestMessage,
+  TrackerSetConfigMessage,
+  TrackerPingMessage,
+  TrackerSyncResponseMessage,
+  TrackerDeltaMessage,
+  TrackerMutationAckMessage,
+  TrackerMutationRejectCode,
+  TrackerConfigBroadcastMessage,
+  TrackerPongMessage,
+  TrackerErrorMessage,
   TrackerRoomConfig,
-} from './trackerSyncTypes';
+  TrackerTransactionState,
+  TrackerTransactionRow,
+  TrackerItemRow,
+  TrackerBodyCacheRow,
+} from './trackerProtocol';
+
+export {
+  buildTrackerRoomId,
+  stripLocalOnlyFields,
+  LOCAL_ONLY_PAYLOAD_FIELDS,
+  SYNC_ID_INITIAL,
+} from './trackerProtocol';
+
+export {
+  encryptTrackerPayload,
+  decryptTrackerEnvelope,
+  fingerprintTrackerKey,
+} from './TrackerEnvelopeCrypto';
+
+export {
+  InMemoryTrackerPersistence,
+} from './trackerPersistence';
+
+export type {
+  TrackerPersistence,
+  TrackerRowSnapshot,
+} from './trackerPersistence';
+
+export {
+  applyLabelDiff,
+  mergeLabelMaps,
+  projectLabelsToValues,
+} from './trackerLabels';
+
+export type {
+  LabelsMap,
+} from './trackerLabels';
+
+export { HeadlessLexicalYDoc } from './HeadlessLexicalYDoc';
+export type { HeadlessLexicalYDocOptions } from './HeadlessLexicalYDoc';
+
+export {
+  TrackerSyncEngine,
+} from './TrackerSyncEngine';
+
+export type {
+  TrackerSyncEngineConfig,
+  TrackerSyncStatus,
+  TrackerKeyMaterial,
+  AppliedTrackerItem,
+  RejectedTrackerMutation,
+} from './TrackerSyncEngine';
 
 export {
   TeamSyncProvider,

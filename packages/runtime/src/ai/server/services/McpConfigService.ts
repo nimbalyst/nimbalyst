@@ -31,6 +31,17 @@ export interface McpConfigServiceDeps {
   /** Port for the meta-agent MCP server */
   metaAgentServerPort?: number | null;
 
+  /** Port for the settings control MCP server (lets agents change Nimbalyst settings) */
+  settingsServerPort?: number | null;
+
+  /**
+   * Kill-switch loader for the settings MCP. Returns true to omit
+   * `nimbalyst-settings` from the agent's MCP config. Read on every config
+   * build so flipping the toggle in Settings takes effect on the next session
+   * start without a restart.
+   */
+  settingsAgentToolsDisabledLoader?: (() => boolean) | null;
+
   /**
    * Per-launch bearer token for the internal Nimbalyst MCP HTTP servers.
    * When set, the service emits an `Authorization: Bearer <token>` header on
@@ -148,6 +159,33 @@ export class McpConfigService {
         type: 'sse',
         transport: 'sse',
         url: `http://127.0.0.1:${this.deps.metaAgentServerPort}/mcp?sessionId=${encodeURIComponent(sessionId)}&workspaceId=${encodeURIComponent(workspacePath)}`,
+        ...(authHeaders ? { headers: { ...authHeaders } } : {}),
+      };
+    }
+
+    // Include settings control MCP server (lets agents change Nimbalyst settings).
+    // Standard profile only -- meta-agent is excluded so it can't twiddle user prefs while
+    // orchestrating sub-sessions. Kill-switch via settingsAgentToolsDisabledLoader.
+    const settingsKilled = (() => {
+      try {
+        return !!this.deps.settingsAgentToolsDisabledLoader?.();
+      } catch {
+        return false;
+      }
+    })();
+    if (
+      !isMetaAgent &&
+      !settingsKilled &&
+      (this.deps.settingsServerPort ?? null) !== null &&
+      sessionId
+    ) {
+      const workspaceParam = workspacePath
+        ? `&workspaceId=${encodeURIComponent(workspacePath)}`
+        : '';
+      config['nimbalyst-settings'] = {
+        type: 'sse',
+        transport: 'sse',
+        url: `http://127.0.0.1:${this.deps.settingsServerPort}/mcp?sessionId=${encodeURIComponent(sessionId)}${workspaceParam}`,
         ...(authHeaders ? { headers: { ...authHeaders } } : {}),
       };
     }

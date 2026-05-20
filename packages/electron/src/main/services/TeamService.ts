@@ -53,8 +53,16 @@ import {
   fetchOwnEnvelope,
   getOrgKeyFingerprint,
   clearOrgKey,
+  getMemberTrustStatus,
+  markMemberVerified,
+  fingerprintIdentityKey,
 } from './OrgKeyService';
 import { performKeyRotation, cleanupOrphanedDocuments, reEncryptTrackerFromLocal } from './KeyRotationService';
+// TrackerSyncManager already imports from this module (findTeamForWorkspace).
+// The cycle is safe because both sides only reference the imported symbols
+// inside function bodies, never at module-init time -- by the time
+// autoMatchTeamForWorkspace runs, both modules are fully loaded.
+import { ensureTrackerSyncForWorkspace } from './TrackerSyncManager';
 
 // ============================================================================
 // Server URL Helper
@@ -83,6 +91,13 @@ interface TeamDetails {
   orgId: string;
   name: string;
   gitRemoteHash: string | null;
+  /**
+   * Server-minted UUID that names this team's tracker room
+   * (tracker-sync-redesign D8 / NIM-404). May be null for snapshots from
+   * old worker versions that predate the field; the tracker host adapter
+   * fails closed in that case rather than falling back to gitRemoteHash.
+   */
+  teamProjectId?: string | null;
   createdAt: string;
   role: string;
   /** Stytch membership type: active_member, pending_member, or invited_member */
@@ -946,6 +961,19 @@ export async function autoMatchTeamForWorkspace(workspacePath: string): Promise<
           hasKey: result.hasKey,
         });
       }
+
+      // Why: callers run autoMatch and initializeTrackerSync in parallel
+      // (WorkspaceManagerWindow, index.ts CLI open, RepositoryManager
+      // auth-change reinit). The parallel init typically races ahead, finds
+      // no team yet via findTeamForWorkspace, and bails at a debug-level
+      // log line that never makes it to main.log. We use the race-safe
+      // ensureTrackerSyncForWorkspace here: if the parallel call is still
+      // inflight, we share its promise; if it already bailed silently or
+      // bails when our shared promise resolves, ensure retries once more
+      // with a fresh init so the engine actually starts.
+      ensureTrackerSyncForWorkspace(workspacePath).catch(err => {
+        logger.main.warn('[TeamService] post-match ensureTrackerSyncForWorkspace failed for', workspacePath, err);
+      });
     }
   } catch (err) {
     // Fire-and-forget -- never block workspace open
@@ -994,8 +1022,27 @@ export async function autoWrapForNewMembers(orgId: string): Promise<void> {
   for (const member of unwrappedMembers) {
     try {
       const memberPubKey = await fetchMemberPublicKey(member.memberId, orgJwt);
+      // Trust gate (security review Issue 2): only wrap if we haven't
+      // recorded a different fingerprint for this member. `unverified` is
+      // TOFU on first contact -- we wrap and record the fingerprint so the
+      // next swap (member rotates their device key, or server lies about
+      // which key belongs to them) is caught as `fingerprint-changed` and
+      // skipped until the admin manually re-verifies via the trust UI.
+      const memberFingerprint = await fingerprintIdentityKey(memberPubKey);
+      const trustStatus = getMemberTrustStatus(orgId, member.memberId, memberFingerprint);
+      if (trustStatus === 'fingerprint-changed') {
+        logger.main.warn(
+          '[TeamService] Skipping auto-wrap for', member.email || member.memberId,
+          '-- identity key fingerprint changed; manual re-verification required',
+        );
+        continue;
+      }
+
       const envelope = await wrapOrgKeyForMember(orgId, memberPubKey);
       await uploadEnvelope(orgId, member.memberId, envelope, orgJwt);
+      if (trustStatus === 'unverified') {
+        markMemberVerified(orgId, member.memberId, memberFingerprint);
+      }
       logger.main.info('[TeamService] Wrapped org key for member:', member.email || member.memberId);
     } catch (err) {
       // Member may not have uploaded their public key yet - that's OK

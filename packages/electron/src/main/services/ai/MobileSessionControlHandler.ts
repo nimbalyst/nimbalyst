@@ -84,12 +84,33 @@ interface GitCommitResponse {
 }
 
 /**
+ * Callbacks the mobile control handler needs from AIService. Passed in so
+ * this module stays free of a circular dependency on AIService.
+ */
+export interface MobileSessionControlCallbacks {
+  /**
+   * Trigger queue processing for a session. Used by `case 'prompt'` so when
+   * iOS delivers a prompt while the desktop session is idle (or busy), the
+   * desktop reliably picks it up from the queued_prompts DB.
+   */
+  triggerQueuedPromptProcessing(sessionId: string, workspacePath: string): Promise<boolean>;
+
+  /**
+   * Reset any prompts stuck in 'executing' back to 'pending' for the given
+   * session. Used by `case 'cancel'` so a queued prompt in-flight when
+   * mobile cancels isn't left permanently wedged.
+   */
+  rollbackExecutingPrompts(sessionId: string): Promise<number>;
+}
+
+/**
  * Initialize the mobile session control handler.
  * Listens for control messages from the sync layer and dispatches to appropriate handlers.
  */
 export function initMobileSessionControlHandler(
   syncProvider: SyncProvider,
-  findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined
+  findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined,
+  callbacks: MobileSessionControlCallbacks
 ): () => void {
   if (!syncProvider.onSessionControlMessage) {
     log.warn('Sync provider does not support session control messages');
@@ -97,7 +118,7 @@ export function initMobileSessionControlHandler(
   }
 
   const cleanup = syncProvider.onSessionControlMessage((message) => {
-    handleControlMessage(message, findWindowByWorkspace);
+    handleControlMessage(message, findWindowByWorkspace, callbacks);
   });
 
   // log.info('Mobile session control handler initialized');
@@ -110,13 +131,14 @@ export function initMobileSessionControlHandler(
  */
 function handleControlMessage(
   message: SessionControlMessage,
-  findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined
+  findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined,
+  callbacks: MobileSessionControlCallbacks
 ): void {
   log.info('Received control message:', message.type, 'for session:', message.sessionId);
 
   switch (message.type) {
     case 'cancel':
-      handleCancel(message.sessionId);
+      void handleCancel(message.sessionId, callbacks);
       break;
 
     // Legacy handler - kept for backwards compatibility with older mobile versions
@@ -144,9 +166,12 @@ function handleControlMessage(
     }
 
     case 'prompt': {
-      // Prompts are handled via the queuedPrompts system, not control messages
-      // This is here for future expansion if needed
-      log.warn('Received prompt control message - prompts should use queuedPrompts system');
+      // iOS has already written the prompt into queued_prompts via sync.
+      // The control message is the trigger: nudge the desktop to start
+      // processing so iOS sees the prompt actually run (otherwise the
+      // queue auto-trigger only fires on isLoading transitions, which
+      // can race or miss the idle case entirely).
+      void handlePromptTrigger(message.sessionId, callbacks);
       break;
     }
 
@@ -159,6 +184,27 @@ function handleControlMessage(
 
     default:
       log.warn('Unknown control message type:', message.type);
+  }
+}
+
+/**
+ * Look up the session's workspacePath and ask AIService to drain the queue.
+ */
+async function handlePromptTrigger(
+  sessionId: string,
+  callbacks: MobileSessionControlCallbacks
+): Promise<void> {
+  try {
+    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+    const session = await AISessionsRepository.get(sessionId);
+    if (!session?.workspacePath) {
+      log.warn('Received prompt control message for unknown session:', sessionId);
+      return;
+    }
+    log.info('Triggering queue processing from mobile prompt control:', sessionId);
+    await callbacks.triggerQueuedPromptProcessing(sessionId, session.workspacePath);
+  } catch (err) {
+    log.error('Failed to handle mobile prompt control message:', err);
   }
 }
 
@@ -295,10 +341,27 @@ function handleRequestUserInputResponse(
 /**
  * Handle a cancel command
  */
-function handleCancel(sessionId: string): void {
+async function handleCancel(
+  sessionId: string,
+  callbacks: MobileSessionControlCallbacks
+): Promise<void> {
   const provider = ProviderFactory.getProvider('claude-code', sessionId);
   if (provider && 'abort' in provider) {
     log.info('Aborting session:', sessionId);
+
+    // Defensive cleanup: if a queued prompt was in-flight when mobile
+    // cancelled, the DB row would otherwise stay 'executing' and be
+    // invisible to listPending. Rollback so the queue isn't wedged after
+    // this cancel.
+    try {
+      const rolledBack = await callbacks.rollbackExecutingPrompts(sessionId);
+      if (rolledBack > 0) {
+        log.info(`Mobile cancel: rolled back ${rolledBack} executing prompt(s) for session ${sessionId}`);
+      }
+    } catch (rollbackErr) {
+      log.error('Mobile cancel: rollbackExecutingPrompts failed:', rollbackErr);
+    }
+
     (provider as { abort: () => void }).abort();
 
     // Notify renderer to update UI

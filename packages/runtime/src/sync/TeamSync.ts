@@ -237,17 +237,26 @@ export class TeamSyncProvider {
 
   async registerDocument(documentId: string, title: string, documentType: string): Promise<void> {
     const { encryptedTitle, titleIv } = await encryptTitle(title, this.config.encryptionKey);
-    this.send({ type: 'docIndexRegister', documentId, encryptedTitle, titleIv, documentType });
+    this.send({
+      type: 'docIndexRegister', documentId, encryptedTitle, titleIv, documentType,
+      orgKeyFingerprint: this.config.orgKeyFingerprint,
+    });
   }
 
   async updateDocumentTitle(documentId: string, newTitle: string): Promise<void> {
     const { encryptedTitle, titleIv } = await encryptTitle(newTitle, this.config.encryptionKey);
-    this.send({ type: 'docIndexUpdate', documentId, encryptedTitle, titleIv });
+    this.send({
+      type: 'docIndexUpdate', documentId, encryptedTitle, titleIv,
+      orgKeyFingerprint: this.config.orgKeyFingerprint,
+    });
   }
 
   removeDocument(documentId: string): void {
     this.localEntries.delete(documentId);
-    this.send({ type: 'docIndexRemove', documentId });
+    this.send({
+      type: 'docIndexRemove', documentId,
+      orgKeyFingerprint: this.config.orgKeyFingerprint,
+    });
   }
 
   // --------------------------------------------------------------------------

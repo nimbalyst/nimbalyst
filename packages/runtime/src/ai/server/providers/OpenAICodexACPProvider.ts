@@ -84,6 +84,8 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
   private static superLoopProgressServerPort: number | null = null;
   private static sessionContextServerPort: number | null = null;
   private static metaAgentServerPort: number | null = null;
+  private static settingsServerPort: number | null = null;
+  private static settingsAgentToolsDisabledLoader: (() => boolean) | null = null;
   // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers (Issue #146)
   private static mcpAuthToken: string | null = null;
   private static mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null = null;
@@ -144,6 +146,8 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
       superLoopProgressServerPort: null,
       sessionContextServerPort: OpenAICodexACPProvider.sessionContextServerPort,
       metaAgentServerPort: OpenAICodexACPProvider.metaAgentServerPort,
+      settingsServerPort: OpenAICodexACPProvider.settingsServerPort,
+      settingsAgentToolsDisabledLoader: OpenAICodexACPProvider.settingsAgentToolsDisabledLoader,
       mcpAuthToken: OpenAICodexACPProvider.mcpAuthToken,
       mcpConfigLoader: OpenAICodexACPProvider.mcpConfigLoader,
       extensionPluginsLoader: null,
@@ -222,6 +226,12 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
   }
   public static setMetaAgentServerPort(port: number | null): void {
     OpenAICodexACPProvider.metaAgentServerPort = port;
+  }
+  public static setSettingsServerPort(port: number | null): void {
+    OpenAICodexACPProvider.settingsServerPort = port;
+  }
+  public static setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void {
+    OpenAICodexACPProvider.settingsAgentToolsDisabledLoader = loader;
   }
   public static setMcpAuthToken(token: string | null): void {
     OpenAICodexACPProvider.mcpAuthToken = token;

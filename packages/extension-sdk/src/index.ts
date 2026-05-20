@@ -42,6 +42,13 @@ export {
   type DiffState,
 } from './useEditorLifecycle.js';
 
+export {
+  useCollaborativeEditor,
+  COLLAB_INIT_ORIGIN,
+  type UseCollaborativeEditorConfig,
+  type UseCollaborativeEditorResult,
+} from './useCollaborativeEditor.js';
+
 // Re-export host-provided editor context and UI helpers for extensions.
 export {
   useDocumentPath,

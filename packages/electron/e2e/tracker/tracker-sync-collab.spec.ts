@@ -1,26 +1,36 @@
 /**
  * Collaborative Tracker Sync E2E Test
  *
- * Tests the real encrypted WebSocket sync path between TWO Electron apps:
+ * Tests the real encrypted WebSocket sync path between TWO Electron apps
+ * driving the post-rewrite `TrackerSyncEngine` against a real wrangler
+ * `TrackerRoom` DO:
  *
  *   App A (upserts item via TrackerSyncManager)
- *     -> TrackerSyncProvider encrypts with AES-256-GCM
+ *     -> TrackerSyncEngine encrypts with AES-256-GCM
  *     -> WebSocket to TrackerRoom Durable Object (wrangler dev --local)
- *     -> broadcast to App B's TrackerSyncProvider
+ *     -> broadcast to App B's TrackerSyncEngine
  *     -> decrypt
- *     -> PGLite hydrate via onItemUpserted callback
+ *     -> PGLite hydrate via onItemApplied callback
  *     -> document-service:tracker-items-changed IPC
  *     -> TrackerTable reactively renders the new row
+ *     -> ALSO: tracker-sync:item-upserted IPC fires for the row (regression
+ *        guard on the renderer atom listener path)
  *
  * Both apps use the real TrackerSyncManager code path via a test-only
- * IPC handler (tracker-sync:connect-test) that bypasses Stytch/team/key-envelope
- * auth but uses the real TrackerSyncProvider, encryption, PGLite hydration,
- * and IPC notification.
+ * IPC handler (`tracker-sync:connect-test`) that bypasses Stytch /
+ * team / key-envelope auth but uses the real `TrackerSyncEngine`,
+ * encryption, PGLite hydration, and IPC notification. The handler is
+ * registered only when `process.env.PLAYWRIGHT === '1'`, matching the
+ * same gate used by `document-sync:open-test` for the sibling spec.
  *
  * Requires: npm run dev (Vite on 5273) + wrangler dev started by this test
+ *
+ * IMPORTANT: do NOT batch this spec with another in the same
+ * `npx playwright test` invocation -- each spec launches its own Electron
+ * instance(s) and the resulting PGLite locks fight. Run one spec per
+ * command.
  */
 
-// Skip in CI - requires wrangler dev running locally and launches 2 Electron instances
 import { test, expect } from '@playwright/test';
 test.skip(() => !process.env.RUN_COLLAB_TESTS, 'Requires RUN_COLLAB_TESTS=1 and wrangler dev - not for CI');
 import type { ElectronApplication, Page } from '@playwright/test';
@@ -45,13 +55,9 @@ import * as os from 'os';
 
 test.describe.configure({ mode: 'serial' });
 
-// Use port 8792 to avoid conflicts with dev (8790) and unit integration tests (8791)
+// Use port 8792 to avoid conflicts with dev (8790) and unit integration tests (8791).
 const WRANGLER_PORT = 8792;
 const TEST_ORG_ID = 'e2e-test-org';
-
-// --------------------------------------------------------------------------
-// Helpers
-// --------------------------------------------------------------------------
 
 async function generateAesKey(): Promise<CryptoKey> {
   return webcrypto.subtle.generateKey(
@@ -65,44 +71,36 @@ async function exportKeyAsJwk(key: CryptoKey): Promise<JsonWebKey> {
   return webcrypto.subtle.exportKey('jwk', key);
 }
 
-/**
- * Launch an Electron app with an isolated database directory.
- * Each instance gets its own NIMBALYST_USER_DATA_PATH so PGLite databases
- * don't collide.
- */
 async function launchIsolatedElectronApp(
   workspace: string,
   instanceName: string,
 ): Promise<{ app: ElectronApplication; page: Page; dbDir: string }> {
   const dbDir = await fs.mkdtemp(path.join(os.tmpdir(), `nimbalyst-e2e-${instanceName}-`));
-
   const app = await launchElectronApp({
     workspace,
     permissionMode: 'allow-all',
-    preserveTestDatabase: true, // We manage our own DB path
-    env: {
-      NIMBALYST_USER_DATA_PATH: dbDir,
-    },
+    preserveTestDatabase: true,
+    env: { NIMBALYST_USER_DATA_PATH: dbDir },
   });
-
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
   await dismissAPIKeyDialog(page);
   await waitForWorkspaceReady(page);
-
   return { app, page, dbDir };
 }
 
 /**
- * Connect an Electron app's TrackerSyncManager to the test wrangler server
- * using the test-only IPC handler that bypasses auth.
+ * Connect an Electron app's TrackerSyncManager to the test wrangler
+ * server through the test-only IPC handler. Bypasses Stytch + team +
+ * envelope unwrap but exercises the real `TrackerSyncEngine` for
+ * encryption, queue lifecycle, and PGLite projection.
  */
 async function connectTrackerSync(
   page: Page,
   opts: {
     workspacePath: string;
     serverUrl: string;
-    projectId: string;
+    teamProjectId: string;
     orgId: string;
     userId: string;
     encryptionKeyJwk: JsonWebKey;
@@ -115,11 +113,13 @@ async function connectTrackerSync(
     opts,
   );
 
-  if (!result.success) {
-    throw new Error(`tracker-sync:connect-test failed: ${result.error}`);
+  if (!result?.success) {
+    throw new Error(`tracker-sync:connect-test failed: ${result?.error}`);
   }
 
-  // Wait for the provider to reach 'connected' status
+  // Wait for the engine to reach 'connected' status. The poll uses the
+  // existing `tracker-sync:get-status` channel which the new engine
+  // continues to support (per phase 3 ipc preservation).
   await expect(async () => {
     const status = await page.evaluate(async (wp) => {
       const s = await (window as any).electronAPI.invoke('tracker-sync:get-status', { workspacePath: wp });
@@ -130,8 +130,9 @@ async function connectTrackerSync(
 }
 
 /**
- * Upsert a tracker item through the real TrackerSyncManager (main process).
- * This encrypts and sends via WebSocket - the real production code path.
+ * Upsert a tracker item through the real `tracker-sync:upsert-item` IPC,
+ * which routes through `syncTrackerItem -> TrackerSyncEngine.upsertItem`
+ * (the production path the host adapter takes).
  */
 async function upsertTrackerItem(
   page: Page,
@@ -148,18 +149,13 @@ async function upsertTrackerItem(
   const result = await page.evaluate(async (itemData) => {
     return (window as any).electronAPI.invoke('tracker-sync:upsert-item', { item: itemData });
   }, item);
-
-  if (!result.success) {
-    throw new Error(`tracker-sync:upsert-item failed: ${result.error}`);
+  if (!result?.success) {
+    throw new Error(`tracker-sync:upsert-item failed: ${result?.error}`);
   }
 }
 
-// --------------------------------------------------------------------------
-// Test Suite
-// --------------------------------------------------------------------------
-
 test.describe('Collaborative Tracker Sync', () => {
-  // Wrangler startup + two Electron launches + WebSocket connections need time
+  // Wrangler startup + two Electron launches + WebSocket connections need time.
   test.setTimeout(120_000);
 
   let appA: ElectronApplication;
@@ -175,23 +171,20 @@ test.describe('Collaborative Tracker Sync', () => {
   test.beforeAll(async ({}, testInfo) => {
     testInfo.setTimeout(90_000);
 
-    // 1. Start wrangler dev (collabv3 server)
     await startWrangler(WRANGLER_PORT);
 
-    // 2. Generate shared encryption key (in production this is the org key)
     const sharedKey = await generateAesKey();
     sharedKeyJwk = await exportKeyAsJwk(sharedKey);
 
-    // 3. Create two separate temp workspaces (one per app)
     workspaceDirA = await createTempWorkspace();
     workspaceDirB = await createTempWorkspace();
     await fs.writeFile(path.join(workspaceDirA, 'README.md'), '# App A\n', 'utf8');
     await fs.writeFile(path.join(workspaceDirB, 'README.md'), '# App B\n', 'utf8');
 
-    // 4. Launch two isolated Electron apps
-    const launchA = launchIsolatedElectronApp(workspaceDirA, 'appA');
-    const launchB = launchIsolatedElectronApp(workspaceDirB, 'appB');
-    const [instanceA, instanceB] = await Promise.all([launchA, launchB]);
+    const [instanceA, instanceB] = await Promise.all([
+      launchIsolatedElectronApp(workspaceDirA, 'appA'),
+      launchIsolatedElectronApp(workspaceDirB, 'appB'),
+    ]);
     appA = instanceA.app;
     pageA = instanceA.page;
     dbDirA = instanceA.dbDir;
@@ -204,7 +197,6 @@ test.describe('Collaborative Tracker Sync', () => {
     await appA?.close();
     await appB?.close();
     await stopWrangler();
-    // Clean up temp directories
     for (const dir of [workspaceDirA, workspaceDirB, dbDirA, dbDirB]) {
       if (dir) {
         await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -213,60 +205,51 @@ test.describe('Collaborative Tracker Sync', () => {
   });
 
   test('App A creates a tracker item that appears in App B via encrypted WebSocket sync', async () => {
-    const projectId = `e2e-collab-${Date.now()}`;
+    const teamProjectId = `e2e-collab-${Date.now()}`;
     const testItemId = `sync-e2e-${Date.now()}`;
     const testTitle = 'Bug from another device';
 
-    // ------------------------------------------------------------------
-    // Step 1: Connect both apps to the same TrackerRoom
-    // ------------------------------------------------------------------
     const connectOpts = {
       serverUrl: `http://localhost:${WRANGLER_PORT}`,
-      projectId,
+      teamProjectId,
       orgId: TEST_ORG_ID,
       encryptionKeyJwk: sharedKeyJwk,
     };
 
+    // Subscribe to `tracker-sync:item-upserted` on B BEFORE the connect
+    // races so we don't miss the IPC payload assertion. The handler
+    // tracks the most-recent payload in a window-side global the test
+    // reads after sync converges.
+    await pageB.evaluate(() => {
+      (window as any).__lastTrackerSyncUpserted = null;
+      (window as any).electronAPI.trackerSync?.onItemUpserted?.((data: any) => {
+        (window as any).__lastTrackerSyncUpserted = data;
+      });
+    });
+
     await Promise.all([
-      connectTrackerSync(pageA, {
-        ...connectOpts,
-        workspacePath: workspaceDirA,
-        userId: 'e2e-user-a',
-      }),
-      connectTrackerSync(pageB, {
-        ...connectOpts,
-        workspacePath: workspaceDirB,
-        userId: 'e2e-user-b',
-      }),
+      connectTrackerSync(pageA, { ...connectOpts, workspacePath: workspaceDirA, userId: 'e2e-user-a' }),
+      connectTrackerSync(pageB, { ...connectOpts, workspacePath: workspaceDirB, userId: 'e2e-user-b' }),
     ]);
 
-    // ------------------------------------------------------------------
-    // Step 2: Navigate App B to Tracker mode so it shows the table
-    // ------------------------------------------------------------------
+    // Navigate App B to tracker mode -> Bugs.
     await openFileFromTree(pageB, 'README.md');
     await pageB.keyboard.press('Meta+t');
 
     const trackerSidebar = pageB.locator(PLAYWRIGHT_TEST_SELECTORS.trackerSidebar);
     await expect(trackerSidebar).toBeVisible({ timeout: 10_000 });
-
-    // Click Bugs type button
     const bugsButton = trackerSidebar.locator(
       `${PLAYWRIGHT_TEST_SELECTORS.trackerTypeButton}[data-tracker-type="bug"]`,
     );
     await bugsButton.click();
-
     const trackerTable = pageB.locator(PLAYWRIGHT_TEST_SELECTORS.trackerTable);
     await expect(trackerTable).toBeVisible({ timeout: 5000 });
 
-    // Verify no rows with our test title exist yet
     const targetRow = pageB.locator(
       `${PLAYWRIGHT_TEST_SELECTORS.trackerTableRow}[data-item-title="${testTitle}"]`,
     );
     await expect(targetRow).not.toBeVisible();
 
-    // ------------------------------------------------------------------
-    // Step 3: App A upserts a tracker item through the real sync path
-    // ------------------------------------------------------------------
     await upsertTrackerItem(pageA, {
       id: testItemId,
       type: 'bug',
@@ -277,9 +260,17 @@ test.describe('Collaborative Tracker Sync', () => {
       workspace: workspaceDirA,
     });
 
-    // ------------------------------------------------------------------
-    // Step 4: Verify the item appears in App B's TrackerTable
-    // ------------------------------------------------------------------
+    // Renderer atom + table render.
     await expect(targetRow).toBeVisible({ timeout: 15_000 });
+
+    // IPC-layer regression guard: the renderer-side
+    // `tracker-sync:item-upserted` event fires for the new row. The new
+    // engine routes upserts through the existing channel; capturing it
+    // here surfaces breakage at the host adapter <-> renderer seam.
+    await expect(async () => {
+      const last = await pageB.evaluate(() => (window as any).__lastTrackerSyncUpserted);
+      expect(last?.itemId).toBe(testItemId);
+      expect(last?.title).toBe(testTitle);
+    }).toPass({ timeout: 10_000 });
   });
 });

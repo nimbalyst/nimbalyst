@@ -17,9 +17,6 @@ import {
 import { ClaudeUsagePopover } from './ClaudeUsagePopover';
 import { refreshClaudeUsage } from '../../store/listeners/claudeUsageListeners';
 
-// This feature is macOS-only (reads from macOS Keychain)
-const isMacOS = navigator.platform.toLowerCase().includes('mac');
-
 const RING_RADIUS = 12;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
@@ -44,11 +41,7 @@ export const ClaudeUsageIndicator: React.FC<ClaudeUsageIndicatorProps> = ({ clas
     await refreshClaudeUsage();
   }, []);
 
-  // Only show if:
-  // 1. On macOS (reads from macOS Keychain)
-  // 2. User has enabled the indicator in settings
-  // 3. We've received usage payload at least once (including error payloads)
-  if (!isMacOS || !isEnabled || !isAvailable) {
+  if (!isEnabled || !isAvailable) {
     return null;
   }
 

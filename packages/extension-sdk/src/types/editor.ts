@@ -13,7 +13,96 @@
  * and provided by the host.
  */
 
+import type { Doc as YDoc } from 'yjs';
+import type { Awareness } from 'y-protocols/awareness';
 import type { ExtensionStorage } from './panel.js';
+
+// ============================================================================
+// Collaboration types
+// ============================================================================
+
+/**
+ * Connection status of a collaborative session.
+ *
+ * Mirrors `DocumentSyncStatus` in `@nimbalyst/runtime`. Extensions should treat
+ * any non-`'connected'` value as "not safe to assume the server has our
+ * latest edits" for UI purposes; the underlying Y.Doc remains usable
+ * regardless (CRDT updates queue locally until reconnection).
+ */
+export type CollaborationStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'syncing'
+  | 'replaying'
+  | 'offline-unsynced'
+  | 'connected'
+  | 'error';
+
+/**
+ * The standard awareness fields the host renders generically (presence
+ * avatars, cursors). Extensions may add arbitrary extra keys -- those extras
+ * are opaque to the host and handled by the extension itself.
+ */
+export interface StandardAwarenessState {
+  user: { id: string; name: string; color: string };
+  pointer?: { x: number; y: number };
+  selection?: unknown;
+  [k: string]: unknown;
+}
+
+/**
+ * Snapshot of a remote collaborator currently in awareness. Provided as a
+ * convenience for the SDK hook; extensions that need richer per-editor
+ * awareness fields should read `host.collaboration.awareness.getStates()`
+ * directly.
+ */
+export interface CollaboratorInfo {
+  user: { id: string; name: string; color: string };
+}
+
+/**
+ * Available on `EditorHost` only when the document was opened collaboratively.
+ *
+ * When undefined, the extension should fall back to its standard
+ * `host.loadContent()` / `host.saveContent()` flow. When defined, the
+ * extension MUST drive its state through the Y.Doc (and the host will not
+ * call `host.onSaveRequested` for this document -- persistence is the
+ * server's encrypted blob store).
+ */
+export interface CollaborationContext {
+  /**
+   * The shared Y.Doc. Extensions create their own shared types within it
+   * (e.g. `yDoc.getArray('elements')`).
+   */
+  readonly yDoc: YDoc;
+
+  /**
+   * `y-protocols/awareness` instance carrying remote presence. Extension
+   * bindings register their own local awareness fields here (cursor, tool,
+   * selection) and observe changes via `awareness.on('change', ...)`.
+   *
+   * The host wires this into the encrypted transport so awareness updates
+   * are throttled and end-to-end encrypted on the wire.
+   */
+  readonly awareness: Awareness;
+
+  /** Identity used to drive `awareness` and presence display. */
+  readonly user: { id: string; name: string; color: string };
+
+  /** Current connection status. */
+  getStatus(): CollaborationStatus;
+
+  /** Subscribe to status changes. Returns an unsubscribe fn. */
+  onStatusChange(cb: (status: CollaborationStatus) => void): () => void;
+
+  /**
+   * Returns the file content that should be used to seed the Y.Doc when this
+   * client is the first to open it. The host owns reading the bytes (from
+   * disk, from in-memory Share-to-Team payload, etc.) so extensions never
+   * reason about file paths in collab mode.
+   */
+  loadInitialContent(): Promise<string | ArrayBuffer>;
+}
 
 // ============================================================================
 // EditorHost API - The primary API for custom editors
@@ -375,6 +464,24 @@ export interface EditorHost {
   registerEditorAPI(api: unknown | null): void;
 
   // ============ MENU ITEMS ============
+
+  // ============ COLLABORATION (OPTIONAL) ============
+
+  /**
+   * Present only when this document was opened collaboratively.
+   *
+   * When defined, the extension MUST drive its state through `collaboration.yDoc`
+   * and use the SDK's `useCollaborativeEditor` hook to manage the binding
+   * lifecycle. In collab mode, the host does not invoke `onSaveRequested` --
+   * persistence is the server's encrypted blob store.
+   *
+   * When undefined, the extension operates in local-only mode (load from
+   * disk via `loadContent()`, save via `saveContent()`).
+   *
+   * Extensions opt in by declaring `collaboration.supported: true` in their
+   * editor contribution manifest entry.
+   */
+  readonly collaboration?: CollaborationContext;
 
   /**
    * Register menu items to appear in the editor's "..." actions menu.

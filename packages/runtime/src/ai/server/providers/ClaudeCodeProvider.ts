@@ -275,6 +275,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       superLoopProgressServerPort: null, // Disabled - was leaking into non-super-loop sessions
       sessionContextServerPort: ClaudeCodeDeps.sessionContextServerPort,
       metaAgentServerPort: ClaudeCodeDeps.metaAgentServerPort,
+      settingsServerPort: ClaudeCodeDeps.settingsServerPort,
+      settingsAgentToolsDisabledLoader: ClaudeCodeDeps.settingsAgentToolsDisabledLoader,
       mcpAuthToken: ClaudeCodeDeps.mcpAuthToken,
       mcpConfigLoader: ClaudeCodeDeps.mcpConfigLoader,
       extensionPluginsLoader: ClaudeCodeDeps.extensionPluginsLoader,
@@ -375,6 +377,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   public static setSuperLoopProgressServerPort(port: number | null): void { ClaudeCodeDeps.setSuperLoopProgressServerPort(port); }
   public static setSessionContextServerPort(port: number | null): void { ClaudeCodeDeps.setSessionContextServerPort(port); }
   public static setMetaAgentServerPort(port: number | null): void { ClaudeCodeDeps.setMetaAgentServerPort(port); }
+  public static setSettingsServerPort(port: number | null): void { ClaudeCodeDeps.setSettingsServerPort(port); }
+  public static setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void { ClaudeCodeDeps.setSettingsAgentToolsDisabledLoader(loader); }
   public static setMcpAuthToken(token: string | null): void { ClaudeCodeDeps.setMcpAuthToken(token); }
   public static setMCPConfigLoader(loader: ((workspacePath?: string) => Promise<Record<string, any>>) | null): void { ClaudeCodeDeps.setMCPConfigLoader(loader); }
   public static setExtensionPluginsLoader(loader: ((workspacePath?: string) => Promise<Array<{ type: 'local'; path: string }>>) | null): void { ClaudeCodeDeps.setExtensionPluginsLoader(loader); }
@@ -1610,11 +1614,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
    * The streaming loop breaks, the 'complete' chunk is still yielded,
    * and the AIService completion handler runs normally (including queue processing).
    * This is a graceful stop — unlike abort(), it doesn't kill the SDK subprocess.
+   *
+   * If there is no active lead query, defer to the BaseAIProvider default
+   * (hard abort) so the caller still gets a sensible signal back.
    */
-  async interruptCurrentTurn(): Promise<void> {
+  async interruptCurrentTurn(): Promise<{ method: 'interrupt' | 'abort' }> {
     if (!this.leadQuery) {
-      console.log('[CLAUDE-CODE] interruptCurrentTurn: no active lead query, nothing to interrupt');
-      return;
+      console.log('[CLAUDE-CODE] interruptCurrentTurn: no active lead query, falling back to abort');
+      return super.interruptCurrentTurn();
     }
 
     console.log('[CLAUDE-CODE] interruptCurrentTurn: interrupting active lead query');
@@ -1632,6 +1639,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     } catch (err) {
       console.warn('[CLAUDE-CODE] interruptCurrentTurn: interrupt() failed (transport may be closed):', err);
     }
+
+    return { method: 'interrupt' };
   }
 
   /**

@@ -7,9 +7,16 @@
  * - User types in the collaborative editor
  * - Content persists to PGLite (via onDirtyChange/saveContent)
  * - Close and reopen verifies persistence
+ * - `tracker_body_cache` has a row at the latest body_version
+ *   (Limitation 2 regression guard)
  *
  * Requires: wrangler dev on port 8792 (started by this test)
  * Run with: RUN_COLLAB_TESTS=1 npx playwright test e2e/tracker/tracker-content-collab.spec.ts
+ *
+ * IMPORTANT: do NOT batch this spec with another file in the same
+ * `npx playwright test` invocation -- each spec launches its own
+ * Electron instance and they fight over the PGLite database lock. Run
+ * one at a time.
  */
 
 import { test, expect } from '@playwright/test';
@@ -66,10 +73,12 @@ test.beforeAll(async ({}, testInfo) => {
   await waitForWorkspaceReady(page);
 
   // Monkey-patch documentSync.open in the renderer to use the test handler.
-  // This bypasses Stytch auth and connects directly to wrangler dev.
+  // This bypasses Stytch auth and connects directly to wrangler dev. The
+  // `document-sync:open-test` channel is registered by `DocumentSyncHandlers`
+  // when `process.env.PLAYWRIGHT === '1'` -- the same gate that protects
+  // the resurrected `tracker-sync:connect-test` in the sibling spec.
   await page.evaluate(
     ({ orgId, userId, serverUrl, keyBase64 }) => {
-      const origOpen = (window as any).electronAPI.documentSync.open;
       (window as any).electronAPI.documentSync.open = async (
         _workspacePath: string,
         documentId: string,
@@ -84,7 +93,6 @@ test.beforeAll(async ({}, testInfo) => {
           encryptionKeyBase64: keyBase64,
         });
       };
-      // Also override getJwt to return a test JWT (wrangler test auth bypass)
       (window as any).electronAPI.documentSync.getJwt = async () => ({
         success: true,
         jwt: 'test-jwt',
@@ -98,10 +106,9 @@ test.beforeAll(async ({}, testInfo) => {
     },
   );
 
-  // Also need to make the tracker model report sync mode as 'team'
-  // so contentMode becomes 'collaborative'. Inject via tracker registry.
+  // Force the bug tracker model into team sync mode so contentMode flips
+  // to 'collaborative' and the collab editor mounts.
   await page.evaluate(() => {
-    // Access the global tracker model registry and patch the bug model's sync config
     const runtime = (window as any).__nimbalystRuntime;
     if (runtime?.trackerRegistry) {
       const bugModel = runtime.trackerRegistry.get('bug');
@@ -156,31 +163,43 @@ test('should render content editor and accept input in collaborative mode', asyn
   const detailPanel = page.locator('.tracker-item-detail');
   await detailPanel.waitFor({ state: 'visible', timeout: 3000 });
 
-  // Wait for either the local or collab editor to appear
   const contentEditor = page.locator('[data-testid="tracker-detail-content-editor"]');
   await expect(contentEditor).toBeVisible({ timeout: 10_000 });
 
   const editable = contentEditor.locator('[contenteditable="true"]');
   await expect(editable).toBeVisible({ timeout: 5000 });
 
-  // Type content
   await editable.click();
   await page.keyboard.type('Collaborative content test');
 
-  // Wait for debounced save
+  // Wait for debounced save.
   await page.waitForTimeout(1500);
 
-  // Verify text is in the editor
   await expect(editable).toContainText('Collaborative content test');
 });
 
+test('should write a tracker_body_cache row after typing (Limitation 2 regression guard)', async () => {
+  // Drives the producer side of the cold-instant body read. The new
+  // `document-service:get-tracker-body-cache-for-detail` IPC is the
+  // reader; if that fails because the cache table is empty the cold-open
+  // optimistic paint silently falls back to the legacy `tracker_items.content`
+  // path and the regression goes unnoticed.
+  const row = await page.evaluate(async (id) => {
+    return (window as any).electronAPI.documentService.getTrackerBodyCacheForDetail({ itemId: id });
+  }, itemId);
+  expect(row?.success).toBe(true);
+  expect(row?.row).toBeTruthy();
+  expect(row?.row?.bodyVersion).toBeGreaterThan(0);
+  // Content stored is a markdown string (or a JSON-wrapped string).
+  const content = typeof row.row.content === 'string' ? row.row.content : row.row.content?.markdown;
+  expect(content).toContain('Collaborative content test');
+});
+
 test('should persist content through close and reopen', async () => {
-  // Close detail panel
   await page.keyboard.press('Escape');
   const detailPanel = page.locator('.tracker-item-detail');
   await expect(detailPanel).not.toBeVisible({ timeout: TEST_TIMEOUTS.DEFAULT_WAIT * 4 });
 
-  // Reopen
   const rowById = page.locator(`[data-item-id="${itemId}"]`);
   await expect(rowById).toBeVisible({ timeout: TEST_TIMEOUTS.DEFAULT_WAIT * 4 });
   await rowById.locator('.tracker-table-cell.title').click();
@@ -193,6 +212,5 @@ test('should persist content through close and reopen', async () => {
   const editable = contentEditor.locator('[contenteditable="true"]');
   await expect(editable).toBeVisible({ timeout: 5000 });
 
-  // Content should have been persisted to PGLite and reloaded
   await expect(editable).toContainText('Collaborative content test', { timeout: 5000 });
 });

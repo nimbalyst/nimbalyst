@@ -299,6 +299,7 @@ const CollabModeInner: React.FC<CollabModeProps> = ({
         workspacePath,
         documentId: doc.documentId,
         title: doc.title,
+        documentType: doc.documentType,
         initialContent,
         addTab: tabsActions.addTab,
       });
@@ -402,9 +403,15 @@ const CollabModeInner: React.FC<CollabModeProps> = ({
 
     // Find the document in the shared documents atom
     const docs = store.get(sharedDocumentsAtom);
-    const doc = docs.find(d => d.documentId === pendingDoc.documentId);
-    if (doc) {
-      // Clear the pending flag before opening to avoid re-triggering
+    const found = docs.find(d => d.documentId === pendingDoc.documentId);
+    if (found) {
+      // Clear the pending flag before opening to avoid re-triggering.
+      // The pending payload carries the authoritative documentType the
+      // sharer just chose (the shared docs atom may still be syncing the
+      // newly registered entry from the server), so prefer it.
+      const doc: SharedDocument = pendingDoc.documentType
+        ? { ...found, documentType: pendingDoc.documentType }
+        : found;
       store.set(pendingCollabDocumentAtom, null);
       handleDocumentSelect(doc, pendingDoc.initialContent);
     }

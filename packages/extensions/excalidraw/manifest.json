@@ -42,7 +42,11 @@
         "component": "ExcalidrawEditor",
         "supportsSourceMode": true,
         "supportsDiffMode": false,
-        "supportsTranscriptEmbed": true
+        "supportsTranscriptEmbed": true,
+        "collaboration": {
+          "supported": true,
+          "awarenessFields": ["pointer", "button", "selectedElementIds"]
+        }
       }
     ],
     "aiTools": [

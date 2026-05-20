@@ -455,8 +455,82 @@ The Playwright extension panel in Nimbalyst supports multiple test configs. It a
 
 See [extension-live-test-infrastructure.md](../design/Extensions/extension-live-test-infrastructure.md) for the full architecture and implementation details.
 
+## Collaborative Editors
+
+Extension editors can participate in Nimbalyst's E2E-encrypted real-time collaboration ("Share to Team") by opting in via the manifest and wiring an SDK hook. The host owns the `DocumentSyncProvider` lifecycle, encryption, awareness transport, and connection-status UI. Extensions implement a small yJS binding that maps their editor state to/from a shared `Y.Doc`.
+
+### Manifest opt-in
+
+```json
+{
+  "contributions": {
+    "customEditors": [{
+      "filePatterns": ["*.excalidraw"],
+      "component": "ExcalidrawEditor",
+      "collaboration": {
+        "supported": true,
+        "awarenessFields": ["pointer", "selectedElementIds"]
+      }
+    }]
+  }
+}
+```
+
+`awarenessFields` is advisory metadata (used for docs / validation) and does not gate runtime behaviour.
+
+### Editor hook
+
+When `collaboration.supported: true`, the host opens collab documents through `CollaborativeTabEditor`, populates `EditorHost.collaboration`, and routes to the extension component. The extension uses `useCollaborativeEditor` from `@nimbalyst/extension-sdk`:
+
+```typescript
+import { useCollaborativeEditor, COLLAB_INIT_ORIGIN } from '@nimbalyst/extension-sdk';
+import * as Y from 'yjs';
+import { ExcalidrawBinding } from './collab/excalidrawBindings';
+import { isExcalidrawYDocEmpty, seedExcalidrawYDoc } from './collab/seed';
+
+function ExcalidrawEditor({ host }) {
+  // ... useEditorLifecycle as before (local-only path) ...
+
+  useCollaborativeEditor(host, {
+    isEmpty: isExcalidrawYDocEmpty,
+    initializeFromContent: seedExcalidrawYDoc,
+    createBinding: ({ yDoc, awareness, user }) => {
+      const undoManager = new Y.UndoManager(yDoc.getArray('elements'));
+      const binding = new ExcalidrawBinding(
+        yDoc.getArray('elements'),
+        yDoc.getMap('assets'),
+        excalidrawAPIRef.current!,
+        awareness,
+        { excalidrawDom: domRef.current!, undoManager },
+      );
+      return { destroy: () => { binding.destroy(); undoManager.destroy(); } };
+    },
+  });
+}
+```
+
+The hook is a no-op when `host.collaboration` is undefined, so the same component renders the local-only flow unchanged for non-collab opens.
+
+### yJS as a peer dependency
+
+Extensions declare `yjs` and `y-protocols` as `peerDependencies` (the host externalizes both at runtime so there is exactly one yjs instance — the same constraint as React). The extension's `vite.config.ts` must add both to `rollupOptions.external`:
+
+```typescript
+external: [
+  'react', 'react-dom',
+  'yjs', /^y-protocols(\/.*)?$/,
+],
+```
+
+### Bootstrap race safety
+
+If two clients both open a fresh collaborative document, both can call `initializeFromContent`. Their CRDT updates merge. To avoid duplicate content, your seed routine MUST be deterministic given the same input — use content-derived stable IDs (Excalidraw's per-element `id`, Mindmap's node id) and fractional indices generated from element order (`generateNKeysBetween(null, null, n)`). Never invent random IDs in `initializeFromContent`.
+
+See [COLLABORATION_GUIDE.md](./COLLABORATION_GUIDE.md) for the full implementation guide, awareness shape, and Y.Doc layout patterns for different editor types.
+
 ## Related Documentation
 
 - [FILE_TYPE_HANDLING.md](./FILE_TYPE_HANDLING.md) - How file types are associated with editors
 - [EXTENSION_PANELS.md](./EXTENSION_PANELS.md) - Creating custom panels
 - [EXTENSION_THEMING.md](./EXTENSION_THEMING.md) - Theming extensions
+- [COLLABORATION_GUIDE.md](./COLLABORATION_GUIDE.md) - Adding real-time collab to an extension editor

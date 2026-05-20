@@ -47,6 +47,11 @@ export default defineConfig({
         /^@lexical\//,
         /^@nimbalyst\/runtime/,
         '@nimbalyst/editor-context',
+        // yJS must resolve to the host's copy at runtime -- `instanceof Y.Doc`
+        // checks fail if the extension bundles its own (same constraint as
+        // React). The host's runtime exposes both modules.
+        'yjs',
+        /^y-protocols(\/.*)?$/,
       ],
       output: {
         globals: {

@@ -372,6 +372,13 @@ interface ElectronAPI {
     getTrackerItemContent: (payload: {
       itemId: string;
     }) => Promise<{ success: boolean; content?: any; error?: string }>;
+    getTrackerBodyCacheForDetail: (payload: {
+      itemId: string;
+    }) => Promise<{
+      success: boolean;
+      row?: { bodyVersion: number; content: any } | null;
+      error?: string;
+    }>;
     archiveTrackerItem: (payload: {
       itemId: string;
       archive: boolean;
@@ -681,12 +688,18 @@ interface ElectronAPI {
 
   // Document Sync (collaborative editing)
   documentSync: {
-    open: (workspacePath: string, documentId: string, title?: string) => Promise<{
+    open: (
+      workspacePath: string,
+      documentId: string,
+      title?: string,
+      documentType?: string,
+    ) => Promise<{
       success: boolean;
       config?: {
         orgId: string;
         documentId: string;
         title: string;
+        documentType?: string;
         orgKeyBase64: string;
         orgKeyFingerprint?: string;
         serverUrl: string;
@@ -716,6 +729,7 @@ interface ElectronAPI {
       config?: {
         orgId: string;
         orgKeyBase64: string;
+        orgKeyFingerprint: string | null;
         serverUrl: string;
         userId: string;
         userName?: string;

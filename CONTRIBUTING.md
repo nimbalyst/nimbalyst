@@ -4,13 +4,11 @@ Thanks for your interest in contributing to Nimbalyst.
 
 ## Scope
 
-Unless stated otherwise, contributions to this repository are accepted under the
-[MIT License](./LICENSE).
+Contributions to this repository are accepted under the [MIT License](./LICENSE).
 
-The `packages/collabv3/` package is different: external contributions are not
-accepted for that package. Nimbalyst Inc. retains sole copyright ownership of
-`packages/collabv3/` so it can continue to offer that package under AGPL-3.0 or
-commercial terms.
+The collaboration server is a separate project. Clients in this repo talk to it 
+over the wire protocol defined in
+[`packages/collab-protocol/`](./packages/collab-protocol/).
 
 ## How to contribute
 

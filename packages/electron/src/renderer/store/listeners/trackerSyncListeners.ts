@@ -33,7 +33,12 @@ import {
   convertFullDocumentToTrackerItems,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { trackerItemToRecord, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
-import { trackerSyncConfigChangeAtom } from '../atoms/trackerSync';
+import { trackerSyncConfigChangeAtom, trackerSyncRejectionAtom, type TrackerSyncRejectionCode } from '../atoms/trackerSync';
+
+/** Auto-clear delay for transient rotation locks. Matches the typical
+ *  team rotation window -- by 30s the org-wide write freeze should have
+ *  lifted, so the user can stop seeing the banner without manual action. */
+const ROTATION_LOCKED_TTL_MS = 30_000;
 
 /**
  * Load full-document tracker items from frontmatter metadata.
@@ -115,6 +120,53 @@ export function initTrackerSyncListeners(): () => void {
   const cleanups: Array<() => void> = [];
   let disposed = false;
   let initialScanTimer: ReturnType<typeof setTimeout> | null = null;
+  let rotationLockedClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // `tracker-sync:mutation-rejected` is broadcast when the server rejects
+  // a write. `staleKeyEpoch + refreshKey succeeds` is silently retried by
+  // the engine; the only events that reach the renderer are the unrecovered
+  // ones the user needs to see. `forbidden` and `malformed` are bugs
+  // (not user-facing) and stay off the banner -- log them and let the
+  // optimistic-rollback surface the failure indirectly.
+  cleanups.push(
+    window.electronAPI.on(
+      'tracker-sync:mutation-rejected',
+      (data: {
+        workspacePath: string;
+        itemId: string;
+        clientMutationId?: string;
+        code: TrackerSyncRejectionCode | 'forbidden' | 'malformed';
+        message?: string;
+      }) => {
+        if (!data) return;
+        if (data.code !== 'staleKeyEpoch' && data.code !== 'rotationLocked') {
+          console.error('[trackerSyncListeners] tracker-sync rejection (non-banner)', data);
+          return;
+        }
+        const rejection = {
+          workspacePath: data.workspacePath,
+          code: data.code,
+          itemId: data.itemId,
+          message: data.message,
+          timestamp: Date.now(),
+        };
+        store.set(trackerSyncRejectionAtom, (prev) => ({
+          ...prev,
+          [data.code as TrackerSyncRejectionCode]: rejection,
+        }));
+        if (data.code === 'rotationLocked') {
+          // Each fresh rotationLocked event resets the TTL -- writes
+          // during an extended freeze should not surprise the user with
+          // an empty banner mid-rotation.
+          if (rotationLockedClearTimer) clearTimeout(rotationLockedClearTimer);
+          rotationLockedClearTimer = setTimeout(() => {
+            rotationLockedClearTimer = null;
+            store.set(trackerSyncRejectionAtom, (prev) => ({ ...prev, rotationLocked: null }));
+          }, ROTATION_LOCKED_TTL_MS);
+        }
+      },
+    ),
+  );
 
   // `tracker-sync:config-changed` is broadcast by the main process whenever a
   // tracker-sync subscription updates its config (e.g. issueKeyPrefix) -- can
@@ -235,6 +287,9 @@ export function initTrackerSyncListeners(): () => void {
     disposed = true;
     if (initialScanTimer) {
       clearTimeout(initialScanTimer);
+    }
+    if (rotationLockedClearTimer) {
+      clearTimeout(rotationLockedClearTimer);
     }
     cleanups.forEach((cleanup) => cleanup());
   };

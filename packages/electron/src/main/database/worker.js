@@ -1172,6 +1172,143 @@ class PGLiteWorker {
       // Non-fatal
     }
 
+    // ========================================================================
+    // tracker-sync-redesign D9: metadata-layer schema reshape
+    // ========================================================================
+    //
+    // Drops the v1 field-stamp LWW model (`_fieldUpdatedAt` inside `data`)
+    // and adds the columns the metadata sync layer expects:
+    //   - sync_id BIGINT: server-assigned monotonic version of the most
+    //     recent accepted mutation for this row. Drives delta queries.
+    //   - body_version BIGINT: pointer to the most recent body Y.Doc
+    //     snapshot in DocumentRoom. Bumped on every body write; used to
+    //     invalidate `tracker_body_cache`.
+    //   - deleted_at TIMESTAMPTZ: tombstone marker. Rows with deleted_at
+    //     set are hidden from queries but kept so the engine can replay
+    //     deltas without re-fetching.
+    //
+    // Per the design doc's "delete decisively" guidance, the migration
+    // unconditionally strips `_fieldUpdatedAt` from `data`. Backwards
+    // compatibility for the v1 protocol is intentionally not preserved.
+    try {
+      const trackerSyncIdCheck = await this.db.query(`
+        SELECT
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'tracker_items' AND column_name = 'sync_id'
+          ) as has_sync_id,
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'tracker_items' AND column_name = 'body_version'
+          ) as has_body_version,
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'tracker_items' AND column_name = 'deleted_at'
+          ) as has_deleted_at
+      `);
+      const {
+        has_sync_id: hasSyncIdCol,
+        has_body_version: hasBodyVersionCol,
+        has_deleted_at: hasDeletedAtCol,
+      } = trackerSyncIdCheck.rows[0] || {};
+
+      if (!hasSyncIdCol) {
+        console.log('[PGLite Worker] Adding sync_id to tracker_items (tracker-sync-redesign D9)...');
+        await this.db.exec(`
+          ALTER TABLE tracker_items ADD COLUMN sync_id BIGINT;
+          CREATE INDEX IF NOT EXISTS idx_tracker_workspace_sync_id ON tracker_items(workspace, sync_id);
+        `);
+      }
+      if (!hasBodyVersionCol) {
+        console.log('[PGLite Worker] Adding body_version to tracker_items...');
+        await this.db.exec(`
+          ALTER TABLE tracker_items ADD COLUMN body_version BIGINT NOT NULL DEFAULT 0;
+        `);
+      }
+      if (!hasDeletedAtCol) {
+        console.log('[PGLite Worker] Adding deleted_at to tracker_items...');
+        await this.db.exec(`
+          ALTER TABLE tracker_items ADD COLUMN deleted_at TIMESTAMPTZ;
+          CREATE INDEX IF NOT EXISTS idx_tracker_deleted_at ON tracker_items(deleted_at) WHERE deleted_at IS NOT NULL;
+        `);
+      }
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to add D9 sync columns:', error);
+      throw error;
+    }
+
+    // Strip `_fieldUpdatedAt` from every `data` JSONB. The new architecture
+    // orders writes by server-assigned `sync_id` -- the per-field timestamp
+    // map is dead weight that the old upload path used to forge. Run on
+    // every startup; cheap when there's nothing to strip.
+    try {
+      const staleStampCount = await this.db.query(`
+        SELECT COUNT(*) as cnt FROM tracker_items
+        WHERE data ? '_fieldUpdatedAt'
+      `);
+      if (staleStampCount.rows[0]?.cnt > 0) {
+        console.log(
+          '[PGLite Worker] Stripping _fieldUpdatedAt from',
+          staleStampCount.rows[0].cnt,
+          'tracker_items rows (D9 cleanup)...',
+        );
+        await this.db.exec(`
+          UPDATE tracker_items SET data = data - '_fieldUpdatedAt'
+          WHERE data ? '_fieldUpdatedAt';
+        `);
+      }
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to strip _fieldUpdatedAt:', error);
+      // Non-fatal; the new client engine ignores the key.
+    }
+
+    // Body cache for cold reads (full-text search, no-roundtrip detail open).
+    // Populated by phase 4 (Body Y.Doc cache). Phase 1 just provisions the
+    // schema so the projection target exists before any code reaches for it.
+    console.log('[PGLite Worker] Creating tracker_body_cache table...');
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tracker_body_cache (
+          item_id TEXT NOT NULL,
+          body_version BIGINT NOT NULL,
+          content TEXT NOT NULL,
+          cached_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (item_id, body_version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tracker_body_cache_item ON tracker_body_cache(item_id);
+      `);
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tracker_body_cache table:', error);
+      throw error;
+    }
+
+    // Offline transaction queue. Linear's four-state model (D6):
+    //   created -> queued -> executing -> persistedEnqueue.
+    // Phase 3 (client engine) reads/writes this; the renderer never
+    // touches it directly.
+    console.log('[PGLite Worker] Creating tracker_transactions table...');
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tracker_transactions (
+          client_mutation_id TEXT PRIMARY KEY,
+          item_id TEXT NOT NULL,
+          workspace_path TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('created','queued','executing','persistedEnqueue')),
+          kind TEXT NOT NULL CHECK (kind IN ('create','update','delete')),
+          payload JSONB,
+          enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          started_at TIMESTAMPTZ,
+          confirmed_sync_id BIGINT,
+          last_rejection JSONB
+        );
+        CREATE INDEX IF NOT EXISTS idx_tracker_txn_workspace_state ON tracker_transactions(workspace_path, state);
+        CREATE INDEX IF NOT EXISTS idx_tracker_txn_item ON tracker_transactions(item_id);
+      `);
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tracker_transactions table:', error);
+      throw error;
+    }
+
     // AI Agent Messages table - write-only raw storage for AI interactions
     console.log('[PGLite Worker] Creating ai_agent_messages table...');
     try {

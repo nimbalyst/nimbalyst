@@ -17,12 +17,14 @@ import {
 import type { TrackerDataModel } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { KanbanBoard } from './KanbanBoard';
 import { TrackerItemDetail } from './TrackerItemDetail';
+import { TrackerSyncRejectionBanner } from './TrackerSyncRejectionBanner';
 import {
   trackerModeLayoutAtom,
   setTrackerModeLayoutAtom,
   type TrackerFilterChip,
   type TypeColumnConfig,
 } from '../../store/atoms/trackers';
+import { useTrackerBodyPrewarm } from '../../hooks/useTrackerBodyPrewarm';
 import { getDefaultColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { setSelectedWorkstreamAtom, sessionRegistryAtom, refreshSessionListAtom, initSessionList } from '../../store/atoms/sessions';
 import { trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
@@ -269,6 +271,51 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     return items;
   }, [activeItems, archivedItems, activeFilters, currentIdentity]);
 
+  // Pre-warm body Y.Docs for visible team-synced items so detail-open
+  // hits a warm WebSocket + Y.Doc state (phase 4a of the tracker sync
+  // redesign, D5). Filter to types whose syncMode is not 'local' --
+  // local-only items have no DocumentRoom and `resolveCollabConfigForUri`
+  // would no-op for them. We also gate on a workspace-team check to
+  // avoid 50 wasted IPC round-trips for workspaces without a team.
+  const [hasTeam, setHasTeam] = useState(false);
+  useEffect(() => {
+    if (!workspacePath) {
+      setHasTeam(false);
+      return;
+    }
+    let cancelled = false;
+    window.electronAPI
+      .invoke('team:find-for-workspace', workspacePath)
+      .then((result: { success?: boolean; team?: { orgId?: string } }) => {
+        if (cancelled) return;
+        setHasTeam(!!(result?.success && result.team?.orgId));
+      })
+      .catch(() => {
+        if (!cancelled) setHasTeam(false);
+      });
+    return () => { cancelled = true; };
+  }, [workspacePath]);
+
+  const teamSyncedTypes = useMemo(() => {
+    const out = new Set<string>();
+    for (const t of trackerTypes) {
+      if (t.sync?.mode && t.sync.mode !== 'local') out.add(t.type);
+    }
+    return out;
+  }, [trackerTypes]);
+
+  const prewarmItemIds = useMemo(() => {
+    if (!hasTeam || teamSyncedTypes.size === 0) return [];
+    return filteredItems
+      .filter(r => teamSyncedTypes.has(r.primaryType))
+      .map(r => r.id);
+  }, [filteredItems, teamSyncedTypes, hasTeam]);
+
+  useTrackerBodyPrewarm({
+    workspacePath,
+    itemIds: prewarmItemIds,
+    enabled: hasTeam,
+  });
 
   const handleItemSelect = useCallback((itemId: string) => {
     setModeLayout({ selectedItemId: itemId });
@@ -440,6 +487,8 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
 
   return (
     <div className="tracker-main-view flex-1 flex flex-col overflow-hidden min-h-0">
+      {/* Sync rejection banner -- key rotation / stale-envelope feedback */}
+      <TrackerSyncRejectionBanner workspacePath={workspacePath} />
       {/* Toolbar */}
       <div className="tracker-toolbar flex items-center gap-2 px-3 py-2 border-b border-nim bg-nim shrink-0">
         {/* Title */}

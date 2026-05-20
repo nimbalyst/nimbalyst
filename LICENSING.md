@@ -1,13 +1,12 @@
 # Licensing
 
-Unless otherwise noted, this repository is licensed under the [MIT License](./LICENSE).
+This repository is licensed under the [MIT License](./LICENSE).
 
-## Package-specific exception
+## Collaboration sync server
 
-The contents of [packages/collabv3](./packages/collabv3/) are not licensed under MIT.
-That package is licensed under the GNU Affero General Public License v3.0.
+The Nimbalyst collaboration sync server (the Cloudflare Worker that powers
+`wss://sync.nimbalyst.com`) is a separate project.
 
-See [packages/collabv3/LICENSE](./packages/collabv3/LICENSE) for the AGPL-3.0 text.
 
 ## Third-party dependencies
 
@@ -17,5 +16,4 @@ their respective authors.
 ## Contact
 
 - General licensing questions: `legal@nimbalyst.com`
-- Commercial licensing for `packages/collabv3/`: `sales@nimbalyst.com`
 - Security reports: see [SECURITY.md](./SECURITY.md)

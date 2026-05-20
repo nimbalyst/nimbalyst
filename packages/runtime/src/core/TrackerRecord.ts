@@ -7,7 +7,7 @@
  */
 
 import type { TrackerIdentity, TrackerActivity, TrackerItem, TrackerItemSource } from './DocumentService';
-import type { TrackerComment } from '../sync/trackerSyncTypes';
+import type { TrackerCommentEntry as TrackerComment } from '../sync/trackerProtocol';
 
 // ---------------------------------------------------------------------------
 // Canonical Record
@@ -51,7 +51,6 @@ export interface TrackerRecord {
   content?: unknown;
   system: TrackerRecordSystem;
   fields: Record<string, unknown>;
-  fieldUpdatedAt: Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,8 +88,6 @@ const NON_FIELD_KEYS = new Set([
   'assigneeId', 'reporterId',
   // old catch-all that's being replaced
   'customFields',
-  // internal metadata keys (persisted in JSONB but not user-visible fields)
-  '_fieldUpdatedAt', 'fieldUpdatedAt',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -120,15 +117,6 @@ export function trackerItemToRecord(item: TrackerItem): TrackerRecord {
         fields[key] = value;
       }
     }
-  }
-
-  // Use persisted per-field timestamps when available (from PGLite round-trip),
-  // falling back to "now" for fields without a persisted timestamp.
-  const persistedTimestamps: Record<string, number> = item.fieldUpdatedAt || {};
-  const now = Date.now();
-  const fieldUpdatedAt: Record<string, number> = {};
-  for (const key of Object.keys(fields)) {
-    fieldUpdatedAt[key] = persistedTimestamps[key] ?? now;
   }
 
   const record: TrackerRecord = {
@@ -162,7 +150,6 @@ export function trackerItemToRecord(item: TrackerItem): TrackerRecord {
       documentId: item.documentId,
     },
     fields,
-    fieldUpdatedAt,
   };
 
   // Pull any SYSTEM_KEYS found in customFields into system generically.
@@ -240,7 +227,6 @@ export function trackerRecordToItem(record: TrackerRecord): TrackerItem {
     documentId: record.system.documentId,
     syncStatus: record.syncStatus as TrackerItem['syncStatus'],
     customFields: Object.keys(customFields).length > 0 ? customFields : undefined,
-    fieldUpdatedAt: record.fieldUpdatedAt,
   };
 }
 
@@ -264,18 +250,11 @@ export function dbRowToRecord(row: any): TrackerRecord {
 
   // Separate system keys from user fields
   const fields: Record<string, unknown> = {};
-  const now = Date.now();
-
-  // Read persisted per-field LWW timestamps if available (backward-compatible:
-  // old rows without _fieldUpdatedAt fall back to "now" for each field)
-  const persistedTimestamps: Record<string, number> = data._fieldUpdatedAt || {};
-  const fieldUpdatedAt: Record<string, number> = { ...persistedTimestamps };
 
   for (const [key, value] of Object.entries(data)) {
     if (NON_FIELD_KEYS.has(key) || SYSTEM_KEYS.has(key)) continue;
     if (value !== undefined) {
       fields[key] = value;
-      if (!fieldUpdatedAt[key]) fieldUpdatedAt[key] = now;
     }
   }
 
@@ -308,7 +287,6 @@ export function dbRowToRecord(row: any): TrackerRecord {
       comments: data.comments || undefined,
     },
     fields,
-    fieldUpdatedAt,
   };
 }
 
@@ -347,11 +325,6 @@ export function recordToDbParams(record: TrackerRecord): {
   if (record.system.comments?.length) data.comments = record.system.comments;
   if (record.system.createdAt) data.created = record.system.createdAt;
   if (record.system.updatedAt) data.updated = record.system.updatedAt;
-
-  // Persist per-field LWW timestamps for sync conflict resolution
-  if (record.fieldUpdatedAt && Object.keys(record.fieldUpdatedAt).length > 0) {
-    data._fieldUpdatedAt = record.fieldUpdatedAt;
-  }
 
   return {
     id: record.id,

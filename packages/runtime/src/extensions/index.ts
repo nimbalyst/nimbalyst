@@ -107,6 +107,10 @@ export type {
   EditorContext,
   DiffConfig,
   DiffResult,
+  CollaborationContext,
+  CollaborationStatus,
+  CollaboratorInfo,
+  StandardAwarenessState,
 } from './editorHost';
 
 // Editor Lifecycle Hook
@@ -116,6 +120,13 @@ export type {
   UseEditorLifecycleResult,
   DiffState,
 } from './useEditorLifecycle';
+
+// Collaborative Editor Hook
+export { useCollaborativeEditor, COLLAB_INIT_ORIGIN } from './useCollaborativeEditor';
+export type {
+  UseCollaborativeEditorConfig,
+  UseCollaborativeEditorResult,
+} from './useCollaborativeEditor';
 
 // Extension Storage
 export {

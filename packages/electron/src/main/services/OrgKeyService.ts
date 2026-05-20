@@ -499,6 +499,29 @@ export function getMemberTrustStatus(
 }
 
 /**
+ * Compute a stable fingerprint for an ECDH public key JWK -- the same shape
+ * stored in `TrustRecord.fingerprint`. SHA-256 over a canonical-JSON
+ * projection of the JWK's curve params, taking the first 32 hex chars to
+ * match the org-key fingerprint format. Both `getMemberTrustStatus` and
+ * `markMemberVerified` expect this representation.
+ */
+export async function fingerprintIdentityKey(publicKeyJwk: string): Promise<string> {
+  const jwk = JSON.parse(publicKeyJwk) as { kty?: string; crv?: string; x?: string; y?: string };
+  const canonical = JSON.stringify({
+    kty: jwk.kty ?? null,
+    crv: jwk.crv ?? null,
+    x: jwk.x ?? null,
+    y: jwk.y ?? null,
+  });
+  const bytes = new TextEncoder().encode(canonical);
+  const digest = await crypto.subtle.digest('SHA-256', bytes as BufferSource);
+  const arr = new Uint8Array(digest);
+  let hex = '';
+  for (let i = 0; i < arr.length; i++) hex += arr[i].toString(16).padStart(2, '0');
+  return hex.slice(0, 32);
+}
+
+/**
  * Get all trust records for an org (for batch UI display).
  */
 export function getAllTrustRecords(orgId: string): Map<string, TrustRecord> {
@@ -549,24 +572,21 @@ export async function wrapOrgKeyForMember(
 /**
  * Unwrap an org key from a key envelope and store it locally.
  *
- * @param orgId - The org this key belongs to
- * @param envelope - The key envelope containing the wrapped key
- * @param expectedSenderPublicKeyJwk - If provided, verifies the envelope's senderPublicKey
- *   matches this expected key (fetched from the sender's registered identity key on the server).
- *   This prevents key envelope poisoning attacks (Finding 2 in security review).
+ * Sender-binding verification is REQUIRED. The caller must supply the
+ * sender's identity-key JWK (fetched from `/api/identity-key/:userId`) so
+ * `unwrapDocumentKeyVerified` can confirm the envelope was wrapped by the
+ * claimed sender. Without this check, a malicious server can swap the
+ * envelope's plaintext `senderPublicKey` and ECDH still derives *some*
+ * shared secret -- the recipient would unknowingly accept a poisoned org
+ * key. There is no fallback unverified branch.
  */
 export async function unwrapAndStoreOrgKey(
   orgId: string,
   envelope: KeyEnvelope,
-  expectedSenderPublicKeyJwk?: string
+  expectedSenderPublicKeyJwk: string
 ): Promise<CryptoKey> {
   const km = await getOrCreateIdentityKeyPair();
-  let orgKey: CryptoKey;
-  if (expectedSenderPublicKeyJwk) {
-    orgKey = await km.unwrapDocumentKeyVerified(envelope, expectedSenderPublicKeyJwk);
-  } else {
-    orgKey = await km.unwrapDocumentKey(envelope);
-  }
+  const orgKey = await km.unwrapDocumentKeyVerified(envelope, expectedSenderPublicKeyJwk);
   const rawBytes = await crypto.subtle.exportKey('raw', orgKey);
   storeOrgKeyRaw(orgId, uint8ArrayToBase64(new Uint8Array(rawBytes)));
   logger.main.info('[OrgKeyService] Unwrapped and stored org key for:', orgId);
@@ -694,26 +714,27 @@ export async function deleteAllEnvelopes(orgId: string, orgScopedJwt: string): P
 
 /**
  * Fetch and unwrap the org key (for non-admin members joining a team).
- * Verifies the sender's public key against their registered identity key.
+ *
+ * Verifies the envelope's sender against the sender's registered identity
+ * key. Both checks fail closed:
+ *   - If the envelope lacks `senderUserId`, throw -- the server is supposed
+ *     to populate that field on upload (see `uploadEnvelope`).
+ *   - If fetching the sender's public key fails, propagate the error. Do
+ *     NOT log-and-continue: a transient network failure or a malicious
+ *     backend response is enough to bypass sender binding otherwise.
  */
 export async function fetchAndUnwrapOrgKey(orgId: string, orgScopedJwt: string): Promise<CryptoKey | null> {
   const envelope = await fetchOwnEnvelope(orgId, orgScopedJwt);
   if (!envelope) return null;
 
-  // Verify sender's public key if we know the sender
-  let expectedSenderKey: string | undefined;
-  if ((envelope as { senderUserId?: string }).senderUserId) {
-    try {
-      expectedSenderKey = await fetchMemberPublicKey(
-        (envelope as { senderUserId?: string }).senderUserId!,
-        orgScopedJwt
-      );
-    } catch (err) {
-      logger.main.warn('[OrgKeyService] Could not fetch sender identity key for verification:', err);
-      // Continue without verification -- sender may have rotated their key
-    }
+  if (!envelope.senderUserId) {
+    throw new Error(
+      `Key envelope for org ${orgId} is missing senderUserId; refusing to unwrap without sender binding. ` +
+      `Ask an admin to re-wrap the key envelope.`,
+    );
   }
 
+  const expectedSenderKey = await fetchMemberPublicKey(envelope.senderUserId, orgScopedJwt);
   return unwrapAndStoreOrgKey(orgId, envelope, expectedSenderKey);
 }
 

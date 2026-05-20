@@ -2,6 +2,11 @@ name = "nimbalyst-marketplace"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
 
+# Pin this worker to the Nimbalyst Cloudflare account so `wrangler deploy`
+# refuses to run if you're logged in as a different account. Override
+# locally by exporting CLOUDFLARE_ACCOUNT_ID.
+account_id = "454b0e55f2d7f9abc0d52d4217ecdc3c"
+
 [dev]
 port = 8791
 

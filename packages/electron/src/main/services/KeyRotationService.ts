@@ -38,9 +38,15 @@ import {
   deleteAllEnvelopes,
   fetchMemberPublicKey,
 } from './OrgKeyService';
+import type {
+  EncryptedTrackerItemEnvelope,
+  TrackerSyncResponseMessage,
+  TrackerItemPayload,
+} from '@nimbalyst/runtime/sync';
+import { encryptTrackerPayload, decryptTrackerEnvelope } from '@nimbalyst/runtime/sync';
 
 // ============================================================================
-// Types (inline to avoid depending on runtime sync types in main process)
+// Types
 // ============================================================================
 
 /** Encrypted document index entry as received from TeamRoom */
@@ -62,6 +68,12 @@ interface TeamSyncResponse {
       orgId: string;
       name: string;
       gitRemoteHash: string | null;
+      /**
+       * Server-minted UUID that names this team's tracker room
+       * (NIM-404 / tracker-sync-redesign D8). Used as the routing key for
+       * tracker rotation; gitRemoteHash above is only a discovery hint.
+       */
+      teamProjectId: string | null;
     } | null;
     documents: EncryptedDocIndexEntry[];
   };
@@ -83,29 +95,6 @@ interface DocSyncResponse {
   };
   hasMore: boolean;
   cursor: number;
-}
-
-/** Encrypted tracker item as received from TrackerRoom */
-interface EncryptedTrackerItem {
-  itemId: string;
-  issueNumber?: number;
-  issueKey?: string;
-  version: number;
-  encryptedPayload: string;
-  iv: string;
-  createdAt: number;
-  updatedAt: number;
-  sequence: number;
-  orgKeyFingerprint?: string | null;
-}
-
-/** TrackerSync response (subset we need) */
-interface TrackerSyncResponse {
-  type: 'trackerSyncResponse';
-  items: EncryptedTrackerItem[];
-  deletedItemIds: string[];
-  sequence: number;
-  hasMore: boolean;
 }
 
 /** Document asset metadata from DocumentRoom */
@@ -440,8 +429,46 @@ async function downloadDocumentState(
 }
 
 /**
- * Download all tracker items from a TrackerRoom.
- * Handles pagination (hasMore) for large tracker datasets.
+ * Decrypted live tracker item used by the re-encrypt step. Tombstones
+ * have no payload and travel through a separate bucket (see `DecryptedTrackerTombstone`).
+ */
+interface DecryptedTrackerLiveItem {
+  itemId: string;
+  decryptedPayload: string;
+  issueNumber?: number;
+  issueKey?: string;
+}
+
+/**
+ * Tombstone envelope carried from download to upload unchanged. We keep
+ * the original syncId only for logging; the server mints a new one when
+ * the rotation upsert lands.
+ */
+interface DecryptedTrackerTombstone {
+  itemId: string;
+  deletedAt: number;
+  issueNumber?: number;
+  issueKey?: string;
+  /** Server syncId at download time. Diagnostic only. */
+  originalSyncId: number;
+}
+
+/**
+ * Download all tracker items from a TrackerRoom. Handles pagination
+ * (`hasMore`) for large datasets.
+ *
+ * Speaks the new tracker wire protocol from
+ * `@nimbalyst/runtime/sync/trackerProtocol`:
+ *   - Client sends `{ type: 'trackerSync', sinceSyncId }` (server reads
+ *     `sinceSyncId`; old field name `sinceSequence` is silently ignored
+ *     and the server returns zero rows -- this used to be the silent
+ *     failure mode that left trackers under the old key after rotation).
+ *   - Server returns `cursorSyncId` for pagination (not `sequence`).
+ *   - Tombstones arrive as envelopes with `encryptedPayload: null` and
+ *     `deletedAt` set, not as a separate `deletedItemIds` array. We
+ *     bucket them separately so the re-encrypt step doesn't try to
+ *     decrypt a null payload, and so the upload step can re-emit them
+ *     with their `deletedAt` preserved.
  */
 async function downloadTrackerItems(
   serverUrl: string,
@@ -449,7 +476,11 @@ async function downloadTrackerItems(
   projectId: string,
   orgKey: CryptoKey,
   jwt: string
-): Promise<{ items: Array<{ itemId: string; decryptedPayload: string; issueNumber?: number; issueKey?: string }>; rawEncrypted: EncryptedTrackerItem[] }> {
+): Promise<{
+  liveItems: DecryptedTrackerLiveItem[];
+  tombstones: DecryptedTrackerTombstone[];
+  rawEncrypted: EncryptedTrackerItemEnvelope[];
+}> {
   const roomId = `org:${orgId}:tracker:${projectId}`;
   const wsUrl = serverUrl.replace(/^http/, 'ws');
   const url = `${wsUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`;
@@ -460,30 +491,67 @@ async function downloadTrackerItems(
       reject(new Error(`Timeout downloading tracker items for project ${projectId}`));
     }, 60_000);
 
-    const allItems: Array<{ itemId: string; decryptedPayload: string; issueNumber?: number; issueKey?: string }> = [];
-    const allRawEncrypted: EncryptedTrackerItem[] = [];
-    let sinceSequence = 0;
+    const liveItems: DecryptedTrackerLiveItem[] = [];
+    const tombstones: DecryptedTrackerTombstone[] = [];
+    const allRawEncrypted: EncryptedTrackerItemEnvelope[] = [];
+    let sinceSyncId = 0;
 
     const ws = new WebSocket(url);
 
     ws.on('open', () => {
-      ws.send(JSON.stringify({ type: 'trackerSync', sinceSequence }));
+      ws.send(JSON.stringify({ type: 'trackerSync', sinceSyncId }));
     });
 
     ws.on('message', async (data: WebSocket.Data) => {
       try {
         const msg = JSON.parse(data.toString());
         if (msg.type === 'trackerSyncResponse') {
-          const resp = msg as TrackerSyncResponse;
+          const resp = msg as TrackerSyncResponseMessage;
+
+          // Fail-loud guard: the new protocol always carries `cursorSyncId`
+          // (a number). If the server is older than the rewrite the field
+          // will be missing; previously this looped forever sending
+          // `sinceSyncId: undefined` and the orchestrator silently
+          // concluded "no tracker items" -- exactly the silent regression
+          // NIM-590 was tracking. Reject the response instead.
+          if (typeof resp.cursorSyncId !== 'number') {
+            clearTimeout(timeout);
+            ws.close();
+            reject(new Error(
+              `Tracker rotation server response missing cursorSyncId for project ${projectId}; ` +
+              `refusing to proceed against an unrecognized wire protocol.`,
+            ));
+            return;
+          }
 
           for (const item of resp.items) {
             allRawEncrypted.push(item);
-            try {
-              const payloadBytes = await decryptBinary(item.encryptedPayload, item.iv, orgKey);
-              const payloadStr = new TextDecoder().decode(payloadBytes);
-              allItems.push({
+
+            // Tombstone envelopes carry `encryptedPayload: null` and
+            // `deletedAt` set. There's nothing to decrypt; we just carry
+            // the deletion forward.
+            if (item.encryptedPayload === null || item.deletedAt !== null) {
+              tombstones.push({
                 itemId: item.itemId,
-                decryptedPayload: payloadStr,
+                deletedAt: item.deletedAt ?? Date.now(),
+                issueNumber: item.issueNumber,
+                issueKey: item.issueKey,
+                originalSyncId: item.syncId,
+              });
+              continue;
+            }
+
+            try {
+              if (!item.iv) {
+                throw new Error('live envelope missing iv');
+              }
+              // Decrypt via the envelope helper so the identifier AAD bind
+              // (itemId / issueNumber / issueKey) is enforced. Splice attempts
+              // surface as OperationError here and we skip those rows.
+              const payload = await decryptTrackerEnvelope(item, orgKey);
+              liveItems.push({
+                itemId: item.itemId,
+                decryptedPayload: JSON.stringify(payload),
                 issueNumber: item.issueNumber,
                 issueKey: item.issueKey,
               });
@@ -493,14 +561,14 @@ async function downloadTrackerItems(
           }
 
           if (resp.hasMore) {
-            sinceSequence = resp.sequence;
-            ws.send(JSON.stringify({ type: 'trackerSync', sinceSequence }));
+            sinceSyncId = resp.cursorSyncId;
+            ws.send(JSON.stringify({ type: 'trackerSync', sinceSyncId }));
           } else {
             clearTimeout(timeout);
             ws.close();
-            resolve({ items: allItems, rawEncrypted: allRawEncrypted });
+            resolve({ liveItems, tombstones, rawEncrypted: allRawEncrypted });
           }
-        } else if (msg.type === 'error') {
+        } else if (msg.type === 'error' || msg.type === 'trackerError') {
           clearTimeout(timeout);
           ws.close();
           reject(new Error(`Server error for tracker ${projectId}: ${msg.code} - ${msg.message}`));
@@ -954,21 +1022,39 @@ export async function performKeyRotation(
       }
     }
 
-    // Download and decrypt tracker items
-    const projectId = teamState.team.metadata?.gitRemoteHash;
-    let decryptedTrackerItems: Array<{ itemId: string; decryptedPayload: string; issueNumber?: number; issueKey?: string }> = [];
+    // Download and decrypt tracker items. NIM-404 routing: the tracker room
+    // ID is keyed by the server-minted teamProjectId, NOT gitRemoteHash. A
+    // team without a teamProjectId predates the D8 migration (the server
+    // backfills on TeamRoom init, so this should be null only if the team
+    // metadata hasn't been touched since the upgrade); we skip rotation for
+    // tracker items in that case rather than rotate the wrong room.
+    const projectId = teamState.team.metadata?.teamProjectId;
+    let decryptedTrackerItems: DecryptedTrackerLiveItem[] = [];
+    let trackerTombstones: DecryptedTrackerTombstone[] = [];
     let trackerDecryptFailures = 0;
     if (projectId) {
       try {
         logger.main.info('[KeyRotationService] Downloading tracker items for project:', projectId);
         const trackerResult = await downloadTrackerItems(serverUrl, orgId, projectId, oldKey, orgJwt);
-        decryptedTrackerItems = trackerResult.items;
-        trackerDecryptFailures = trackerResult.rawEncrypted.length - trackerResult.items.length;
+        decryptedTrackerItems = trackerResult.liveItems;
+        trackerTombstones = trackerResult.tombstones;
+        // Count: total envelopes received minus those that decrypted (live) or
+        // were tombstones (no decrypt attempted). Anything else is a failure.
+        const accountedFor = trackerResult.liveItems.length + trackerResult.tombstones.length;
+        trackerDecryptFailures = trackerResult.rawEncrypted.length - accountedFor;
         if (trackerDecryptFailures > 0) {
           logger.main.error('[KeyRotationService]', trackerDecryptFailures, 'tracker items failed to decrypt');
           progress.trackerItemsFailed = trackerDecryptFailures;
         }
-        logger.main.info('[KeyRotationService] Downloaded', decryptedTrackerItems.length, 'tracker items,', trackerDecryptFailures, 'failed');
+        logger.main.info(
+          '[KeyRotationService] Downloaded',
+          decryptedTrackerItems.length,
+          'live tracker items,',
+          trackerTombstones.length,
+          'tombstones,',
+          trackerDecryptFailures,
+          'failed',
+        );
       } catch (err) {
         logger.main.error('[KeyRotationService] Failed to download tracker items:', err);
         // Mark as failed so the fail-closed check blocks key distribution
@@ -1011,18 +1097,45 @@ export async function performKeyRotation(
       reEncryptedDocs.set(documentId, { encrypted, iv });
     }
 
-    // Re-encrypt tracker items
-    const reEncryptedTrackerItems: Array<{ itemId: string; encryptedPayload: string; iv: string; issueNumber?: number; issueKey?: string; orgKeyFingerprint?: string }> = [];
+    // Re-encrypt tracker items. Live items get re-encrypted under the new
+    // key with the new fingerprint. Tombstones travel through unchanged --
+    // there's no payload to encrypt, and the wire-protocol invariant
+    // (trackerProtocol.ts:131-137) is that orgKeyFingerprint is null only
+    // for tombstones.
+    interface RotationTrackerUploadItem {
+      itemId: string;
+      encryptedPayload: string | null;
+      iv?: string;
+      deletedAt?: number;
+      issueNumber?: number;
+      issueKey?: string;
+      orgKeyFingerprint: string | null;
+    }
+    const reEncryptedTrackerItems: RotationTrackerUploadItem[] = [];
     for (const item of decryptedTrackerItems) {
-      const plaintext = new TextEncoder().encode(item.decryptedPayload);
-      const { encrypted, iv } = await encryptBinary(plaintext, newKey);
+      // Re-encrypt through the envelope helper so the new ciphertext is
+      // AAD-bound to the same identifiers (itemId / issueNumber / issueKey)
+      // that travel as plaintext envelope fields. encryptBinary would skip
+      // the AAD and produce ciphertext that fails to decrypt post-rotation.
+      const payload = JSON.parse(item.decryptedPayload) as TrackerItemPayload;
+      const { encryptedPayload, iv } = await encryptTrackerPayload(payload, newKey, item.itemId);
       reEncryptedTrackerItems.push({
         itemId: item.itemId,
-        encryptedPayload: encrypted,
+        encryptedPayload,
         iv,
         issueNumber: item.issueNumber,
         issueKey: item.issueKey,
-        orgKeyFingerprint: newFingerprint ?? undefined,
+        orgKeyFingerprint: newFingerprint ?? null,
+      });
+    }
+    for (const tombstone of trackerTombstones) {
+      reEncryptedTrackerItems.push({
+        itemId: tombstone.itemId,
+        encryptedPayload: null,
+        deletedAt: tombstone.deletedAt,
+        issueNumber: tombstone.issueNumber,
+        issueKey: tombstone.issueKey,
+        orgKeyFingerprint: null,
       });
     }
 
@@ -1041,22 +1154,27 @@ export async function performKeyRotation(
       'Content-Type': 'application/json',
     };
 
-    // Update doc index titles via TeamRoom (still uses WebSocket since TeamRoom
-    // doesn't have a rotation lock -- only doc/tracker rooms do)
-    const titleUpdateMessages: object[] = [];
-    for (const [documentId, { encryptedTitle, titleIv }] of reEncryptedTitles) {
-      titleUpdateMessages.push({
-        type: 'docIndexUpdate',
-        documentId,
-        encryptedTitle,
-        titleIv,
+    // Update doc index titles + bump TeamRoom fingerprint atomically via HTTP
+    // (bypasses the rotation lock that we set on TeamRoom in step 1). Previously
+    // this path used a regular WebSocket `docIndexUpdate`, which let stale-key
+    // clients race the rotation and overwrite freshly re-encrypted titles
+    // because TeamRoom had no rotation lock. See security review Issue 5.
+    if (reEncryptedTitles.size > 0 && newFingerprint) {
+      const entries = Array.from(reEncryptedTitles.entries()).map(
+        ([documentId, { encryptedTitle, titleIv }]) => ({ documentId, encryptedTitle, titleIv }),
+      );
+      const titleResp = await net.fetch(`${httpUrl}/api/teams/${orgId}/rotation-update-doc-index`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ entries, newFingerprint }),
       });
-    }
-    if (titleUpdateMessages.length > 0) {
-      await wsSendAndClose(serverUrl, teamRoomId, orgJwt, ...titleUpdateMessages);
+      if (!titleResp.ok) {
+        const body = await titleResp.text();
+        throw new Error(`Doc-index rotation update failed: HTTP ${titleResp.status} ${body}`);
+      }
       progress.docIndexDone = true;
       writeProgress(backupDir, progress);
-      logger.main.info('[KeyRotationService] Re-encrypted', titleUpdateMessages.length, 'doc index titles');
+      logger.main.info('[KeyRotationService] Re-encrypted', entries.length, 'doc index titles atomically');
     }
 
     // Upload re-encrypted document snapshots via HTTP (bypasses write barrier).
@@ -1371,9 +1489,14 @@ export async function cleanupOrphanedDocuments(
   // Just removing from the index leaves stale old-key-encrypted data in the DO
   // which causes decryption failures if the document is re-shared with the same ID.
   if (removed.length > 0) {
+    // TeamRoom now enforces key-epoch on doc-index writes (Issue 5). At this
+    // point in the rotation flow the lock is cleared and the new fingerprint
+    // is published, so attach it to the orphan-cleanup messages.
+    const currentFingerprint = await getOrgKeyFingerprint(orgId);
     const removeMessages = removed.map(documentId => ({
       type: 'docIndexRemove',
       documentId,
+      orgKeyFingerprint: currentFingerprint,
     }));
     await wsSendAndClose(serverUrl, teamRoomId, orgJwt, ...removeMessages);
 

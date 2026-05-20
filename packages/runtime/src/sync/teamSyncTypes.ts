@@ -1,10 +1,41 @@
 /**
  * Types for TeamSync -- client-side team state sync layer.
  *
- * These are the client-side equivalents of the TeamClientMessage/TeamServerMessage
- * types defined in collabv3/src/types.ts. Duplicated here to avoid a dependency
- * on the collabv3 package (which is a Cloudflare Worker, not a library).
+ * Wire-protocol message shapes come from `@nimbalyst/collab-protocol` and
+ * are shared with the sync server. This file adds the client-side config
+ * surface (callbacks, status) and the decrypted projections (`TeamState`,
+ * `DocIndexEntry`) that the renderer consumes.
  */
+
+import type {
+  MemberInfo as ProtocolMemberInfo,
+  TeamState as ProtocolTeamState,
+  EncryptedDocIndexEntry as ProtocolEncryptedDocIndexEntry,
+} from '@nimbalyst/collab-protocol';
+
+export type {
+  TeamClientMessage,
+  TeamServerMessage,
+  TeamSyncResponseMessage,
+  TeamMemberAddedMessage,
+  TeamMemberRemovedMessage,
+  TeamMemberRoleChangedMessage,
+  TeamKeyEnvelopeAvailableMessage,
+  TeamKeyEnvelopeMessage,
+  TeamIdentityKeyResponseMessage,
+  TeamIdentityKeyUploadedMessage,
+  TeamDocIndexSyncResponseMessage,
+  TeamDocIndexBroadcastMessage,
+  TeamDocIndexRemoveBroadcastMessage,
+  TeamOrgKeyRotatedMessage,
+  TeamErrorMessage,
+} from '@nimbalyst/collab-protocol';
+
+/** Re-export wire types under client-side names. */
+export type MemberInfo = ProtocolMemberInfo;
+export type EncryptedDocIndexEntry = ProtocolEncryptedDocIndexEntry;
+/** Wire-format team state (encrypted document titles, sent by server). */
+export type ServerTeamState = ProtocolTeamState;
 
 // ============================================================================
 // Configuration
@@ -25,6 +56,15 @@ export interface TeamSyncConfig {
 
   /** AES-256-GCM key for encrypting/decrypting document titles (org key) */
   encryptionKey: CryptoKey;
+
+  /**
+   * Fingerprint of the current org key (`SHA-256(rawKey).slice(0,32)`),
+   * attached to every doc-index write so the server can enforce key-epoch
+   * alignment during rotation. May be `null` while the host adapter is
+   * still bootstrapping; once set, writes that don't match the server's
+   * current fingerprint are rejected with `staleKeyEpoch`.
+   */
+  orgKeyFingerprint: string | null;
 
   /** Called when full team state snapshot is received (initial sync) */
   onTeamStateLoaded?: (state: TeamState) => void;
@@ -81,7 +121,7 @@ export type TeamSyncStatus =
   | 'error';
 
 // ============================================================================
-// Team State (decrypted)
+// Decrypted team state (client-side projection)
 // ============================================================================
 
 export interface TeamState {
@@ -89,20 +129,18 @@ export interface TeamState {
     orgId: string;
     name: string;
     gitRemoteHash: string | null;
+    /**
+     * Server-minted UUID that names this team's tracker room
+     * (tracker-sync-redesign D8 / NIM-404). May be null when reading
+     * snapshots persisted before the migration ran on the server.
+     */
+    teamProjectId: string | null;
     createdBy: string;
     createdAt: number;
   } | null;
   members: MemberInfo[];
   documents: DocIndexEntry[];
   keyEnvelope?: KeyEnvelopeData | null;
-}
-
-export interface MemberInfo {
-  userId: string;
-  role: string;
-  email: string | null;
-  hasKeyEnvelope: boolean;
-  hasIdentityKey: boolean;
 }
 
 export interface KeyEnvelopeData {
@@ -115,134 +153,6 @@ export interface KeyEnvelopeData {
 export interface DocIndexEntry {
   documentId: string;
   title: string;
-  documentType: string;
-  createdBy: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-// ============================================================================
-// Wire Protocol (client-side copies of collabv3 types)
-// ============================================================================
-
-/** Client -> Server messages */
-export type TeamClientMessage =
-  | { type: 'teamSync' }
-  | { type: 'uploadIdentityKey'; publicKeyJwk: string }
-  | { type: 'requestIdentityKey'; targetUserId: string }
-  | { type: 'requestKeyEnvelope' }
-  | { type: 'docIndexSync' }
-  | { type: 'docIndexRegister'; documentId: string; encryptedTitle: string; titleIv: string; documentType: string }
-  | { type: 'docIndexUpdate'; documentId: string; encryptedTitle: string; titleIv: string }
-  | { type: 'docIndexRemove'; documentId: string };
-
-/** Server -> Client messages */
-export type TeamServerMessage =
-  | TeamSyncResponseMessage
-  | TeamMemberAddedMessage
-  | TeamMemberRemovedMessage
-  | TeamMemberRoleChangedMessage
-  | TeamKeyEnvelopeAvailableMessage
-  | TeamKeyEnvelopeMessage
-  | TeamIdentityKeyResponseMessage
-  | TeamIdentityKeyUploadedMessage
-  | TeamDocIndexSyncResponseMessage
-  | TeamDocIndexBroadcastMessage
-  | TeamDocIndexRemoveBroadcastMessage
-  | TeamOrgKeyRotatedMessage
-  | TeamErrorMessage;
-
-export interface TeamSyncResponseMessage {
-  type: 'teamSyncResponse';
-  team: ServerTeamState;
-}
-
-export interface TeamMemberAddedMessage {
-  type: 'memberAdded';
-  member: MemberInfo;
-}
-
-export interface TeamMemberRemovedMessage {
-  type: 'memberRemoved';
-  userId: string;
-}
-
-export interface TeamMemberRoleChangedMessage {
-  type: 'memberRoleChanged';
-  userId: string;
-  role: string;
-}
-
-export interface TeamKeyEnvelopeAvailableMessage {
-  type: 'keyEnvelopeAvailable';
-  targetUserId: string;
-}
-
-export interface TeamKeyEnvelopeMessage {
-  type: 'keyEnvelope';
-  wrappedKey: string;
-  iv: string;
-  senderPublicKey: string;
-}
-
-export interface TeamIdentityKeyResponseMessage {
-  type: 'identityKeyResponse';
-  userId: string;
-  publicKeyJwk: string;
-}
-
-export interface TeamIdentityKeyUploadedMessage {
-  type: 'identityKeyUploaded';
-  userId: string;
-}
-
-export interface TeamDocIndexSyncResponseMessage {
-  type: 'docIndexSyncResponse';
-  documents: EncryptedDocIndexEntry[];
-}
-
-export interface TeamDocIndexBroadcastMessage {
-  type: 'docIndexBroadcast';
-  document: EncryptedDocIndexEntry;
-}
-
-export interface TeamDocIndexRemoveBroadcastMessage {
-  type: 'docIndexRemoveBroadcast';
-  documentId: string;
-}
-
-export interface TeamOrgKeyRotatedMessage {
-  type: 'orgKeyRotated';
-  fingerprint: string;
-}
-
-export interface TeamErrorMessage {
-  type: 'error';
-  code: string;
-  message: string;
-}
-
-/** Server team state snapshot (encrypted document titles) */
-export interface ServerTeamState {
-  metadata: {
-    orgId: string;
-    name: string;
-    gitRemoteHash: string | null;
-    createdBy: string;
-    createdAt: number;
-    /** Server-authoritative fingerprint of the current org encryption key */
-    currentOrgKeyFingerprint?: string | null;
-  } | null;
-  members: MemberInfo[];
-  documents: EncryptedDocIndexEntry[];
-  keyEnvelope?: KeyEnvelopeData | null;
-}
-
-/** Encrypted document index entry as received from server */
-export interface EncryptedDocIndexEntry {
-  documentId: string;
-  encryptedTitle: string;
-  titleIv: string;
   documentType: string;
   createdBy: string;
   createdAt: number;

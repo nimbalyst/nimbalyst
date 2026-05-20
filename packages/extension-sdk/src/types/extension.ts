@@ -412,6 +412,27 @@ export interface CustomEditorContribution {
    * omitted.
    */
   transcriptEmbedHeight?: number;
+
+  /**
+   * Declares whether this editor supports the host's collaborative
+   * (Share-to-Team / multi-client real-time) flow.
+   *
+   * When `supported: true`, the host treats files of this type as eligible
+   * for collaborative open: it stands up a `DocumentSyncProvider`,
+   * populates `host.collaboration` on the EditorHost, and the editor
+   * component is expected to call `useCollaborativeEditor` from
+   * `@nimbalyst/extension-sdk` to wire its binding.
+   *
+   * `awarenessFields` is advisory metadata used for docs / debugging --
+   * it does not gate runtime behaviour. List the extra awareness keys
+   * (beyond the standard `user`, `pointer`, `selection`) your editor
+   * publishes, e.g. `['selectedElementIds', 'tool']` for Excalidraw or
+   * `['editingNodeId']` for Mindmap.
+   */
+  collaboration?: {
+    supported: boolean;
+    awarenessFields?: string[];
+  };
 }
 
 export interface DocumentHeaderContribution {

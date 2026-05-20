@@ -62,6 +62,7 @@ function registerExtensionEditors(extensionId: string): string[] {
         transcriptEmbedHeight: contribution.transcriptEmbedHeight,
         extensionId: extensionId,
         componentName: contribution.component,
+        collaboration: contribution.collaboration,
       });
 
       registeredExtensions.push(...extensions);

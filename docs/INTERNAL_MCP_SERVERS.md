@@ -26,6 +26,19 @@ Nimbalyst runs MCP servers **inside the Electron main process** to provide AI ca
 
 3. **Extension Development Kit MCP Server** (`extensionDevServer.ts`) - Port varies, provides:
 
+4. **Settings Control MCP Server** (`settingsServer.ts`) - Port varies, provides curated tools for an agent to inspect and change Nimbalyst settings:
+  - `settings_get_overview` - Curated, redacted snapshot of app + workspace settings (no secrets)
+  - `workspace_create` / `workspace_open` - Create/open a project workspace
+  - `sync_set_for_project` - Enable/disable session and document sync per project (requires Stytch sign-in)
+  - `appearance_set_theme` / `appearance_set_completion_sound` / `appearance_set_spellcheck`
+  - `analytics_set_enabled`
+  - `ai_set_default_model` / `ai_set_preferred_language`
+  - `features_toggle` - alpha/beta/developer feature flags (alpha and developer require Developer Mode)
+  - `extension_set_enabled`
+  - `tracker_set_sync_policy` / `tracker_set_issue_key_prefix`
+
+  All writes route through `SettingsControlService` which enforces an allow-list, a deny-list (API keys, Stytch creds, share keys), a per-session rate limit (30 writes / 60s), and audit logging via `logger.store.info`. Kill-switch: set `settingsAgentToolsDisabled` to `true` in Settings to omit this server from the agent's MCP config on the next session start. The server is exposed to standard agents only; the meta-agent profile excludes it.
+
 ## Architecture
 
 ### Components

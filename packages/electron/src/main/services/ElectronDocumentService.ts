@@ -28,6 +28,7 @@ import { shouldExcludeDir } from '../utils/fileFilters';
 import { getRegisteredExtensions } from '../extensions/RegisteredFileTypes';
 import { isPathInWorkspace, getRelativeWorkspacePath } from '../utils/workspaceDetection';
 import { syncTrackerItem, unsyncTrackerItem, isTrackerSyncActive } from './TrackerSyncManager';
+import { applyHeadlessBodyMarkdown } from './MainBodyDocService';
 import {
   getEffectiveTrackerSyncPolicy,
   getInitialTrackerSyncStatus,
@@ -1037,8 +1038,11 @@ export class ElectronDocumentService implements DocumentService {
       linkedCommitSha: data.linkedCommitSha || undefined,
       documentId: data.documentId || undefined,
       syncStatus: row.sync_status || 'local',
-      // Map persisted per-field LWW timestamps to the top-level property
-      fieldUpdatedAt: data?._fieldUpdatedAt || undefined,
+      // Body Y.Doc version pointer (phase 4b). BIGINT in PGLite arrives
+      // as string|number depending on the driver path; normalize.
+      bodyVersion: row.body_version !== undefined && row.body_version !== null
+        ? Number(row.body_version)
+        : undefined,
       // Pass through extra JSONB data fields (e.g. kanbanSortOrder) so they
       // survive the TrackerItem -> TrackerRecord conversion via customFields.
       customFields: (() => {
@@ -1047,9 +1051,6 @@ export class ElectronDocumentService implements DocumentService {
           'created', 'updated', 'dueDate', 'assigneeEmail', 'reporterEmail',
           'authorIdentity', 'lastModifiedBy', 'createdByAgent', 'assigneeId',
           'reporterId', 'labels', 'linkedSessions', 'linkedCommitSha', 'documentId',
-          // _fieldUpdatedAt is the per-field LWW timestamp map, surfaced via the
-          // top-level fieldUpdatedAt property -- not a user-visible custom field.
-          '_fieldUpdatedAt',
         ]);
         const extra: Record<string, any> = {};
         if (data) {
@@ -1131,18 +1132,11 @@ export class ElectronDocumentService implements DocumentService {
     // getCurrentIdentity imported statically at top of file
     data.lastModifiedBy = getCurrentIdentity(row.workspace);
 
-    // Stamp per-field LWW timestamps for sync conflict resolution
-    const fieldTimestamps: Record<string, number> = data._fieldUpdatedAt || {};
-    const now = Date.now();
-
     // Merge remaining updates into data (skip typeTags since it's a column)
     for (const [key, value] of Object.entries(updates)) {
       if (key === 'typeTags') continue;
       data[key] = value;
-      fieldTimestamps[key] = now;
     }
-
-    data._fieldUpdatedAt = fieldTimestamps;
 
     await database.query(
       `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
@@ -1171,10 +1165,38 @@ export class ElectronDocumentService implements DocumentService {
    */
   async updateTrackerItemContent(itemId: string, content: any): Promise<void> {
     const contentJson = content != null ? JSON.stringify(content) : null;
-    await database.query(
-      `UPDATE tracker_items SET content = $1, updated = NOW() WHERE id = $2`,
+    // Phase 4b: every body save bumps `body_version` and writes a row
+    // into `tracker_body_cache` keyed by `(item_id, body_version)`. The
+    // bumped version travels through the metadata sync envelope so
+    // remote clients learn the body changed without re-fetching the Y.Doc.
+    //
+    // The UPDATE + cache INSERT are issued serially via the PGLite
+    // worker, which serializes calls. A crash between the two leaves
+    // tracker_items.body_version bumped but tracker_body_cache without
+    // the new row -- on next save the bump re-fires and the cache row
+    // gets a fresher version anyway, so we don't end up wedged.
+    const updateResult = await database.query<{ body_version: string | number | null }>(
+      `UPDATE tracker_items
+         SET content = $1,
+             body_version = COALESCE(body_version, 0) + 1,
+             updated = NOW()
+       WHERE id = $2
+       RETURNING body_version`,
       [contentJson, itemId]
     );
+    const newBodyVersion = Number(updateResult.rows[0]?.body_version ?? 0);
+
+    if (contentJson !== null && newBodyVersion > 0) {
+      // ON CONFLICT DO NOTHING covers the rare case where two saves race
+      // on the same version assignment (shouldn't happen via PGLite's
+      // single-writer worker, but cheap insurance).
+      await database.query(
+        `INSERT INTO tracker_body_cache (item_id, body_version, content, cached_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (item_id, body_version) DO NOTHING`,
+        [itemId, newBodyVersion, contentJson]
+      );
+    }
 
     const result = await database.query<any>(
       `SELECT * FROM tracker_items WHERE id = $1`,
@@ -1189,7 +1211,89 @@ export class ElectronDocumentService implements DocumentService {
         timestamp: new Date(),
       };
       this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+
+      // Phase 4b: fire a metadata-layer sync so remote cold clients
+      // learn about the bumped body_version. Warm clients with the
+      // DocumentRoom Y.Doc open already see body changes directly --
+      // this push exists for the "search / preview / never-opened"
+      // surface, which only ever reads the metadata projection. The
+      // 800ms debounce upstream keeps the burst rate reasonable.
+      if (isTrackerSyncActive(item.workspace)) {
+        try {
+          await syncTrackerItem(item);
+        } catch (syncErr) {
+          console.error('[DocumentService] updateTrackerItemContent sync failed:', syncErr);
+        }
+        // Limitation 1 fix (Option A): also land the body change against
+        // the live DocumentRoom Y.Doc so warm renderer peers receive the
+        // edit via CRDT merge instead of clobbering it on their next
+        // autosave.
+        if (typeof content === 'string') {
+          void applyHeadlessBodyMarkdown(item.workspace, itemId, content);
+        }
+      }
     }
+  }
+
+  /**
+   * Read a body snapshot at a specific version from the cache. Used by
+   * future cold-read paths (search, history, preview) so they don't pay
+   * the cost of resolving the Y.Doc just to look at body text.
+   *
+   * Returns `null` when no cached row exists at that version (e.g. the
+   * cache was provisioned after the version was written, or the row was
+   * evicted by a future pruning policy).
+   */
+  async getTrackerBodyCacheAtVersion(itemId: string, bodyVersion: number): Promise<any | null> {
+    const result = await database.query<{ content: string | null }>(
+      `SELECT content FROM tracker_body_cache
+        WHERE item_id = $1 AND body_version = $2`,
+      [itemId, bodyVersion]
+    );
+    const raw = result.rows[0]?.content;
+    if (raw === undefined || raw === null) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // Not JSON -- return as-is. The cache stores whatever the host wrote.
+      return raw;
+    }
+  }
+
+  /**
+   * Read the latest body cache row for an item -- the one matching the
+   * item's current `body_version`. Used by the renderer's cold-open path
+   * so the editor can paint authoritative content before the
+   * DocumentRoom Y.Doc finishes its initial sync. CollabLexicalProvider's
+   * `deferInitialSync: true` mode ensures the bootstrap decision still
+   * happens AFTER the server's initial sync response, so a non-empty
+   * room won't be clobbered by this optimistic paint.
+   *
+   * Returns `null` when the item is missing, has never been saved
+   * (body_version = 0), or the cache row was never written.
+   */
+  async getTrackerBodyCacheLatest(itemId: string): Promise<{ bodyVersion: number; content: any } | null> {
+    const result = await database.query<{ body_version: string | number | null; content: string | null }>(
+      `SELECT t.body_version, c.content
+         FROM tracker_items t
+         LEFT JOIN tracker_body_cache c
+           ON c.item_id = t.id AND c.body_version = t.body_version
+        WHERE t.id = $1`,
+      [itemId]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const bodyVersion = Number(row.body_version ?? 0);
+    if (bodyVersion <= 0) return null;
+    const raw = row.content;
+    if (raw === undefined || raw === null) return null;
+    let parsed: any = raw;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Not JSON -- return as-is. The cache stores whatever the host wrote.
+    }
+    return { bodyVersion, content: parsed };
   }
 
   /**
@@ -1670,16 +1774,6 @@ export class ElectronDocumentService implements DocumentService {
     if (payload.customFields) {
       Object.assign(data, payload.customFields);
     }
-
-    // Stamp per-field LWW timestamps for sync conflict resolution on create
-    const now = Date.now();
-    const fieldTimestamps: Record<string, number> = {};
-    for (const key of Object.keys(data)) {
-      // Skip system/internal keys that aren't user fields
-      if (key === '_fieldUpdatedAt' || key === 'authorIdentity' || key === 'kanbanSortOrder') continue;
-      fieldTimestamps[key] = now;
-    }
-    data._fieldUpdatedAt = fieldTimestamps;
 
     const source = payload.source || 'native';
     const contentJson = payload.content ? JSON.stringify(payload.content) : null;
@@ -2473,15 +2567,13 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
     try {
       await requireDocumentService(event).updateTrackerItemContent(payload.itemId, payload.content);
 
-      // Stamp fieldUpdatedAt.content and trigger sync
+      // Trigger sync; the new sync engine orders writes by server-assigned syncId.
       try {
-        const row = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [payload.itemId]);
+        const row = await database.query<any>(
+          `SELECT workspace, type FROM tracker_items WHERE id = $1`,
+          [payload.itemId],
+        );
         if (row.rows.length > 0) {
-          const data = typeof row.rows[0].data === 'string' ? JSON.parse(row.rows[0].data) : row.rows[0].data || {};
-          const fieldUpdatedAt = data._fieldUpdatedAt || {};
-          fieldUpdatedAt.content = Date.now();
-          data._fieldUpdatedAt = fieldUpdatedAt;
-          await database.query(`UPDATE tracker_items SET data = $1 WHERE id = $2`, [JSON.stringify(data), payload.itemId]);
           await syncAfterCommentMutation(event, payload.itemId, row.rows[0].workspace, row.rows[0].type);
         }
       } catch (syncErr) {
@@ -2504,6 +2596,21 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
       return { success: true, content };
     } catch (error) {
       console.error('[DocumentService] tracker-item-get-content failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Latest body cache row for an item -- cold-open paint path. Returns
+  // { bodyVersion, content } so the renderer can paint authoritative
+  // content while the DocumentRoom Y.Doc connects in the background.
+  safeHandle('document-service:get-tracker-body-cache-for-detail', async (event, payload: {
+    itemId: string;
+  }) => {
+    try {
+      const row = await requireDocumentService(event).getTrackerBodyCacheLatest(payload.itemId);
+      return { success: true, row };
+    } catch (error) {
+      console.error('[DocumentService] get-tracker-body-cache-for-detail failed:', error);
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   });
@@ -2631,7 +2738,6 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
         labels: d.labels || undefined, linkedSessions: d.linkedSessions || undefined,
         linkedCommitSha: d.linkedCommitSha || undefined, documentId: d.documentId || undefined,
         syncStatus: r.sync_status || 'local',
-        fieldUpdatedAt: d._fieldUpdatedAt || undefined,
       };
       // Pass through extra JSONB data fields (activity, comments, etc.)
       // Uses the item's own keys as the "known" set -- no hardcoded list.
@@ -2683,11 +2789,6 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
       });
       data.activity = activity.length > 100 ? activity.slice(-100) : activity;
 
-      // Stamp field-level LWW timestamp for sync conflict resolution
-      const fieldUpdatedAt = data._fieldUpdatedAt || {};
-      fieldUpdatedAt.comments = Date.now();
-      data._fieldUpdatedAt = fieldUpdatedAt;
-
       await database.query(
         `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
         [JSON.stringify(data), payload.itemId]
@@ -2728,11 +2829,6 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
         comments[idx].deleted = payload.deleted;
       }
       data.comments = comments;
-
-      // Stamp field-level LWW timestamp for sync conflict resolution
-      const fieldUpdatedAt = data._fieldUpdatedAt || {};
-      fieldUpdatedAt.comments = Date.now();
-      data._fieldUpdatedAt = fieldUpdatedAt;
 
       await database.query(
         `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,

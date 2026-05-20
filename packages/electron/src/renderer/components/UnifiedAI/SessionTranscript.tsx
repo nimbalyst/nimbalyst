@@ -990,7 +990,10 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     try {
       await window.electronAPI.invoke('ai:deleteQueuedPrompt', id);
       setQueuedPrompts(prev => prev.filter(p => p.id !== id));
-      setDraftInput(prompt);
+      // Append to any existing draft so editing multiple queued items doesn't
+      // clobber prior text; matches how handleQueue bundles consecutive
+      // queued prompts with a blank-line separator.
+      setDraftInput(prev => prev.trim().length > 0 ? `${prev}\n\n${prompt}` : prompt);
       inputRef.current?.focus();
     } catch (error) {
       console.error('[SessionTranscript] Failed to edit queued prompt:', error);
@@ -999,14 +1002,21 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   const handleSendNowQueuedPrompt = useCallback(async (_id: string, _prompt: string) => {
     try {
-      // Interrupt the current turn using the SDK's interrupt(). This gracefully
-      // stops the current turn, the completion handler fires normally, and the
-      // existing queue processing picks up the next pending prompt.
+      // Two-step send-now: (1) interrupt the current turn (graceful for
+      // Claude Code, hard abort for other providers via the BaseAIProvider
+      // default); (2) explicitly trigger queue processing. The natural
+      // completion-handler path also triggers it, and the server's
+      // sessionsProcessingQueue guard de-dupes, so this is safe to call.
+      // We don't rely on the isLoading auto-effect because session:completed
+      // may race or, in some edge cases, may not fire cleanly after abort.
       await window.electronAPI.invoke('ai:interruptCurrentTurn', sessionId);
+      if (workspacePath) {
+        await window.electronAPI.invoke('ai:triggerQueueProcessing', sessionId, workspacePath);
+      }
     } catch (error) {
       console.error('[SessionTranscript] Failed to interrupt for send-now:', error);
     }
-  }, [sessionId]);
+  }, [sessionId, workspacePath]);
 
   const handleCloseAndArchive = useCallback(async () => {
     try {

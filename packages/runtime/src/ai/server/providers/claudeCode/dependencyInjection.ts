@@ -61,6 +61,13 @@ export const ClaudeCodeDeps = {
   // Meta-agent MCP server port
   metaAgentServerPort: null as number | null,
 
+  // Settings control MCP server port (allows agents to inspect/change Nimbalyst settings)
+  settingsServerPort: null as number | null,
+
+  // Kill-switch loader for the settings MCP. Returns true to omit the server
+  // from the agent's MCP config on the next session start.
+  settingsAgentToolsDisabledLoader: null as (() => boolean) | null,
+
   // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers.
   // Issue #146: required so a malicious page in the user's browser can't
   // invoke MCP tools against the localhost ports. Plumbed to the SDK
@@ -153,6 +160,14 @@ export const ClaudeCodeDeps = {
 
   setMetaAgentServerPort(port: number | null): void {
     this.metaAgentServerPort = port;
+  },
+
+  setSettingsServerPort(port: number | null): void {
+    this.settingsServerPort = port;
+  },
+
+  setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void {
+    this.settingsAgentToolsDisabledLoader = loader;
   },
 
   setMcpAuthToken(token: string | null): void {

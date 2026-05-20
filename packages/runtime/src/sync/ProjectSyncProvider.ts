@@ -15,69 +15,22 @@
  *   - Queues outgoing messages when offline, replays on reconnect
  */
 
-// Wire protocol types (matching collabv3/src/types.ts ProjectSync messages)
-// Defined inline to avoid runtime -> collabv3 cross-package dependency
-
-interface ProjectSyncRequestMessage {
-  type: 'projectSyncRequest';
-  files: Array<{ syncId: string; contentHash: string; lastModifiedAt: number; hasYjs: boolean; yjsSeq: number }>;
-}
-
-interface FileContentPushMessage {
-  type: 'fileContentPush';
-  syncId: string;
-  encryptedContent: string; contentIv: string;
-  contentHash: string;
-  encryptedPath: string; pathIv: string;
-  encryptedTitle: string; titleIv: string;
-  lastModifiedAt: number;
-}
-
-interface FileContentBatchPushMessage {
-  type: 'fileContentBatchPush';
-  files: Omit<FileContentPushMessage, 'type'>[];
-}
-
-interface FileDeleteMessage { type: 'fileDelete'; syncId: string }
-interface FileYjsInitMessage { type: 'fileYjsInit'; syncId: string; encryptedSnapshot: string; iv: string }
-interface FileYjsUpdateMessage { type: 'fileYjsUpdate'; syncId: string; encryptedUpdate: string; iv: string }
-interface FileYjsCompactMessage { type: 'fileYjsCompact'; syncId: string; encryptedSnapshot: string; iv: string; replacesUpTo: number }
-
-interface ProjectSyncFileEntry {
-  syncId: string;
-  encryptedContent: string; contentIv: string;
-  contentHash: string;
-  encryptedPath: string; pathIv: string;
-  encryptedTitle: string; titleIv: string;
-  lastModifiedAt: number;
-  hasYjs: boolean;
-}
-
-interface ProjectSyncYjsUpdate {
-  syncId: string; encryptedUpdate: string; iv: string; sequence: number;
-}
-
-interface ProjectSyncResponseMessage {
-  type: 'projectSyncResponse';
-  updatedFiles: ProjectSyncFileEntry[];
-  yjsUpdates: ProjectSyncYjsUpdate[];
-  newFiles: ProjectSyncFileEntry[];
-  needFromClient: string[];
-  deletedSyncIds: string[];
-}
-
-interface FileContentBroadcastMessage {
-  type: 'fileContentBroadcast';
-  syncId: string;
-  encryptedContent: string; contentIv: string;
-  contentHash: string;
-  encryptedPath: string; pathIv: string;
-  encryptedTitle: string; titleIv: string;
-  lastModifiedAt: number;
-  fromConnectionId: string;
-}
-
-interface FileDeleteBroadcastMessage { type: 'fileDeleteBroadcast'; syncId: string; fromConnectionId: string }
+// Wire protocol types come from `@nimbalyst/collab-protocol`, which is the
+// single source of truth shared with the sync server.
+import type {
+  ProjectSyncRequestMessage,
+  FileContentPushMessage,
+  FileContentBatchPushMessage,
+  FileDeleteMessage,
+  FileYjsInitMessage,
+  FileYjsUpdateMessage,
+  FileYjsCompactMessage,
+  ProjectSyncFileEntry,
+  ProjectSyncYjsUpdate,
+  ProjectSyncResponseMessage,
+  FileContentBroadcastMessage,
+  FileDeleteBroadcastMessage,
+} from '@nimbalyst/collab-protocol';
 
 
 export interface ProjectSyncConfig {

@@ -28,13 +28,6 @@
     "ios:test:swift": "npm run test:swift --prefix packages/ios",
     "ios:build:transcript": "npm run build:transcript --prefix packages/ios",
     "ios:build:editor": "npm run build:editor --prefix packages/ios",
-    "collab:dev": "npm run dev --prefix packages/collab",
-    "collab:build": "npm run build --prefix packages/collab",
-    "collab:start": "npm start --prefix packages/collab",
-    "collabv2:dev": "npm run dev --prefix packages/collabv2",
-    "collabv2:build": "npm run build --prefix packages/collabv2",
-    "collabv2:deploy": "npm run deploy --prefix packages/collabv2",
-    "collabv2:test": "npm run test --prefix packages/collabv2",
     "test:extensions": "bash scripts/run-extension-tests.sh"
   },
   "devDependencies": {
@@ -79,8 +72,7 @@
     "packages/electron",
     "packages/runtime",
     "packages/core",
-    "packages/collabv3",
-    "packages/collabv3-metrics",
+    "packages/collab-protocol",
     "packages/ios",
     "packages/extension-sdk",
     "packages/extensions/*",

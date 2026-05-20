@@ -52,4 +52,13 @@ export interface CustomEditorRegistration {
 
   // Optional: Component name for error attribution
   componentName?: string;
+
+  // Optional: Collaboration support, mirrors the manifest contribution. When
+  // `supported: true`, opening this file via a `collab://` URI routes through
+  // `CollaborativeTabEditor` and the editor receives a populated
+  // `host.collaboration` (extension uses `useCollaborativeEditor` from the SDK).
+  collaboration?: {
+    supported: boolean;
+    awarenessFields?: string[];
+  };
 }
