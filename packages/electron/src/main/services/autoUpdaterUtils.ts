@@ -25,9 +25,27 @@ export function categorizeDownloadDuration(durationMs: number): 'fast' | 'medium
  * stays classified as network. Documents the precedence so a future
  * reorder does not silently change behavior.
  */
+// electron-updater runs its requests through Electron's Chromium net stack,
+// which reports connectivity failures as `net::ERR_*` strings that none of the
+// Node-style checks (enotfound / econnrefused / timeout) match. The most common
+// one is `net::ERR_NAME_NOT_RESOLVED` on a background poll when DNS is briefly
+// unavailable (machine waking, captive portal, VPN flap). Match the connectivity
+// family explicitly so these get the 'network' bucket and the background-poll
+// toast suppression in autoUpdater.ts fires. Deliberately scoped: `net::ERR_CERT_*`
+// and `net::ERR_SSL_*` are NOT listed here so they keep falling through to the
+// signature branch below. See #56 / #223.
+const CHROMIUM_NETWORK_ERROR =
+  /net::err_(name_not_resolved|internet_disconnected|network_changed|connection_(refused|reset|closed|timed_out|aborted|failed)|proxy_connection_failed|address_unreachable|name_resolution_failed|network_access_denied|timed_out)/;
+
 export function classifyUpdateError(error: Error): string {
   const message = error.message.toLowerCase();
-  if (message.includes('network') || message.includes('enotfound') || message.includes('timeout') || message.includes('econnrefused')) {
+  if (
+    message.includes('network') ||
+    message.includes('enotfound') ||
+    message.includes('timeout') ||
+    message.includes('econnrefused') ||
+    CHROMIUM_NETWORK_ERROR.test(message)
+  ) {
     return 'network';
   }
   if (message.includes('permission') || message.includes('eacces')) {
