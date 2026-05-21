@@ -7,7 +7,7 @@ import { readClipboard, type ChatAttachment } from '@nimbalyst/runtime';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
 import type { EffortLevel } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
-import { ModeTag, AIMode, nextMode } from './ModeTag';
+import { ModeTag, type AIMode } from './ModeTag';
 import { ModelSelector } from './ModelSelector';
 import { EffortLevelSelector } from './EffortLevelSelector';
 import { registerPendingVoiceCommandSetter } from './VoiceModeButton.tsx';
@@ -766,7 +766,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
       // Other providers do not get Shift+Tab — gated below.
       if (e.key === 'Tab' && e.shiftKey && provider === 'claude-code' && onModeChange && mode) {
         e.preventDefault();
-        onModeChange(nextMode(mode, provider));
+        onModeChange(mode === 'planning' ? 'agent' : 'planning');
         return;
       }
 
@@ -1263,7 +1263,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
             alignItems: 'center',
             gap: '8px',
           }}>
-{onModeChange && provider === 'claude-code' && mode && <ModeTag mode={mode} onModeChange={onModeChange} provider={provider} />}
+{onModeChange && provider === 'claude-code' && mode && <ModeTag mode={mode} onModeChange={onModeChange} />}
             {onModelChange && (
               <HelpTooltip testId="model-picker">
                 <span style={{ display: 'inline-flex' }}>
