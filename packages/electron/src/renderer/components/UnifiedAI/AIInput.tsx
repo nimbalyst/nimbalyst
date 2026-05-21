@@ -33,7 +33,6 @@ import {
   searchSessionMentionAtom,
   sessionRegistryAtom,
 } from '../../store';
-import { workspacePermissionsAtomFamily } from '../../store/atoms/appSettings';
 import { useAIInputUndo } from '../../hooks/useAIInputUndo';
 import type { AIInputSnapshot } from '../../store/atoms/aiInputUndo';
 
@@ -181,13 +180,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     // Workspace permissions atom (used to detect Auto + bypass-all conflict).
     // Falls back to empty-string key when no workspacePath; the default state
     // returns permissionMode = null so the badge stays hidden.
-    const workspacePermissionsAtom = useMemo(
-      () => workspacePermissionsAtomFamily(workspacePath ?? ''),
-      [workspacePath],
-    );
-    const workspacePermissions = useAtomValue(workspacePermissionsAtom);
-    // Auto-bypass warning removed: "Allow All" (bypass-all) now transparently
-    // activates auto mode for supported providers, so the conflict is moot.
+
 
     // Undo/redo stack for the input. Snapshots include text, attachments, and
     // cursor; boundary events (paste, drop, typeahead, attachment add/remove,
