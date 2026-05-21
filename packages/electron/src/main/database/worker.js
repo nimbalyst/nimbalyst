@@ -604,35 +604,12 @@ class PGLiteWorker {
           ALTER TABLE ai_sessions ADD COLUMN has_been_named BOOLEAN DEFAULT FALSE;
         END IF;
 
-        -- Add mode column for session behavior (planning vs agent vs auto).
-        -- Fresh installs get the wide CHECK constraint directly; the migration
-        -- block below only runs for databases that already have the old
-        -- ('planning','agent') constraint.
+        -- Add mode column for session behavior (planning vs agent)
         IF NOT EXISTS (
           SELECT 1 FROM information_schema.columns
           WHERE table_name = 'ai_sessions' AND column_name = 'mode'
         ) THEN
-          ALTER TABLE ai_sessions ADD COLUMN mode TEXT DEFAULT 'agent' CHECK (mode IN ('planning', 'agent', 'auto'));
-        END IF;
-
-        -- Migration (issue #371): widen the existing mode CHECK constraint to
-        -- include 'auto'. Guarded by inspecting pg_get_constraintdef(c.oid)
-        -- so it only runs once: any subsequent boot sees 'auto' in the
-        -- constraint definition and skips the block entirely. Without this
-        -- guard the original constraint rejects UPDATEs to 'auto', the write
-        -- fails silently in PGLiteSessionStore, and the renderer's
-        -- optimistic mode gets clobbered on the next session reload.
-        IF EXISTS (
-          SELECT 1
-          FROM pg_constraint c
-          JOIN pg_class t ON t.oid = c.conrelid
-          WHERE t.relname = 'ai_sessions'
-            AND c.conname = 'ai_sessions_mode_check'
-            AND pg_get_constraintdef(c.oid) NOT LIKE '%auto%'
-        ) THEN
-          ALTER TABLE ai_sessions DROP CONSTRAINT ai_sessions_mode_check;
-          ALTER TABLE ai_sessions
-            ADD CONSTRAINT ai_sessions_mode_check CHECK (mode IN ('planning', 'agent', 'auto'));
+          ALTER TABLE ai_sessions ADD COLUMN mode TEXT DEFAULT 'agent' CHECK (mode IN ('planning', 'agent'));
         END IF;
 
         -- Add is_archived column for session archiving feature
