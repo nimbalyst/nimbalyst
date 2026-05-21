@@ -186,10 +186,8 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
       [workspacePath],
     );
     const workspacePermissions = useAtomValue(workspacePermissionsAtom);
-    const showAutoBypassWarning =
-      provider === 'claude-code'
-      && mode === 'auto'
-      && workspacePermissions.permissionMode === 'bypass-all';
+    // Auto-bypass warning removed: "Allow All" (bypass-all) now transparently
+    // activates auto mode for supported providers, so the conflict is moot.
 
     // Undo/redo stack for the input. Snapshots include text, attachments, and
     // cursor; boundary events (paste, drop, typeahead, attachment add/remove,
@@ -1266,21 +1264,6 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
             gap: '8px',
           }}>
 {onModeChange && provider === 'claude-code' && mode && <ModeTag mode={mode} onModeChange={onModeChange} provider={provider} />}
-            {showAutoBypassWarning && (
-              <HelpTooltip testId="auto-bypass-warning">
-                <span
-                  data-testid="auto-bypass-warning"
-                  className="auto-bypass-warning inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-amber-700 bg-amber-100 dark:text-amber-300 dark:bg-amber-900/40"
-                  role="status"
-                  aria-label="Workspace Bypass All is on, but Auto mode classifier escalates destructive operations to a permission prompt"
-                  title="Workspace 'Bypass All' is on, but Auto mode's classifier runs first and escalates destructive operations to a permission prompt."
-                >
-                  <span aria-hidden>!</span>
-                  <span>bypass</span>
-                </span>
-              </HelpTooltip>
-            )}
-
             {onModelChange && (
               <HelpTooltip testId="model-picker">
                 <span style={{ display: 'inline-flex' }}>

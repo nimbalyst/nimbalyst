@@ -9,7 +9,12 @@ interface ModeStyle {
   ariaPrefix: string;
 }
 
-const STYLES: Record<AIMode, ModeStyle> = {
+// Visual styles for the two user-facing modes. `auto` is intentionally
+// absent — it is activated transparently via the "Allow All" trust level
+// (see ClaudeCodeProvider) and does not appear in the toggle cycle.
+// The `auto` entry in `AIMode` is kept for backward compat with sessions
+// persisted before this change; stale `auto` collapses to `agent` below.
+const STYLES: Record<'planning' | 'agent', ModeStyle> = {
   planning: {
     label: 'Plan',
     className:
@@ -22,39 +27,19 @@ const STYLES: Record<AIMode, ModeStyle> = {
       'mode-tag-agent bg-orange-100 text-orange-600 hover:bg-orange-200 dark:bg-orange-900/40 dark:text-orange-400 dark:hover:bg-orange-900/60',
     ariaPrefix: 'Agent mode: Full tool access',
   },
-  auto: {
-    label: 'Auto',
-    className:
-      'mode-tag-auto bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/40 dark:text-violet-400 dark:hover:bg-violet-900/60',
-    ariaPrefix:
-      'Auto mode: SDK classifier auto-approves safe operations and asks for confirmation on destructive or uncertain ones',
-  },
 };
 
 /**
- * Ordered list of supported modes for a given provider. The cycle order is
- * the array order (last entry wraps back to the first).
+ * Ordered list of user-facing modes. The cycle order is the array order
+ * (last entry wraps back to the first).
  *
- * Note on rendering: today AIInput only renders ModeTag at all when
- * `provider === 'claude-code'`, so non-claude callers never reach this
- * helper from the UI. The provider parameter is kept (and the
- * non-claude-code branch returns just Plan/Agent) as defense in depth:
- * future callers that drop the outer gate inherit a safe, Auto-free cycle
- * automatically, and stale `auto` state from a swapped session falls back
- * to a supported mode instead of breaking the toggle.
- *
- * - `claude-code`: Plan, Agent, Auto. Auto maps to the Claude Agent SDK's
- *   native `permissionMode: 'auto'` classifier (issue #371).
- * - Other providers (defense-in-depth fallback): Plan, Agent only. Auto is
- *   omitted because the classifier is Claude Code SDK-specific; Codex and
- *   other harnesses do not honour it.
+ * Auto mode is not in this list — it is activated transparently when the
+ * workspace trust level is "Allow All" and the provider supports the SDK
+ * classifier (see ClaudeCodeProvider.sendMessage, issue #371). The user
+ * only sees Plan and Agent in the toggle.
  */
-export function buildModeList(provider: string | null | undefined): AIMode[] {
-  const modes: AIMode[] = ['planning', 'agent'];
-  if (provider === 'claude-code') {
-    modes.push('auto');
-  }
-  return modes;
+export function buildModeList(_provider?: string | null): AIMode[] {
+  return ['planning', 'agent'];
 }
 
 export function nextMode(mode: AIMode, provider: string | null | undefined): AIMode {
@@ -74,26 +59,19 @@ interface ModeTagProps {
 }
 
 /**
- * ModeTag - Compact toggle between session modes.
- *
- * Rendered by AIInput only when `provider === 'claude-code'` (today). The
- * provider prop drives the supported-mode list and ARIA labels so this
- * component stays correct if that outer gate ever changes.
+ * ModeTag - Compact toggle between Plan and Agent modes.
  *
  * Plan mode: Creates plan documents, restricted to markdown files
  * Agent mode: Full tool access, write operations enabled
- * Auto mode (claude-code only): SDK classifier approves safe operations
- *   without prompting and escalates destructive or uncertain ones to the
- *   regular permission prompt. Silent auto-deny only happens for SDK-level
- *   deny rules, not as the classifier's default response to risky tools.
- *   See issue #371.
+ *
+ * Auto mode is handled transparently via the "Allow All" trust level
+ * (issue #371) and does not appear in this toggle.
  */
 export function ModeTag({ mode, onModeChange, provider }: ModeTagProps) {
   const supportedModes = buildModeList(provider);
-  // Stale mode (e.g. `auto` on a non-claude-code provider) collapses to the
-  // first supported mode so the visible state reflects what the binary will
-  // actually do.
-  const visibleMode: AIMode = supportedModes.includes(mode) ? mode : supportedModes[0];
+  // Stale `auto` from an older session collapses to `agent` so the visible
+  // state matches the two-mode cycle.
+  const visibleMode: 'planning' | 'agent' = supportedModes.includes(mode) ? (mode as 'planning' | 'agent') : 'agent';
   const next = nextMode(visibleMode, provider);
   const style = STYLES[visibleMode];
   const nextLabel = STYLES[next].label;

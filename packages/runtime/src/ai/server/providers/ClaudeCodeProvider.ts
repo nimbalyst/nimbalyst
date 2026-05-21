@@ -451,6 +451,20 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     // Track session mode for MCP server configuration and tool filtering
     this.currentMode = (documentContext as any)?.mode || 'agent';
 
+    // Trust-level upgrade: when workspace permission is "Allow All" (internal
+    // mode 'bypass-all') and session mode is 'agent', transparently upgrade to
+    // 'auto' so the SDK classifier handles permissions instead of Nimbalyst
+    // bypassing everything. This matches CLI auto-mode behaviour and adds a
+    // safety layer on top of the previous blanket bypass. Plan mode is never
+    // upgraded — it always uses the SDK's native read-only enforcement.
+    const pathForTrustUpgrade = (documentContext as any)?.permissionsPath || workspacePath;
+    if (this.currentMode === 'agent' && pathForTrustUpgrade && BaseAgentProvider.trustChecker) {
+      const trustStatus = BaseAgentProvider.trustChecker(pathForTrustUpgrade);
+      if (trustStatus.trusted && trustStatus.mode === 'bypass-all') {
+        this.currentMode = 'auto';
+      }
+    }
+
     // Threshold for large text attachments that should be written to /tmp instead of sent inline
     // This reduces initial token usage for very large attachments
     const LARGE_ATTACHMENT_CHAR_THRESHOLD = 10000;

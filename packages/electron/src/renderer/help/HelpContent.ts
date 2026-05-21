@@ -186,11 +186,7 @@ export const HelpContent: Record<string, HelpEntry> = {
   },
   'plan-mode-toggle': {
     title: 'Session Mode',
-    body: 'Cycle through Plan, Agent, and Auto modes (Shift+Tab; Auto is Claude Code only). Plan: read-only planning. Agent: full tool access; first use of each tool prompts for approval (you can grant once, for the session, or always; workspace permission modes like Allow All / Bypass All can skip prompts further). Auto: SDK classifier approves safe operations silently and falls back to the normal permission prompt for destructive or uncertain ones.',
-  },
-  'auto-bypass-warning': {
-    title: 'Auto + Bypass conflict',
-    body: 'Workspace permission mode is "Bypass All", but Auto mode\'s classifier escalates destructive operations to a permission prompt before Bypass All ever runs. Switch to Agent mode for unconditional Bypass behavior.',
+    body: 'Toggle between Plan and Agent modes (Shift+Tab). Plan: read-only planning. Agent: full tool access; first use of each tool prompts for approval (you can grant once, for the session, or always). When workspace trust is set to "Allow All", Claude Code sessions automatically use the SDK classifier to approve safe operations silently and prompt only for destructive or uncertain ones.',
   },
   'attach-files-input': {
     title: 'Attach Files & Images',
