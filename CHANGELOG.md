@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- Imported Claude Code sessions are now labelled with the model that was actually used instead of always showing Sonnet. The importer (`ClaudeCodeSessionSync`) never set a `model` on the new `ai_sessions` row, so the renderer fell back to a hardcoded `claude-code:sonnet` and every imported session showed Sonnet regardless of the real model. The importer now reads the per-turn model recorded on the JSONL assistant entries (e.g. `claude-opus-4-7`), maps it to the matching claude-code variant, and stores it on the session, falling back to the real default (`claude-code:opus-1m`) rather than Sonnet when no model is present. (#394)
 
 ### Removed
 <!-- Removed features go here -->
