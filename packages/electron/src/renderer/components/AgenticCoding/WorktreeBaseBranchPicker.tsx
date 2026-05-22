@@ -11,6 +11,7 @@
  * is logged silently (per #264 decision).
  */
 
+import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 interface WorktreeBaseBranchPickerProps {
@@ -272,7 +273,11 @@ export function WorktreeBaseBranchPicker({
             )}
 
             {!isLoading && !loadError && hasAnyBranch && (
-              <div className="worktree-base-branch-list flex flex-col gap-3 max-h-[44vh] overflow-y-auto rounded-md border border-nim bg-nim-secondary p-2">
+              <div
+                className="worktree-base-branch-list flex flex-col gap-3 max-h-[44vh] overflow-y-auto rounded-md border border-nim bg-nim-secondary p-2"
+                role="radiogroup"
+                aria-label="Base branch"
+              >
                 {sections.local.length > 0 && (
                   <BranchSection
                     title="Local branches"
@@ -329,9 +334,13 @@ interface BranchSectionProps {
 }
 
 function BranchSection({ title, branches, current, selected, onSelect }: BranchSectionProps) {
+  const sectionLabelId = `worktree-branch-section-${title.replace(/\s+/g, '-').toLowerCase()}`;
   return (
-    <div className="worktree-base-branch-section">
-      <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-nim-faint">
+    <div className="worktree-base-branch-section" role="group" aria-labelledby={sectionLabelId}>
+      <div
+        id={sectionLabelId}
+        className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-nim-faint"
+      >
         {title}
       </div>
       <ul className="list-none m-0 p-0">
@@ -342,6 +351,8 @@ function BranchSection({ title, branches, current, selected, onSelect }: BranchS
             <li key={branch}>
               <button
                 type="button"
+                role="radio"
+                aria-checked={isSelected}
                 className={`worktree-base-branch-item flex items-center w-full px-2 py-1.5 text-left text-[12px] bg-transparent border-none cursor-pointer gap-2 rounded-sm ${
                   isSelected
                     ? 'bg-[var(--nim-primary)]/15 text-nim'
@@ -357,7 +368,7 @@ function BranchSection({ title, branches, current, selected, onSelect }: BranchS
                   </span>
                 )}
                 {isSelected && (
-                  <span className="text-[14px] leading-none text-nim-primary">●</span>
+                  <span className="text-[14px] leading-none text-nim-primary" aria-hidden="true">●</span>
                 )}
               </button>
             </li>
