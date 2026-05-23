@@ -780,8 +780,11 @@ export function clearPendingThemeFallback(): void {
   getAppStore().delete('pendingThemeFallback');
 }
 
-// getThemeSync resolves 'system'/'auto' to the actual theme for the renderer
-// This prevents flash by ensuring renderer gets 'dark' or 'light', not 'system'
+// getThemeSync resolves the persisted theme ID to a renderer-applicable
+// theme: one of 'dark' | 'light' | 'crystal-dark'. Used by callers that
+// cannot consult the in-renderer extension theme registry (the project
+// picker / WorkspaceManager window and the flash-prevention script in
+// index.html).
 export function getThemeSync(): AppTheme {
   const { nativeTheme } = require('electron');
   const storedTheme = getAppStore().get('theme');
@@ -791,7 +794,21 @@ export function getThemeSync(): AppTheme {
     return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
   }
 
-  return storedTheme;
+  // Built-in themes the renderer knows how to render directly.
+  if (storedTheme === 'dark' || storedTheme === 'light' || storedTheme === 'crystal-dark') {
+    return storedTheme;
+  }
+
+  // Extension / filesystem theme. Callers that do not load the extension
+  // theme registry cannot resolve the theme's isDark themselves; fall back
+  // to the flag persisted alongside the theme ID by setTheme().
+  const isDark = getAppStore().get('themeIsDark');
+  if (typeof isDark === 'boolean') {
+    return isDark ? 'dark' : 'light';
+  }
+
+  // Last resort for themes persisted before themeIsDark existed: follow OS.
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
 }
 
 export const setThemeSync = setTheme;
