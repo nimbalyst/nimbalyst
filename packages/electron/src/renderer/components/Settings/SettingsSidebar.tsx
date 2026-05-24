@@ -15,6 +15,7 @@ export type SettingsCategory =
   | 'lmstudio'
   | 'notifications'
   | 'voice-mode'
+  | 'postgres-database'
   | 'sync'
   | 'themes'
   | 'advanced'
@@ -105,6 +106,12 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
           id: 'voice-mode',
           name: 'Voice Mode',
           icon: <MaterialSymbol icon="mic" size={16} />,
+          isAlpha: true,
+        },
+        {
+          id: 'postgres-database',
+          name: 'PostgreSQL',
+          icon: <MaterialSymbol icon="database" size={16} />,
           isAlpha: true,
         },
         {

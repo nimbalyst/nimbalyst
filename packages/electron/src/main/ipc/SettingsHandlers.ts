@@ -36,7 +36,9 @@ import {
     setClaudeCodeProjectCommandsEnabled, setClaudeCodeUserCommandsEnabled,
     getAgentWorkflowSourceSettings, getAgentWorkflowExportSettings,
     setAgentWorkflowSourceSettings, setAgentWorkflowExportSettings,
+    getPostgresBackendSettings, setPostgresBackendSettings, type PostgresBackendSettings,
 } from '../utils/store';
+import { Pool } from 'pg';
 import { getEnhancedPath } from '../services/CLIManager';
 import { logger } from '../utils/logger';
 import { SessionNamingService } from '../services/SessionNamingService';
@@ -50,6 +52,8 @@ import { getRestartSignalPath } from '../utils/appPaths';
 import { TrayManager } from '../tray/TrayManager';
 import { STYTCH_CONFIG } from '@nimbalyst/runtime';
 import { type EffortLevel, parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { databaseBackend } from '../database/PGLiteDatabaseWorker';
+import { getDefaultPgliteDir, migratePgliteToPostgres } from '../database/pgliteToPostgresMigration';
 
 // Track if we've subscribed to sync status changes
 let syncStatusListenerSetup = false;
@@ -103,6 +107,81 @@ export function registerSettingsHandlers() {
 
     safeHandle('app-settings:set', (_event, key: string, value: unknown) => {
         setAppSetting(key, value);
+    });
+
+    safeHandle('postgres:get-settings', () => {
+        return getPostgresBackendSettings();
+    });
+
+    safeHandle('postgres:set-settings', (_event, updates: Partial<PostgresBackendSettings>) => {
+        return setPostgresBackendSettings(updates);
+    });
+
+    safeHandle('postgres:get-status', () => {
+        return {
+            activeBackend: databaseBackend,
+            envConfigured: !!process.env.NIMBALYST_DATABASE_URL,
+            defaultPgliteDir: getDefaultPgliteDir(),
+            settings: getPostgresBackendSettings(),
+        };
+    });
+
+    safeHandle('postgres:test-connection', async (_event, connectionString: unknown) => {
+        const postgresUrl = typeof connectionString === 'string'
+            ? connectionString.trim()
+            : getPostgresBackendSettings().connectionString.trim();
+        if (!postgresUrl) {
+            return { success: false, error: 'Postgres connection string is required' };
+        }
+
+        const pool = new Pool({
+            connectionString: postgresUrl,
+            application_name: 'nimbalyst-postgres-settings-test',
+        });
+        try {
+            const { rows } = await pool.query(
+                `SELECT current_database() AS database, current_user AS user, version() AS version`
+            );
+            return { success: true, info: rows[0] };
+        } catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+            };
+        } finally {
+            await pool.end().catch(() => {});
+        }
+    });
+
+    safeHandle('postgres:migrate-pglite', async (_event, options: {
+        connectionString?: string;
+        pgliteDir?: string;
+        batchSize?: number;
+        truncate?: boolean;
+    } = {}) => {
+        if (databaseBackend === 'postgres' && options.truncate !== false) {
+            throw new Error('Cannot replace PostgreSQL data while Nimbalyst is actively using PostgreSQL. Restart on PGLite or disable Replace target data.');
+        }
+
+        const currentSettings = getPostgresBackendSettings();
+        const postgresUrl = (options.connectionString ?? currentSettings.connectionString).trim();
+        const result = await migratePgliteToPostgres({
+            postgresUrl,
+            pgliteDir: options.pgliteDir,
+            batchSize: options.batchSize ?? currentSettings.migrationBatchSize,
+            truncate: options.truncate ?? true,
+            snapshot: true,
+        });
+        setPostgresBackendSettings({
+            connectionString: postgresUrl,
+            migrationBatchSize: options.batchSize ?? currentSettings.migrationBatchSize,
+            lastMigration: {
+                completedAt: new Date().toISOString(),
+                rowsCopied: result.rowsCopied,
+                snapshotDir: result.snapshotDir,
+            },
+        });
+        return { success: true, result };
     });
 
     // Spellcheck toggle - controls Chromium's built-in spellchecker for all windows

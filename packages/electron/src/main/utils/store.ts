@@ -137,6 +137,9 @@ interface AppStoreSchema {
     // Dev-only: override environment (defaults to 'production' even in dev builds)
     environment?: 'development' | 'production';
   };
+  // PostgreSQL database backend. When enabled, startup maps this into
+  // NIMBALYST_DATABASE_URL before the database layer initializes.
+  postgresBackend?: PostgresBackendSettings;
   // Stytch Auth Configuration (project ID and public token only - secret stored in keychain)
   stytchAuth?: {
     projectId: string;
@@ -1414,6 +1417,58 @@ export function setSessionSyncConfig(config: SessionSyncConfig | undefined): voi
   } else {
     getAppStore().delete('sessionSync');
   }
+}
+
+// PostgreSQL Backend Settings
+export interface PostgresBackendSettings {
+  enabled: boolean;
+  connectionString: string;
+  poolMax: number;
+  migrationBatchSize?: number;
+  lastMigration?: {
+    completedAt: string;
+    rowsCopied: number;
+    snapshotDir?: string;
+  };
+}
+
+const DEFAULT_POSTGRES_BACKEND_SETTINGS: PostgresBackendSettings = {
+  enabled: false,
+  connectionString: '',
+  poolMax: 10,
+  migrationBatchSize: 200,
+};
+
+export function normalizePostgresBackendSettings(
+  settings?: Partial<PostgresBackendSettings>
+): PostgresBackendSettings {
+  const poolMax = Number(settings?.poolMax);
+  const migrationBatchSize = Number(settings?.migrationBatchSize);
+  return {
+    ...DEFAULT_POSTGRES_BACKEND_SETTINGS,
+    ...settings,
+    enabled: settings?.enabled === true,
+    connectionString: typeof settings?.connectionString === 'string' ? settings.connectionString : '',
+    poolMax: Number.isFinite(poolMax) && poolMax > 0 ? Math.floor(poolMax) : DEFAULT_POSTGRES_BACKEND_SETTINGS.poolMax,
+    migrationBatchSize: Number.isFinite(migrationBatchSize) && migrationBatchSize > 0
+      ? Math.floor(migrationBatchSize)
+      : DEFAULT_POSTGRES_BACKEND_SETTINGS.migrationBatchSize,
+  };
+}
+
+export function getPostgresBackendSettings(): PostgresBackendSettings {
+  return normalizePostgresBackendSettings(getAppStore().get('postgresBackend'));
+}
+
+export function setPostgresBackendSettings(
+  updates: Partial<PostgresBackendSettings>
+): PostgresBackendSettings {
+  const next = normalizePostgresBackendSettings({
+    ...getPostgresBackendSettings(),
+    ...updates,
+  });
+  getAppStore().set('postgresBackend', next);
+  return next;
 }
 
 // Stytch Auth Configuration

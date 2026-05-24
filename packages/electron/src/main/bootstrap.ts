@@ -118,15 +118,30 @@ if (customUserDataDir) {
   // console.log(`[Bootstrap] Using custom userData directory: ${customUserDataDir}`);
 }
 
-// Configure V8 heap memory limit from app settings
-// This must happen before app.whenReady() for the flag to take effect
-// Default to 4096MB (4GB) if not configured
+interface BootstrapAppSettings {
+  maxHeapSizeMB?: number;
+  postgresBackend?: {
+    enabled?: boolean;
+    connectionString?: string;
+    poolMax?: number;
+  };
+}
+
+// Configure startup-sensitive settings before app.whenReady().
 try {
-  const appSettings = new Store<{ maxHeapSizeMB?: number }>({ name: 'app-settings' });
+  const appSettings = new Store<BootstrapAppSettings>({ name: 'app-settings' });
   const maxHeapSizeMB = appSettings.get('maxHeapSizeMB', 4096);
   if (maxHeapSizeMB && maxHeapSizeMB > 0) {
     app.commandLine.appendSwitch('js-flags', `--max-old-space-size=${maxHeapSizeMB}`);
     // console.log(`[Bootstrap] V8 heap limit set to ${maxHeapSizeMB}MB`);
+  }
+
+  const postgresBackend = appSettings.get('postgresBackend');
+  if (!process.env.NIMBALYST_DATABASE_URL && postgresBackend?.enabled && postgresBackend.connectionString?.trim()) {
+    process.env.NIMBALYST_DATABASE_URL = postgresBackend.connectionString.trim();
+  }
+  if (!process.env.NIMBALYST_POSTGRES_POOL_MAX && postgresBackend?.poolMax && postgresBackend.poolMax > 0) {
+    process.env.NIMBALYST_POSTGRES_POOL_MAX = String(Math.floor(postgresBackend.poolMax));
   }
 } catch (error) {
   // If we can't read settings, use default

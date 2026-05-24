@@ -19,6 +19,7 @@ import { AgentFeaturesPanel } from './AgentFeaturesPanel';
 import { BetaFeaturesPanel } from '../GlobalSettings/panels/BetaFeaturesPanel';
 import { NotificationsPanel } from '../GlobalSettings/panels/NotificationsPanel';
 import { VoiceModePanel } from './VoiceModePanel';
+import { PostgresDatabasePanel } from './PostgresDatabasePanel';
 import { MCPServersPanel } from '../GlobalSettings/panels/MCPServersPanel';
 import { ClaudeCodePluginsPanel } from '../GlobalSettings/panels/ClaudeCodePluginsPanel';
 import { SyncPanel } from '../GlobalSettings/panels/SyncPanel';
@@ -146,7 +147,7 @@ export function SettingsView({
 
   // Valid categories for each scope
   const projectCategories: SettingsCategory[] = ['agent-permissions', 'team', 'tracker-config', 'installed-extensions', 'claude-plugins', 'mcp-servers', 'claude-code', 'claude', 'openai', 'openai-codex', 'opencode', 'copilot-cli', 'lmstudio'];
-  const userCategories: SettingsCategory[] = ['claude-code', 'claude', 'openai', 'openai-codex', 'opencode', 'copilot-cli', 'lmstudio', 'sync', 'notifications', 'voice-mode', 'agent-features', 'advanced', 'marketplace', 'installed-extensions', 'claude-plugins', 'mcp-servers'];
+  const userCategories: SettingsCategory[] = ['claude-code', 'claude', 'openai', 'openai-codex', 'opencode', 'copilot-cli', 'lmstudio', 'sync', 'notifications', 'voice-mode', 'postgres-database', 'agent-features', 'advanced', 'marketplace', 'installed-extensions', 'claude-plugins', 'mcp-servers'];
 
   // When initialCategory/initialScope props change, update state (for deep linking)
   useEffect(() => {
@@ -557,6 +558,8 @@ export function SettingsView({
       case 'voice-mode':
         // VoiceModePanel is now self-contained - uses Jotai atoms directly
         return <VoiceModePanel workspacePath={workspacePath ?? undefined} />;
+      case 'postgres-database':
+        return <PostgresDatabasePanel />;
       case 'installed-extensions':
         return (
           <InstalledExtensionsPanel
