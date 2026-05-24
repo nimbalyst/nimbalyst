@@ -27,6 +27,7 @@
  */
 
 import { buildDocumentAttachmentPromptText } from '../providers/codex/documentAttachmentPrompt';
+import { describeCodexConfigError } from './codexConfigError';
 import {
   AgentProtocol,
   ProtocolSession,
@@ -313,9 +314,10 @@ export class CodexSDKProtocol implements AgentProtocol {
         (session.raw?.options as { abortSignal?: AbortSignal })?.abortSignal?.aborted || /abort|cancel/i.test(errorMessage);
 
       if (!isAbort) {
+        const configHint = describeCodexConfigError(errorMessage);
         yield {
           type: 'error',
-          error: errorMessage,
+          error: configHint ? `${errorMessage}\n\n${configHint}` : errorMessage,
         };
       }
     }

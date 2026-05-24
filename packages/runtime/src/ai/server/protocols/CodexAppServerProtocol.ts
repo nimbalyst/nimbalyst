@@ -29,6 +29,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
 import { buildDocumentAttachmentPromptText } from '../providers/codex/documentAttachmentPrompt';
+import { describeCodexConfigError } from './codexConfigError';
 import { reverseCodexPatch, type CodexPatchKind } from '../providers/codex/patchReverse';
 import {
   AgentProtocol,
@@ -429,7 +430,9 @@ export class CodexAppServerProtocol implements AgentProtocol {
       try { client.close('init failed'); } catch { /* noop */ }
       try { child.kill(); } catch { /* noop */ }
       const tail = stderrTail.join('').slice(-2000);
-      throw new Error(`[CodexAppServer] initialize failed: ${err instanceof Error ? err.message : String(err)}${tail ? `\nstderr tail: ${tail}` : ''}`);
+      const rawError = `${err instanceof Error ? err.message : String(err)}${tail ? `\nstderr tail: ${tail}` : ''}`;
+      const configHint = describeCodexConfigError(rawError);
+      throw new Error(`[CodexAppServer] initialize failed: ${rawError}${configHint ? `\n\n${configHint}` : ''}`);
     }
     return {
       child,
