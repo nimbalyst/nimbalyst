@@ -5,7 +5,7 @@
 
 import { app } from 'electron';
 import path from 'path';
-import { database } from './PGLiteDatabaseWorker';
+import { database, databaseBackend } from './PGLiteDatabaseWorker';
 import { logger } from '../utils/logger';
 import type { SessionStore } from '@nimbalyst/runtime';
 import { repositoryManager } from '../services/RepositoryManager';
@@ -28,7 +28,7 @@ export async function initializeDatabase(): Promise<SessionStore> {
   if (repositoryManager.isInitialized()) {
     return repositoryManager.getSessionStore();
   }
-  logger.main.info('[Database] Initializing PGLite database system...');
+  logger.main.info(`[Database] Initializing ${databaseBackend} database system...`);
 
   try {
     // Get database path
@@ -39,17 +39,18 @@ export async function initializeDatabase(): Promise<SessionStore> {
       || app.getPath('userData');
     const dbPath = path.join(userDataPath, 'pglite-db');
 
-    // Initialize backup service
-    backupService = new DatabaseBackupService(dbPath, database);
-    await timeStartupPhase('BackupService.initialize', () => backupService!.initialize());
-    logger.main.info('[Database] Backup service initialized');
+    if (databaseBackend === 'pglite') {
+      backupService = new DatabaseBackupService(dbPath, database);
+      await timeStartupPhase('BackupService.initialize', () => backupService!.initialize());
+      logger.main.info('[Database] Backup service initialized');
 
-    // Set backup service on database instance
-    database.setBackupService(backupService);
+      database.setBackupService(backupService);
+    } else {
+      logger.main.info('[Database] Skipping PGLite backup service for Postgres backend');
+    }
 
-    // Initialize PGLite database
-    await timeStartupPhase('PGLite.initialize', () => database.initialize());
-    logger.main.info('[Database] PGLite initialized successfully');
+    await timeStartupPhase(`${databaseBackend}.initialize`, () => database.initialize());
+    logger.main.info(`[Database] ${databaseBackend} initialized successfully`);
 
     // Initialize all repositories
     await timeStartupPhase('RepositoryManager.initialize', () => repositoryManager.initialize());
@@ -119,7 +120,7 @@ export async function initializeDatabase(): Promise<SessionStore> {
     logger.main.info('[Database] Database stats:', stats);
 
     // Start periodic backup timer (only in production, not in tests)
-    if (process.env.PLAYWRIGHT !== '1') {
+    if (process.env.PLAYWRIGHT !== '1' && databaseBackend === 'pglite') {
       periodicBackupTimer = setInterval(async () => {
         logger.main.info('[Database] Running periodic backup...');
         const result = await database.createBackup();

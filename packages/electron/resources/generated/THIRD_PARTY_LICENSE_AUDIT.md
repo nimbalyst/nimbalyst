@@ -2,7 +2,7 @@
 
 Generated from `package-lock.json` and installed package legal files.
 
-- Packages scanned: 827
+- Packages scanned: 840
 - Review required: 0
 - Approved exceptions: 3
 
@@ -15,9 +15,9 @@ Generated from `package-lock.json` and installed package legal files.
 - BSD-3-Clause: 28
 - CC0-1.0: 2
 - EPL-2.0: 1
-- ISC: 56
+- ISC: 58
 - LGPL-3.0: 1
-- MIT: 683
+- MIT: 694
 - Python-2.0: 1
 - SEE LICENSE IN README.md: 1
 - Unlicense: 1

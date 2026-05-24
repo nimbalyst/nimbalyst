@@ -13,6 +13,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { DatabaseBackupService } from '../services/database/DatabaseBackupService';
 import { deserializeWorkerError } from './workerErrorSerialization';
+import { PostgresDatabase } from './PostgresDatabase';
 
 /**
  * Error that has already been shown to the user via a dialog.
@@ -1064,5 +1065,13 @@ export class PGLiteDatabaseWorker {
   }
 }
 
-// Export singleton instance
-export const database = new PGLiteDatabaseWorker();
+export type DatabaseBackendName = 'pglite' | 'postgres';
+
+export const databaseBackend: DatabaseBackendName = process.env.NIMBALYST_DATABASE_URL ? 'postgres' : 'pglite';
+
+// Keep the existing export name so direct database imports continue to work.
+export const database = (
+  databaseBackend === 'postgres'
+    ? new PostgresDatabase()
+    : new PGLiteDatabaseWorker()
+) as unknown as PGLiteDatabaseWorker;
