@@ -53,6 +53,7 @@ export const DIALOG_IDS = {
 
   // Collaboration group
   CREATE_TEAM: 'create-team',
+  SHARE_TO_TEAM: 'share-to-team',
 } as const;
 
 export type DialogId = (typeof DIALOG_IDS)[keyof typeof DIALOG_IDS];

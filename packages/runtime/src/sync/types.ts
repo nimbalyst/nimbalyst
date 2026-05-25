@@ -93,6 +93,15 @@ export interface SyncProvider {
   /** Check if a session is connected */
   isConnected(sessionId: string): boolean;
 
+  /**
+   * Returns true when the provider has latched a JWT/userId mismatch
+   * (server-rejected, locally refused). Callers in hot paths (e.g.
+   * MessageSyncHandler running on every agent message) should consult
+   * this before attempting connect() to avoid log floods and CPU spin.
+   * Optional so non-Stytch-backed providers don't have to implement it.
+   */
+  isAuthMismatched?(): boolean;
+
   /** Get sync status for a session */
   getStatus(sessionId: string): SyncStatus;
 

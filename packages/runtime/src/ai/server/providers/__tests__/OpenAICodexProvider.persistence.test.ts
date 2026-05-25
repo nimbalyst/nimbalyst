@@ -194,6 +194,83 @@ describe('OpenAICodexProvider persistence', () => {
     });
   });
 
+  it('tags the session naming reminder turn output rows so the transcript hides them', async () => {
+    OpenAICodexProvider.setSessionNamingServerPort(41003);
+
+    let turn = 0;
+    const protocol = {
+      platform: 'codex-sdk',
+      async createSession() {
+        return { id: 'thread-reminder-raw', platform: 'codex-sdk', raw: {} };
+      },
+      async resumeSession() {
+        throw new Error('not used');
+      },
+      async forkSession() {
+        throw new Error('not used');
+      },
+      async *sendMessage(_session: unknown, _payload: { content: string }) {
+        turn += 1;
+        if (turn === 1) {
+          // First turn completes without naming the session, which triggers the
+          // reminder turn below.
+          yield { type: 'text', content: 'first turn complete' };
+          yield {
+            type: 'complete',
+            content: '',
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          };
+          return;
+        }
+        // Reminder turn: emit a raw event whose persisted output row must carry
+        // the system_reminder tag so it does not leak into the transcript.
+        yield {
+          type: 'raw_event',
+          metadata: { rawEvent: { type: 'reminder.output', payload: { step: 1 } } },
+        };
+        yield {
+          type: 'complete',
+          content: '',
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        };
+      },
+      abortSession: vi.fn(),
+      cleanupSession: vi.fn(),
+    } as any;
+
+    const permissionService = {
+      resolvePermission: vi.fn(),
+      rejectAllPending: vi.fn(),
+      clearSessionCache: vi.fn(),
+    } as any;
+
+    const provider = new OpenAICodexProvider(
+      { apiKey: 'test-key' },
+      { protocol, permissionService }
+    );
+
+    await provider.initialize({
+      apiKey: 'test-key',
+      model: 'openai-codex:gpt-5',
+    });
+
+    for await (const _chunk of provider.sendMessage('name the session', undefined, 'session-reminder-raw', [], process.cwd())) {
+      // drain
+    }
+
+    const reminderOutputRow = createdMessages.find(
+      (message) =>
+        message.direction === 'output' &&
+        (message.metadata as any)?.eventType === 'reminder.output'
+    );
+
+    expect(reminderOutputRow).toBeDefined();
+    expect(reminderOutputRow?.metadata).toMatchObject({
+      promptType: 'system_reminder',
+      reminderKind: 'session_naming',
+    });
+  });
+
   it('stamps a synthetic edit-group ID onto raw event metadata and tool_call chunks for codex tool items', async () => {
     const itemStarted = {
       type: 'item.started',

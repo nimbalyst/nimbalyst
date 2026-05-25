@@ -561,6 +561,20 @@ class SyncManager(
                     ).getOrThrow()
                 }
 
+                "gitCommitCancel" -> {
+                    val response = jsonObject("action" to "cancelled")
+                    sendSessionControlMessage(
+                        sessionId = sessionId,
+                        messageType = "prompt_response",
+                        payload = jsonObject(
+                            "promptType" to "git_commit",
+                            "promptId" to promptId,
+                            "response" to response
+                        )
+                    ).getOrThrow()
+                    appendToolResult(sessionId, promptId, gson.toJson(response)).getOrThrow()
+                }
+
                 else -> throw IllegalArgumentException("Unsupported interactive action: $action")
             }
 

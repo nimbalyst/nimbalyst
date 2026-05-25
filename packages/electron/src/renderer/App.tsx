@@ -116,7 +116,7 @@ import { initUpdateListeners } from './store/listeners/updateListeners';
 import { initWalkthroughListeners } from './store/listeners/walkthroughListeners';
 import { initWakeupListeners } from './store/listeners/wakeupListener';
 import { TrackerMode } from './components/TrackerMode';
-import { CollabMode } from './components/CollabMode';
+import { CollabMode, type CollabModeRef } from './components/CollabMode';
 import { TerminalBottomPanel } from './components/TerminalBottomPanel';
 import { ProjectRail } from './components/ProjectRail';
 import {
@@ -305,7 +305,7 @@ export default function App() {
     const cleanupUpdate = initUpdateListeners();
     const cleanupWalkthrough = initWalkthroughListeners();
     const cleanupWakeup = initWakeupListeners();
-    initNetworkAvailabilityListeners();
+    const cleanupNetworkAvailability = initNetworkAvailabilityListeners();
     return () => {
       cleanupActionPrompts?.();
       cleanupAiCommands?.();
@@ -328,6 +328,7 @@ export default function App() {
       cleanupUpdate?.();
       cleanupWalkthrough?.();
       cleanupWakeup?.();
+      cleanupNetworkAvailability?.();
     };
   }, []);
 
@@ -829,6 +830,7 @@ export default function App() {
   const chatSidebarRef = useRef<ChatSidebarRef>(null);
   const agentModeRef = useRef<AgentModeRef>(null);
   const editorModeRef = useRef<EditorModeRef>(null);
+  const collabModeRef = useRef<CollabModeRef | null>(null);
 
   // NOTE: autoSaveIntervalRef and autoSaveCancellationRef removed - EditorContainer handles autosave now
   const activeSavesRef = useRef<Set<string>>(new Set());
@@ -1709,6 +1711,7 @@ export default function App() {
     getContentRef,
     searchCommandRef,
     editorModeRef,
+    collabModeRef,
     currentFilePathRef,
     currentFileNameRef,
 
@@ -1873,6 +1876,9 @@ export default function App() {
     } else if (activeModeStateRef.current === 'files') {
       console.log('[App] Routing to editorModeRef.closeActiveTab()');
       editorModeRef.current?.closeActiveTab();
+    } else if (activeModeStateRef.current === 'collab') {
+      console.log('[App] Routing to collabModeRef.closeActiveTab()');
+      collabModeRef.current?.closeActiveTab();
     }
   }, [closeActiveTabVersion]);
 
@@ -1885,6 +1891,8 @@ export default function App() {
       agentModeRef.current?.reopenLastClosedSession?.();
     } else if (activeModeStateRef.current === 'files') {
       editorModeRef.current?.reopenLastClosedTab?.();
+    } else if (activeModeStateRef.current === 'collab') {
+      collabModeRef.current?.reopenLastClosedTab?.();
     }
   }, [reopenLastClosedTabVersion]);
 
@@ -2176,6 +2184,7 @@ export default function App() {
             >
               {workspacePath && (
                 <CollabMode
+                  ref={collabModeRef}
                   workspacePath={workspacePath}
                   isActive={activeMode === 'collab'}
                   onFileOpen={handleWorkspaceFileSelect}

@@ -10,7 +10,7 @@ import {
 } from '../../store/atoms/appSettings';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
 import { ALPHA_FEATURES, type AlphaFeatureTag } from '../../../shared/alphaFeatures';
-import { AlphaBadge } from '../common/AlphaBadge';
+import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../common/AlphaBadge';
 import { SettingsToggle } from '../GlobalSettings/SettingsToggle';
 
 const AGENT_FEATURE_TAGS: AlphaFeatureTag[] = [
@@ -189,7 +189,7 @@ export function AgentFeaturesPanel() {
       <div className="provider-panel-section">
         <div className="flex items-center gap-2 mb-2">
           <h4 className="provider-panel-section-title text-base font-semibold text-[var(--nim-text)] m-0">Experimental</h4>
-          <AlphaBadge size="sm" />
+          <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
         </div>
 
         <div className="flex items-start gap-2 p-3 mb-3 rounded border border-[var(--nim-warning)]/30 bg-[var(--nim-warning)]/10">

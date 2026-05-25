@@ -40,4 +40,14 @@ export const documentSyncRegistry = {
   size(): number {
     return providers.size;
   },
+
+  clear(): void {
+    providers.clear();
+  },
 };
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    providers.clear();
+  });
+}

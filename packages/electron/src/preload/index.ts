@@ -237,6 +237,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return 'light';
     }
   },
+  getResolvedThemeSync: () => {
+    try {
+      return ipcRenderer.sendSync('get-resolved-theme-sync');
+    } catch (err) {
+      console.error('[preload] getResolvedThemeSync error:', err);
+      return 'light';
+    }
+  },
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   setTheme: (theme: string) => ipcRenderer.invoke('set-theme', theme),
 
@@ -849,6 +857,156 @@ contextBridge.exposeInMainWorld('electronAPI', {
         documentId,
         pendingUpdateBase64,
       }) as Promise<{ success: boolean; error?: string }>,
+    getLocalOrigin: (workspacePath: string, documentId: string) =>
+      ipcRenderer.invoke('document-sync:get-local-origin', {
+        workspacePath,
+        documentId,
+      }) as Promise<{
+        success: boolean;
+        binding?: {
+          orgId: string;
+          documentId: string;
+          gitRemoteHash: string | null;
+          workspacePathHash: string | null;
+          relativePath: string;
+          documentType: string;
+          sourceBasename: string;
+          lastLocalContentHash: string | null;
+          lastCollabContentHash: string | null;
+          lastSyncedAt: string | null;
+          lastSeenMtimeMs: number | null;
+          lastSeenSizeBytes: number | null;
+          resolutionStatus: 'resolved' | 'missing' | 'relinked' | 'conflict';
+          resolutionError: string | null;
+          createdAt: string;
+          updatedAt: string;
+          resolvedPath: string | null;
+        } | null;
+        error?: string;
+      }>,
+    saveLocalOrigin: (payload: {
+      workspacePath: string;
+      documentId: string;
+      documentType: string;
+      sourceFilePath: string;
+      lastLocalContentHash: string | null;
+      lastCollabContentHash: string | null;
+    }) =>
+      ipcRenderer.invoke('document-sync:save-local-origin', payload) as Promise<{
+        success: boolean;
+        binding?: {
+          orgId: string;
+          documentId: string;
+          gitRemoteHash: string | null;
+          workspacePathHash: string | null;
+          relativePath: string;
+          documentType: string;
+          sourceBasename: string;
+          lastLocalContentHash: string | null;
+          lastCollabContentHash: string | null;
+          lastSyncedAt: string | null;
+          lastSeenMtimeMs: number | null;
+          lastSeenSizeBytes: number | null;
+          resolutionStatus: 'resolved' | 'missing' | 'relinked' | 'conflict';
+          resolutionError: string | null;
+          createdAt: string;
+          updatedAt: string;
+          resolvedPath: string | null;
+        } | null;
+        error?: string;
+      }>,
+    relinkLocalOrigin: (payload: {
+      workspacePath: string;
+      documentId: string;
+      documentType: string;
+      sourceFilePath: string;
+    }) =>
+      ipcRenderer.invoke('document-sync:relink-local-origin', payload) as Promise<{
+        success: boolean;
+        binding?: {
+          orgId: string;
+          documentId: string;
+          gitRemoteHash: string | null;
+          workspacePathHash: string | null;
+          relativePath: string;
+          documentType: string;
+          sourceBasename: string;
+          lastLocalContentHash: string | null;
+          lastCollabContentHash: string | null;
+          lastSyncedAt: string | null;
+          lastSeenMtimeMs: number | null;
+          lastSeenSizeBytes: number | null;
+          resolutionStatus: 'resolved' | 'missing' | 'relinked' | 'conflict';
+          resolutionError: string | null;
+          createdAt: string;
+          updatedAt: string;
+          resolvedPath: string | null;
+        } | null;
+        error?: string;
+      }>,
+    clearLocalOrigin: (workspacePath: string, documentId: string) =>
+      ipcRenderer.invoke('document-sync:clear-local-origin', {
+        workspacePath,
+        documentId,
+      }) as Promise<{ success: boolean; error?: string }>,
+    reuploadLocalOrigin: (payload: {
+      workspacePath: string;
+      documentId: string;
+      forceOverwriteShared?: boolean;
+    }) =>
+      ipcRenderer.invoke('document-sync:reupload-local-origin', payload) as Promise<{
+        success: boolean;
+        status: 'noop' | 'uploaded' | 'conflict' | 'missing-source' | 'unsupported' | 'error';
+        conflictKind?: 'missing-baseline' | 'shared-ahead' | 'diverged';
+        message?: string;
+        binding?: {
+          orgId: string;
+          documentId: string;
+          gitRemoteHash: string | null;
+          workspacePathHash: string | null;
+          relativePath: string;
+          documentType: string;
+          sourceBasename: string;
+          lastLocalContentHash: string | null;
+          lastCollabContentHash: string | null;
+          lastSyncedAt: string | null;
+          lastSeenMtimeMs: number | null;
+          lastSeenSizeBytes: number | null;
+          resolutionStatus: 'resolved' | 'missing' | 'relinked' | 'conflict';
+          resolutionError: string | null;
+          createdAt: string;
+          updatedAt: string;
+          resolvedPath: string | null;
+        } | null;
+        migration?: { okCount: number; failedCount: number };
+      }>,
+    findLocalOriginLink: (workspacePath: string, sourceFilePath: string) =>
+      ipcRenderer.invoke('document-sync:find-local-origin-link', {
+        workspacePath,
+        sourceFilePath,
+      }) as Promise<{
+        success: boolean;
+        binding?: {
+          orgId: string;
+          documentId: string;
+          gitRemoteHash: string | null;
+          workspacePathHash: string | null;
+          relativePath: string;
+          documentType: string;
+          sourceBasename: string;
+          lastLocalContentHash: string | null;
+          lastCollabContentHash: string | null;
+          lastSyncedAt: string | null;
+          lastSeenMtimeMs: number | null;
+          lastSeenSizeBytes: number | null;
+          resolutionStatus: 'resolved' | 'missing' | 'relinked' | 'conflict';
+          resolutionError: string | null;
+          createdAt: string;
+          updatedAt: string;
+          resolvedPath: string | null;
+        } | null;
+        error?: string;
+      }>,
     getJwt: (orgId: string) =>
       ipcRenderer.invoke('document-sync:get-jwt', { orgId }) as Promise<{
         success: boolean;
@@ -979,8 +1137,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Worktree operations
-  worktreeCreate: (workspacePath: string, name?: string) =>
-    ipcRenderer.invoke('worktree:create', workspacePath, name),
+  worktreeCreate: (workspacePath: string, options?: { name?: string; baseBranch?: string }) =>
+    ipcRenderer.invoke('worktree:create', workspacePath, options),
   worktreeGetStatus: (worktreePath: string, options?: { fetchFirst?: boolean }) =>
     ipcRenderer.invoke('worktree:get-status', worktreePath, options),
   worktreeGetByPath: (worktreePath: string) =>

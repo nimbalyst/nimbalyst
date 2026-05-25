@@ -45,6 +45,7 @@ export {
 export {
   registerTeamDialogs,
   type CreateTeamData,
+  type ShareToTeamData,
 } from './teamDialogs';
 export { useNavigationDialogs, type UseNavigationDialogsReturn } from './useNavigationDialogs';
 export { dialogRef, dialogReadyAtom, hasActiveDialogsAtom } from '../contexts/DialogContext';

@@ -437,6 +437,9 @@ export interface WorkspaceState {
   collabTree?: {
     expandedFolders: string[];
     customFolders: string[];
+    // Folder path most recently used as the destination for "Share to Team".
+    // Pre-selected on next share so users don't re-pick the same folder.
+    lastSharedFolder?: string;
   };
   collabPendingUpdates?: Record<string, {
     mergedUpdateBase64: string;
@@ -780,8 +783,11 @@ export function clearPendingThemeFallback(): void {
   getAppStore().delete('pendingThemeFallback');
 }
 
-// getThemeSync resolves 'system'/'auto' to the actual theme for the renderer
-// This prevents flash by ensuring renderer gets 'dark' or 'light', not 'system'
+// getThemeSync resolves 'system'/'auto' to the actual theme for the renderer.
+// This prevents flash by ensuring renderer gets 'dark' or 'light', not 'system'.
+// Preserves the persisted theme ID for built-in, filesystem, and extension
+// themes so callers that own the extension theme registry (the main workspace
+// renderer's useTheme.ts) can apply the correct theme.
 export function getThemeSync(): AppTheme {
   const { nativeTheme } = require('electron');
   const storedTheme = getAppStore().get('theme');
@@ -792,6 +798,36 @@ export function getThemeSync(): AppTheme {
   }
 
   return storedTheme;
+}
+
+// getResolvedThemeSync collapses any persisted theme (built-in, system,
+// filesystem, or extension-contributed) into a renderer-applicable base
+// theme: 'dark' | 'light' | 'crystal-dark'. Used by callers that cannot
+// consult the in-renderer extension theme registry (the project picker /
+// WorkspaceManager window and the flash-prevention script in index.html).
+export function getResolvedThemeSync(): AppTheme {
+  const { nativeTheme } = require('electron');
+  const storedTheme = getAppStore().get('theme');
+
+  if (storedTheme === 'system' || storedTheme === 'auto') {
+    return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  }
+
+  // Built-in themes the renderer knows how to render directly.
+  if (storedTheme === 'dark' || storedTheme === 'light' || storedTheme === 'crystal-dark') {
+    return storedTheme;
+  }
+
+  // Extension / filesystem theme. Callers that do not load the extension
+  // theme registry cannot resolve the theme's isDark themselves; fall back
+  // to the flag persisted alongside the theme ID by setTheme().
+  const isDark = getAppStore().get('themeIsDark');
+  if (typeof isDark === 'boolean') {
+    return isDark ? 'dark' : 'light';
+  }
+
+  // Last resort for themes persisted before themeIsDark existed: follow OS.
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
 }
 
 export const setThemeSync = setTheme;

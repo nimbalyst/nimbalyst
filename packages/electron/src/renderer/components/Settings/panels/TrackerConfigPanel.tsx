@@ -9,7 +9,7 @@ import {
 } from '@nimbalyst/runtime';
 import { trackerItemCountByTypeAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { trackerSyncConfigChangeAtom } from '../../../store/atoms/trackerSync';
-import { AlphaBadge } from '../../common/AlphaBadge';
+import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
 import { useDialog } from '../../../contexts/DialogContext';
 import {
   buildTrackerUpgradeConfirmOptions,
@@ -620,7 +620,7 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
       <div className="provider-panel-header mb-5 pb-4 border-b border-[var(--nim-border)]">
         <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-1.5 text-[var(--nim-text)] flex items-center gap-2">
           Trackers
-          <AlphaBadge size="sm" />
+          <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
         </h3>
         <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
           {isAdmin

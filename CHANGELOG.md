@@ -10,24 +10,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Seeded `nimbalyst-local/ai-actions.md` now includes example actions for launching sibling planning and worktree implementation sessions.
-- Tracker screen now has a true table view with aligned headers, sortable columns, resizable widths, and shared row interactions.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
-- Tracker row interactions now live in a shared hook, and persisted tracker view-mode state migrates legacy `'table'` entries to the renamed `'list'` mode.
+- Auto-update now downloads in the background and shows only the "Ready to install" toast; the redundant "Update Available" toast has been removed. (#327)
 
 ### Fixed
-- Shared docs now defer markdown bootstrap until server sync to avoid duplicated content, and share-to-team preserves full custom-editor suffixes like `mockup.html` when routing collaborative docs.
-- iOS session index sync now preserves workstream, worktree, pin, and naming metadata so sessions do not reappear as duplicate or free-floating rows.
-- Bug-report anonymizer redacts the session workspace path and recognizes Windows / Git Bash / WSL / JSON-escaped path forms so usernames and project names stop leaking into prefilled issues. (#396)
-- Imported Claude Code sessions are labelled with the model actually used (per-turn `model` from the JSONL), not always Sonnet. (#394)
-- Transcript, model-picker, session-history, and shared editor dropdown menus now use floating-ui portals so they stay visible instead of clipping inside panels.
-- Agent transcript no longer repaints on every streamed token or keystroke, so text selection inside running sessions stays usable.
-- Dev-mode transcript reprocess now refreshes transcript views without marking sessions unread, and child session context menus under workstreams and blitz worktrees now use the shared session actions.
+<!-- Bug fixes go here -->
+- Codex session-naming reminder no longer leaks into the chat transcript; its turn output is tagged so the transcript hides it. (#420)
 
 ### Removed
 <!-- Removed features go here -->
+
+## [0.61.1] - 2026-05-21
+
+
+### Added
+- AI action seed file now includes sibling-session launch examples for planning and worktree implementation.
+- Tracker screen has a table view with sortable columns, resizable widths, and aligned headers.
+- "Share to Team" opens a folder picker so you can choose the destination folder and rename the document before sharing; last-used folder is remembered per workspace.
+- Shared documents can remember their local source file, surface re-upload actions, and relink missing local files.
+
+### Changed
+- Tracker row interactions unified in a shared hook; legacy `'table'` view-mode entries migrate to `'list'`.
+- Agent guidance treats markdown links to custom-editor files as the default way to share visuals.
+
+### Fixed
+- Bug-report anonymizer scrubs workspace paths and Windows path-form variants. (#396)
+- Imported sessions now show the model actually used instead of always Sonnet. (#394)
+- CollabV3 no longer hammers the server with rejected connections on JWT/userId mismatch; backs off pre-open failures exponentially up to 5 minutes.
+- Renderer no longer hangs during heavy tool-call streams when CollabV3 JWT/userId mismatch latch is set.
+- Shared docs defer markdown bootstrap until server sync to avoid duplicated content; share-to-team preserves full custom-editor suffixes.
+- Shared-document tabs respect Find and Close Tab menu commands; dev HMR no longer stacks stale reconnect listeners.
+- Mobile git commit proposal cancellation sends a durable prompt response so blocked sessions actually cancel.
+- iOS session sync preserves workstream, worktree, pin, and naming metadata so sessions don't reappear as duplicates.
+- Floating menus use floating-ui portals so they stay visible instead of clipping inside panels.
+- Agent transcript no longer repaints on every streamed token or keystroke; text selection in running sessions stays usable.
+- Dev-mode transcript reprocess refreshes views without marking sessions unread; child session menus under workstreams unified.
+- Settings Alpha badges show the shared tooltip with alpha risk details and future Team pricing.
+- Codex app-server tool events now appear in transcripts.
+- Renderer no longer hangs when opening large markdown files mid-AI-edit.
+- External session edits excluded from git staging. (#398)
 
 ## [0.61.0] - 2026-05-21
 

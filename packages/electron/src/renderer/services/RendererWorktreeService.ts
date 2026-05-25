@@ -53,15 +53,18 @@ export class RendererWorktreeService {
    * Create a new git worktree
    *
    * @param workspacePath - Path to the main git repository
-   * @param name - Optional custom name for the worktree
+   * @param options - Optional name and baseBranch
    * @returns Worktree data including id, path, branch, etc.
    */
-  async createWorktree(workspacePath: string, name?: string): Promise<Worktree> {
+  async createWorktree(
+    workspacePath: string,
+    options?: { name?: string; baseBranch?: string }
+  ): Promise<Worktree> {
     if (!window.electronAPI) {
       throw new Error('electronAPI not available');
     }
 
-    const response = await window.electronAPI.worktreeCreate(workspacePath, name);
+    const response = await window.electronAPI.worktreeCreate(workspacePath, options);
 
     if (!response.success || !response.worktree) {
       throw new Error(response.error || 'Failed to create worktree');

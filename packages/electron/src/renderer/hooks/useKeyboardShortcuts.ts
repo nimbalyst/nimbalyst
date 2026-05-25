@@ -75,7 +75,10 @@ export function useKeyboardShortcuts({
   useEffect(() => {
     if (pendingWorktreeCreationRef.current && agentModeRef.current && activeMode === 'agent') {
       pendingWorktreeCreationRef.current = false;
-      agentModeRef.current.createNewWorktreeSession();
+      void agentModeRef.current.createNewWorktreeSession().catch(() => {
+        // Swallowed: AgentMode already logs the error; keyboard shortcut
+        // has no UI to display it.
+      });
     }
   }, [agentModeRef, activeMode]);
 
@@ -179,7 +182,10 @@ export function useKeyboardShortcuts({
 
         // If in agent mode and ref is available, create worktree directly
         if (activeMode === 'agent' && agentModeRef.current) {
-          agentModeRef.current.createNewWorktreeSession();
+          void agentModeRef.current.createNewWorktreeSession().catch(() => {
+            // Swallowed: AgentMode already logs the error; keyboard
+            // shortcut has no UI to display it.
+          });
         } else {
           // Switch to agent mode first, then create worktree when ref becomes available
           pendingWorktreeCreationRef.current = true;

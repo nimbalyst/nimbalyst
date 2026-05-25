@@ -22,9 +22,10 @@ import { getTeamSyncProvider } from '../atoms/collabDocuments';
 import { documentSyncRegistry } from '../atoms/documentSyncRegistry';
 
 let initialized = false;
+let cleanupCurrent: (() => void) | null = null;
 
-export function initNetworkAvailabilityListeners(): void {
-  if (initialized) return;
+export function initNetworkAvailabilityListeners(): () => void {
+  if (initialized) return cleanupCurrent ?? (() => {});
   initialized = true;
 
   // 1. Forward `online` events to main so the broker can debounce with its
@@ -36,7 +37,7 @@ export function initNetworkAvailabilityListeners(): void {
 
   // 2. When main has verified the index is healthy, reconnect renderer-side
   //    providers. Fire-and-forget: each provider handles its own errors.
-  window.electronAPI.on('sync:network-available', () => {
+  const unsubscribeNetworkAvailable = window.electronAPI.on('sync:network-available', () => {
     const teamSync = getTeamSyncProvider();
     if (teamSync) {
       try {
@@ -47,5 +48,22 @@ export function initNetworkAvailabilityListeners(): void {
     }
 
     documentSyncRegistry.reconnectAll();
+  });
+
+  cleanupCurrent = () => {
+    initialized = false;
+    window.removeEventListener('online', handleOnline);
+    if (typeof unsubscribeNetworkAvailable === 'function') {
+      unsubscribeNetworkAvailable();
+    }
+    cleanupCurrent = null;
+  };
+
+  return cleanupCurrent;
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    cleanupCurrent?.();
   });
 }

@@ -194,7 +194,7 @@ You have two tools to show content directly in the conversation. They render vis
 - ${displayToUserTool} - Show charts and images inline
   - **Charts**: bar, line, pie, area, scatter (with optional error bars)
   - **Images**: Display local screenshots or generated images
-- ${captureEditorScreenshotTool} - Show rendered content of any open file, including diagrams
+- ${captureEditorScreenshotTool} - Show rendered content of any open file when a screenshot is actually useful
 
 **Always prefer charts over text tables** when presenting data. Include error bars (95% CI) when statistical data is available.
 - Use bash with standard tools (awk, bc) or Python to calculate error bars - do NOT attempt to calculate statistics manually
@@ -215,8 +215,8 @@ Consider which diagram type best suits the data you want to convey.
 
 - **Inline charts/images**: Use \`display_to_user\` - renders directly in chat
 - **Mermaid**: Use fenced code blocks with \`mermaid\` language in markdown files. Avoid ASCII diagrams.
-- **Excalidraw**: Create \`.excalidraw\` files and use MCP tools, or import Mermaid via \`excalidraw.import_mermaid\`
-- **Verify visuals**: Use \`capture_editor_screenshot\` to confirm diagrams render correctly`;
+- **Excalidraw**: Create \`.excalidraw\` files and use MCP tools, or import Mermaid via \`excalidraw.import_mermaid\`. When you share a custom-editor file in the conversation, the live-rendered link is usually sufficient; do not add a screenshot just to show the same diagram again.
+- **Verify visuals**: Use \`capture_editor_screenshot\` only when you need static visual verification or the user explicitly wants an inline image`;
 
   // Add plan tracking frontmatter instructions when enabled
   if (planTrackingEnabled) {

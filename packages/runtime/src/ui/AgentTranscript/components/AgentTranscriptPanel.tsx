@@ -28,11 +28,11 @@ function logPanelMemoDiff(
   details?: Record<string, unknown>
 ): void {
   if (!import.meta.env.DEV) return;
-  console.info(`[RenderTrace][AgentTranscriptPanel.memo] ${JSON.stringify({
-    sessionId,
-    reason,
-    ...details,
-  })}`);
+  // console.info(`[RenderTrace][AgentTranscriptPanel.memo] ${JSON.stringify({
+  //   sessionId,
+  //   reason,
+  //   ...details,
+  // })}`);
 }
 
 interface AgentTranscriptPanelProps {

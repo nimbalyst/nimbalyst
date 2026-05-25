@@ -322,9 +322,15 @@ export function registerWorktreeHandlers(): void {
    * @param name - Optional custom name for the worktree
    * @returns Worktree data including id, path, branch, etc.
    */
-  ipcMain.handle('worktree:create', async (_event, workspacePath: string, name?: string): Promise<WorktreeCreateResult> => {
+  ipcMain.handle('worktree:create', async (
+    _event,
+    workspacePath: string,
+    options?: { name?: string; baseBranch?: string }
+  ): Promise<WorktreeCreateResult> => {
     const startTime = Date.now();
     const MAX_RETRIES = 3;
+    const name = options?.name;
+    const baseBranch = options?.baseBranch;
 
     // Retry loop for handling race conditions where concurrent requests pick the same name
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -337,7 +343,7 @@ export function registerWorktreeHandlers(): void {
           throw new Error('workspacePath is required');
         }
 
-        logger.info('Creating worktree', { workspacePath, name, attempt });
+        logger.info('Creating worktree', { workspacePath, name, baseBranch, attempt });
 
         // Get database early for de-duplication
         const db = getDatabase();
@@ -381,7 +387,7 @@ export function registerWorktreeHandlers(): void {
 
         // Create the git worktree
         const gitCreateStartTime = Date.now();
-        const worktree = await gitWorktreeService.createWorktree(workspacePath, { name: finalName });
+        const worktree = await gitWorktreeService.createWorktree(workspacePath, { name: finalName, baseBranch });
         timings.gitWorktreeCreate = Date.now() - gitCreateStartTime;
 
         // Track the created worktree for potential cleanup
@@ -415,6 +421,7 @@ export function registerWorktreeHandlers(): void {
         analyticsService.sendEvent('worktree_created', {
           duration_ms: totalDuration,
           retry_count: attempt - 1,
+          base_branch_source: baseBranch ? 'picker' : 'default',
         });
 
         return {

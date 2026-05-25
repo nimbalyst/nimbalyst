@@ -776,21 +776,36 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     if (config.userId && jwtUserId !== config.userId) {
       const jwtIsTeamScoped =
         !!claims.organization_id && !!config.orgId && claims.organization_id !== config.orgId;
-      console.warn(
-        '[CollabV3] JWT sub does not match sync config userId -- server will reject the WebSocket auth.',
-        {
-          jwtSub: jwtUserId,
-          jwtOrgId: claims.organization_id ?? null,
-          configUserId: config.userId, // personalUserId from SyncManager
-          configOrgId: config.orgId,   // personalOrgId from SyncManager
-          likelyCause: jwtIsTeamScoped
-            ? 'JWT is team-scoped (organization_id differs from personal orgId). getJwt() should return a personal-org-scoped JWT -- check StytchAuthService.refreshPersonalSession / getPersonalSessionJwt.'
-            : 'JWT and config disagree on the user ID. The persisted personalUserId is likely stale (e.g. saved as a team member ID before resolvePersonalUserId ran). Check StytchAuthService.resolvePersonalUserId and the persisted session-sync config.',
-        },
-      );
+      // Rate-limit: this used to log every 2s forever once the loop kicked in.
+      const now = Date.now();
+      if (now - lastJwtMismatchLogAt > JWT_MISMATCH_LOG_INTERVAL_MS) {
+        lastJwtMismatchLogAt = now;
+        console.warn(
+          '[CollabV3] JWT sub does not match sync config userId -- refusing to connect (would be server-rejected and throttle the client).',
+          {
+            jwtSub: jwtUserId,
+            jwtOrgId: claims.organization_id ?? null,
+            configUserId: config.userId, // personalUserId from SyncManager
+            configOrgId: config.orgId,   // personalOrgId from SyncManager
+            likelyCause: jwtIsTeamScoped
+              ? 'JWT is team-scoped (organization_id differs from personal orgId). getJwt() should return a personal-org-scoped JWT -- check StytchAuthService.refreshPersonalSession / getPersonalSessionJwt.'
+              : 'JWT and config disagree on the user ID. The persisted personalUserId is likely stale (e.g. saved as a team member ID before resolvePersonalUserId ran). Check StytchAuthService.resolvePersonalUserId and the persisted session-sync config.',
+          },
+        );
+      }
+      // Don't even attempt the connection -- the server will reject it and the
+      // tight retry loop got us throttled in the past. Caller will set
+      // `indexAuthBlocked` and stop scheduling reconnects.
+      const err = new Error('CollabV3 JWT/userId mismatch -- connection refused locally to avoid server throttling');
+      (err as any).code = 'AUTH_MISMATCH';
+      throw err;
     }
     currentUserId = config.userId || jwtUserId;
     return { jwt, userId: currentUserId };
+  }
+
+  function isAuthMismatchError(err: unknown): boolean {
+    return !!err && typeof err === 'object' && (err as any).code === 'AUTH_MISMATCH';
   }
 
   // Get user ID synchronously if we have a cached JWT, otherwise use config.userId
@@ -825,7 +840,31 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   let deviceAnnounceInterval: ReturnType<typeof setInterval> | null = null;
   let pingInterval: ReturnType<typeof setInterval> | null = null;
   let indexReconnectAttempts = 0;
+  /**
+   * Count of consecutive pre-open failures (WebSocket created but never reached
+   * `onopen`). Distinct from `indexReconnectAttempts` so we can keep the first
+   * few retries fast (handles legitimate "network just came up" races) while
+   * still ramping into a real backoff if the failures keep coming. Without this,
+   * a permanent server-side rejection (e.g. JWT/userId mismatch) used to hammer
+   * the server at 2s forever and get us throttled.
+   */
+  let indexPreOpenFailures = 0;
   let indexReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * When `ensureFreshJwt` detects that the JWT cannot possibly succeed against
+   * the configured room (JWT `sub` does not match `config.userId`), we set this
+   * flag and stop scheduling reconnects entirely. The server would only reject
+   * us anyway, and repeated rejections get the client IP throttled. Cleared by
+   * an explicit `reconnectIndex()` (network change / user toggles sync / app
+   * regains focus) so a refreshed JWT gets a chance to retry.
+   */
+  let indexAuthBlocked = false;
+  /**
+   * Rate-limit identical JWT-mismatch warnings. Without this we log the same
+   * `[object Object]` warning every 2 seconds forever.
+   */
+  let lastJwtMismatchLogAt = 0;
+  const JWT_MISMATCH_LOG_INTERVAL_MS = 60_000;
 
   function clearIndexReady(): void {
     indexReady = false;
@@ -871,31 +910,57 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   /**
    * Schedule a reconnect attempt for the index WebSocket with exponential backoff.
    *
-   * `preOpenFailure: true` keeps the backoff flat at the base delay (2s) rather
-   * than incrementing the attempts counter. Rationale: if the WS never reached
-   * `onopen`, the network probably isn't actually up yet (e.g. fresh from sleep,
-   * DHCP still in progress). Bumping the backoff pushes us into the 30s cap
-   * where we spend minutes in "dead but pretending" state. Staying at 2s lets
-   * us recover within a couple of seconds of the network actually coming up.
+   * Backoff schedule:
+   *   - mid-connection drops (server closed an open WS): exponential 2s, 4s, 8s,
+   *     16s, 30s cap.
+   *   - pre-open failures (WS never reached `onopen`): the first 3 attempts stay
+   *     flat at 2s -- handles the legitimate "OS network just came up, DHCP
+   *     still in progress" race. After that we ramp 5s, 10s, 30s, 60s, 120s,
+   *     up to a 5-minute cap. Without this ramp a permanent server-side
+   *     rejection (e.g. stale JWT) would hammer the server at 2s forever and
+   *     get the client throttled.
+   *
+   * If `indexAuthBlocked` is set (JWT/userId mismatch detected), we don't
+   * schedule a reconnect at all. Recovery happens only via an explicit
+   * `reconnectIndex()` call (network change, user toggles sync, app focus).
    */
   function scheduleIndexReconnect(options?: { preOpenFailure?: boolean }): void {
+    if (indexAuthBlocked) {
+      // Don't keep hammering a connection the server will hard-reject. Wait for
+      // an explicit reconnect trigger that resets indexAuthBlocked.
+      return;
+    }
+
     const preOpenFailure = options?.preOpenFailure ?? false;
-    // Exponential backoff: 2s, 4s, 8s, 16s, 30s max -- for true mid-connection
-    // drops. For pre-open failures we stay at the base 2s.
-    const delay = preOpenFailure
-      ? 2000
-      : Math.min(2000 * Math.pow(2, indexReconnectAttempts), 30000);
-    if (!preOpenFailure) {
+    let delay: number;
+    if (preOpenFailure) {
+      indexPreOpenFailures++;
+      if (indexPreOpenFailures <= 3) {
+        delay = 2000; // fast retries for transient network-coming-up race
+      } else {
+        // Ramp: 5s, 10s, 30s, 60s, 120s, 300s cap.
+        const ramp = [5_000, 10_000, 30_000, 60_000, 120_000, 300_000];
+        const idx = Math.min(indexPreOpenFailures - 4, ramp.length - 1);
+        delay = ramp[idx];
+      }
+    } else {
+      delay = Math.min(2000 * Math.pow(2, indexReconnectAttempts), 30000);
       indexReconnectAttempts++;
     }
-    console.log(`[CollabV3] Scheduling index reconnect attempt ${indexReconnectAttempts}${preOpenFailure ? ' (pre-open, flat backoff)' : ''} in ${delay}ms`);
+    console.log(`[CollabV3] Scheduling index reconnect attempt ${indexReconnectAttempts}${preOpenFailure ? ` (pre-open #${indexPreOpenFailures})` : ''} in ${delay}ms`);
 
     if (indexReconnectTimer) clearTimeout(indexReconnectTimer);
     indexReconnectTimer = setTimeout(() => {
       indexReconnectTimer = null;
+      if (indexAuthBlocked) return;
       if (!indexWs && !indexConnected) {
         console.log('[CollabV3] Attempting to reconnect to index...');
         connectToIndex().catch(err => {
+          if (isAuthMismatchError(err)) {
+            // ensureFreshJwt already set indexAuthBlocked. Do not reschedule.
+            console.warn('[CollabV3] Index reconnect blocked: JWT/userId mismatch. Waiting for explicit reconnect trigger.');
+            return;
+          }
           console.error('[CollabV3] Failed to reconnect to index:', err);
           // Schedule another attempt - connectToIndex() may have failed before
           // creating a WebSocket (e.g. JWT refresh failed), so onclose won't fire
@@ -1458,6 +1523,14 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       return;
     }
 
+    if (indexAuthBlocked) {
+      // Auth is known-bad; throwing here lets callers (e.g. ad-hoc
+      // sendSessionControlMessage) skip work that would never succeed.
+      const err = new Error('CollabV3 index connection blocked: JWT/userId mismatch');
+      (err as any).code = 'AUTH_MISMATCH';
+      throw err;
+    }
+
     // Clean up zombie WebSocket: created but never connected (or connection dropped
     // silently). Without this, we'd return early and never establish a fresh connection.
     if (indexWs && !indexConnected) {
@@ -1470,8 +1543,21 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       indexWs = null;
     }
 
-    // Get fresh JWT before connecting
-    const { jwt } = await ensureFreshJwt();
+    // Get fresh JWT before connecting. Throws AUTH_MISMATCH if the JWT cannot
+    // succeed against the configured room (caught below to set indexAuthBlocked).
+    let jwt: string;
+    try {
+      ({ jwt } = await ensureFreshJwt());
+    } catch (err) {
+      if (isAuthMismatchError(err)) {
+        indexAuthBlocked = true;
+        if (indexReconnectTimer) {
+          clearTimeout(indexReconnectTimer);
+          indexReconnectTimer = null;
+        }
+      }
+      throw err;
+    }
 
     const indexRoomId = getIndexRoomId();
     console.log('[CollabV3] connectToIndex() roomId:', indexRoomId, 'orgId:', config.orgId, 'userId:', getUserId());
@@ -1495,6 +1581,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       reachedOpen = true;
       indexConnected = true;
       indexReconnectAttempts = 0;
+      indexPreOpenFailures = 0;
       // console.log('[CollabV3] Connected to index');
 
       // Send device announcement if device info is provided
@@ -2121,8 +2208,20 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   //   hasEncryptionKey: !!config.encryptionKey,
   // });
 
-  // Start index connection
-  connectToIndex();
+  // Start index connection. If the JWT mismatches the configured userId,
+  // ensureFreshJwt sets indexAuthBlocked and throws -- we swallow it here so we
+  // don't fire an unhandled promise rejection at startup. A later explicit
+  // reconnectIndex() (network change / settings update / auth refresh) will
+  // clear indexAuthBlocked and try again. Other errors fall through to the
+  // existing scheduleIndexReconnect path via the onclose handler.
+  connectToIndex().catch(err => {
+    if (isAuthMismatchError(err)) {
+      console.warn('[CollabV3] Initial index connect blocked: JWT/userId mismatch. Waiting for explicit reconnect trigger.');
+      return;
+    }
+    console.error('[CollabV3] Initial index connect failed:', err);
+    scheduleIndexReconnect({ preOpenFailure: true });
+  });
 
   // Sync messages to a session room (internal function)
   async function syncSessionMessages(
@@ -2446,6 +2545,20 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         return; // Already connected
       }
 
+      // Short-circuit when the JWT/userId mismatch latch is set. The server
+      // would reject any session WebSocket against this room, and an active
+      // agent streams ~10 messages/sec -- without this guard every message
+      // hit `ensureFreshJwt()`, threw AUTH_MISMATCH, and flooded main.log
+      // (1686/4986 lines during a single mobile-build session on 2026-05-21).
+      // The latch clears on reconnectIndex() / disconnectAll(), so legitimate
+      // signals (network change, settings update, auth refresh) still
+      // unblock subsequent connects.
+      if (indexAuthBlocked) {
+        const err = new Error('CollabV3 session connection blocked: JWT/userId mismatch');
+        (err as any).code = 'AUTH_MISMATCH';
+        throw err;
+      }
+
       // Enforce hard limit on concurrent connections - try to evict idle connection first
       if (sessions.size >= MAX_SESSION_CONNECTIONS) {
         // Find the oldest idle connection that exceeds the idle timeout
@@ -2479,8 +2592,21 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       // const stack = new Error().stack?.split('\n').slice(2, 6).join('\n') || '';
       // console.log(`[CollabV3] connect() - CREATING NEW WebSocket for session ${sessionId} (${sessions.size + 1}/${MAX_SESSION_CONNECTIONS})\n${stack}`);
 
-      // Get fresh JWT before connecting
-      const { jwt } = await ensureFreshJwt();
+      // Get fresh JWT before connecting. If ensureFreshJwt throws
+      // AUTH_MISMATCH, set the latch so subsequent connect() calls
+      // short-circuit (defense in depth alongside the check above; this
+      // covers the case where the per-session connect() is the first
+      // sync call in the process and connectToIndex() hasn't latched
+      // yet).
+      let jwt: string;
+      try {
+        ({ jwt } = await ensureFreshJwt());
+      } catch (err) {
+        if (isAuthMismatchError(err)) {
+          indexAuthBlocked = true;
+        }
+        throw err;
+      }
 
       const roomId = getRoomId(sessionId);
       const url = getWebSocketUrl(roomId);
@@ -2571,6 +2697,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         indexReconnectTimer = null;
       }
       indexReconnectAttempts = 0;
+      indexPreOpenFailures = 0;
+      indexAuthBlocked = false;
       clearIndexReady();
       indexReadyListeners.clear();
       if (indexWs) {
@@ -2583,6 +2711,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     isConnected(sessionId: string): boolean {
       const session = sessions.get(sessionId);
       return session?.status.connected ?? false;
+    },
+
+    isAuthMismatched(): boolean {
+      return indexAuthBlocked;
     },
 
     getStatus(sessionId: string): SyncStatus {
@@ -3421,6 +3553,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         indexReconnectTimer = null;
       }
       indexReconnectAttempts = 0;
+      indexPreOpenFailures = 0;
+      // Explicit reconnect = user/system signal that something changed (network,
+      // settings, auth refresh). Clear the auth-blocked latch and give the JWT
+      // another shot. If it still mismatches, ensureFreshJwt will set the flag
+      // again immediately and we won't enter another tight loop.
+      indexAuthBlocked = false;
 
       // Force-close the current socket, even if it still reports OPEN.
       // After laptop sleep the WebSocket layer can stay "connected" while the

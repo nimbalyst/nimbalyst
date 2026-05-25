@@ -78,7 +78,7 @@ All events include `$session_id` property automatically. Dev users are marked wi
 
 | Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
 | --- | --- | --- | --- | --- | --- |
-| `worktree_created` | `WorktreeHandlers.ts:115` | User creates a new git worktree | `duration_ms` | (pending release) |  |
+| `worktree_created` | `WorktreeHandlers.ts:115` | User creates a new git worktree | `duration_ms`<br/>`retry_count`<br/>`base_branch_source` (`default` \| `picker`) | (pending release) | (pending release): Added base_branch_source (#264) |
 | `worktree_archived` | `WorktreeHandlers.ts:897` | User archives a worktree (sessions archived immediately, cleanup queued) | `session_count`<br/>`worktree_age_days`<br/>`failed_sessions`<br/>`has_uncommitted_changes`<br/>`has_unmerged_changes` | (pending release as of 6d0b51b5) | (pending release): Added has_uncommitted_changes and has_unmerged_changes |
 | `worktree_archive_completed` | `WorktreeHandlers.ts:921` | Worktree cleanup completes successfully | `session_count`<br/>`duration_ms` | (pending release as of 6d0b51b5) |  |
 | `worktree_archive_failed` | `WorktreeHandlers.ts:937, 961` | Worktree archive fails | `error_type`<br/>`stage` (archiving-sessions/removing-worktree) | (pending release as of 6d0b51b5) |  |

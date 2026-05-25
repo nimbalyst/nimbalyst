@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ProviderConfig } from '../../Settings/SettingsView';
 import { SettingsToggle } from '../SettingsToggle';
-import { AlphaBadge } from '../../common/AlphaBadge';
+import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
 
 interface CopilotCLIPanelProps {
   config: ProviderConfig;
@@ -62,7 +62,7 @@ export function CopilotCLIPanel({
       <div className="provider-panel-header mb-6 pb-4 border-b border-[var(--nim-border)]">
         <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-2 text-[var(--nim-text)] flex items-center gap-2">
           GitHub Copilot
-          <AlphaBadge size="sm" />
+          <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
         </h3>
         <p className="provider-panel-description text-sm leading-relaxed text-[var(--nim-text-muted)]">
           GitHub Copilot coding agent via the ACP (Agent Communication Protocol) server mode.

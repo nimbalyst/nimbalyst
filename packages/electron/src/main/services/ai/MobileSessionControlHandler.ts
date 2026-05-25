@@ -13,6 +13,10 @@ import { logger } from '../../utils/logger';
 import type { PermissionScope } from '@nimbalyst/runtime';
 import { TrayManager } from '../../tray/TrayManager';
 import { resolveRequestUserInputPromptTargets } from '../../mcp/tools/codexToolCallResolver';
+import {
+  getGitCommitProposalResponseChannel,
+  resolveGitCommitProposalPromptId,
+} from './gitCommitProposalPromptUtils';
 
 const log = logger.ai;
 
@@ -605,6 +609,7 @@ async function handleGitCommitResponse(
   findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined
 ): Promise<void> {
   log.info('Handling GitCommit response:', promptId, 'action:', response.action);
+  const canonicalPromptId = await resolveGitCommitProposalPromptId(sessionId, promptId);
 
   // Helper to emit the proposal response to unblock the MCP tool
   const emitProposalResponse = async (result: {
@@ -616,10 +621,34 @@ async function handleGitCommitResponse(
     commitMessage?: string;
   }) => {
     const { ipcMain } = await import('electron');
-    const responseChannel = `git-commit-proposal-response:${sessionId || 'unknown'}:${promptId}`;
+    const responseChannel = getGitCommitProposalResponseChannel(sessionId, canonicalPromptId);
     ipcMain.emit(responseChannel, null, result);
+
+    import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository').then(({ AgentMessagesRepository }) => {
+      AgentMessagesRepository.create({
+        sessionId,
+        source: 'nimbalyst',
+        direction: 'output' as const,
+        createdAt: new Date(),
+        content: JSON.stringify({
+          type: 'git_commit_proposal_response',
+          proposalId: canonicalPromptId,
+          action: result.action,
+          commitHash: result.commitHash,
+          commitDate: result.commitDate,
+          error: result.error,
+          filesCommitted: result.filesCommitted,
+          commitMessage: result.commitMessage,
+          respondedBy: 'mobile',
+          respondedAt: Date.now(),
+        }),
+      }).catch((err) => {
+        log.warn(`[Mobile] Failed to persist GitCommit response: ${err}`);
+      });
+    });
+
     // Notify renderer to clear the pending interactive prompt indicator
-    notifyAllWindows('ai:gitCommitProposalResolved', { sessionId, proposalId: promptId });
+    notifyAllWindows('ai:gitCommitProposalResolved', { sessionId, proposalId: canonicalPromptId });
     TrayManager.getInstance().onPromptResolved(sessionId);
   };
 

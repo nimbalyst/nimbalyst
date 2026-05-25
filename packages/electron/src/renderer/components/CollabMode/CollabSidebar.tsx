@@ -25,6 +25,7 @@ import {
   type CollabTreeNode,
 } from './collabTree';
 import { registerDocumentInIndex } from '../../store/atoms/collabDocuments';
+import { useCollabLocalOrigin } from '../../hooks/useCollabLocalOrigin';
 
 // ---------------------------------------------------------------------------
 // TeamSync status indicator -- shown in the header subtitle slot
@@ -537,6 +538,11 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
 
   const selectedFolderLabel = selectedFolderPath ? getCollabNodeName(selectedFolderPath) : 'Shared Docs';
   const contextDocument = contextMenu?.node.type === 'document' ? contextMenu.node.document : null;
+  const contextLocalOrigin = useCollabLocalOrigin(
+    workspacePath,
+    contextDocument?.documentId,
+    contextDocument?.documentType,
+  );
 
   return (
     <div
@@ -691,6 +697,56 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
                 <MaterialSymbol icon="edit" size={18} />
                 <span>Rename</span>
               </button>
+              <button
+                type="button"
+                className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={!contextLocalOrigin.hasResolvedBinding || contextLocalOrigin.busyAction !== null}
+                onClick={() => {
+                  setContextMenu(null);
+                  void contextLocalOrigin.openLocalSource();
+                }}
+              >
+                <MaterialSymbol icon="draft" size={18} />
+                <span>Open Local Source</span>
+              </button>
+              <button
+                type="button"
+                className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={!contextLocalOrigin.binding || contextLocalOrigin.busyAction !== null}
+                onClick={() => {
+                  setContextMenu(null);
+                  void contextLocalOrigin.reuploadFromLocalSource();
+                }}
+              >
+                <MaterialSymbol icon="upload" size={18} />
+                <span>Re-upload From Local</span>
+              </button>
+              <button
+                type="button"
+                className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={contextLocalOrigin.busyAction !== null}
+                onClick={() => {
+                  setContextMenu(null);
+                  void contextLocalOrigin.relinkLocalSource();
+                }}
+              >
+                <MaterialSymbol icon="link" size={18} />
+                <span>{contextLocalOrigin.binding ? 'Relink Local Source...' : 'Link Local Source...'}</span>
+              </button>
+              {contextLocalOrigin.binding && (
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={contextLocalOrigin.busyAction !== null}
+                  onClick={() => {
+                    setContextMenu(null);
+                    void contextLocalOrigin.clearLocalSource();
+                  }}
+                >
+                  <MaterialSymbol icon="link_off" size={18} />
+                  <span>Clear Local Source</span>
+                </button>
+              )}
               <button
                 type="button"
                 className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim-error hover:bg-nim-hover"

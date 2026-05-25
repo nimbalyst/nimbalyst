@@ -150,6 +150,7 @@ import { windowStates, windows, resolveActiveWorkspacePath } from './window/wind
 import { getRecentItems } from './utils/store';
 import { registerOrgKeyHandlers, getOrgKey } from './services/OrgKeyService';
 import { registerDocumentSyncHandlers } from './ipc/DocumentSyncHandlers';
+import { registerCollabV3TestHandlers } from './ipc/CollabV3TestHandlers';
 import { getPermissionService } from './services/PermissionService';
 import { ClaudeSettingsManager } from './services/ClaudeSettingsManager';
 import { TrayManager } from './tray/TrayManager';
@@ -1394,6 +1395,7 @@ app.whenReady().then(async () => {
     registerTeamHandlers();
     registerOrgKeyHandlers();
     registerDocumentSyncHandlers();
+    registerCollabV3TestHandlers();
     markEnd('ipc-handlers');
 
     // Initialize system tray for session status visibility

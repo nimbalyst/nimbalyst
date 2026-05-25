@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { CollapsibleGroup } from './CollapsibleGroup';
+import { WorktreeBaseBranchPicker } from './WorktreeBaseBranchPicker';
 import { SessionListItem } from './SessionListItem';
 import { WorkstreamGroup } from './WorkstreamGroup';
 import { BlitzGroup } from './BlitzGroup';
@@ -181,7 +182,7 @@ interface SessionHistoryProps {
   onSessionBranch?: (sessionId: string) => void; // Callback when user wants to branch a session
   onNewSession?: () => void;
   onNewTerminal?: () => void; // Callback for creating a new terminal session
-  onNewWorktreeSession?: () => void; // Callback for creating new worktree session
+  onNewWorktreeSession?: (options?: { baseBranch?: string; name?: string }) => void | Promise<void>; // Callback for creating new worktree session
   onNewBlitz?: () => void; // Callback for creating a new blitz (multi-worktree prompt)
   isGitRepo?: boolean; // Whether the workspace is a git repository (needed for worktree feature)
   onAddSessionToWorktree?: (worktreeId: string) => void; // Callback for adding session to existing worktree
@@ -323,6 +324,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
   const setSortBy = onSortOrderChange ?? setInternalSortOrder;
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
   const newDropdownMenu = useFloatingMenu({ placement: 'bottom-end', offsetPx: 4 });
+  const [worktreeBaseBranchPickerOpen, setWorktreeBaseBranchPickerOpen] = useState(false);
   const [contentSearchTriggered, setContentSearchTriggered] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   // Use atom for showArchived state
@@ -1890,13 +1892,21 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
     newDropdownMenu.setIsOpen(!newDropdownMenu.isOpen);
   };
 
+  // Open the worktree picker modal. It drives creation by calling
+  // onNewWorktreeSession({ baseBranch, name }).
+  const openWorktreeBaseBranchPicker = useCallback(() => {
+    if (!isGitRepo || !onNewWorktreeSession) return;
+    newDropdownMenu.setIsOpen(false);
+    setWorktreeBaseBranchPickerOpen(true);
+  }, [isGitRepo, onNewWorktreeSession, newDropdownMenu]);
+
   // Handle new button click - if only one option available, trigger it directly
   const handleNewButtonClick = () => {
     const availableOptions = [onNewSession, onNewWorktreeSession, onNewBlitz, onNewTerminal].filter(Boolean);
     if (availableOptions.length === 1) {
       // Only one option available, trigger it directly
       if (onNewSession) onNewSession();
-      else if (onNewWorktreeSession) onNewWorktreeSession();
+      else if (onNewWorktreeSession) openWorktreeBaseBranchPicker();
       else if (onNewTerminal) onNewTerminal();
     } else {
       // Multiple options, show dropdown
@@ -2734,7 +2744,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
         <button
           className={`session-history-new-option flex items-center w-full px-3 py-2 text-[13px] bg-transparent border-none text-[var(--nim-text)] cursor-pointer transition-colors duration-150 text-left gap-2 hover:bg-[var(--nim-bg-hover)] [&_svg]:shrink-0 [&_svg]:text-[var(--nim-text-muted)] [&>span]:flex-1 ${!isGitRepo ? 'opacity-50 cursor-not-allowed hover:bg-transparent' : ''}`}
           data-testid="new-worktree-session-button"
-          onClick={() => { if (isGitRepo) { onNewWorktreeSession(); newDropdownMenu.setIsOpen(false); } }}
+          onClick={() => { if (isGitRepo) { openWorktreeBaseBranchPicker(); } }}
           disabled={!isGitRepo}
           title={!isGitRepo ? 'Worktrees require a git repository' : undefined}
         >
@@ -2809,6 +2819,21 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
     </FloatingPortal>
   );
 
+  const worktreeBaseBranchPickerPortal = onNewWorktreeSession && (
+    <WorktreeBaseBranchPicker
+      isOpen={worktreeBaseBranchPickerOpen}
+      workspacePath={workspacePath}
+      onCreate={async ({ baseBranch, name }) => {
+        // Await the parent's create handler so the picker can keep its
+        // submitting state until creation actually resolves (and surface
+        // any error inline without losing the user's input).
+        await onNewWorktreeSession({ baseBranch, name });
+        setWorktreeBaseBranchPickerOpen(false);
+      }}
+      onCancel={() => setWorktreeBaseBranchPickerOpen(false)}
+    />
+  );
+
   if (sessions.length === 0 && !hasSearchQuery) {
     // No sessions at all - show simple empty state without search
     return (
@@ -2878,6 +2903,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
             from this return path - the previous render site was only in the
             main return below. See #306. */}
         {newDropdownPortal}
+        {worktreeBaseBranchPickerPortal}
       </div>
     );
   }
@@ -3610,6 +3636,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
       {/* New dropdown menu - extracted to `newDropdownPortal` above so the
           empty-state early-return can also mount it. See #306. */}
       {newDropdownPortal}
+      {worktreeBaseBranchPickerPortal}
     </div>
   );
 };

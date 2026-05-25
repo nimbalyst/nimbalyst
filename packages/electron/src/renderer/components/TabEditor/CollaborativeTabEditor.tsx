@@ -33,6 +33,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { MarkdownEditor, DocumentPathProvider } from '@nimbalyst/runtime';
+import { FixedTabHeaderContainer, FixedTabHeaderRegistry } from '@nimbalyst/runtime/plugins/shared/fixedTabHeader';
 import { LexicalDiffHeaderAdapter } from '../UnifiedDiffHeader';
 import { DocumentSyncProvider } from '@nimbalyst/runtime/sync';
 import { CollabLexicalProvider } from '@nimbalyst/runtime/sync';
@@ -53,6 +54,9 @@ import { documentSyncRegistry } from '../../store/atoms/documentSyncRegistry';
 import { CollabAssetService } from '../../services/CollabAssetService';
 import { customEditorRegistry } from '../CustomEditors';
 import type { CustomEditorRegistration } from '../CustomEditors/types';
+import { useCollabLocalOrigin } from '../../hooks/useCollabLocalOrigin';
+import { FilePathBreadcrumb } from '../common/FilePathBreadcrumb';
+import { UnifiedEditorHeaderBar } from './UnifiedEditorHeaderBar';
 import {
   createCollaborationContext,
   createCollabExtensionHost,
@@ -126,7 +130,10 @@ const CollabAvatars: React.FC<{ filePath: string }> = ({ filePath }) => {
 // Status bar (subscribes to Jotai atom -- isolated re-renders)
 // ---------------------------------------------------------------------------
 
-const CollabStatusBar: React.FC<{ filePath: string; fileName: string }> = ({ filePath, fileName }) => {
+const CollabStatusBar: React.FC<{
+  filePath: string;
+  fileName: string;
+}> = ({ filePath, fileName }) => {
   const status = useAtomValue(collabConnectionStatusAtom(filePath));
 
   const statusDot = status === 'connected'
@@ -151,7 +158,7 @@ const CollabStatusBar: React.FC<{ filePath: string; fileName: string }> = ({ fil
       ? 'Decryption failed - encryption key mismatch'
     : status === 'connecting'
       ? 'Connecting...'
-      : status === 'syncing'
+    : status === 'syncing'
         ? 'Syncing...'
         : 'Disconnected';
 
@@ -193,6 +200,11 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   const isActiveRef = useRef(isActive);
   const cursorColor = useMemo(() => randomCursorColor(), []);
   const assetService = useMemo(() => new CollabAssetService(activeConfig), [activeConfig]);
+  const localOrigin = useCollabLocalOrigin(
+    activeConfig.workspacePath,
+    activeConfig.documentId,
+    activeConfig.documentType ?? 'markdown',
+  );
   const keyRotationEpoch = useAtomValue(collabKeyRotationEpochAtom);
   // Captured Lexical editor instance -- needed by FixedTabHeader plugins
   // (search/replace, the unified diff header, etc.) when the agent applies edits.
@@ -479,11 +491,102 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     if (!match.collaboration?.supported) return null;
     return match;
   }, [documentType, fileName, activeConfig.title]);
+  const localOriginActionItems = useMemo(() => {
+    const actionDisabled = localOrigin.busyAction !== null;
+    return [
+      {
+        label: 'Open Local',
+        icon: 'folder_open',
+        disabled: !localOrigin.hasResolvedBinding || actionDisabled,
+        onClick: () => {
+          void localOrigin.openLocalSource();
+        },
+      },
+      {
+        label: 'Re-upload to Shared Doc',
+        icon: 'upload',
+        disabled: !localOrigin.binding || actionDisabled,
+        onClick: () => {
+          void localOrigin.reuploadFromLocalSource();
+        },
+      },
+      {
+        label: localOrigin.binding ? 'Relink Local Source' : 'Link Local Source',
+        icon: 'link',
+        disabled: actionDisabled,
+        onClick: () => {
+          void localOrigin.relinkLocalSource();
+        },
+      },
+      {
+        label: 'Clear Local Source',
+        icon: 'link_off',
+        disabled: !localOrigin.binding || actionDisabled,
+        onClick: () => {
+          void localOrigin.clearLocalSource();
+        },
+      },
+    ];
+  }, [localOrigin]);
+  const handleLexicalEditorReady = useCallback((editor: any) => {
+    setLexicalEditor((prev: any) => (prev === editor ? prev : editor));
+    setTimeout(() => {
+      FixedTabHeaderRegistry.getInstance().notifyChange();
+    }, 150);
+  }, []);
 
   return (
     <div className="collaborative-tab-editor" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Connection status bar -- subscribes to Jotai atom, isolated re-renders */}
-      <CollabStatusBar filePath={filePath} fileName={fileName} />
+      <CollabStatusBar
+        filePath={filePath}
+        fileName={fileName}
+      />
+
+      {documentType === 'markdown' && (
+        <UnifiedEditorHeaderBar
+          filePath={filePath}
+          fileName={fileName}
+          workspaceId={activeConfig.workspacePath}
+          isMarkdown={true}
+          lexicalEditor={lexicalEditor ?? undefined}
+          breadcrumbContent={
+            localOrigin.binding?.resolvedPath ? (
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="shrink-0 text-[var(--nim-text-faint)] text-[12px] uppercase tracking-wide">
+                  Uploaded from
+                </span>
+                <FilePathBreadcrumb
+                  filePath={localOrigin.binding.resolvedPath}
+                  workspacePath={activeConfig.workspacePath}
+                  className="min-w-0 flex-1"
+                />
+              </div>
+            ) : localOrigin.binding ? (
+              <div className="flex min-w-0 items-center gap-1.5 text-[13px]">
+                <span className="shrink-0 text-[var(--nim-text-faint)] text-[12px] uppercase tracking-wide">
+                  Uploaded from
+                </span>
+                <span className="truncate text-[var(--nim-warning)]">
+                  {localOrigin.binding.relativePath} (missing)
+                </span>
+              </div>
+            ) : (
+              <div className="flex min-w-0 items-center gap-1.5 text-[13px]">
+                <span className="shrink-0 text-[var(--nim-text-faint)] text-[12px] uppercase tracking-wide">
+                  Shared doc
+                </span>
+                <span className="truncate text-[var(--nim-text)] font-medium">{fileName}</span>
+              </div>
+            )
+          }
+          showShareLinkButton={false}
+          showSharedDocButton={false}
+          showHistoryAction={false}
+          showCommonFileActions={false}
+          extraActionItems={localOriginActionItems}
+        />
+      )}
 
       {/* Editor area */}
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
@@ -493,6 +596,11 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
           </div>
         ) : documentType === 'markdown' ? (
           <DocumentPathProvider documentPath={filePath}>
+            <FixedTabHeaderContainer
+              filePath={filePath}
+              fileName={fileName}
+              editor={lexicalEditor ?? undefined}
+            />
             {/* Accept/reject bar when an AI edit is pending review. Mirrors
                 the TabEditor markdown branch. */}
             <LexicalDiffHeaderAdapter
@@ -505,7 +613,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
                 host={editorHost}
                 config={markdownConfig}
                 onGetContent={onGetContentReady}
-                onEditorReady={setLexicalEditor}
+                onEditorReady={handleLexicalEditorReady}
                 collaborationConfig={collaborationMemoConfig}
               />
             </div>

@@ -20,6 +20,10 @@ import { setWindowModeAtom } from '../store/atoms/windowMode';
 import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
 import { customEditorRegistry } from './CustomEditors';
 import { deriveCollabDocumentType } from '../utils/collabDocumentType';
+import { getRelativePath } from '../utils/pathUtils';
+import { dialogRef, DIALOG_IDS } from '../dialogs';
+import type { ShareToTeamData } from '../dialogs';
+import { joinCollabPath, normalizeCollabPath } from './CollabMode/collabTree';
 
 interface CommonFileActionsProps {
   filePath: string;
@@ -53,7 +57,7 @@ export function CommonFileActions({
     () => deriveCollabDocumentType(fileName, customEditorRegistry),
     [fileName]
   );
-  const handleShareToTeam = useCallback(async () => {
+  const runShareToTeam = useCallback(async (folderPath: string, sharedName: string) => {
     const { errorNotificationService } = await import('../services/ErrorNotificationService');
 
     if (!collabDocumentType) {
@@ -87,9 +91,22 @@ export function CommonFileActions({
     // base64 images, mindmap's no-attachments) are handled differently or
     // not at all; we skip the markdown rewriter for them entirely.
     const workspacePath = store.get(activeWorkspacePathAtom);
+    const normalizedFolder = normalizeCollabPath(folderPath);
+    const trimmedName = sharedName.trim() || fileName;
+    // joinCollabPath handles empty parent -> root and normalizes separators.
+    const shareTitle = joinCollabPath(normalizedFolder, trimmedName);
+    const documentId = crypto.randomUUID();
     const documentSync = window.electronAPI?.documentSync;
     let migratedContent = initialContent;
     let migrationToast: { kind: 'ok' | 'partial' | 'no-assets' | 'unavailable' | 'total-failure'; message?: string; failedCount?: number; okCount?: number } = { kind: 'no-assets' };
+
+    const hashContent = async (content: string | undefined): Promise<string | null> => {
+      if (typeof content !== 'string') return null;
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+      return Array.from(new Uint8Array(digest))
+        .map(byte => byte.toString(16).padStart(2, '0'))
+        .join('');
+    };
 
     if (
       documentType === 'markdown' &&
@@ -99,16 +116,16 @@ export function CommonFileActions({
       documentSync?.migrateLocalAssets
     ) {
       try {
-        const openResult = await documentSync.open(workspacePath, fileName, fileName);
+        const openResult = await documentSync.open(workspacePath, documentId, shareTitle, documentType);
         if (!openResult.success || !openResult.config) {
           throw new Error(openResult.error || 'Failed to open collab document for migration');
         }
-        const { orgId, documentId } = openResult.config;
+        const { orgId, documentId: openedDocumentId } = openResult.config;
         try {
           const migration = await documentSync.migrateLocalAssets({
             workspacePath,
             orgId,
-            documentId,
+            documentId: openedDocumentId,
             sourceFilePath: filePath,
             markdown: initialContent,
           });
@@ -136,7 +153,7 @@ export function CommonFileActions({
           // Drop the migration-pass registration. CollabMode will reopen the
           // doc when its tab mounts; otherwise we'd permanently inflate the
           // sender refcount by 1.
-          await documentSync.closeDoc(documentId).catch(() => {});
+          await documentSync.closeDoc(openedDocumentId).catch(() => {});
         }
       } catch (err) {
         console.warn('[ShareToTeam] Asset migration failed:', err);
@@ -158,16 +175,40 @@ export function CommonFileActions({
 
     // Register in the doc index (optimistic local update is synchronous,
     // server registration happens in background)
-    registerDocumentInIndex(fileName, fileName, documentType).catch(error => {
+    registerDocumentInIndex(documentId, shareTitle, documentType).catch(error => {
       console.error('Failed to register document in index:', error);
     });
 
     // Set the pending document so CollabMode auto-opens it (with content for seeding)
     store.set(pendingCollabDocumentAtom, {
-      documentId: fileName,
+      documentId,
       initialContent: migratedContent,
       documentType,
     });
+
+    if (workspacePath && documentSync?.saveLocalOrigin) {
+      try {
+        await documentSync.saveLocalOrigin({
+          workspacePath,
+          documentId,
+          documentType,
+          sourceFilePath: filePath,
+          lastLocalContentHash: await hashContent(initialContent),
+          lastCollabContentHash: await hashContent(migratedContent),
+        });
+      } catch (error) {
+        console.warn('[CommonFileActions] Failed to save local origin binding:', error);
+      }
+    }
+
+    // Remember the destination folder so the next share defaults to it.
+    if (workspacePath && window.electronAPI?.invoke) {
+      window.electronAPI.invoke('workspace:update-state', workspacePath, {
+        collabTree: { lastSharedFolder: normalizedFolder },
+      }).catch((error: unknown) => {
+        console.warn('[CommonFileActions] Failed to persist lastSharedFolder:', error);
+      });
+    }
 
     // Switch to collab mode immediately
     store.set(setWindowModeAtom, 'collab');
@@ -176,21 +217,21 @@ export function CommonFileActions({
       case 'ok':
         errorNotificationService.showInfo(
           'Shared to team',
-          `"${fileName}" is now a collaborative document. Migrated ${migrationToast.okCount} attachment${migrationToast.okCount === 1 ? '' : 's'}.`,
+          `"${shareTitle}" is now a collaborative document. Migrated ${migrationToast.okCount} attachment${migrationToast.okCount === 1 ? '' : 's'}.`,
           { duration: 4000 },
         );
         break;
       case 'partial':
         errorNotificationService.showWarning(
           'Shared with missing attachments',
-          `"${fileName}" was shared but ${migrationToast.failedCount} attachment${migrationToast.failedCount === 1 ? '' : 's'} failed to upload.`,
+          `"${shareTitle}" was shared but ${migrationToast.failedCount} attachment${migrationToast.failedCount === 1 ? '' : 's'} failed to upload.`,
           { duration: 8000 },
         );
         break;
       case 'unavailable':
         errorNotificationService.showWarning(
           'Shared to team',
-          `"${fileName}" is now collaborative, but image attachments could not be migrated${migrationToast.message ? `: ${migrationToast.message}` : '.'}`,
+          `"${shareTitle}" is now collaborative, but image attachments could not be migrated${migrationToast.message ? `: ${migrationToast.message}` : '.'}`,
           { duration: 8000 },
         );
         break;
@@ -198,12 +239,24 @@ export function CommonFileActions({
       default:
         errorNotificationService.showInfo(
           'Shared to team',
-          `"${fileName}" is now a collaborative document.`,
+          `"${shareTitle}" is now a collaborative document.`,
           { duration: 4000 },
         );
         break;
     }
   }, [filePath, fileName, collabDocumentType]);
+
+  const openShareToTeamDialog = useCallback(() => {
+    const workspacePath = store.get(activeWorkspacePathAtom);
+    const sourceRelPath = workspacePath ? getRelativePath(workspacePath, filePath) || fileName : fileName;
+    dialogRef.current?.open<ShareToTeamData>(DIALOG_IDS.SHARE_TO_TEAM, {
+      fileName,
+      sourceRelPath,
+      onConfirm: ({ folderPath, sharedName }) => {
+        runShareToTeam(folderPath, sharedName);
+      },
+    });
+  }, [filePath, fileName, runShareToTeam]);
 
   const Item = useButtons ? 'button' : 'div';
 
@@ -264,7 +317,7 @@ export function CommonFileActions({
       {collabDocumentType && hasTeam && (
         <Item
           className={menuItemClass}
-          onClick={() => { handleShareToTeam(); onClose(); }}
+          onClick={() => { openShareToTeamDialog(); onClose(); }}
         >
           {showIcons && <MaterialSymbol icon="group" size={iconSize} />}
           <span>Share to Team</span>

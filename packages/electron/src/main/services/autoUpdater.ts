@@ -58,8 +58,10 @@ export class AutoUpdaterService {
     log.transports.file.level = 'info';
     autoUpdater.logger = log;
 
-    // Configure auto-updater
-    autoUpdater.autoDownload = false;
+    // Configure auto-updater. autoDownload=true: both background polls and the
+    // manual "Check for Updates" trigger download immediately, then surface a
+    // single "Ready to install" toast. Per maintainer direction on #327.
+    autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
 
     // Configure feed URL based on release channel
@@ -99,7 +101,6 @@ export class AutoUpdaterService {
       log.info('Update available:', info);
       this.isCheckingForUpdate = false;
       this.lastUpdateErrorKey = null;
-      const wasManualCheck = this.isManualCheck;
       this.isManualCheck = false;
 
       let releaseNotes = info.releaseNotes as string | undefined;
@@ -115,19 +116,11 @@ export class AutoUpdaterService {
         releaseDate: info.releaseDate
       };
 
-      // Send to frontmost window via toast system. The renderer fires
-      // `update_toast_shown` analytics after passing suppression checks --
-      // firing here would over-count by ~14x because update-available
-      // re-fires every hourly auto-check even when the toast is suppressed.
-      this.sendToFrontmostWindow('update-toast:show-available', {
-        currentVersion: app.getVersion(),
-        newVersion: info.version,
-        releaseNotes: releaseNotes,
-        releaseDate: info.releaseDate,
-        releaseChannel: channel,
-        isManualCheck: wasManualCheck
-      });
-
+      // With autoDownload=true the download starts immediately. Per maintainer
+      // direction on #327 we no longer surface an "Update Available" toast - the
+      // download runs in the background and only the "Ready to install" toast
+      // (update-downloaded) is shown. The update-available event is still
+      // broadcast so renderer state stays in sync.
       this.sendToAllWindows('update-available', info);
     });
 

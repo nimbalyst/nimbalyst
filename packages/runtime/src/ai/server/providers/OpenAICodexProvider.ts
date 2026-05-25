@@ -1668,7 +1668,15 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     for await (const reminderEvent of this.protocol.sendMessage(session, {
       content: OpenAICodexProvider.SESSION_NAMING_REMINDER_PROMPT,
     })) {
-      await this.storeRawEventIfPresent(reminderEvent, sessionId);
+      // Tag this reminder turn's persisted output rows as a system reminder so
+      // the metadata-based transcript hide covers them. Without the tag they
+      // carry only { eventType, codexProvider, transport } and fall back to the
+      // exact <SYSTEM_REMINDER> tag regex, which a fragmented streamed tag
+      // defeats, leaking the naming nudge into the visible transcript.
+      await this.storeRawEventIfPresent(reminderEvent, sessionId, {
+        promptType: 'system_reminder',
+        reminderKind: 'session_naming',
+      });
 
       if (reminderEvent.type === 'tool_call' && reminderEvent.toolCall) {
         if (OpenAICodexProvider.isSessionNamingToolCall(reminderEvent.toolCall.name)) {
@@ -2120,7 +2128,8 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    */
   private async storeRawEventIfPresent(
     event: ProtocolEvent,
-    sessionId: string
+    sessionId: string,
+    extraMetadata?: Record<string, unknown>
   ): Promise<void> {
     if (event.type !== 'raw_event') {
       return;
@@ -2145,6 +2154,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         eventType: method,
         codexProvider: true,
         transport: 'app-server',
+        ...extraMetadata,
       };
       if (editGroupId) metadata.editGroupId = editGroupId;
       await this.logAgentMessage(
@@ -2201,6 +2211,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       eventType: rawEventType,
       codexProvider: true,
       rawEventSerializationFallback: usedFallback,
+      ...extraMetadata,
     };
     if (editGroupId) {
       metadata.editGroupId = editGroupId;

@@ -185,7 +185,7 @@ When choosing between alternatives (libraries, patterns, deciding NOT to do some
 
 ## Architecture Diagrams for Decisions
 
-Whenever an architectural change is proposed, create an Excalidraw diagram in `nimbalyst-local/architecture/` and show it inline via `capture_editor_screenshot`. See [ARCHITECTURE_DIAGRAMS.md](./docs/ARCHITECTURE_DIAGRAMS.md).
+Whenever an architectural change is proposed, create an Excalidraw diagram in `nimbalyst-local/architecture/` and share the diagram file/link in the conversation. Use `capture_editor_screenshot` only when visual verification is needed or the user explicitly asks for an inline image. See [ARCHITECTURE_DIAGRAMS.md](./docs/ARCHITECTURE_DIAGRAMS.md).
 
 ## Verifying Development Mode
 
@@ -216,4 +216,4 @@ See the Critical Rules block above ("Always Run Your Own Observation Commands").
 
 User support docs live in `support/`. Notable: `force-restore-database-backup.md` for manual database restore.
 if i ask you to propose a commit, first update the `CHANGELOG.md` (at the repo root) and include it in the commit proposal
-if a commit is intended to fix a github issue, include the issue number and a closing reference in the commit message when appropriate
+if a commit is intended to fix a github issue, include the issue number and a closing reference in the commit message when appropriate (fixes #123 or closes #123)

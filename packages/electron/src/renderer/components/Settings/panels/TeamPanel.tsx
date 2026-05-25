@@ -3,7 +3,7 @@ import { MaterialSymbol } from '@nimbalyst/runtime';
 import { useDialogState } from '../../../contexts/DialogContext';
 import { DIALOG_IDS } from '../../../dialogs/registry';
 import type { CreateTeamData } from '../../../dialogs/teamDialogs';
-import { AlphaBadge } from '../../common/AlphaBadge';
+import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
 
 // ============================================================================
 // Types
@@ -1100,7 +1100,7 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
         <div className="provider-panel-header mb-5 pb-4 border-b border-[var(--nim-border)]">
           <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-1.5 text-[var(--nim-text)] flex items-center gap-2">
             Team
-            <AlphaBadge size="sm" />
+            <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
           </h3>
           <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
             Create a team to collaborate on shared tracker items and documents with end-to-end encryption.
@@ -1133,7 +1133,7 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
       <div className="provider-panel-header mb-5 pb-4 border-b border-[var(--nim-border)]">
         <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-1.5 text-[var(--nim-text)] flex items-center gap-2">
           Team
-          <AlphaBadge size="sm" />
+          <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
         </h3>
         <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
           Create a team to collaborate on shared tracker items and documents with end-to-end encryption.

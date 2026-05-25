@@ -9,6 +9,7 @@ import { registerDialog } from '../contexts/DialogContext';
 import type { DialogConfig } from '../contexts/DialogContext.types';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { DIALOG_IDS } from './registry';
+import { ShareToTeamDialog } from '../components/ShareToTeamDialog';
 
 // ============================================================================
 // Types
@@ -25,6 +26,12 @@ export interface CreateTeamData {
   suggestedName: string;
   accounts: AccountInfo[];
   onCreateTeam: (name: string, accountOrgId?: string) => void;
+}
+
+export interface ShareToTeamData {
+  fileName: string;
+  sourceRelPath: string;
+  onConfirm: (params: { folderPath: string; sharedName: string }) => void;
 }
 
 // ============================================================================
@@ -193,11 +200,38 @@ function CreateTeamDialogWrapper({
 // Registration
 // ============================================================================
 
+function ShareToTeamDialogWrapper({
+  isOpen,
+  onClose,
+  data,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  data: ShareToTeamData;
+}) {
+  return (
+    <ShareToTeamDialog
+      isOpen={isOpen}
+      onClose={onClose}
+      fileName={data.fileName}
+      sourceRelPath={data.sourceRelPath}
+      onConfirm={data.onConfirm}
+    />
+  );
+}
+
 export function registerTeamDialogs() {
   registerDialog<CreateTeamData>({
     id: DIALOG_IDS.CREATE_TEAM,
     group: 'system',
     component: CreateTeamDialogWrapper as DialogConfig<CreateTeamData>['component'],
     priority: 100,
+  });
+
+  registerDialog<ShareToTeamData>({
+    id: DIALOG_IDS.SHARE_TO_TEAM,
+    group: 'system',
+    component: ShareToTeamDialogWrapper as DialogConfig<ShareToTeamData>['component'],
+    priority: 200,
   });
 }

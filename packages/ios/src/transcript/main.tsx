@@ -146,6 +146,10 @@ function createMobileBridgeHost(sessionId: string): InteractiveWidgetHost {
       return { success: true, pending: true };
     },
 
+    async gitCommitCancel(proposalId: string) {
+      postToNative({ type: 'interactive_response', action: 'gitCommitCancel', proposalId });
+    },
+
     trackEvent() {
       // No-op on mobile
     },

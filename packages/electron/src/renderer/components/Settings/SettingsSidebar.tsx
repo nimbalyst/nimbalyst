@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MaterialSymbol, getProviderIcon } from '@nimbalyst/runtime';
 import { useAlphaFeatures } from '../../hooks/useAlphaFeature';
-import { AlphaBadge } from '../common/AlphaBadge';
+import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../common/AlphaBadge';
 
 export type SettingsCategory =
   | 'agent-permissions'
@@ -299,7 +299,7 @@ Best for quick edits and tasks that do not require multi-file operations.`,
                 >
                   <span className="settings-sidebar-item-icon flex items-center justify-center w-5 h-5 shrink-0 text-[var(--nim-text-muted)]">{item.icon}</span>
                   <span className="settings-sidebar-item-name flex-1 truncate">{item.name}</span>
-                  {item.isAlpha && <AlphaBadge size="xs" />}
+                  {item.isAlpha && <AlphaBadge size="xs" tooltip={SETTINGS_ALPHA_TOOLTIP} />}
                   {item.badge && (
                     <span className="settings-sidebar-item-badge text-[10px] font-medium px-1.5 py-0.5 rounded bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)]">
                       {item.badge}

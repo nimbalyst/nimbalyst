@@ -24,14 +24,16 @@
 
     <script>
         // Determine theme FIRST, before any CSS - using SYNC API to prevent flash
-        // IMPORTANT: getThemeSync() resolves 'system' to actual theme, so we get 'light' or 'dark' directly
+        // IMPORTANT: getResolvedThemeSync() collapses 'system' and any extension
+        // theme into 'light' | 'dark' | 'crystal-dark', so we can apply the
+        // correct base class before React mounts.
         (function() {
             // Diagnostic logging for theme initialization issues
             const hasElectronAPI = !!window.electronAPI;
-            const hasGetThemeSync = !!(window.electronAPI?.getThemeSync);
+            const hasGetResolvedThemeSync = !!(window.electronAPI?.getResolvedThemeSync);
             console.log('[THEME-INIT] Diagnostic:', {
                 hasElectronAPI,
-                hasGetThemeSync,
+                hasGetResolvedThemeSync,
                 platform: navigator.platform,
                 userAgent: navigator.userAgent
             });
@@ -39,9 +41,9 @@
             // Get theme SYNCHRONOUSLY from main process - already resolved!
             let theme;
             try {
-                theme = window.electronAPI?.getThemeSync?.() || 'light';
+                theme = window.electronAPI?.getResolvedThemeSync?.() || 'light';
             } catch (err) {
-                console.error('[THEME-INIT] Error calling getThemeSync:', err);
+                console.error('[THEME-INIT] Error calling getResolvedThemeSync:', err);
                 theme = 'light';
             }
 
@@ -49,8 +51,8 @@
 
             const root = document.documentElement;
 
-            // Apply theme directly - no need to check prefers-color-scheme
-            // because getThemeSync() already did that for us
+            // Apply theme directly - getResolvedThemeSync() already resolved
+            // system + extension themes to a base class for us.
             if (theme === 'dark') {
                 root.classList.add('dark-theme');
                 root.setAttribute('data-theme', 'dark');

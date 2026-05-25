@@ -1,59 +1,39 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// Helper function to apply theme
+// Apply the active theme as a base dark/light class on the WorkspaceManager
+// (project picker) window. The picker does not load the extension theme
+// registry, so we rely on the main process's getResolvedThemeSync() to return
+// 'dark' | 'crystal-dark' | 'light' regardless of whether the active theme is
+// built-in, system, or extension-contributed.
 const applyTheme = () => {
   if (typeof window === 'undefined') return;
 
-  const savedTheme = localStorage.getItem('theme');
+  const resolved = window.electronAPI?.getResolvedThemeSync?.() ?? 'light';
   const root = document.documentElement;
 
-  // Clear all theme classes first
   root.classList.remove('light-theme', 'dark-theme', 'crystal-dark-theme');
 
-  if (savedTheme === 'dark') {
+  if (resolved === 'dark') {
     root.setAttribute('data-theme', 'dark');
     root.classList.add('dark-theme');
-  } else if (savedTheme === 'crystal-dark') {
+  } else if (resolved === 'crystal-dark') {
     root.setAttribute('data-theme', 'crystal-dark');
     root.classList.add('crystal-dark-theme');
-  } else if (savedTheme === 'light') {
+  } else {
     root.setAttribute('data-theme', 'light');
     root.classList.add('light-theme');
-  } else {
-    // Auto - check system preference
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    if (prefersDark) {
-      root.setAttribute('data-theme', 'dark');
-      root.classList.add('dark-theme');
-    } else {
-      root.setAttribute('data-theme', 'light');
-      root.classList.add('light-theme');
-    }
   }
 };
 
 // Apply theme on mount
 applyTheme();
 
-// Listen for theme changes
-if (typeof window !== 'undefined') {
-  window.addEventListener('storage', (e) => {
-    if (e.key === 'theme') {
-      applyTheme();
-    }
+// Listen for theme changes from the main process. Re-running applyTheme()
+// re-queries getThemeSync(), which already reflects the new active theme.
+if (typeof window !== 'undefined' && window.electronAPI?.onThemeChange) {
+  window.electronAPI.onThemeChange(() => {
+    applyTheme();
   });
-
-  // Also listen for IPC theme changes
-  if (window.electronAPI?.onThemeChange) {
-    const unsubscribe = window.electronAPI.onThemeChange((theme) => {
-      // Guard: skip if unchanged
-      if (localStorage.getItem('theme') === theme) return;
-      // Update localStorage with the new theme
-      localStorage.setItem('theme', theme);
-      applyTheme();
-    });
-    // Note: unsubscribe is returned but we're not cleaning it up since this is module-level
-  }
 }
 
 interface WorkspaceInfo {

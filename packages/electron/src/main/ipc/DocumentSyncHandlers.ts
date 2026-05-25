@@ -30,6 +30,14 @@ import {
   resolveAssetRef,
   rewriteMarkdownImageRefs,
 } from '../services/markdownAssetScanner';
+import {
+  clearLocalOriginBinding,
+  findLinkedDocumentForLocalPath,
+  getLocalOriginBinding,
+  recordLocalOriginShare,
+  relinkLocalOriginBinding,
+  reuploadFromLocalOrigin,
+} from '../services/CollabLocalOriginService';
 import WebSocket from 'ws';
 
 /** Max concurrent uploads in a single migrate-local-assets pass. Keeps a    */
@@ -433,6 +441,88 @@ export function registerDocumentSyncHandlers(): void {
       };
     });
     return { success: true };
+  });
+
+  safeHandle('document-sync:get-local-origin', async (_event, payload: {
+    workspacePath: string;
+    documentId: string;
+  }) => {
+    try {
+      const binding = await getLocalOriginBinding(payload.workspacePath, payload.documentId);
+      return { success: true, binding };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  safeHandle('document-sync:save-local-origin', async (_event, payload: {
+    workspacePath: string;
+    documentId: string;
+    documentType: string;
+    sourceFilePath: string;
+    lastLocalContentHash: string | null;
+    lastCollabContentHash: string | null;
+  }) => {
+    try {
+      const binding = await recordLocalOriginShare(payload);
+      return { success: true, binding };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  safeHandle('document-sync:relink-local-origin', async (_event, payload: {
+    workspacePath: string;
+    documentId: string;
+    documentType: string;
+    sourceFilePath: string;
+  }) => {
+    try {
+      const binding = await relinkLocalOriginBinding(payload);
+      return { success: true, binding };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  safeHandle('document-sync:clear-local-origin', async (_event, payload: {
+    workspacePath: string;
+    documentId: string;
+  }) => {
+    try {
+      await clearLocalOriginBinding(payload.workspacePath, payload.documentId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  safeHandle('document-sync:reupload-local-origin', async (_event, payload: {
+    workspacePath: string;
+    documentId: string;
+    forceOverwriteShared?: boolean;
+  }) => {
+    try {
+      return await reuploadFromLocalOrigin(payload);
+    } catch (err) {
+      return {
+        success: false,
+        status: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
+  safeHandle('document-sync:find-local-origin-link', async (_event, payload: {
+    workspacePath: string;
+    sourceFilePath: string;
+  }) => {
+    try {
+      const binding = await findLinkedDocumentForLocalPath(payload.workspacePath, payload.sourceFilePath);
+      return { success: true, binding };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
   });
 
   /**

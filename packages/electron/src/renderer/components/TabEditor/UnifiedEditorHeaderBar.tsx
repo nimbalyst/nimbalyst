@@ -35,6 +35,7 @@ import { CommonFileActions } from '../CommonFileActions';
 import { FilePathBreadcrumb } from '../common/FilePathBreadcrumb';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
 import type { ShareDialogData } from '../../dialogs';
+import { useLocalFileSharedDocLink } from '../../hooks/useCollabLocalOrigin';
 
 // Built-in tracker types that support full-document mode
 const TRACKER_TYPES: TrackerTypeInfo[] = [
@@ -100,12 +101,14 @@ interface ExtensionMenuItem {
   label: string;
   icon?: string;
   onClick: () => void;
+  disabled?: boolean;
 }
 
 interface UnifiedEditorHeaderBarProps {
   filePath: string;
   fileName: string;
   workspaceId?: string;
+  breadcrumbContent?: React.ReactNode;
 
   // Editor type info
   isMarkdown?: boolean;
@@ -130,6 +133,7 @@ interface UnifiedEditorHeaderBarProps {
 
   // Extension menu items (contributed by custom editors)
   extensionMenuItems?: ExtensionMenuItem[];
+  extraActionItems?: ExtensionMenuItem[];
   onOpenExtensionSettings?: () => void;
 
   // Debug tree toggle (dev mode only)
@@ -137,12 +141,20 @@ interface UnifiedEditorHeaderBarProps {
 
   // Signal that content changed (e.g., frontmatter injected), so document headers re-check
   onContentChanged?: () => void;
+
+  // Visibility overrides for non-local editor shells
+  showAIButton?: boolean;
+  showShareLinkButton?: boolean;
+  showSharedDocButton?: boolean;
+  showHistoryAction?: boolean;
+  showCommonFileActions?: boolean;
 }
 
 export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   filePath,
   fileName,
   workspaceId,
+  breadcrumbContent,
   isMarkdown = false,
   isCustomEditor = false,
   extensionId,
@@ -155,9 +167,15 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   onSwitchToAgentMode,
   onOpenSessionInChat,
   extensionMenuItems = [],
+  extraActionItems = [],
   onOpenExtensionSettings,
   onToggleDebugTree,
   onContentChanged,
+  showAIButton,
+  showShareLinkButton = isMarkdown,
+  showSharedDocButton = true,
+  showHistoryAction = true,
+  showCommonFileActions = true,
 }) => {
   const openHistoryDialog = useSetAtom(historyDialogFileAtom);
 
@@ -170,6 +188,8 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   const actionsMenu = useFloatingMenu({ placement: 'bottom-end' });
   const showActionsMenu = actionsMenu.isOpen;
   const setShowActionsMenu = actionsMenu.setIsOpen;
+  const sharedDocMenu = useFloatingMenu({ placement: 'bottom-end' });
+  const sharedDocLink = useLocalFileSharedDocLink(workspaceId ?? '', filePath);
 
   // Dev mode check
   const isDevMode = import.meta.env.DEV;
@@ -516,9 +536,14 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
     if (days < 7) return `${days}d ago`;
     return new Date(timestamp).toLocaleDateString();
   };
+  const formatSharedTimestamp = (isoTimestamp: string): string => {
+    const timestamp = new Date(isoTimestamp).getTime();
+    if (Number.isNaN(timestamp)) return isoTimestamp;
+    return `${new Date(timestamp).toLocaleString()} (${formatRelativeTime(timestamp)})`;
+  };
 
   // Determine if we should show AI button (shown in both editor and agent modes)
-  const showAIButton = Boolean(workspaceId);
+  const shouldShowAIButton = showAIButton ?? Boolean(workspaceId);
   // Group sessions: current workspace first, then others
   const isInWorktree = workspaceId ? isWorktreePath(workspaceId) : false;
   const currentWorkspaceSessions = useMemo(() => aiSessions.filter(s => s.isCurrentWorkspace), [aiSessions]);
@@ -529,14 +554,14 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   const showTOCButton = isMarkdown && Boolean(lexicalEditor);
 
   return (
-    <div className="unified-editor-header-bar h-9 min-h-9 flex items-center justify-between px-3 shrink-0 bg-[var(--nim-bg)] border-b border-[var(--nim-border)]">
+      <div className="unified-editor-header-bar h-9 min-h-9 flex items-center justify-between px-3 shrink-0 bg-[var(--nim-bg)] border-b border-[var(--nim-border)]">
       {/* Left: Breadcrumb Path */}
-      <FilePathBreadcrumb filePath={filePath} workspacePath={workspaceId} />
+      {breadcrumbContent ?? <FilePathBreadcrumb filePath={filePath} workspacePath={workspaceId} />}
 
       {/* Right: Action Buttons */}
       <div className="unified-header-actions flex items-center gap-1">
         {/* AI Sessions Button */}
-        {showAIButton && (
+        {shouldShowAIButton && (
           <div className="unified-header-dropdown-container relative">
             <button
               ref={aiSessionsButtonRef}
@@ -672,7 +697,7 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
         )}
 
         {/* Share Link Button (markdown files only) */}
-        {isMarkdown && (
+        {showShareLinkButton && (
           <button
             className="unified-header-button nim-btn-icon w-7 h-7 rounded border-none bg-transparent cursor-pointer flex items-center justify-center transition-all duration-150 text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
             onClick={handleShareLink}
@@ -686,6 +711,65 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
               <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
             </svg>
           </button>
+        )}
+
+        {/* Shared Doc Button - local file is already linked to a team-shared doc */}
+        {showSharedDocButton && sharedDocLink.binding && (
+          <div className="unified-header-dropdown-container relative">
+            <button
+              ref={sharedDocMenu.refs.setReference}
+              className={`unified-header-button nim-btn-icon w-7 h-7 rounded border-none bg-transparent cursor-pointer flex items-center justify-center transition-all duration-150 text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)] ${
+                sharedDocMenu.isOpen ? 'active bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)]' : ''
+              }`}
+              onClick={() => sharedDocMenu.setIsOpen(!sharedDocMenu.isOpen)}
+              title="Shared to Team"
+              {...sharedDocMenu.getReferenceProps()}
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25" />
+                <path d="m8 17 4 4 4-4" />
+                <path d="M12 12v9" />
+              </svg>
+            </button>
+
+            {sharedDocMenu.isOpen && (
+              <FloatingPortal>
+                <div
+                  ref={sharedDocMenu.refs.setFloating}
+                  style={sharedDocMenu.floatingStyles}
+                  className="min-w-[260px] overflow-hidden rounded-md z-[1000] py-1 bg-[var(--nim-bg)] border border-[var(--nim-border)] shadow-[0_4px_12px_rgba(0,0,0,0.3)]"
+                  {...sharedDocMenu.getFloatingProps()}
+                >
+                  <div className="px-3 py-2 border-b border-[var(--nim-border)]">
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--nim-text-faint)]">
+                      Shared Document
+                    </div>
+                    <div className="mt-1 text-[13px] text-[var(--nim-text)]">
+                      Shared to team on {formatSharedTimestamp(sharedDocLink.binding.createdAt)}
+                    </div>
+                  </div>
+                  <button
+                    className="dropdown-item w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={sharedDocLink.busyAction !== null}
+                    onClick={async () => {
+                      const success = await sharedDocLink.reuploadToSharedDoc();
+                      if (success) {
+                        await sharedDocLink.refresh();
+                        sharedDocMenu.setIsOpen(false);
+                      }
+                    }}
+                  >
+                    <svg className="w-4 h-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 5 17 10" />
+                      <line x1="12" y1="5" x2="12" y2="16" />
+                    </svg>
+                    Re-upload to Shared Doc
+                  </button>
+                </div>
+              </FloatingPortal>
+            )}
+          </div>
         )}
 
         {/* Actions Menu Button */}
@@ -732,19 +816,21 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
               )}
 
               {/* View History */}
-              <button
-                className="dropdown-item w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
-                onClick={() => {
-                  openHistoryDialog(filePath);
-                  setShowActionsMenu(false);
-                }}
-              >
-                <svg className="w-4 h-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="12" cy="12" r="10"/>
-                  <polyline points="12 6 12 12 16 14"/>
-                </svg>
-                View History
-              </button>
+              {showHistoryAction && (
+                <button
+                  className="dropdown-item w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
+                  onClick={() => {
+                    openHistoryDialog(filePath);
+                    setShowActionsMenu(false);
+                  }}
+                >
+                  <svg className="w-4 h-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <polyline points="12 6 12 12 16 14"/>
+                  </svg>
+                  View History
+                </button>
+              )}
 
               {/* Markdown-specific actions */}
               {isMarkdown && (
@@ -877,17 +963,44 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
                 </button>
               )}
 
+              {/* Extra shell-specific actions */}
+              {extraActionItems.length > 0 && (
+                <>
+                  <div className="dropdown-divider h-px my-1 bg-[var(--nim-border)]" />
+                  {extraActionItems.map((item, index) => (
+                    <button
+                      key={`extra-action-${index}-${item.label}`}
+                      className="dropdown-item w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+                      disabled={item.disabled}
+                      onClick={() => {
+                        item.onClick();
+                        setShowActionsMenu(false);
+                      }}
+                    >
+                      {item.icon && (
+                        <span className="material-symbols-outlined text-lg opacity-70">{item.icon}</span>
+                      )}
+                      {item.label}
+                    </button>
+                  ))}
+                </>
+              )}
+
               {/* Common file actions (Open in Default App, External Editor, Finder, Copy Path, Share) */}
-              <div className="dropdown-divider h-px my-1 bg-[var(--nim-border)]" />
-              <CommonFileActions
-                filePath={filePath}
-                fileName={fileName}
-                onClose={() => setShowActionsMenu(false)}
-                menuItemClass="dropdown-item w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
-                separatorClass="dropdown-divider h-px my-1 bg-[var(--nim-border)]"
-                iconSize={16}
-                useButtons={true}
-              />
+              {showCommonFileActions && (
+                <>
+                  <div className="dropdown-divider h-px my-1 bg-[var(--nim-border)]" />
+                  <CommonFileActions
+                    filePath={filePath}
+                    fileName={fileName}
+                    onClose={() => setShowActionsMenu(false)}
+                    menuItemClass="dropdown-item w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
+                    separatorClass="dropdown-divider h-px my-1 bg-[var(--nim-border)]"
+                    iconSize={16}
+                    useButtons={true}
+                  />
+                </>
+              )}
 
               {/* Extension Menu Items */}
               {extensionMenuItems.length > 0 && (
@@ -899,7 +1012,8 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
                   {extensionMenuItems.map((item, index) => (
                     <button
                       key={index}
-                      className="dropdown-item w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
+                      className="dropdown-item w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+                      disabled={item.disabled}
                       onClick={() => {
                         item.onClick();
                         setShowActionsMenu(false);

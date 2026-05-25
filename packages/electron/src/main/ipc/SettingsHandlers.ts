@@ -6,7 +6,7 @@ import * as path from 'path';
 import { app } from 'electron';
 import {
     getWorkspaceState, updateWorkspaceState,
-    getTheme, getThemeSync,
+    getTheme, getThemeSync, getResolvedThemeSync,
     isCompletionSoundEnabled, setCompletionSoundEnabled,
     getCompletionSoundType, setCompletionSoundType, CompletionSoundType,
     getReleaseChannel, setReleaseChannel, ReleaseChannel,
@@ -250,6 +250,15 @@ export function registerSettingsHandlers() {
     safeOn('get-theme-sync', (event) => {
         const theme = getThemeSync();
         console.log('[SettingsHandlers] get-theme-sync returning:', theme);
+        event.returnValue = theme;
+    });
+
+    // Get fully-resolved theme (sync) - collapses extension/filesystem themes
+    // into 'dark' | 'light' | 'crystal-dark'. Used by callers that cannot
+    // consult the in-renderer extension theme registry (project picker window
+    // and the flash-prevention script in index.html).
+    safeOn('get-resolved-theme-sync', (event) => {
+        const theme = getResolvedThemeSync();
         event.returnValue = theme;
     });
 

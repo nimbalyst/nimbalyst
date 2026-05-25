@@ -1073,6 +1073,26 @@ public struct SessionDetailView: View {
                 "file_count": files.count,
             ])
 
+        case "gitCommitCancel":
+            syncManager.sendSessionControlMessage(
+                sessionId: session.id,
+                messageType: "prompt_response",
+                payload: [
+                    "promptType": "git_commit",
+                    "promptId": promptId,
+                    "response": [
+                        "action": "cancelled",
+                    ],
+                ]
+            )
+            if let json = try? JSONSerialization.data(withJSONObject: ["action": "cancelled"]),
+               let jsonStr = String(data: json, encoding: .utf8) {
+                syncManager.appendToolResult(sessionId: session.id, toolResultId: promptId, content: jsonStr)
+            }
+            AnalyticsManager.shared.capture("mobile_git_commit_response", properties: [
+                "action": "cancelled",
+            ])
+
         default:
             print("Unhandled interactive response: \(action)")
         }

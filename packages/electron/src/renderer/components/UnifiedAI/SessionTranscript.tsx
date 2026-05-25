@@ -137,7 +137,7 @@ function summarizeTeammates(
 }
 
 function emitSessionRenderTrace(event: string, payload: Record<string, unknown>): void {
-  console.info(`[RenderTrace][SessionTranscript] ${event} ${JSON.stringify(payload)}`);
+  // console.info(`[RenderTrace][SessionTranscript] ${event} ${JSON.stringify(payload)}`);
 }
 
 function makeOptimisticUserMessage(

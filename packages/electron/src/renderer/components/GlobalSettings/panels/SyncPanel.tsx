@@ -11,7 +11,7 @@ import {
   setAdvancedSettingsAtom,
   type SyncConfig,
 } from '../../../store/atoms/appSettings';
-import { AlphaBadge } from '../../common/AlphaBadge';
+import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
 import { SettingsToggle } from '../SettingsToggle';
 
 /** Format a timestamp as relative time (e.g., "5 minutes ago") */
@@ -517,7 +517,7 @@ export function SyncPanel() {
       <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)]">
         <div className="flex items-center gap-2 mb-2">
           <h4 className="provider-panel-section-title text-base font-semibold text-[var(--nim-text)] m-0">Team Collaboration</h4>
-          <AlphaBadge size="sm" />
+          <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
         </div>
         <SettingsToggle
           variant="enable"

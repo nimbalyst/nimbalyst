@@ -98,6 +98,9 @@ interface UseIPCHandlersProps {
   getContentRef: React.MutableRefObject<(() => string) | null>;
   searchCommandRef: React.MutableRefObject<LexicalCommand<undefined> | null>;
   editorModeRef: React.RefObject<any>; // EditorModeRef from EditorMode component
+  collabModeRef: React.RefObject<{
+    getActiveDocumentPath?: () => string | null;
+  } | null>;
   currentFilePathRef: React.MutableRefObject<string | null>;
   currentFileNameRef: React.MutableRefObject<string | null>;
 
@@ -154,6 +157,7 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     getContentRef,
     searchCommandRef,
     editorModeRef,
+    collabModeRef,
     currentFilePathRef,
     currentFileNameRef,
 
@@ -1056,14 +1060,21 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     if (menuFindVersion === menuFindInitialRef.current) return;
     const mode = propsRef.current.activeMode;
     if (mode === 'files') {
-      const activeFilePath = editorRegistry.getActiveFilePath();
+      const activeFilePath =
+        (window as unknown as { __currentDocumentPath?: string | null }).__currentDocumentPath ||
+        editorRegistry.getActiveFilePath();
       if (activeFilePath) {
         SearchReplaceStateManager.toggle(activeFilePath);
+      }
+    } else if (mode === 'collab') {
+      const activeDocumentPath = collabModeRef.current?.getActiveDocumentPath?.();
+      if (activeDocumentPath) {
+        SearchReplaceStateManager.toggle(activeDocumentPath);
       }
     } else if (mode === 'agent') {
       window.dispatchEvent(new CustomEvent('menu:find'));
     }
-  }, [menuFindVersion]);
+  }, [collabModeRef, menuFindVersion]);
 
   useEffect(() => {
     if (menuFindNextVersion === menuFindNextInitialRef.current) return;

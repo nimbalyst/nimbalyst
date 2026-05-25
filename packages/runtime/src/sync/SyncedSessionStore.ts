@@ -266,6 +266,26 @@ export function createSyncedSessionStore(
  * repository pattern.
  */
 export function createMessageSyncHandler(syncProvider: SyncProvider) {
+  // Rate-limit the "Failed to connect session" log line. Without this, a
+  // single hung CollabV3 connection (e.g. JWT/userId mismatch) produces one
+  // error per agent message -- 1686 of 4986 main.log lines during a mobile
+  // build on 2026-05-21. One log per minute per session keeps the signal
+  // without the flood.
+  const LOG_INTERVAL_MS = 60_000;
+  const lastConnectErrorLogAt = new Map<string, number>();
+
+  function logConnectFailure(sessionId: string, error: unknown): void {
+    const now = Date.now();
+    const last = lastConnectErrorLogAt.get(sessionId) ?? 0;
+    if (now - last >= LOG_INTERVAL_MS) {
+      lastConnectErrorLogAt.set(sessionId, now);
+      console.error(
+        `[MessageSyncHandler] Failed to connect session ${sessionId}:`,
+        error,
+      );
+    }
+  }
+
   return {
     /**
      * Call this after a message is created to sync it.
@@ -273,6 +293,15 @@ export function createMessageSyncHandler(syncProvider: SyncProvider) {
      * @param sessionUpdatedAt Optional timestamp (ms) for session updated_at - MUST match local DB
      */
     async onMessageCreated(message: AgentMessage, sessionUpdatedAt?: number): Promise<void> {
+      // Provider-latched auth mismatch (JWT sub != configured userId) means
+      // the server will reject every connection until the user re-auths or
+      // settings change. Skip the connect attempt entirely; the latch
+      // clears on reconnectIndex() / disconnectAll() so legitimate auth
+      // refreshes still get through on the next message.
+      if (syncProvider.isAuthMismatched?.()) {
+        return;
+      }
+
       // Auto-connect session if not already connected
       if (!syncProvider.isConnected(message.sessionId)) {
         // console.log(`[MessageSyncHandler] Session ${message.sessionId} not connected, auto-connecting...`);
@@ -280,7 +309,7 @@ export function createMessageSyncHandler(syncProvider: SyncProvider) {
           await syncProvider.connect(message.sessionId);
           // console.log(`[MessageSyncHandler] Successfully connected session ${message.sessionId}`);
         } catch (error) {
-          console.error(`[MessageSyncHandler] Failed to connect session ${message.sessionId}:`, error);
+          logConnectFailure(message.sessionId, error);
           return;
         }
       }

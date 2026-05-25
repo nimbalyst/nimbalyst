@@ -23,7 +23,7 @@ import {
 import { voiceModePreviewAudioAtom } from '../../store/atoms/voiceModeState';
 import { addSessionFullAtom, setSelectedWorkstreamAtom, setWindowModeAtom, navigateToSettingsAtom } from '../../store';
 import { useDialog } from '../../contexts/DialogContext';
-import { AlphaBadge } from '../common/AlphaBadge';
+import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../common/AlphaBadge';
 import { buildVoiceProjectSummaryPrompt, VOICE_PROJECT_SUMMARY_PATH } from './voiceModeSummaryPrompt';
 import type { SessionCreateResult } from '../../../shared/ipc/types';
 
@@ -351,7 +351,7 @@ export const VoiceModePanel: React.FC<VoiceModePanelProps> = ({
       <div className="provider-panel-header mb-6 pb-4 border-b border-[var(--nim-border)]">
         <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-2 text-[var(--nim-text)] flex items-center gap-2">
           Voice Mode
-          <AlphaBadge size="sm" />
+          <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
         </h3>
         <p className="provider-panel-description text-sm leading-relaxed text-[var(--nim-text-muted)]">
           Use OpenAI's Advanced Voice Mode to control Claude Code with your voice.

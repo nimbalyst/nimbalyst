@@ -2154,6 +2154,44 @@ class PGLiteWorker {
       // Non-fatal - lazy transformation will be unavailable but app continues
     }
 
+    // Migration: local-only shared-document origin bindings for re-upload.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS collab_local_origins (
+          org_id TEXT NOT NULL,
+          document_id TEXT NOT NULL,
+          git_remote_hash TEXT,
+          workspace_path_hash TEXT,
+          relative_path TEXT NOT NULL,
+          document_type TEXT NOT NULL,
+          source_basename TEXT NOT NULL,
+          last_local_content_hash TEXT,
+          last_collab_content_hash TEXT,
+          last_synced_at TIMESTAMPTZ,
+          last_seen_mtime_ms BIGINT,
+          last_seen_size_bytes BIGINT,
+          resolution_status TEXT NOT NULL DEFAULT 'resolved'
+            CHECK (resolution_status IN ('resolved', 'missing', 'relinked', 'conflict')),
+          resolution_error TEXT,
+          created_at TIMESTAMPTZ NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY (org_id, document_id)
+        );
+      `);
+      await this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_collab_local_origins_git_remote_hash
+          ON collab_local_origins (git_remote_hash);
+      `);
+      await this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_collab_local_origins_relative_path
+          ON collab_local_origins (org_id, relative_path);
+      `);
+      console.log('[PGLite Worker] collab_local_origins table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create collab_local_origins table:', error);
+      throw error;
+    }
+
     // Migration: Ensure ai_tool_call_file_edits FK points to ai_agent_messages (not ai_transcript_events).
     // A previous buggy migration may have re-pointed it to ai_transcript_events.
     try {
