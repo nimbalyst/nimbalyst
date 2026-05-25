@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { usePostHog } from 'posthog-js/react';
 import { ErrorBoundary } from '../../ErrorBoundary';
 import { useTheme } from '../../../hooks/useTheme';
@@ -165,15 +165,39 @@ interface ClaudeCodePluginsPanelProps {
 // Marketplace plugins don't carry a source attribution that matches the
 // installed_plugins.json key directly. Best-effort extraction lets us produce a
 // stable `name@source` key for marketplace cards too.
+//
+// This mirrors how the install handler derives `sourceName` from the
+// marketplace URL, so the value we use to test `isPluginInstalled` matches the
+// `name@source` key the installer writes to `installed_plugins.json`.
 function extractMarketplaceSourceName(plugin: MarketplacePlugin): string {
-  const sourceField = plugin.source || '';
-  if (sourceField.startsWith('http')) {
-    const match = sourceField.match(/github\.com\/([^/]+\/[^/]+)/i);
-    if (match) {
-      return match[1].replace('/', '-');
-    }
+  const sourceField = (plugin.source || '').trim();
+  if (!/^https?:/i.test(sourceField)) {
+    return 'claude-plugins-official';
   }
-  return 'claude-plugins-official';
+
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(sourceField);
+  } catch {
+    parsed = null;
+  }
+
+  if (!parsed || !/(^|\.)github\.com$/i.test(parsed.hostname)) {
+    return 'claude-plugins-official';
+  }
+
+  // Pathname looks like "/owner/repo" or "/owner/repo/tree/...". We only care
+  // about the first two segments. Strip a trailing `.git` so URLs that come
+  // straight from `git clone` examples produce the same key as the marketplace
+  // installer.
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  if (segments.length < 2) {
+    return 'claude-plugins-official';
+  }
+
+  const owner = segments[0];
+  const repo = segments[1].replace(/\.git$/i, '');
+  return `${owner}-${repo}`;
 }
 
 function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCodePluginsPanelProps) {
@@ -191,14 +215,7 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
   const [installStatus, setInstallStatus] = useState<Record<string, 'idle' | 'installing' | 'installed' | 'error'>>({});
   const [installMessage, setInstallMessage] = useState<string>('');
 
-  useEffect(() => {
-    loadData();
-    // Reload when the active workspace changes so project-scoped plugins
-    // appear or disappear with the current project.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspacePath]);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
 
@@ -225,7 +242,13 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
     } finally {
       setLoading(false);
     }
-  };
+  }, [workspacePath]);
+
+  // Reload when the active workspace changes so project-scoped plugins
+  // appear or disappear with the current project.
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const handleInstall = async (plugin: MarketplacePlugin) => {
     setInstallStatus(prev => ({ ...prev, [plugin.name]: 'installing' }));
@@ -267,17 +290,25 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
     }, 5000);
   };
 
-  const handleUninstall = async (pluginName: string) => {
-    if (!confirm(`Uninstall ${pluginName}?`)) {
+  interface UninstallTarget {
+    name: string;
+    source?: string;
+    scope?: 'user' | 'project';
+    projectPath?: string;
+  }
+
+  const handleUninstall = async (target: UninstallTarget) => {
+    const label = target.source ? `${target.name}@${target.source}` : target.name;
+    if (!confirm(`Uninstall ${label}?`)) {
       return;
     }
 
     try {
-      const result = await window.electronAPI.invoke('claude-plugin:uninstall', pluginName);
+      const result = await window.electronAPI.invoke('claude-plugin:uninstall', target);
 
       if (result.success) {
-        setInstallStatus(prev => ({ ...prev, [pluginName]: 'idle' }));
-        setInstallMessage(`${pluginName} uninstalled`);
+        setInstallStatus(prev => ({ ...prev, [target.name]: 'idle' }));
+        setInstallMessage(`${label} uninstalled`);
 
         // Refresh installed plugins
         const installedResult = await window.electronAPI.invoke('claude-plugin:list-installed', { workspacePath });
@@ -492,7 +523,12 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
                 <div className="plugin-installed-actions flex gap-2">
                   <button
                     className="plugin-uninstall-button py-1.5 px-3 border border-[#e74c3c] rounded bg-transparent text-[#e74c3c] text-xs font-medium cursor-pointer transition-all duration-150 hover:bg-[#e74c3c] hover:text-white"
-                    onClick={() => handleUninstall(plugin.name)}
+                    onClick={() => handleUninstall({
+                      name: plugin.name,
+                      source: plugin.source,
+                      scope: plugin.scope,
+                      projectPath: plugin.projectPath,
+                    })}
                     aria-label={`Uninstall ${plugin.name}`}
                   >
                     Uninstall
@@ -563,7 +599,15 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
                 <button
                   className="plugin-uninstall-button py-1.5 px-3 border border-[#e74c3c] rounded bg-transparent text-[#e74c3c] text-xs font-medium cursor-pointer transition-all duration-150 hover:bg-[#e74c3c] hover:text-white"
                   onClick={() => {
-                    handleUninstall(selectedPlugin.name);
+                    // Modal originates from a marketplace card, so we only
+                    // know name+derived source. The server-side uninstall
+                    // handler will refuse ambiguous matches; users on a
+                    // multi-marketplace install must uninstall from the
+                    // Installed tab where the source is explicit.
+                    handleUninstall({
+                      name: selectedPlugin.name,
+                      source: extractMarketplaceSourceName(selectedPlugin),
+                    });
                     setSelectedPlugin(null);
                   }}
                 >

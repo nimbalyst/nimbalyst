@@ -645,51 +645,108 @@ async function installPlugin(pluginName: string, source: string): Promise<{ succ
   }
 }
 
+interface UninstallTarget {
+  name: string;
+  source?: string;
+  scope?: 'user' | 'project';
+  projectPath?: string;
+}
+
 /**
- * Uninstall a plugin
+ * Locate the `name@source` key in installed_plugins.json that matches the
+ * caller's intent. When the caller already provides a source, we require an
+ * exact match. Otherwise we fall back to the legacy behaviour of matching by
+ * plugin name alone but refuse to guess when multiple sources are ambiguous.
  */
-async function uninstallPlugin(pluginName: string): Promise<{ success: boolean; error?: string }> {
+function resolvePluginKey(
+  installedPlugins: InstalledPluginsJson['plugins'],
+  target: UninstallTarget,
+): { matchingKey?: string; ambiguous?: boolean } {
+  if (target.source) {
+    const exactKey = `${target.name}@${target.source}`;
+    return installedPlugins[exactKey] ? { matchingKey: exactKey } : {};
+  }
+
+  const candidates = Object.keys(installedPlugins).filter(key =>
+    key.startsWith(`${target.name}@`)
+  );
+
+  if (candidates.length === 0) {
+    return {};
+  }
+  if (candidates.length > 1) {
+    return { ambiguous: true };
+  }
+  return { matchingKey: candidates[0] };
+}
+
+/**
+ * Uninstall a plugin entry from installed_plugins.json.
+ *
+ * Selection precedence:
+ * 1. Exact `name@source` match when the caller supplies a source.
+ * 2. Legacy name-only match when there is exactly one installation by that
+ *    name (preserves prior behaviour for older callers).
+ *
+ * Scope precedence:
+ * 1. The explicit scope (and `projectPath`) supplied by the caller.
+ * 2. The user-scoped installation when none is provided.
+ */
+async function uninstallPlugin(target: UninstallTarget): Promise<{ success: boolean; error?: string }> {
   try {
-    logger.main.info(`[ClaudePlugins] Uninstalling plugin: ${pluginName}`);
+    logger.main.info(`[ClaudePlugins] Uninstalling plugin: ${target.name}@${target.source ?? '(unspecified)'}`);
 
     const installedJson = await readInstalledPluginsJson();
+    const { matchingKey, ambiguous } = resolvePluginKey(installedJson.plugins, target);
 
-    // Find the plugin key that matches this plugin name (format: pluginName@source)
-    const matchingKey = Object.keys(installedJson.plugins).find(key => key.startsWith(`${pluginName}@`));
-
+    if (ambiguous) {
+      return {
+        success: false,
+        error: `Plugin ${target.name} is installed from multiple marketplaces; specify a source to uninstall`,
+      };
+    }
     if (!matchingKey) {
-      return { success: false, error: `Plugin ${pluginName} is not installed` };
+      return { success: false, error: `Plugin ${target.name} is not installed` };
     }
 
-    // Find user-scope installation
-    const userInstallation = installedJson.plugins[matchingKey].find(e => e.scope === 'user');
-    if (!userInstallation) {
-      return { success: false, error: `Plugin ${pluginName} is not installed in user scope` };
+    const installations = installedJson.plugins[matchingKey];
+    const desiredScope = target.scope ?? 'user';
+    const installation = installations.find(entry => {
+      if (entry.scope !== desiredScope) {
+        return false;
+      }
+      if (desiredScope === 'project' && target.projectPath) {
+        return entry.projectPath === target.projectPath;
+      }
+      return true;
+    });
+
+    if (!installation) {
+      return {
+        success: false,
+        error: `Plugin ${target.name} is not installed in ${desiredScope} scope`,
+      };
     }
 
-    // Remove the plugin directory
     try {
-      await fsPromises.rm(userInstallation.installPath, { recursive: true, force: true });
+      await fsPromises.rm(installation.installPath, { recursive: true, force: true });
     } catch (err) {
       logger.main.warn(`[ClaudePlugins] Could not remove plugin directory: ${err}`);
     }
 
-    // Update installed_plugins.json
-    installedJson.plugins[matchingKey] = installedJson.plugins[matchingKey].filter(e => e.scope !== 'user');
-
-    // Remove plugin entry if no installations left
+    installedJson.plugins[matchingKey] = installations.filter(entry => entry !== installation);
     if (installedJson.plugins[matchingKey].length === 0) {
       delete installedJson.plugins[matchingKey];
     }
 
     await writeInstalledPluginsJson(installedJson);
 
-    logger.main.info(`[ClaudePlugins] Successfully uninstalled plugin: ${pluginName}`);
+    logger.main.info(`[ClaudePlugins] Successfully uninstalled plugin: ${matchingKey}`);
     return { success: true };
 
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    logger.main.error(`[ClaudePlugins] Failed to uninstall plugin ${pluginName}:`, err);
+    logger.main.error(`[ClaudePlugins] Failed to uninstall plugin ${target.name}:`, err);
     return { success: false, error: errorMsg };
   }
 }
@@ -731,12 +788,25 @@ export function registerClaudeCodePluginHandlers() {
     return await installPlugin(pluginName, source);
   });
 
-  // Uninstall a plugin
-  safeHandle('claude-plugin:uninstall', async (_event, pluginName: string) => {
-    if (!pluginName) {
+  // Uninstall a plugin.
+  //
+  // Accepts either the legacy positional form `(pluginName)` or a structured
+  // payload `{ name, source?, scope?, projectPath? }`. Renderer code should
+  // prefer the structured form so that plugins published from more than one
+  // marketplace can be disambiguated.
+  safeHandle('claude-plugin:uninstall', async (
+    _event,
+    pluginNameOrPayload: string | UninstallTarget,
+  ) => {
+    const target: UninstallTarget =
+      typeof pluginNameOrPayload === 'string'
+        ? { name: pluginNameOrPayload }
+        : pluginNameOrPayload ?? { name: '' };
+
+    if (!target.name) {
       return { success: false, error: 'Plugin name is required' };
     }
-    return await uninstallPlugin(pluginName);
+    return await uninstallPlugin(target);
   });
 
   // Clear marketplace cache
