@@ -4,6 +4,10 @@
   "description": "Excalidraw diagram editor extension for Nimbalyst",
   "main": "dist/index.js",
   "types": "src/index.tsx",
+  "exports": {
+    ".": "./dist/index.js",
+    "./collab-adapter": "./src/collab/ExcalidrawCollabContentAdapter.ts"
+  },
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch",

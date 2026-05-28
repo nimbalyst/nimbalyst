@@ -32,8 +32,74 @@ import {
   getReleaseChannel,
 } from '../utils/store';
 import { registerFileExtension, clearRegisteredExtensions } from '../extensions/RegisteredFileTypes';
+import { validateBackendModules } from '@nimbalyst/extension-sdk';
 import type { ReleaseChannel } from '../utils/store';
 import { buildExtensionFindFilesPlan } from './extensionFindFilesPlan';
+import { database } from '../database/PGLiteDatabaseWorker';
+import {
+  isAllowedToContributeBackendModules,
+  type BackendModuleAllowResult,
+} from '../extensions/backendModuleAllowlist';
+
+/**
+ * Validate `contributions.backendModules` on a parsed manifest, then apply
+ * the backend-module allowlist policy. If either step refuses the manifest,
+ * strips the field so downstream code never sees the declaration (the rest
+ * of the extension's contributions still load).
+ *
+ * Mutates the manifest in place. Returns true if backendModules survived;
+ * false if it was stripped.
+ */
+function validateAndScrubBackendModules(
+  manifest: Record<string, unknown>,
+  extensionId: string,
+  context: { isBuiltin: boolean; isSymlink: boolean }
+): boolean {
+  const contributions = manifest?.contributions as Record<string, unknown> | undefined;
+  if (!contributions || contributions.backendModules === undefined) {
+    return true;
+  }
+
+  // Step 1: shape validation. Warnings are non-fatal (legacy deprecated
+  // permission ids are dropped silently by the SDK validator).
+  const issues = validateBackendModules(contributions.backendModules);
+  const errors = issues.filter((i) => i.severity !== 'warning');
+  const warnings = issues.filter((i) => i.severity === 'warning');
+  if (warnings.length > 0) {
+    logger.main.warn(
+      `[ExtensionHandlers] Extension ${extensionId} backendModules has warnings:`,
+      warnings
+    );
+  }
+  if (errors.length > 0) {
+    logger.main.error(
+      `[ExtensionHandlers] Extension ${extensionId} has invalid backendModules; ` +
+        `stripping the field so it cannot load privileged capabilities. Issues:`,
+      errors
+    );
+    delete contributions.backendModules;
+    return false;
+  }
+
+  // Step 2: allowlist policy. Backend modules can run arbitrary native code;
+  // restrict who is permitted to ship them.
+  const decision: BackendModuleAllowResult = isAllowedToContributeBackendModules({
+    extensionId,
+    isBuiltin: context.isBuiltin,
+    isSymlink: context.isSymlink,
+  });
+  if (!decision.allowed) {
+    logger.main.warn(
+      `[ExtensionHandlers] Extension ${extensionId} is not allowlisted to ship backend modules ` +
+        `(reason: ${decision.reason}). Dropping contributions.backendModules. ` +
+        (decision.detail ?? '')
+    );
+    delete contributions.backendModules;
+    return false;
+  }
+
+  return true;
+}
 
 /**
  * Check if an extension should be visible for the current release channel.
@@ -815,7 +881,8 @@ export function registerExtensionHandlers(): void {
         for (const subdir of subdirs) {
           // Handle both directories and symlinks to directories
           let isDir = subdir.isDirectory();
-          if (!isDir && subdir.isSymbolicLink()) {
+          const isSymlink = subdir.isSymbolicLink();
+          if (!isDir && isSymlink) {
             try {
               const targetPath = path.join(extensionsDir, subdir.name);
               const stat = await fs.stat(targetPath);
@@ -845,6 +912,14 @@ export function registerExtensionHandlers(): void {
               logger.main.debug(`[ExtensionHandlers] Skipping extension ${extensionId} from list (requires ${manifest.requiredReleaseChannel} channel)`);
               continue;
             }
+
+            // Validate privileged-capability contributions and enforce the
+            // backend-module allowlist. Invalid or disallowed declarations
+            // are stripped so the rest of the extension still loads.
+            validateAndScrubBackendModules(manifest, extensionId, {
+              isBuiltin: isBuiltinDir,
+              isSymlink,
+            });
 
             // Register file patterns from customEditors
             if (manifest.contributions?.customEditors) {
@@ -1132,37 +1207,8 @@ export function registerExtensionHandlers(): void {
   }) => {
     const { extensionId, command, cwd, timeout = 60000, env, maxBuffer = 10 * 1024 * 1024 } = params;
 
-    // Find extension manifest by scanning extension directories
-    let hasFilesystemPermission = false;
-    const extensionDirs = await getAllExtensionDirectories();
-    for (const extDir of extensionDirs) {
-      let subdirs;
-      try {
-        subdirs = await fs.readdir(extDir, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const subdir of subdirs) {
-        let isDir = subdir.isDirectory();
-        if (!isDir && subdir.isSymbolicLink()) {
-          try {
-            const stat = await fs.stat(path.join(extDir, subdir.name));
-            isDir = stat.isDirectory();
-          } catch { continue; }
-        }
-        if (!isDir) continue;
-        const manifestPath = path.join(extDir, subdir.name, 'manifest.json');
-        try {
-          const manifestJson = await fs.readFile(manifestPath, 'utf-8');
-          const manifest = JSON.parse(manifestJson);
-          if (manifest.id === extensionId) {
-            hasFilesystemPermission = !!manifest.permissions?.filesystem;
-            break;
-          }
-        } catch { continue; }
-      }
-      if (hasFilesystemPermission) break;
-    }
+    const manifest = await readExtensionManifest(extensionId);
+    const hasFilesystemPermission = !!manifest?.permissions?.filesystem;
 
     if (!hasFilesystemPermission) {
       return { success: false, stdout: '', stderr: `Extension ${extensionId} not found or lacks filesystem permission`, exitCode: -1 };
@@ -1305,7 +1351,116 @@ export function registerExtensionHandlers(): void {
     return { usedBytes, limitBytes };
   });
 
+  // ============================================================================
+  // Extension Database Access (read-only PGLite query)
+  // ============================================================================
+
+  // Run a read-only SQL query against PGLite on behalf of an extension. The
+  // query is wrapped in BEGIN; SET TRANSACTION READ ONLY; SET LOCAL
+  // statement_timeout; <sql>; COMMIT -- DML/DDL is rejected by the planner.
+  // Requires the extension to declare 'nimbalyst-database-read' in
+  // manifest.permissions.catalog. Errors surface PG's native message so
+  // extension authors can debug their SQL.
+  safeHandle('extension:database:query', async (_event, params: {
+    extensionId: string;
+    sql: string;
+    params?: unknown[];
+  }) => {
+    if (!params || typeof params.extensionId !== 'string' || params.extensionId.length === 0) {
+      throw new Error('extension:database:query requires extensionId');
+    }
+    if (typeof params.sql !== 'string' || params.sql.length === 0) {
+      throw new Error('extension:database:query requires non-empty sql');
+    }
+
+    const granted = await extensionHasCatalogPermission(
+      params.extensionId,
+      'nimbalyst-database-read'
+    );
+    if (!granted) {
+      throw new Error(
+        `Extension ${params.extensionId} is not authorized for database access. ` +
+        `Declare "nimbalyst-database-read" in manifest.permissions.catalog.`
+      );
+    }
+
+    const queryParams = Array.isArray(params.params) ? params.params : undefined;
+    const result = await database.queryReadOnly(params.sql, queryParams as any[] | undefined);
+    return { rows: result.rows };
+  });
+
   logger.main.info('[ExtensionHandlers] Extension handlers registered');
+}
+
+/**
+ * Shape of the bits of an extension manifest we read for permission gating.
+ * `permissions.filesystem` / `network` / `ai` are the legacy boolean object;
+ * `permissions.catalog` is the catalog ids the renderer-side surface uses.
+ */
+interface ManifestForGating {
+  id?: string;
+  permissions?: {
+    filesystem?: boolean;
+    ai?: boolean;
+    network?: boolean;
+    catalog?: string[];
+  };
+}
+
+/**
+ * Read the manifest for a given extension id by scanning user and built-in
+ * extension directories (in that order). Returns the parsed manifest or null
+ * if no matching extension is found. Used by permission-gated IPC handlers
+ * to verify the caller declared the capability they're asking for.
+ */
+async function readExtensionManifest(
+  extensionId: string
+): Promise<ManifestForGating | null> {
+  const extensionDirs = await getAllExtensionDirectories();
+  for (const extDir of extensionDirs) {
+    let subdirs;
+    try {
+      subdirs = await fs.readdir(extDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const subdir of subdirs) {
+      let isDir = subdir.isDirectory();
+      if (!isDir && subdir.isSymbolicLink()) {
+        try {
+          const stat = await fs.stat(path.join(extDir, subdir.name));
+          isDir = stat.isDirectory();
+        } catch { continue; }
+      }
+      if (!isDir) continue;
+      const manifestPath = path.join(extDir, subdir.name, 'manifest.json');
+      try {
+        const manifestJson = await fs.readFile(manifestPath, 'utf-8');
+        const manifest = JSON.parse(manifestJson) as ManifestForGating;
+        if (manifest.id === extensionId) {
+          return manifest;
+        }
+      } catch { continue; }
+    }
+  }
+  return null;
+}
+
+/**
+ * Check whether `extensionId` declares the given catalog permission in
+ * `manifest.permissions.catalog`. Currently the manifest declaration IS the
+ * gate for renderer-side catalog permissions -- there's no separate consent
+ * prompt for panel extensions, since the user already had to install and
+ * enable the extension. Backend-module permissions go through the consent
+ * flow in PrivilegedExtensionHost.
+ */
+async function extensionHasCatalogPermission(
+  extensionId: string,
+  permissionId: string
+): Promise<boolean> {
+  const manifest = await readExtensionManifest(extensionId);
+  const catalog = manifest?.permissions?.catalog;
+  return Array.isArray(catalog) && catalog.includes(permissionId);
 }
 
 // ============================================================================

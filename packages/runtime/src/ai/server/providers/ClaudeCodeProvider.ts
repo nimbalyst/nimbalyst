@@ -496,6 +496,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     // Capture stderr from the subprocess for diagnostics (populated inside try, read in catch)
     const stderrLines: string[] = [];
 
+    // Hoisted so the catch block can avoid double-yielding `complete` if the
+    // result chunk's early-yield already fired before an error was thrown.
+    let completeEmitted = false;
+
     try {
       // Append document context to message using pre-built prompts from DocumentContextService
       // Skip adding system message if the prompt starts with a slash command
@@ -715,6 +719,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // the "Stream closed" tool permission errors.
       let resultReceivedTime: number | null = null;
       let resultReceivedChunkCount: number | null = null;
+      // `completeEmitted` is declared outside the try block so the catch can
+      // see it. We yield `complete` as soon as the SDK sends the `result`
+      // chunk so the UI flips to ready immediately, rather than waiting for
+      // the post-result grace period to expire (~30s of perceived "still
+      // running" with no new output). The for-await loop and grace timer
+      // continue running so late can_use_tool control requests on stdin still
+      // complete; subsequent chunks (rare -- teammate drainage, late text)
+      // are still yielded to the consumer.
       // Grace window after `type: 'result'` before the controller ends the
       // prompt iterable and the SDK closes the binary's stdin pipe.
       //
@@ -1128,6 +1140,75 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             }
           }
           if (breakOuter) break;
+
+          // Yield `complete` as soon as the SDK reports the turn is done (`result`
+          // chunk). usageData / lastAssistantUsage / modelUsageData were populated
+          // by the parsed items above (via `usage` items from the result chunk).
+          // The for-await keeps running so stdin stays open for late control
+          // requests, but the consumer sees completion immediately.
+          if (typeof chunk === 'object' && chunk !== null && chunk.type === 'result' && !completeEmitted) {
+            await this.flushPendingWrites();
+
+            if (this.toolHooksService && this.toolHooksService.getEditedFiles().size > 0) {
+              await this.toolHooksService.createTurnEndSnapshots();
+            }
+
+            let totalInputTokens = usageData?.input_tokens || 0;
+            let totalOutputTokens = usageData?.output_tokens || 0;
+            if (modelUsageData) {
+              totalInputTokens = 0;
+              totalOutputTokens = 0;
+              for (const modelName of Object.keys(modelUsageData)) {
+                const modelStats = modelUsageData[modelName];
+                totalInputTokens += modelStats.inputTokens || 0;
+                totalOutputTokens += modelStats.outputTokens || 0;
+              }
+            }
+
+            const lastMessageContextTokens = lastAssistantUsage
+              ? (lastAssistantUsage.input_tokens || 0)
+                + (lastAssistantUsage.cache_read_input_tokens || 0)
+                + (lastAssistantUsage.cache_creation_input_tokens || 0)
+              : undefined;
+
+            transcriptAdapter?.turnEnded(usageData, modelUsageData);
+
+            yield {
+              type: 'complete',
+              isComplete: true,
+              ...(usageData || modelUsageData ? {
+                usage: {
+                  input_tokens: totalInputTokens,
+                  output_tokens: totalOutputTokens,
+                  cache_read_input_tokens: usageData?.cache_read_input_tokens || 0,
+                  cache_creation_input_tokens: usageData?.cache_creation_input_tokens || 0,
+                  total_tokens: totalInputTokens + totalOutputTokens
+                }
+              } : {}),
+              ...(modelUsageData ? { modelUsage: modelUsageData } : {}),
+              ...(lastMessageContextTokens !== undefined ? { contextFillTokens: lastMessageContextTokens } : {}),
+              ...(receivedCompactBoundary ? { contextCompacted: true } : {})
+            };
+            completeEmitted = true;
+
+            // Break out of the chunk loop. The for-await would otherwise stay
+            // alive indefinitely on sessions where the binary's task-list
+            // `<system-reminder>` hook keeps trying can_use_tool requests over
+            // closed stdin (each failure emits a tool_result(Stream closed)
+            // chunk that resets the grace timer). Witnessed in the wild as
+            // 13+ minute hangs after ScheduleWakeup-driven turns.
+            //
+            // Because this is a manual `while (true)` loop iterating via
+            // iterator.next() (not for-await), `break` does NOT call
+            // iterator.return(), so the SDK generator's internal state is
+            // preserved for the next turn. The binary subprocess stays alive
+            // for session resume (existing finally-block behavior).
+            //
+            // Teammate drainage at the next block reads from the same
+            // leadQuery iterator if pending messages exist, so that flow
+            // still works.
+            break;
+          }
         }
       } catch (iterError) {
         // Don't log abort errors - they're expected when user cancels
@@ -1256,66 +1337,74 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // Send completion event
       const totalTime = Date.now() - startTime;
 
-      // Flush all pending non-blocking DB writes before signaling completion.
-      // Without this, the UI receives session:completed and reloads from DB
-      // before the final messages (e.g. compact_boundary, continuation, result)
-      // have been committed, causing a stale transcript.
-      await this.flushPendingWrites();
+      // If we already emitted `complete` on the `result` chunk (the common
+      // path), all post-turn side effects (flushPendingWrites, snapshots,
+      // transcriptAdapter.turnEnded) were already run there. Skip them and the
+      // duplicate yield. We only fall through to the legacy end-of-loop path
+      // when no `result` chunk was ever seen (e.g. iterator closed early,
+      // slash command produced no result).
+      if (!completeEmitted) {
+        // Flush all pending non-blocking DB writes before signaling completion.
+        // Without this, the UI receives session:completed and reloads from DB
+        // before the final messages (e.g. compact_boundary, continuation, result)
+        // have been committed, causing a stale transcript.
+        await this.flushPendingWrites();
 
-      // Create snapshots for all files edited during this turn
-      if (this.toolHooksService && this.toolHooksService.getEditedFiles().size > 0) {
-        await this.toolHooksService.createTurnEndSnapshots();
-      }
-
-      // Calculate total input/output tokens from modelUsage if available (more accurate than usageData)
-      let totalInputTokens = usageData?.input_tokens || 0;
-      let totalOutputTokens = usageData?.output_tokens || 0;
-      let totalCostUSD = 0;
-
-      if (modelUsageData) {
-        // Sum up tokens from all models (in case multiple models were used)
-        totalInputTokens = 0;
-        totalOutputTokens = 0;
-        for (const modelName of Object.keys(modelUsageData)) {
-          const modelStats = modelUsageData[modelName];
-          totalInputTokens += modelStats.inputTokens || 0;
-          totalOutputTokens += modelStats.outputTokens || 0;
-          totalCostUSD += modelStats.costUSD || 0;
+        // Create snapshots for all files edited during this turn
+        if (this.toolHooksService && this.toolHooksService.getEditedFiles().size > 0) {
+          await this.toolHooksService.createTurnEndSnapshots();
         }
-      }
 
-      // Compute context fill from last assistant message's usage (not cumulative result.usage).
-      // CRITICAL: Use lastAssistantUsage, NOT usageData (which gets overwritten by cumulative result.usage).
-      const lastMessageContextTokens = lastAssistantUsage
-        ? (lastAssistantUsage.input_tokens || 0)
-          + (lastAssistantUsage.cache_read_input_tokens || 0)
-          + (lastAssistantUsage.cache_creation_input_tokens || 0)
-        : undefined;
+        // Calculate total input/output tokens from modelUsage if available (more accurate than usageData)
+        let totalInputTokens = usageData?.input_tokens || 0;
+        let totalOutputTokens = usageData?.output_tokens || 0;
+        let totalCostUSD = 0;
 
-      // Canonical transcript: turn ended with usage
-      transcriptAdapter?.turnEnded(usageData, modelUsageData);
-
-      yield {
-        type: 'complete',
-        // Don't send content here - it's already been sent in chunks
-        // The AIService accumulates the chunks itself
-        isComplete: true,
-        ...(usageData || modelUsageData ? {
-          usage: {
-            input_tokens: totalInputTokens,
-            output_tokens: totalOutputTokens,
-            cache_read_input_tokens: usageData?.cache_read_input_tokens || 0,
-            cache_creation_input_tokens: usageData?.cache_creation_input_tokens || 0,
-            total_tokens: totalInputTokens + totalOutputTokens
+        if (modelUsageData) {
+          // Sum up tokens from all models (in case multiple models were used)
+          totalInputTokens = 0;
+          totalOutputTokens = 0;
+          for (const modelName of Object.keys(modelUsageData)) {
+            const modelStats = modelUsageData[modelName];
+            totalInputTokens += modelStats.inputTokens || 0;
+            totalOutputTokens += modelStats.outputTokens || 0;
+            totalCostUSD += modelStats.costUSD || 0;
           }
-        } : {}),
-        // Include modelUsage for detailed per-model breakdown and cost tracking
-        ...(modelUsageData ? { modelUsage: modelUsageData } : {}),
-        // Context fill from last assistant message (for context window display)
-        ...(lastMessageContextTokens !== undefined ? { contextFillTokens: lastMessageContextTokens } : {}),
-        // Signal that compaction happened so AIService clears stale currentContext
-        ...(receivedCompactBoundary ? { contextCompacted: true } : {})
-      };
+        }
+
+        // Compute context fill from last assistant message's usage (not cumulative result.usage).
+        // CRITICAL: Use lastAssistantUsage, NOT usageData (which gets overwritten by cumulative result.usage).
+        const lastMessageContextTokens = lastAssistantUsage
+          ? (lastAssistantUsage.input_tokens || 0)
+            + (lastAssistantUsage.cache_read_input_tokens || 0)
+            + (lastAssistantUsage.cache_creation_input_tokens || 0)
+          : undefined;
+
+        // Canonical transcript: turn ended with usage
+        transcriptAdapter?.turnEnded(usageData, modelUsageData);
+
+        yield {
+          type: 'complete',
+          // Don't send content here - it's already been sent in chunks
+          // The AIService accumulates the chunks itself
+          isComplete: true,
+          ...(usageData || modelUsageData ? {
+            usage: {
+              input_tokens: totalInputTokens,
+              output_tokens: totalOutputTokens,
+              cache_read_input_tokens: usageData?.cache_read_input_tokens || 0,
+              cache_creation_input_tokens: usageData?.cache_creation_input_tokens || 0,
+              total_tokens: totalInputTokens + totalOutputTokens
+            }
+          } : {}),
+          // Include modelUsage for detailed per-model breakdown and cost tracking
+          ...(modelUsageData ? { modelUsage: modelUsageData } : {}),
+          // Context fill from last assistant message (for context window display)
+          ...(lastMessageContextTokens !== undefined ? { contextFillTokens: lastMessageContextTokens } : {}),
+          // Signal that compaction happened so AIService clears stale currentContext
+          ...(receivedCompactBoundary ? { contextCompacted: true } : {})
+        };
+      }
 
 
     } catch (error: any) {
@@ -1347,10 +1436,12 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       if (isAbort) {
         // Abort is expected - user cancelled, don't log as error
         await this.flushPendingWrites();
-        yield {
-          type: 'complete',
-          isComplete: true
-        };
+        if (!completeEmitted) {
+          yield {
+            type: 'complete',
+            isComplete: true
+          };
+        }
       } else {
         console.error(`[CLAUDE-CODE] Error occurred`);
 
@@ -1383,11 +1474,16 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           error: error.message
         };
 
-        // CRITICAL: Always send completion after error to clean up UI state
+        // CRITICAL: Always send completion after error to clean up UI state.
+        // Skip if we already emitted complete on the result chunk -- the UI
+        // is already cleaned up; this error was raised after the turn was
+        // delivered (e.g. teammate streamInput failure).
         await this.flushPendingWrites();
-        yield {
-          type: 'complete'
-        };
+        if (!completeEmitted) {
+          yield {
+            type: 'complete'
+          };
+        }
       }
     } finally {
       // Don't stop MCP health checks or clear mcpQuery between turns -

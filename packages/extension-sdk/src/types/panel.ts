@@ -348,6 +348,50 @@ export interface PanelHost {
    * @returns Promise resolving to exec result with stdout, stderr, and exit code
    */
   exec(command: string, options?: ExecOptions): Promise<ExecResult>;
+
+  // ============ DATA ACCESS ============
+
+  /**
+   * Read-only access to Nimbalyst's local PGLite database.
+   *
+   * Requires the extension to declare `"nimbalyst-database-read"` in
+   * `permissions.catalog` in manifest.json. Queries run inside a
+   * `READ ONLY` transaction with a bounded statement_timeout; any DML/DDL
+   * is rejected by the planner.
+   *
+   * Tables and columns are not part of any stable contract -- this surface
+   * is intended for built-in extensions today and will be redesigned when
+   * Nimbalyst's storage layer ports to native SQLite. Pin to the host
+   * version you tested against.
+   */
+  readonly data: ExtensionDataAccess;
+}
+
+/**
+ * Read-only data access surface exposed to extension panels.
+ *
+ * @example
+ * ```typescript
+ * const rows = await host.data.query<{ id: string; title: string }>(
+ *   'SELECT id, title FROM ai_sessions ORDER BY created_at DESC LIMIT $1',
+ *   [50]
+ * );
+ * ```
+ */
+export interface ExtensionDataAccess {
+  /**
+   * Run a read-only SQL query against the local PGLite database.
+   *
+   * The query is wrapped in `BEGIN; SET TRANSACTION READ ONLY; SET LOCAL
+   * statement_timeout = '5s'; <sql>; COMMIT;` -- DML/DDL is rejected by PG.
+   * Multi-statement scripts are not supported; use a single SELECT or CTE.
+   *
+   * @param sql Parameterized SQL (use `$1`, `$2`, ... placeholders)
+   * @param params Bound parameter values (optional)
+   * @returns Resolves with the result rows. Rejects with the raw PG error on
+   *          read-only violations, timeouts, syntax errors, or missing tables.
+   */
+  query<T = unknown>(sql: string, params?: unknown[]): Promise<T[]>;
 }
 
 /**

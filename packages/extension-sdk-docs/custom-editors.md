@@ -438,6 +438,119 @@ export function TableEditor({ host }: EditorHostProps) {
 }
 ```
 
+## Making Your Editor Collaborative
+
+`useEditorLifecycle` covers single-user, file-backed editing. To make your editor work on **shared documents** (real-time collaboration, revision history, AI editing on shared docs, re-upload from local source, export-to-file), register a `CollabContentAdapter`.
+
+The adapter is the per-extension contract that lets the host operate on your Y.Doc generically -- without knowing your internal layout. The host calls into it for features that need to read or replace shared-doc content:
+
+| Host feature | What it asks the adapter for |
+| --- | --- |
+| Initial share | `seedFromFile(yDoc, fileBytes)` |
+| Re-upload from local source | `applyFromFile(yDoc, fileBytes)` + `toPlainText` for diff/conflict gate |
+| Export / Save a copy | `exportToFile(yDoc)` |
+| Revision history | `exportRevisionSnapshot(yDoc)` / `restoreRevisionSnapshot(yDoc, bytes)` (defaults supplied) |
+| Search indexing, AI prompt context | `toPlainText(yDoc)` |
+| AI structured edits (optional) | `toStructured(yDoc)` + `applyStructuredPatch(yDoc, patch)` |
+
+### The Contract
+
+```ts
+import type { CollabContentAdapter } from '@nimbalyst/extension-sdk';
+
+export const MyCollabContentAdapter: CollabContentAdapter = {
+  documentType: 'my-format',           // matches the shared doc's documentType
+  fileExtensions: ['.myext'],           // first entry is the export default
+  mimeType: 'application/json',
+  layoutVersion: 1,                     // bump when Y.Doc shape changes
+
+  isEmpty(yDoc) {
+    return yDoc.getMap('content').size === 0;
+  },
+
+  seedFromFile(yDoc, source) {
+    // Initial share -- yDoc is empty.
+    yDoc.transact(() => { /* populate yDoc from source */ });
+  },
+
+  applyFromFile(yDoc, source) {
+    // Re-upload path -- yDoc may be populated. Default pattern is
+    // wipe-and-reseed inside one transaction so peers see one CRDT step.
+    yDoc.transact(() => { /* clear + populate */ });
+  },
+
+  exportToFile(yDoc) {
+    // Serialize live Y.Doc to your on-disk format.
+    return JSON.stringify(projectToFile(yDoc), null, 2);
+  },
+
+  toPlainText(yDoc) {
+    // Lossy projection used for search, AI prompts, history previews.
+    return extractText(yDoc);
+  },
+};
+```
+
+### Registering the Adapter
+
+Call `context.services.collab.registerContentAdapter(...)` from your extension's `activate()`. The host owns the registry; you only need types from `@nimbalyst/extension-sdk`.
+
+```ts
+import type { ExtensionContext } from '@nimbalyst/extension-sdk';
+import { MyCollabContentAdapter } from './collab/MyCollabContentAdapter';
+
+export async function activate(context: ExtensionContext) {
+  context.services.collab.registerContentAdapter(MyCollabContentAdapter);
+}
+```
+
+The host tracks the disposable in `context.subscriptions`, so it unregisters automatically on `deactivate()`. One adapter per `documentType`. An extension that ships multiple document types (e.g. Mockup's `.mockup.html` + `.mockupproject`) calls `registerContentAdapter` once per type.
+
+### Adapter vs. `useCollaborativeEditor`
+
+These two pieces operate at different layers and you typically need both for a collaborative editor:
+
+| | `useCollaborativeEditor` | `CollabContentAdapter` |
+| --- | --- | --- |
+| Scope | One open tab | The whole `documentType` |
+| Runs in | Renderer (your editor component) | Main process + renderer (host singleton) |
+| Cares about | Live Y.Doc ↔ editor state binding | Host-level operations on the Y.Doc |
+| Lifetime | Mount/unmount of the editor | Extension activation lifetime |
+
+The hook plumbs live edits in both directions while the editor is on screen. The adapter lets the host do things to your Y.Doc when no tab is open -- replace its contents from a file, snapshot it for history, project it as text for search, hand it to AI tools.
+
+### Layout Migrations
+
+When the Y.Doc shape changes between releases, bump `layoutVersion` and supply `migrations`. The registry runs them before any host write op when an older doc is opened:
+
+```ts
+export const MyCollabContentAdapter: CollabContentAdapter = {
+  documentType: 'my-format',
+  fileExtensions: ['.myext'],
+  layoutVersion: 2,
+  migrations: [
+    {
+      from: 1,
+      to: 2,
+      run(yDoc) {
+        // Reshape v1 layout into v2 in place. Use yDoc.transact.
+      },
+    },
+  ],
+  // ...
+};
+```
+
+### Structured Edits and AI Write Access
+
+`toPlainText` enables AI **read** on every adapter (good enough for prompts). AI **write** is only enabled on adapters that implement both `toStructured` and `applyStructuredPatch`. Visual-only adapters that skip the structured surface stay read-only to AI -- intentional, so the host has a typed patch shape to validate.
+
+### Where Adapters Run -- and Don't
+
+Adapters are client-only code (main process, renderer, extension SDK). They are **not** loaded in the collab Worker, which continues to treat all Y.Doc state as opaque end-to-end-encrypted blobs. Your adapter never sees ciphertext or keys -- it only ever receives an already-decrypted `Y.Doc` reference.
+
+`toPlainText` is the one egress surface to watch: when the host hands plaintext to an AI provider, that's the AI provider's trust boundary, not a regression of collab encryption. The host UI surfaces this the same way as for AI-on-local-files.
+
 ## Best Practices
 
 1. **Use `useEditorLifecycle`** - Handles loading, saving, echo detection, file watching, diff mode, and theme
@@ -446,6 +559,7 @@ export function TableEditor({ host }: EditorHostProps) {
 4. **Handle empty content** - The file might be new or empty
 5. **Call `markDirty()`** - Not `host.setDirty()` directly -- the hook tracks dirty state for you
 6. **Test with large files** - Ensure your editor performs well
+7. **Ship a `CollabContentAdapter`** if your editor type can be shared -- without it, the document is invisible to history, re-upload, export, AI editing, and search
 
 ## Next Steps
 

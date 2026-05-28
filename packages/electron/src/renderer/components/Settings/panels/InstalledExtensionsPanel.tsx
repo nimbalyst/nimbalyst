@@ -4,6 +4,7 @@ import { MaterialSymbol, createExtensionStorage } from '@nimbalyst/runtime';
 import type { ExtensionManifest, SettingsPanelProps } from '@nimbalyst/runtime';
 import { getExtensionLoader } from '@nimbalyst/runtime';
 import { ExtensionConfigPanel } from './ExtensionConfigPanel';
+import { ExtensionBackendModulesSection } from '../../ExtensionPermissions/ExtensionBackendModulesSection';
 import { useTheme } from '../../../hooks/useTheme';
 import { ToggleSwitch } from '../../GlobalSettings/SettingsToggle';
 
@@ -505,6 +506,16 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
                         />
                       </div>
                   )}
+
+                  {/* Privileged backend modules (Phase 4) */}
+                  {Array.isArray(selectedExtension.manifest.contributions?.backendModules) &&
+                    selectedExtension.manifest.contributions!.backendModules!.length > 0 && (
+                      <ExtensionBackendModulesSection
+                        extensionId={selectedExtension.id}
+                        modules={selectedExtension.manifest.contributions!.backendModules!}
+                        workspacePath={workspacePath}
+                      />
+                    )}
 
                   {/* Claude Plugin */}
                   {selectedExtension.manifest.contributions?.claudePlugin && (

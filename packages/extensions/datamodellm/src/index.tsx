@@ -13,7 +13,11 @@
  */
 
 import './styles.css';
+import type { ExtensionContext } from '@nimbalyst/extension-sdk';
 import { DatamodelLMEditor } from './components/DatamodelLMEditor';
+import { DataModelCollabContentAdapter } from './collab/DataModelCollabContentAdapter';
+
+export { DataModelCollabContentAdapter };
 import { DataModelCanvas } from './components/DataModelCanvas';
 import { aiTools as datamodelAITools } from './aiTools';
 import { createDataModelStore } from './store';
@@ -47,9 +51,9 @@ export * from './lexical';
  * Extension activation
  * Called when the extension is loaded
  */
-export async function activate(context: unknown) {
+export async function activate(context: ExtensionContext) {
+  context.services.collab.registerContentAdapter(DataModelCollabContentAdapter);
   console.log('[DatamodelLM] Extension activated');
-  console.log('[DatamodelLM] Extension context:', context);
 
   // Set up the platform service from the host
   // The host exposes the DataModelPlatformService implementation via window.__nimbalyst_extensions

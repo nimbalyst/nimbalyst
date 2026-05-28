@@ -11,8 +11,12 @@
  */
 
 import './styles.css';
+import type { ExtensionContext } from '@nimbalyst/extension-sdk';
 import { ExcalidrawEditor } from './components/ExcalidrawEditor';
 import { aiTools as excalidrawAITools } from './aiTools';
+import { ExcalidrawCollabContentAdapter } from './collab/ExcalidrawCollabContentAdapter';
+
+export { ExcalidrawCollabContentAdapter };
 
 // Export types for consumers
 export type {
@@ -28,9 +32,9 @@ export type {
  * Extension activation
  * Called when the extension is loaded
  */
-export async function activate(context: unknown) {
+export async function activate(context: ExtensionContext) {
+  context.services.collab.registerContentAdapter(ExcalidrawCollabContentAdapter);
   console.log('[Excalidraw] Extension activated');
-  console.log('[Excalidraw] Extension context:', context);
 
   // TODO: Register screenshot capability when screenshot service is available
   // This will allow AI tools to capture diagram screenshots

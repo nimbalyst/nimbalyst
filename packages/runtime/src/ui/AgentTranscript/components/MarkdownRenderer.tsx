@@ -7,6 +7,7 @@ import {
   useTranscriptMarkdownContributions,
   useTranscriptMarkdownStyles,
 } from '../contributions';
+import { escapeCurrencyDollars } from '../utils/escapeCurrencyDollars';
 
 // Inject MarkdownRenderer styles once (for syntax highlighting, scrollbar, and overflow wrapper)
 const injectMarkdownRendererStyles = () => {
@@ -381,6 +382,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     [contributions.rehypePlugins],
   );
 
+  // Pre-escape currency-pattern dollar signs so `remark-math` does not
+  // collapse `$7M ... $40M`-style text as inline LaTeX in the transcript.
+  // Mirrors the pandoc rules from the Lexical-editor fix in commit baf60b4e9.
+  // See nimbalyst/nimbalyst#462.
+  const processedContent = useMemo(() => escapeCurrencyDollars(content), [content]);
+
   return (
     <div
       className={`markdown-content text-[0.9375rem] leading-relaxed max-w-full overflow-x-hidden break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 ${isUser ? 'font-medium' : 'font-normal'} ${isSystemMessage ? 'opacity-85 font-mono text-[0.95em]' : ''}`}
@@ -724,7 +731,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
           ...contributions.components,
         }}
       >
-        {content}
+        {processedContent}
       </ReactMarkdown>
     </div>
   );

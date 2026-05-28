@@ -9,8 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Shared documents have revision history: Cmd/Ctrl+S saves a named version, auto snapshots run after idle, and any past revision can be restored from the History dialog.
-- Custom shared-document editors can publish history controllers so the global History dialog can route to collaborative revisions.
 - Claude Opus 4.8 is now selectable in the Claude provider (1M context, dateless ID `claude-opus-4-8`) and is the default Claude model for new installs.
 - Claude Code variants `opus-4-7` and `opus-4-7-1m` pinned to Opus 4.7 so it stays selectable after the canonical `opus` alias was bumped to 4.8.
 <!-- New features go here -->
@@ -18,20 +16,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 <!-- Changes to existing functionality go here -->
 - Default Claude model bumped from `claude-opus-4-7` to `claude-opus-4-8`. Existing sessions keep their configured model; only new sessions and "reset to default" pick up 4.8.
-- Auto-update now downloads in the background and shows only the "Ready to install" toast; the redundant "Update Available" toast has been removed. (#327)
-- Extension docs now cover all four markdown/transcript contribution surfaces in both the internal architecture doc and the public SDK docs, including declarative module exports, diff handlers, transcript renderer hooks, and the current `@nimbalyst/runtime` import surface.
 
 ### Fixed
-- Project quick open now loads recent projects from stored recents instead of crawling every workspace on open.
-- Rebuild Extensions submenu now lists buildable extensions alphabetically.
-- Tracker list, table, and kanban views now share the session-style `#tag` typeahead filter.
-- Session history search bar no longer overlaps floating popovers (e.g. Claude Usage).
-- Re-uploading a local source into a shared markdown document now waits for the collab write to be acknowledged before tearing down the headless sync client.
 <!-- Bug fixes go here -->
-- Codex session-naming reminder no longer leaks into the chat transcript; its turn output is tagged so the transcript hides it. (#420)
+- Agent transcript no longer collapses `$7M ... $40M`-style currency text into LaTeX. (#462)
+- Blitz no longer silently dismisses the dialog when run against a workspace whose git repo has no commits. (#455)
 
 ### Removed
 <!-- Removed features go here -->
+
+## [0.62.0] - 2026-05-26
+
+
+### Added
+- Non-markdown shared documents (Excalidraw, Mindmap, Mockup, etc.) now show the unified editor header bar with breadcrumb, View History, and local-source actions.
+- Editor header bar's "Shared to Team" dropdown links to the shared document, showing its name with the team-side folder path in subscript.
+- Shared documents have revision history: Cmd/Ctrl+S saves a named version, auto snapshots run after idle, and any past revision can be restored.
+- Custom shared-document editors can publish history controllers so the global History dialog can route to collaborative revisions.
+- Extensions SDK permissions and backend modules.
+- Extension panels can run read-only SQL via `host.data.query()` against the local PGLite store when the manifest declares `nimbalyst-database-read`.
+- Backend-module allowlist: only built-in extensions, curated marketplace ids, and dev-installed extensions with `NIMBALYST_ALLOW_DEV_BACKEND_MODULES=1` can ship native-code backends.
+
+### Changed
+- Auto-update downloads in the background and shows only the "Ready to install" toast; the redundant "Update Available" toast is removed. (#327)
+- Extension docs now cover all four markdown/transcript contribution surfaces in both the internal architecture doc and the public SDK docs.
+- Backend-module consent prompt leads with an explicit "this extension will run native code on your computer" banner; granular catalog ids only cover host-brokered services.
+
+### Fixed
+- Claude Code sessions break out of the SDK iterator after the `result` chunk so the binary's task-list reminder hook can't emit a 14+ minute `tool_result(Stream closed)` flood that pins sendMessage open.
+- Claude Code sessions flip to "ready" the moment the model's turn finishes instead of sitting on the last output for up to 30 s while the SDK stdin grace period expired.
+- Claude Code sessions no longer reset mid-conversation when the agent spawns sub-agents. (#451, #456, #457)
+- CI `npm ci` no longer fails resolving `@nimbalyst/collab-adapters`; the workspace was missing from `package-lock.json`.
+- Project quick open loads recent projects from stored recents instead of crawling every workspace on open.
+- Rebuild Extensions submenu lists buildable extensions alphabetically.
+- Shared Excalidraw and mockup tabs no longer come back blank after restart or close+reopen.
+- Tracker list, table, and kanban views share the session-style `#tag` typeahead filter.
+- Session history search bar no longer overlaps floating popovers (e.g. Claude Usage).
+- Re-uploading a local source into a shared markdown document waits for the collab write to be acknowledged before tearing down the headless sync client.
+- Codex session-naming reminder no longer leaks into the chat transcript. (#420)
+- Mobile sync picks up Codex sessions running in git worktrees by resolving worktree workspaceIds to the parent project path. (#430) Thanks @stamkivi.
+- Claude Code plugins installed at the project scope appear in the Installed plugins list with marketplace and scope badges.
+- Slash-command typeahead lists commands and skills from Claude CLI plugins without requiring the experimental "Agent Workflows" toggle.
+- Excalidraw "import mermaid" registers the rendered diagram image, so it no longer shows as a broken thumbnail. (#428)
+- Codex sessions append actionable guidance when `~/.codex/config.toml` has a url-based MCP server the bundled Codex rejects, instead of an opaque failure. (#424)
+- Dollar signs in markdown no longer collapse currency text like `$7M ... $40M` as inline LaTeX; the typing-time `$...$` shortcut is replaced by slash-menu "Math (inline)" / "Math (block)". (#447)
+- Trackers panel refetches when switching projects in the sidebar rail instead of staying pinned to the workspace that was active at app startup. (#441)
+
+### Removed
+- Catalog permission ids `spawn-process`, `network-loopback`, `network-internet`, and `filesystem` are no longer accepted; they were unenforceable inside a Node backend. Manifests listing them load with a non-fatal warning.
 
 ## [0.61.1] - 2026-05-21
 

@@ -6,6 +6,10 @@
   "author": "Nimbalyst",
   "main": "dist/index.js",
   "types": "src/index.tsx",
+  "exports": {
+    ".": "./dist/index.js",
+    "./collab-adapters": "./src/collab/MockupCollabContentAdapters.ts"
+  },
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch"

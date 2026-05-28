@@ -2,18 +2,14 @@ import { createHash } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import WebSocket from 'ws';
-import { $getRoot } from 'lexical';
-import {
-  $convertFromEnhancedMarkdownString,
-  $convertToEnhancedMarkdownString,
-  EditorNodes,
-  getEditorTransformers,
-} from '@nimbalyst/runtime/editor';
 import {
   DocumentSyncProvider,
-  HeadlessLexicalYDoc,
   type DocumentSyncConfig,
 } from '@nimbalyst/runtime/sync';
+import {
+  getCollabContentAdapter,
+  type CollabContentAdapter,
+} from '@nimbalyst/collab-adapters';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { getCollabSyncHttpUrl, getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { logger } from '../utils/logger';
@@ -352,12 +348,18 @@ async function resolveDocumentSyncConfig(
   };
 }
 
-async function withHeadlessMarkdownDocument<T>(
+/**
+ * Open a connected DocumentSyncProvider for a shared document and
+ * yield its underlying Y.Doc to the caller. The caller is expected
+ * to project / mutate the doc via a CollabContentAdapter; this
+ * helper itself is adapter-agnostic.
+ */
+async function withSharedDocument<T>(
   workspacePath: string,
   documentId: string,
   callback: (helpers: {
     provider: DocumentSyncProvider;
-    headless: HeadlessLexicalYDoc;
+    yDoc: ReturnType<DocumentSyncProvider['getYDoc']>;
   }) => Promise<T>,
 ): Promise<T | null> {
   const config = await resolveDocumentSyncConfig(workspacePath, documentId);
@@ -371,26 +373,6 @@ async function withHeadlessMarkdownDocument<T>(
         connected = true;
       }
     },
-  });
-
-  const headless = new HeadlessLexicalYDoc({
-    doc: provider.getYDoc(),
-    nodes: EditorNodes,
-    provider: {
-      awareness: {
-        getLocalState: () => null,
-        getStates: () => new Map(),
-        setLocalState: () => {},
-        setLocalStateField: () => {},
-        on: () => {},
-        off: () => {},
-      },
-      connect: () => provider.connect(),
-      disconnect: () => provider.disconnect(),
-      on: () => {},
-      off: () => {},
-      getYDoc: () => provider.getYDoc(),
-    } as any,
   });
 
   try {
@@ -409,13 +391,8 @@ async function withHeadlessMarkdownDocument<T>(
       };
       poll();
     });
-    return await callback({ provider, headless });
+    return await callback({ provider, yDoc: provider.getYDoc() });
   } finally {
-    try {
-      headless.destroy();
-    } catch {
-      // Ignore cleanup failures.
-    }
     try {
       provider.destroy();
     } catch {
@@ -424,28 +401,48 @@ async function withHeadlessMarkdownDocument<T>(
   }
 }
 
-async function readSharedMarkdown(
+async function readSharedDocText(
   workspacePath: string,
   documentId: string,
+  adapter: CollabContentAdapter,
 ): Promise<string | null> {
-  return withHeadlessMarkdownDocument(workspacePath, documentId, async ({ headless }) => {
-    return headless.editor.getEditorState().read(() => {
-      return $convertToEnhancedMarkdownString(getEditorTransformers());
-    });
+  return withSharedDocument(workspacePath, documentId, async ({ yDoc }) => {
+    return adapter.toPlainText(yDoc);
   });
 }
 
-async function overwriteSharedMarkdown(
+async function overwriteSharedDocFromSource(
   workspacePath: string,
   documentId: string,
-  markdown: string,
+  adapter: CollabContentAdapter,
+  source: string | Uint8Array,
 ): Promise<boolean> {
-  const result = await withHeadlessMarkdownDocument(workspacePath, documentId, async ({ headless, provider }) => {
-    headless.applyUpdate(() => {
-      $getRoot().clear();
-      $convertFromEnhancedMarkdownString(markdown, getEditorTransformers());
+  const result = await withSharedDocument(workspacePath, documentId, async ({ yDoc, provider }) => {
+    logger.main.info('[CollabLocalOrigin] applyFromFile starting', {
+      documentId,
+      documentType: adapter.documentType,
+      yDocByteLength: 0, // filled after
     });
-    return provider.waitForPendingWrites(5_000);
+    let writeCount = 0;
+    const subDoc = yDoc;
+    const onAfter = () => { writeCount += 1; };
+    subDoc.on('afterTransaction', onAfter);
+    try {
+      adapter.applyFromFile(yDoc, source);
+    } finally {
+      subDoc.off('afterTransaction', onAfter);
+    }
+    logger.main.info('[CollabLocalOrigin] applyFromFile done; transactions=' + writeCount);
+    const ok = await provider.waitForPendingWrites(5_000);
+    logger.main.info('[CollabLocalOrigin] waitForPendingWrites returned', { documentId, ok });
+    // `waitForPendingWrites` returns once our writes have been ack'd by
+    // the server, but the server's broadcast to OTHER connected peers
+    // (the renderer holding the open tab) is asynchronous. Wait a beat
+    // before tearing down main's provider so the broadcast has a chance
+    // to land. Without this, the live editor often doesn't see the
+    // update until the tab is reopened.
+    await new Promise((r) => setTimeout(r, 500));
+    return ok;
   });
   return result === true;
 }
@@ -579,10 +576,10 @@ export async function relinkLocalOriginBinding(params: {
   const relativePath = ensureWorkspaceRelativePath(params.workspacePath, params.sourceFilePath);
   const sourceContent = await fs.readFile(params.sourceFilePath, 'utf8');
   const stats = await getSourceFileStats(params.sourceFilePath);
-  const sharedMarkdown =
-    params.documentType === 'markdown'
-      ? await readSharedMarkdown(params.workspacePath, params.documentId)
-      : null;
+  const adapter = getCollabContentAdapter(params.documentType);
+  const sharedText = adapter
+    ? await readSharedDocText(params.workspacePath, params.documentId, adapter)
+    : null;
 
   await upsertBinding({
     orgId: team.orgId,
@@ -593,7 +590,7 @@ export async function relinkLocalOriginBinding(params: {
     documentType: params.documentType,
     sourceBasename: path.basename(params.sourceFilePath),
     lastLocalContentHash: hashText(sourceContent),
-    lastCollabContentHash: sharedMarkdown !== null ? hashText(sharedMarkdown) : null,
+    lastCollabContentHash: sharedText !== null ? hashText(sharedText) : null,
     lastSyncedAt: null,
     lastSeenMtimeMs: stats.mtimeMs,
     lastSeenSizeBytes: stats.sizeBytes,
@@ -631,11 +628,12 @@ export async function reuploadFromLocalOrigin(params: {
     };
   }
 
-  if (binding.documentType !== 'markdown') {
+  const adapter = getCollabContentAdapter(binding.documentType);
+  if (!adapter) {
     return {
       success: false,
       status: 'unsupported',
-      message: 'Re-upload from local source currently supports markdown shared documents only.',
+      message: `No collab content adapter is registered for document type '${binding.documentType}'.`,
       binding,
     };
   }
@@ -650,9 +648,10 @@ export async function reuploadFromLocalOrigin(params: {
   }
 
   try {
-    const sourceContent = await fs.readFile(binding.resolvedPath, 'utf8');
-    const sharedMarkdown = await readSharedMarkdown(params.workspacePath, params.documentId);
-    if (sharedMarkdown === null) {
+    const sourceBuffer = await fs.readFile(binding.resolvedPath);
+    const sourceText = sourceBuffer.toString('utf8');
+    const sharedText = await readSharedDocText(params.workspacePath, params.documentId, adapter);
+    if (sharedText === null) {
       return {
         success: false,
         status: 'error',
@@ -661,8 +660,8 @@ export async function reuploadFromLocalOrigin(params: {
       };
     }
 
-    const sourceHash = hashText(sourceContent);
-    const sharedHash = hashText(sharedMarkdown);
+    const sourceHash = hashText(sourceText);
+    const sharedHash = hashText(sharedText);
     const baselineLocal = binding.lastLocalContentHash;
     const baselineShared = binding.lastCollabContentHash;
 
@@ -691,19 +690,50 @@ export async function reuploadFromLocalOrigin(params: {
       };
     }
 
-    const migrated = await migrateMarkdownAssetsForCollab({
-      workspacePath: params.workspacePath,
-      orgId: binding.orgId,
-      documentId: params.documentId,
-      sourceFilePath: binding.resolvedPath,
-      markdown: sourceContent,
-    });
+    // Asset migration is markdown-specific: it scans Markdown image
+    // refs and re-uploads each local image as an encrypted collab
+    // asset. Other document types either embed their own assets in
+    // the Y.Doc (Excalidraw) or don't reference external files at
+    // all -- the adapter contract leaves binary-attachment handling
+    // to each adapter.
+    let payloadForUpload: string | Uint8Array;
+    let payloadForHash: string;
+    let migration: { okCount: number; failedCount: number } = { okCount: 0, failedCount: 0 };
+    if (binding.documentType === 'markdown') {
+      const migrated = await migrateMarkdownAssetsForCollab({
+        workspacePath: params.workspacePath,
+        orgId: binding.orgId,
+        documentId: params.documentId,
+        sourceFilePath: binding.resolvedPath,
+        markdown: sourceText,
+      });
+      payloadForUpload = migrated.markdown;
+      payloadForHash = migrated.markdown;
+      migration = { okCount: migrated.okCount, failedCount: migrated.failedCount };
+    } else {
+      // Hand the adapter the original on-disk bytes; text-shaped
+      // adapters decode internally, binary-shaped adapters get the
+      // raw Uint8Array.
+      payloadForUpload = sourceBuffer;
+      payloadForHash = sourceText;
+    }
 
-    const applied = await overwriteSharedMarkdown(
+    logger.main.info('[CollabLocalOrigin] reupload dispatching to adapter', {
+      documentId: params.documentId,
+      documentType: binding.documentType,
+      payloadKind: typeof payloadForUpload === 'string' ? 'text' : 'binary',
+      payloadLength: typeof payloadForUpload === 'string' ? payloadForUpload.length : payloadForUpload.byteLength,
+    });
+    const applied = await overwriteSharedDocFromSource(
       params.workspacePath,
       params.documentId,
-      migrated.markdown,
+      adapter,
+      payloadForUpload,
     );
+    logger.main.info('[CollabLocalOrigin] reupload adapter write complete', {
+      documentId: params.documentId,
+      applied,
+    });
     if (!applied) {
       return {
         success: false,
@@ -723,7 +753,7 @@ export async function reuploadFromLocalOrigin(params: {
       documentType: binding.documentType,
       sourceBasename: binding.sourceBasename,
       lastLocalContentHash: sourceHash,
-      lastCollabContentHash: hashText(migrated.markdown),
+      lastCollabContentHash: hashText(payloadForHash),
       lastSyncedAt: new Date(),
       lastSeenMtimeMs: stats.mtimeMs,
       lastSeenSizeBytes: stats.sizeBytes,
@@ -736,10 +766,7 @@ export async function reuploadFromLocalOrigin(params: {
       status: 'uploaded',
       message: 'Uploaded the current local file into the shared document.',
       binding: await getLocalOriginBinding(params.workspacePath, params.documentId),
-      migration: {
-        okCount: migrated.okCount,
-        failedCount: migrated.failedCount,
-      },
+      migration,
     };
   } catch (error) {
     logger.main.error('[CollabLocalOrigin] Re-upload failed:', error);

@@ -290,6 +290,8 @@ class PGLiteWorker {
         return await this.initialize(message);
       case 'query':
         return await this.query(message);
+      case 'queryReadOnly':
+        return await this.queryReadOnly(message);
       case 'exec':
         return await this.exec(message);
       case 'close':
@@ -2246,6 +2248,49 @@ class PGLiteWorker {
       return {
         id: message.id,
         success: true,
+        execMs
+      };
+    } finally {
+      this.activeOps--;
+    }
+  }
+
+  // Run a user-supplied SELECT inside a READ ONLY transaction with a bounded
+  // statement_timeout. Used by the extension `host.data.query` API so panel
+  // extensions can read the local PGLite store without being able to mutate it.
+  //
+  // The whole BEGIN/SET LOCAL/SELECT/COMMIT runs atomically inside PGLite's
+  // native db.transaction() so concurrent callers cannot interleave between
+  // the SET and the SELECT.
+  async queryReadOnly(message) {
+    if (!this.db) throw new Error('Database not initialized');
+
+    const sql = message.payload?.sql;
+    const params = message.payload?.params;
+    const rawTimeout = Number(message.payload?.timeoutMs);
+    const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0
+      ? Math.min(Math.floor(rawTimeout), 30000)
+      : 5000;
+
+    if (typeof sql !== 'string' || sql.length === 0) {
+      throw new Error('queryReadOnly: sql must be a non-empty string');
+    }
+
+    this.activeOps++;
+    try {
+      const execStart = performance.now();
+      const result = await this.db.transaction(async (tx) => {
+        await tx.exec('SET TRANSACTION READ ONLY');
+        // SET LOCAL reverts at COMMIT so this doesn't leak to the next caller
+        // on the same PGLite session.
+        await tx.exec(`SET LOCAL statement_timeout = '${timeoutMs}'`);
+        return await tx.query(sql, params);
+      });
+      const execMs = performance.now() - execStart;
+      return {
+        id: message.id,
+        success: true,
+        data: result,
         execMs
       };
     } finally {

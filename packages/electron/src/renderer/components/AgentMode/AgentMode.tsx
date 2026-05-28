@@ -120,9 +120,11 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
 
   // Check if worktrees feature is available (developer mode + feature enabled)
   const isWorktreesAvailable = useAtomValue(worktreesFeatureAvailableAtom);
-  // Blitz requires both worktrees and the blitz alpha feature
+  // Blitz is gated by its alpha feature alone (like Meta Agent), not developer
+  // mode. The worktrees it creates still require a git repo, enforced in
+  // createNewBlitz and on the New Blitz button (disabled when !isGitRepo).
   const isBlitzAlphaEnabled = useAtomValue(alphaFeatureEnabledAtom('blitz'));
-  const isBlitzAvailable = isWorktreesAvailable && isBlitzAlphaEnabled;
+  const isBlitzAvailable = isBlitzAlphaEnabled;
 
   // Keep Super Loop listeners active even when session history is collapsed/hidden.
   useSuperLoopInit(workspacePath);
@@ -545,9 +547,9 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
 
   // Create new blitz - opens the blitz dialog
   const createNewBlitz = useCallback(() => {
-    if (!isWorktreesAvailable || !isGitRepo) return;
+    if (!isBlitzAlphaEnabled || !isGitRepo) return;
     setShowBlitzDialog(true);
-  }, [isWorktreesAvailable, isGitRepo]);
+  }, [isBlitzAlphaEnabled, isGitRepo]);
 
   // Handle blitz creation result
   const handleBlitzCreated = useCallback(async (result: any) => {

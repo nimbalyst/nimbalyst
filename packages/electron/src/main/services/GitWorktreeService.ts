@@ -23,6 +23,20 @@ import { gitOperationLock } from './GitOperationLock';
 const logger = log.scope('GitWorktreeService');
 
 /**
+ * Thrown when a workspace's git repository has no commits yet, so HEAD
+ * does not resolve to a tree-ish. Worktree operations cannot proceed.
+ */
+export class WorkspaceHasNoCommitsError extends Error {
+  constructor(workspacePath: string) {
+    super(
+      `Workspace '${workspacePath}' has no commits yet, so worktrees cannot be created. ` +
+      `Make an initial commit, or open a different folder that already has commits.`
+    );
+    this.name = 'WorkspaceHasNoCommitsError';
+  }
+}
+
+/**
  * Worktree data structure (matches runtime types)
  */
 export interface Worktree {
@@ -674,6 +688,33 @@ export class GitWorktreeService {
   }
 
   /**
+   * Throws WorkspaceHasNoCommitsError if the repo's HEAD does not resolve
+   * to a commit. This is the empty-repo case (`git init` ran, no commits).
+   * Cheap pre-flight that lets callers fail fast with a friendly message
+   * before any worktree-record or session-row gets created.
+   */
+  async validateWorkspaceHasCommits(workspacePath: string): Promise<void> {
+    if (!workspacePath) {
+      throw new Error('workspacePath is required');
+    }
+    // Differentiate "not a git repo at all" from "git repo with no commits".
+    // simple-git's checkIsRepo defaults to IN_TREE which walks UP the directory
+    // tree and would return true if any ancestor has a .git. We need the
+    // workspacePath itself to be the repo root for worktree ops, so do a
+    // direct fs check for `.git` (file or directory - submodules use a file).
+    const gitMeta = path.join(workspacePath, '.git');
+    if (!fs.existsSync(gitMeta)) {
+      throw new Error(`Not a git repository: ${workspacePath}`);
+    }
+    const git: SimpleGit = simpleGit(workspacePath);
+    try {
+      await git.raw(['rev-parse', '--verify', 'HEAD']);
+    } catch {
+      throw new WorkspaceHasNoCommitsError(workspacePath);
+    }
+  }
+
+  /**
    * Get the current branch of a git repository (private helper)
    * @private
    */
@@ -683,7 +724,14 @@ export class GitWorktreeService {
       return branch.trim();
     } catch (error) {
       logger.error('Failed to get current branch', { error });
-      throw new Error(`Failed to get current branch: ${error instanceof Error ? error.message : String(error)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      // Recognize the empty-repo failure mode and rethrow as a typed error
+      // so callers can show a friendly message. Git emits this stderr when
+      // HEAD points at a symbolic ref whose target does not exist (no commits).
+      if (message.includes("ambiguous argument 'HEAD'")) {
+        throw new WorkspaceHasNoCommitsError('repository');
+      }
+      throw new Error(`Failed to get current branch: ${message}`);
     }
   }
 

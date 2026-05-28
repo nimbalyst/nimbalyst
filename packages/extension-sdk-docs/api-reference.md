@@ -19,6 +19,9 @@ import type {
 
 import { REQUIRED_EXTERNALS, validateExtensionBundle } from '@nimbalyst/extension-sdk';
 import { createExtensionConfig } from '@nimbalyst/extension-sdk/vite';
+
+// Collaboration: per-extension Y.Doc content contract
+import type { CollabContentAdapter } from '@nimbalyst/extension-sdk';
 ```
 
 ## Extension Entry Point
@@ -101,6 +104,7 @@ interface ExtensionServices {
   ui: ExtensionUIService;
   ai?: ExtensionAIService;
   configuration?: ExtensionConfigurationService;
+  collab: ExtensionCollabService;
 }
 ```
 
@@ -414,6 +418,7 @@ interface PanelHost {
   readonly isSettingsOpen: boolean;
   readonly ai?: PanelAIContext;
   readonly storage: ExtensionStorage;
+  readonly data: ExtensionDataAccess;
 
   onThemeChanged(callback: (theme: string) => void): () => void;
   openFile(path: string): void;
@@ -421,8 +426,28 @@ interface PanelHost {
   close(): void;
   openSettings(): void;
   closeSettings(): void;
+  exec(command: string, options?: ExecOptions): Promise<ExecResult>;
 }
 ```
+
+### `ExtensionDataAccess`
+
+Read-only access to Nimbalyst's local PGLite database. Requires
+`"nimbalyst-database-read"` in `permissions.catalog` on the manifest.
+
+```ts
+interface ExtensionDataAccess {
+  // Run a read-only SQL query against the local PGLite database. The query
+  // is wrapped in a `READ ONLY` transaction with a 5s statement_timeout, so
+  // DML/DDL is rejected by the planner. Use `$1`, `$2`, ... placeholders.
+  query<T = unknown>(sql: string, params?: unknown[]): Promise<T[]>;
+}
+```
+
+Tables and columns are not part of any stable contract -- the surface is
+intended for built-in extensions and will be redesigned when Nimbalyst's
+storage layer ports to native SQLite. Pin to the host version you tested
+against.
 
 ```ts
 interface PanelAIContext {
@@ -501,8 +526,129 @@ interface ExtensionContributions {
   settingsPanel?: SettingsPanelContribution;
   documentHeaders?: DocumentHeaderContribution[];
   themes?: ThemeContribution[];
+  backendModules?: BackendModuleContribution[];
 }
 ```
+
+## Permissions and Backend Modules
+
+> The catalog and shape are evolving -- pin to specific SDK versions while
+> this stabilizes. See [permissions.md](./permissions.md) for the full
+> manifest format, consent flow, and runtime choice guidance.
+
+```ts
+import type {
+  BackendModuleContribution,
+  BackendModuleRuntime,
+  BackendModuleEnablement,
+  ExtensionPermissionId,
+  PermissionRiskTier,
+} from '@nimbalyst/extension-sdk';
+
+type BackendModuleRuntime = 'utility-process' | 'worker-thread';
+type PermissionRiskTier = 'low' | 'elevated' | 'high';
+
+type ExtensionPermissionId =
+  | 'workspace-files'
+  | 'nimbalyst-database-read'
+  | 'nimbalyst-database-write'
+  | 'secrets-read'
+  | 'mcp-server-register';
+
+interface BackendModuleEnablement {
+  default: 'disabled';
+  promptOn: 'firstUse';
+  purpose: string;
+}
+
+interface BackendModuleContribution {
+  id: string;
+  entry: string;
+  runtime: BackendModuleRuntime;
+  permissions: ExtensionPermissionId[];
+  enablement: BackendModuleEnablement;
+}
+```
+
+Manifest cap (also exported as a constant):
+
+```ts
+import { MAX_BACKEND_MODULES_PER_EXTENSION } from '@nimbalyst/extension-sdk';
+// 8
+```
+
+### Manifest Validation Helpers
+
+```ts
+import {
+  validateBackendModules,
+  assertBackendModulesValid,
+  type BackendModuleValidationIssue,
+} from '@nimbalyst/extension-sdk';
+
+// Pure check -- returns the list of issues (empty = valid)
+const issues = validateBackendModules(manifest.contributions?.backendModules);
+
+// Convenience wrapper -- throws if any issues are found
+assertBackendModulesValid(manifest.id, manifest.contributions?.backendModules);
+```
+
+`validateExtensionBundle()` already runs `validateBackendModules()` against
+the manifest it reads from disk; call the helpers directly only if you are
+validating a manifest you constructed in memory.
+
+## Collaboration: `CollabContentAdapter`
+
+The per-extension Y.Doc content contract. See [custom-editors.md](./custom-editors.md#making-your-editor-collaborative) for the full guide.
+
+```ts
+import type { Doc } from 'yjs';
+
+interface CollabContentAdapter<TStructured = unknown> {
+  documentType: string;
+  fileExtensions: string[];
+  mimeType?: string;
+  layoutVersion: number;
+  migrations?: CollabContentAdapterMigration[];
+
+  isEmpty(yDoc: Doc): boolean;
+  seedFromFile(yDoc: Doc, source: string | Uint8Array): void;
+  applyFromFile(yDoc: Doc, source: string | Uint8Array): void;
+  exportToFile(yDoc: Doc): string | Uint8Array;
+  toPlainText(yDoc: Doc): string;
+
+  // Optional: AI-write surface
+  toStructured?(yDoc: Doc): TStructured;
+  applyStructuredPatch?(yDoc: Doc, patch: unknown): void;
+
+  // Optional: revision-history overrides (defaults use Y.encodeStateAsUpdateV2)
+  exportRevisionSnapshot?(yDoc: Doc): Uint8Array;
+  restoreRevisionSnapshot?(yDoc: Doc, bytes: Uint8Array): void;
+}
+
+interface CollabContentAdapterMigration {
+  from: number;
+  to: number;
+  run(yDoc: Doc): void;
+}
+```
+
+### Registration
+
+Adapters are registered via the extension context, not via a global function. The host owns the registry; extensions only need the type.
+
+```ts
+interface ExtensionCollabService {
+  registerContentAdapter(adapter: CollabContentAdapter): { dispose(): void };
+}
+
+// Usage from activate():
+export async function activate(context: ExtensionContext) {
+  context.services.collab.registerContentAdapter(MyAdapter);
+}
+```
+
+The returned disposable is also tracked in `context.subscriptions`, so it unregisters automatically on `deactivate()`.
 
 ## Vite Helper
 

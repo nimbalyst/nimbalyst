@@ -21,6 +21,35 @@ import { deserializeWorkerError } from './workerErrorSerialization';
 export class HandledError extends Error {}
 
 /**
+ * Normalize a caller-supplied timeout to a sane bound for queryReadOnly.
+ * Floors at 1ms; defaults to 5000; ceiling is 30000 to prevent runaway
+ * extension queries from holding the worker indefinitely.
+ */
+export function clampReadOnlyTimeout(timeoutMs: number): number {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return 5000;
+  return Math.min(Math.floor(timeoutMs), 30000);
+}
+
+/**
+ * Wrap a promise with a JS-level timeout. On timeout, rejects with a PG-shaped
+ * "canceling statement due to statement timeout" message so the error surface
+ * matches what callers will eventually see when this targets a backend that
+ * actually enforces statement_timeout. The wrapped promise is not cancellable;
+ * it continues running and its result is dropped.
+ */
+export function raceWithTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(`canceling statement due to statement timeout (${timeoutMs}ms)`));
+    }, timeoutMs);
+  });
+  return Promise.race([work, timeoutPromise]).finally(() => {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }) as Promise<T>;
+}
+
+/**
  * Extended timeout for the worker `init` message. The init path runs
  * PGLite WAL recovery after an unclean shutdown plus schema migration
  * and, if corruption is detected, the auto-recovery flow. The default
@@ -813,6 +842,62 @@ export class PGLiteDatabaseWorker {
       if (duration >= PGLiteDatabaseWorker.SLOW_QUERY_THRESHOLD_MS) {
         logger.main.warn(`[PGLite] Slow query failed (${duration.toFixed(0)}ms): table=${tableName}`);
       }
+      throw error;
+    }
+  }
+
+  /**
+   * Run a read-only query inside a `READ ONLY` transaction with a bounded
+   * statement_timeout. PG planner rejects DML/DDL inside a read-only txn;
+   * `statement_timeout` is applied via `SET LOCAL` so it reverts at COMMIT
+   * and never pollutes subsequent queries on the same PGLite session.
+   *
+   * Note on timeouts: `statement_timeout` is a no-op in PGLite today (single-
+   * thread WASM, no signal-based cancel) -- the SET is still issued so that
+   * when this code path eventually targets native SQLite/Postgres the limit
+   * works, but for now the caller-visible bound is enforced by a JS-level
+   * Promise.race in this wrapper. The actual query keeps running on the
+   * worker until PGLite finishes it; the worker is briefly hogged but other
+   * callers' messages queue normally.
+   *
+   * Used by the extension `host.data.query` IPC to expose raw SELECT access
+   * to built-in extensions without giving them write capability.
+   *
+   * @param sql - User-supplied SQL (single statement or CTE)
+   * @param params - Parameterized values
+   * @param timeoutMs - Per-query timeout in ms (default 5000, capped at 30000 in worker)
+   */
+  async queryReadOnly<T = any>(
+    sql: string,
+    params?: any[],
+    timeoutMs: number = 5000
+  ): Promise<{ rows: T[] }> {
+    if (!this.initialized) {
+      throw new Error('Database not initialized. Call initialize() first.');
+    }
+    const startTime = performance.now();
+    const tableName = this.extractTableName(sql);
+    const effectiveTimeout = clampReadOnlyTimeout(timeoutMs);
+
+    try {
+      const result = await raceWithTimeout(
+        this.sendMessage('queryReadOnly', { sql, params, timeoutMs: effectiveTimeout }),
+        effectiveTimeout
+      ) as { rows: T[] };
+      const duration = performance.now() - startTime;
+      const execMs = this.lastExecMs;
+      this.lastExecMs = undefined;
+      this.stats.record(tableName, 'read', duration, execMs);
+      if (duration >= PGLiteDatabaseWorker.SLOW_QUERY_THRESHOLD_MS) {
+        const truncatedSql = sql.length > 200 ? sql.substring(0, 400) + '...' : sql;
+        logger.main.warn(`[PGLite] Slow extension queryReadOnly (${duration.toFixed(0)}ms): table=${tableName}, sql="${truncatedSql}"`);
+      }
+      return result;
+    } catch (error) {
+      const duration = performance.now() - startTime;
+      const execMs = this.lastExecMs;
+      this.lastExecMs = undefined;
+      this.stats.record(tableName, 'read', duration, execMs);
       throw error;
     }
   }

@@ -12,8 +12,20 @@
 
 import { MockupEditor } from './components/MockupEditor';
 import { MockupProjectEditor } from './components/MockupProjectEditor';
-import type { ExtensionFileSystemService } from '@nimbalyst/extension-sdk';
+import type {
+  ExtensionContext,
+  ExtensionFileSystemService,
+} from '@nimbalyst/extension-sdk';
+import {
+  MockupHtmlCollabContentAdapter,
+  MockupProjectCollabContentAdapter,
+} from './collab/MockupCollabContentAdapters';
 import './styles.css';
+
+export {
+  MockupHtmlCollabContentAdapter,
+  MockupProjectCollabContentAdapter,
+};
 
 // Module-level filesystem service, set during activation
 let _filesystem: ExtensionFileSystemService | null = null;
@@ -27,11 +39,11 @@ export function getFilesystem(): ExtensionFileSystemService {
  * Extension activation
  * Called when the extension is loaded
  */
-export async function activate(context: any) {
+export async function activate(context: ExtensionContext) {
+  context.services.collab.registerContentAdapter(MockupHtmlCollabContentAdapter);
+  context.services.collab.registerContentAdapter(MockupProjectCollabContentAdapter);
   console.log('[MockupLM] Extension activated');
-  if (context?.services?.filesystem) {
-    _filesystem = context.services.filesystem;
-  }
+  _filesystem = context.services.filesystem;
 }
 
 /**

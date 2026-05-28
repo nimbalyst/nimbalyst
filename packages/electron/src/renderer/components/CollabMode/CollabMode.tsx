@@ -17,6 +17,11 @@ import { TabManager } from '../TabManager/TabManager';
 import { TabContent } from '../TabContent/TabContent';
 import { ChatSidebar } from '../ChatSidebar';
 import { openCollabDocumentViaIPC } from '../../utils/collabDocumentOpener';
+import {
+  loadOpenCollabDocs,
+  persistOpenCollabDocs,
+  type PersistedCollabEntry,
+} from '../../utils/collabOpenDocsPersistence';
 import { initSharedDocuments, pendingCollabDocumentAtom, sharedDocumentsAtom, type SharedDocument } from '../../store/atoms/collabDocuments';
 import { isCollabUri, parseCollabUri } from '../../utils/collabUri';
 import { MaterialSymbol } from '@nimbalyst/runtime';
@@ -86,27 +91,6 @@ const COLLAB_CHAT_DEFAULT = 350;
 interface CollabLayout {
   sidebarWidth: number;
   chatWidth: number;
-}
-
-/** Save the list of open collab document IDs to workspace state. */
-async function persistOpenCollabDocs(workspacePath: string, documentIds: string[]): Promise<void> {
-  try {
-    await window.electronAPI?.invoke?.('workspace:update-state', workspacePath, {
-      openCollabDocumentIds: documentIds,
-    });
-  } catch (err) {
-    console.warn('[CollabMode] Failed to persist open collab docs:', err);
-  }
-}
-
-/** Load the list of open collab document IDs from workspace state. */
-async function loadOpenCollabDocs(workspacePath: string): Promise<string[]> {
-  try {
-    const state = await window.electronAPI?.invoke?.('workspace:get-state', workspacePath);
-    return state?.openCollabDocumentIds ?? [];
-  } catch {
-    return [];
-  }
 }
 
 let layoutPersistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -359,43 +343,58 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
     }
   }, [sharedDocuments, tabs, tabsActions]);
 
-  // Persist open document IDs whenever tabs change
+  // Persist open document entries (id + documentType) whenever tabs change.
+  // documentType is required at restore time so the right editor is mounted;
+  // without it CollaborativeTabEditor falls back to markdown for everything
+  // and renders an Excalidraw / mockup Y.Doc as blank.
   useEffect(() => {
     if (!restored) return; // Don't persist until we've finished restoring
-    const docIds = tabs
-      .filter(t => isCollabUri(t.filePath))
-      .map(t => {
-        try { return parseCollabUri(t.filePath).documentId; }
-        catch { return null; }
+    const docsById = new Map<string, SharedDocument>();
+    for (const d of sharedDocuments) docsById.set(d.documentId, d);
+
+    const entries: PersistedCollabEntry[] = tabs
+      .filter((t) => isCollabUri(t.filePath))
+      .map((t) => {
+        try {
+          const { documentId } = parseCollabUri(t.filePath);
+          return {
+            documentId,
+            documentType: docsById.get(documentId)?.documentType ?? 'markdown',
+          };
+        } catch {
+          return null;
+        }
       })
-      .filter((id): id is string => id !== null);
-    persistOpenCollabDocs(workspacePath, docIds);
-  }, [tabs, workspacePath, restored]);
+      .filter((entry): entry is PersistedCollabEntry => entry !== null);
+    persistOpenCollabDocs(workspacePath, entries);
+  }, [tabs, sharedDocuments, workspacePath, restored]);
 
   // Restore previously open collab documents on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const savedDocIds = await loadOpenCollabDocs(workspacePath);
-      if (cancelled || savedDocIds.length === 0) {
+      const savedEntries = await loadOpenCollabDocs(workspacePath);
+      if (cancelled || savedEntries.length === 0) {
         setRestored(true);
         return;
       }
 
       // Open each saved document. We don't need to wait for sharedDocumentsAtom
       // because openCollabDocumentViaIPC resolves auth/keys via IPC directly.
-      // Use the documentId as both documentId and title (title is only for display).
-      for (const docId of savedDocIds) {
+      // Use the documentId as both documentId and title (title is only for display);
+      // the title atom gets repopulated from the shared-docs sync afterwards.
+      for (const entry of savedEntries) {
         if (cancelled) break;
         try {
           await openCollabDocumentViaIPC({
             workspacePath,
-            documentId: docId,
-            title: docId,
+            documentId: entry.documentId,
+            title: entry.documentId,
+            documentType: entry.documentType,
             addTab: tabsActions.addTab,
           });
         } catch (err) {
-          console.warn('[CollabMode] Failed to restore collab document:', docId, err);
+          console.warn('[CollabMode] Failed to restore collab document:', entry.documentId, err);
         }
       }
       setRestored(true);

@@ -18,5 +18,6 @@ export {HeadingDiffHandler} from './HeadingDiffHandler';
 export {NoopDiffHandler} from './NoopDiffHandler';
 export {ListDiffHandler} from './ListDiffHandler';
 export {ParagraphDiffHandler} from './ParagraphDiffHandler';
+export {QuoteDiffHandler} from './QuoteDiffHandler';
 export {CodeBlockDiffHandler} from './CodeBlockDiffHandler';
 export {MermaidDiffHandler} from './MermaidDiffHandler';

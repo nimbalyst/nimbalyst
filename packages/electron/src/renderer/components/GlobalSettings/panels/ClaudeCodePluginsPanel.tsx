@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { usePostHog } from 'posthog-js/react';
 import { ErrorBoundary } from '../../ErrorBoundary';
 import { useTheme } from '../../../hooks/useTheme';
@@ -16,7 +16,10 @@ interface MarketplacePlugin {
 // Installed plugin from local system
 interface InstalledPlugin {
   name: string;
+  source: string;
   path: string;
+  scope: 'user' | 'project';
+  projectPath?: string;
   enabled: boolean;
 }
 
@@ -159,6 +162,44 @@ interface ClaudeCodePluginsPanelProps {
   workspacePath?: string;
 }
 
+// Marketplace plugins don't carry a source attribution that matches the
+// installed_plugins.json key directly. Best-effort extraction lets us produce a
+// stable `name@source` key for marketplace cards too.
+//
+// This mirrors how the install handler derives `sourceName` from the
+// marketplace URL, so the value we use to test `isPluginInstalled` matches the
+// `name@source` key the installer writes to `installed_plugins.json`.
+function extractMarketplaceSourceName(plugin: MarketplacePlugin): string {
+  const sourceField = (plugin.source || '').trim();
+  if (!/^https?:/i.test(sourceField)) {
+    return 'claude-plugins-official';
+  }
+
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(sourceField);
+  } catch {
+    parsed = null;
+  }
+
+  if (!parsed || !/(^|\.)github\.com$/i.test(parsed.hostname)) {
+    return 'claude-plugins-official';
+  }
+
+  // Pathname looks like "/owner/repo" or "/owner/repo/tree/...". We only care
+  // about the first two segments. Strip a trailing `.git` so URLs that come
+  // straight from `git clone` examples produce the same key as the marketplace
+  // installer.
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  if (segments.length < 2) {
+    return 'claude-plugins-official';
+  }
+
+  const owner = segments[0];
+  const repo = segments[1].replace(/\.git$/i, '');
+  return `${owner}-${repo}`;
+}
+
 function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCodePluginsPanelProps) {
   const posthog = usePostHog();
   const { theme } = useTheme();
@@ -174,11 +215,7 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
   const [installStatus, setInstallStatus] = useState<Record<string, 'idle' | 'installing' | 'installed' | 'error'>>({});
   const [installMessage, setInstallMessage] = useState<string>('');
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
 
@@ -186,7 +223,7 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
       // Fetch marketplace data and installed plugins in parallel
       const [marketplaceResult, installedResult] = await Promise.all([
         window.electronAPI.invoke('claude-plugin:fetch-marketplace'),
-        window.electronAPI.invoke('claude-plugin:list-installed'),
+        window.electronAPI.invoke('claude-plugin:list-installed', { workspacePath }),
       ]);
 
       if (marketplaceResult.success) {
@@ -205,7 +242,13 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
     } finally {
       setLoading(false);
     }
-  };
+  }, [workspacePath]);
+
+  // Reload when the active workspace changes so project-scoped plugins
+  // appear or disappear with the current project.
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const handleInstall = async (plugin: MarketplacePlugin) => {
     setInstallStatus(prev => ({ ...prev, [plugin.name]: 'installing' }));
@@ -227,7 +270,7 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
         });
 
         // Refresh installed plugins
-        const installedResult = await window.electronAPI.invoke('claude-plugin:list-installed');
+        const installedResult = await window.electronAPI.invoke('claude-plugin:list-installed', { workspacePath });
         if (installedResult.success) {
           setInstalledPlugins(installedResult.data || []);
         }
@@ -247,20 +290,28 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
     }, 5000);
   };
 
-  const handleUninstall = async (pluginName: string) => {
-    if (!confirm(`Uninstall ${pluginName}?`)) {
+  interface UninstallTarget {
+    name: string;
+    source?: string;
+    scope?: 'user' | 'project';
+    projectPath?: string;
+  }
+
+  const handleUninstall = async (target: UninstallTarget) => {
+    const label = target.source ? `${target.name}@${target.source}` : target.name;
+    if (!confirm(`Uninstall ${label}?`)) {
       return;
     }
 
     try {
-      const result = await window.electronAPI.invoke('claude-plugin:uninstall', pluginName);
+      const result = await window.electronAPI.invoke('claude-plugin:uninstall', target);
 
       if (result.success) {
-        setInstallStatus(prev => ({ ...prev, [pluginName]: 'idle' }));
-        setInstallMessage(`${pluginName} uninstalled`);
+        setInstallStatus(prev => ({ ...prev, [target.name]: 'idle' }));
+        setInstallMessage(`${label} uninstalled`);
 
         // Refresh installed plugins
-        const installedResult = await window.electronAPI.invoke('claude-plugin:list-installed');
+        const installedResult = await window.electronAPI.invoke('claude-plugin:list-installed', { workspacePath });
         if (installedResult.success) {
           setInstalledPlugins(installedResult.data || []);
         }
@@ -277,8 +328,12 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
     }, 5000);
   };
 
-  const isPluginInstalled = (pluginName: string): boolean => {
-    return installedPlugins.some(p => p.name.toLowerCase() === pluginName.toLowerCase());
+  const isPluginInstalled = (plugin: MarketplacePlugin): boolean => {
+    const expectedSource = extractMarketplaceSourceName(plugin).toLowerCase();
+    const expectedName = plugin.name.toLowerCase();
+    return installedPlugins.some(p =>
+      p.name.toLowerCase() === expectedName && p.source.toLowerCase() === expectedSource
+    );
   };
 
   // Filter plugins by search query
@@ -357,7 +412,7 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
             <h4 className="plugin-category-title text-xs font-semibold uppercase tracking-wider text-[var(--nim-text-faint)] m-0 mb-3 pb-2 border-b border-[var(--nim-border)]">{CATEGORY_LABELS[category] || category}</h4>
             <div className="plugin-grid grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3 @container" role="list" aria-label={CATEGORY_LABELS[category] || category}>
               {plugins.map((plugin) => {
-                const installed = isPluginInstalled(plugin.name);
+                const installed = isPluginInstalled(plugin);
                 const status = installStatus[plugin.name] || 'idle';
 
                 return (
@@ -431,28 +486,57 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
         </div>
       ) : (
         <div className="plugin-installed-list flex flex-col gap-2" role="list">
-          {installedPlugins.map((plugin) => (
-            <div key={plugin.name} className="plugin-installed-item flex items-center justify-between p-4 border border-[var(--nim-border)] rounded-lg bg-[var(--nim-bg-secondary)]" role="listitem">
-              <div className="plugin-installed-info flex items-center gap-3 flex-1 min-w-0">
-                <div className="plugin-installed-icon w-9 h-9 rounded-md bg-[var(--nim-bg-tertiary)] flex items-center justify-center shrink-0 overflow-hidden">
-                  <PluginIcon pluginName={plugin.name} category="external" isDark={isDark} />
+          {installedPlugins.map((plugin) => {
+            const isProjectScope = plugin.scope === 'project';
+            const itemKey = `${plugin.name}@${plugin.source}@${plugin.projectPath ?? 'user'}`;
+            return (
+              <div key={itemKey} className="plugin-installed-item flex items-center justify-between p-4 border border-[var(--nim-border)] rounded-lg bg-[var(--nim-bg-secondary)]" role="listitem">
+                <div className="plugin-installed-info flex items-center gap-3 flex-1 min-w-0">
+                  <div className="plugin-installed-icon w-9 h-9 rounded-md bg-[var(--nim-bg-tertiary)] flex items-center justify-center shrink-0 overflow-hidden">
+                    <PluginIcon pluginName={plugin.name} category="external" isDark={isDark} />
+                  </div>
+                  <div className="plugin-installed-details flex-1 min-w-0">
+                    <div className="plugin-installed-name flex items-center gap-2 font-medium text-[0.9375rem] text-[var(--nim-text)] mb-0.5">
+                      <span>{plugin.name}</span>
+                      {plugin.source && (
+                        <span className="plugin-installed-source text-xs text-[var(--nim-text-faint)] font-normal">@{plugin.source}</span>
+                      )}
+                      <span
+                        className={`plugin-installed-scope inline-flex items-center px-1.5 py-0.5 rounded text-[0.6875rem] font-semibold uppercase tracking-tight ${
+                          isProjectScope
+                            ? 'bg-[rgba(52,152,219,0.15)] text-[#3498db]'
+                            : 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)]'
+                        }`}
+                        title={isProjectScope ? plugin.projectPath : 'Available in every workspace'}
+                      >
+                        {isProjectScope ? 'Project' : 'User'}
+                      </span>
+                      {!plugin.enabled && (
+                        <span className="plugin-installed-disabled inline-flex items-center px-1.5 py-0.5 rounded text-[0.6875rem] font-semibold uppercase tracking-tight bg-[rgba(231,76,60,0.12)] text-[#e74c3c]" title="Not present in enabledPlugins for this scope">
+                          Disabled
+                        </span>
+                      )}
+                    </div>
+                    <div className="plugin-installed-path text-xs text-[var(--nim-text-faint)] overflow-hidden text-ellipsis whitespace-nowrap">{plugin.path}</div>
+                  </div>
                 </div>
-                <div className="plugin-installed-details flex-1 min-w-0">
-                  <div className="plugin-installed-name font-medium text-[0.9375rem] text-[var(--nim-text)] mb-0.5">{plugin.name}</div>
-                  <div className="plugin-installed-path text-xs text-[var(--nim-text-faint)] overflow-hidden text-ellipsis whitespace-nowrap">{plugin.path}</div>
+                <div className="plugin-installed-actions flex gap-2">
+                  <button
+                    className="plugin-uninstall-button py-1.5 px-3 border border-[#e74c3c] rounded bg-transparent text-[#e74c3c] text-xs font-medium cursor-pointer transition-all duration-150 hover:bg-[#e74c3c] hover:text-white"
+                    onClick={() => handleUninstall({
+                      name: plugin.name,
+                      source: plugin.source,
+                      scope: plugin.scope,
+                      projectPath: plugin.projectPath,
+                    })}
+                    aria-label={`Uninstall ${plugin.name}`}
+                  >
+                    Uninstall
+                  </button>
                 </div>
               </div>
-              <div className="plugin-installed-actions flex gap-2">
-                <button
-                  className="plugin-uninstall-button py-1.5 px-3 border border-[#e74c3c] rounded bg-transparent text-[#e74c3c] text-xs font-medium cursor-pointer transition-all duration-150 hover:bg-[#e74c3c] hover:text-white"
-                  onClick={() => handleUninstall(plugin.name)}
-                  aria-label={`Uninstall ${plugin.name}`}
-                >
-                  Uninstall
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -461,7 +545,7 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
   const renderPluginDetails = () => {
     if (!selectedPlugin) return null;
 
-    const installed = isPluginInstalled(selectedPlugin.name);
+    const installed = isPluginInstalled(selectedPlugin);
     const status = installStatus[selectedPlugin.name] || 'idle';
 
     return (
@@ -515,7 +599,15 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
                 <button
                   className="plugin-uninstall-button py-1.5 px-3 border border-[#e74c3c] rounded bg-transparent text-[#e74c3c] text-xs font-medium cursor-pointer transition-all duration-150 hover:bg-[#e74c3c] hover:text-white"
                   onClick={() => {
-                    handleUninstall(selectedPlugin.name);
+                    // Modal originates from a marketplace card, so we only
+                    // know name+derived source. The server-side uninstall
+                    // handler will refuse ambiguous matches; users on a
+                    // multi-marketplace install must uninstall from the
+                    // Installed tab where the source is explicit.
+                    handleUninstall({
+                      name: selectedPlugin.name,
+                      source: extractMarketplaceSourceName(selectedPlugin),
+                    });
                     setSelectedPlugin(null);
                   }}
                 >

@@ -1312,6 +1312,83 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('extension:dev-unload', handler);
       return () => ipcRenderer.removeListener('extension:dev-unload', handler);
     },
+
+    // Privileged-capability permissions (Phase 4)
+    permissions: {
+      listDescriptors: () => ipcRenderer.invoke('ext-permissions:list-descriptors'),
+      listEffective: (workspacePath?: string) =>
+        ipcRenderer.invoke('ext-permissions:list-effective', workspacePath),
+      listAtScope: (scope: 'workspace' | 'global', workspacePath?: string) =>
+        ipcRenderer.invoke('ext-permissions:list-at-scope', scope, workspacePath),
+      listEnabledModules: (workspacePath?: string) =>
+        ipcRenderer.invoke('ext-permissions:list-enabled-modules', workspacePath),
+      isModuleEnabled: (args: {
+        extensionId: string;
+        moduleId: string;
+        declaredPermissions: string[];
+        workspacePath?: string;
+      }) => ipcRenderer.invoke('ext-permissions:is-module-enabled', args),
+      grantModule: (args: {
+        extensionId: string;
+        moduleId: string;
+        permissions: string[];
+        scope: 'workspace' | 'global';
+        workspacePath?: string;
+      }) => ipcRenderer.invoke('ext-permissions:grant-module', args),
+      revokeModule: (args: {
+        extensionId: string;
+        moduleId: string;
+        scope: 'workspace' | 'global';
+        workspacePath: string;
+      }) => ipcRenderer.invoke('ext-permissions:revoke-module', args),
+      handleUninstall: (args: { extensionId: string; workspacePath?: string }) =>
+        ipcRenderer.invoke('ext-permissions:handle-uninstall', args),
+      listHostState: () => ipcRenderer.invoke('ext-permissions:list-host-state'),
+      usageSummary: () => ipcRenderer.invoke('ext-permissions:usage-summary'),
+      usageEventsForModule: (args: { extensionId: string; moduleId: string }) =>
+        ipcRenderer.invoke('ext-permissions:usage-events-for-module', args),
+      usageEventsAll: () => ipcRenderer.invoke('ext-permissions:usage-events-all'),
+      onStateChanged: (
+        callback: (handle: {
+          extensionId: string;
+          moduleId: string;
+          workspacePath: string;
+          state: unknown;
+        }) => void
+      ) => {
+        const handler = (_event: any, data: any) => callback(data);
+        ipcRenderer.on('ext-permissions:state-changed', handler);
+        return () => ipcRenderer.removeListener('ext-permissions:state-changed', handler);
+      },
+      // Prompt bridge - renderer subscribes, shows modal, resolves
+      onPromptRaised: (
+        callback: (request: {
+          id: string;
+          extensionId: string;
+          extensionName: string;
+          moduleId: string;
+          purpose: string;
+          declaredPermissions: string[];
+          workspacePath: string;
+          reason: { kind: 'first-use' } | { kind: 're-prompt-update'; addedPermissions: string[]; existingScopes: Array<'workspace' | 'global'> };
+          raisedAt: number;
+        }) => void
+      ) => {
+        const handler = (_event: any, data: any) => callback(data);
+        ipcRenderer.on('ext-permission-prompt:raise', handler);
+        return () => ipcRenderer.removeListener('ext-permission-prompt:raise', handler);
+      },
+      onPromptResolved: (callback: (data: { promptId: string }) => void) => {
+        const handler = (_event: any, data: any) => callback(data);
+        ipcRenderer.on('ext-permission-prompt:resolved', handler);
+        return () => ipcRenderer.removeListener('ext-permission-prompt:resolved', handler);
+      },
+      resolvePrompt: (
+        promptId: string,
+        resolution: { decision: 'enable-workspace' | 'enable-global' | 'not-now' }
+      ) => ipcRenderer.send('ext-permission-prompt:resolve', { promptId, resolution }),
+      listPendingPrompts: () => ipcRenderer.invoke('ext-permission-prompt:list-pending'),
+    },
   },
 
   // Claude Code API

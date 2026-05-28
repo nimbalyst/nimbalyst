@@ -202,6 +202,7 @@
     "@lexical/utils": "^0.44.0",
     "@lexical/yjs": "^0.44.0",
     "@monaco-editor/react": "^4.7.0",
+    "@nimbalyst/collab-adapters": "*",
     "@nimbalyst/collab-protocol": "*",
     "@nimbalyst/extension-sdk": "*",
     "@openai/codex-sdk": "^0.130.0",

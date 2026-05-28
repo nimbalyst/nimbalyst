@@ -595,7 +595,7 @@ function relationshipFieldsChanged(a: Relationship, b: Relationship): boolean {
   );
 }
 
-function yMapToEntity(yEntity: Y.Map<unknown>): Entity {
+export function yMapToEntity(yEntity: Y.Map<unknown>): Entity {
   const id = (yEntity.get('id') as string) ?? '';
   const name = (yEntity.get('name') as string) ?? '';
   const description = yEntity.get('description') as string | undefined;
@@ -614,7 +614,7 @@ function yMapToEntity(yEntity: Y.Map<unknown>): Entity {
   };
 }
 
-function yMapToRelationship(yRel: Y.Map<unknown>): Relationship {
+export function yMapToRelationship(yRel: Y.Map<unknown>): Relationship {
   return {
     id: (yRel.get('id') as string) ?? '',
     type: yRel.get('type') as Relationship['type'],

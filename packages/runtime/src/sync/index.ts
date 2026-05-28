@@ -179,6 +179,12 @@ export type {
 export { HeadlessLexicalYDoc } from './HeadlessLexicalYDoc';
 export type { HeadlessLexicalYDocOptions } from './HeadlessLexicalYDoc';
 
+export { MarkdownCollabContentAdapter } from './MarkdownCollabContentAdapter';
+export {
+  createRevisionAdapterFromCollabContent,
+  type CollabAdapterRevisionBridgeOptions,
+} from './revisionSnapshotBridge';
+
 export {
   TrackerSyncEngine,
 } from './TrackerSyncEngine';

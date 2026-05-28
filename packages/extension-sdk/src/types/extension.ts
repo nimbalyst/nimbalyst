@@ -13,7 +13,15 @@ import type {
   SettingsPanelContribution,
   SettingsPanelProps,
 } from './panel';
+import type { BackendModuleContribution, ExtensionPermissionId } from './permissions';
 import type { ThemeColors } from './theme';
+import type { ExtensionCollabService } from './collab';
+
+/**
+ * Manifest validation rejects extensions declaring more than this many
+ * backend modules, to keep the consent prompt manageable.
+ */
+export const MAX_BACKEND_MODULES_PER_EXTENSION = 8;
 
 /**
  * Extension manifest schema (manifest.json)
@@ -158,6 +166,17 @@ export interface ExtensionPermissions {
 
   /** Can make network requests */
   network?: boolean;
+
+  /**
+   * Catalog-based capability ids. Use this for capabilities defined in the
+   * host's permission catalog (see ExtensionPermissionId). Required for any
+   * panel/renderer extension that wants to call host APIs gated on a catalog
+   * permission (e.g. `host.data.query` requires `nimbalyst-database-read`).
+   *
+   * Backend modules declare their own permissions on the module contribution;
+   * this top-level array covers the panel/renderer surface.
+   */
+  catalog?: ExtensionPermissionId[];
 }
 
 export interface ExtensionContributions {
@@ -235,6 +254,17 @@ export interface ExtensionContributions {
    * Extensions can provide color themes that override the built-in themes.
    */
   themes?: ThemeContribution[];
+
+  /**
+   * Backend modules contributed by this extension.
+   *
+   * Each module runs in an isolated runtime (utility-process or worker-thread)
+   * outside both Electron main and the renderer. Modules are inert until the
+   * user grants their declared permissions via the first-use prompt.
+   *
+   * Capped at {@link MAX_BACKEND_MODULES_PER_EXTENSION} per extension.
+   */
+  backendModules?: BackendModuleContribution[];
 }
 
 /**
@@ -686,6 +716,14 @@ export interface ExtensionServices {
 
   /** Configuration service (only available if contributions.configuration is defined) */
   configuration?: ExtensionConfigurationService;
+
+  /**
+   * Collaboration service. Used by editors that ship a
+   * CollabContentAdapter to plug into host-level operations on their
+   * shared Y.Doc (re-upload, history, export, AI editing, search).
+   * See `packages/extension-sdk-docs/custom-editors.md`.
+   */
+  collab: ExtensionCollabService;
 }
 
 /**

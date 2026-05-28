@@ -4,17 +4,21 @@
  * Registers the SpreadsheetEditor as a custom editor for CSV files.
  */
 
+import type { ExtensionContext } from '@nimbalyst/extension-sdk';
 import { SpreadsheetEditor } from './components/SpreadsheetEditor';
+import { CsvCollabContentAdapter } from './collab/CsvCollabContentAdapter';
 import './revogrid-theme.css';
 
 // Export the editor component for the extension system
 export { SpreadsheetEditor };
+export { CsvCollabContentAdapter };
 
 /**
  * Extension activation
  * Called when the extension is loaded
  */
-export async function activate() {
+export async function activate(context: ExtensionContext) {
+  context.services.collab.registerContentAdapter(CsvCollabContentAdapter);
   console.log('[CSV Spreadsheet] Extension activated');
 }
 

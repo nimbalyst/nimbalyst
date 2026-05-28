@@ -14,7 +14,7 @@
 
 import { ipcMain, BrowserWindow } from 'electron';
 import log from 'electron-log/main';
-import { GitWorktreeService } from '../services/GitWorktreeService';
+import { GitWorktreeService, WorkspaceHasNoCommitsError } from '../services/GitWorktreeService';
 import { createWorktreeStore } from '../services/WorktreeStore';
 import { getDatabase } from '../database/initialize';
 import { getQueuedPromptsStore } from '../services/RepositoryManager';
@@ -158,6 +158,12 @@ export function registerBlitzHandlers(): void {
       if (totalWorktrees > MAX_BLITZ_WORKTREES) {
         throw new Error(`Total worktrees (${totalWorktrees}) exceeds maximum of ${MAX_BLITZ_WORKTREES}`);
       }
+
+      // Pre-flight: confirm the workspace's HEAD resolves to a commit. Without
+      // this, a `git init`-ed-but-never-committed workspace would create the
+      // parent blitz row, then fail on every per-worktree git call, and the
+      // user would see the dialog disappear with no toast. Fail fast here.
+      await gitWorktreeService.validateWorkspaceHasCommits(workspacePath);
 
       const db = getDatabase();
       if (!db) {
@@ -336,6 +342,22 @@ export function registerBlitzHandlers(): void {
       // Emit event to renderer
       emitBlitzCreated(blitzId, workspacePath);
 
+      // If every worktree creation failed, treat the whole call as a failure
+      // so the renderer can surface an error toast instead of dismissing the
+      // dialog as if the blitz succeeded.
+      const successCount = worktreeResults.filter(r => r.success).length;
+      if (successCount === 0) {
+        return {
+          success: false,
+          error: errors[0] || 'No worktrees could be created',
+          blitzSessionId: blitzId,
+          worktrees: worktreeResults,
+          sessionIds,
+          models: worktreeAssignments.map(a => a.model),
+          errors,
+        };
+      }
+
       return {
         success: true,
         blitzSessionId: blitzId,
@@ -346,9 +368,12 @@ export function registerBlitzHandlers(): void {
       };
     } catch (error) {
       logger.error('Failed to create blitz:', error);
+      const message = error instanceof WorkspaceHasNoCommitsError
+        ? error.message
+        : (error instanceof Error ? error.message : 'Failed to create blitz');
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Failed to create blitz',
+        error: message,
       };
     }
   });

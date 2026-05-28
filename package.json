@@ -73,6 +73,7 @@
     "packages/runtime",
     "packages/core",
     "packages/collab-protocol",
+    "packages/collab-adapters",
     "packages/ios",
     "packages/extension-sdk",
     "packages/extensions/*",

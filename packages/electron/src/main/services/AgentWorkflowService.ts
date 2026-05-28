@@ -487,8 +487,14 @@ export class AgentWorkflowService {
 
     if (sourceSettings.extensionWorkflowsEnabled) {
       await this.scanExtensionWorkflowSources(snapshot);
-      await this.scanLegacyClaudePluginSources(snapshot);
     }
+
+    // Always scan Claude CLI plugins (~/.claude/plugins) regardless of the
+    // Nimbalyst extension-workflows toggle. The Claude Agent SDK auto-loads
+    // these plugins based on the user's enabledPlugins settings, so the
+    // Nimbalyst typeahead must mirror that to avoid showing plugin commands
+    // only on the global panel but not on project-scoped workspaces.
+    await this.scanLegacyClaudePluginSources(snapshot);
 
     return snapshot;
   }

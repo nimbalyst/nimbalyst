@@ -187,8 +187,12 @@ export class ClaudeCodeTranscriptAdapter {
   private parseAssistantChunk(chunk: any): ParsedItem[] {
     const items: ParsedItem[] = [];
 
-    // Session ID capture
-    if (chunk.session_id) {
+    // Session ID capture. Skip when this assistant chunk is from a sub-agent
+    // (parent_tool_use_id set): the SDK relays the sub-agent's chunks back
+    // through the same iterator carrying the sub-agent's own session_id,
+    // which is NOT the lead's. Capturing it overwrites the lead's session id
+    // and corrupts resume on the next turn (NIM-671 / #457).
+    if (chunk.session_id && !chunk.parent_tool_use_id) {
       items.push({ kind: 'session_id', id: chunk.session_id });
     }
 
@@ -356,9 +360,10 @@ export class ClaudeCodeTranscriptAdapter {
   private parseResultChunk(chunk: any): ParsedItem[] {
     const items: ParsedItem[] = [];
 
-    if (chunk.session_id) {
-      items.push({ kind: 'session_id', id: chunk.session_id });
-    }
+    // Do not capture session_id from result chunks. The system init frame is
+    // authoritative for the lead session id (see parseSystemChunk:'init').
+    // Result chunks can arrive from sub-agent completions and would otherwise
+    // overwrite the lead's session id (NIM-671 / #457).
 
     if (chunk.is_error) {
       const msg = chunk.error?.message || chunk.error || 'Unknown error';

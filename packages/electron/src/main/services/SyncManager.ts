@@ -26,6 +26,7 @@ import { getProjectFileSyncService } from './ProjectFileSyncService';
 import { startProjectFileSync } from '../file/WorkspaceWatcher';
 import { windowStates } from '../window/WindowManager';
 import { getNormalizedGitRemote } from '../utils/gitUtils';
+import { resolveProjectPath } from '../utils/workspaceDetection';
 import { createHash } from 'crypto';
 import { setSleepPreventionMode, setSyncConnected, shutdownSleepPrevention, type PreventSleepMode } from './PowerSaveService';
 import { reconnectAllTrackerSyncs } from './TrackerSyncManager';
@@ -619,9 +620,19 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
             continue;
           }
 
-          // Skip sessions from disabled projects (if project filtering is enabled)
-          if (enabledProjectIds && !enabledProjectIds.has(localSession.workspaceId)) {
-            continue;
+          // Skip sessions from disabled projects (if project filtering is enabled).
+          // Sessions running in a git worktree may have a workspaceId of
+          // ".../<project>_worktrees/<name>" rather than the parent project path
+          // the user enabled in Settings > Sync. Claude sessions normally adopt
+          // the parent path via adoptWorktreeForSession(), but the Codex
+          // provider currently does not, so a Codex worktree session keeps the
+          // raw worktree path and is silently filtered out here. Resolve to the
+          // parent project path and accept either form against the enabled set.
+          if (enabledProjectIds) {
+            const projectPath = resolveProjectPath(localSession.workspaceId);
+            if (!enabledProjectIds.has(localSession.workspaceId) && !enabledProjectIds.has(projectPath)) {
+              continue;
+            }
           }
 
           const serverSession = serverSessionMap.get(localSession.id);
@@ -1041,9 +1052,14 @@ export async function triggerIncrementalSync(): Promise<void> {
         continue;
       }
 
-      // Skip sessions from disabled projects
-      if (enabledProjectIds && !enabledProjectIds.has(localSession.workspaceId)) {
-        continue;
+      // Skip sessions from disabled projects. Resolve worktree paths to their
+      // parent project path so Codex worktree sessions (which do not adopt the
+      // parent path the way Claude sessions do) match the user's enabled set.
+      if (enabledProjectIds) {
+        const projectPath = resolveProjectPath(localSession.workspaceId);
+        if (!enabledProjectIds.has(localSession.workspaceId) && !enabledProjectIds.has(projectPath)) {
+          continue;
+        }
       }
 
       const serverSession = serverSessionMap.get(localSession.id);

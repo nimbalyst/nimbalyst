@@ -146,6 +146,7 @@ import {DefaultDiffHandler} from '../handlers/DefaultDiffHandler';
 import {ListDiffHandler} from '../handlers/ListDiffHandler';
 import {HeadingDiffHandler} from '../handlers/HeadingDiffHandler';
 import {ParagraphDiffHandler} from '../handlers/ParagraphDiffHandler';
+import {QuoteDiffHandler} from '../handlers/QuoteDiffHandler';
 import {TableDiffHandler} from '../handlers/TableDiffHandler';
 import {CodeBlockDiffHandler} from '../handlers/CodeBlockDiffHandler';
 import {MermaidDiffHandler} from '../handlers/MermaidDiffHandler';
@@ -174,6 +175,7 @@ export function initializeHandlers() {
   diffHandlerRegistry.register(new CodeBlockDiffHandler());
   diffHandlerRegistry.register(new MermaidDiffHandler());
   diffHandlerRegistry.register(new ParagraphDiffHandler());
+  diffHandlerRegistry.register(new QuoteDiffHandler());
   diffHandlerRegistry.register(new HeadingDiffHandler());
   diffHandlerRegistry.register(new ListDiffHandler());
   diffHandlerRegistry.register(new DefaultDiffHandler());

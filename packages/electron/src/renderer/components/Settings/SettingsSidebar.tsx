@@ -22,6 +22,7 @@ export type SettingsCategory =
   | 'beta-features'
   | 'mcp-servers'
   | 'installed-extensions'
+  | 'privileged-extensions'
   | 'claude-plugins'
   | 'shared-links'
   | 'marketplace'
@@ -225,6 +226,11 @@ Best for quick edits and tasks that do not require multi-file operations.`,
           id: 'installed-extensions',
           name: 'Installed',
           icon: <MaterialSymbol icon="extension" size={16} />,
+        },
+        {
+          id: 'privileged-extensions',
+          name: 'Privileged Capabilities',
+          icon: <MaterialSymbol icon="shield_lock" size={16} />,
         },
         {
           id: 'claude-plugins',

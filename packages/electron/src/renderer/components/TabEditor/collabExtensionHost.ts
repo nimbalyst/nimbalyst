@@ -272,6 +272,11 @@ export interface CollabExtensionHostArgs {
   onDirtyChange?: (isDirty: boolean) => void;
   /** Called when the user invokes the "History" action on this tab. */
   onOpenHistory?: () => void;
+  /** Read the current host theme. Called on demand so the host always
+   *  returns the latest value without recreating the host. */
+  getTheme?: () => string;
+  /** Subscribe to host theme changes. The returned function unsubscribes. */
+  subscribeToThemeChanges?: (callback: (theme: string) => void) => () => void;
 }
 
 /**
@@ -296,6 +301,8 @@ export function createCollabExtensionHost(
     collaboration,
     onDirtyChange,
     onOpenHistory,
+    getTheme,
+    subscribeToThemeChanges,
   } = args;
 
   const editorKey = makeEditorKey(filePath);
@@ -315,11 +322,13 @@ export function createCollabExtensionHost(
   return {
     filePath,
     fileName,
-    get theme() { return 'auto'; },
+    get theme() { return getTheme ? getTheme() : 'auto'; },
     get isActive() { return isActive; },
     workspaceId,
 
-    onThemeChanged: () => () => {},
+    onThemeChanged(callback: (theme: string) => void): () => void {
+      return subscribeToThemeChanges ? subscribeToThemeChanges(callback) : () => {};
+    },
 
     async loadContent(): Promise<string> {
       return activeConfig.initialContent ?? '';

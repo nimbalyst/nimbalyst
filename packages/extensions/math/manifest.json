@@ -15,6 +15,24 @@
   "contributions": {
     "hostComponents": ["TranscriptMathHost"],
     "transformers": ["BLOCK_MATH_TRANSFORMER", "INLINE_MATH_TRANSFORMER"],
-    "lexicalExtensions": ["MathLexicalExtension"]
+    "lexicalExtensions": ["MathLexicalExtension"],
+    "slashCommands": [
+      {
+        "id": "com.nimbalyst.math.inline",
+        "title": "Math (inline)",
+        "description": "Insert an inline LaTeX math formula",
+        "icon": "functions",
+        "keywords": ["math", "latex", "katex", "equation", "formula", "inline"],
+        "handler": "insertInlineMath"
+      },
+      {
+        "id": "com.nimbalyst.math.block",
+        "title": "Math (block)",
+        "description": "Insert a block LaTeX math formula",
+        "icon": "calculate",
+        "keywords": ["math", "latex", "katex", "equation", "formula", "block"],
+        "handler": "insertBlockMath"
+      }
+    ]
   }
 }

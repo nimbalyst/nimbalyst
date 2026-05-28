@@ -3,6 +3,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { validateBackendModules } from './manifestValidation.js';
 import type { ValidationResult } from './validationTypes.js';
 export type { ValidationResult } from './validationTypes.js';
 
@@ -128,6 +129,31 @@ export async function validateExtensionBundle(
           warnings.push(
             `manifest.json "styles" points to ${manifest.styles} but file does not exist`
           );
+        }
+      }
+
+      // Validate backendModules if present. These run outside the renderer
+      // under a host-managed permission system; malformed declarations would
+      // either fail to load at runtime or, worse, declare unknown permission
+      // ids the consent prompt can't render. Catch both at build time.
+      const backendModulesIssues = validateBackendModules(
+        manifest?.contributions?.backendModules
+      );
+      for (const issue of backendModulesIssues) {
+        errors.push(issue.message);
+      }
+
+      // Also check the declared entry files exist on disk.
+      if (Array.isArray(manifest?.contributions?.backendModules)) {
+        for (const module of manifest.contributions.backendModules as Array<Record<string, unknown>>) {
+          if (typeof module?.entry === 'string') {
+            const entryPath = path.join(path.dirname(manifestPath), module.entry);
+            if (!fs.existsSync(entryPath)) {
+              errors.push(
+                `backendModules[${module.id ?? '?'}].entry points to ${module.entry} but file does not exist`
+              );
+            }
+          }
         }
       }
     } catch (e) {

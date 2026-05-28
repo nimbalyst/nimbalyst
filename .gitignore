@@ -1,3 +1,6 @@
+# Agent mistake log (local only)
+agent-mistakes.md
+
 # Dependencies
 node_modules/
 .pnpm-store/

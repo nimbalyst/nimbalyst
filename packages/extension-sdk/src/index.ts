@@ -72,3 +72,10 @@ export {
   printValidationResult,
   type ValidationResult,
 } from './validate.js';
+
+export {
+  validateBackendModules,
+  assertBackendModulesValid,
+  effectiveModulePermissions,
+  type BackendModuleValidationIssue,
+} from './manifestValidation.js';

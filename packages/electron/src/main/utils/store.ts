@@ -92,6 +92,12 @@ interface AppStoreSchema {
   extensionProjectIntroShown?: boolean;
   // Extension settings (enabled/disabled state and configuration)
   extensionSettings?: Record<string, ExtensionSettings>;
+  // Global-scope privileged-extension capability grants ("Enable for all workspaces").
+  // Workspace-scope grants live on WorkspaceState.extensionPermissionGrants.
+  // See packages/electron/src/main/extensions/permissionGrantStore.ts for the
+  // canonical read/write API. Keep this as an opaque list to keep electron-store
+  // migrations simple; the store module owns the shape and indexing.
+  extensionPermissionGrantsGlobal?: PersistedPermissionGrant[];
   // Claude Code settings
   claudeCode?: {
     // Enable project-level commands (.claude/commands/ in workspace)
@@ -460,7 +466,30 @@ export interface WorkspaceState {
     enabled?: boolean;
     autoCloseOnCommit?: boolean;
   };
+  // Privileged extension capability grants scoped to this workspace.
+  // Global-scope grants live on AppStoreSchema.extensionPermissionGrantsGlobal.
+  // See packages/electron/src/main/extensions/permissionGrantStore.ts for the
+  // canonical read/write API.
+  extensionPermissionGrants?: PersistedPermissionGrant[];
   lastUpdated: number;
+}
+
+/**
+ * Persisted shape of a single permission grant row.
+ * Mirrors the grant store data model from the plan:
+ *   keyed by (extensionId, moduleId, permissionId, scope)
+ * Workspace-scope rows live in WorkspaceState; global rows live in AppStoreSchema.
+ */
+export interface PersistedPermissionGrant {
+  extensionId: string;
+  moduleId: string;
+  permissionId: string;
+  scope: 'workspace' | 'global';
+  /** Workspace path - present for workspace scope, omitted for global */
+  workspacePath?: string;
+  grantedAt: number;
+  grantedBy: 'user';
+  permissionVersion: number;
 }
 
 // Lazy-initialized stores to avoid reading userData path at module load time.
@@ -1555,6 +1584,22 @@ export function setAgentWorkflowsEnabled(extensionId: string, enabled: boolean):
     settings[extensionId].agentWorkflowsEnabled = enabled;
   }
   setExtensionSettings(settings);
+}
+
+// Privileged extension capability grants (global scope only).
+// Workspace-scope grants live on WorkspaceState.extensionPermissionGrants.
+// See packages/electron/src/main/extensions/permissionGrantStore.ts for the
+// canonical read/write API; consumers should not touch electron-store here
+// directly.
+
+export function getExtensionPermissionGrantsGlobal(): PersistedPermissionGrant[] {
+  return getAppStore().get('extensionPermissionGrantsGlobal', []);
+}
+
+export function setExtensionPermissionGrantsGlobal(
+  rows: PersistedPermissionGrant[]
+): void {
+  getAppStore().set('extensionPermissionGrantsGlobal', rows);
 }
 
 // Claude Code settings

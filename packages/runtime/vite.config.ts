@@ -84,6 +84,8 @@ export default defineConfig(({ mode }) => ({
         'y-websocket',
         '@nimbalyst/extension-sdk',
         /^@nimbalyst\/extension-sdk\//,
+        '@nimbalyst/collab-adapters',
+        /^@nimbalyst\/collab-adapters\//,
       ],
       output: {
         globals: {

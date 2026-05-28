@@ -28,6 +28,7 @@ import {
   removeCollabConfig,
   resolveCollabConfigForUri,
 } from '../../utils/collabDocumentOpener';
+import { getPersistedCollabDocType } from '../../utils/collabOpenDocsPersistence';
 import { store, editorDirtyAtom, editorHasUnacceptedChangesAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { clearMockupAnnotationsForFile, getMockupFilePath } from '../UnifiedAI/MockupAnnotationIndicator';
 
@@ -124,11 +125,21 @@ const TabContentComponent: React.FC<TabContentProps> = ({
         }
         try {
           const { documentId } = parseCollabUri(filePath);
+          // Persisted documentType is the only source of truth on a cold
+          // restore: the in-memory collabConfigRegistry is empty and
+          // sharedDocumentsAtom hasn't synced yet. Without it, the open
+          // routes a shared .excalidraw / .mockup.html Y.Doc through the
+          // markdown editor and the canvas comes back blank.
+          const documentType = await getPersistedCollabDocType(
+            propsRef.current.workspaceId,
+            documentId,
+          );
           await resolveCollabConfigForUri(
             propsRef.current.workspaceId,
             filePath,
             documentId,
             title,
+            documentType,
           );
         } catch (error) {
           logger.ui.error('[TabContent] Failed to resolve collab config:', error);

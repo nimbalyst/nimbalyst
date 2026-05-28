@@ -38,8 +38,10 @@ import type {
   ChatCompletionStreamChunk,
   ExtensionAIModel,
 } from './types';
+import type { CollabContentAdapter } from '@nimbalyst/extension-sdk';
 import { getExtensionPlatformService } from './ExtensionPlatformService';
 import { registerThemeContribution } from '../editor/themes/registry';
+import { registerCollabContentAdapter } from '@nimbalyst/collab-adapters';
 
 const MANIFEST_FILENAME = 'manifest.json';
 
@@ -772,6 +774,16 @@ function createExtensionContext(
       },
       showError: (message: string) => {
         console.error(`[${manifest.name}] ${message}`);
+      },
+    },
+    collab: {
+      registerContentAdapter: (adapter: CollabContentAdapter) => {
+        const registration = registerCollabContentAdapter(adapter);
+        const disposable: Disposable = {
+          dispose: () => registration.unregister(),
+        };
+        subscriptions.push(disposable);
+        return disposable;
       },
     },
   };

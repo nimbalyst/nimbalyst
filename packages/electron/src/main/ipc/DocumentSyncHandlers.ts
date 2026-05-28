@@ -6,8 +6,9 @@
  * services so the renderer can open collab:// tabs.
  */
 
-import { net } from 'electron';
+import { BrowserWindow, dialog, net } from 'electron';
 import * as fs from 'fs/promises';
+import * as path from 'path';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl, getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
@@ -16,6 +17,7 @@ import { findTeamForWorkspace, getOrgScopedJwt } from '../services/TeamService';
 import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIdentityKeyToOrg, fetchAndUnwrapOrgKey, clearOrgKey } from '../services/OrgKeyService';
 import { getWorkspaceState, updateWorkspaceState } from '../utils/store';
 import { getPersonalDocSyncConfig, isSyncEnabled } from '../services/SyncManager';
+import { resolveCollabDocumentType } from './collabDocumentTypeResolver';
 import { getSyncId } from '../services/DocSyncService';
 import {
   registerCollabAssetDocument,
@@ -160,9 +162,21 @@ export function registerDocumentSyncHandlers(): void {
     const orgKeyBase64 = Buffer.from(rawBytes).toString('base64');
 
     const serverUrl = getCollabSyncWsUrl();
+    const workspaceState = getWorkspaceState(payload.workspacePath);
     const pendingKey = getCollabPendingKey(orgId, payload.documentId);
-    const pendingUpdateBase64 = getWorkspaceState(payload.workspacePath)
+    const pendingUpdateBase64 = workspaceState
       .collabPendingUpdates?.[pendingKey]?.mergedUpdateBase64;
+
+    // Defensive: if the caller didn't pass documentType, fall back to the
+    // renderer-persisted entry list. Some restore paths only know the
+    // documentId; without a resolved documentType, CollaborativeTabEditor
+    // renders shared docs through the markdown branch and Excalidraw /
+    // mockup Y.Docs come back blank.
+    const resolvedDocumentType = resolveCollabDocumentType({
+      callerDocumentType: payload.documentType,
+      workspaceState: workspaceState as unknown as { openCollabDocumentEntries?: unknown },
+      documentId: payload.documentId,
+    });
 
     // logger.main.info('[DocumentSyncHandlers] Resolved collab config', {
     //   orgId,
@@ -199,7 +213,7 @@ export function registerDocumentSyncHandlers(): void {
         orgId,
         documentId: payload.documentId,
         title: payload.title || payload.documentId,
-        documentType: payload.documentType,
+        documentType: resolvedDocumentType,
         orgKeyBase64,
         orgKeyFingerprint: orgKeyFp,
         serverUrl,
@@ -804,4 +818,62 @@ export function registerDocumentSyncHandlers(): void {
       }
     });
   }
+
+  /**
+   * Save a copy of a shared collab document to disk.
+   *
+   * The renderer projects the live Y.Doc to bytes via the registered
+   * CollabContentAdapter (host knows the layout for this documentType),
+   * then hands the bytes to this IPC. Main shows a save dialog and
+   * writes the file. Same trust boundary as `share:revealInFinder` --
+   * never persists bytes outside the user-chosen path.
+   *
+   * Payload: { documentType, defaultFileName, bytes }
+   * Returns: { success: true, filePath } | { success: false, cancelled?: true, error?: string }
+   */
+  safeHandle('document-sync:export-to-file', async (event, payload: {
+    documentType: string;
+    defaultFileName: string;
+    fileExtensions?: string[];
+    bytes: ArrayBuffer | Uint8Array;
+  }) => {
+    if (!payload || typeof payload.documentType !== 'string' || typeof payload.defaultFileName !== 'string') {
+      return { success: false, error: 'Invalid payload.' };
+    }
+    if (!payload.bytes) {
+      return { success: false, error: 'Missing bytes to write.' };
+    }
+
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const filterExtensions = (payload.fileExtensions ?? [])
+      .map((ext) => (ext.startsWith('.') ? ext.slice(1) : ext))
+      .filter((ext) => ext.length > 0);
+
+    const dialogOptions: Electron.SaveDialogOptions = {
+      title: 'Save a copy',
+      defaultPath: payload.defaultFileName,
+      filters: filterExtensions.length > 0
+        ? [{ name: payload.documentType, extensions: filterExtensions }]
+        : undefined,
+    };
+
+    const result = window
+      ? await dialog.showSaveDialog(window, dialogOptions)
+      : await dialog.showSaveDialog(dialogOptions);
+
+    if (result.canceled || !result.filePath) {
+      return { success: false, cancelled: true };
+    }
+
+    try {
+      const buffer = payload.bytes instanceof Uint8Array
+        ? Buffer.from(payload.bytes)
+        : Buffer.from(new Uint8Array(payload.bytes));
+      await fs.writeFile(result.filePath, buffer);
+      return { success: true, filePath: result.filePath, fileName: path.basename(result.filePath) };
+    } catch (err) {
+      logger.main.error('[DocumentSync] export-to-file write failed:', err);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 }

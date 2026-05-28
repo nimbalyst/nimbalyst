@@ -199,13 +199,47 @@ describe('ClaudeCodeTranscriptAdapter', () => {
   });
 
   describe('processChunk: session_id capture', () => {
-    it('returns session_id from assistant chunk', () => {
+    it('returns session_id from system init chunk (authoritative source)', () => {
+      const items = adapter.processChunk({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'lead-session-abc',
+      });
+      expect(items!.find(i => i.kind === 'session_id')).toEqual({ kind: 'session_id', id: 'lead-session-abc' });
+    });
+
+    it('returns session_id from assistant chunk when not from a sub-agent', () => {
       const items = adapter.processChunk({
         type: 'assistant',
         session_id: 'sdk-session-123',
         message: { content: [] },
       });
       expect(items!.find(i => i.kind === 'session_id')).toEqual({ kind: 'session_id', id: 'sdk-session-123' });
+    });
+
+    it('does NOT emit session_id from a sub-agent assistant chunk (parent_tool_use_id set)', () => {
+      // NIM-671: When the agent uses Task/Agent to spawn a sub-agent, the SDK
+      // relays the sub-agent's assistant chunks with parent_tool_use_id set
+      // and the sub-agent's own session_id. Capturing that as the lead's
+      // session_id corrupts resume on the next turn.
+      const items = adapter.processChunk({
+        type: 'assistant',
+        session_id: 'subagent-session-xyz',
+        parent_tool_use_id: 'tool-task-1',
+        message: { content: [{ type: 'text', text: 'sub-agent output' }] },
+      });
+      expect(items!.find(i => i.kind === 'session_id')).toBeUndefined();
+    });
+
+    it('does NOT emit session_id from a result chunk', () => {
+      // Result chunks may carry the sub-agent's session_id when a sub-agent
+      // finishes. Only the system init frame is authoritative for the lead.
+      const items = adapter.processChunk({
+        type: 'result',
+        session_id: 'maybe-subagent-session',
+        subtype: 'success',
+      });
+      expect(items!.find(i => i.kind === 'session_id')).toBeUndefined();
     });
   });
 

@@ -640,6 +640,38 @@ async function installFromGitHubCloneSource(
 }
 
 /**
+ * Remove the given aiProvider ids from the ai-settings store. Used when an
+ * extension is uninstalled so its contributed provider entries (enabled,
+ * models, testStatus...) don't linger and re-populate the Settings UI on
+ * the next boot. Broadcasts `ai-settings:changed` so open renderer windows
+ * refresh their atoms.
+ */
+async function pruneAiSettingsProviders(providerIds: string[]): Promise<void> {
+  if (providerIds.length === 0) return;
+  const { default: Store } = await import('electron-store');
+  const aiStore = new Store<Record<string, unknown>>({ name: 'ai-settings' });
+  const providerSettings = (aiStore.get('providerSettings', {}) as Record<string, unknown>) ?? {};
+  const removed: string[] = [];
+  for (const id of providerIds) {
+    if (id in providerSettings) {
+      delete providerSettings[id];
+      removed.push(id);
+    }
+  }
+  if (removed.length > 0) {
+    aiStore.set('providerSettings', providerSettings);
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send('ai-settings:changed', {
+          providerIds: removed,
+          apiKeyNames: [],
+        });
+      }
+    }
+  }
+}
+
+/**
  * Uninstall a marketplace-installed extension.
  */
 async function uninstallExtension(extensionId: string): Promise<InstallResult> {
@@ -655,6 +687,45 @@ async function uninstallExtension(extensionId: string): Promise<InstallResult> {
       return { success: false, error: `Extension ${extensionId} was not installed via marketplace` };
     }
 
+    // BEFORE removing the directory, read the manifest to learn which AI
+    // providers the extension contributed. We need this list to garbage-
+    // collect the matching keys from ai-settings.providerSettings -- without
+    // this step, the user's stored enabled/models choices persist on disk
+    // forever and the renderer SettingsSidebar keeps rendering ghost provider
+    // rows on the next boot even though no extension is registered.
+    //
+    // Read both `aiProviders` and `aiAgentProviders`. The agent-provider
+    // contribution shape proposed in the Agent-Providers-as-Extensions design
+    // doc uses `aiAgentProviders`, while a future chat-only contribution may
+    // reuse the older `aiProviders` name. Reading both keeps the GC working
+    // across the rename without a follow-up patch when either lands. An
+    // extension that declares both (e.g., for a transitional period) is
+    // handled idempotently downstream because the prune loop skips ids that
+    // are not in providerSettings.
+    let contributedAiProviderIds: string[] = [];
+    try {
+      const manifestPath = path.join(installPath, 'manifest.json');
+      const manifestRaw = await fs.readFile(manifestPath, 'utf8');
+      const manifest = JSON.parse(manifestRaw) as {
+        contributions?: {
+          aiProviders?: Array<{ id?: string }>;
+          aiAgentProviders?: Array<{ id?: string }>;
+        };
+      };
+      const collected = [
+        ...(manifest.contributions?.aiProviders ?? []),
+        ...(manifest.contributions?.aiAgentProviders ?? []),
+      ];
+      contributedAiProviderIds = collected
+        .map((p) => p?.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    } catch (err) {
+      logger.main.warn(
+        `[ExtMarketplace] Could not read manifest for ${extensionId} ` +
+        `before uninstall; skipping ai-settings cleanup: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     // Remove the extension directory
     try {
       await fs.rm(installPath, { recursive: true, force: true });
@@ -668,6 +739,24 @@ async function uninstallExtension(extensionId: string): Promise<InstallResult> {
     // Re-register file types and notify renderer (with unload)
     await initializeExtensionFileTypes();
     notifyExtensionUnloaded(extensionId);
+
+    // Garbage-collect provider entries the uninstalled extension contributed
+    // to ai-settings. Done AFTER notifyExtensionUnloaded so the renderer's
+    // ProviderRegistry.unregister fires before the broadcast that follows.
+    if (contributedAiProviderIds.length > 0) {
+      try {
+        await pruneAiSettingsProviders(contributedAiProviderIds);
+        logger.main.info(
+          `[ExtMarketplace] Pruned ${contributedAiProviderIds.length} aiProvider entry(ies) ` +
+          `from ai-settings for ${extensionId}: ${contributedAiProviderIds.join(', ')}`,
+        );
+      } catch (err) {
+        logger.main.warn(
+          `[ExtMarketplace] Failed to prune ai-settings for ${extensionId}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
 
     logger.main.info(`[ExtMarketplace] Successfully uninstalled ${extensionId}`);
     return { success: true, extensionId };

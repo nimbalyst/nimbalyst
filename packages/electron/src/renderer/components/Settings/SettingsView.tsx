@@ -26,6 +26,7 @@ import { SharedLinksPanel } from '../GlobalSettings/panels/SharedLinksPanel';
 import { ProjectPermissionsPanel } from './panels/ProjectPermissionsPanel';
 import { ProviderOverrideWrapper } from './panels/ProviderOverrideWrapper';
 import { InstalledExtensionsPanel } from './panels/InstalledExtensionsPanel';
+import { PrivilegedExtensionsPanel } from './panels/PrivilegedExtensionsPanel';
 import { ThemesPanel } from './panels/ThemesPanel';
 import { TeamPanel } from './panels/TeamPanel';
 import { TrackerConfigPanel } from './panels/TrackerConfigPanel';
@@ -564,6 +565,8 @@ export function SettingsView({
             workspacePath={workspacePath ?? undefined}
           />
         );
+      case 'privileged-extensions':
+        return <PrivilegedExtensionsPanel workspacePath={workspacePath ?? undefined} />;
       case 'mcp-servers':
         return (
           <>

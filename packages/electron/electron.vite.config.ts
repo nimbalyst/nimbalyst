@@ -154,7 +154,14 @@ export default defineConfig({
       rollupOptions: {
         input: {
           // Use bootstrap.ts as entry point to handle user-data-dir before any imports
-          index: resolve(__dirname, 'src/main/bootstrap.ts')
+          index: resolve(__dirname, 'src/main/bootstrap.ts'),
+          // Backend bootstrap for privileged extension modules. Loaded by
+          // utilityProcess.fork() and worker_threads.Worker() at runtime;
+          // it MUST be a standalone entry, not pulled into the main chunk.
+          extensionBackendBootstrap: resolve(
+            __dirname,
+            'src/main/extensions/extensionBackendBootstrap.ts'
+          )
         },
         external: [
           '@anthropic-ai/claude-agent-sdk', // Exclude from bundle - loaded dynamically at runtime

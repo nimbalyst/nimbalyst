@@ -502,6 +502,56 @@ interface ElectronAPI {
     devUnload: (extensionId: string) => Promise<{ success: boolean; error?: string }>;
     onDevReload: (callback: (data: { extensionId: string; extensionPath: string }) => void) => () => void;
     onDevUnload: (callback: (data: { extensionId: string }) => void) => () => void;
+
+    permissions: {
+      listDescriptors: () => Promise<Array<{
+        id: string;
+        label: string;
+        description: string;
+        risk: 'low' | 'elevated' | 'high';
+      }>>;
+      listEffective: (workspacePath?: string) => Promise<Array<PermissionGrantRow>>;
+      listAtScope: (scope: 'workspace' | 'global', workspacePath?: string) => Promise<Array<PermissionGrantRow>>;
+      listEnabledModules: (workspacePath?: string) => Promise<Array<{
+        extensionId: string;
+        moduleId: string;
+        scopes: Array<'workspace' | 'global'>;
+      }>>;
+      isModuleEnabled: (args: {
+        extensionId: string;
+        moduleId: string;
+        declaredPermissions: string[];
+        workspacePath?: string;
+      }) => Promise<boolean>;
+      grantModule: (args: {
+        extensionId: string;
+        moduleId: string;
+        permissions: string[];
+        scope: 'workspace' | 'global';
+        workspacePath?: string;
+      }) => Promise<{ success: boolean; grants: Array<PermissionGrantRow> }>;
+      revokeModule: (args: {
+        extensionId: string;
+        moduleId: string;
+        scope: 'workspace' | 'global';
+        workspacePath: string;
+      }) => Promise<{ success: boolean; removedRows: number }>;
+      handleUninstall: (args: { extensionId: string; workspacePath?: string }) => Promise<{ success: boolean }>;
+      listHostState: () => Promise<Array<ModuleHandleRow>>;
+      usageSummary: () => Promise<Array<UsageSummaryRow>>;
+      usageEventsForModule: (args: { extensionId: string; moduleId: string }) => Promise<Array<UsageEventRow>>;
+      usageEventsAll: () => Promise<Array<UsageEventRow>>;
+      onStateChanged: (callback: (handle: ModuleHandleRow) => void) => () => void;
+      onPromptRaised: (
+        callback: (request: PermissionPromptRequestRow) => void
+      ) => () => void;
+      onPromptResolved: (callback: (data: { promptId: string }) => void) => () => void;
+      resolvePrompt: (
+        promptId: string,
+        resolution: { decision: 'enable-workspace' | 'enable-global' | 'not-now' }
+      ) => void;
+      listPendingPrompts: () => Promise<Array<PermissionPromptRequestRow>>;
+    };
   };
 
   // Claude Code API
@@ -1078,6 +1128,58 @@ interface InstalledExtension {
   manifest: any;
   name: string;
   enabled: boolean;
+}
+
+// Privileged-capability permission types (Phase 4)
+interface PermissionGrantRow {
+  extensionId: string;
+  moduleId: string;
+  permissionId: string;
+  scope: 'workspace' | 'global';
+  workspacePath?: string;
+  grantedAt: number;
+  grantedBy: 'user';
+  permissionVersion: number;
+}
+
+interface ModuleHandleRow {
+  extensionId: string;
+  moduleId: string;
+  workspacePath: string;
+  state: unknown;
+}
+
+interface UsageSummaryRow {
+  extensionId: string;
+  moduleId: string;
+  permissionId: string;
+  total: number;
+  allowed: number;
+  denied: number;
+  lastAt?: number;
+}
+
+interface UsageEventRow {
+  extensionId: string;
+  moduleId: string;
+  permissionId: string;
+  timestamp: number;
+  outcome: 'allowed' | 'denied';
+  method?: string;
+}
+
+interface PermissionPromptRequestRow {
+  id: string;
+  extensionId: string;
+  extensionName: string;
+  moduleId: string;
+  purpose: string;
+  declaredPermissions: string[];
+  workspacePath: string;
+  reason:
+    | { kind: 'first-use' }
+    | { kind: 're-prompt-update'; addedPermissions: string[]; existingScopes: Array<'workspace' | 'global'> };
+  raisedAt: number;
 }
 
 interface Window {

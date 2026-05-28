@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { $isHeadingNode } from '@lexical/rich-text';
 import { $getRoot } from 'lexical';
 import {
@@ -36,6 +36,9 @@ import { FilePathBreadcrumb } from '../common/FilePathBreadcrumb';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
 import type { ShareDialogData } from '../../dialogs';
 import { useLocalFileSharedDocLink } from '../../hooks/useCollabLocalOrigin';
+import { sharedDocumentsAtom, pendingCollabDocumentAtom } from '../../store/atoms/collabDocuments';
+import { setWindowModeAtom } from '../../store/atoms/windowMode';
+import { getCollabNodeName, getCollabParentPath, normalizeCollabPath } from '../CollabMode/collabTree';
 
 // Built-in tracker types that support full-document mode
 const TRACKER_TYPES: TrackerTypeInfo[] = [
@@ -190,6 +193,49 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   const setShowActionsMenu = actionsMenu.setIsOpen;
   const sharedDocMenu = useFloatingMenu({ placement: 'bottom-end' });
   const sharedDocLink = useLocalFileSharedDocLink(workspaceId ?? '', filePath);
+  const sharedDocuments = useAtomValue(sharedDocumentsAtom);
+  const setWindowMode = useSetAtom(setWindowModeAtom);
+  const setPendingCollabDoc = useSetAtom(pendingCollabDocumentAtom);
+
+  // Look up the shared document by id so we can show its name + folder
+  const sharedDocument = useMemo(() => {
+    const id = sharedDocLink.binding?.documentId;
+    if (!id) return null;
+    return sharedDocuments.find((doc) => doc.documentId === id) ?? null;
+  }, [sharedDocLink.binding?.documentId, sharedDocuments]);
+
+  const sharedDocNameAndFolder = useMemo(() => {
+    if (sharedDocument?.title) {
+      const normalized = normalizeCollabPath(sharedDocument.title);
+      return {
+        name: getCollabNodeName(normalized) || sharedDocument.title,
+        folder: getCollabParentPath(normalized),
+      };
+    }
+    // Fall back to the local source basename if the shared-docs index hasn't loaded yet
+    if (sharedDocLink.binding?.sourceBasename) {
+      return { name: sharedDocLink.binding.sourceBasename, folder: null };
+    }
+    return null;
+  }, [sharedDocument, sharedDocLink.binding?.sourceBasename]);
+
+  const handleOpenSharedDoc = useCallback(() => {
+    const documentId = sharedDocLink.binding?.documentId;
+    if (!documentId) return;
+    setWindowMode('collab');
+    setPendingCollabDoc({
+      documentId,
+      documentType: sharedDocument?.documentType ?? sharedDocLink.binding?.documentType,
+    });
+    sharedDocMenu.setIsOpen(false);
+  }, [
+    sharedDocLink.binding?.documentId,
+    sharedDocLink.binding?.documentType,
+    sharedDocument?.documentType,
+    setWindowMode,
+    setPendingCollabDoc,
+    sharedDocMenu,
+  ]);
 
   // Dev mode check
   const isDevMode = import.meta.env.DEV;
@@ -748,6 +794,29 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
                       Shared to team on {formatSharedTimestamp(sharedDocLink.binding.createdAt)}
                     </div>
                   </div>
+                  {sharedDocNameAndFolder && (
+                    <button
+                      className="shared-doc-open-link dropdown-item w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-start gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
+                      onClick={handleOpenSharedDoc}
+                      title="Open shared document"
+                    >
+                      <svg className="w-4 h-4 mt-[2px] opacity-70 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <polyline points="15 3 21 3 21 9" />
+                        <line x1="10" y1="14" x2="21" y2="3" />
+                      </svg>
+                      <div className="min-w-0 flex-1 flex flex-col leading-tight">
+                        <span className="shared-doc-open-link-name truncate text-[var(--nim-text)]">
+                          {sharedDocNameAndFolder.name}
+                        </span>
+                        {sharedDocNameAndFolder.folder && (
+                          <sub className="shared-doc-open-link-folder text-[11px] text-[var(--nim-text-faint)] truncate not-italic align-baseline mt-0.5">
+                            {sharedDocNameAndFolder.folder}
+                          </sub>
+                        )}
+                      </div>
+                    </button>
+                  )}
                   <button
                     className="dropdown-item w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
                     disabled={sharedDocLink.busyAction !== null}

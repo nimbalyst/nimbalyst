@@ -38,6 +38,7 @@ import { GlobalHistoryDialog } from './components/HistoryDialog';
 // NOTE: WindowsClaudeCodeWarning now managed by DialogProvider
 // NOTE: ErrorDialog now managed by DialogProvider
 import { ErrorToastContainer } from './components/ErrorToast/ErrorToast';
+import { ExtensionPermissionPrompt } from './components/ExtensionPermissions/ExtensionPermissionPrompt';
 import { errorNotificationService } from './services/ErrorNotificationService';
 // NOTE: ProjectSelectionDialog now managed by DialogProvider
 // NOTE: UnifiedOnboarding now managed by DialogProvider
@@ -103,6 +104,7 @@ import { initMcpListeners } from './store/listeners/mcpListeners';
 import { initMenuCommandListeners } from './store/listeners/menuCommandListeners';
 import { initNetworkAvailabilityListeners } from './store/listeners/networkAvailabilityListeners';
 import { initNotificationListeners } from './store/listeners/notificationListeners';
+import { initExtensionPermissionListeners } from './store/listeners/extensionPermissionListeners';
 import { initPermissionListeners } from './store/listeners/permissionListeners';
 import { initSoundListeners } from './store/listeners/soundListeners';
 import { initStytchAuthListeners } from './store/listeners/stytchAuthListeners';
@@ -293,6 +295,7 @@ export default function App() {
     const cleanupMcp = initMcpListeners();
     const cleanupMenuCommand = initMenuCommandListeners();
     const cleanupNotification = initNotificationListeners();
+    const cleanupExtensionPermission = initExtensionPermissionListeners();
     const cleanupPermission = initPermissionListeners();
     const cleanupSound = initSoundListeners();
     const cleanupStytchAuth = initStytchAuthListeners();
@@ -316,6 +319,7 @@ export default function App() {
       cleanupMcp?.();
       cleanupMenuCommand?.();
       cleanupNotification?.();
+      cleanupExtensionPermission?.();
       cleanupPermission?.();
       cleanupSound?.();
       cleanupStytchAuth?.();
@@ -2304,6 +2308,7 @@ export default function App() {
       <ErrorToastContainer />
       <MockupPickerMenuHost />
       <ExtensionHostComponents />
+      <ExtensionPermissionPrompt />
       <UpdateToast />
       <ProjectTrustToast
         workspacePath={workspacePath}

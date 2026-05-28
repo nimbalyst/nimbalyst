@@ -31,7 +31,7 @@ import {
   addSessionFullAtom,
   type SessionMeta,
 } from '../../store';
-import { alphaFeatureEnabledAtom, worktreesFeatureAvailableAtom } from '../../store/atoms/appSettings';
+import { alphaFeatureEnabledAtom } from '../../store/atoms/appSettings';
 import { worktreeDisplayNameUpdateAtom } from '../../store/atoms/worktrees';
 import { blitzCreatedAtom, blitzDisplayNameUpdateAtom } from '../../store/atoms/blitz';
 import { superLoopListAtom, upsertSuperLoopAtom, removeSuperLoopAtom } from '../../store/atoms/superLoop';
@@ -241,9 +241,11 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
   const removeSessionFromAtom = useSetAtom(removeSessionFullAtom);
 
-  const isWorktreesAvailable = useAtomValue(worktreesFeatureAvailableAtom);
   const isSuperLoopsAlphaEnabled = useAtomValue(alphaFeatureEnabledAtom('super-loops'));
-  const isSuperLoopsAvailable = isWorktreesAvailable && isSuperLoopsAlphaEnabled;
+  // Super Loops is gated by its alpha feature alone (like Meta Agent), not by
+  // developer mode. The worktree it creates still requires a git repo, which is
+  // enforced on the New Super Loop button (disabled when !isGitRepo).
+  const isSuperLoopsAvailable = isSuperLoopsAlphaEnabled;
   const isMetaAgentEnabled = useAtomValue(alphaFeatureEnabledAtom('meta-agent'));
 
   // === Super Loop state ===
@@ -1902,7 +1904,18 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
 
   // Handle new button click - if only one option available, trigger it directly
   const handleNewButtonClick = () => {
-    const availableOptions = [onNewSession, onNewWorktreeSession, onNewBlitz, onNewTerminal].filter(Boolean);
+    // Count the atom-gated alpha items (Meta Agent, Super Loop) alongside the
+    // prop callbacks so enabling an alpha feature opens the dropdown instead of
+    // firing New Session directly. Without this, standard mode never shows the
+    // menu even when alpha options are available.
+    const availableOptions = [
+      onNewSession,
+      onNewWorktreeSession,
+      onNewBlitz,
+      onNewTerminal,
+      isSuperLoopsAvailable || null,
+      isMetaAgentEnabled || null,
+    ].filter(Boolean);
     if (availableOptions.length === 1) {
       // Only one option available, trigger it directly
       if (onNewSession) onNewSession();

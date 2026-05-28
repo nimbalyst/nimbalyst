@@ -713,6 +713,16 @@ export const aiTools = [
         const newElements = [...currentElements, ...excalidrawElements];
         console.log('[import_mermaid] Updating scene with', newElements.length, 'total elements');
 
+        // Register the image blob(s) Mermaid produced before adding the elements
+        // that reference them. The rendered diagram is an image element whose
+        // data lives in `files`; updateScene does not accept files, so without
+        // addFiles the fileId resolves to nothing and the element renders as a
+        // broken thumbnail (#428).
+        const importedFiles = Object.values(files);
+        if (importedFiles.length > 0) {
+          api.addFiles(importedFiles);
+        }
+
         api.updateScene({
           elements: newElements,
         });

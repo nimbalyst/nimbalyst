@@ -6,13 +6,14 @@ Welcome to the Nimbalyst Extension SDK. This documentation will help you build e
 
 Extensions can add:
 
-- **Custom Editors** - New ways to view and edit file types (spreadsheets, diagrams, 3D models)
+- **Custom Editors** - New ways to view and edit file types (spreadsheets, diagrams, 3D models), including collaborative shared documents via `CollabContentAdapter`
 - **AI Tools** - Tools that Claude can use to interact with your extension
 - **AI Completions** - Call chat models (Claude, OpenAI, LM Studio) directly from your extension
 - **Slash Commands** - Commands users can invoke from the editor
 - **Markdown and Transcript Integrations** - Extend the built-in markdown editor and AI transcript renderer
 - **File Icons** - Custom icons for file types in the sidebar
 - **New File Types** - Add entries to the "New File" menu
+- **Backend Modules** - Run isolated, permission-gated code in a worker thread or utility process (kernels, language servers, indexers). The permissions and consent flow are still evolving — see [permissions.md](./permissions.md).
 
 ## Quick Links
 
@@ -22,6 +23,7 @@ Extensions can add:
 | [custom-editors.md](./custom-editors.md) | Build editors for new file types |
 | [ai-tools.md](./ai-tools.md) | Add tools that Claude can use |
 | [contribution-points.md](./contribution-points.md) | Extend the built-in markdown editor and transcript renderer |
+| [permissions.md](./permissions.md) | Backend modules, the granular permission catalog, and the consent flow (evolving) |
 | [manifest-reference.md](./manifest-reference.md) | Complete manifest.json schema |
 | [api-reference.md](./api-reference.md) | TypeScript types and interfaces |
 

@@ -50,6 +50,7 @@ export type {
   SettingsPanelProps,
   ExtensionStorage,
   ExtensionFileStorage,
+  ExtensionDataAccess,
   ExecOptions,
   ExecResult,
   // Theme types

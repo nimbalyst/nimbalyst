@@ -117,7 +117,16 @@ If omitted, the extension defaults to enabled.
 
 ## Permissions
 
-Declare the capabilities your extension needs:
+> The permission system is **evolving**. The legacy
+> `permissions: { filesystem, ai, network }` object governs renderer-side
+> capabilities and is gradually being folded into a granular id catalog that
+> also drives [backend modules](#backendmodules). Expect the manifest shape
+> for permissions to change in upcoming versions.
+
+### Renderer-side capabilities
+
+Declare what your renderer-side code (React components, slash command
+handlers, AI tool handlers) needs:
 
 ```json
 "permissions": {
@@ -127,13 +136,28 @@ Declare the capabilities your extension needs:
 }
 ```
 
-Available permissions:
-
 | Permission | Description |
 | --- | --- |
 | `filesystem` | Read and write files through extension services |
 | `ai` | Register AI tools, context providers, and call AI chat/completion models directly (`listModels`, `chatCompletion`, `chatCompletionStream`) |
 | `network` | Reserved for network-enabled extensions |
+
+### Granular permissions for brokered host services
+
+A second `permissions.catalog` array declares host-brokered capabilities used
+by both renderer-side code (e.g., `host.data.query()`) and backend modules
+(when they call back into the host). Catalog ids:
+
+- `workspace-files`
+- `nimbalyst-database-read`
+- `nimbalyst-database-write`
+- `secrets-read`
+- `mcp-server-register`
+
+Backend modules declare their additional brokered permissions on the module
+contribution itself (`contributions.backendModules[].permissions`). See
+[permissions.md](./permissions.md) for the full catalog, the backend-module
+allowlist, and the consent flow.
 
 ## Contributions
 
@@ -387,6 +411,58 @@ Register selectable themes contributed by your extension.
   }
 ]
 ```
+
+### `backendModules`
+
+Declare isolated runtimes for code that needs to spawn processes, hit the
+network, or otherwise reach beyond what the renderer can do. Each module is
+loaded into a `utility-process` or `worker-thread` and stays inert until the
+user grants it.
+
+Granting a backend module is itself the consent to run native code locally;
+the consent prompt says so explicitly. The `permissions` array on the module
+declares **additional** host-brokered capabilities (database, secrets, etc.)
+beyond ambient Node access. It may be empty.
+
+Only allowlisted extensions can ship backend modules. Built-in extensions
+qualify automatically; marketplace extensions must be on the curated list in
+`packages/electron/src/main/extensions/backendModuleAllowlist.ts`; locally
+dev-installed extensions require `NIMBALYST_ALLOW_DEV_BACKEND_MODULES=1` and
+a non-packaged build. See [permissions.md](./permissions.md) for the full
+policy.
+
+```json
+"backendModules": [
+  {
+    "id": "jupyter-runtime",
+    "entry": "dist/backend/jupyter.js",
+    "runtime": "utility-process",
+    "permissions": [
+      "workspace-files"
+    ],
+    "enablement": {
+      "default": "disabled",
+      "promptOn": "firstUse",
+      "purpose": "Run Jupyter kernels and execute notebook cells locally."
+    }
+  }
+]
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | `string` | Unique within the extension. Lowercase, `[a-z0-9._-]`, max 64 chars |
+| `entry` | `string` | Relative path to a compiled JS file. No `/` or `..` segments |
+| `runtime` | `"utility-process"` \| `"worker-thread"` | OS-isolated process vs. in-process worker thread |
+| `permissions` | `string[]` | Granular permission ids from the [permission catalog](./permissions.md#granular-permission-catalog). Non-empty |
+| `enablement.default` | `"disabled"` | Required value -- privileged code is always opt-in |
+| `enablement.promptOn` | `"firstUse"` | Defer the consent prompt until the user invokes the capability |
+| `enablement.purpose` | `string` | Shown verbatim in the consent prompt. Max 280 chars |
+
+An extension may declare at most **8** backend modules.
+
+See [permissions.md](./permissions.md) for the full permission catalog, the
+consent flow, runtime choice guidance, and build-time validation rules.
 
 ### `nodes`, `transformers`, `lexicalExtensions`, and `hostComponents`
 

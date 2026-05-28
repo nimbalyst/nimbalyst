@@ -116,6 +116,7 @@ import { registerCodexUsageHandlers } from './ipc/CodexUsageHandlers';
 import { codexUsageService } from './services/CodexUsageService';
 import { codexAuthService } from './services/CodexAuthService';
 import { registerExtensionHandlers, getClaudePluginPaths, initializeExtensionFileTypes } from './ipc/ExtensionHandlers';
+import { registerExtensionPermissionHandlers } from './ipc/ExtensionPermissionHandlers';
 import { getAgentWorkflowService } from './services/AgentWorkflowService';
 import { queueMarketplaceInstallRequest, registerExtensionMarketplaceHandlers, runExtensionAutoUpdate } from './ipc/ExtensionMarketplaceHandlers';
 import { getRegisteredExtensions } from './extensions/RegisteredFileTypes';
@@ -150,6 +151,7 @@ import { windowStates, windows, resolveActiveWorkspacePath } from './window/wind
 import { getRecentItems } from './utils/store';
 import { registerOrgKeyHandlers, getOrgKey } from './services/OrgKeyService';
 import { registerDocumentSyncHandlers } from './ipc/DocumentSyncHandlers';
+import { registerBuiltinCollabContentAdapters } from './services/collabContentAdapterRegistration';
 import { registerCollabV3TestHandlers } from './ipc/CollabV3TestHandlers';
 import { getPermissionService } from './services/PermissionService';
 import { ClaudeSettingsManager } from './services/ClaudeSettingsManager';
@@ -1394,6 +1396,7 @@ app.whenReady().then(async () => {
 
     registerTeamHandlers();
     registerOrgKeyHandlers();
+    registerBuiltinCollabContentAdapters();
     registerDocumentSyncHandlers();
     registerCollabV3TestHandlers();
     markEnd('ipc-handlers');
@@ -1853,6 +1856,7 @@ app.whenReady().then(async () => {
     registerMockupHandlers();
     registerDataModelHandlers();
     registerExtensionHandlers();
+    registerExtensionPermissionHandlers();
     registerExtensionMarketplaceHandlers();
     registerOffscreenEditorHandlers();
 

@@ -30,6 +30,7 @@ import {
 import type { TrackerItem, TrackerItemChangeEvent } from '@nimbalyst/runtime';
 import { trackerItemToRecord, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { trackerSyncConfigChangeAtom, trackerSyncRejectionAtom, type TrackerSyncRejectionCode } from '../atoms/trackerSync';
+import { activeWorkspacePathAtom } from '../atoms/openProjects';
 
 /** Auto-clear delay for transient rotation locks. Matches the typical
  *  team rotation window -- by 30s the org-wide write freeze should have
@@ -235,6 +236,20 @@ export function initTrackerSyncListeners(): () => void {
           void loadAllTrackerItems();
         })
       );
+
+      // Refetch when the user switches projects in the multi-project rail.
+      // Without this, `currentWorkspacePath` stays pinned to the startup
+      // workspace and the panel keeps showing the wrong project's items
+      // (see GitHub #441). The IPC handlers resolve to the window's active
+      // workspace, so a plain refetch after updating the filter is enough.
+      const unsubscribeActivePath = store.sub(activeWorkspacePathAtom, () => {
+        if (disposed) return;
+        const nextPath = store.get(activeWorkspacePathAtom);
+        if (!nextPath || nextPath === currentWorkspacePath) return;
+        currentWorkspacePath = nextPath;
+        void loadAllTrackerItems();
+      });
+      cleanups.push(unsubscribeActivePath);
     })
     .catch(() => {
       currentWorkspacePath = null;

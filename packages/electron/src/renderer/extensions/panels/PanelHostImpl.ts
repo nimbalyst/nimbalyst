@@ -5,7 +5,7 @@
  * Handles communication between panels and the host application.
  */
 
-import type { PanelHost, PanelAIContext, ExtensionStorage, ExtensionFileStorage, ExecOptions, ExecResult } from '@nimbalyst/runtime';
+import type { PanelHost, PanelAIContext, ExtensionStorage, ExtensionFileStorage, ExtensionDataAccess, ExecOptions, ExecResult } from '@nimbalyst/runtime';
 import { ExtensionFileStorageImpl } from './ExtensionFileStorageImpl';
 
 // ============================================================================
@@ -73,6 +73,23 @@ class PanelAIContextImpl implements PanelAIContext {
 }
 
 // ============================================================================
+// Data Access Implementation
+// ============================================================================
+
+function createExtensionDataAccess(extensionId: string): ExtensionDataAccess {
+  return {
+    async query<T = unknown>(sql: string, params?: unknown[]): Promise<T[]> {
+      const result = await window.electronAPI.invoke('extension:database:query', {
+        extensionId,
+        sql,
+        params,
+      });
+      return (result as { rows: T[] }).rows;
+    },
+  };
+}
+
+// ============================================================================
 // Panel Host Implementation
 // ============================================================================
 
@@ -83,6 +100,7 @@ class PanelHostImpl implements PanelHost {
   readonly ai?: PanelAIContext;
   readonly storage: ExtensionStorage;
   readonly files: ExtensionFileStorage;
+  readonly data: ExtensionDataAccess;
 
   private _theme: string;
   private _isSettingsOpen = false;
@@ -101,6 +119,7 @@ class PanelHostImpl implements PanelHost {
     this.workspacePath = options.workspacePath;
     this.storage = options.storage;
     this.files = new ExtensionFileStorageImpl(options.extensionId, options.workspacePath);
+    this.data = createExtensionDataAccess(options.extensionId);
 
     this.onOpenFile = options.onOpenFile;
     this.onOpenPanel = options.onOpenPanel;

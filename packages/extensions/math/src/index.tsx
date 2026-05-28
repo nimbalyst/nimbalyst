@@ -7,8 +7,16 @@
 
 import './styles.css';
 
+import {
+  $getSelection,
+  $isRangeSelection,
+  $insertNodes,
+} from 'lexical';
+
 import { TranscriptMathHost } from './TranscriptMathHost';
 import {
+  $createMathBlockNode,
+  $createMathInlineNode,
   BLOCK_MATH_TRANSFORMER,
   INLINE_MATH_TRANSFORMER,
   MathLexicalExtension,
@@ -34,4 +42,19 @@ export const lexicalExtensions = {
 
 export const hostComponents = {
   TranscriptMathHost,
+};
+
+// Slash command handlers run inside an editor command listener context,
+// so the Lexical `$` helpers operate on the active editor.
+export const slashCommandHandlers = {
+  insertInlineMath: () => {
+    const selection = $getSelection();
+    if (!$isRangeSelection(selection)) return;
+    $insertNodes([$createMathInlineNode('x')]);
+  },
+  insertBlockMath: () => {
+    const selection = $getSelection();
+    if (!$isRangeSelection(selection)) return;
+    $insertNodes([$createMathBlockNode('x = y', '$$')]);
+  },
 };
