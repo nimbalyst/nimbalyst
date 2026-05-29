@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Claude Opus 4.8 (`claude-opus-4-8`) is available in the Claude model picker.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

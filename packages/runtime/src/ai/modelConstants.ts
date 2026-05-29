@@ -12,6 +12,15 @@ export interface ModelDefinition {
 
 export const CLAUDE_MODELS: ModelDefinition[] = [
   {
+    id: 'claude-opus-4-8',
+    displayName: 'Claude Opus 4.8 (1M)',
+    shortName: 'Opus 4.8',
+    maxTokens: 8192,
+    // Opus 4.8 uses the 1M context window natively — no beta header required
+    // (unlike Opus 4.6 which needed `context-1m-2025-08-07`).
+    contextWindow: 1000000,
+  },
+  {
     id: 'claude-opus-4-7',
     displayName: 'Claude Opus 4.7 (1M)',
     shortName: 'Opus 4.7',
