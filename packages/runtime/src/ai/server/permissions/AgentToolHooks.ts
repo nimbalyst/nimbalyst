@@ -323,31 +323,19 @@ export class AgentToolHooks {
    * inside Nimbalyst.
    *
    * Behaviour:
-   * - Only re-prompts when the session is in `auto` mode and the classifier
-   *   was the source of the denial (`reason_type === 'classifier'`).
+   * - Only re-prompts when the session is in `auto` mode.
    * - Shows the regular ToolPermission widget with the classifier reason as
    *   a warning so the user knows why the model flagged the call.
    * - If the user approves, returns `retry: true` so the SDK re-runs the
    *   original tool call; if the user denies (or aborts), returns `{}` and
    *   the SDK's original denial stands.
    *
-   * Outside auto mode (or when the deny source is not the classifier) we
-   * return `{}` so deny rules, `dontAsk` mode, and headless auto-deny keep
-   * their existing terminal behaviour.
+   * Outside auto mode we return `{}` so deny rules, `dontAsk` mode, and
+   * headless auto-deny keep their existing terminal behaviour.
    */
   createPermissionDeniedHook() {
     return async (input: any, _toolUseID: string | undefined, options: { signal: AbortSignal }) => {
       if (this.getCurrentMode?.() !== 'auto') {
-        return {};
-      }
-
-      // Only re-prompt when the SDK explicitly flags the classifier as the
-      // source. A missing/undefined `reason_type` is treated as non-classifier
-      // (e.g. SDK deny rule, dontAsk mode, headless auto-deny that omit it)
-      // so deny rules and explicit denies keep their terminal behaviour
-      // instead of being silently re-prompted.
-      const reasonType = input.reason_type as string | undefined;
-      if (reasonType !== 'classifier') {
         return {};
       }
 
@@ -370,9 +358,8 @@ export class AgentToolHooks {
         ? [`Auto-mode classifier flagged this call: ${classifierReason}`]
         : ['Auto-mode classifier requested user approval before running this tool.'];
 
-      this.logSecurity('[PermissionDenied] Auto-mode classifier denied tool, re-prompting user:', {
+      this.logSecurity('[PermissionDenied] Auto-mode denied tool, re-prompting user:', {
         toolName,
-        reasonType,
         classifierReason,
       });
 

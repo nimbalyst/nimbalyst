@@ -72,8 +72,11 @@ describe('resolveImmediateToolDecision', () => {
       assertZodCompliantAllow(result);
     });
 
-    it('bypass-all mode returns updatedInput', async () => {
-      const deps = createDeps({ trustChecker: vi.fn().mockReturnValue({ trusted: true, mode: 'bypass-all' }) });
+    it('bypass-all mode returns updatedInput (non-auto mode)', async () => {
+      const deps = createDeps({
+        trustChecker: vi.fn().mockReturnValue({ trusted: true, mode: 'bypass-all' }),
+        getCurrentMode: () => 'agent',
+      });
       const params = createParams({ toolName: 'Bash' });
       const result = await resolveImmediateToolDecision(deps, params);
       assertZodCompliantAllow(result);
@@ -189,8 +192,14 @@ describe('resolveImmediateToolDecision', () => {
       assertZodCompliantAllow(result);
     });
 
-    it('does NOT auto-approve Bash in auto mode (classifier handles Bash)', async () => {
-      const deps = createDeps({ getCurrentMode: () => 'auto' });
+    it('does NOT auto-approve Bash in auto mode even with bypass-all trust', async () => {
+      // Auto mode only activates under bypass-all in production. When the
+      // classifier escalates a Bash call (uncertain/risky), bypass-all must
+      // NOT short-circuit — the escalation should reach the permission prompt.
+      const deps = createDeps({
+        getCurrentMode: () => 'auto',
+        trustChecker: vi.fn().mockReturnValue({ trusted: true, mode: 'bypass-all' }),
+      });
       const params = createParams({ toolName: 'Bash', input: { command: 'rm -rf /' } });
       const result = await resolveImmediateToolDecision(deps, params);
       expect(result).toBeNull();

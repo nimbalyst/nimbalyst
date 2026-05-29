@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Auto mode: PermissionDenied hook now always re-prompts the user when the SDK classifier denies a tool call (was silently swallowed due to checking a non-existent `reason_type` field). (#371)
+- Auto mode: classifier-escalated tool calls no longer bypass-all silently; escalations now reach the permission prompt so the user decides on uncertain/destructive ops. (#371)
 - Codex session-naming reminder no longer leaks into the chat transcript; its turn output is tagged so the transcript hides it. (#420)
 
 ### Removed
