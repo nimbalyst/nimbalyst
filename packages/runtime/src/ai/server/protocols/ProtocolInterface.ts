@@ -100,8 +100,8 @@ export interface ProtocolMessage {
   /** Session ID for logging and tracking */
   sessionId?: string;
 
-  /** AI mode when message was sent ('planning' or 'agent') */
-  mode?: 'planning' | 'agent';
+  /** AI mode when message was sent ('planning' or 'agent' or 'auto') */
+  mode?: 'planning' | 'agent' | 'auto';
 }
 
 /**

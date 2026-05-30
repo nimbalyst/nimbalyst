@@ -72,8 +72,11 @@ describe('resolveImmediateToolDecision', () => {
       assertZodCompliantAllow(result);
     });
 
-    it('bypass-all mode returns updatedInput', async () => {
-      const deps = createDeps({ trustChecker: vi.fn().mockReturnValue({ trusted: true, mode: 'bypass-all' }) });
+    it('bypass-all mode returns updatedInput (non-auto mode)', async () => {
+      const deps = createDeps({
+        trustChecker: vi.fn().mockReturnValue({ trusted: true, mode: 'bypass-all' }),
+        getCurrentMode: () => 'agent',
+      });
       const params = createParams({ toolName: 'Bash' });
       const result = await resolveImmediateToolDecision(deps, params);
       assertZodCompliantAllow(result);
@@ -159,15 +162,45 @@ describe('resolveImmediateToolDecision', () => {
       });
     }
 
-    it('does NOT broaden to third-party MCP tools', async () => {
-      // The fix must keep the allowlist strictly nimbalyst-owned. A
-      // fabricated third-party MCP tool name must still fall through to
-      // the permission system.
-      const deps = createDeps({ internalMcpTools: INTERNAL_MCP_TOOLS as readonly string[] as string[] });
+    it('does NOT broaden to third-party MCP tools in non-auto modes', async () => {
+      const deps = createDeps({
+        internalMcpTools: INTERNAL_MCP_TOOLS as readonly string[] as string[],
+        getCurrentMode: () => 'agent',
+      });
       const params = createParams({
         toolName: 'mcp__some-third-party-server__do_something',
         input: { x: 1 },
       });
+      const result = await resolveImmediateToolDecision(deps, params);
+      expect(result).toBeNull();
+    });
+
+    it('auto-approves third-party MCP tools in auto mode', async () => {
+      const deps = createDeps({ getCurrentMode: () => 'auto' });
+      const params = createParams({
+        toolName: 'mcp__some-third-party-server__do_something',
+        input: { x: 1 },
+      });
+      const result = await resolveImmediateToolDecision(deps, params);
+      assertZodCompliantAllow(result);
+    });
+
+    it('auto-approves Skill tool in auto mode', async () => {
+      const deps = createDeps({ getCurrentMode: () => 'auto' });
+      const params = createParams({ toolName: 'Skill', input: { skill: 'commit' } });
+      const result = await resolveImmediateToolDecision(deps, params);
+      assertZodCompliantAllow(result);
+    });
+
+    it('does NOT auto-approve Bash in auto mode even with bypass-all trust', async () => {
+      // Auto mode only activates under bypass-all in production. When the
+      // classifier escalates a Bash call (uncertain/risky), bypass-all must
+      // NOT short-circuit — the escalation should reach the permission prompt.
+      const deps = createDeps({
+        getCurrentMode: () => 'auto',
+        trustChecker: vi.fn().mockReturnValue({ trusted: true, mode: 'bypass-all' }),
+      });
+      const params = createParams({ toolName: 'Bash', input: { command: 'rm -rf /' } });
       const result = await resolveImmediateToolDecision(deps, params);
       expect(result).toBeNull();
     });

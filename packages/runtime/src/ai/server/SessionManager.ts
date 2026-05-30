@@ -836,7 +836,7 @@ export class SessionManager {
     providerConfig?: any,
     model?: string,
     sessionType?: SessionType,
-    mode?: 'planning' | 'agent',
+    mode?: 'planning' | 'agent' | 'auto',
     worktreeId?: string,
     worktreePath?: string,
     worktreeProjectPath?: string,

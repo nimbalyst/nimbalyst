@@ -98,7 +98,7 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
             createdAt: msg.createdAt,
           });
         } else {
-          const mode = (msg.metadata?.mode as 'agent' | 'planning') ?? 'agent';
+          const mode = (msg.metadata?.mode as 'agent' | 'planning' | 'auto') ?? 'agent';
           descriptors.push({
             type: 'user_message',
             text: parsed.prompt,
@@ -262,6 +262,43 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
             createdAt: msg.createdAt,
           });
         }
+      } else if (parsed.type === 'system' && parsed.subtype === 'permission_denied') {
+        // SDK auto-denied a tool call WITHOUT showing an interactive prompt.
+        // Sources: SDK deny rule, `dontAsk` mode, headless-agent auto-deny,
+        // or (rarely) the auto-mode classifier on something it is confident
+        // should be blocked. Note: the common auto-mode path for destructive
+        // tools is escalation to the normal permission prompt via
+        // can_use_tool, NOT this deny short-circuit -- those still surface as
+        // an interactive_prompt event, not here. We render this so the user
+        // sees why a tool was blocked instead of only an is_error tool_result.
+        // See @anthropic-ai/claude-agent-sdk
+        // SDKPermissionDeniedMessage.
+        const deniedToolName: string =
+          typeof parsed.tool_name === 'string' ? parsed.tool_name : 'unknown';
+        const deniedReason: string | undefined =
+          typeof parsed.decision_reason === 'string' ? parsed.decision_reason : undefined;
+        const deniedReasonType: string | undefined =
+          typeof parsed.decision_reason_type === 'string' ? parsed.decision_reason_type : undefined;
+        const deniedInput: Record<string, unknown> | undefined =
+          parsed.tool_input && typeof parsed.tool_input === 'object'
+            ? (parsed.tool_input as Record<string, unknown>)
+            : undefined;
+        const messageText: string =
+          typeof parsed.message === 'string'
+            ? parsed.message
+            : deniedReason
+              ? `${deniedToolName} was denied: ${deniedReason}`
+              : `${deniedToolName} was denied`;
+        descriptors.push({
+          type: 'system_message',
+          text: messageText,
+          systemType: 'permission_denied',
+          deniedToolName,
+          ...(deniedReason ? { deniedReason } : {}),
+          ...(deniedReasonType ? { deniedReasonType } : {}),
+          ...(deniedInput ? { deniedInput } : {}),
+          createdAt: msg.createdAt,
+        });
       } else if (parsed.type === 'error' && parsed.error) {
         const errorContent =
           typeof parsed.error === 'string' ? parsed.error : JSON.stringify(parsed.error);

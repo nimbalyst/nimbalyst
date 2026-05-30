@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude Opus 4.8 is now selectable in the Claude provider (1M context, dateless ID `claude-opus-4-8`) and is the default Claude model for new installs. (#473)
 - Claude Code variants `opus-4-7` and `opus-4-7-1m` pinned to Opus 4.7 so it stays selectable after the canonical `opus` alias was bumped to 4.8. (#473)
 <!-- New features go here -->
+- Claude Code sessions use the SDK's `permissionMode: 'auto'` classifier when workspace trust is "Allow All"; safe operations run silently, uncertain ones prompt the user. (#379)
 
 ### Changed
 <!-- Changes to existing functionality go here -->

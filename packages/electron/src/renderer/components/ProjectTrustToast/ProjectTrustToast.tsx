@@ -520,6 +520,20 @@ export const ProjectTrustToast: React.FC<ProjectTrustToastProps> = ({
                   </svg>
                   <span>Best for development and testing workflows</span>
                 </li>
+                <li
+                  className="flex items-start gap-2 text-[13px] leading-relaxed text-nim-muted"
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    className="shrink-0 mt-0.5 text-nim-primary"
+                  >
+                    <path d="M13.5 4.5l-7 7-4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  <span>For supported models (Claude Code), an AI classifier reviews each operation and prompts only for destructive or uncertain ones</span>
+                </li>
               </ul>
             </>
           )}

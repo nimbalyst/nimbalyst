@@ -13,7 +13,7 @@ import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
 import { DEFAULT_EFFORT_LEVEL } from '../../effortLevels';
 
-type SessionMode = 'planning' | 'agent' | undefined;
+type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
 
 type SDKUserMessage = {
   type: 'user';
@@ -25,7 +25,11 @@ export interface BuildSdkOptionsDeps {
   resolveModelVariant: () => string;
   mcpConfigService: { getMcpServersConfig: (params: { sessionId?: string; workspacePath: string }) => Promise<Record<string, any>> };
   createCanUseToolHandler: (sessionId?: string, workspacePath?: string, permissionsPath?: string) => any;
-  toolHooksService: { createPreToolUseHook: () => any; createPostToolUseHook: () => any };
+  toolHooksService: {
+    createPreToolUseHook: () => any;
+    createPostToolUseHook: () => any;
+    createPermissionDeniedHook: () => any;
+  };
   teammateManager: {
     lastUsedCwd?: string | undefined;
     lastUsedSessionId?: string | undefined;
@@ -117,6 +121,26 @@ export function createPersistentPromptStream(
   };
 }
 
+/**
+ * Resolve the SDK `permissionMode` from the session mode.
+ *
+ * - `planning` -> `plan` (SDK enforces read-only planning, scoped to plan file)
+ * - `auto` -> `auto` (SDK classifier approves safe ops silently and escalates
+ *   destructive or uncertain ones through `canUseTool` to the regular
+ *   permission prompt; silent auto-deny only fires for SDK-level deny rules
+ *   or `dontAsk` mode, not as the classifier's default response to risky tools)
+ * - everything else (incl. `agent` and `undefined`) -> `default`
+ *
+ * See issue #371 and @anthropic-ai/claude-agent-sdk PermissionMode.
+ */
+export function resolvePermissionMode(
+  currentMode: SessionMode
+): 'plan' | 'auto' | 'default' {
+  if (currentMode === 'planning') return 'plan';
+  if (currentMode === 'auto') return 'auto';
+  return 'default';
+}
+
 export async function buildSdkOptions(
   deps: BuildSdkOptionsDeps,
   params: BuildSdkOptionsParams
@@ -192,7 +216,16 @@ export async function buildSdkOptions(
     // IMPORTANT: Do NOT add manual tool restrictions or prompt injections for plan mode here.
     // The SDK's `permissionMode: 'plan'` natively enforces planning restrictions (scopes
     // Write to the plan file only). Manual filtering was removed in favour of this approach.
-    permissionMode: currentMode === 'planning' ? 'plan' : 'default',
+    //
+    // `permissionMode: 'auto'` delegates decisions to the SDK's classifier. The
+    // classifier approves safe operations silently and ESCALATES destructive or
+    // uncertain ones to `canUseTool` (which renders the normal permission prompt
+    // for the user). It does not silently deny destructive tools by default --
+    // silent auto-deny is reserved for SDK-level deny rules / dontAsk mode.
+    // Because escalation still hits `canUseTool`, Nimbalyst's workspace rules
+    // (allow-all / bypass-all in immediateToolDecision.ts) continue to apply on
+    // the escalation path.
+    permissionMode: resolvePermissionMode(currentMode),
     // When plan tracking is enabled, direct plan files to the project's plans folder
     // (relative to cwd). This applies whenever the agent enters plan mode, even mid-session.
     settings: {
@@ -202,11 +235,20 @@ export async function buildSdkOptions(
     hooks: {
       'PreToolUse': [{ hooks: [toolHooksService.createPreToolUseHook()] }],
       'PostToolUse': [{ hooks: [toolHooksService.createPostToolUseHook()] }],
+      // PermissionDenied fires when the SDK denies a tool call without
+      // escalating through canUseTool (auto-mode classifier confident deny,
+      // headless auto-deny, deny rules, dontAsk mode). In auto-mode sessions
+      // we mirror the Claude Code CLI behaviour and re-prompt the user
+      // instead of leaving the call dead -- returning `retry: true` from the
+      // hook causes the SDK to re-run the original tool call.
+      'PermissionDenied': [{ hooks: [toolHooksService.createPermissionDeniedHook()] }],
     },
   };
 
   if (currentMode === 'planning') {
     console.log('[CLAUDE-CODE] Plan mode active: delegating tool restrictions to SDK permissionMode=plan');
+  } else if (currentMode === 'auto') {
+    console.log('[CLAUDE-CODE] Auto mode active: SDK classifier handling permission decisions');
   }
 
   // Capture lead config for teammate spawning

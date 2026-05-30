@@ -32,8 +32,8 @@ export interface DocumentContext {
   textSelection?: string;  // Just the selected text (filePath is already on document context)
   textSelectionTimestamp?: number | null;  // For staleness detection
 
-  // AI mode at time of message submission (planning vs agent)
-  mode?: 'planning' | 'agent';
+  // AI mode at time of message submission (planning vs agent vs auto)
+  mode?: 'planning' | 'agent' | 'auto';
 
   // Worktree context (for isolated AI coding sessions)
   worktreeId?: string;  // ID of the associated worktree
@@ -100,7 +100,7 @@ export interface Message {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
   timestamp: number;
-  mode?: 'planning' | 'agent';  // AI mode when message was sent (user messages only)
+  mode?: 'planning' | 'agent' | 'auto';  // AI mode when message was sent (user messages only)
   // Additional fields for rich message types
   edits?: unknown[];
   toolCall?: ToolCall;
@@ -236,7 +236,7 @@ export interface AIModel {
 /** Structural type describing what role a session plays in the hierarchy */
 export type SessionType = 'session' | 'workstream' | 'blitz' | 'voice';
 
-export type SessionMode = 'planning' | 'agent';
+export type SessionMode = 'planning' | 'agent' | 'auto';
 
 export type AgentRole = 'standard' | 'meta-agent';
 

@@ -32,7 +32,7 @@ export interface TranscriptViewMessage {
   createdAt: Date;
   type: TranscriptEventType;
   text?: string;
-  mode?: 'agent' | 'planning';
+  mode?: 'agent' | 'planning' | 'auto';
   attachments?: UserMessagePayload['attachments'];
   toolCall?: {
     toolName: string;

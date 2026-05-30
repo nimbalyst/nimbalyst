@@ -911,7 +911,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       } catch (error) {
         console.error('[SessionTranscript] Failed to update session mode:', error);
         // Revert local state since persistence failed
-        setAiMode(aiMode);
+        setAiMode(aiMode as AIMode);
         // Show error to user
         const errorMessage = makeOptimisticError('Failed to switch to planning mode. Please try again.');
         updateSessionStore({
@@ -2112,7 +2112,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
               ? "Type your message... (Enter to send, Shift+Enter for new line, @ for files, @@ for sessions, / for commands)"
               : "Type your message... (Enter to send, Shift+Enter for new line, @ for files, @@ for sessions, / for commands)"
         }
-        mode={aiMode}
+        mode={aiMode as AIMode}
         onModeChange={handleAIModeChange}
         currentModel={currentModel}
         onModelChange={handleModelChange}
