@@ -228,6 +228,16 @@ export type TurnEndedEvent = TypedTranscriptEvent<'turn_ended'>;
 
 export interface ITranscriptEventStore {
   insertEvent(event: Omit<TranscriptEvent, 'id'>): Promise<TranscriptEvent>;
+  /**
+   * Batch-insert canonical events. Used by `TranscriptTransformer` during the
+   * bulk lazy-migration path where the per-event IPC round-trip of
+   * `insertEvent` dominates wall-clock time. Implementations should do this in
+   * a single transaction. The returned array preserves input order; ids are
+   * assigned by the underlying store. Optional so existing test stores keep
+   * working without modification — the transformer falls back to a sequential
+   * `insertEvent` loop when this is not implemented.
+   */
+  insertEvents?(events: Array<Omit<TranscriptEvent, 'id'>>): Promise<TranscriptEvent[]>;
   updateEventPayload(id: number, payload: Record<string, unknown>): Promise<void>;
   /** Merge partial payload fields into an existing event's payload via JSONB || operator */
   mergeEventPayload(id: number, partialPayload: Record<string, unknown>): Promise<void>;

@@ -1,0 +1,184 @@
+/**
+ * InlineTipDisplay
+ *
+ * Always renders a tip in the empty panel of a new AI session. Cycles
+ * through every defined tip (priority-sorted) -- dismissed/completed state
+ * is recorded for analytics but does NOT remove a tip from rotation.
+ *
+ * Lifecycle:
+ *  - On mount, picks the highest-priority tip if no tip is currently active.
+ *  - Dismiss / action / Next all advance to the next tip in rotation so
+ *    the inline slot is never empty while a new-session panel is open.
+ *
+ * Footer controls:
+ *  - "Next" cycles forward.
+ *  - "All tips" opens a dialog listing every tip; selecting one promotes
+ *    it into the active slot.
+ *
+ * Note: `emptyTranscriptVisibleCountAtom` is still incremented while mounted
+ * so the dormant TipProvider eval loop (kept for the floating-card surface)
+ * stays aware of inline surfaces.
+ */
+
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAtom, useSetAtom } from 'jotai';
+import { usePostHog } from 'posthog-js/react';
+import { TipCard } from './TipCard';
+import { tips } from './definitions';
+import { markTipCompleted, markTipDismissed, recordTipShown } from './TipService';
+import { activeTipIdAtom, emptyTranscriptVisibleCountAtom } from './atoms';
+import { AllTipsDialog } from './AllTipsDialog';
+
+const orderedTips = [...tips].sort(
+  (a, b) => (b.trigger.priority ?? 0) - (a.trigger.priority ?? 0)
+);
+
+function nextTipAfter(tipId: string | null) {
+  if (orderedTips.length === 0) return null;
+  if (!tipId) return orderedTips[0];
+  const idx = orderedTips.findIndex((t) => t.id === tipId);
+  if (idx < 0) return orderedTips[0];
+  return orderedTips[(idx + 1) % orderedTips.length];
+}
+
+export function InlineTipDisplay() {
+  const posthog = usePostHog();
+  const [activeTipId, setActiveTipId] = useAtom(activeTipIdAtom);
+  const setVisibleCount = useSetAtom(emptyTranscriptVisibleCountAtom);
+  const [showAllTipsDialog, setShowAllTipsDialog] = useState(false);
+
+  // Register this surface so TipProvider knows it exists (the eval loop is
+  // a no-op while activeTipId is set, but we still maintain the count).
+  useEffect(() => {
+    setVisibleCount((n) => n + 1);
+    return () => setVisibleCount((n) => Math.max(0, n - 1));
+  }, [setVisibleCount]);
+
+  // Ensure a tip is always selected while this surface is mounted.
+  useEffect(() => {
+    if (activeTipId) return;
+    if (orderedTips.length === 0) return;
+    const first = orderedTips[0];
+    setActiveTipId(first.id);
+    recordTipShown(first.id, first.version);
+  }, [activeTipId, setActiveTipId]);
+
+  const activeTip = useMemo(() => {
+    if (!activeTipId) return null;
+    return orderedTips.find((t) => t.id === activeTipId) ?? null;
+  }, [activeTipId]);
+
+  const advance = useCallback(
+    (eventName: string, extra?: Record<string, unknown>) => {
+      const next = nextTipAfter(activeTip?.id ?? null);
+      if (!next) return;
+      if (activeTip && extra) {
+        posthog?.capture(eventName, {
+          from_tip_id: activeTip.id,
+          to_tip_id: next.id,
+          surface: 'inline_empty_transcript',
+          ...extra,
+        });
+      }
+      setActiveTipId(next.id);
+      recordTipShown(next.id, next.version);
+    },
+    [activeTip, posthog, setActiveTipId]
+  );
+
+  const dismissTip = useCallback(() => {
+    if (!activeTip) return;
+    posthog?.capture('tip_dismissed', {
+      tip_id: activeTip.id,
+      tip_name: activeTip.name,
+      surface: 'inline_empty_transcript',
+    });
+    markTipDismissed(activeTip.id, activeTip.version);
+    advance('tip_navigated', { direction: 'next', reason: 'dismiss' });
+  }, [activeTip, posthog, advance]);
+
+  const handleAction = useCallback(() => {
+    if (!activeTip?.content.action) return;
+    posthog?.capture('tip_action_clicked', {
+      tip_id: activeTip.id,
+      tip_name: activeTip.name,
+      action_label: activeTip.content.action.label,
+      surface: 'inline_empty_transcript',
+    });
+    activeTip.content.action.onClick();
+    markTipCompleted(activeTip.id, activeTip.version);
+    advance('tip_navigated', { direction: 'next', reason: 'action' });
+  }, [activeTip, posthog, advance]);
+
+  const handleSecondaryAction = useCallback(() => {
+    if (!activeTip?.content.secondaryAction) return;
+    posthog?.capture('tip_action_clicked', {
+      tip_id: activeTip.id,
+      tip_name: activeTip.name,
+      action_label: activeTip.content.secondaryAction.label,
+      action_type: 'secondary',
+      surface: 'inline_empty_transcript',
+    });
+    activeTip.content.secondaryAction.onClick();
+  }, [activeTip, posthog]);
+
+  const handleNext = useCallback(() => {
+    if (orderedTips.length <= 1) return;
+    advance('tip_navigated', { direction: 'next', reason: 'next_button' });
+  }, [advance]);
+
+  const handleOpenAllTips = useCallback(() => {
+    posthog?.capture('tip_all_tips_opened', {
+      from_tip_id: activeTip?.id ?? null,
+      surface: 'inline_empty_transcript',
+    });
+    setShowAllTipsDialog(true);
+  }, [activeTip, posthog]);
+
+  if (!activeTip) return null;
+
+  const footerExtras = (
+    <>
+      {orderedTips.length > 1 && (
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 px-2.5 py-1 text-[12.5px] text-[var(--nim-text-muted)] bg-transparent border border-[var(--nim-border)] rounded-md cursor-pointer transition-all duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+          onClick={handleNext}
+          aria-label="Next tip"
+          title="Next tip"
+        >
+          Next
+          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M9 6l6 6-6 6" />
+          </svg>
+        </button>
+      )}
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 px-2.5 py-1 text-[12.5px] text-[var(--nim-text-muted)] bg-transparent border border-[var(--nim-border)] rounded-md cursor-pointer transition-all duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+        onClick={handleOpenAllTips}
+        aria-label="Show all tips"
+        title="Show all tips"
+      >
+        All tips
+      </button>
+    </>
+  );
+
+  return (
+    <>
+      <TipCard
+        tip={activeTip}
+        onDismiss={dismissTip}
+        onAction={handleAction}
+        onSecondaryAction={activeTip.content.secondaryAction ? handleSecondaryAction : undefined}
+        variant="inline"
+        inlineFooterExtras={footerExtras}
+      />
+      <AllTipsDialog
+        isOpen={showAllTipsDialog}
+        onClose={() => setShowAllTipsDialog(false)}
+      />
+    </>
+  );
+}

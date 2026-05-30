@@ -141,7 +141,28 @@ export default defineConfig({
       // The main process reads it from the actual runtime environment via process.env.
       // This allows crystal-run.sh to set it at runtime without affecting normal dev mode.
     },
-    plugins: [resolveWorkspaceSubpaths()],
+    plugins: [
+      resolveWorkspaceSubpaths(),
+      {
+        name: 'copy-sqlite-schemas',
+        // Use options.dir so this works regardless of the active outDir
+        // (e.g. `out/main` for `npm run dev` and `out2/main` for
+        // `npm run dev:user2`). Hard-coding `out/main` here broke user2.
+        writeBundle(options: { dir?: string }) {
+          const srcDir = resolve(__dirname, 'src/main/database/sqlite/schemas');
+          const outMainDir = options.dir
+            ? resolve(options.dir)
+            : resolve(__dirname, 'out/main');
+          const destDir = resolve(outMainDir, 'sqlite/schemas');
+          if (!fs.existsSync(srcDir)) return;
+          fs.mkdirSync(destDir, { recursive: true });
+          for (const f of fs.readdirSync(srcDir)) {
+            if (!f.endsWith('.sql')) continue;
+            fs.copyFileSync(resolve(srcDir, f), resolve(destDir, f));
+          }
+        },
+      },
+    ],
     resolve: {
       alias: {
         // Always use src for bundling - simpler than dealing with ESM/CJS issues

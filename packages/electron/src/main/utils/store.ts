@@ -1926,17 +1926,17 @@ export function shouldShowWalkthrough(walkthroughId: string, version?: number): 
   // Globally disabled
   if (!state.enabled) return false;
 
-  // Already completed or dismissed
-  if (state.completed.includes(walkthroughId)) return false;
-  if (state.dismissed.includes(walkthroughId)) return false;
-
-  // If version is specified and a different version was shown, allow re-showing
+  // Newer versions should re-show even if the previous version was dismissed
+  // or completed. History tracks the last version the user saw.
   if (version !== undefined && state.history?.[walkthroughId]?.version !== undefined) {
     if (state.history[walkthroughId].version !== version) {
-      // New version - allow showing again
       return true;
     }
   }
+
+  // Already completed or dismissed
+  if (state.completed.includes(walkthroughId)) return false;
+  if (state.dismissed.includes(walkthroughId)) return false;
 
   return true;
 }

@@ -8,6 +8,7 @@
 import { ipcMain, BrowserWindow } from 'electron';
 import log from 'electron-log/main';
 import simpleGit from 'simple-git';
+import { FeatureUsageService, FEATURES } from '../services/FeatureUsageService';
 import { GitWorktreeService } from '../services/GitWorktreeService';
 import { WorktreeStore, createWorktreeStore } from '../services/WorktreeStore';
 import { createSuperLoopStore } from '../services/SuperLoopStore';
@@ -418,6 +419,7 @@ export function registerWorktreeHandlers(): void {
 
         // Track worktree creation
         const analyticsService = AnalyticsService.getInstance();
+        FeatureUsageService.getInstance().recordUsage(FEATURES.WORKTREE_CREATED);
         analyticsService.sendEvent('worktree_created', {
           duration_ms: totalDuration,
           retry_count: attempt - 1,

@@ -722,9 +722,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
           toolCall: {
             id: fileItem.id,
             // Use the SDK-transport tool name so the renderer's special-case
-            // routing in RichTranscriptView picks AsyncEditToolResultCard
-            // (which fetches diffs from session_files + history snapshots
-            // via getToolCallDiffs). The 'apply_patch' label would fall
+            // routing in RichTranscriptView picks the main-enriched file_change
+            // renderer. The 'apply_patch' label would fall
             // through to the generic EditToolResultCard path, which expects
             // {old_string,new_string} or {content} fields that the codex
             // change shape ({path, kind, diff}) does not provide.
@@ -846,9 +845,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
             toolCall: {
               id: fileItem.id,
               // Use the SDK-transport tool name so the renderer's special-case
-            // routing in RichTranscriptView picks AsyncEditToolResultCard
-            // (which fetches diffs from session_files + history snapshots
-            // via getToolCallDiffs). The 'apply_patch' label would fall
+            // routing in RichTranscriptView picks the main-enriched file_change
+            // renderer. The 'apply_patch' label would fall
             // through to the generic EditToolResultCard path, which expects
             // {old_string,new_string} or {content} fields that the codex
             // change shape ({path, kind, diff}) does not provide.

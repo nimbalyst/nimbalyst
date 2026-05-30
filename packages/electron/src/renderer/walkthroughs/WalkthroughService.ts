@@ -82,18 +82,18 @@ export function shouldShowWalkthrough(
   // Globally disabled
   if (!state.enabled) return false;
 
-  // Already completed or dismissed
-  if (state.completed.includes(walkthrough.id)) return false;
-  if (state.dismissed.includes(walkthrough.id)) return false;
-
-  // Check for version update (allow re-showing if version changed)
+  // Newer versions should re-show even if the previous version was dismissed
+  // or completed. History tracks the last version the user saw.
   if (walkthrough.version !== undefined) {
     const history = state.history?.[walkthrough.id];
     if (history?.version !== undefined && history.version !== walkthrough.version) {
-      // New version - allow showing again even if previously completed/dismissed
       return true;
     }
   }
+
+  // Already completed or dismissed
+  if (state.completed.includes(walkthrough.id)) return false;
+  if (state.dismissed.includes(walkthrough.id)) return false;
 
   // Check per-mode cooldown (prevents rapid-fire walkthroughs in same mode)
   if (currentMode && state.lastShownAtByMode?.[currentMode]) {

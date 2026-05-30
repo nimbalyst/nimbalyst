@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCollabTree,
+  filterCollabTree,
   getCollabDocumentPath,
   getCollabNodeName,
   getCollabParentPath,
@@ -93,5 +94,58 @@ describe('collabTree', () => {
   it('falls back to document id when title is empty', () => {
     const document = makeDocument('doc-123', '');
     expect(getCollabDocumentPath(document)).toBe('doc-123');
+  });
+
+  it('filters documents by query while preserving matching ancestors', () => {
+    const tree = buildCollabTree([
+      makeDocument('doc-1', 'Specs/API Spec'),
+      makeDocument('doc-2', 'Specs/Deprecated/Legacy Auth'),
+      makeDocument('doc-3', 'RFCs/Auth Redesign'),
+    ], []);
+
+    const filtered = filterCollabTree(tree, 'auth');
+
+    expect(filtered).toHaveLength(2);
+    expect(filtered[0]).toMatchObject({ type: 'folder', path: 'RFCs' });
+    expect(filtered[1]).toMatchObject({ type: 'folder', path: 'Specs' });
+
+    const specsFolder = filtered[1];
+    if (specsFolder.type !== 'folder') {
+      throw new Error('Expected folder');
+    }
+
+    expect(specsFolder.children).toHaveLength(1);
+    expect(specsFolder.children[0]).toMatchObject({
+      type: 'folder',
+      path: 'Specs/Deprecated',
+    });
+  });
+
+  it('keeps full folder contents when the folder path matches the query', () => {
+    const tree = buildCollabTree([
+      makeDocument('doc-1', 'Specs/API Spec'),
+      makeDocument('doc-2', 'Specs/Deprecated/Legacy Auth'),
+      makeDocument('doc-3', 'RFCs/Auth Redesign'),
+    ], []);
+
+    const filtered = filterCollabTree(tree, 'specs');
+
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]).toMatchObject({ type: 'folder', path: 'Specs' });
+
+    const specsFolder = filtered[0];
+    if (specsFolder.type !== 'folder') {
+      throw new Error('Expected folder');
+    }
+
+    expect(specsFolder.children).toHaveLength(2);
+    expect(specsFolder.children[0]).toMatchObject({
+      type: 'folder',
+      path: 'Specs/Deprecated',
+    });
+    expect(specsFolder.children[1]).toMatchObject({
+      type: 'document',
+      path: 'Specs/API Spec',
+    });
   });
 });

@@ -3,8 +3,8 @@
  *
  * Two adapters, one per documentType:
  *
- * - `mockup-html`     -> `.mockup.html` (Y.Text shape)
- * - `mockup-project`  -> `.mockupproject` (Y.Map<id, Y.Map> Pattern A)
+ * - `mockup.html`     -> `.mockup.html` (Y.Text shape)
+ * - `mockupproject`   -> `.mockupproject` (Y.Map<id, Y.Map> Pattern A)
  *
  * Both reuse the existing seed.ts helpers for read/write so the
  * adapter is a thin contract bridge and not a parallel
@@ -35,7 +35,7 @@ function decodeSource(source: string | Uint8Array): string {
 }
 
 export const MockupHtmlCollabContentAdapter: CollabContentAdapter = {
-  documentType: 'mockup-html',
+  documentType: 'mockup.html',
   fileExtensions: ['.mockup.html'],
   mimeType: 'text/html',
   layoutVersion: 1,
@@ -70,7 +70,7 @@ export const MockupHtmlCollabContentAdapter: CollabContentAdapter = {
 };
 
 export const MockupProjectCollabContentAdapter: CollabContentAdapter = {
-  documentType: 'mockup-project',
+  documentType: 'mockupproject',
   fileExtensions: ['.mockupproject'],
   mimeType: 'application/json',
   layoutVersion: 1,

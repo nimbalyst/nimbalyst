@@ -553,6 +553,34 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
     [handleEditClick],
   );
 
+  const handleSelectedEmbedPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!isSelected) return;
+      // Once the embed is selected, interactions inside its body should
+      // stay within the embedded editor. If this bubbles to Lexical, the
+      // host editor converts the NodeSelection back to a RangeSelection,
+      // reinstates the shield, and Monaco immediately loses focus.
+      event.stopPropagation();
+    },
+    [isSelected],
+  );
+
+  const handleSelectedEmbedMouseDown = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!isSelected) return;
+      event.stopPropagation();
+    },
+    [isSelected],
+  );
+
+  const handleSelectedEmbedClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!isSelected) return;
+      event.stopPropagation();
+    },
+    [isSelected],
+  );
+
   const frameStyle = useMemo<React.CSSProperties>(
     () => (widthPx ? { width: widthPx, maxWidth: '100%' } : {}),
     [widthPx],
@@ -628,6 +656,9 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
         ref={bodyRef}
         className="embed-frame__body"
         style={{ height: heightPx }}
+        onPointerDown={handleSelectedEmbedPointerDown}
+        onMouseDown={handleSelectedEmbedMouseDown}
+        onClick={handleSelectedEmbedClick}
         onDoubleClick={handleBodyDoubleClick}
       >
         {/* Editor wrapper establishes its own stacking context (via

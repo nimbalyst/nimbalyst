@@ -111,10 +111,23 @@ export const CollabHistoryDialog: React.FC<CollabHistoryDialogProps> = ({
 
   const handleRestore = useCallback(async () => {
     if (!controller || !selectedRevision || !controller.exportSnapshot || !controller.applySnapshot) return;
-    if (!isRestoreSafe(controller.getStatus())) return;
     setRestoring(true);
     setError(null);
     try {
+      if (!isRestoreSafe(controller.getStatus())) {
+        // If the controller can wait for pending writes (markdown + extension
+        // collab editors after the history fix), block on it and re-check.
+        // Older controllers without the method fall back to a silent dismiss
+        // -- the prior behavior before waitForPendingWrites existed -- so we
+        // don't surface a user-facing error against a code path that simply
+        // hasn't been upgraded.
+        if (!controller.waitForPendingWrites) return;
+        const settled = await controller.waitForPendingWrites(5_000);
+        if (!settled || !isRestoreSafe(controller.getStatus())) {
+          throw new Error('This document still has unsynced local changes. Wait for "Connected" before restoring.');
+        }
+      }
+
       // 1. Capture a restore-pre checkpoint from the current head.
       const currentSnapshot = await controller.exportSnapshot();
       const currentSnapshotBytes = currentSnapshot instanceof Uint8Array

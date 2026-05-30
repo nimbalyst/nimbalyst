@@ -189,6 +189,8 @@ export default function DropDown({
 }): JSX.Element {
   const [buttonElement, setButtonElement] = useState<HTMLButtonElement | null>(null);
   const [showDropDown, setShowDropDown] = useState(false);
+  const portalRoot =
+    (buttonElement?.closest('.nimbalyst-editor') as HTMLElement | null) ?? null;
   const handleClose = useCallback(() => {
     setShowDropDown(false);
     if (buttonElement) {
@@ -255,7 +257,7 @@ export default function DropDown({
 
       {showDropDown &&
         (
-          <FloatingPortal>
+          <FloatingPortal root={portalRoot}>
             <DropDownItems
               dropDownRef={setFloatingRef}
               onClose={handleClose}

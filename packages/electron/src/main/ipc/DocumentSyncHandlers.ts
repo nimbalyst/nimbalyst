@@ -39,6 +39,7 @@ import {
   recordLocalOriginShare,
   relinkLocalOriginBinding,
   reuploadFromLocalOrigin,
+  seedSharedDocumentFromContent,
 } from '../services/CollabLocalOriginService';
 import WebSocket from 'ws';
 
@@ -455,6 +456,20 @@ export function registerDocumentSyncHandlers(): void {
       };
     });
     return { success: true };
+  });
+
+  safeHandle('document-sync:seed-shared-document', async (_event, payload: {
+    workspacePath: string;
+    documentId: string;
+    documentType: string;
+    content: string;
+  }) => {
+    try {
+      const ok = await seedSharedDocumentFromContent(payload);
+      return { success: ok };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
   });
 
   safeHandle('document-sync:get-local-origin', async (_event, payload: {

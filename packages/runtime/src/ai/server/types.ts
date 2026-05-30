@@ -174,11 +174,11 @@ export function shouldBlockStartedSessionProviderSwitch(
  * Claude Code uses simplified variant names (opus, sonnet, haiku) instead of full model IDs.
  * These are ONLY valid for the claude-code provider.
  *
- * `opus-4-6` is a pinned-version variant retained after bumping the canonical
- * `opus` alias to 4.7, so users can still choose the previous generation.
- * See CLAUDE_CODE_PINNED_SDK_MODELS in modelConstants.ts.
+ * `opus-4-7` and `opus-4-6` are pinned-version variants retained after bumping
+ * the canonical `opus` alias to 4.8, so users can still choose previous
+ * generations. See CLAUDE_CODE_PINNED_SDK_MODELS in modelConstants.ts.
  */
-export const CLAUDE_CODE_VARIANTS = ['opus', 'opus-4-6', 'sonnet', 'haiku'] as const;
+export const CLAUDE_CODE_VARIANTS = ['opus', 'opus-4-7', 'opus-4-6', 'sonnet', 'haiku'] as const;
 
 /**
  * Resolves a configured model string to the SDK model value.

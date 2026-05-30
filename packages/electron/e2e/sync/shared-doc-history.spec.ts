@@ -41,7 +41,6 @@ test.describe.configure({ mode: 'serial' });
 const WRANGLER_PORT = 8794;
 const TEST_ORG_ID = 'e2e-doc-history-org';
 const TEST_USER_ID = 'e2e-doc-history-user';
-const DOC_ID = 'history-spec.md';
 const BOOTSTRAP_TEXT = 'Bootstrap-only line.';
 const MANUAL_ADDITION = 'Manual revision line.';
 
@@ -49,6 +48,7 @@ let electronApp: ElectronApplication;
 let page: Page;
 let workspaceDir: string;
 let encryptionKeyBase64: string;
+let docId: string;
 
 async function generateKeyBase64(): Promise<string> {
   const key = await webcrypto.subtle.generateKey(
@@ -85,7 +85,7 @@ async function openCollabMarkdown(page: Page, initialContent: string): Promise<v
       });
     },
     {
-      documentId: DOC_ID,
+      documentId: docId,
       content: initialContent,
       serverUrl: `ws://localhost:${WRANGLER_PORT}`,
       orgId: TEST_ORG_ID,
@@ -122,6 +122,7 @@ test.beforeAll(async ({}, testInfo) => {
 
   workspaceDir = await createTempWorkspace();
   encryptionKeyBase64 = await generateKeyBase64();
+  docId = `history-spec-${Date.now()}.md`;
 
   await startWrangler(WRANGLER_PORT);
 

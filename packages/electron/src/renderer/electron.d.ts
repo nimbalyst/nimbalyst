@@ -770,6 +770,15 @@ interface ElectronAPI {
       success: boolean;
       error?: string;
     }>;
+    seedSharedDocument: (
+      workspacePath: string,
+      documentId: string,
+      documentType: string,
+      content: string
+    ) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
     getLocalOrigin: (workspacePath: string, documentId: string) => Promise<{
       success: boolean;
       binding?: {

@@ -15,8 +15,8 @@ import { existsSync } from 'fs';
 import os from 'os';
 import { logger } from '../utils/logger';
 import { findWindowByWorkspace } from '../window/WindowManager';
-import { PGLiteDatabaseWorker, database } from '../database/PGLiteDatabaseWorker';
-import { DatabaseBackupService } from './database/DatabaseBackupService';
+import type { AppDatabase } from '../database/PGLiteDatabaseWorker';
+import { database } from '../database/PGLiteDatabaseWorker';
 import { encodeWorkspaceDir } from './ClaudeCodeSessionScanner';
 
 // Import store utilities - we'll need to access the underlying stores directly
@@ -68,9 +68,9 @@ export interface MoveResult {
  * If any step fails, rollback is performed to restore the original state.
  */
 export class ProjectMigrationService {
-  private dbWorker: PGLiteDatabaseWorker;
+  private dbWorker: AppDatabase;
 
-  constructor(dbWorker?: PGLiteDatabaseWorker) {
+  constructor(dbWorker?: AppDatabase) {
     this.dbWorker = dbWorker || database;
   }
 
@@ -151,10 +151,7 @@ export class ProjectMigrationService {
     try {
       // Step 1: Create database backup
       logger.main.info('[ProjectMigration] Creating database backup...');
-      const dbPath = path.join(app.getPath('userData'), 'pglite-db');
-      const backupService = new DatabaseBackupService(dbPath, this.dbWorker);
-      await backupService.initialize();
-      const backupResult = await backupService.createBackup();
+      const backupResult = await this.dbWorker.createBackup();
       if (!backupResult.success) {
         return { success: false, error: `Failed to create backup: ${backupResult.error}` };
       }
@@ -270,10 +267,7 @@ export class ProjectMigrationService {
     try {
       // Step 1: Create database backup
       logger.main.info('[ProjectMigration] Creating database backup...');
-      const dbPath = path.join(app.getPath('userData'), 'pglite-db');
-      const backupService = new DatabaseBackupService(dbPath, this.dbWorker);
-      await backupService.initialize();
-      const backupResult = await backupService.createBackup();
+      const backupResult = await this.dbWorker.createBackup();
       if (!backupResult.success) {
         return { success: false, error: `Failed to create backup: ${backupResult.error}` };
       }

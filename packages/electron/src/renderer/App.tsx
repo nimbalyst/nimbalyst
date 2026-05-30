@@ -2004,7 +2004,7 @@ export default function App() {
       }}
     />
     <WalkthroughProvider currentMode={activeMode}>
-    <TipProvider currentMode={activeMode}>
+    <TipProvider currentMode={activeMode} workspacePath={workspacePath || undefined}>
     <div data-layout="root-container" className="h-screen flex flex-row">
       {/* Far-left: project rail (Discord-style) — visible only when
           multi-project mode is enabled in settings. */}

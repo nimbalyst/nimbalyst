@@ -24,6 +24,8 @@ export interface CollabDocumentConfig {
   documentKey: CryptoKey;
   serverUrl: string;
   getJwt: () => Promise<string>;
+  /** Optional extra query appended to revision-history HTTP requests. */
+  urlExtraQuery?: string;
   userId: string;
   /** Human-readable display name (first+last from Stytch, falls back to email). */
   userName?: string;

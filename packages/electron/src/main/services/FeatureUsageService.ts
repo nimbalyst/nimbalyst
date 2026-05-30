@@ -1,13 +1,8 @@
 import Store from 'electron-store';
-
-/**
- * A single feature usage record with count and timestamps.
- */
-export interface FeatureUsageRecord {
-  count: number;
-  firstUsed: string;  // ISO timestamp
-  lastUsed: string;   // ISO timestamp
-}
+import {
+  FEATURE_USAGE_KEYS,
+  type FeatureUsageRecord,
+} from '../../shared/featureUsage';
 
 interface FeatureUsageStore {
   installDate: string;
@@ -33,22 +28,7 @@ function resolveInstallDate(): string {
  * Well-known feature keys. Extensible -- any string key works,
  * but these constants provide discoverability and typo prevention.
  */
-export const FEATURES = {
-  SESSION_CREATED: 'session_created',
-  SESSION_COMPLETED: 'session_completed',
-  SESSION_COMPLETED_WITH_TOOLS: 'session_completed_with_tools',
-  APP_LAUNCH: 'app_launch',
-  AI_PROMPT_SUBMITTED: 'ai_prompt_submitted',
-  EXCALIDRAW_OPENED: 'excalidraw_opened',
-  MOCKUP_OPENED: 'mockup_opened',
-  SPREADSHEET_OPENED: 'spreadsheet_opened',
-  DATAMODEL_OPENED: 'datamodel_opened',
-  TRACKER_USED: 'tracker_used',
-  THEME_CHANGED: 'theme_changed',
-  KEYBOARD_SHORTCUT_USED: 'keyboard_shortcut_used',
-  FILE_CREATED: 'file_created',
-  WORKTREE_CREATED: 'worktree_created',
-} as const;
+export const FEATURES = FEATURE_USAGE_KEYS;
 
 /**
  * Tracks feature usage counts with first/last timestamps.

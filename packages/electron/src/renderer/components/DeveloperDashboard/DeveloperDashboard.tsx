@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
+import { summarizeDatabaseQueryStats } from './dashboardStats';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,6 +43,21 @@ interface SampleSummary {
   blockedTotalMs: number;
 }
 
+interface IpcChannelStats {
+  channel: string;
+  callCount: number;
+  errorCount: number;
+  slowCount: number;
+  totalMs: number;
+  avgMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+  lastMs: number;
+  inFlight: number;
+  maxInFlight: number;
+}
+
 interface SystemStats {
   fileWatchers: {
     type: string;
@@ -60,6 +76,7 @@ interface SystemStats {
   };
   ipc: {
     registeredHandlers: number;
+    channelStats: IpcChannelStats[];
   };
   database: {
     queryStats: Record<string, { reads: SampleSummary; writes: SampleSummary }>;
@@ -161,9 +178,12 @@ function OverviewPanel({
   const rendererHeapTotalMB = perfMemory ? Math.round(perfMemory.jsHeapSizeLimit / 1024 / 1024) : null;
 
   // Database totals
-  const dbEntries = Object.entries(db.queryStats);
-  const totalDbReads = dbEntries.reduce((sum, [, s]) => sum + s.reads.count, 0);
-  const totalDbWrites = dbEntries.reduce((sum, [, s]) => sum + s.writes.count, 0);
+  const dbStats = summarizeDatabaseQueryStats(db.queryStats);
+  const totalDbReads = dbStats.totalReads;
+  const totalDbWrites = dbStats.totalWrites;
+  const totalIpcCalls = ipc.channelStats.reduce((sum, stat) => sum + stat.callCount, 0);
+  const totalSlowIpcCalls = ipc.channelStats.reduce((sum, stat) => sum + stat.slowCount, 0);
+  const hottestIpc = ipc.channelStats[0];
 
   return (
     <div className="flex flex-col gap-4 p-4 overflow-auto h-full">
@@ -174,13 +194,17 @@ function OverviewPanel({
         <StatCard label="Renderer Heap" value={rendererHeapMB != null ? `${rendererHeapMB} / ${rendererHeapTotalMB} MB` : 'N/A'} />
         <StatCard label="Active Handles" value={String(proc.activeHandles)} />
         <StatCard label="IPC Handlers" value={String(ipc.registeredHandlers)} />
+        <StatCard label="IPC Calls" value={String(totalIpcCalls)} />
+        <StatCard label="Slow IPC Calls" value={String(totalSlowIpcCalls)} />
         <StatCard label="Watcher Type" value={fileWatchers.type.replace('WorkspaceEventBus ', '').replace(/[()]/g, '')} />
         <StatCard label="Watched Workspaces" value={String(fileWatchers.activeWorkspaces)} />
         <StatCard label="Watcher Subscribers" value={String(fileWatchers.totalSubscribers)} />
         <StatCard label="Atom Families" value={`${nonEmptyFamilies} active / ${atomStats.length} total`} />
         <StatCard label="Atom Instances" value={String(totalInstances)} />
         <StatCard label="DB Queries (5m)" value={`${totalDbReads} R / ${totalDbWrites} W`} />
-        <StatCard label="DB Tables Active" value={String(dbEntries.length)} />
+        <StatCard label="DB Tables Active" value={String(dbStats.tableCount)} />
+        <StatCard label="Top IPC Channel" value={hottestIpc ? hottestIpc.channel : 'N/A'} />
+        <StatCard label="Top IPC p95" value={hottestIpc ? `${hottestIpc.p95Ms}ms` : 'N/A'} />
       </div>
 
       {/* Charts */}
@@ -280,7 +304,7 @@ function OverviewPanel({
       )}
 
       {/* Database query performance table */}
-      {dbEntries.length > 0 && (
+      {dbStats.legacyRows.length > 0 && (
         <div>
           <h3 className="text-sm font-medium text-[var(--nim-text)] mb-2">Database Query Performance (5m window)</h3>
           <div className="overflow-auto">
@@ -298,46 +322,123 @@ function OverviewPanel({
                 </tr>
               </thead>
               <tbody>
-                {dbEntries.sort(([a], [b]) => a.localeCompare(b)).flatMap(([table, stats]) => {
+                {dbStats.legacyRows.sort((a, b) => a.table.localeCompare(b.table)).flatMap(({ table, reads, writes }) => {
                   const rows: React.ReactElement[] = [];
-                  if (stats.reads.count > 0) {
+                  if (reads.count > 0) {
                     rows.push(
                       <tr key={`${table}-r`} className="border-b border-[var(--nim-border)] hover:bg-[var(--nim-surface-hover)]">
                         <td className="px-2 py-1 text-[var(--nim-text)]">{table}</td>
                         <td className="px-2 py-1 text-right text-[var(--nim-text-muted)]">R</td>
-                        <td className="px-2 py-1 text-right">{stats.reads.count}</td>
-                        <td className="px-2 py-1 text-right">{stats.reads.p50}ms</td>
-                        <td className="px-2 py-1 text-right">{stats.reads.p95}ms</td>
-                        <td className="px-2 py-1 text-right">{stats.reads.p99}ms</td>
+                        <td className="px-2 py-1 text-right">{reads.count}</td>
+                        <td className="px-2 py-1 text-right">{reads.p50}ms</td>
+                        <td className="px-2 py-1 text-right">{reads.p95}ms</td>
+                        <td className="px-2 py-1 text-right">{reads.p99}ms</td>
                         <td className="px-2 py-1 text-right">
-                          <span className={stats.reads.max > 100 ? 'text-[var(--nim-error)]' : ''}>{stats.reads.max}ms</span>
+                          <span className={reads.max > 100 ? 'text-[var(--nim-error)]' : ''}>{reads.max}ms</span>
                         </td>
                         <td className="px-2 py-1 text-right">
-                          {stats.reads.blockedP95 > 0 ? <span className="text-[var(--nim-warning)]">{stats.reads.blockedP95}ms</span> : '-'}
+                          {reads.blockedP95 > 0 ? <span className="text-[var(--nim-warning)]">{reads.blockedP95}ms</span> : '-'}
                         </td>
                       </tr>
                     );
                   }
-                  if (stats.writes.count > 0) {
+                  if (writes.count > 0) {
                     rows.push(
                       <tr key={`${table}-w`} className="border-b border-[var(--nim-border)] hover:bg-[var(--nim-surface-hover)]">
                         <td className="px-2 py-1 text-[var(--nim-text)]">{table}</td>
                         <td className="px-2 py-1 text-right text-[var(--nim-text-muted)]">W</td>
-                        <td className="px-2 py-1 text-right">{stats.writes.count}</td>
-                        <td className="px-2 py-1 text-right">{stats.writes.p50}ms</td>
-                        <td className="px-2 py-1 text-right">{stats.writes.p95}ms</td>
-                        <td className="px-2 py-1 text-right">{stats.writes.p99}ms</td>
+                        <td className="px-2 py-1 text-right">{writes.count}</td>
+                        <td className="px-2 py-1 text-right">{writes.p50}ms</td>
+                        <td className="px-2 py-1 text-right">{writes.p95}ms</td>
+                        <td className="px-2 py-1 text-right">{writes.p99}ms</td>
                         <td className="px-2 py-1 text-right">
-                          <span className={stats.writes.max > 100 ? 'text-[var(--nim-error)]' : ''}>{stats.writes.max}ms</span>
+                          <span className={writes.max > 100 ? 'text-[var(--nim-error)]' : ''}>{writes.max}ms</span>
                         </td>
                         <td className="px-2 py-1 text-right">
-                          {stats.writes.blockedP95 > 0 ? <span className="text-[var(--nim-warning)]">{stats.writes.blockedP95}ms</span> : '-'}
+                          {writes.blockedP95 > 0 ? <span className="text-[var(--nim-warning)]">{writes.blockedP95}ms</span> : '-'}
                         </td>
                       </tr>
                     );
                   }
                   return rows;
                 })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {dbStats.sqliteRows.length > 0 && (
+        <div>
+          <h3 className="text-sm font-medium text-[var(--nim-text)] mb-2">Database Query Activity (5m window)</h3>
+          <div className="overflow-auto">
+            <table className="w-full text-xs font-mono border-collapse">
+              <thead>
+                <tr className="text-left text-[var(--nim-text-muted)] border-b border-[var(--nim-border)]">
+                  <th className="px-2 py-1.5">Table</th>
+                  <th className="px-2 py-1.5 text-right">Reads</th>
+                  <th className="px-2 py-1.5 text-right">Writes</th>
+                  <th className="px-2 py-1.5 text-right">Total ms</th>
+                  <th className="px-2 py-1.5 text-right">p99</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dbStats.sqliteRows
+                  .sort((a, b) => a.table.localeCompare(b.table))
+                  .map((row) => (
+                    <tr key={row.table} className="border-b border-[var(--nim-border)] hover:bg-[var(--nim-surface-hover)]">
+                      <td className="px-2 py-1 text-[var(--nim-text)]">{row.table}</td>
+                      <td className="px-2 py-1 text-right">{row.reads}</td>
+                      <td className="px-2 py-1 text-right">{row.writes}</td>
+                      <td className="px-2 py-1 text-right">{row.totalMs}ms</td>
+                      <td className="px-2 py-1 text-right">{row.p99}ms</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {ipc.channelStats.length > 0 && (
+        <div>
+          <h3 className="text-sm font-medium text-[var(--nim-text)] mb-2">IPC Channels</h3>
+          <div className="overflow-auto">
+            <table className="w-full text-xs font-mono border-collapse">
+              <thead>
+                <tr className="text-left text-[var(--nim-text-muted)] border-b border-[var(--nim-border)]">
+                  <th className="px-2 py-1.5">Channel</th>
+                  <th className="px-2 py-1.5 text-right">Calls</th>
+                  <th className="px-2 py-1.5 text-right">Errors</th>
+                  <th className="px-2 py-1.5 text-right">Slow</th>
+                  <th className="px-2 py-1.5 text-right">Avg</th>
+                  <th className="px-2 py-1.5 text-right">p95</th>
+                  <th className="px-2 py-1.5 text-right">Max</th>
+                  <th className="px-2 py-1.5 text-right">Inflight</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ipc.channelStats.map((stat) => (
+                  <tr key={stat.channel} className="border-b border-[var(--nim-border)] hover:bg-[var(--nim-surface-hover)]">
+                    <td className="px-2 py-1 text-[var(--nim-text)]">{stat.channel}</td>
+                    <td className="px-2 py-1 text-right">{stat.callCount}</td>
+                    <td className="px-2 py-1 text-right">
+                      {stat.errorCount > 0 ? <span className="text-[var(--nim-error)]">{stat.errorCount}</span> : 0}
+                    </td>
+                    <td className="px-2 py-1 text-right">
+                      {stat.slowCount > 0 ? <span className="text-[var(--nim-warning)]">{stat.slowCount}</span> : 0}
+                    </td>
+                    <td className="px-2 py-1 text-right">{stat.avgMs}ms</td>
+                    <td className="px-2 py-1 text-right">{stat.p95Ms}ms</td>
+                    <td className="px-2 py-1 text-right">
+                      <span className={stat.maxMs > 100 ? 'text-[var(--nim-error)]' : ''}>{stat.maxMs}ms</span>
+                    </td>
+                    <td className="px-2 py-1 text-right">
+                      {stat.inFlight}
+                      {stat.maxInFlight > stat.inFlight ? ` / ${stat.maxInFlight}` : ''}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -568,9 +669,9 @@ export function DeveloperDashboard() {
         const nonEmptyFamilies = atoms.filter(s => s.count > 0).length;
         const totalInstances = atoms.reduce((sum, s) => sum + s.count, 0);
         const perfMem = (performance as any).memory;
-        const dbEntries = Object.values(sys.database.queryStats);
-        const dbReadCount = dbEntries.reduce((sum, s) => sum + s.reads.count, 0);
-        const dbWriteCount = dbEntries.reduce((sum, s) => sum + s.writes.count, 0);
+        const dbStats = summarizeDatabaseQueryStats(sys.database.queryStats);
+        const dbReadCount = dbStats.totalReads;
+        const dbWriteCount = dbStats.totalWrites;
 
         const point: TimeSeriesPoint = {
           time: formatTime(now),

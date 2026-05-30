@@ -75,7 +75,10 @@ export function registerCollabContentAdapter(
 export function getCollabContentAdapter(
   documentType: string,
 ): CollabContentAdapter | undefined {
-  return adaptersByDocumentType.get(documentType);
+  return (
+    adaptersByDocumentType.get(documentType) ??
+    adaptersByExtension.get(normalizeExtension(documentType))
+  );
 }
 
 export function getCollabContentAdapterForExtension(

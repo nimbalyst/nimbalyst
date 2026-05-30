@@ -23,6 +23,7 @@ import { createPGLiteQueuedPromptsStore, type QueuedPromptsStore } from './PGLit
 import { createPGLiteSessionWakeupsStore, type SessionWakeupsStore } from './PGLiteSessionWakeupsStore';
 import { createTranscriptEventStore } from './TranscriptEventStore';
 import { database } from '../database/PGLiteDatabaseWorker';
+import { createSQLiteStoreAdapter } from '../database/sqlite/SQLiteStoreAdapter';
 import { logger } from '../utils/logger';
 import { initializeSync, shutdownSync, isSyncEnabled, reinitializeSync } from './SyncManager';
 import { shutdownTrackerSync, initializeTrackerSync } from './TrackerSyncManager';
@@ -60,9 +61,10 @@ class RepositoryManager {
       }
 
       // Create database adapter
-      const dbAdapter = {
-        query: database.query.bind(database),
-      };
+      const sqliteDatabase = database.getActiveSQLiteDatabase();
+      const dbAdapter = sqliteDatabase
+        ? createSQLiteStoreAdapter(sqliteDatabase)
+        : { query: database.query.bind(database) };
 
       // Create base session store
       this.baseSessionStore = createPGLiteSessionStore(

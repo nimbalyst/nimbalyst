@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.62.0",
+  "version": "0.63.0",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -75,6 +75,7 @@
     "@vscode/ripgrep": "^1.17.1",
     "abort-controller": "^3.0.0",
     "agentkeepalive": "^4.6.0",
+    "better-sqlite3": "^12.10.0",
     "chardet": "^2.1.1",
     "chokidar": "^4.0.3",
     "diff": "^5.2.0",
@@ -127,6 +128,7 @@
     "@eslint/js": "^9.37.0",
     "@playwright/test": "^1.55.1",
     "@types/dotenv": "^6.1.1",
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^20.19.11",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^18.2.0",
@@ -258,6 +260,10 @@
       {
         "from": "out/worker.bundle.js",
         "to": "worker.bundle.js"
+      },
+      {
+        "from": "out/sqlite-worker.bundle.js",
+        "to": "sqlite-worker.bundle.js"
       },
       {
         "from": "../../node_modules/@electric-sql/pglite/dist/pglite.data",

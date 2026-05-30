@@ -73,6 +73,7 @@ export const EditToolResultCard: React.FC<EditToolResultCardProps> = ({
   }
 
   const firstEditPath = resolveEditFilePath(edits[0], toolMessage);
+  const primarySupportsEmbeddedPreview = isEmbeddable(firstEditPath);
   const displayPath = firstEditPath ? toProjectRelative(firstEditPath, workspacePath) : '';
   const prettyPath = displayPath ? shortenPath(displayPath, 64) : '';
   const toolDisplayName = formatToolDisplayName(tool.toolName || '') || tool.toolName || 'Edit';
@@ -87,7 +88,11 @@ export const EditToolResultCard: React.FC<EditToolResultCardProps> = ({
   const previewFilePaths = Array.from(new Set(
     edits
       .map((edit) => resolveEditFilePath(edit, toolMessage))
-      .filter((filePath): filePath is string => !!filePath && isEmbeddable(filePath))
+      .filter((filePath): filePath is string => (
+        !!filePath &&
+        primarySupportsEmbeddedPreview &&
+        isEmbeddable(filePath)
+      ))
   ));
 
   const handleOpenFile = () => {
@@ -153,9 +158,16 @@ export const EditToolResultCard: React.FC<EditToolResultCardProps> = ({
         {edits.map((edit, idx) => {
           const absolutePath = resolveEditFilePath(edit, toolMessage);
           const relativePath = absolutePath ? toProjectRelative(absolutePath, workspacePath) : undefined;
-          const shouldUseEmbeddedPreview = !!renderEmbeddedFile && isEmbeddable(absolutePath);
+          const isSecondaryEmbeddableFile =
+            !!absolutePath &&
+            absolutePath !== firstEditPath &&
+            isEmbeddable(absolutePath);
+          const shouldUseEmbeddedPreview =
+            !!renderEmbeddedFile &&
+            primarySupportsEmbeddedPreview &&
+            isEmbeddable(absolutePath);
 
-          if (shouldUseEmbeddedPreview) {
+          if (shouldUseEmbeddedPreview || (!primarySupportsEmbeddedPreview && isSecondaryEmbeddableFile)) {
             return null;
           }
 

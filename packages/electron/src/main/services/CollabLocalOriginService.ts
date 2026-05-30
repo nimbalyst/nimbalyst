@@ -447,6 +447,12 @@ async function overwriteSharedDocFromSource(
   return result === true;
 }
 
+function resolveAdapterForSharedDocumentType(
+  documentType: string,
+): CollabContentAdapter | undefined {
+  return getCollabContentAdapter(documentType);
+}
+
 async function migrateMarkdownAssetsForCollab(params: {
   workspacePath: string;
   orgId: string;
@@ -576,7 +582,7 @@ export async function relinkLocalOriginBinding(params: {
   const relativePath = ensureWorkspaceRelativePath(params.workspacePath, params.sourceFilePath);
   const sourceContent = await fs.readFile(params.sourceFilePath, 'utf8');
   const stats = await getSourceFileStats(params.sourceFilePath);
-  const adapter = getCollabContentAdapter(params.documentType);
+  const adapter = resolveAdapterForSharedDocumentType(params.documentType);
   const sharedText = adapter
     ? await readSharedDocText(params.workspacePath, params.documentId, adapter)
     : null;
@@ -628,7 +634,7 @@ export async function reuploadFromLocalOrigin(params: {
     };
   }
 
-  const adapter = getCollabContentAdapter(binding.documentType);
+  const adapter = resolveAdapterForSharedDocumentType(binding.documentType);
   if (!adapter) {
     return {
       success: false,
@@ -777,4 +783,25 @@ export async function reuploadFromLocalOrigin(params: {
       binding,
     };
   }
+}
+
+export async function seedSharedDocumentFromContent(params: {
+  workspacePath: string;
+  documentId: string;
+  documentType: string;
+  content: string | Uint8Array;
+}): Promise<boolean> {
+  const adapter = resolveAdapterForSharedDocumentType(params.documentType);
+  if (!adapter) {
+    throw new Error(
+      `No collab content adapter is registered for document type '${params.documentType}'.`,
+    );
+  }
+
+  return overwriteSharedDocFromSource(
+    params.workspacePath,
+    params.documentId,
+    adapter,
+    params.content,
+  );
 }

@@ -15,6 +15,7 @@ import { OpenCodePanel } from '../GlobalSettings/panels/OpenCodePanel';
 import { CopilotCLIPanel } from '../GlobalSettings/panels/CopilotCLIPanel';
 import { LMStudioPanel } from '../GlobalSettings/panels/LMStudioPanel';
 import { AdvancedPanel } from '../GlobalSettings/panels/AdvancedPanel';
+import { DatabasePanel } from '../GlobalSettings/panels/DatabasePanel';
 import { AgentFeaturesPanel } from './AgentFeaturesPanel';
 import { BetaFeaturesPanel } from '../GlobalSettings/panels/BetaFeaturesPanel';
 import { NotificationsPanel } from '../GlobalSettings/panels/NotificationsPanel';
@@ -548,6 +549,11 @@ export function SettingsView({
       case 'advanced':
         // AdvancedPanel is self-contained - uses Jotai atoms and IPC directly
         return <AdvancedPanel />;
+      case 'database':
+        // DatabasePanel exposes the SQLite migration controls (dry-run, gated
+        // "Migrate now", rollback). Self-contained; talks to MigrationHandlers
+        // IPC directly. See packages/electron/src/main/ipc/MigrationHandlers.ts.
+        return <DatabasePanel />;
       case 'agent-features':
         return <AgentFeaturesPanel />;
       case 'beta-features':

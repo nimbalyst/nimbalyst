@@ -5,6 +5,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { SessionFileStore, FileLink, FileLinkType } from '@nimbalyst/runtime';
 import { toMillis } from '../utils/timestampUtils';
+import { parseJsonObjectColumn } from '../utils/jsonColumn';
 
 type PGliteLike = {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
@@ -20,7 +21,7 @@ function rowToFileLink(row: any): FileLink {
     filePath: row.file_path,
     linkType: row.link_type as FileLinkType,
     timestamp: toMillis(row.timestamp)!,
-    metadata: row.metadata || {}
+    metadata: parseJsonObjectColumn(row.metadata)
   };
 }
 

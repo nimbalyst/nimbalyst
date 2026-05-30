@@ -16,7 +16,7 @@
 
 import React, { useCallback, useRef, useImperativeHandle, forwardRef, useEffect, useState, useMemo } from 'react';
 import { useAtom, useSetAtom, useAtomValue } from 'jotai';
-import { store, setInteractiveWidgetHost } from '@nimbalyst/runtime/store';
+import { store, registerInteractiveWidgetHost, unregisterInteractiveWidgetHost } from '@nimbalyst/runtime/store';
 import type { SessionData, ChatAttachment, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
 import { AgentTranscriptPanel } from '@nimbalyst/runtime/ui/AgentTranscript/components/AgentTranscriptPanel';
 import type { InteractiveWidgetHost, PermissionScope } from '@nimbalyst/runtime/ui/AgentTranscript/components/CustomToolWidgets/InteractiveWidgetHost';
@@ -35,6 +35,8 @@ import { WakeupBanner } from '../AIChat/WakeupBanner';
 import type { AIMode } from './ModeTag';
 // Note: ExitPlanMode, AskUserQuestion, and ToolPermission use inline widgets via InteractiveWidgetHost (in runtime package)
 import { SlashCommandSuggestions } from './SlashCommandSuggestions';
+import { InlineTipDisplay } from '../../tips/InlineTipDisplay';
+import { activeTipIdAtom } from '../../tips/atoms';
 import { supportsWorkspaceSlashCommands } from '../Typeahead/slashCommandAutocomplete';
 import type { TextSelection } from './TextSelectionIndicator';
 import { type SerializableDocumentContext } from '../../hooks/useDocumentContext';
@@ -94,6 +96,35 @@ import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/ato
 import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPeekSizeAtoms';
 import { registerSessionWorkspace, loadInitialSessionFileState } from '../../store/listeners/fileStateListeners';
 import { SESSION_PHASE_COLUMNS, setSessionPhaseAtom, type SessionPhase } from '../../store/atoms/sessionKanban';
+
+/**
+ * Detect a metadata value that's the artifact of `{...stringValue, ...}` -
+ * the spread treats each character of the string as a numeric-keyed
+ * property, producing objects with millions of `"0"`, `"1"`, ... entries.
+ * Spreading such an object via `...metadata` later in the render path
+ * throws V8's "RangeError: Too many properties to enumerate" and crashes
+ * the session view. Two known sessions in production hit this state via
+ * a legacy bad write upstream; the row should be cleaned DB-side, but
+ * the UI must not crash before that runs.
+ *
+ * Heuristic uses only the `in` operator (O(1) property lookups) so we
+ * never trigger the same enumeration that would re-throw the RangeError.
+ * If keys "0","1","2" all exist as own properties AND none of the real
+ * metadata field names do, treat as the spread-of-string artifact.
+ */
+function isCorruptedSpreadOfString(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const obj = value as Record<string, unknown>;
+  if (!('0' in obj) || !('1' in obj) || !('2' in obj)) return false;
+  // Known real metadata fields. Any one of them present means the object
+  // has at least some legitimate structure even if it also has stray
+  // numeric keys (which we'd rather keep than wipe).
+  const realKeys = ['tags', 'phase', 'metadata', 'tokenUsage', 'hasUnread', 'effortLevel', 'linkedTrackerItemIds'];
+  for (const k of realKeys) {
+    if (k in obj) return false;
+  }
+  return true;
+}
 
 /**
  * Expand @@[name](shortId) session mentions to @@[name](fullUuid).
@@ -432,6 +463,19 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionData = useMemo(() => {
     if (!hasSessionData) return null;
     const snapshot = store.get(sessionStoreAtom(sessionId));
+    // Guard against corrupted metadata: some legacy rows have a metadata
+    // value that's the result of `{...stringValue, ...}`, producing an
+    // object with millions of numeric-string keys (each char of the
+    // original JSON as its own property). Spreading that into the
+    // memoized object below throws "RangeError: Too many properties to
+    // enumerate" and crashes the transcript. Sniff for the spread-of-
+    // string shape and fall back to an empty object rather than crashing.
+    // The underlying row should also be repaired DB-side, but this keeps
+    // the UI usable until then.
+    const rawMetadata = snapshot?.metadata;
+    const safeMetadata = isCorruptedSpreadOfString(rawMetadata)
+      ? {}
+      : (rawMetadata ?? {});
     return {
       ...(snapshot ?? {}),
       id: snapshot?.id ?? sessionId,
@@ -445,8 +489,8 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       // we don't subscribe to it.
       updatedAt: snapshot?.updatedAt ?? 0,
       metadata: {
-        ...(snapshot?.metadata ?? {}),
-        effortLevel: rawEffortLevel ?? (snapshot?.metadata as Record<string, unknown> | undefined)?.effortLevel ?? null,
+        ...safeMetadata,
+        effortLevel: rawEffortLevel ?? (safeMetadata as Record<string, unknown> | undefined)?.effortLevel ?? null,
         sessionStatus,
         currentTeammates: metadataTeammates,
         currentTodos,
@@ -1094,20 +1138,6 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     setRequestOpenSession(targetSessionId);
   }, [setRequestOpenSession]);
 
-  const getToolCallDiffs = useCallback(async (toolCallItemId: string, toolCallTimestamp?: number) => {
-    try {
-      const result = await window.electronAPI.invoke(
-        'session-files:get-tool-call-diffs',
-        sessionId,
-        toolCallItemId,
-        toolCallTimestamp
-      );
-      return result.success && result.diffs?.length > 0 ? result.diffs : null;
-    } catch {
-      return null;
-    }
-  }, [sessionId]);
-
   const handleOpenInExternalEditor = useCallback((filePath: string) => {
     openInExternalEditor(filePath);
   }, [openInExternalEditor]);
@@ -1422,10 +1452,21 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   // Note: AskUserQuestion, ToolPermission handlers removed - now handled by inline widgets via InteractiveWidgetHost
 
-  // Set the interactive widget host in the atom - widgets read from here
-  // This provides methods for widgets to call that have access to atoms, callbacks, and analytics
-  useEffect(() => {
-    const host: InteractiveWidgetHost = {
+  // Set the interactive widget host in the atom - widgets read from here.
+  // This provides methods for widgets to call that have access to atoms, callbacks, and analytics.
+  //
+  // We use a *stable proxy* whose methods read from `liveHostRef` (refreshed
+  // every render), and a multi-owner registry (`registerInteractiveWidgetHost`)
+  // so two SessionTranscripts displaying the same session -- e.g. one in
+  // Files-mode ChatSidebar and one in Agent mode -- can coexist without
+  // clobbering each other's host. Without multi-owner, the chat sidebar's
+  // host effect unmount/cleanup would null the atom even though the
+  // agent-mode transcript is still mounted, leaving the AskUserQuestion
+  // widget stuck with no host (header visible, options blank) until the
+  // user switched sessions.
+  const liveHostRef = useRef<InteractiveWidgetHost | null>(null);
+  // Build the live host on every render so its closures stay current.
+  const liveHost: InteractiveWidgetHost = {
       sessionId,
       workspacePath: workspacePath || '',
       worktreeId,
@@ -1703,32 +1744,44 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       trackEvent: (eventName: string, properties?: Record<string, unknown>) => {
         posthog?.capture(eventName, properties);
       },
+  };
+  liveHostRef.current = liveHost;
+
+  useEffect(() => {
+    // Stable proxy: identity is fixed for the lifetime of this {sessionId,
+    // workspacePath, worktreeId} tuple. Methods delegate to the live ref so
+    // closures stay current without re-registering the host on every render.
+    const proxy: InteractiveWidgetHost = {
+      get sessionId() { return liveHostRef.current?.sessionId ?? sessionId; },
+      get workspacePath() { return liveHostRef.current?.workspacePath ?? (workspacePath || ''); },
+      get worktreeId() { return liveHostRef.current?.worktreeId ?? worktreeId; },
+      get autoCommitEnabled() { return liveHostRef.current?.autoCommitEnabled ?? false; },
+      get diffPeekSize() { return liveHostRef.current?.diffPeekSize ?? { width: 0, height: 0 }; },
+      askUserQuestionSubmit: (...args) => liveHostRef.current!.askUserQuestionSubmit(...args),
+      askUserQuestionCancel: (...args) => liveHostRef.current!.askUserQuestionCancel(...args),
+      requestUserInputSubmit: (...args) => liveHostRef.current!.requestUserInputSubmit(...args),
+      requestUserInputCancel: (...args) => liveHostRef.current!.requestUserInputCancel(...args),
+      exitPlanModeApprove: (...args) => liveHostRef.current!.exitPlanModeApprove(...args),
+      exitPlanModeStartNewSession: (...args) => liveHostRef.current!.exitPlanModeStartNewSession(...args),
+      exitPlanModeDeny: (...args) => liveHostRef.current!.exitPlanModeDeny(...args),
+      exitPlanModeCancel: (...args) => liveHostRef.current!.exitPlanModeCancel(...args),
+      toolPermissionSubmit: (...args) => liveHostRef.current!.toolPermissionSubmit(...args),
+      toolPermissionCancel: (...args) => liveHostRef.current!.toolPermissionCancel(...args),
+      setAutoCommitEnabled: (...args) => liveHostRef.current!.setAutoCommitEnabled(...args),
+      gitCommit: (...args) => liveHostRef.current!.gitCommit(...args),
+      gitCommitCancel: (...args) => liveHostRef.current!.gitCommitCancel(...args),
+      gitFileDiff: (...args) => liveHostRef.current!.gitFileDiff!(...args),
+      setDiffPeekSize: (...args) => liveHostRef.current!.setDiffPeekSize!(...args),
+      superLoopBlockedFeedback: (...args) => liveHostRef.current!.superLoopBlockedFeedback(...args),
+      openFile: (...args) => liveHostRef.current!.openFile(...args),
+      trackEvent: (...args) => liveHostRef.current!.trackEvent(...args),
     };
 
-    setInteractiveWidgetHost(sessionId, host);
-
-    // Cleanup on unmount or sessionId change
+    registerInteractiveWidgetHost(sessionId, proxy);
     return () => {
-      setInteractiveWidgetHost(sessionId, null);
+      unregisterInteractiveWidgetHost(sessionId, proxy);
     };
-  }, [
-    sessionId,
-    workspacePath,
-    worktreeId,
-    sessionWorktreePath,
-    handleExitPlanModeApprove,
-    handleExitPlanModeStartNewSession,
-    handleExitPlanModeDeny,
-    handleExitPlanModeCancel,
-    refreshPendingPrompts,
-    respondToPrompt,
-    posthog,
-    autoCommitEnabled,
-    setAutoCommitEnabled,
-    diffPeekSize,
-    setDiffPeekSize,
-    onFileClick,
-  ]);
+  }, [sessionId, workspacePath, worktreeId]);
 
   // Feature flags
   const enableSlashCommands = supportsWorkspaceSlashCommands(provider);
@@ -1742,21 +1795,32 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     return userMessages[userMessages.length - 1].createdAt?.getTime() || null;
   }, [messages]);
 
-  // Slash command suggestions for empty sessions
+  // Extra content rendered in the empty-session panel: an inline contextual
+  // tip (any provider) above the slash command suggestions (claude-code
+  // only). InlineTipDisplay registers itself with TipProvider so tips only
+  // activate while this surface is mounted.
   const renderEmptyExtra = React.useCallback(() => {
-    if (provider !== 'claude-code' || messages.length > 0) {
-      return null;
-    }
+    if (messages.length > 0) return null;
     return (
-      <SlashCommandSuggestions
-        provider={provider}
-        hasMessages={messages.length > 0}
-        workspacePath={workspacePath}
-        sessionId={sessionId}
-        onCommandSelect={handleCommandSelect}
-      />
+      <div className="rich-transcript-empty-extras w-full max-w-[640px] flex flex-col items-center gap-6">
+        <InlineTipDisplay />
+        {provider === 'claude-code' && (
+          <SlashCommandSuggestions
+            provider={provider}
+            hasMessages={false}
+            workspacePath={workspacePath}
+            sessionId={sessionId}
+            onCommandSelect={handleCommandSelect}
+          />
+        )}
+      </div>
     );
   }, [provider, messages.length, workspacePath, sessionId, handleCommandSelect]);
+
+  // When a tip is being shown in the empty panel, hide the generic
+  // "ready to assist with" help block so the tip is the focal point.
+  const activeTipId = useAtomValue(activeTipIdAtom);
+  const hideEmptyHelp = activeTipId !== null && messages.length === 0;
 
   // Scroll-to-teammate: when the atom fires for this session, find the spawn
   // message and scroll the transcript to it.
@@ -2031,6 +2095,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
               showSessionInit: false
             }}
             renderEmptyExtra={renderEmptyExtra}
+            hideEmptyHelp={hideEmptyHelp}
             isArchived={isArchived}
             onCloseAndArchive={handleCloseAndArchive}
             onUnarchive={handleUnarchive}
@@ -2051,7 +2116,6 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             currentTeammates={transcriptTeammates}
             waitingForNoun={waitingForNoun}
             appStartTime={appStartTime ?? undefined}
-            getToolCallDiffs={getToolCallDiffs}
             renderEmbeddedFile={renderEmbeddedFile}
             canEmbedFile={canEmbedFile}
             currentPhase={currentPhase}

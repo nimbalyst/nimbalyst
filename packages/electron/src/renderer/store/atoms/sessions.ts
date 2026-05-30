@@ -114,6 +114,22 @@ export const sessionUnreadAtom = atomFamily((_sessionId: string) =>
 );
 
 /**
+ * Per-session "last activity" timestamp.
+ *
+ * Bumped on every `ai:message-logged` IPC event. SessionListItem (and the
+ * group rows that render a relative-time label) subscribes to this so its
+ * "5m ago" label can tick during streaming without forcing a re-render of
+ * `SessionHistory` or the 705 other sessions in the registry.
+ *
+ * Initial value `0` means "no activity recorded this session" — the
+ * displayed timestamp falls back to the registry's `updatedAt` from the
+ * last DB refresh.
+ */
+export const sessionLastActivityAtom = atomFamily((_sessionId: string) =>
+  atom(0)
+);
+
+/**
  * Per-session pending prompt state.
  * Set when there's a queued prompt waiting to be processed.
  * SessionListItem subscribes to show pending indicator.

@@ -18,7 +18,7 @@ import {
   sessionPendingPromptAtom,
   type SessionMeta,
 } from '../../store';
-import { getRelativeTimeString } from '../../utils/dateFormatting';
+import { SessionRelativeTime } from './SessionRelativeTime';
 import { SessionContextMenu } from './SessionContextMenu';
 
 interface MetaAgentGroupProps {
@@ -137,7 +137,7 @@ const MetaAgentChildRow: React.FC<{
       {session.title || 'Untitled Session'}
     </span>
     <span className="shrink-0 text-[0.6875rem] text-[var(--nim-text-faint)] ml-2">
-      {getRelativeTimeString(session.updatedAt || session.createdAt)}
+      <SessionRelativeTime sessionId={session.id} fallbackTimestamp={session.updatedAt || session.createdAt} />
     </span>
     <div className="shrink-0 flex items-center">
       <ChildSessionStatus sessionId={session.id} />
@@ -277,7 +277,7 @@ export const MetaAgentGroup: React.FC<MetaAgentGroupProps> = memo(({
 
         {/* Timestamp */}
         <span className="shrink-0 text-[0.6875rem] text-[var(--nim-text-faint)]">
-          {getRelativeTimeString(metaSession.updatedAt || metaSession.createdAt)}
+          <SessionRelativeTime sessionId={metaSession.id} fallbackTimestamp={metaSession.updatedAt || metaSession.createdAt} />
         </span>
 
         {/* Aggregate status */}

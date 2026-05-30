@@ -102,6 +102,21 @@ export function getCanonicalTrackerItemIdFromRow(row: { id: string; type: string
   return row.id;
 }
 
+/**
+ * Parse a column value that may be either a parsed object/array (PGLite
+ * JSONB / TEXT[] semantics) or a JSON-encoded string (SQLite TEXT
+ * semantics). Returns the parsed shape, or undefined on null/parse error.
+ */
+function parseJsonColumn<T>(value: unknown): T | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'string') return value as T;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizeTrackerTitle(title: string | undefined): string {
   return (title || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -1263,13 +1278,14 @@ export class ElectronDocumentService implements DocumentService {
   }
 
   private rowToTrackerItem(row: any): TrackerItem {
-    // Parse JSONB data field
-    const data = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+    // Parse JSONB data field (PGLite returns object, SQLite returns JSON string)
+    const data = parseJsonColumn<Record<string, any>>(row.data) ?? {};
 
-    // type_tags from DB column; fall back to [type] for backward compat
-    const typeTags: string[] = row.type_tags && row.type_tags.length > 0
-      ? row.type_tags
-      : [row.type];
+    // type_tags from DB column; fall back to [type] for backward compat.
+    // PGLite stored this as TEXT[]; SQLite stores it as a JSON-encoded string.
+    const parsedTypeTags = parseJsonColumn<string[]>(row.type_tags);
+    const typeTags: string[] =
+      Array.isArray(parsedTypeTags) && parsedTypeTags.length > 0 ? parsedTypeTags : [row.type];
 
     return {
       id: getCanonicalTrackerItemIdFromRow(row),
@@ -3084,8 +3100,10 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
       const result = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [itemId]);
       if (result.rows.length === 0) return;
       const r = result.rows[0];
-      const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data || {};
-      const typeTags: string[] = r.type_tags?.length > 0 ? r.type_tags : [r.type];
+      const d = parseJsonColumn<Record<string, any>>(r.data) ?? {};
+      const parsedTags = parseJsonColumn<string[]>(r.type_tags);
+      const typeTags: string[] =
+        Array.isArray(parsedTags) && parsedTags.length > 0 ? parsedTags : [r.type];
       const item: TrackerItem = {
         id: r.id, issueNumber: r.issue_number ?? undefined, issueKey: r.issue_key ?? undefined,
         type: r.type, typeTags, title: d.title || r.title, description: d.description || undefined,

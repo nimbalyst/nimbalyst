@@ -36,7 +36,7 @@ export function registerBuiltinCollabContentAdapters(): void {
     registerCollabContentAdapter(DataModelCollabContentAdapter);
     registerCollabContentAdapter(MockupHtmlCollabContentAdapter);
     registerCollabContentAdapter(MockupProjectCollabContentAdapter);
-    logger.main.info('[CollabContentAdapters] Registered built-in adapters: markdown, csv, excalidraw, datamodel, mockup-html, mockup-project');
+    logger.main.info('[CollabContentAdapters] Registered built-in adapters: markdown, csv, excalidraw, datamodel, mockup.html, mockupproject');
   } catch (error) {
     logger.main.error('[CollabContentAdapters] Failed to register built-in adapters:', error);
   }

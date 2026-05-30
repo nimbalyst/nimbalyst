@@ -11,6 +11,7 @@ import { getPackageRoot } from '../utils/appPaths';
 import { logger } from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
+import type { SQLiteDatabase } from './sqlite/SQLiteDatabase';
 import { DatabaseBackupService } from '../services/database/DatabaseBackupService';
 import { deserializeWorkerError } from './workerErrorSerialization';
 
@@ -1149,5 +1150,140 @@ export class PGLiteDatabaseWorker {
   }
 }
 
-// Export singleton instance
-export const database = new PGLiteDatabaseWorker();
+export type DatabaseEngine = 'pglite' | 'sqlite';
+
+export interface AppDatabaseBackupService {
+  createBackup(): Promise<{ success: boolean; error?: string }>;
+  getBackupStatus?(): unknown;
+  cleanupOldCorruptedBackups?(): Promise<void>;
+}
+
+export interface AppDatabase {
+  initialize(): Promise<void>;
+  isInitialized(): boolean;
+  query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
+  queryReadOnly<T = any>(sql: string, params?: any[], timeoutMs?: number): Promise<{ rows: T[] }>;
+  exec(sql: string, timeoutMs?: number): Promise<void>;
+  close(): Promise<void>;
+  getStats(): Promise<any>;
+  getDB(): any;
+  verifyBackup(backupPath: string): Promise<{
+    valid: boolean;
+    error?: string;
+    hasData?: boolean;
+    sessionCount?: number;
+    historyCount?: number;
+  }>;
+  setBackupService(backupService: AppDatabaseBackupService): void;
+  createBackup(): Promise<{ success: boolean; error?: string }>;
+  getBackupService(): AppDatabaseBackupService | null;
+  showRecoveryDialog?(): Promise<void>;
+}
+
+class ActiveDatabaseFacade implements AppDatabase {
+  private active: AppDatabase;
+  private engine: DatabaseEngine;
+
+  constructor(initial: AppDatabase, engine: DatabaseEngine) {
+    this.active = initial;
+    this.engine = engine;
+  }
+
+  useDatabase(databaseImpl: AppDatabase, engine: DatabaseEngine): void {
+    this.active = databaseImpl;
+    this.engine = engine;
+  }
+
+  getEngine(): DatabaseEngine {
+    return this.engine;
+  }
+
+  getActiveDatabase(): AppDatabase {
+    return this.active;
+  }
+
+  /**
+   * Returns the active SQLite backend when SQLite is the live engine.
+   *
+   * In production this is now a `SQLiteDatabaseProxy` (worker-hosted) rather
+   * than an in-process `SQLiteDatabase`. The two share the same public shape
+   * for `query/exec/queryReadOnly/getStats/...`, but proxy-only methods
+   * (`pragmaRead`, `dashboardTableStats`, `getSlowQueries`, `getPerformance`,
+   * `walCheckpoint`) only exist on the proxy. Callers that need those should
+   * accept the proxy type directly. The return type is loosely typed as the
+   * SQLiteDatabase interface so existing call sites keep compiling; the
+   * dashboard / performance handlers cast to the proxy.
+   */
+  getActiveSQLiteDatabase(): SQLiteDatabase | null {
+    return this.engine === 'sqlite' ? (this.active as unknown as SQLiteDatabase) : null;
+  }
+
+  initialize(): Promise<void> {
+    return this.active.initialize();
+  }
+
+  isInitialized(): boolean {
+    return this.active.isInitialized();
+  }
+
+  query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }> {
+    return this.active.query<T>(sql, params);
+  }
+
+  queryReadOnly<T = any>(sql: string, params?: any[], timeoutMs?: number): Promise<{ rows: T[] }> {
+    return this.active.queryReadOnly<T>(sql, params, timeoutMs);
+  }
+
+  exec(sql: string, timeoutMs?: number): Promise<void> {
+    return this.active.exec(sql, timeoutMs);
+  }
+
+  close(): Promise<void> {
+    return this.active.close();
+  }
+
+  getStats(): Promise<any> {
+    return this.active.getStats();
+  }
+
+  getDB(): any {
+    return this.active.getDB();
+  }
+
+  verifyBackup(backupPath: string): Promise<{
+    valid: boolean;
+    error?: string;
+    hasData?: boolean;
+    sessionCount?: number;
+    historyCount?: number;
+  }> {
+    return this.active.verifyBackup(backupPath);
+  }
+
+  setBackupService(backupService: AppDatabaseBackupService): void {
+    this.active.setBackupService(backupService);
+  }
+
+  createBackup(): Promise<{ success: boolean; error?: string }> {
+    return this.active.createBackup();
+  }
+
+  getBackupService(): AppDatabaseBackupService | null {
+    return this.active.getBackupService();
+  }
+
+  async showRecoveryDialog(): Promise<void> {
+    if (typeof this.active.showRecoveryDialog === 'function') {
+      await this.active.showRecoveryDialog();
+    }
+  }
+}
+
+// Legacy worker remains available for migration / rollback flows even when the
+// active app backend has been switched to SQLite.
+export const legacyPgliteDatabase = new PGLiteDatabaseWorker();
+
+// Export singleton facade instance under the historical import path so the
+// rest of the main process can route through the selected backend without a
+// large import rewrite.
+export const database = new ActiveDatabaseFacade(legacyPgliteDatabase, 'pglite');

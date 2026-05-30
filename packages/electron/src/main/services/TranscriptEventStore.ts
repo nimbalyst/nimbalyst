@@ -17,6 +17,13 @@ type TranscriptEventStoreType = ITranscriptEventStore;
 
 type PGliteLike = {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
+  searchTranscriptEvents?(
+    query: string,
+    opts?: {
+      limit?: number;
+      sessionIds?: string[];
+    },
+  ): Promise<Array<Record<string, unknown>>>;
 };
 
 type EnsureReadyFn = () => Promise<void>;
@@ -59,7 +66,8 @@ function rowToEvent(row: TranscriptEventRow): TranscriptEvent {
     searchableText: row.searchable_text,
     payload: payload as Record<string, unknown>,
     parentEventId: row.parent_event_id != null ? Number(row.parent_event_id) : null,
-    searchable: row.searchable,
+    // SQLite stores BOOLEAN as INTEGER 0/1; PG returns native booleans.
+    searchable: typeof row.searchable === 'number' ? row.searchable !== 0 : !!row.searchable,
     subagentId: row.subagent_id,
     provider: row.provider,
     providerToolCallId: row.provider_tool_call_id,
@@ -118,6 +126,59 @@ export function createTranscriptEventStore(
       return rowToEvent(rows[0]);
     },
 
+    async insertEvents(events): Promise<TranscriptEvent[]> {
+      await ensureReady();
+      if (events.length === 0) return [];
+
+      // Build one multi-row INSERT so the whole batch crosses the worker
+      // boundary in a single IPC round-trip and writes inside a single
+      // transaction. PG-style `$N` placeholders are translated to `?` by the
+      // SQLite dialect translator; PGLite consumes them natively.
+      //
+      // SQLite's default `SQLITE_MAX_VARIABLE_NUMBER` is 32,766 on modern
+      // builds. With 11 columns/row, chunking at 1,000 rows/call leaves
+      // plenty of headroom and keeps individual transactions bounded for
+      // progress observability on very large sessions.
+      const COLS_PER_ROW = 11;
+      const CHUNK_ROWS = 1_000;
+      const all: TranscriptEvent[] = [];
+      for (let start = 0; start < events.length; start += CHUNK_ROWS) {
+        const slice = events.slice(start, start + CHUNK_ROWS);
+        const valueClauses: string[] = [];
+        const params: any[] = [];
+        for (let i = 0; i < slice.length; i++) {
+          const base = i * COLS_PER_ROW;
+          const ph: string[] = [];
+          for (let c = 1; c <= COLS_PER_ROW; c++) ph.push(`$${base + c}`);
+          valueClauses.push(`(${ph.join(', ')})`);
+          const e = slice[i];
+          params.push(
+            e.sessionId,
+            e.sequence,
+            e.createdAt,
+            e.eventType,
+            e.searchableText,
+            JSON.stringify(e.payload),
+            e.parentEventId,
+            e.searchable,
+            e.subagentId,
+            e.provider,
+            e.providerToolCallId,
+          );
+        }
+
+        const sql = `INSERT INTO ai_transcript_events (
+            session_id, sequence, created_at, event_type, searchable_text,
+            payload, parent_event_id, searchable, subagent_id, provider, provider_tool_call_id
+          ) VALUES ${valueClauses.join(', ')}
+          RETURNING ${SELECT_COLS}`;
+
+        const { rows } = await db.query<TranscriptEventRow>(sql, params);
+        for (const r of rows) all.push(rowToEvent(r));
+      }
+      return all;
+    },
+
     async updateEventPayload(id, payload): Promise<void> {
       await ensureReady();
 
@@ -130,9 +191,25 @@ export function createTranscriptEventStore(
     async mergeEventPayload(id, partialPayload): Promise<void> {
       await ensureReady();
 
+      const { rows } = await db.query<{ payload: Record<string, unknown> | string | null }>(
+        `SELECT payload FROM ai_transcript_events WHERE id = $1`,
+        [id],
+      );
+      const existingPayload = rows[0]?.payload;
+      let normalizedPayload: Record<string, unknown> = {};
+      if (typeof existingPayload === 'string') {
+        try {
+          normalizedPayload = JSON.parse(existingPayload);
+        } catch {
+          normalizedPayload = {};
+        }
+      } else if (existingPayload && typeof existingPayload === 'object') {
+        normalizedPayload = existingPayload;
+      }
+
       await db.query(
-        `UPDATE ai_transcript_events SET payload = payload || $1::jsonb WHERE id = $2`,
-        [JSON.stringify(partialPayload), id],
+        `UPDATE ai_transcript_events SET payload = $1 WHERE id = $2`,
+        [JSON.stringify({ ...normalizedPayload, ...partialPayload }), id],
       );
     },
 
@@ -301,30 +378,39 @@ export function createTranscriptEventStore(
 
       const limit = options?.limit ?? 100;
 
-      let sql: string;
-      let params: any[];
-
-      if (options?.sessionIds && options.sessionIds.length > 0) {
-        const placeholders = options.sessionIds.map((_, i) => `$${i + 3}`).join(', ');
-        sql = `SELECT ${SELECT_COLS}
-          FROM ai_transcript_events
-          WHERE searchable = TRUE
-            AND to_tsvector('english', COALESCE(searchable_text, '')) @@ plainto_tsquery('english', $1)
-            AND session_id IN (${placeholders})
-          ORDER BY ts_rank_cd(to_tsvector('english', COALESCE(searchable_text, '')), plainto_tsquery('english', $1)) DESC
-          LIMIT $2`;
-        params = [query, limit, ...options.sessionIds];
+      const sqliteRows = await db.searchTranscriptEvents?.(query, {
+        limit,
+        sessionIds: options?.sessionIds,
+      });
+      let rows: TranscriptEventRow[];
+      if (sqliteRows) {
+        rows = sqliteRows as unknown as TranscriptEventRow[];
       } else {
-        sql = `SELECT ${SELECT_COLS}
-          FROM ai_transcript_events
-          WHERE searchable = TRUE
-            AND to_tsvector('english', COALESCE(searchable_text, '')) @@ plainto_tsquery('english', $1)
-          ORDER BY ts_rank_cd(to_tsvector('english', COALESCE(searchable_text, '')), plainto_tsquery('english', $1)) DESC
-          LIMIT $2`;
-        params = [query, limit];
-      }
+        let sql: string;
+        let params: any[];
 
-      const { rows } = await db.query<TranscriptEventRow>(sql, params);
+        if (options?.sessionIds && options.sessionIds.length > 0) {
+          const placeholders = options.sessionIds.map((_, i) => `$${i + 3}`).join(', ');
+          sql = `SELECT ${SELECT_COLS}
+            FROM ai_transcript_events
+            WHERE searchable = TRUE
+              AND to_tsvector('english', COALESCE(searchable_text, '')) @@ plainto_tsquery('english', $1)
+              AND session_id IN (${placeholders})
+            ORDER BY ts_rank_cd(to_tsvector('english', COALESCE(searchable_text, '')), plainto_tsquery('english', $1)) DESC
+            LIMIT $2`;
+          params = [query, limit, ...options.sessionIds];
+        } else {
+          sql = `SELECT ${SELECT_COLS}
+            FROM ai_transcript_events
+            WHERE searchable = TRUE
+              AND to_tsvector('english', COALESCE(searchable_text, '')) @@ plainto_tsquery('english', $1)
+            ORDER BY ts_rank_cd(to_tsvector('english', COALESCE(searchable_text, '')), plainto_tsquery('english', $1)) DESC
+            LIMIT $2`;
+          params = [query, limit];
+        }
+
+        rows = (await db.query<TranscriptEventRow>(sql, params)).rows;
+      }
       return rows.map((row) => ({
         event: rowToEvent(row),
         sessionId: row.session_id,

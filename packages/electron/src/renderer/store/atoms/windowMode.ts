@@ -14,6 +14,7 @@ import { atom } from 'jotai';
 import { store } from '@nimbalyst/runtime/store';
 import type { ContentMode } from '../../types/WindowModeTypes';
 import { DocumentModelRegistry } from '../../services/document-model/DocumentModelRegistry';
+import { FEATURE_USAGE_KEYS } from '../../../shared/featureUsage';
 
 // Re-export ContentMode for convenience (TODO: rename type to WindowMode)
 export type { ContentMode };
@@ -76,6 +77,12 @@ export const setWindowModeAtom = atom(
       DocumentModelRegistry.flushAll().catch((err) => {
         console.error('[windowMode] Failed to flush dirty editors on mode switch:', err);
       });
+
+      if (mode === 'tracker') {
+        window.electronAPI?.featureUsage?.record(FEATURE_USAGE_KEYS.TRACKER_USED).catch((err) => {
+          console.error('[windowMode] Failed to record tracker usage:', err);
+        });
+      }
     }
 
     const workspacePath = get(windowModeWorkspaceAtom);

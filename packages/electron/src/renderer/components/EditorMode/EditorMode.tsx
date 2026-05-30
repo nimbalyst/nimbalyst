@@ -450,6 +450,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         userName: cfg.userName ?? 'Test User',
         userEmail: cfg.userEmail ?? 'test@test.com',
         initialContent: params.initialContent,
+        urlExtraQuery: params.urlExtraQuery,
         createWebSocket,
         getJwt: async () => 'test-jwt',
         addTab: tabsActions.addTab,

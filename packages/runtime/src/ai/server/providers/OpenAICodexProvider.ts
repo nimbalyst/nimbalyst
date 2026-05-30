@@ -73,6 +73,14 @@ interface PendingAskUserQuestionEntry {
   sessionId: string;
 }
 
+const PERSISTED_APP_SERVER_NOTIFICATION_METHODS = new Set([
+  'item/started',
+  'item/completed',
+  'turn/completed',
+  'turn/failed',
+  'error',
+]);
+
 export class OpenAICodexProvider extends BaseAgentProvider {
   static readonly DEFAULT_MODEL = DEFAULT_MODELS['openai-codex'];
   private static readonly CODEX_EXECUTION_PATTERN = 'OpenAICodex(agent-run:*)';
@@ -150,6 +158,18 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    * dedupe and snapshot only on the first observation.
    */
   private readonly fileChangePreEditSnapshottedIds = new Map<string, Set<string>>();
+
+  /**
+   * Per-session dedupe state for app-server notifications that should only be
+   * persisted once per turn/item. This protects the transcript pipeline from
+   * duplicate `item/started` / `item/completed` / terminal turn notifications
+   * without touching streaming text deltas, which can legitimately repeat the
+   * same token content.
+   */
+  private readonly appServerNotificationDeduper = new Map<
+    string,
+    { turnId: string | null; seenKeys: Set<string> }
+  >();
 
   /**
    * In-memory cache of live `ProtocolSession` objects, keyed by Nimbalyst
@@ -1706,6 +1726,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   cleanupSession(sessionId: string): void {
     this.evictLiveProtocolSession(sessionId);
     this.sessions.deleteSession(sessionId);
+    this.appServerNotificationDeduper.delete(sessionId);
   }
 
   destroy(): void {
@@ -1716,6 +1737,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       catch (err) { console.warn('[CODEX] protocol.cleanupSession threw during destroy():', err); }
     }
     this.liveProtocolSessions.clear();
+    this.appServerNotificationDeduper.clear();
     // Clear permission service caches
     this.permissionService.clearSessionCache();
     // Call base class destroy (calls abort, sessions.clear, permissions.clearSessionCache, removeAllListeners)
@@ -2124,7 +2146,8 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
   /**
    * Store a raw protocol event to the database if present in event metadata.
-   * Each raw event is stored as a separate database row for Codex event tracking.
+   * Meaningful raw events are stored as separate database rows for Codex event
+   * tracking. Transient app-server deltas and status churn are intentionally skipped.
    */
   private async storeRawEventIfPresent(
     event: ProtocolEvent,
@@ -2144,6 +2167,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       const method = (event.metadata as { method?: string }).method;
       const params = (event.metadata as { params?: unknown }).params;
       if (!method) return;
+      if (!this.shouldPersistAppServerNotification(sessionId, method, params)) {
+        return;
+      }
       const synthesizedRaw = { method, params };
       const content = JSON.stringify(synthesizedRaw);
       const rawItemId = this.extractAppServerItemId(params);
@@ -2230,6 +2256,90 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
     // Detect todo_list items and update session metadata so sidebar widgets display them
     this.handleTodoListEvent(event.metadata.rawEvent, sessionId);
+  }
+
+  private shouldPersistAppServerNotification(
+    sessionId: string,
+    method: string,
+    params: unknown,
+  ): boolean {
+    if (!PERSISTED_APP_SERVER_NOTIFICATION_METHODS.has(method)) {
+      return false;
+    }
+
+    const notificationKey = this.buildAppServerNotificationKey(method, params);
+    if (!notificationKey) {
+      return true;
+    }
+
+    const turnId = this.extractAppServerTurnId(params);
+    const existing = this.appServerNotificationDeduper.get(sessionId);
+    const state =
+      !existing || existing.turnId !== turnId
+        ? { turnId, seenKeys: new Set<string>() }
+        : existing;
+
+    if (state !== existing) {
+      this.appServerNotificationDeduper.set(sessionId, state);
+    }
+
+    if (state.seenKeys.has(notificationKey)) {
+      return false;
+    }
+
+    state.seenKeys.add(notificationKey);
+    return true;
+  }
+
+  private buildAppServerNotificationKey(method: string, params: unknown): string | null {
+    if (!params || typeof params !== 'object') {
+      return null;
+    }
+
+    const record = params as {
+      item?: { id?: unknown };
+      turn?: { id?: unknown };
+    };
+    const turnId = this.extractAppServerTurnId(params) ?? 'no-turn';
+
+    switch (method) {
+      case 'item/started':
+      case 'item/completed': {
+        const itemId = record.item?.id;
+        if (typeof itemId !== 'string' || !itemId) {
+          return null;
+        }
+        return `${method}:${turnId}:${itemId}`;
+      }
+      case 'turn/completed':
+      case 'turn/failed': {
+        const completedTurnId = record.turn?.id;
+        if (typeof completedTurnId !== 'string' || !completedTurnId) {
+          return null;
+        }
+        return `${method}:${completedTurnId}`;
+      }
+      default:
+        return null;
+    }
+  }
+
+  private extractAppServerTurnId(params: unknown): string | null {
+    if (!params || typeof params !== 'object') {
+      return null;
+    }
+
+    const record = params as {
+      turnId?: unknown;
+      turn?: { id?: unknown };
+    };
+
+    if (typeof record.turnId === 'string' && record.turnId) {
+      return record.turnId;
+    }
+
+    const turnId = record.turn?.id;
+    return typeof turnId === 'string' && turnId ? turnId : null;
   }
 
   /**

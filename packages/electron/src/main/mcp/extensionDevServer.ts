@@ -1832,7 +1832,12 @@ function createExtensionDevMcpServer(
         );
 
         try {
-          const result = await database.query(sql);
+          // Route through the read-only path so the database enforces
+          // SELECT-only at the engine level (PGLite SET TRANSACTION READ ONLY
+          // + statement_timeout; SQLite PRAGMA query_only = ON + interrupt).
+          // The prefix check above is defense in depth — the engine is the
+          // real authority.
+          const result = await database.queryReadOnly(sql, [], 30_000);
 
           // Format results for display
           const rowCount = result.rows.length;

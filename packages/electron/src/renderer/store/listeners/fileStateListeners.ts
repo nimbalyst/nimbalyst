@@ -71,6 +71,7 @@ export function registerSessionWorkspace(sessionId: string, workspacePath: strin
  */
 export function unregisterSessionWorkspace(sessionId: string): void {
   sessionWorkspaceRegistry.delete(sessionId);
+  clearInitialSessionFileStateCache(sessionId);
 }
 
 /**
@@ -88,11 +89,48 @@ export function unregisterWorktreePath(worktreeId: string): void {
   worktreePathRegistry.delete(worktreeId);
 }
 
+// Idempotency guard: callers like FilesEditedSidebar fire this from a
+// useEffect with `workstreamSessions` in its deps, and that array's identity
+// churns on every render -- so without this guard we got 120+ IPC calls per
+// second for a single session. The actual data is kept in sync by the
+// session-files:updated and history:pending-count-changed listeners; the
+// initial load only needs to happen once per (session, workspace) per renderer.
+const initialFileStateLoaded = new Set<string>();
+const initialFileStateInFlight = new Map<string, Promise<void>>();
+
+export function clearInitialSessionFileStateCache(sessionId?: string): void {
+  if (sessionId) {
+    for (const key of Array.from(initialFileStateLoaded)) {
+      if (key.startsWith(`${sessionId}\0`)) initialFileStateLoaded.delete(key);
+    }
+  } else {
+    initialFileStateLoaded.clear();
+  }
+}
+
 /**
  * Load initial file state for a session.
  * Call this when a session is created or loaded to populate atoms with initial data.
+ * Idempotent: subsequent calls for the same (sessionId, workspacePath) are no-ops
+ * until clearInitialSessionFileStateCache(sessionId) is called.
  */
 export async function loadInitialSessionFileState(sessionId: string, workspacePath: string): Promise<void> {
+  const key = `${sessionId}\0${workspacePath}`;
+  if (initialFileStateLoaded.has(key)) return;
+  const inFlight = initialFileStateInFlight.get(key);
+  if (inFlight) return inFlight;
+
+  const promise = loadInitialSessionFileStateImpl(sessionId, workspacePath);
+  initialFileStateInFlight.set(key, promise);
+  try {
+    await promise;
+    initialFileStateLoaded.add(key);
+  } finally {
+    initialFileStateInFlight.delete(key);
+  }
+}
+
+async function loadInitialSessionFileStateImpl(sessionId: string, workspacePath: string): Promise<void> {
   // Debug logging - uncomment if needed
   // console.log('[fileStateListeners] Loading initial state for session:', sessionId);
 
@@ -175,7 +213,9 @@ export function initFileStateListeners(workspacePath: string): () => void {
   const cleanups: Array<() => void> = [];
   const enrichDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const gitStatusDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const pendingCountDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const GIT_STATUS_DEBOUNCE_MS = 300;
+  const PENDING_COUNT_DEBOUNCE_MS = 250;
 
   // Load all uncommitted files for workspace immediately
   (async () => {
@@ -234,18 +274,15 @@ export function initFileStateListeners(workspacePath: string): () => void {
           // Also refresh git status for these files
           await refreshSessionGitStatus(sessionId);
 
-          // Keep pending-review atom in sync for this session.
-          // This prevents stale UI state when pending tags are created/updated
-          // close to file-edit events.
-          const wsPath = sessionWorkspaceRegistry.get(sessionId);
-          if (wsPath) {
-            const pendingFiles: string[] = await window.electronAPI.invoke(
-              'history:get-pending-files-for-session',
-              wsPath,
-              sessionId
-            );
-            store.set(setSessionPendingReviewFilesAtom, { sessionId, pendingFiles });
-          }
+          // Note: we used to also fetch pending-review files here to keep the
+          // atom in sync, but that fired once per session-files:updated event
+          // -- and the file-attribution service emits one per file edit during
+          // AI tool execution (hundreds per second in active sessions). The
+          // history:pending-count-changed handler below already covers this
+          // case with proper per-workspace debouncing, and emitPendingCountChanged
+          // is called from every site that mutates pending-review state
+          // (createTag, markTagReviewed, clearAllPending, etc.). Don't
+          // re-add this without a debounce.
         }
       } catch (error) {
         console.error('[fileStateListeners] Failed to fetch file edits for session:', sessionId, error);
@@ -318,27 +355,41 @@ export function initFileStateListeners(workspacePath: string): () => void {
   // =========================================================================
 
   cleanups.push(
-    window.electronAPI.on('history:pending-count-changed', async () => {
-      // Refresh pending files for all sessions
-      const allSessions = Array.from(sessionWorkspaceRegistry.keys());
+    window.electronAPI.on('history:pending-count-changed', (data: { workspacePath: string; count: number }) => {
+      // Only refresh sessions in the workspace whose pending count actually changed.
+      // The previous fan-out across all registered sessions caused a 200+ call
+      // pile-up when AI sessions tagged many files in succession (each createTag
+      // emits one broadcast).
+      const eventWorkspacePath = data?.workspacePath;
+      if (!eventWorkspacePath) return;
 
-      await Promise.all(
-        allSessions.map(async (sessionId) => {
-          const wsPath = sessionWorkspaceRegistry.get(sessionId);
-          if (!wsPath) return;
+      // Debounce per workspace so a burst of createTag emissions coalesces into
+      // a single refresh pass (mirrors GIT_STATUS_DEBOUNCE_MS behavior).
+      const existingTimer = pendingCountDebounceTimers.get(eventWorkspacePath);
+      if (existingTimer) clearTimeout(existingTimer);
 
-          try {
-            const pendingFiles: string[] = await window.electronAPI.invoke(
-              'history:get-pending-files-for-session',
-              wsPath,
-              sessionId
-            );
-            store.set(setSessionPendingReviewFilesAtom, { sessionId, pendingFiles });
-          } catch (error) {
-            console.error('[fileStateListeners] Failed to fetch pending files for session:', sessionId, error);
-          }
-        })
-      );
+      pendingCountDebounceTimers.set(eventWorkspacePath, setTimeout(async () => {
+        pendingCountDebounceTimers.delete(eventWorkspacePath);
+
+        const sessionsInWorkspace = Array.from(sessionWorkspaceRegistry.entries())
+          .filter(([, wsPath]) => wsPath === eventWorkspacePath)
+          .map(([sessionId]) => sessionId);
+
+        await Promise.all(
+          sessionsInWorkspace.map(async (sessionId) => {
+            try {
+              const pendingFiles: string[] = await window.electronAPI.invoke(
+                'history:get-pending-files-for-session',
+                eventWorkspacePath,
+                sessionId
+              );
+              store.set(setSessionPendingReviewFilesAtom, { sessionId, pendingFiles });
+            } catch (error) {
+              console.error('[fileStateListeners] Failed to fetch pending files for session:', sessionId, error);
+            }
+          })
+        );
+      }, PENDING_COUNT_DEBOUNCE_MS));
     })
   );
 
@@ -348,6 +399,8 @@ export function initFileStateListeners(workspacePath: string): () => void {
     enrichDebounceTimers.clear();
     gitStatusDebounceTimers.forEach(timer => clearTimeout(timer));
     gitStatusDebounceTimers.clear();
+    pendingCountDebounceTimers.forEach(timer => clearTimeout(timer));
+    pendingCountDebounceTimers.clear();
   };
 }
 

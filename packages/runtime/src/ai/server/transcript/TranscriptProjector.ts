@@ -26,6 +26,16 @@ export interface TranscriptViewModel {
   messages: TranscriptViewMessage[];
 }
 
+export interface ToolCallDiffResult {
+  filePath: string;
+  operation: string; // 'create' | 'edit' | 'delete' | 'bash'
+  diffs: Array<{ oldString: string; newString: string }>;
+  content?: string; // full content for create operations
+  linesAdded?: number;
+  linesRemoved?: number;
+  debugInfo?: string; // how this file was linked to the tool call
+}
+
 export interface TranscriptViewMessage {
   id: number;
   sequence: number;
@@ -48,6 +58,7 @@ export interface TranscriptViewMessage {
     exitCode?: number;
     durationMs?: number;
     changes?: Array<{ path: string; patch: string }>;
+    fileDiffs?: ToolCallDiffResult[];
     providerToolCallId: string | null;
     progress: Array<{
       elapsedSeconds: number;

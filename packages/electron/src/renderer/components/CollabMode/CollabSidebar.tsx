@@ -17,6 +17,7 @@ import {
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import {
   buildCollabTree,
+  filterCollabTree,
   getCollabDocumentPath,
   getCollabNodeName,
   getCollabParentPath,
@@ -78,6 +79,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [customFolders, setCustomFolders] = useState<string[]>([]);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const [isCreateDocumentOpen, setIsCreateDocumentOpen] = useState(false);
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
   const [documentToRename, setDocumentToRename] = useState<SharedDocument | null>(null);
@@ -99,6 +101,12 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
   const tree = useMemo(
     () => buildCollabTree(sharedDocuments, customFolders),
     [sharedDocuments, customFolders]
+  );
+  const trimmedSearchQuery = searchQuery.trim();
+  const hasActiveSearch = trimmedSearchQuery.length > 0;
+  const filteredTree = useMemo(
+    () => filterCollabTree(tree, trimmedSearchQuery),
+    [tree, trimmedSearchQuery]
   );
 
   const existingPaths = useMemo(() => {
@@ -152,6 +160,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     setContextMenu(null);
     setDocumentToRename(null);
     setSelectedFolderPath(null);
+    setSearchQuery('');
     setExpandedFolders(new Set());
     setCustomFolders([]);
     setUserTouchedExpansion(false);
@@ -483,7 +492,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
       const indent = depth * 16 + 8;
 
       if (node.type === 'folder') {
-        const isExpanded = expandedFolders.has(node.path);
+        const isExpanded = hasActiveSearch || expandedFolders.has(node.path);
         const isSelected = selectedFolderPath === node.path;
         const isDropTarget = dropTargetPath === node.path;
 
@@ -493,7 +502,9 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               className={`w-full flex items-center text-left file-tree-directory${isSelected ? ' selected' : ''}${isDropTarget ? ' drag-over' : ''}`}
               style={{ paddingLeft: indent }}
               onClick={() => {
-                toggleFolder(node.path);
+                if (!hasActiveSearch) {
+                  toggleFolder(node.path);
+                }
                 setSelectedFolderPath(node.path);
               }}
               onContextMenu={(event) => handleContextMenu(event, node)}
@@ -611,6 +622,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     moveDraggedDocument,
     onDocumentSelect,
     selectedFolderPath,
+    hasActiveSearch,
     toggleFolder,
   ]);
 
@@ -659,6 +671,30 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
           </>
         }
       />
+
+      <div className="session-history-search px-3 py-2 border-b border-[var(--nim-border)] shrink-0 relative">
+          <input
+            type="text"
+            className="session-history-search-input nim-input w-full pl-3 pr-9 py-2 text-[13px] text-[var(--nim-text)] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded outline-none transition-colors duration-150 placeholder:text-[var(--nim-text-faint)] focus:border-[var(--nim-primary)] focus:bg-[var(--nim-bg)]"
+            placeholder="Search shared documents..."
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            aria-label="Search shared documents"
+          />
+          {hasActiveSearch && (
+            <button
+              type="button"
+              className="session-history-search-clear absolute right-5 top-1/2 -translate-y-1/2 flex items-center justify-center w-5 h-5 rounded text-[var(--nim-text-muted)] bg-transparent border-none cursor-pointer transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+              onClick={() => setSearchQuery('')}
+              aria-label="Clear shared document search"
+              title="Clear search"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </button>
+          )}
+      </div>
 
       {/* Document tree */}
       <div
@@ -729,7 +765,20 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               </div>
             );
           }
-          return <div>{renderTree(tree)}</div>;
+          if (filteredTree.length === 0) {
+            return (
+              <div className="px-2 py-4 text-center">
+                <MaterialSymbol icon="search_off" size={32} className="text-nim-faint mb-2" />
+                <p className="text-xs text-nim-faint m-0">
+                  No shared documents match "{trimmedSearchQuery}".
+                </p>
+                <p className="text-xs text-nim-faint mt-1 m-0">
+                  Try a different file name or folder path.
+                </p>
+              </div>
+            );
+          }
+          return <div>{renderTree(filteredTree)}</div>;
         })()}
       </div>
 

@@ -21,7 +21,7 @@
  *   projection via `applyRemoteItem` after bootstrap, which is correct.
  */
 
-import type { PGLiteDatabaseWorker } from '../../database/PGLiteDatabaseWorker';
+import type { AppDatabase } from '../../database/PGLiteDatabaseWorker';
 import type {
   EncryptedTrackerItemEnvelope,
   SyncId,
@@ -112,7 +112,7 @@ interface PGLiteTrackerTransactionRow {
 
 export class TrackerPGLiteStore implements TrackerPersistence {
   constructor(
-    private readonly db: PGLiteDatabaseWorker,
+    private readonly db: AppDatabase,
     private readonly workspacePath: string,
   ) {}
 
@@ -759,8 +759,16 @@ function pgliteRowToPayload(row: PGLiteTrackerItemRow): TrackerItemPayload {
 function pgliteRowToTrackerItem(row: PGLiteTrackerItemRow, workspacePath: string): TrackerItem {
   const data: Record<string, unknown> =
     typeof row.data === 'string' ? JSON.parse(row.data) : ((row.data as Record<string, unknown>) || {});
+  // type_tags is TEXT[] in PGLite (returns string[]) but TEXT in SQLite
+  // (returns a JSON-encoded string). Parse the SQLite shape back into an array.
+  const rawTags = row.type_tags;
+  const parsedTags: string[] | undefined = Array.isArray(rawTags)
+    ? (rawTags as string[])
+    : typeof rawTags === 'string'
+      ? safeParseStringArray(rawTags)
+      : undefined;
   const typeTags: string[] =
-    Array.isArray(row.type_tags) && row.type_tags.length > 0 ? row.type_tags : [row.type];
+    parsedTags && parsedTags.length > 0 ? parsedTags : [row.type];
   return {
     id: row.id,
     issueNumber: row.issue_number ?? undefined,
@@ -807,4 +815,13 @@ function pgliteRowToTrackerItem(row: PGLiteTrackerItemRow, workspacePath: string
     documentId: data.documentId as string | undefined,
     syncStatus: (row.sync_status ?? 'synced') as TrackerItem['syncStatus'],
   };
+}
+
+function safeParseStringArray(raw: string): string[] | undefined {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as string[]) : undefined;
+  } catch {
+    return undefined;
+  }
 }

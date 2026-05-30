@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef, memo, useMemo, useCallback } from '
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { groupSessionStatusAtom, sessionProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom } from '../../store';
-import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { SessionContextMenu } from './SessionContextMenu';
+import { SessionRelativeTime } from './SessionRelativeTime';
 
 import type { SessionMeta as SessionItem } from '../../store';
 
@@ -179,7 +179,7 @@ const BlitzSessionRow: React.FC<{
           isActive ? 'font-medium' : ''
         }`}>{sessionTitle}</span>
         <span className="shrink-0 text-[0.6875rem] text-[var(--nim-text-faint)] ml-2">
-          {getRelativeTimeString(session.updatedAt || session.createdAt)}
+          <SessionRelativeTime sessionId={session.id} fallbackTimestamp={session.updatedAt || session.createdAt} />
         </span>
       </>
     )}

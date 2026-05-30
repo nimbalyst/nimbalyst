@@ -163,9 +163,9 @@ describe('extractEditsFromToolMessage', () => {
   describe('Codex file_change shape (legacy synchronous adapter, removed)', () => {
     // The synchronous extractFileChangeEdits adapter was removed because the raw
     // canonical event for Codex file_change carries no diff content. Diff rendering
-    // is now handled by AsyncEditToolResultCard via getToolCallDiffs (the async
-    // path). The mapping that AsyncEditToolResultCard uses is `toolCallDiffsToEdits`
-    // -- see the dedicated describe block below.
+    // is now handled by the main-process transcript enrichment path. The mapping
+    // from resolved file diffs into EditToolResultCard input stays in
+    // `toolCallDiffsToEdits` -- see the dedicated describe block below.
     it('extractEditsFromToolMessage returns [] for a file_change tool', () => {
       const message = makeTestMessage({
         toolCall: {
@@ -194,9 +194,9 @@ describe('extractEditsFromToolMessage', () => {
   });
 
   describe('toolCallDiffsToEdits', () => {
-    // Adapter from the workstream's getToolCallDiffs IPC result shape into the
-    // edit-record shape EditToolResultCard expects. Used by AsyncEditToolResultCard
-    // for Codex file_change, whose raw item.completed payload has no diff content.
+    // Adapter from the resolved transcript file-diff payload into the edit-record
+    // shape EditToolResultCard expects. Used by the main-enriched file_change path,
+    // whose raw item.completed payload has no diff content.
 
     it('maps an edit-operation diff to a replacements-style update edit', () => {
       const edits = toolCallDiffsToEdits([

@@ -28,6 +28,9 @@ interface WalStats {
   minWalSize: string;
   maxWalSize: string;
   checkpointTimeout: string;
+  // Backend-specific blurb -- explains how WAL is trimmed for the active engine
+  // (PGLite has no background checkpointer; SQLite auto-checkpoints by page).
+  description?: string;
 }
 
 interface DashboardStats {
@@ -243,9 +246,11 @@ export function DatabaseDashboard({ onTableSelect }: Props) {
                   <span className="text-[var(--nim-text-muted)]">Checkpoint timeout</span>
                   <span>{stats.walStats.checkpointTimeout}</span>
                 </div>
-                <div className="text-xs text-[var(--nim-text-faint)] pt-1">
-                  PGLite has no background checkpointer; WAL is trimmed by explicit CHECKPOINT after init, before close, and when size exceeds 200 MB.
-                </div>
+                {stats.walStats.description && (
+                  <div className="text-xs text-[var(--nim-text-faint)] pt-1">
+                    {stats.walStats.description}
+                  </div>
+                )}
               </div>
             </div>
           );

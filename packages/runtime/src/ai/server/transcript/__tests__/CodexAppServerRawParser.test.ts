@@ -56,6 +56,36 @@ describe('CodexAppServerRawParser', () => {
     expect(descs).toEqual([{ type: 'assistant_message', text: 'hello there', createdAt: msg.createdAt }]);
   });
 
+  it('dedupes repeated item and terminal turn notifications on the same parser instance', async () => {
+    const parser = new CodexAppServerRawParser();
+    const messageCompleted = makeRawMessage({
+      id: 2,
+      content: envelope('item/completed', {
+        threadId: 't-1',
+        turnId: 'turn-1',
+        item: { id: 'msg-dup', type: 'agentMessage', text: 'hello there', status: 'completed' },
+      }),
+    });
+    const firstMessage = await parser.parseMessage(messageCompleted, makeContext());
+    const secondMessage = await parser.parseMessage(messageCompleted, makeContext());
+    expect(firstMessage).toEqual([{ type: 'assistant_message', text: 'hello there', createdAt: messageCompleted.createdAt }]);
+    expect(secondMessage).toEqual([]);
+
+    const turnCompleted = makeRawMessage({
+      id: 3,
+      content: envelope('turn/completed', {
+        threadId: 't-1',
+        turn: { id: 'turn-1', status: 'completed' },
+        usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 },
+      }),
+    });
+    const firstTurn = await parser.parseMessage(turnCompleted, makeContext());
+    const secondTurn = await parser.parseMessage(turnCompleted, makeContext());
+    expect(firstTurn).toHaveLength(1);
+    expect(firstTurn[0]).toMatchObject({ type: 'turn_ended' });
+    expect(secondTurn).toEqual([]);
+  });
+
   it('parses item/completed fileChange into started + completed tool-call descriptors', async () => {
     const parser = new CodexAppServerRawParser();
     const msg = makeRawMessage({

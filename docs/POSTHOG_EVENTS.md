@@ -265,6 +265,11 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | `database_init_failed_recovery_choice` | `PGLiteDatabaseWorker.ts:343, 399, 408` | User makes a choice in init failure recovery dialog | `choice` (restore_from_backup/start_fresh)<br/>`confirmed` (for start_fresh) | (pending release) |  |
 | `known_error` | Various (see Known Error IDs below) | A recognized error condition occurs that we want to track and monitor | `errorId` (see Known Error IDs)<br/>`context` (where the error occurred)<br/>`errorMessage` (optional, truncated) | (pending release as of c597008b) |  |
 | `feature_first_use` | `AIService.ts:406`<br/>`WindowManager.ts:230`<br/>`AnalyticsHandlers.ts:45` | User uses a feature for the first time | `feature`<br/>`daysSinceInstall` | v0.45.25 (2025-11-14) |  |
+| `migration_completed` | `MigrationOrchestrator.ts` | PGLite → SQLite migration finished successfully | `pglite_dir_size_bytes` (gauge of pre-migration store size)<br/>`target_row_count` (total rows migrated)<br/>`duration_ms`<br/>`tables_migrated`<br/>`spot_check_count`<br/>`foreign_key_violations`<br/>`integrity_check` ("ok") | (pending release) |  |
+| `migration_failed` | `MigrationOrchestrator.ts` | PGLite → SQLite migration aborted before cutover | `phase` (closing-pglite / opening-pglite / opening-sqlite / migrating / verifying-* / cutover)<br/>`message` (first 500 chars of error) | (pending release) |  |
+| `pglite_legacy_dir_present` | `database/initialize.ts` | Heartbeat fired at startup when a `pglite-db.migrated-*` directory still exists; gates the decision to retire the PGLite reader | `active_backend` (sqlite/pglite) | (pending release) |  |
+| `migration_dry_run_completed` | `ipc/MigrationHandlers.ts` | Alpha-grade preview: migration ran against a live PGLite to a throwaway SQLite dir without cutover | `target_row_count`<br/>`duration_ms`<br/>`tables_migrated`<br/>`sqlite_file_bytes` (estimated post-cutover footprint)<br/>`pglite_dir_bytes` (current PGLite footprint)<br/>`foreign_key_violations`<br/>`integrity_check` | (pending release) |  |
+| `migration_dry_run_failed` | `ipc/MigrationHandlers.ts` | Dry-run aborted before completion (schema open / read / verification failure) | `message` (first 500 chars of error) | (pending release) |  |
 
 #### Known Error IDs
 

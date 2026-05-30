@@ -65,6 +65,7 @@ import {
 import {
   applyToolResultToToolCall,
   isSearchableAssistantChunk,
+  isTransientClaudeCodeChunk,
 } from './claudeCode/toolChunkUtils';
 import {
   INTERNAL_MCP_TOOLS,
@@ -863,8 +864,12 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           }
 
           // Log raw SDK chunks to database (non-blocking for streaming performance)
-          // Extract SDK-provided uuid for deduplication in sync
-          if (sessionId) {
+          // Extract SDK-provided uuid for deduplication in sync.
+          // Skip transient chunk types (hook lifecycle, task progress, tool_progress,
+          // auth_status, rate_limit_event): the live dispatch loop above already
+          // reacted to them, and the persistent reparse path (ClaudeCodeRawParser)
+          // ignores them, so persisting just inflates ai_agent_messages + sync churn.
+          if (sessionId && !isTransientClaudeCodeChunk(chunk)) {
             const rawChunkJson = typeof chunk === 'string'
               ? JSON.stringify({ type: 'text', content: chunk })
               : JSON.stringify(chunk);

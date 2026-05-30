@@ -18,7 +18,15 @@ export default defineConfig({
       ['packages/electron/src/main/**/*.{test,spec}.{ts,tsx}', 'node'],
       ['packages/runtime/src/ai/**/*.{test,spec}.{ts,tsx}', 'node']
     ],
-    setupFiles: './test-utils/setup.ts',
+    setupFiles: ['./test-utils/setup.ts', './packages/electron/vitest.setup.ts'],
+    // Tests under packages/electron/src/main touch better-sqlite3, whose
+    // build/Release/.node binary is compiled for Electron (NODE_MODULE_VERSION
+    // 145) and unloadable under the system Node that vitest runs against.
+    // The globalSetup fetches a Node-ABI prebuild into a side cache and sets
+    // NIMBALYST_BETTER_SQLITE3_NATIVE; SQLiteDatabase reads that env to load
+    // the right binary via better-sqlite3's `nativeBinding` option without
+    // disturbing the Electron binary that the dev server depends on.
+    globalSetup: ['./packages/electron/vitest.globalSetup.ts'],
     include: [
       'packages/**/__tests__/**/*.test.{ts,tsx}',
       'packages/**/__tests__/**/*.spec.{ts,tsx}'

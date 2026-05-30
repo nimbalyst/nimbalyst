@@ -1,26 +1,24 @@
 /**
- * ToolCallChanges - Shows file changes caused by a tool call.
+ * ToolCallChanges - Shows pre-resolved file changes caused by a tool call.
  *
  * Renders a collapsible "File Changes" section with:
  * - Compact summary header showing file count and +/- stats
  * - DiffViewer for edit operations (old_string/new_string)
  * - NewFilePreview for create operations (full content)
  * - Compact file entry for bash/unknown operations (path + stats only)
+ *
+ * Diff resolution happens in main during transcript enrichment. The renderer
+ * only receives the resolved `diffs` payload and renders it synchronously.
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import type { ToolCallDiffResult } from './CustomToolWidgets';
 import { DiffViewer } from './DiffViewer';
 import { NewFilePreview } from './NewFilePreview';
 import { toProjectRelative } from '../utils/pathResolver';
 
 interface ToolCallChangesProps {
-  toolCallItemId: string;
-  toolCallTimestamp?: number;
-  getToolCallDiffs: (
-    toolCallItemId: string,
-    toolCallTimestamp?: number
-  ) => Promise<ToolCallDiffResult[] | null>;
+  diffs: ToolCallDiffResult[] | null | undefined;
   isExpanded: boolean;
   workspacePath?: string;
   onOpenFile?: (filePath: string) => void;
@@ -64,46 +62,25 @@ function getOperationBadge(operation: string): { label: string; colorClass: stri
 }
 
 export const ToolCallChanges: React.FC<ToolCallChangesProps> = ({
-  toolCallItemId,
-  toolCallTimestamp,
-  getToolCallDiffs,
+  diffs,
   isExpanded,
   workspacePath,
   onOpenFile,
   renderEmbeddedFile,
   canEmbedFile,
 }) => {
-  const [diffs, setDiffs] = useState<ToolCallDiffResult[] | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const [changesExpanded, setChangesExpanded] = useState(false);
-  const fetchedRef = useRef(false);
-
-  // Reset fetch state when tool call identity changes
-  useEffect(() => {
-    fetchedRef.current = false;
-    setDiffs(null);
-  }, [toolCallItemId, toolCallTimestamp]);
-
-  // Fetch diffs when the parent tool card is expanded
-  useEffect(() => {
-    if (!isExpanded || fetchedRef.current || !toolCallItemId) return;
-    fetchedRef.current = true;
-    setIsLoading(true);
-    getToolCallDiffs(toolCallItemId, toolCallTimestamp)
-      .then(result => setDiffs(result))
-      .catch(() => setDiffs(null))
-      .finally(() => setIsLoading(false));
-  }, [isExpanded, toolCallItemId, toolCallTimestamp, getToolCallDiffs]);
 
   // Don't render anything if not expanded or no diffs
   if (!isExpanded) return null;
-  if (isLoading) return null; // Don't show loading state - it's fast enough
   if (!diffs || diffs.length === 0) return null;
 
   // Compute summary stats
   const totalAdded = diffs.reduce((sum, d) => sum + (d.linesAdded ?? 0), 0);
   const totalRemoved = diffs.reduce((sum, d) => sum + (d.linesRemoved ?? 0), 0);
   const fileCount = diffs.length;
+  const primaryFilePath = diffs[0]?.filePath;
+  const primarySupportsEmbeddedPreview = !!canEmbedFile?.(diffs[0]?.filePath);
   const summaryParts = [`${fileCount} file${fileCount !== 1 ? 's' : ''} changed`];
   if (totalAdded > 0) summaryParts.push(`+${totalAdded}`);
   if (totalRemoved > 0) summaryParts.push(`-${totalRemoved}`);
@@ -149,8 +126,17 @@ export const ToolCallChanges: React.FC<ToolCallChangesProps> = ({
             const badge = getOperationBadge(diff.operation);
             const hasDiffContent = diff.diffs.length > 0;
             const hasNewContent = !hasDiffContent && !!diff.content;
+            const isSecondaryEmbeddableFile =
+              diff.filePath !== primaryFilePath &&
+              !!canEmbedFile?.(diff.filePath);
             const shouldUseEmbeddedPreview =
-              !!renderEmbeddedFile && !!canEmbedFile?.(diff.filePath);
+              !!renderEmbeddedFile &&
+              primarySupportsEmbeddedPreview &&
+              !!canEmbedFile?.(diff.filePath);
+
+            if (!primarySupportsEmbeddedPreview && isSecondaryEmbeddableFile) {
+              return null;
+            }
 
             return (
               <div key={`${diff.filePath}-${idx}`} className="border-t border-nim first:border-t-0">

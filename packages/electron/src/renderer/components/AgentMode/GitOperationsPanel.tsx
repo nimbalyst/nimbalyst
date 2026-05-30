@@ -105,6 +105,7 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
 
     // Local state for commit workflow mode (manual vs smart)
     const [commitMode, setCommitMode] = useState<'manual' | 'smart'>('smart');
+    const [worktreeCommitMode, setWorktreeCommitMode] = useState<'manual' | 'smart'>('smart');
 
     // Default model for new sessions (user's last selected model)
     const defaultModel = useAtomValue(defaultAgentModelAtom);
@@ -399,11 +400,14 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
       try {
         const isInWorkstream = childSessionIds && childSessionIds.length > 1;
         const isInWorktree = !!worktreeId;
+        // In a worktree, edited files are rooted at the worktree path. Pass it so the
+        // session-edited-files cross-reference with git status resolves to matching paths.
+        const commitContextPath = worktreePath || workspacePath;
 
         // Pre-fetch commit context from main process
         const commitContext = await window.electronAPI.invoke(
           'git:get-commit-context',
-          workspacePath,
+          commitContextPath,
           sessionId,
           isInWorkstream ? childSessionIds : undefined
         ) as {
@@ -459,7 +463,7 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
       } catch (error) {
         console.error('[GitOperationsPanel] Failed to send smart commit message:', error);
       }
-    }, [sessionId, workspacePath, childSessionIds, worktreeId]);
+    }, [sessionId, workspacePath, worktreePath, childSessionIds, worktreeId]);
 
     // Toggle file staging
     const toggleFileStaging = useCallback(
@@ -1398,29 +1402,53 @@ Please proceed with this strategy.`;
                 {/* Section header with refresh button */}
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-semibold text-[var(--nim-text)]">Commit & Sync</span>
-                  <button
-                    onClick={async () => {
-                      try {
-                        // Refresh worktree data (local state for GitOperationsPanel)
-                        await Promise.all([
-                          loadWorktreeChangedFiles(),
-                          loadWorktreeCommits(),
-                          loadWorktreeStatus(),
-                        ]);
-                        // Also refresh the central atom so FilesEditedSidebar updates
-                        if (worktreeId && worktreePath) {
-                          await refreshWorktreeChangedFiles(worktreeId, worktreePath);
+                  <div className="flex items-center gap-2">
+                    <HelpTooltip testId="git-commit-mode-toggle">
+                      <div className="flex rounded-[3px] overflow-hidden border border-[var(--nim-border)]" data-testid="git-commit-mode-toggle">
+                        <button
+                          className={`px-1.5 py-0.5 border-none bg-transparent text-[var(--nim-text-muted)] text-[10px] font-medium cursor-pointer transition-all duration-150 border-r border-[var(--nim-border)] ${
+                            worktreeCommitMode === 'manual' ? 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)]' : 'hover:bg-[var(--nim-bg-tertiary)] hover:opacity-60'
+                          }`}
+                          onClick={() => setWorktreeCommitMode('manual')}
+                          aria-label="Manual commit message"
+                        >
+                          Manual
+                        </button>
+                        <button
+                          className={`px-1.5 py-0.5 border-none bg-transparent text-[var(--nim-text-muted)] text-[10px] font-medium cursor-pointer transition-all duration-150 ${
+                            worktreeCommitMode === 'smart' ? 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)]' : 'hover:bg-[var(--nim-bg-tertiary)] hover:opacity-60'
+                          }`}
+                          onClick={() => setWorktreeCommitMode('smart')}
+                          aria-label="AI-assisted commit"
+                        >
+                          Smart
+                        </button>
+                      </div>
+                    </HelpTooltip>
+                    <button
+                      onClick={async () => {
+                        try {
+                          // Refresh worktree data (local state for GitOperationsPanel)
+                          await Promise.all([
+                            loadWorktreeChangedFiles(),
+                            loadWorktreeCommits(),
+                            loadWorktreeStatus(),
+                          ]);
+                          // Also refresh the central atom so FilesEditedSidebar updates
+                          if (worktreeId && worktreePath) {
+                            await refreshWorktreeChangedFiles(worktreeId, worktreePath);
+                          }
+                        } catch (error) {
+                          console.error('[GitOperationsPanel] Failed to refresh worktree data:', error);
                         }
-                      } catch (error) {
-                        console.error('[GitOperationsPanel] Failed to refresh worktree data:', error);
-                      }
-                    }}
-                    className="flex items-center gap-1 px-2 py-1 text-[10px] text-[var(--nim-primary)] hover:bg-[var(--nim-bg-hover)] rounded transition-colors"
-                    title="Refresh worktree status and uncommitted files"
-                  >
-                    <MaterialSymbol icon="refresh" size={14} />
-                    <span>Refresh</span>
-                  </button>
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 text-[10px] text-[var(--nim-primary)] hover:bg-[var(--nim-bg-hover)] rounded transition-colors"
+                      title="Refresh worktree status and uncommitted files"
+                    >
+                      <MaterialSymbol icon="refresh" size={14} />
+                      <span>Refresh</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Worktree Status Info */}
@@ -1441,39 +1469,65 @@ Please proceed with this strategy.`;
                   </div>
                 )}
 
-                {/* Commit Message */}
-                <div className="flex flex-col gap-2">
-                  <textarea
-                    className="w-full p-2 border border-[var(--nim-border)] rounded bg-[var(--nim-bg)] text-[var(--nim-text)] text-[11px] font-[var(--nim-font-mono)] resize-y focus:outline-none focus:border-[var(--nim-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-                    placeholder="Commit message..."
-                    value={worktreeCommitMessage}
-                    onChange={(e) => setWorktreeCommitMessage(e.target.value)}
-                    disabled={worktreeIsCommitting}
-                    rows={3}
-                  />
-                </div>
+                {/* Manual commit workflow */}
+                {worktreeCommitMode === 'manual' && (
+                  <div className="flex flex-col gap-2" data-testid="git-operations-manual-mode">
+                    <textarea
+                      className="w-full p-2 border border-[var(--nim-border)] rounded bg-[var(--nim-bg)] text-[var(--nim-text)] text-[11px] font-[var(--nim-font-mono)] resize-y focus:outline-none focus:border-[var(--nim-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                      placeholder="Commit message..."
+                      value={worktreeCommitMessage}
+                      onChange={(e) => setWorktreeCommitMessage(e.target.value)}
+                      disabled={worktreeIsCommitting}
+                      rows={3}
+                    />
+                  </div>
+                )}
+
+                {/* Smart commit workflow - AI proposes commit in transcript */}
+                {worktreeCommitMode === 'smart' && (
+                  <div className="flex flex-col gap-2" data-testid="git-operations-smart-mode">
+                    <p className="text-xs text-[var(--nim-text-muted)] m-0 leading-normal">
+                      Let AI analyze your changes and propose a commit message.
+                    </p>
+                  </div>
+                )}
 
                 {/* Action Buttons */}
                 <div className="flex flex-col gap-2">
-                  <button
-                    type="button"
-                    className="w-full p-2 border-none rounded bg-[var(--nim-primary)] text-white text-xs font-semibold cursor-pointer flex items-center justify-center gap-1.5 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                    onClick={handleWorktreeCommit}
-                    disabled={!worktreeCanCommit}
-                    title={worktreeStagedCount === 0 ? 'Stage files to commit' : !worktreeCommitMessage.trim() ? 'Enter commit message' : 'Commit staged changes'}
-                  >
-                    {worktreeIsCommitting ? (
-                      <>
-                        <MaterialSymbol icon="progress_activity" size={16} />
-                        <span>Committing...</span>
-                      </>
-                    ) : (
-                      <>
-                        <MaterialSymbol icon="check" size={16} />
-                        <span>Commit ({worktreeStagedCount})</span>
-                      </>
-                    )}
-                  </button>
+                  {worktreeCommitMode === 'manual' ? (
+                    <button
+                      type="button"
+                      className="w-full p-2 border-none rounded bg-[var(--nim-primary)] text-white text-xs font-semibold cursor-pointer flex items-center justify-center gap-1.5 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      onClick={handleWorktreeCommit}
+                      disabled={!worktreeCanCommit}
+                      title={worktreeStagedCount === 0 ? 'Stage files to commit' : !worktreeCommitMessage.trim() ? 'Enter commit message' : 'Commit staged changes'}
+                    >
+                      {worktreeIsCommitting ? (
+                        <>
+                          <MaterialSymbol icon="progress_activity" size={16} />
+                          <span>Committing...</span>
+                        </>
+                      ) : (
+                        <>
+                          <MaterialSymbol icon="check" size={16} />
+                          <span>Commit ({worktreeStagedCount})</span>
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <HelpTooltip testId="git-operations-commit-with-ai-button">
+                      <button
+                        type="button"
+                        className="w-full p-2 border-none rounded text-white text-xs font-semibold cursor-pointer flex items-center justify-center gap-1.5 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-br from-[var(--nim-primary)] to-[var(--nim-primary-hover)]"
+                        onClick={handleSmartCommit}
+                        disabled={!worktreeHasUncommittedChanges}
+                        data-testid="git-operations-commit-with-ai-button"
+                      >
+                        <MaterialSymbol icon="auto_awesome" size={16} />
+                        Commit with AI
+                      </button>
+                    </HelpTooltip>
+                  )}
                   <button
                     type="button"
                     className={`w-full p-2 border-none rounded text-white text-xs font-semibold cursor-pointer flex items-center justify-center gap-1.5 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed ${

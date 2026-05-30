@@ -1,7 +1,9 @@
 import {AnalyticsService} from "../services/analytics/AnalyticsService.ts";
+import { FeatureUsageService, FEATURES } from '../services/FeatureUsageService';
 import {safeHandle, safeOn} from "../utils/ipcRegistry";
 
 const analytics = AnalyticsService.getInstance();
+const featureUsage = FeatureUsageService.getInstance();
 
 export function registerAnalyticsHandlers() {
   safeHandle("analytics:allowed", (): boolean => {
@@ -30,6 +32,7 @@ export function registerAnalyticsHandlers() {
       shortcut: data.shortcut,
       context: data.context,
     });
+    featureUsage.recordUsage(FEATURES.KEYBOARD_SHORTCUT_USED);
   });
 
   // Track toolbar button clicks from renderer

@@ -31,7 +31,25 @@ import {
   addSessionFullAtom,
   type SessionMeta,
 } from '../../store';
-import { alphaFeatureEnabledAtom } from '../../store/atoms/appSettings';
+import { alphaFeatureEnabledAtom, worktreesFeatureAvailableAtom } from '../../store/atoms/appSettings';
+import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
+import { activeSessionIdAtom as globalActiveSessionIdAtom } from '../../store/atoms/sessions';
+import { collapsedGroupsAtom, sortOrderAtom, setCollapsedGroupsAtom, setSortOrderAtom } from '../../store/atoms/agentMode';
+import {
+  isGitRepoAtom,
+  recentlyRenamedSessionAtom,
+  selectSessionActionAtom,
+  selectChildSessionActionAtom,
+  deleteSessionActionAtom,
+  archiveSessionActionAtom,
+  renameSessionActionAtom,
+  branchSessionActionAtom,
+  createNewSessionActionAtom,
+  createNewWorktreeSessionActionAtom,
+  addSessionToWorktreeActionAtom,
+  openNewBlitzDialogActionAtom,
+  requestSessionQuickOpenActionAtom,
+} from '../../store/actions/sessionHistoryActions';
 import { worktreeDisplayNameUpdateAtom } from '../../store/atoms/worktrees';
 import { blitzCreatedAtom, blitzDisplayNameUpdateAtom } from '../../store/atoms/blitz';
 import { superLoopListAtom, upsertSuperLoopAtom, removeSuperLoopAtom } from '../../store/atoms/superLoop';
@@ -90,6 +108,10 @@ type UnifiedListItem =
   | { type: 'blitz'; blitzId: string; worktrees: { worktreeId: string; sessions: SessionItem[] }[]; timestamp: number; rank: number }
   | { type: 'superLoop'; loop: SuperLoop; timestamp: number; rank: number }
   | { type: 'metaAgent'; metaSession: SessionItem; childSessions: SessionItem[]; timestamp: number; rank: number };
+
+// Virtual tag name used in the search-by-tag picker to filter sessions
+// attached to a worktree. Not stored on any session.
+const VIRTUAL_TAG_WORKTREE = 'worktree';
 
 // Search filter options for content search
 type SearchTimeRange = '7d' | '30d' | '90d' | 'all';
@@ -165,72 +187,114 @@ function compareNumbersAsc(a: number, b: number): number {
   return a - b;
 }
 
-interface SessionHistoryProps {
-  workspacePath: string;
-  activeSessionId: string | null;
-  loadedSessionIds?: string[]; // IDs of sessions loaded in tabs
-  // Note: processingSessions, unreadSessions, pendingPromptSessions are now deprecated
-  // SessionListItem subscribes directly to Jotai atoms for these states
-  renamedSession?: { id: string; title: string } | null; // Session that was just renamed
-  renamedWorktree?: { worktreeId: string; displayName: string } | null; // Worktree that just got a display name
-  updatedSession?: { id: string; timestamp: number } | null; // Session that was just updated
-  onSessionSelect: (sessionId: string) => void;
-  onChildSessionSelect?: (childSessionId: string, parentId: string, parentType: 'workstream' | 'worktree') => void;
-  onSessionDelete?: (sessionId: string) => void;
-  onSessionArchive?: (sessionId: string) => void; // Callback when session is archived (to close tab)
-  onSessionRename?: (sessionId: string, newName: string) => void; // Callback when session is renamed
-  onSessionBranch?: (sessionId: string) => void; // Callback when user wants to branch a session
-  onNewSession?: () => void;
-  onNewTerminal?: () => void; // Callback for creating a new terminal session
-  onNewWorktreeSession?: (options?: { baseBranch?: string; name?: string }) => void | Promise<void>; // Callback for creating new worktree session
-  onNewBlitz?: () => void; // Callback for creating a new blitz (multi-worktree prompt)
-  isGitRepo?: boolean; // Whether the workspace is a git repository (needed for worktree feature)
-  onAddSessionToWorktree?: (worktreeId: string) => void; // Callback for adding session to existing worktree
-  onAddTerminalToWorktree?: (worktreeId: string) => void; // Callback for adding terminal to existing worktree
-  onWorktreeFilesMode?: (worktreeId: string) => void; // Callback to open Files mode for a worktree
-  onWorktreeChangesMode?: (worktreeId: string) => void; // Callback to open Changes mode for a worktree
-  onImportSessions?: () => void; // Callback for opening import dialog
-  onOpenQuickSearch?: () => void; // Callback for opening session quick search (Cmd+L)
-  collapsedGroups: string[];
-  onCollapsedGroupsChange: (groups: string[]) => void;
-  sortOrder?: 'updated' | 'created'; // Sort order for sessions
-  onSortOrderChange?: (sortOrder: 'updated' | 'created') => void; // Callback when sort order changes
-  refreshTrigger?: number; // Optional trigger to force refresh
-  mode?: 'chat' | 'agent'; // Mode determines which sessions to show
-}
+/**
+ * SessionHistory takes no props. All inputs come from Jotai atoms:
+ *   - `activeWorkspacePathAtom` for the current workspace
+ *   - `globalActiveSessionIdAtom` for the selected session
+ *   - `collapsedGroupsAtom` / `sortOrderAtom` for user preferences
+ *   - `isGitRepoAtom(workspacePath)` for the New Worktree button
+ *   - `recentlyRenamedSessionAtom` for the rename-cache patch signal
+ *   - The action atoms in `sessionHistoryActions.ts` for every handler
+ *
+ * `mode` defaults to `'agent'`. The previous chat-mode discriminator is no
+ * longer wired through this component (the chat surface lives elsewhere
+ * now); we keep the constant for code paths that still branch on it.
+ */
+const SessionHistoryComponent: React.FC = () => {
+  const workspacePath = useAtomValue(activeWorkspacePathAtom) ?? '';
+  const activeSessionId = useAtomValue(globalActiveSessionIdAtom);
+  const collapsedGroups = useAtomValue(collapsedGroupsAtom);
+  const controlledSortOrder = useAtomValue(sortOrderAtom);
+  const setCollapsedGroupsAction = useSetAtom(setCollapsedGroupsAtom);
+  const setSortOrderAction = useSetAtom(setSortOrderAtom);
+  const onCollapsedGroupsChange = setCollapsedGroupsAction;
+  const onSortOrderChange = setSortOrderAction;
+  const isGitRepo = useAtomValue(isGitRepoAtom(workspacePath));
+  const isWorktreesFeatureAvailable = useAtomValue(worktreesFeatureAvailableAtom);
+  const isBlitzAlphaAvailable = useAtomValue(alphaFeatureEnabledAtom('blitz'));
 
+  const renamedSession = useAtomValue(recentlyRenamedSessionAtom);
+  // Workstream rename / update signals are not currently broadcast through
+  // atoms; the relevant effects below treat null as "no patch needed".
+  // `as ... | null` cast keeps the union type so TypeScript doesn't narrow
+  // away the property accesses inside the (always-skipped) effect bodies.
+  const renamedWorktree = null as { worktreeId: string; displayName: string } | null;
+  const updatedSession = null as { id: string; timestamp: number } | null;
+  const refreshTrigger = undefined as number | undefined;
+  const loadedSessionIds: string[] = [];
+  const mode: 'chat' | 'agent' = 'agent';
 
-const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
-  workspacePath,
-  activeSessionId,
-  loadedSessionIds = [],
-  renamedSession = null,
-  renamedWorktree = null,
-  updatedSession = null,
-  onSessionSelect,
-  onChildSessionSelect,
-  onSessionDelete,
-  onSessionArchive,
-  onSessionRename,
-  onSessionBranch,
-  onNewSession,
-  onNewTerminal,
-  onNewWorktreeSession,
-  onNewBlitz,
-  isGitRepo = false,
-  onAddSessionToWorktree,
-  onAddTerminalToWorktree,
-  onWorktreeFilesMode,
-  onWorktreeChangesMode,
-  onImportSessions,
-  onOpenQuickSearch,
-  collapsedGroups,
-  onCollapsedGroupsChange,
-  sortOrder: controlledSortOrder,
-  onSortOrderChange,
-  refreshTrigger,
-  mode = 'agent'
-}) => {
+  // Action-atom setters. `useSetAtom` returns identity-stable setters so
+  // these can be passed to children or used in effect deps without
+  // creating churn.
+  const dispatchSelectSession = useSetAtom(selectSessionActionAtom);
+  const dispatchSelectChildSession = useSetAtom(selectChildSessionActionAtom);
+  const dispatchDeleteSession = useSetAtom(deleteSessionActionAtom);
+  const dispatchArchiveSession = useSetAtom(archiveSessionActionAtom);
+  const dispatchRenameSession = useSetAtom(renameSessionActionAtom);
+  const dispatchBranchSession = useSetAtom(branchSessionActionAtom);
+  const dispatchCreateNewSession = useSetAtom(createNewSessionActionAtom);
+  const dispatchCreateNewWorktreeSession = useSetAtom(createNewWorktreeSessionActionAtom);
+  const dispatchAddSessionToWorktree = useSetAtom(addSessionToWorktreeActionAtom);
+  const dispatchOpenNewBlitzDialog = useSetAtom(openNewBlitzDialogActionAtom);
+  const dispatchRequestQuickOpen = useSetAtom(requestSessionQuickOpenActionAtom);
+
+  // Adapter callbacks for the existing rendering code that still expects
+  // single-arg / multi-arg shapes from the old prop interface.
+  //
+  // The explicit `: Type | undefined` annotations preserve the optional
+  // shape the JSX below was written against (`{onSessionDelete && ...}`,
+  // `onSessionRename ? () => ... : undefined`, etc.). Without them
+  // TypeScript would narrow these to "always defined" and flag every
+  // existing guard as a tautology (TS2774).
+  const onSessionSelect: ((sessionId: string) => void) | undefined = useCallback((sessionId: string) => {
+    void dispatchSelectSession(sessionId);
+  }, [dispatchSelectSession]);
+  const onChildSessionSelect: ((childSessionId: string, parentId: string, parentType: 'workstream' | 'worktree') => void) | undefined = useCallback(
+    (childSessionId: string, parentId: string, parentType: 'workstream' | 'worktree') => {
+      void dispatchSelectChildSession({ childSessionId, parentId, parentType });
+    },
+    [dispatchSelectChildSession],
+  );
+  const onSessionDelete: ((sessionId: string) => void) | undefined = useCallback((sessionId: string) => {
+    void dispatchDeleteSession(sessionId);
+  }, [dispatchDeleteSession]);
+  const onSessionArchive: ((sessionId: string) => void) | undefined = useCallback((sessionId: string) => {
+    void dispatchArchiveSession(sessionId);
+  }, [dispatchArchiveSession]);
+  const onSessionRename: ((sessionId: string, newName: string) => void) | undefined = useCallback((sessionId: string, newName: string) => {
+    void dispatchRenameSession({ sessionId, newName });
+  }, [dispatchRenameSession]);
+  const onSessionBranch: ((sessionId: string) => void) | undefined = useCallback((sessionId: string) => {
+    void dispatchBranchSession(sessionId);
+  }, [dispatchBranchSession]);
+  const onNewSession: (() => void) | undefined = useCallback(() => {
+    void dispatchCreateNewSession(undefined);
+  }, [dispatchCreateNewSession]);
+  const onNewWorktreeSession: ((options?: { baseBranch?: string; name?: string }) => void | Promise<void>) | undefined = isWorktreesFeatureAvailable
+    ? (options?: { baseBranch?: string; name?: string }) => dispatchCreateNewWorktreeSession(options)
+    : undefined;
+  const onAddSessionToWorktree: ((worktreeId: string) => void) | undefined = isWorktreesFeatureAvailable
+    ? (worktreeId: string) => { void dispatchAddSessionToWorktree(worktreeId); }
+    : undefined;
+  const onNewBlitz: (() => void) | undefined = isBlitzAlphaAvailable
+    ? () => { void dispatchOpenNewBlitzDialog(); }
+    : undefined;
+  const onOpenQuickSearch: (() => void) | undefined = useCallback(() => {
+    dispatchRequestQuickOpen();
+  }, [dispatchRequestQuickOpen]);
+
+  // The following ex-props are no longer wired (the chat-mode surface and
+  // terminal/import buttons live elsewhere). Local placeholders keep the
+  // rendered code below typecheckable without re-introducing prop drilling.
+  // `as ... | undefined` casts preserve the union so the existing
+  // `onCallback && onCallback()` guards in the JSX still type-check.
+  const onNewTerminal = undefined as (() => void) | undefined;
+  const onAddTerminalToWorktree = undefined as ((worktreeId: string) => void) | undefined;
+  const onWorktreeFilesMode = undefined as ((worktreeId: string) => void) | undefined;
+  const onWorktreeChangesMode = undefined as ((worktreeId: string) => void) | undefined;
+  const onImportSessions = undefined as (() => void) | undefined;
+
   // === Atom subscriptions for session list ===
   // Use sessionListRootAtom to only show root sessions (not children of workstreams)
   const allSessionsFromAtom = useAtomValue(sessionListRootAtom);
@@ -303,18 +367,20 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
   // Count of sessions matching the iOS project list definition: same workspace,
   // not archived, not workstream/blitz containers. iOS counts all sessions (incl.
   // children), so we count from the registry rather than from sessionListRootAtom
-  // which only contains roots + blitz children.
-  const registryForCount = useAtomValue(sessionRegistryAtom);
+  // which only contains roots + blitz children. We reuse the existing
+  // `sessionRegistry` subscription above instead of subscribing twice — a
+  // second `useAtomValue(sessionRegistryAtom)` here used to be one of the
+  // identity-churn surfaces flagged in the render trace.
   const iosMatchCount = useMemo(() => {
     let count = 0;
-    for (const s of registryForCount.values()) {
+    for (const s of sessionRegistry.values()) {
       if (s.workspaceId !== workspacePath) continue;
       if (s.isArchived) continue;
       if (s.sessionType === 'workstream' || s.sessionType === 'blitz') continue;
       count++;
     }
     return count;
-  }, [registryForCount, workspacePath]);
+  }, [sessionRegistry, workspacePath]);
 
   const [sessions, setSessions] = useState<SessionItem[]>([]); // Filtered sessions to display
   const loading = atomLoading && allSessions.length === 0; // Only show loading on initial load
@@ -339,10 +405,22 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
   const [workstreamChildrenCache, setWorkstreamChildrenCache] = useState<Map<string, SessionItem[]>>(new Map()); // Cache workstream children
   const [blitzCache, setBlitzCache] = useState<Map<string, BlitzData>>(new Map()); // Cache blitz data
   const pendingWorkstreamChildrenFetchesRef = useRef<Set<string>>(new Set());
+  // Mirrors `workstreamChildrenCache` so the workstream-children fetch
+  // effect below can read the current cache without putting it in deps
+  // (which previously formed a self-trigger loop: setCache -> dep change ->
+  // effect re-runs -> setCache -> ...).
+  const workstreamChildrenCacheRef = useRef(workstreamChildrenCache);
+  useEffect(() => {
+    workstreamChildrenCacheRef.current = workstreamChildrenCache;
+  }, [workstreamChildrenCache]);
   const orderThrottleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const orderLastCommittedAtRef = useRef(0);
   const orderPendingMapRef = useRef<Map<string, number> | null>(null);
   const orderStrategyKeyRef = useRef(`${mode}:${sortBy}`);
+  // Same pattern for the throttled display order map; the throttle effect
+  // both writes this state and needs to read the latest value for an
+  // equality check. Without the ref it re-fires every time it commits.
+  const displayOrderTimestampMapRef = useRef<Map<string, number>>(new Map());
 
   // View mode persisted via agentMode atoms
   const viewMode = useAtomValue(viewModeAtom);
@@ -370,14 +448,26 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
   const tagDropdownRef = useRef<HTMLDivElement>(null);
   const searchTrackDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Tags available for selection: exclude already-active tags, optionally narrow by typed query
+  // Tags available for selection: exclude already-active tags, optionally narrow by typed query.
+  // Includes the virtual `#worktree` tag, which matches any session attached to a worktree.
   const filteredTagOptions = useMemo(() => {
     const activeSet = new Set(tagFilter.tags);
     const q = tagQuery.toLowerCase();
-    return allWorkspaceTags
-      .filter(t => !activeSet.has(t.name))
-      .filter(t => !q || t.name.toLowerCase().includes(q));
-  }, [allWorkspaceTags, tagFilter.tags, tagQuery]);
+    const virtuals: { name: string; count: number }[] = [];
+    if (!activeSet.has(VIRTUAL_TAG_WORKTREE)) {
+      let worktreeCount = 0;
+      for (const s of allSessions) if (s.worktreeId) worktreeCount++;
+      if (worktreeCount > 0) {
+        virtuals.push({ name: VIRTUAL_TAG_WORKTREE, count: worktreeCount });
+      }
+    }
+    const real = allWorkspaceTags.filter(
+      t => !activeSet.has(t.name) && t.name !== VIRTUAL_TAG_WORKTREE,
+    );
+    return [...virtuals, ...real].filter(
+      t => !q || t.name.toLowerCase().includes(q),
+    );
+  }, [allWorkspaceTags, allSessions, tagFilter.tags, tagQuery]);
 
   const addTagFilter = useCallback((tag: string) => {
     if (!tagFilter.tags.includes(tag)) {
@@ -458,7 +548,19 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
     }
     return timestamps;
   }, [sessionRegistry, sortBy, mode, workspaceTurnActivity]);
-  const [displayOrderTimestampMap, setDisplayOrderTimestampMap] = useState<Map<string, number>>(() => liveOrderTimestampMap);
+  const [displayOrderTimestampMap, setDisplayOrderTimestampMapState] = useState<Map<string, number>>(() => {
+    // Initialize ref to mirror state from the start so the throttle effect
+    // can compare without an initial null window.
+    displayOrderTimestampMapRef.current = liveOrderTimestampMap;
+    return liveOrderTimestampMap;
+  });
+  // Wrapper that keeps the ref in sync. The throttle effect below reads
+  // the ref instead of subscribing to `displayOrderTimestampMap` so it
+  // does not re-fire every time it commits its own state.
+  const setDisplayOrderTimestampMap = useCallback((next: Map<string, number>) => {
+    displayOrderTimestampMapRef.current = next;
+    setDisplayOrderTimestampMapState(next);
+  }, []);
   const [displayOrderRankMap, setDisplayOrderRankMap] = useState<Map<string, number>>(() => {
     const rankedSessions = Array.from(sessionRegistry.values())
       .sort((a, b) => {
@@ -707,7 +809,10 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
       }
       if (hasTagFilter) {
         const sessionTags = session.tags ?? [];
-        if (!activeTags.some(t => sessionTags.includes(t))) return false;
+        const matchesAny = activeTags.some(t =>
+          t === VIRTUAL_TAG_WORKTREE ? !!session.worktreeId : sessionTags.includes(t),
+        );
+        if (!matchesAny) return false;
       }
       return true;
     });
@@ -734,7 +839,11 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
       return;
     }
 
-    if (mapsHaveEqualEntries(displayOrderTimestampMap, liveOrderTimestampMap)) {
+    // Read current display map from the ref so we don't subscribe to it
+    // (the effect commits the map below, and resubscribing would form a
+    // self-trigger loop).
+    const currentDisplayMap = displayOrderTimestampMapRef.current;
+    if (mapsHaveEqualEntries(currentDisplayMap, liveOrderTimestampMap)) {
       return;
     }
 
@@ -749,7 +858,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
 
     // Membership changes should be reflected immediately. The throttle is only
     // for reshuffling the existing visible items during bursts of session activity.
-    if (!mapsHaveSameKeys(displayOrderTimestampMap, liveOrderTimestampMap)) {
+    if (!mapsHaveSameKeys(currentDisplayMap, liveOrderTimestampMap)) {
       if (orderThrottleTimerRef.current) {
         clearTimeout(orderThrottleTimerRef.current);
         orderThrottleTimerRef.current = null;
@@ -779,7 +888,10 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
         }
       }, ORDER_THROTTLE_MS - elapsed);
     }
-  }, [buildCommittedRankMap, displayOrderTimestampMap, liveOrderTimestampMap, useThrottledTurnOrdering]);
+    // NOTE: deliberately omitting `displayOrderTimestampMap` from deps —
+    // we read it via `displayOrderTimestampMapRef` and writing to state
+    // would otherwise re-trigger this effect on every commit.
+  }, [buildCommittedRankMap, liveOrderTimestampMap, useThrottledTurnOrdering, mode, sortBy]);
 
   useEffect(() => {
     return () => {
@@ -1917,10 +2029,11 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
       isMetaAgentEnabled || null,
     ].filter(Boolean);
     if (availableOptions.length === 1) {
-      // Only one option available, trigger it directly
-      if (onNewSession) onNewSession();
-      else if (onNewWorktreeSession) openWorktreeBaseBranchPicker();
-      else if (onNewTerminal) onNewTerminal();
+      // Only one option available, trigger it directly. `onNewSession` is
+      // always defined (it dispatches the create-new-session action atom),
+      // so it wins by default; the worktree/terminal branches stay for the
+      // future case where `onNewSession` is gated.
+      onNewSession();
     } else {
       // Multiple options, show dropdown
       toggleNewDropdown();
@@ -2419,36 +2532,48 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
     fetchBlitzes();
   }, [blitzCreated, workspacePath, fetchBlitzes]);
 
-  // Fetch children for expanded workstreams
+  // Fetch children for expanded workstreams.
+  //
+  // No `isMounted` short-circuit on purpose: pendingWorkstreamChildrenFetchesRef
+  // already dedupes concurrent fetches for the same sessionId, and setState
+  // on an actually-unmounted component is a no-op in React 18+.
+  //
+  // We deliberately do NOT subscribe to `sessionRegistry` or
+  // `workstreamChildrenCache` in this effect's deps. Both atoms / state
+  // values churn frequently from unrelated activity (streamed messages,
+  // status indicators) and putting them in deps formed a self-trigger
+  // loop: setCache -> dep change -> effect re-runs -> set... etc.
+  //
+  // Instead we read them via refs (`workstreamChildrenCacheRef`) and
+  // `store.get(sessionRegistryAtom)`. The effect now only re-runs on
+  // structural changes -- when the workstream `sessions` list, the
+  // `collapsedGroups` user preference, the workspace, or the archive
+  // filter change -- which is what actually matters for "do we need to
+  // fetch more children right now".
   useEffect(() => {
-    let isMounted = true;
+    const cache = workstreamChildrenCacheRef.current;
+    const registrySnapshot = store.get(sessionRegistryAtom);
 
     const workstreamChildrenNeedRefresh = (session: SessionItem) => {
-      const cachedChildren = workstreamChildrenCache.get(session.id);
+      const cachedChildren = cache.get(session.id);
       if (!cachedChildren) {
         return true;
       }
 
-      // If the parent's childCount changed since we last fetched, refresh.
-      // This catches newly added or removed children.
+      // Only refetch on STRUCTURAL changes (add/remove child, or a child we
+      // cached is no longer in the registry). updatedAt/title/isArchived/etc
+      // churn on every streamed message via sessions:refresh-list, which used
+      // to make this comparison flap forever during an active session and
+      // burn the renderer at 100% CPU. Field updates for existing children
+      // already propagate via sessions:session-updated -> sessionRegistryAtom
+      // patch -- the UI reads those directly via per-id atoms, it doesn't
+      // need our cached SessionItem copy to also be up to date.
       if (cachedChildren.length !== (session.childCount ?? 0)) {
         return true;
       }
 
       for (const child of cachedChildren) {
-        const registryChild = sessionRegistry.get(child.id);
-        if (!registryChild) {
-          return true;
-        }
-
-        if (
-          registryChild.title !== child.title ||
-          registryChild.updatedAt !== child.updatedAt ||
-          registryChild.isArchived !== child.isArchived ||
-          registryChild.isPinned !== child.isPinned ||
-          registryChild.parentSessionId !== child.parentSessionId ||
-          registryChild.worktreeId !== child.worktreeId
-        ) {
+        if (!registrySnapshot.has(child.id)) {
           return true;
         }
       }
@@ -2466,7 +2591,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
     );
 
     if (workstreamSessionsNeedingFetch.length === 0) {
-      return () => { isMounted = false; };
+      return;
     }
 
     const fetchChildren = async () => {
@@ -2518,8 +2643,6 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
           })
         );
 
-        if (!isMounted) return;
-
         const successfulResults = results.filter((result): result is { sessionId: string; children: SessionItem[] } => result !== null);
         if (successfulResults.length === 0) {
           return;
@@ -2533,19 +2656,23 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
           return updated;
         });
 
-        const registry = new Map(store.get(sessionRegistryAtom));
-        let didUpdateRegistry = false;
+        // Only mutate the registry atom for children that are genuinely
+        // missing. The other paths (sessions:list, session-updated) already
+        // keep existing entries in sync, and unconditionally re-setting the
+        // atom Map every fetch makes every subscriber re-render -- which
+        // brought the renderer back into a re-render loop here.
+        const currentRegistry = store.get(sessionRegistryAtom);
+        let nextRegistry: Map<string, SessionMeta> | null = null;
         for (const result of successfulResults) {
           for (const child of result.children) {
-            const existing = registry.get(child.id);
-            // Merge with existing entry to preserve metadata fields (linkedTrackerItemIds, phase, tags)
-            // that may have been loaded by the main sessions:list query
-            registry.set(child.id, existing ? { ...existing, ...child } : child);
-            didUpdateRegistry = true;
+            if (!currentRegistry.has(child.id)) {
+              if (!nextRegistry) nextRegistry = new Map(currentRegistry);
+              nextRegistry.set(child.id, child);
+            }
           }
         }
-        if (didUpdateRegistry) {
-          store.set(sessionRegistryAtom, registry);
+        if (nextRegistry) {
+          store.set(sessionRegistryAtom, nextRegistry);
         }
       } finally {
         sessionIds.forEach(sessionId => pendingWorkstreamChildrenFetchesRef.current.delete(sessionId));
@@ -2553,9 +2680,11 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
     };
 
     fetchChildren();
-
-    return () => { isMounted = false; };
-  }, [sessions, collapsedGroups, workspacePath, workstreamChildrenCache, sessionRegistry, showArchived]);
+    // NOTE: `workstreamChildrenCache` and `sessionRegistry` are intentionally
+    // omitted from deps — they're read via refs / store.get inside the
+    // effect. Including them caused a self-trigger loop (this effect both
+    // sets the cache and writes the registry atom).
+  }, [sessions, collapsedGroups, workspacePath, showArchived]);
 
   if (loading) {
     return (
@@ -2595,7 +2724,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
                 </svg>
               </button>
             )}
-            {(onNewSession || onNewWorktreeSession || onNewTerminal) && (
+            {(
               <div className="session-history-new-dropdown relative z-10">
                 <button
                   ref={newDropdownMenu.refs.setReference}
@@ -2695,7 +2824,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
           showAccent={false}
           actions={
             <>
-            {(onNewSession || onNewWorktreeSession || onNewTerminal) && (
+            {(
               <div className="session-history-new-dropdown relative z-10">
                 <button
                   ref={newDropdownMenu.refs.setReference}
@@ -2871,7 +3000,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
                   </svg>
                 </button>
               )}
-              {(onNewSession || onNewWorktreeSession) && (
+              {(
                 <div className="session-history-new-dropdown relative z-10">
                   <button
                     ref={newDropdownMenu.refs.setReference}
@@ -2980,7 +3109,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
               </svg>
             </button>
           )}
-          {(onNewSession || onNewWorktreeSession || onNewTerminal) && (
+          {(
             <div className="session-history-new-dropdown relative z-10">
               <button
                 ref={newDropdownMenu.refs.setReference}
@@ -3314,7 +3443,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
                 Archive
               </button>
             )}
-            {onSessionDelete && (
+            {(
               <button className="session-history-bulk-button flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded border border-[var(--nim-border)] bg-[var(--nim-bg)] text-[var(--nim-error)] cursor-pointer transition-all duration-150 hover:bg-[var(--nim-error)] hover:border-[var(--nim-error)] hover:text-white [&_svg]:shrink-0" onClick={handleBulkDelete} title="Delete selected">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M2 4h12M5.333 4V2.667A.667.667 0 016 2h4a.667.667 0 01.667.667V4M12.667 4v9.333a1.333 1.333 0 01-1.334 1.334H4.667a1.333 1.333 0 01-1.334-1.334V4" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
@@ -3447,7 +3576,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
                       activeSessionId={activeSessionId}
                       onSessionSelect={handleSessionClick}
                       onChildSessionSelect={onChildSessionSelect}
-                      onSessionDelete={onSessionDelete ? handleDeleteSession : undefined}
+                      onSessionDelete={handleDeleteSession}
                       onSessionArchive={handleArchiveSession}
                       onSessionUnarchive={handleUnarchiveSession}
                       onSessionPinToggle={handleSessionPinToggle}
@@ -3488,7 +3617,7 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
                       activeSessionId={activeSessionId}
                       onSessionSelect={handleSessionClick}
                       onChildSessionSelect={onChildSessionSelect}
-                      onSessionDelete={onSessionDelete ? handleDeleteSession : undefined}
+                      onSessionDelete={handleDeleteSession}
                       onSessionArchive={handleArchiveSession}
                       onSessionUnarchive={handleUnarchiveSession}
                       onSessionPinToggle={handleSessionPinToggle}
@@ -3522,10 +3651,10 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
                       onSessionSelect={handleSessionClick}
                       onSessionArchive={handleArchiveSession}
                       onSessionUnarchive={handleUnarchiveSession}
-                      onSessionDelete={onSessionDelete ? handleDeleteSession : undefined}
+                      onSessionDelete={handleDeleteSession}
                       onMetaSessionArchive={handleArchiveMetaAgentSession}
                       onMetaSessionUnarchive={handleUnarchiveMetaAgentSession}
-                      onMetaSessionDelete={onSessionDelete ? handleDeleteMetaAgentSession : undefined}
+                      onMetaSessionDelete={handleDeleteMetaAgentSession}
                       onSessionPinToggle={handleSessionPinToggle}
                       onSessionBranch={onSessionBranch}
                       onWorktreeArchive={handleArchiveWorktree}
@@ -3572,16 +3701,16 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
                     selectedCount={selectedSessionIds.has(session.id) ? selectedSessionIds.size : 1}
                     sortBy={sortBy}
                     onClick={(e) => handleSessionClick(session.id, e)}
-                    onDelete={onSessionDelete ? () => handleDeleteSession(session.id) : undefined}
+                    onDelete={() => handleDeleteSession(session.id)}
                     onArchive={selectedSessionIds.size > 1 && selectedSessionIds.has(session.id)
                       ? handleBulkArchive
                       : item.isWorktreeSession && session.worktreeId
                         ? () => handleArchiveWorktree(session.worktreeId!)
                         : () => handleArchiveSession(session.id)}
                     onUnarchive={() => handleUnarchiveSession(session.id)}
-                    onRename={onSessionRename ? (newName: string) => onSessionRename(session.id, newName) : undefined}
+                    onRename={(newName: string) => onSessionRename(session.id, newName)}
                     onPinToggle={(isPinned) => handleSessionPinToggle(session.id, isPinned)}
-                    onBranch={onSessionBranch ? () => onSessionBranch(session.id) : undefined}
+                    onBranch={() => onSessionBranch(session.id)}
                     provider={session.provider}
                     model={session.model}
                     messageCount={session.messageCount}
@@ -3654,44 +3783,9 @@ const SessionHistoryComponent: React.FC<SessionHistoryProps> = ({
   );
 };
 
-// Helper to compare arrays by value (for loadedSessionIds, collapsedGroups)
-function arraysEqual(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
-// Memoize SessionHistory to prevent re-renders when props haven't meaningfully changed
-// This is critical for performance during typing in AIInput
-// Note: processingSessions, unreadSessions, pendingPromptSessions are no longer compared here
-// SessionListItem subscribes directly to Jotai atoms for these states
-export const SessionHistory = React.memo(SessionHistoryComponent, (prevProps, nextProps) => {
-  // Only re-render if meaningful props changed
-  if (prevProps.workspacePath !== nextProps.workspacePath) return false;
-  if (prevProps.activeSessionId !== nextProps.activeSessionId) return false;
-  if (prevProps.refreshTrigger !== nextProps.refreshTrigger) return false;
-  if (prevProps.sortOrder !== nextProps.sortOrder) return false;
-  if (prevProps.mode !== nextProps.mode) return false;
-  if (prevProps.isGitRepo !== nextProps.isGitRepo) return false;
-
-  // Compare arrays by value
-  if (!arraysEqual(prevProps.loadedSessionIds ?? [], nextProps.loadedSessionIds ?? [])) return false;
-  if (!arraysEqual(prevProps.collapsedGroups, nextProps.collapsedGroups)) return false;
-
-  // Compare renamed/updated session objects
-  const prevRenamed = prevProps.renamedSession;
-  const nextRenamed = nextProps.renamedSession;
-  if (prevRenamed?.id !== nextRenamed?.id || prevRenamed?.title !== nextRenamed?.title) return false;
-
-  const prevUpdated = prevProps.updatedSession;
-  const nextUpdated = nextProps.updatedSession;
-  if (prevUpdated?.id !== nextUpdated?.id || prevUpdated?.timestamp !== nextUpdated?.timestamp) return false;
-
-  // Callback presence changes (function vs undefined) affect rendered UI
-  if (Boolean(prevProps.onNewBlitz) !== Boolean(nextProps.onNewBlitz)) return false;
-  if (Boolean(prevProps.onNewWorktreeSession) !== Boolean(nextProps.onNewWorktreeSession)) return false;
-
-  return true; // Props are equal, skip re-render
-});
+// SessionHistory has no props — all state comes from atoms — so there's
+// nothing for a React.memo equality function to compare. The previous
+// hand-rolled memo comparator (workspacePath/activeSessionId/sortOrder/...
+// equality checks) was exactly the "if you need React.memo you have the
+// wrong architecture" smell from packages/electron/CLAUDE.md.
+export const SessionHistory = SessionHistoryComponent;

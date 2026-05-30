@@ -17,6 +17,7 @@ export type ClientMessage =
   | DeleteSessionMessage
   | IndexSyncRequestMessage
   | IndexUpdateMessage
+  | IndexClientMetadataPatchMessage
   | IndexBatchUpdateMessage
   | IndexDeleteMessage
   | FileIndexUpdateMessage
@@ -75,6 +76,27 @@ export interface IndexSyncRequestMessage {
 export interface IndexUpdateMessage {
   type: 'indexUpdate';
   session: SessionIndexEntry;
+}
+
+/**
+ * Patch metadata-only session index fields without touching updated_at or
+ * forcing a project stats recalculation.
+ */
+export interface IndexClientMetadataPatchMessage {
+  type: 'indexClientMetadataPatch';
+  patch: IndexClientMetadataPatch;
+}
+
+export interface IndexClientMetadataPatch {
+  sessionId: string;
+  /** Encrypted client metadata blob (base64) - opaque to server */
+  encryptedClientMetadata?: string;
+  /** IV for client metadata decryption (base64) */
+  clientMetadataIv?: string;
+  /** Whether the session is currently executing (processing AI request) */
+  isExecuting?: boolean;
+  /** Unix timestamp ms when this session was last read by any device */
+  lastReadAt?: number;
 }
 
 /** Batch update sessions in index (for efficient bulk sync) */

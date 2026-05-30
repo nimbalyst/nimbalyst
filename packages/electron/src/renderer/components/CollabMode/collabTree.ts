@@ -145,3 +145,42 @@ export function buildCollabTree(
 
   return sortNodes(roots);
 }
+
+export function filterCollabTree(nodes: CollabTreeNode[], query: string): CollabTreeNode[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!normalizedQuery) {
+    return nodes;
+  }
+
+  const nodeMatchesQuery = (node: CollabTreeNode): boolean => {
+    return node.path.toLocaleLowerCase().includes(normalizedQuery)
+      || node.name.toLocaleLowerCase().includes(normalizedQuery);
+  };
+
+  const filterNode = (node: CollabTreeNode): CollabTreeNode | null => {
+    if (node.type === 'document') {
+      return nodeMatchesQuery(node) ? node : null;
+    }
+
+    if (nodeMatchesQuery(node)) {
+      return node;
+    }
+
+    const filteredChildren = node.children
+      .map(filterNode)
+      .filter((child): child is CollabTreeNode => child !== null);
+
+    if (filteredChildren.length === 0) {
+      return null;
+    }
+
+    return {
+      ...node,
+      children: filteredChildren,
+    };
+  };
+
+  return nodes
+    .map(filterNode)
+    .filter((node): node is CollabTreeNode => node !== null);
+}

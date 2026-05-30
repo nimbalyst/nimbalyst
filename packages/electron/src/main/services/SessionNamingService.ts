@@ -169,17 +169,35 @@ export class SessionNamingService {
             const workspaceId = wsResult.rows[0]?.workspace_id;
             if (!workspaceId) return [];
 
-            const result = await db.query<{ tag: string; count: number }>(
-              `SELECT t.tag, COUNT(*)::int as count
-               FROM ai_sessions s,
-                    jsonb_array_elements_text(s.metadata->'tags') AS t(tag)
-               WHERE s.workspace_id = $1
-                 AND s.is_archived = false
-               GROUP BY t.tag
-               ORDER BY count DESC`,
+            // Pull metadata for every non-archived session in the workspace and
+            // explode the tags array in JS. SQL-level array explosion has no
+            // portable form (PGLite jsonb_array_elements_text vs SQLite json_each
+            // produce different row shapes), and the per-workspace volume is
+            // small enough that materializing metadata is cheaper than a
+            // dialect-specific lateral join.
+            const result = await db.query<{ metadata: unknown }>(
+              `SELECT metadata FROM ai_sessions
+               WHERE workspace_id = $1
+                 AND (is_archived = false OR is_archived IS NULL)`,
               [workspaceId]
             );
-            return result.rows.map(r => ({ name: r.tag, count: r.count }));
+            const counts = new Map<string, number>();
+            for (const row of result.rows) {
+              const meta = row.metadata;
+              let parsed: any = meta;
+              if (typeof meta === 'string') {
+                try { parsed = JSON.parse(meta); } catch { parsed = null; }
+              }
+              const tags = parsed?.tags;
+              if (!Array.isArray(tags)) continue;
+              for (const tag of tags) {
+                if (typeof tag !== 'string' || tag.length === 0) continue;
+                counts.set(tag, (counts.get(tag) ?? 0) + 1);
+              }
+            }
+            return Array.from(counts.entries())
+              .map(([name, count]) => ({ name, count }))
+              .sort((a, b) => b.count - a.count);
           } catch {
             return [];
           }

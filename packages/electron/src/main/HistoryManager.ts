@@ -6,6 +6,7 @@ import * as zlib from 'zlib';
 import { promisify } from 'util';
 import { database } from './database/PGLiteDatabaseWorker';
 import { logger } from './utils/logger';
+import { parseJsonObjectColumn } from './utils/jsonColumn';
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -52,6 +53,21 @@ export class HistoryManager {
   private pendingSnapshots = new Map<string, { promise: Promise<void>; timestamp: number }>(); // Track in-flight snapshot creations
   private readonly DEDUP_WINDOW_MS = 1500; // Only deduplicate within 1500ms window
 
+  // Short-TTL cache + in-flight dedup for getPendingFilesForSession.
+  // The underlying query (LIKE workspacePath% + two metadata->>? JSON extracts)
+  // is 50-127ms on SQLite, and was being fanned out hundreds of times per
+  // second from the renderer. Cache invalidates on createTag/markTagReviewed.
+  private pendingFilesCache = new Map<string, { value: string[]; expiresAt: number }>();
+  private pendingFilesInFlight = new Map<string, Promise<string[]>>();
+  private readonly PENDING_FILES_TTL_MS = 2000;
+
+  private invalidatePendingFilesForWorkspace(workspacePath: string): void {
+    const prefix = `${workspacePath}|`;
+    for (const key of this.pendingFilesCache.keys()) {
+      if (key.startsWith(prefix)) this.pendingFilesCache.delete(key);
+    }
+  }
+
   constructor() {}
 
   /**
@@ -72,6 +88,9 @@ export class HistoryManager {
    * Emit pending count changed event to all windows for a workspace
    */
   private async emitPendingCountChanged(workspacePath: string): Promise<void> {
+    // Any code path that mutates pending state ends up here, so this is the
+    // single invalidation point for the getPendingFilesForSession cache.
+    this.invalidatePendingFilesForWorkspace(workspacePath);
     try {
       const count = await this.getPendingCount(workspacePath);
       const windows = BrowserWindow.getAllWindows();
@@ -240,13 +259,16 @@ export class HistoryManager {
         ORDER BY timestamp DESC
       `, [filePath]);
 
-      return result.rows.map(row => ({
-        timestamp: new Date(row.timestamp).toISOString(),
-        type: row.metadata?.type || 'manual',
-        size: row.size_bytes,
-        baseMarkdownHash: row.metadata?.baseMarkdownHash || '',
-        metadata: row.metadata
-      }));
+      return result.rows.map(row => {
+        const metadata = parseJsonObjectColumn(row.metadata);
+        return {
+          timestamp: new Date(row.timestamp).toISOString(),
+          type: metadata.type || 'manual',
+          size: row.size_bytes,
+          baseMarkdownHash: metadata.baseMarkdownHash || '',
+          metadata,
+        };
+      });
     } catch (error) {
       logger.main.error('[HistoryManager] Failed to list snapshots:', error);
       return [];
@@ -626,16 +648,17 @@ export class HistoryManager {
       const decompressed = await gunzip(compressed);
       const content = decompressed.toString('utf-8');
 
+      const metadata = parseJsonObjectColumn(row.metadata);
       return {
         id: tagId,
         filePath,
         content,
-        type: row.metadata.type || 'pre-edit',
-        status: row.metadata.status,
-        sessionId: row.metadata.sessionId,
-        toolUseId: row.metadata.toolUseId,
-        createdAt: new Date(row.metadata.createdAt),
-        updatedAt: new Date(row.metadata.updatedAt)
+        type: metadata.type || 'pre-edit',
+        status: metadata.status,
+        sessionId: metadata.sessionId,
+        toolUseId: metadata.toolUseId,
+        createdAt: new Date(metadata.createdAt),
+        updatedAt: new Date(metadata.updatedAt)
       };
     } catch (error) {
       logger.main.error('[HistoryManager] Failed to get tag:', error);
@@ -768,16 +791,17 @@ export class HistoryManager {
         const decompressed = await gunzip(compressed);
         const content = decompressed.toString('utf-8');
 
+        const metadata = parseJsonObjectColumn(row.metadata);
         tags.push({
-          id: row.metadata.tagId,
+          id: metadata.tagId,
           filePath: row.file_path,
           content,
-          type: row.metadata.type,
-          status: row.metadata.status,
-          sessionId: row.metadata.sessionId,
-          toolUseId: row.metadata.toolUseId,
-          createdAt: new Date(row.metadata.createdAt),
-          updatedAt: new Date(row.metadata.updatedAt)
+          type: metadata.type,
+          status: metadata.status,
+          sessionId: metadata.sessionId,
+          toolUseId: metadata.toolUseId,
+          createdAt: new Date(metadata.createdAt),
+          updatedAt: new Date(metadata.updatedAt)
         });
       }
 
@@ -938,23 +962,45 @@ export class HistoryManager {
    * Get list of files with pending-review tags for a specific session
    */
   async getPendingFilesForSession(workspacePath: string, sessionId: string): Promise<string[]> {
-    try {
-      if (!database.isInitialized()) {
-        await database.initialize();
+    const cacheKey = `${workspacePath}|${sessionId}`;
+    const now = Date.now();
+    const cached = this.pendingFilesCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) return cached.value;
+    const inFlight = this.pendingFilesInFlight.get(cacheKey);
+    if (inFlight) return inFlight;
+
+    const promise = (async () => {
+      try {
+        if (!database.isInitialized()) {
+          await database.initialize();
+        }
+
+        // Use json_extract (not the ->> operator) so SQLite's planner can
+        // match this against idx_history_pending_session_file (migration 2).
+        // PGLite is happy with either form. Putting the sessionId predicate
+        // first lets the index lookup happen before the file_path filter.
+        const result = await database.query<{ file_path: string }>(`
+          SELECT DISTINCT file_path
+          FROM document_history
+          WHERE json_extract(metadata, '$.sessionId') = $1
+            AND json_extract(metadata, '$.status') = 'pending-review'
+            AND file_path LIKE $2
+        `, [sessionId, workspacePath + '%']);
+
+        return result.rows.map((row: { file_path: string }) => row.file_path);
+      } catch (error) {
+        logger.main.error('[HistoryManager] Failed to get pending files for session:', error);
+        return [];
       }
+    })();
 
-      const result = await database.query<{ file_path: string }>(`
-        SELECT DISTINCT file_path
-        FROM document_history
-        WHERE file_path LIKE $1
-          AND metadata->>'status' = 'pending-review'
-          AND metadata->>'sessionId' = $2
-      `, [workspacePath + '%', sessionId]);
-
-      return result.rows.map((row: { file_path: string }) => row.file_path);
-    } catch (error) {
-      logger.main.error('[HistoryManager] Failed to get pending files for session:', error);
-      return [];
+    this.pendingFilesInFlight.set(cacheKey, promise);
+    try {
+      const value = await promise;
+      this.pendingFilesCache.set(cacheKey, { value, expiresAt: Date.now() + this.PENDING_FILES_TTL_MS });
+      return value;
+    } finally {
+      this.pendingFilesInFlight.delete(cacheKey);
     }
   }
 

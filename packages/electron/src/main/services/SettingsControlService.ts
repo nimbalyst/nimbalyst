@@ -47,6 +47,7 @@ import {
 } from '../utils/store';
 import * as StytchAuth from './StytchAuthService';
 import { logger } from '../utils/logger';
+import { FeatureUsageService, FEATURES } from './FeatureUsageService';
 import { SessionNamingService } from './SessionNamingService';
 import { updateNativeTheme, updateWindowTitleBars } from '../theme/ThemeManager';
 import { createWindow, findWindowByWorkspace } from '../window/WindowManager';
@@ -362,6 +363,7 @@ export class SettingsControlService {
       };
     }
     storeSetTheme(next);
+    FeatureUsageService.getInstance().recordUsage(FEATURES.THEME_CHANGED);
     // Mirror the renderer-triggered `set-theme` IPC path: clear any pending
     // fallback banner, update native theme + window title bars, and broadcast
     // on `theme-change` (the channel the renderer's themeListeners subscribes

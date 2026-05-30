@@ -1,6 +1,6 @@
 import { app, BrowserWindow } from 'electron';
 import { join } from 'path';
-import { safeHandle, getRegisteredHandlerCount } from '../utils/ipcRegistry';
+import { safeHandle, getIpcStatsSnapshot, getRegisteredHandlerCount } from '../utils/ipcRegistry';
 import { getPreloadPath } from '../utils/appPaths';
 import { getTheme } from '../utils/store';
 import { getBackgroundColor } from '../theme/ThemeManager';
@@ -93,6 +93,7 @@ safeHandle('dev:get-system-stats', async () => {
         },
         ipc: {
             registeredHandlers: getRegisteredHandlerCount(),
+            channelStats: getIpcStatsSnapshot(25),
         },
         database: {
             queryStats: dbQueryStats,

@@ -72,7 +72,7 @@ export function CommonFileActions({
     try {
       if (window.electronAPI?.invoke) {
         const result = await window.electronAPI.invoke('read-file-content', filePath);
-        if (result?.success && result?.content) {
+        if (result?.success && typeof result.content === 'string') {
           initialContent = result.content;
         }
       }
@@ -173,6 +173,37 @@ export function CommonFileActions({
       return;
     }
 
+    // Seed the room before the doc is announced in the shared-doc index.
+    // Otherwise a teammate can open the link before the sharer’s auto-open
+    // tab writes the first Yjs update, and they see an empty doc.
+    let seedError: string | null = null;
+    if (
+      workspacePath &&
+      typeof migratedContent === 'string' &&
+      documentSync?.seedSharedDocument
+    ) {
+      try {
+        const seedResult = await documentSync.seedSharedDocument(
+          workspacePath,
+          documentId,
+          documentType,
+          migratedContent,
+        );
+        if (!seedResult.success) {
+          seedError = seedResult.error || 'Failed to seed shared document content.';
+        }
+      } catch (error) {
+        seedError = error instanceof Error ? error.message : String(error);
+      }
+      if (seedError) {
+        console.warn('[ShareToTeam] Failed to seed shared document before registration:', {
+          documentId,
+          documentType,
+          error: seedError,
+        });
+      }
+    }
+
     // Register in the doc index (optimistic local update is synchronous,
     // server registration happens in background)
     registerDocumentInIndex(documentId, shareTitle, documentType).catch(error => {
@@ -212,6 +243,15 @@ export function CommonFileActions({
 
     // Switch to collab mode immediately
     store.set(setWindowModeAtom, 'collab');
+
+    if (seedError) {
+      errorNotificationService.showWarning(
+        'Shared with pending seed',
+        `"${shareTitle}" was shared, but its initial content could not be written to the shared room yet. Teammates may see a blank doc until it is reopened or re-uploaded.`,
+        { details: seedError, duration: 10000 },
+      );
+      return;
+    }
 
     switch (migrationToast.kind) {
       case 'ok':

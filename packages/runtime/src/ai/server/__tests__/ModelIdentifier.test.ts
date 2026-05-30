@@ -232,7 +232,7 @@ describe('ModelIdentifier', () => {
     it('returns default ModelIdentifier for claude', () => {
       const id = ModelIdentifier.getDefaultForProvider('claude');
       expect(id.provider).toBe('claude');
-      expect(id.combined).toBe('claude:claude-opus-4-7');
+      expect(id.combined).toBe('claude:claude-opus-4-8');
     });
 
     it('returns default ModelIdentifier for claude-code', () => {
@@ -262,7 +262,7 @@ describe('ModelIdentifier', () => {
 
   describe('getDefaultModelId', () => {
     it('returns default model ID string for all providers', () => {
-      expect(ModelIdentifier.getDefaultModelId('claude')).toBe('claude:claude-opus-4-7');
+      expect(ModelIdentifier.getDefaultModelId('claude')).toBe('claude:claude-opus-4-8');
       expect(ModelIdentifier.getDefaultModelId('claude-code')).toBe('claude-code:opus-1m');
       expect(ModelIdentifier.getDefaultModelId('openai')).toBe('openai:gpt-5.4');
       expect(ModelIdentifier.getDefaultModelId('openai-codex')).toBe('openai-codex:gpt-5.4');

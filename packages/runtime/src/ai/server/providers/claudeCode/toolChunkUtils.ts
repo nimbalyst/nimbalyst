@@ -1,3 +1,38 @@
+// Claude Agent SDK emits several chunk types that are pure runtime side-channels:
+// the live in-memory dispatch loop reacts to them (status text, auth detection,
+// rate-limit metadata, tool progress), but the persistent reparse path
+// (ClaudeCodeRawParser used by TranscriptTransformer) ignores them entirely.
+// Persisting them just inflates ai_agent_messages and SessionRoom storage with
+// rows that never produce a canonical transcript event.
+//
+// Kept persisted on purpose:
+//   - system/init           -- carries session_id + tool/MCP context useful for forensics
+//   - system/compact_boundary -- marks where the SDK compacted the conversation
+//   - summary               -- carries auth-error text the parser may surface later
+const CLAUDE_CODE_TRANSIENT_SYSTEM_SUBTYPES = new Set([
+  'hook_started',
+  'hook_response',
+  'task_started',
+  'task_progress',
+  'task_notification',
+]);
+
+const CLAUDE_CODE_TRANSIENT_CHUNK_TYPES = new Set([
+  'tool_progress',
+  'tool_use_summary',
+  'auth_status',
+  'rate_limit_event',
+]);
+
+export function isTransientClaudeCodeChunk(chunk: unknown): boolean {
+  if (!chunk || typeof chunk !== 'object') return false;
+  const c = chunk as { type?: string; subtype?: string };
+  if (c.type === 'system' && typeof c.subtype === 'string') {
+    return CLAUDE_CODE_TRANSIENT_SYSTEM_SUBTYPES.has(c.subtype);
+  }
+  return typeof c.type === 'string' && CLAUDE_CODE_TRANSIENT_CHUNK_TYPES.has(c.type);
+}
+
 export function isSearchableAssistantChunk(chunk: any): boolean {
   if (typeof chunk !== 'object' || chunk.type !== 'assistant' || !chunk.message?.content) {
     return false;

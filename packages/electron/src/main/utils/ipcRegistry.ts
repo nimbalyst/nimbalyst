@@ -18,6 +18,36 @@ import type { IpcMainInvokeEvent } from 'electron';
 
 const registeredHandlers = new Set<string>();
 const registeredListeners = new Map<string, Set<Function>>();
+const IPC_SAMPLE_CAP = 200;
+
+interface IpcInvocationStats {
+  callCount: number;
+  errorCount: number;
+  slowCount: number;
+  totalMs: number;
+  maxMs: number;
+  lastMs: number;
+  inFlight: number;
+  maxInFlight: number;
+  samples: number[];
+}
+
+export interface IpcChannelStatsSnapshot {
+  channel: string;
+  callCount: number;
+  errorCount: number;
+  slowCount: number;
+  totalMs: number;
+  avgMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+  lastMs: number;
+  inFlight: number;
+  maxInFlight: number;
+}
+
+const ipcStats = new Map<string, IpcInvocationStats>();
 
 function getIpcMain(): any {
   try {
@@ -36,10 +66,72 @@ function getIpcMain(): any {
 }
 
 /**
+ * Slow-IPC threshold. Any `safeHandle` invocation that takes longer than
+ * this logs a `[IpcSlow]` line with the channel + duration so the main log
+ * surfaces accidental long-running handlers (e.g. a session:load that
+ * triggers a heavy transcript reparse, or a sessions:list that holds the
+ * write lane). 500ms is well below "user notices a hang" but above
+ * routine query latency.
+ *
+ * Configurable via `NIMBALYST_IPC_SLOW_MS` for ad-hoc tuning.
+ */
+const IPC_SLOW_THRESHOLD_MS = (() => {
+  const v = Number(process.env.NIMBALYST_IPC_SLOW_MS);
+  return Number.isFinite(v) && v > 0 ? v : 1000;
+})();
+
+function ipcSlowLog(channel: string, durationMs: number): void {
+  // Avoid pulling the main logger here (would tangle this module's
+  // dependency graph at import time during tests); console.warn is captured
+  // by the main-log pipeline the same way every other (MAIN) warn line is.
+  console.warn(
+    `[IpcSlow] ${channel} took ${durationMs.toFixed(0)}ms (threshold ${IPC_SLOW_THRESHOLD_MS}ms)`,
+  );
+}
+
+function getOrCreateIpcStats(channel: string): IpcInvocationStats {
+  let stats = ipcStats.get(channel);
+  if (!stats) {
+    stats = {
+      callCount: 0,
+      errorCount: 0,
+      slowCount: 0,
+      totalMs: 0,
+      maxMs: 0,
+      lastMs: 0,
+      inFlight: 0,
+      maxInFlight: 0,
+      samples: [],
+    };
+    ipcStats.set(channel, stats);
+  }
+  return stats;
+}
+
+function recordDurationSample(stats: IpcInvocationStats, durationMs: number): void {
+  stats.samples.push(durationMs);
+  if (stats.samples.length > IPC_SAMPLE_CAP) {
+    stats.samples.shift();
+  }
+}
+
+function percentile(sortedValues: number[], pct: number): number {
+  if (sortedValues.length === 0) return 0;
+  const index = Math.min(
+    sortedValues.length - 1,
+    Math.max(0, Math.ceil((pct / 100) * sortedValues.length) - 1),
+  );
+  return sortedValues[index] ?? 0;
+}
+
+/**
  * Safe ipcMain.handle() - prevents duplicate registration
  *
  * Use this instead of ipcMain.handle() for all invoke-style handlers.
  * If the handler is already registered, this will log a warning and skip.
+ *
+ * Also wraps the handler with slow-call instrumentation: any invocation
+ * longer than `IPC_SLOW_THRESHOLD_MS` logs `[IpcSlow] <channel> took ...ms`.
  */
 export function safeHandle(
   channel: string,
@@ -55,12 +147,40 @@ export function safeHandle(
     return;
   }
 
+  // Wrap so we can time every invocation. We can't observe how long the
+  // promise takes from outside `ipcMain.handle`, so the wrap is the only
+  // place to measure end-to-end main-side handler latency.
+  const instrumented = async (event: IpcMainInvokeEvent, ...args: any[]) => {
+    const stats = getOrCreateIpcStats(channel);
+    const t0 = performance.now();
+    stats.callCount += 1;
+    stats.inFlight += 1;
+    stats.maxInFlight = Math.max(stats.maxInFlight, stats.inFlight);
+    try {
+      return await handler(event, ...args);
+    } catch (error) {
+      stats.errorCount += 1;
+      throw error;
+    } finally {
+      const dur = performance.now() - t0;
+      stats.inFlight = Math.max(0, stats.inFlight - 1);
+      stats.totalMs += dur;
+      stats.maxMs = Math.max(stats.maxMs, dur);
+      stats.lastMs = dur;
+      recordDurationSample(stats, dur);
+      if (dur >= IPC_SLOW_THRESHOLD_MS) {
+        stats.slowCount += 1;
+        ipcSlowLog(channel, dur);
+      }
+    }
+  };
+
   // Special case: electron-log registers its own '__ELECTRON_LOG__' handler
   // If we try to register after electron-log has already initialized, we'll get an error
   // This can happen during HMR or if the module is bundled multiple times
   try {
     registeredHandlers.add(channel);
-    ipcMain.handle(channel, handler);
+    ipcMain.handle(channel, instrumented);
   } catch (error: any) {
     if (error?.message?.includes('Attempted to register a second handler')) {
       console.warn(`[IPC] Handler registration failed (already exists): ${channel}`);
@@ -187,4 +307,33 @@ export function getRegisteredHandlerCount(): number {
  */
 export function getRegisteredChannels(): string[] {
   return Array.from(registeredHandlers);
+}
+
+export function getIpcStatsSnapshot(limit?: number): IpcChannelStatsSnapshot[] {
+  const rows = Array.from(ipcStats.entries()).map(([channel, stats]) => {
+    const sortedSamples = [...stats.samples].sort((a, b) => a - b);
+    return {
+      channel,
+      callCount: stats.callCount,
+      errorCount: stats.errorCount,
+      slowCount: stats.slowCount,
+      totalMs: Number(stats.totalMs.toFixed(2)),
+      avgMs: stats.callCount > 0 ? Number((stats.totalMs / stats.callCount).toFixed(2)) : 0,
+      p50Ms: Number(percentile(sortedSamples, 50).toFixed(2)),
+      p95Ms: Number(percentile(sortedSamples, 95).toFixed(2)),
+      maxMs: Number(stats.maxMs.toFixed(2)),
+      lastMs: Number(stats.lastMs.toFixed(2)),
+      inFlight: stats.inFlight,
+      maxInFlight: stats.maxInFlight,
+    } satisfies IpcChannelStatsSnapshot;
+  });
+
+  rows.sort((a, b) =>
+    b.totalMs - a.totalMs ||
+    b.callCount - a.callCount ||
+    b.p95Ms - a.p95Ms ||
+    a.channel.localeCompare(b.channel),
+  );
+
+  return typeof limit === 'number' ? rows.slice(0, Math.max(0, limit)) : rows;
 }

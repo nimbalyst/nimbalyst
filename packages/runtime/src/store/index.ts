@@ -72,6 +72,8 @@ export { type GitCommitProposalData } from './atoms/gitCommitProposals';
 export {
   interactiveWidgetHostAtom,
   setInteractiveWidgetHost,
+  registerInteractiveWidgetHost,
+  unregisterInteractiveWidgetHost,
   getInteractiveWidgetHost,
   cleanupInteractiveWidgetHost,
 } from './atoms/interactiveWidgetHost';

@@ -33,6 +33,14 @@ export class InMemoryTranscriptEventStore implements ITranscriptEventStore {
     return inserted;
   }
 
+  async insertEvents(
+    events: Array<Omit<TranscriptEvent, 'id'>>,
+  ): Promise<TranscriptEvent[]> {
+    const inserted: TranscriptEvent[] = [];
+    for (const event of events) inserted.push(await this.insertEvent(event));
+    return inserted;
+  }
+
   async updateEventPayload(id: number, payload: Record<string, unknown>): Promise<void> {
     const idx = this.events.findIndex(e => e.id === id);
     if (idx >= 0) {

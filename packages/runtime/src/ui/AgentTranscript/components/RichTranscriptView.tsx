@@ -11,7 +11,6 @@ import { copyToClipboard } from '../../../utils/clipboard';
 import { JSONViewer } from './JSONViewer';
 import { formatToolArguments, extractFilePathFromArgs } from '../utils/pathResolver';
 import { EditToolResultCard } from './EditToolResultCard';
-import { AsyncEditToolResultCard } from './AsyncEditToolResultCard';
 import { TranscriptSearchBar } from './TranscriptSearchBar';
 import { formatToolDisplayName } from '../utils/toolNameFormatter';
 import { isToolLikeMessage } from '../utils/messageTypeHelpers';
@@ -433,6 +432,11 @@ interface RichTranscriptViewProps {
   workspacePath?: string;
   /** Optional: render additional content in the empty state (e.g., command suggestions) */
   renderEmptyExtra?: () => React.ReactNode;
+  /**
+   * If true, suppress the default "ready to assist with" help block in the
+   * empty state -- the host's `renderEmptyExtra` becomes the primary content.
+   */
+  hideEmptyHelp?: boolean;
   /** Optional: Read a file from the filesystem (for custom widgets that need to load persisted files) */
   readFile?: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
   /** Optional: Open a file in the editor */
@@ -455,11 +459,6 @@ interface RichTranscriptViewProps {
   waitingForNoun?: string;
   /** Optional: App start time (epoch ms) for rendering restart indicator line (dev mode only) */
   appStartTime?: number;
-  /** Optional: Fetch file diffs caused by a specific tool call */
-  getToolCallDiffs?: (
-    toolCallItemId: string,
-    toolCallTimestamp?: number
-  ) => Promise<ToolCallDiffResult[] | null>;
   /** Optional: Render a file using a host-provided embedded editor surface */
   renderEmbeddedFile?: (params: { filePath: string; defaultExpanded?: boolean }) => React.ReactNode;
   /**
@@ -501,8 +500,8 @@ const defaultSettings: TranscriptSettings = {
 // (parsed in extractEditsFromToolMessage).
 // OpenAI Codex SDK's `file_change` tool is NOT in this set -- the raw
 // item.completed payload has no diff content, so its dispatch goes through
-// AsyncEditToolResultCard which fetches diffs via getToolCallDiffs (the synthetic
-// edit-group ID populates session_files.metadata.toolUseId via Phase 1-3 plumbing).
+// the main-process transcript enrichment path, which resolves fileDiffs before
+// the renderer sees the transcript row.
 const EDIT_TOOL_NAMES = new Set([
   'edit', 'write', 'multi-edit', 'multiedit', 'multi_edit',
   'applypatch', 'apply_patch',
@@ -783,11 +782,9 @@ const extractApplyPatchChanges = (changes: unknown): any[] => {
 };
 
 /**
- * Map a `ToolCallDiffResult[]` (from getToolCallDiffs) into the edit-record
- * shape EditToolResultCard expects. Used by the async dispatch path for tools
- * (e.g. Codex `file_change`) whose raw canonical event carries no diff content
- * and whose diffs must be fetched from local-history via the synthetic
- * edit-group ID stored on session_files.metadata.toolUseId.
+ * Map resolved `ToolCallDiffResult[]` into the edit-record shape
+ * EditToolResultCard expects. Used by transcript rows that are enriched in
+ * main before the renderer sees them (for example Codex `file_change`).
  */
 export const toolCallDiffsToEdits = (diffs: any[]): any[] => {
   const out: any[] = [];
@@ -1021,7 +1018,7 @@ export const extractEditsFromToolMessage = (message: TranscriptViewMessage): any
 export const RichTranscriptView = React.forwardRef<
   { scrollToMessage: (index: number) => void; scrollToTop: () => void },
   RichTranscriptViewProps
->(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, appStartTime, getToolCallDiffs, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, persistScrollState = true }, ref) => {
+>(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, appStartTime, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, persistScrollState = true }, ref) => {
   const [collapsedMessages, setCollapsedMessages] = useState<Set<number>>(new Set());
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollButtonRef = useRef<HTMLDivElement>(null);
@@ -1620,32 +1617,29 @@ export const RichTranscriptView = React.forwardRef<
               workspacePath={workspacePath}
               sessionId={sessionId}
               readFile={readFile}
-              getToolCallDiffs={getToolCallDiffs}
             />
           </ToolWidgetErrorBoundary>
         </div>
       );
     }
 
-    // Codex SDK's `file_change` tool's raw item.completed payload only carries
-    // { id, type, changes:[{path,kind}], status } -- no diff content. Render via
-    // AsyncEditToolResultCard, which fetches red/green diffs from local-history
-    // using the synthetic edit-group ID (Phase 1-3 plumbing) and then renders
-    // through the same EditToolResultCard look as Claude's Edit tool.
-    if (tool.toolName === 'file_change' && getToolCallDiffs) {
+    // Codex SDK `file_change` rows are enriched with resolved diffs in main
+    // before the transcript reaches the renderer. Render them through the same
+    // EditToolResultCard path as Claude's Edit tool.
+    if (tool.toolName === 'file_change' && tool.fileDiffs && tool.fileDiffs.length > 0) {
       return (
         <div
           key={toolRenderKey}
           className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`}
           style={{ marginLeft: depth > 0 ? '1rem' : '0' }}
         >
-          <AsyncEditToolResultCard
+          <EditToolResultCard
             toolMessage={toolMsg}
+            edits={toolCallDiffsToEdits(tool.fileDiffs)}
             workspacePath={workspacePath}
             onOpenFile={onOpenFile}
             renderEmbeddedFile={renderEmbeddedFile}
             canEmbedFile={canEmbedFile}
-            getToolCallDiffs={getToolCallDiffs}
           />
         </div>
       );
@@ -1890,11 +1884,9 @@ export const RichTranscriptView = React.forwardRef<
               )}
 
               {/* File changes caused by this tool call */}
-              {!isSubAgent && getToolCallDiffs && tool.providerToolCallId && tool.result !== undefined && tool.result !== null && (
+              {!isSubAgent && tool.fileDiffs && tool.fileDiffs.length > 0 && (
                 <ToolCallChanges
-                  toolCallItemId={tool.providerToolCallId}
-                  toolCallTimestamp={toolMsg.createdAt?.getTime() ?? 0}
-                  getToolCallDiffs={getToolCallDiffs}
+                  diffs={tool.fileDiffs}
                   isExpanded={isExpanded}
                   workspacePath={workspacePath}
                   onOpenFile={onOpenFile}
@@ -2289,20 +2281,14 @@ export const RichTranscriptView = React.forwardRef<
         <div className={`rich-transcript-content mx-auto py-1 h-full ${settings.compactMode ? 'compact' : 'normal'}`}>
           {messages.length === 0 && !isWaitingForResponse ? (
             <div className="rich-transcript-empty flex flex-col items-center p-8 px-4 h-full max-w-4xl mx-auto">
-              <div className="rich-transcript-empty-content flex-1 flex flex-col justify-center max-w-[400px] text-left">
-                <div className="rich-transcript-empty-title text-[var(--nim-text-faint)] text-sm mb-2 leading-relaxed">
-                  {getProviderDisplayName(provider)} is ready to assist with:
+
+              {hideEmptyHelp ? (
+                <div className="rich-transcript-empty-extras-wrap flex-1 flex flex-col items-center justify-center w-full">
+                  {renderEmptyExtra?.()}
                 </div>
-                <ul className="rich-transcript-empty-capabilities list-none p-0 m-0 ml-6">
-                  <li className="text-[var(--nim-text-faint)] text-sm py-1 pl-3 relative leading-relaxed before:content-['•'] before:absolute before:left-0 before:text-[var(--nim-text-faint)]">Web research</li>
-                  <li className="text-[var(--nim-text-faint)] text-sm py-1 pl-3 relative leading-relaxed before:content-['•'] before:absolute before:left-0 before:text-[var(--nim-text-faint)]">Code analysis</li>
-                  <li className="text-[var(--nim-text-faint)] text-sm py-1 pl-3 relative leading-relaxed before:content-['•'] before:absolute before:left-0 before:text-[var(--nim-text-faint)]">File editing</li>
-                </ul>
-                <div className="rich-transcript-empty-footer text-[var(--nim-text-faint)] text-sm mt-3 leading-relaxed">
-                  Enter a task below to get started
-                </div>
-              </div>
-              {renderEmptyExtra?.()}
+              ) : (
+                renderEmptyExtra?.()
+              )}
             </div>
           ) : !isContainerVisible ? (
             /* Skip VList rendering when container is hidden (display:none parent).

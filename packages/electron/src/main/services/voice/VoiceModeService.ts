@@ -1099,14 +1099,15 @@ export function initVoiceModeService() {
   }) => {
     try {
       const { database } = await import('../../database/PGLiteDatabaseWorker');
+      const cutoff = new Date(Date.now() - data.timeoutMs);
       const result = await database.query(
         `SELECT id, updated_at FROM ai_sessions
          WHERE workspace_id = $1
            AND session_type = 'voice'
-           AND updated_at > NOW() - INTERVAL '1 millisecond' * $2
+           AND updated_at > $2
          ORDER BY updated_at DESC
          LIMIT 1`,
-        [data.workspacePath, data.timeoutMs]
+        [data.workspacePath, cutoff]
       );
       if (result.rows.length > 0) {
         return { found: true, sessionId: result.rows[0].id };

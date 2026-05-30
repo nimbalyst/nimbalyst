@@ -12,10 +12,15 @@ describe('ClaudeProvider.supportsTemperature', () => {
       expect(ClaudeProvider.supportsTemperature('claude-opus-4-7')).toBe(false);
     });
 
-    it('returns false for hypothetical future opus-4-8 / 4-9', () => {
-      // Document the forward-compatibility intent: when Anthropic ships
-      // claude-opus-4-8 / 4-9, the deprecation pattern is expected to hold.
+    it('returns false for claude-opus-4-8', () => {
+      // Anthropic shipped Opus 4.8 with the same temperature-deprecation
+      // posture as 4.7 (adaptive thinking, no `temperature` parameter).
       expect(ClaudeProvider.supportsTemperature('claude-opus-4-8')).toBe(false);
+    });
+
+    it('returns false for hypothetical future opus-4-9+', () => {
+      // Document the forward-compatibility intent: future Opus minors are
+      // expected to keep the deprecation pattern.
       expect(ClaudeProvider.supportsTemperature('claude-opus-4-9')).toBe(false);
     });
 

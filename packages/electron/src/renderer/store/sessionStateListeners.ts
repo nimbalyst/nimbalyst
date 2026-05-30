@@ -31,6 +31,7 @@ import {
   selectedWorkstreamAtom,
   setSelectedWorkstreamAtom,
   sessionUnreadAtom,
+  sessionLastActivityAtom,
   sessionLastReadAtom,
   sessionHasPendingInteractivePromptAtom,
   sessionPendingPromptsAtom,
@@ -523,11 +524,24 @@ export function initSessionStateListeners(): () => void {
       }, RELOAD_THROTTLE_MS));
     }
 
-    // Update session metadata with updatedAt timestamp and ensure it's unarchived
-    // The database layer already sets is_archived = FALSE when a message is added,
-    // but we need to update the UI state to match
-    // This automatically syncs both sessionStoreAtom and sessionRegistryAtom
-    store.set(updateSessionStoreAtom, { sessionId, updates: { updatedAt: Date.now(), isArchived: false } });
+    // Bump the per-session activity atom. Individual list-item subscribers
+    // re-render their own relative-time labels without churning
+    // sessionRegistryAtom (which would cascade through sessionListRootAtom,
+    // SessionHistory's filter effect, and every workstream/group derivation).
+    // The registry's `updatedAt` stays at the value from the last DB refresh
+    // — sort order during a live turn is driven by `markSessionTurnActivityAtom`,
+    // not by per-message timestamps.
+    store.set(sessionLastActivityAtom(sessionId), Date.now());
+
+    // Only mutate the registry to flip `isArchived: false` when it actually
+    // is currently archived. The database layer unarchives on insert; the
+    // unconditional registry write that used to happen here was the single
+    // biggest source of SessionHistory churn during streaming (706-entry
+    // Map rebuilt + sessionListRootAtom re-derived + setSessions cascade per
+    // streamed chunk).
+    if (sessionMeta?.isArchived) {
+      store.set(updateSessionStoreAtom, { sessionId, updates: { isArchived: false } });
+    }
 
     // Mark as unread if this is an output message (agent response) and the session
     // is not currently being viewed

@@ -34,6 +34,8 @@ export interface CollabHistoryClientConfig {
   serverUrl: string;
   /** Async accessor for the room JWT (same as DocumentSyncConfig.getJwt). */
   getJwt: () => Promise<string>;
+  /** Optional extra query appended to revision HTTP requests (test seam). */
+  urlExtraQuery?: string;
   /** Org owning the room. */
   orgId: string;
   /** Document identity. */
@@ -75,7 +77,7 @@ export class CollabHistoryClient {
   }
 
   async listRevisions(opts: { cursor?: string | null; limit?: number } = {}): Promise<DocRevisionListResponse> {
-    const url = new URL(`${this.httpBase}/sync/${this.roomId}/revisions`);
+    const url = this.buildRequestUrl(`/sync/${this.roomId}/revisions`);
     if (opts.cursor) url.searchParams.set('cursor', opts.cursor);
     if (opts.limit) url.searchParams.set('limit', String(opts.limit));
 
@@ -87,7 +89,7 @@ export class CollabHistoryClient {
    * Load a single revision and decrypt its snapshot payload.
    */
   async loadRevision(revisionId: string): Promise<LoadedRevision> {
-    const url = `${this.httpBase}/sync/${this.roomId}/revisions/${encodeURIComponent(revisionId)}`;
+    const url = this.buildRequestUrl(`/sync/${this.roomId}/revisions/${encodeURIComponent(revisionId)}`);
     const response = await this.fetchAuthed(url, { method: 'GET' });
     const body = (await response.json()) as DocRevisionDetailResponse;
     const plaintext = await decryptRevisionPayload(
@@ -126,7 +128,7 @@ export class CollabHistoryClient {
       payload,
     };
 
-    const url = `${this.httpBase}/sync/${this.roomId}/revisions`;
+    const url = this.buildRequestUrl(`/sync/${this.roomId}/revisions`);
     const response = await this.fetchAuthed(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -135,7 +137,7 @@ export class CollabHistoryClient {
     return (await response.json()) as DocRevisionCreateResponse;
   }
 
-  private async fetchAuthed(url: string, init: RequestInit): Promise<Response> {
+  private async fetchAuthed(url: string | URL, init: RequestInit): Promise<Response> {
     const jwt = await this.config.getJwt();
     const headers = new Headers(init.headers);
     headers.set('Authorization', `Bearer ${jwt}`);
@@ -169,6 +171,15 @@ export class CollabHistoryClient {
       iv: bytesToBase64(iv),
       encodingVersion: REVISION_ENCODING_VERSION,
     };
+  }
+
+  private buildRequestUrl(pathname: string): URL {
+    const url = new URL(`${this.httpBase}${pathname}`);
+    if (this.config.urlExtraQuery) {
+      const extra = new URLSearchParams(this.config.urlExtraQuery);
+      extra.forEach((value, key) => url.searchParams.append(key, value));
+    }
+    return url;
   }
 
 }
@@ -235,4 +246,3 @@ function base64ToBytes(base64: string): Uint8Array {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
-

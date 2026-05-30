@@ -80,6 +80,8 @@ import { registerShareHandlers } from './ipc/ShareHandlers';
 import { MCPConfigService } from './services/MCPConfigService';
 import { setMcpConfigServiceGetter } from './mcpConfigServiceRef';
 import { registerDatabaseBrowserHandlers } from './ipc/DatabaseBrowserHandlers';
+import { registerDatabaseBrowserSqliteHandlers } from './ipc/DatabaseBrowserSqliteHandlers';
+import { registerMigrationHandlers } from './ipc/MigrationHandlers';
 import { registerTerminalHandlers, shutdownTerminalHandlers } from './ipc/TerminalHandlers';
 import { AIService } from './services/ai/AIService';
 import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesForWorkspace } from './utils/workspaceDetection';
@@ -1383,7 +1385,18 @@ app.whenReady().then(async () => {
     registerMCPConfigHandlers();
     registerOpenCodeConfigHandlers();
     registerClaudeCodePluginHandlers();
-    registerDatabaseBrowserHandlers();
+    const activeSqlite = database.getActiveSQLiteDatabase();
+    if (database.getEngine() === 'sqlite' && activeSqlite) {
+        const userDataPath = process.env.NIMBALYST_USER_DATA_PATH || app.getPath('userData');
+        registerDatabaseBrowserSqliteHandlers({
+            sqlite: activeSqlite,
+            backupService: database.getBackupService() as any,
+            sqliteFilePath: join(userDataPath, 'sqlite-db', 'nimbalyst.sqlite'),
+        });
+    } else {
+        registerDatabaseBrowserHandlers();
+    }
+    registerMigrationHandlers();
     registerTerminalHandlers();
     registerExportHandlers();
     registerShareHandlers();
@@ -2084,6 +2097,7 @@ app.whenReady().then(async () => {
     // Set up IPC handler for theme changes from renderer
     safeOn('set-theme', (event, theme: AppTheme, isDark?: boolean) => {
         setTheme(theme, isDark);
+        FeatureUsageService.getInstance().recordUsage(FEATURES.THEME_CHANGED);
         // User explicitly applied a theme — clear any pending fallback banner
         clearPendingThemeFallback();
         updateNativeTheme();
@@ -2846,8 +2860,14 @@ app.on('before-quit', async (event) => {
         }
 
         // Import database and create backup (with timeout)
-        const { getDatabase } = await import('./database/initialize');
+        const { getDatabase, stopPeriodicBackupTimer } = await import('./database/initialize');
         const db = getDatabase();
+
+        // Stop the 4h periodic backup timer before doing anything else.
+        // If it fires after we close the DB, better-sqlite3's setImmediate-
+        // driven backup step throws "database connection is not open" from
+        // inside an async chain we no longer await.
+        stopPeriodicBackupTimer();
 
         if (db) {
             const backupPromise = db.createBackup();
@@ -2871,7 +2891,7 @@ app.on('before-quit', async (event) => {
             const backupService = db.getBackupService();
             if (backupService) {
                 try {
-                    await backupService.cleanupOldCorruptedBackups();
+                    await backupService.cleanupOldCorruptedBackups?.();
                     console.log('[QUIT] Old corrupted backups cleaned up');
                     if (canWriteLogs && debugLog) {
                         try { fs.appendFileSync(debugLog, '[QUIT] Old backups cleaned up\n'); } catch (e) {}

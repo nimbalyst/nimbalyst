@@ -72,10 +72,22 @@ describe('resolveClaudeCodeModelVariant', () => {
   });
 
   describe('pinned-version variants', () => {
+    it('opus-4-7 resolves to the full claude-opus-4-7 SDK model ID', () => {
+      // Pinned after the canonical `opus` alias was bumped to 4.8, so users
+      // can keep selecting 4.7 explicitly.
+      const result = resolveClaudeCodeModelVariant('claude-code:opus-4-7', DEFAULT_MODEL);
+      expect(result).toBe('claude-opus-4-7');
+    });
+
+    it('opus-4-7-1m resolves to claude-opus-4-7[1m]', () => {
+      const result = resolveClaudeCodeModelVariant('claude-code:opus-4-7-1m', DEFAULT_MODEL);
+      expect(result).toBe('claude-opus-4-7[1m]');
+    });
+
     it('opus-4-6 resolves to the full claude-opus-4-6 SDK model ID', () => {
       // Pinned variants always point at a specific Anthropic model, not
       // whatever "latest opus" happens to be, so users can stay on 4.6
-      // after the canonical `opus` alias is bumped to 4.7.
+      // after the canonical `opus` alias is bumped.
       const result = resolveClaudeCodeModelVariant('claude-code:opus-4-6', DEFAULT_MODEL);
       expect(result).toBe('claude-opus-4-6');
     });

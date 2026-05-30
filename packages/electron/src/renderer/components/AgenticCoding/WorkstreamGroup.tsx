@@ -15,10 +15,10 @@ import {
   buildShareUrl,
 } from '../../store';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
-import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
 import type { ShareDialogData } from '../../dialogs';
 import { SessionContextMenu } from './SessionContextMenu';
+import { SessionRelativeTime } from './SessionRelativeTime';
 
 /**
  * Unified component for rendering expandable session groups in the session history.
@@ -1175,7 +1175,7 @@ const WorkstreamSessionItem: React.FC<WorkstreamSessionItemProps> = ({
             isActive ? 'font-medium' : ''
           }`}>{displayTitle}</span>
           <span className="workstream-session-item-timestamp shrink-0 text-[0.6875rem] text-[var(--nim-text-faint)] ml-2">
-            {getRelativeTimeString(session.updatedAt || session.createdAt)}
+            <SessionRelativeTime sessionId={session.id} fallbackTimestamp={session.updatedAt || session.createdAt} />
           </span>
         </>
       )}

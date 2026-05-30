@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useRef, useMemo, memo } from '
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
-import { sessionOrChildProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom, sessionHasPendingInteractivePromptAtom, reparentSessionAtom, refreshSessionListAtom, sessionShareAtom, sessionWakeupAtom } from '../../store';
+import { sessionOrChildProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom, sessionHasPendingInteractivePromptAtom, reparentSessionAtom, refreshSessionListAtom, sessionShareAtom, sessionWakeupAtom, sessionLastActivityAtom } from '../../store';
 import { convertToWorkstreamAtom } from '../../store/atoms/sessions';
 import { SessionContextMenu } from './SessionContextMenu';
 
@@ -388,8 +388,16 @@ export const SessionListItem = memo<SessionListItemProps>(({
     ? displayTitle.substring(0, 40) + '...'
     : displayTitle;
 
+  // Per-session live activity. Bumped on every `ai:message-logged`; only
+  // this list item re-renders when its own activity ticks, instead of the
+  // whole SessionHistory + 705 siblings. Fall back to the registry's
+  // `updatedAt` (set at DB refresh / on terminal session events) when no
+  // activity has been recorded since mount.
+  const liveActivity = useAtomValue(sessionLastActivityAtom(id));
+  const effectiveUpdatedAt = liveActivity > 0 ? liveActivity : updatedAt;
+
   // Show timestamp based on current sort order
-  const timestamp = sortBy === 'updated' ? (updatedAt || createdAt) : createdAt;
+  const timestamp = sortBy === 'updated' ? (effectiveUpdatedAt || createdAt) : createdAt;
   const timestampLabel = sortBy === 'updated' ? 'updated' : 'created';
 
   const { relativeTime, fullDateTime } = useMemo(() => ({

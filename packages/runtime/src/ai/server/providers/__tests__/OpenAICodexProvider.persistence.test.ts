@@ -112,6 +112,279 @@ describe('OpenAICodexProvider persistence', () => {
     expect(chunks.some((chunk) => chunk.type === 'text')).toBe(true);
   });
 
+  it('dedupes repeated app-server item and turn notifications before persistence', async () => {
+    const repeatedEvents = [
+      {
+        type: 'raw_event',
+        metadata: {
+          transport: 'app-server',
+          method: 'item/started',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+              type: 'mcpToolCall',
+              id: 'call_commit',
+              server: 'nimbalyst-mcp',
+              tool: 'developer_git_commit_proposal',
+              status: 'inProgress',
+              arguments: {
+                commitMessage: 'fix: example',
+                filesToStage: ['CHANGELOG.md'],
+              },
+            },
+          },
+        },
+      },
+      {
+        type: 'raw_event',
+        metadata: {
+          transport: 'app-server',
+          method: 'item/started',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+              type: 'mcpToolCall',
+              id: 'call_commit',
+              server: 'nimbalyst-mcp',
+              tool: 'developer_git_commit_proposal',
+              status: 'inProgress',
+              arguments: {
+                commitMessage: 'fix: example',
+                filesToStage: ['CHANGELOG.md'],
+              },
+            },
+          },
+        },
+      },
+      {
+        type: 'raw_event',
+        metadata: {
+          transport: 'app-server',
+          method: 'item/completed',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+              type: 'agentMessage',
+              id: 'msg_final',
+              text: 'Commit created via the proposal tool.',
+            },
+          },
+        },
+      },
+      {
+        type: 'raw_event',
+        metadata: {
+          transport: 'app-server',
+          method: 'item/completed',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+              type: 'agentMessage',
+              id: 'msg_final',
+              text: 'Commit created via the proposal tool.',
+            },
+          },
+        },
+      },
+      {
+        type: 'raw_event',
+        metadata: {
+          transport: 'app-server',
+          method: 'turn/completed',
+          params: {
+            threadId: 'thread-1',
+            turn: {
+              id: 'turn-1',
+              status: 'completed',
+            },
+          },
+        },
+      },
+      {
+        type: 'raw_event',
+        metadata: {
+          transport: 'app-server',
+          method: 'turn/completed',
+          params: {
+            threadId: 'thread-1',
+            turn: {
+              id: 'turn-1',
+              status: 'completed',
+            },
+          },
+        },
+      },
+    ];
+
+    const protocol = {
+      platform: 'codex-app-server',
+      async createSession() {
+        return {
+          id: 'thread-1',
+          platform: 'codex-app-server',
+          raw: {},
+        };
+      },
+      async resumeSession() {
+        throw new Error('not used');
+      },
+      async forkSession() {
+        throw new Error('not used');
+      },
+      async *sendMessage() {
+        for (const event of repeatedEvents) {
+          yield event;
+        }
+
+        yield {
+          type: 'complete',
+          content: '',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+          },
+        };
+      },
+      abortSession: vi.fn(),
+      cleanupSession: vi.fn(),
+    } as any;
+
+    const permissionService = {
+      resolvePermission: vi.fn(),
+      rejectAllPending: vi.fn(),
+      clearSessionCache: vi.fn(),
+    } as any;
+
+    const provider = new OpenAICodexProvider(
+      { apiKey: 'test-key' },
+      { protocol, permissionService }
+    );
+
+    await provider.initialize({
+      apiKey: 'test-key',
+      model: 'openai-codex:gpt-5',
+    });
+
+    for await (const _chunk of provider.sendMessage('test', undefined, 'session-app-dedupe', [], process.cwd())) {
+      // drain
+    }
+
+    const outputRows = createdMessages.filter((message) => message.direction === 'output');
+    expect(outputRows).toHaveLength(3);
+    expect(outputRows.map((row) => (row.metadata as any)?.eventType)).toEqual([
+      'item/started',
+      'item/completed',
+      'turn/completed',
+    ]);
+  });
+
+  it('does not persist transient app-server delta and status notifications', async () => {
+    const transientEvents = [
+      {
+        type: 'raw_event',
+        metadata: {
+          transport: 'app-server',
+          method: 'thread/started',
+          params: { threadId: 'thread-1' },
+        },
+      },
+      {
+        type: 'raw_event',
+        metadata: {
+          transport: 'app-server',
+          method: 'item/agentMessage/delta',
+          params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'msg-1', delta: 'hello' },
+        },
+      },
+      {
+        type: 'raw_event',
+        metadata: {
+          transport: 'app-server',
+          method: 'item/reasoning/textDelta',
+          params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'reason-1', delta: 'thinking' },
+        },
+      },
+      {
+        type: 'raw_event',
+        metadata: {
+          transport: 'app-server',
+          method: 'thread/tokenUsage/updated',
+          params: { threadId: 'thread-1', usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 } },
+        },
+      },
+      {
+        type: 'raw_event',
+        metadata: {
+          transport: 'app-server',
+          method: 'mcpServer/startupStatus/updated',
+          params: { server: 'nimbalyst-mcp', status: 'ready' },
+        },
+      },
+    ];
+
+    const protocol = {
+      platform: 'codex-app-server',
+      async createSession() {
+        return {
+          id: 'thread-1',
+          platform: 'codex-app-server',
+          raw: {},
+        };
+      },
+      async resumeSession() {
+        throw new Error('not used');
+      },
+      async forkSession() {
+        throw new Error('not used');
+      },
+      async *sendMessage() {
+        for (const event of transientEvents) {
+          yield event;
+        }
+
+        yield {
+          type: 'complete',
+          content: '',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+          },
+        };
+      },
+      abortSession: vi.fn(),
+      cleanupSession: vi.fn(),
+    } as any;
+
+    const permissionService = {
+      resolvePermission: vi.fn(),
+      rejectAllPending: vi.fn(),
+      clearSessionCache: vi.fn(),
+    } as any;
+
+    const provider = new OpenAICodexProvider(
+      { apiKey: 'test-key' },
+      { protocol, permissionService }
+    );
+
+    await provider.initialize({
+      apiKey: 'test-key',
+      model: 'openai-codex:gpt-5',
+    });
+
+    for await (const _chunk of provider.sendMessage('test', undefined, 'session-app-transient', [], process.cwd())) {
+      // drain
+    }
+
+    const outputRows = createdMessages.filter((message) => message.direction === 'output');
+    expect(outputRows).toHaveLength(0);
+  });
+
   it('persists the session naming reminder as a tagged non-searchable input row', async () => {
     OpenAICodexProvider.setSessionNamingServerPort(41002);
 

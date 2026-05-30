@@ -1,4 +1,5 @@
-import { FeatureUsageService, FeatureUsageRecord } from '../services/FeatureUsageService';
+import { FeatureUsageService } from '../services/FeatureUsageService';
+import type { FeatureUsageRecord } from '../../shared/featureUsage';
 import { safeHandle } from '../utils/ipcRegistry';
 
 export function registerFeatureUsageHandlers() {

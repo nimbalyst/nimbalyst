@@ -11,10 +11,8 @@
  * the massive re-renders caused by holding sessionTabs[] in useState.
  */
 
-import React, { forwardRef, useImperativeHandle, useEffect, useCallback, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, useImperativeHandle, useEffect, useCallback, useMemo, useRef } from 'react';
 import { atom, useAtomValue, useSetAtom } from 'jotai';
-import { defaultAgentModelAtom, worktreesFeatureAvailableAtom, alphaFeatureEnabledAtom } from '../../store/atoms/appSettings';
-import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { ResizablePanel } from '../AgenticCoding/ResizablePanel';
 import { SessionHistory } from '../AgenticCoding/SessionHistory';
 import { SessionKanbanBoard } from '../TrackerMode/SessionKanbanBoard';
@@ -25,35 +23,22 @@ import {
   setSelectedWorkstreamAtom,
   sessionHistoryWidthAtom,
   sessionHistoryCollapsedAtom,
-  collapsedGroupsAtom,
-  sortOrderAtom,
   setSessionHistoryWidthAtom,
-  setCollapsedGroupsAtom,
-  setSortOrderAtom,
   initSessionList,
   initAgentModeLayout,
   initSessionEditors,
   addSessionFullAtom,
-  setActiveSessionInWorkstreamAtom,
-  loadSessionChildrenAtom,
   store,
   refreshSessionListAtom,
-  removeSessionFullAtom,
-  updateSessionStoreAtom,
   sessionAgentRoleAtom,
-  sessionRegistryAtom,
-  sessionStoreAtom,
   pushNavigationEntryAtom,
   isRestoringNavigationAtom,
-  markSessionReadAtom,
   activeSessionIdAtom,
-  setSessionDraftInputAtom,
   viewModeAtom,
   setViewModeAtom,
   registerWorkstreamSelectedHook,
 } from '../../store';
-import { errorNotificationService } from '../../services/ErrorNotificationService';
-import { initWorkstreamState, loadWorkstreamStates, workstreamStateAtom, workstreamActiveChildAtom, setWorkstreamActiveChildAtom, setWorktreeActiveSessionAtom } from '../../store/atoms/workstreamState';
+import { initWorkstreamState, loadWorkstreamStates, workstreamStateAtom, workstreamActiveChildAtom } from '../../store/atoms/workstreamState';
 import { blitzAnalysisCreatedAtom } from '../../store/atoms/blitz';
 import { initSessionStateListeners, updateSessionStateListenerWorkspace } from '../../store/sessionStateListeners';
 import { initFileStateListeners } from '../../store/listeners/fileStateListeners';
@@ -64,9 +49,21 @@ import { initTrayListeners, trayNewSessionRequestAtom } from '../../store/listen
 import { initDeepLinkListeners } from '../../store/listeners/deepLinkListeners';
 import { requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { fetchSessionSharesAtom } from '../../store';
-import type { WorktreeCreateResult, SessionCreateResult } from '../../../shared/ipc/types';
 import { BlitzDialog } from '../BlitzDialog/BlitzDialog';
 import { MetaAgentMode } from '../MetaAgentMode/MetaAgentMode';
+import { tipCreateWorktreeSessionRequestAtom } from '../../tips/atoms';
+import {
+  blitzDialogOpenAtom,
+  isGitRepoAtom,
+  sessionQuickOpenRequestedAtom,
+  selectSessionActionAtom,
+  openSessionInTabActionAtom,
+  createNewSessionActionAtom,
+  createNewWorktreeSessionActionAtom,
+  createWorktreeSessionCoreActionAtom,
+  addSessionToWorktreeActionAtom,
+} from '../../store/actions/sessionHistoryActions';
+import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
 
 export interface AgentModeRef {
   createNewSession: (initialDraft?: string) => Promise<string | undefined>;
@@ -112,19 +109,16 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
   // Ref to the workstream panel for closing tabs
   const workstreamPanelRef = useRef<AgentWorkstreamPanelRef>(null);
 
-  // Git repo status for worktree feature
-  const [isGitRepo, setIsGitRepo] = useState(false);
+  // Git repo status for the worktree feature. Stored per-workspace in an
+  // atom so SessionHistory and the New Worktree action atom can read it
+  // without prop-threading.
+  const isGitRepo = useAtomValue(isGitRepoAtom(workspacePath));
 
-  // Blitz dialog state
-  const [showBlitzDialog, setShowBlitzDialog] = useState(false);
-
-  // Check if worktrees feature is available (developer mode + feature enabled)
-  const isWorktreesAvailable = useAtomValue(worktreesFeatureAvailableAtom);
-  // Blitz is gated by its alpha feature alone (like Meta Agent), not developer
-  // mode. The worktrees it creates still require a git repo, enforced in
-  // createNewBlitz and on the New Blitz button (disabled when !isGitRepo).
-  const isBlitzAlphaEnabled = useAtomValue(alphaFeatureEnabledAtom('blitz'));
-  const isBlitzAvailable = isBlitzAlphaEnabled;
+  // Blitz dialog open state. Lives in an atom so SessionHistory's
+  // "New Blitz" button can open the dialog via an action atom while the
+  // dialog itself is still rendered here in AgentMode.
+  const blitzDialogOpen = useAtomValue(blitzDialogOpenAtom);
+  const setBlitzDialogOpen = useSetAtom(blitzDialogOpenAtom);
 
   // Keep Super Loop listeners active even when session history is collapsed/hidden.
   useSuperLoopInit(workspacePath);
@@ -132,8 +126,6 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
   // Layout state from atoms
   const historyWidth = useAtomValue(sessionHistoryWidthAtom);
   const historyCollapsed = useAtomValue(sessionHistoryCollapsedAtom);
-  const collapsedGroups = useAtomValue(collapsedGroupsAtom);
-  const sortOrder = useAtomValue(sortOrderAtom);
 
   // Selection state
   const selectedWorkstream = useAtomValue(selectedWorkstreamAtom(workspacePath));
@@ -141,15 +133,23 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
 
   // Layout setters
   const setHistoryWidth = useSetAtom(setSessionHistoryWidthAtom);
-  const setCollapsedGroups = useSetAtom(setCollapsedGroupsAtom);
-  const setSortOrder = useSetAtom(setSortOrderAtom);
   const addSession = useSetAtom(addSessionFullAtom);
 
-  // Default model for new sessions (user's last selected model)
+  // Default model for blitz analysis sessions (still needed in handleBlitzCreated below)
   const defaultModel = useAtomValue(defaultAgentModelAtom);
 
   // Shares state
   const fetchShares = useSetAtom(fetchSessionSharesAtom);
+
+  // Action-atom setters. `useSetAtom` returns an identity-stable setter, so
+  // these can be safely passed to children or used in effect deps without
+  // forcing re-renders.
+  const dispatchSelectSession = useSetAtom(selectSessionActionAtom);
+  const dispatchOpenSessionInTab = useSetAtom(openSessionInTabActionAtom);
+  const dispatchCreateNewSession = useSetAtom(createNewSessionActionAtom);
+  const dispatchCreateNewWorktreeSession = useSetAtom(createNewWorktreeSessionActionAtom);
+  const dispatchCreateWorktreeSessionCore = useSetAtom(createWorktreeSessionCoreActionAtom);
+  const dispatchAddSessionToWorktree = useSetAtom(addSessionToWorktreeActionAtom);
 
   // Get the active child session ID if the selected workstream has one
   const activeChildAtom = useMemo(
@@ -252,23 +252,21 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
     return cleanup;
   }, [workspacePath]);
 
-  // Check if workspace is a git repository (needed for worktree feature)
+  // Check if workspace is a git repository (needed for worktree feature).
+  // Writes the per-workspace `isGitRepoAtom` so SessionHistory and the
+  // worktree action atoms can read it without prop drilling.
   useEffect(() => {
     if (!workspacePath || !window.electronAPI?.invoke) {
-      setIsGitRepo(false);
+      store.set(isGitRepoAtom(workspacePath), false);
       return;
     }
 
     window.electronAPI.invoke('git:is-repo', workspacePath)
       .then(result => {
-        if (result?.success) {
-          setIsGitRepo(result.isRepo);
-        } else {
-          setIsGitRepo(false);
-        }
+        store.set(isGitRepoAtom(workspacePath), Boolean(result?.success && result.isRepo));
       })
       .catch(() => {
-        setIsGitRepo(false);
+        store.set(isGitRepoAtom(workspacePath), false);
       });
   }, [workspacePath]);
 
@@ -297,259 +295,43 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
     }
   }, [isActive, actualActiveSessionId, selectedWorkstream?.id, activeChildId, pushNavigationEntry, isRestoringNavigation]);
 
-  // Create new session
-  const createNewSession = useCallback(async (initialDraft?: string): Promise<string | undefined> => {
-    if (!window.electronAPI) return undefined;
-
-    try {
-      const sessionId = crypto.randomUUID();
-      // Parse provider from defaultModel using ModelIdentifier
-      const parsedModel = defaultModel ? ModelIdentifier.tryParse(defaultModel) : null;
-      const provider = parsedModel?.provider || 'claude-code';
-      // console.log('[AgentMode] Creating new session with defaultModel:', defaultModel, 'provider:', provider);
-      const result = await window.electronAPI.invoke('sessions:create', {
-        session: {
-          id: sessionId,
-          provider,
-          model: defaultModel,
-          title: 'New Session',
-        },
-        workspaceId: workspacePath,
-      });
-
-      if (result.success && result.id) {
-        // Add to session list
-        addSession({
-          id: result.id,
-          title: 'New Session',
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          provider,
-          model: defaultModel,
-          sessionType: 'session',
-          messageCount: 0,
-          workspaceId: workspacePath,
-          isArchived: false,
-          isPinned: false,
-          parentSessionId: null,
-          worktreeId: null,
-          childCount: 0,
-          uncommittedCount: 0,
-        });
-
-        // Set initial draft input before selecting the session
-        // so it's ready when the session component mounts
-        if (initialDraft) {
-          store.set(setSessionDraftInputAtom, {
-            sessionId: result.id,
-            draftInput: initialDraft,
-            workspacePath,
-            persist: true,
-          });
-        }
-
-        // Select the new session
-        setSelectedWorkstream({
-          workspacePath,
-          selection: { type: 'session', id: result.id },
-        });
-
-        return result.id;
-      }
-    } catch (error) {
-      console.error('[AgentMode] Failed to create session:', error);
-    }
-    return undefined;
-  }, [workspacePath, addSession, setSelectedWorkstream, defaultModel]);
-
-  // Handle "New Session" from tray menu
+  // Handle "New Session" from tray menu (dispatchCreateNewSession is identity-stable)
   const trayNewSessionRequest = useAtomValue(trayNewSessionRequestAtom);
   const setTrayNewSessionRequest = useSetAtom(trayNewSessionRequestAtom);
   useEffect(() => {
     if (trayNewSessionRequest) {
       setTrayNewSessionRequest(false);
-      createNewSession();
+      void dispatchCreateNewSession(undefined);
     }
-  }, [trayNewSessionRequest, setTrayNewSessionRequest, createNewSession]);
+  }, [trayNewSessionRequest, setTrayNewSessionRequest, dispatchCreateNewSession]);
 
-  // Create new worktree session
-  const createNewWorktreeSession = useCallback(async (options?: { baseBranch?: string; name?: string }) => {
-    if (!window.electronAPI) return;
-
-    // Check if worktrees feature is available
-    if (!isWorktreesAvailable) return;
-
-    // Check if this is a git repo
-    if (!isGitRepo) return;
-
-    try {
-      // Create the worktree
-      const ipcOptions = options?.baseBranch || options?.name ? options : undefined;
-      const worktreeResult: WorktreeCreateResult = await window.electronAPI.invoke(
-        'worktree:create',
-        workspacePath,
-        ipcOptions
-      );
-      if (!worktreeResult.success || !worktreeResult.worktree) {
-        throw new Error(worktreeResult.error || 'Failed to create worktree');
-      }
-
-      const worktree = worktreeResult.worktree;
-
-      // Create session with worktree association
-      const sessionId = crypto.randomUUID();
-      const parsedWorktreeModel = defaultModel ? ModelIdentifier.tryParse(defaultModel) : null;
-      const worktreeProvider = parsedWorktreeModel?.provider || 'claude-code';
-      const result: SessionCreateResult = await window.electronAPI.invoke('sessions:create', {
-        session: {
-          id: sessionId,
-          provider: worktreeProvider,
-          model: defaultModel,
-          title: `Worktree: ${worktree.name}`,
-          worktreeId: worktree.id,
-        },
-        workspaceId: workspacePath,
-      });
-
-      if (result.success && result.id) {
-        // Add to session list
-        addSession({
-          id: result.id,
-          title: `Worktree: ${worktree.name}`,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          provider: worktreeProvider,
-          model: defaultModel,
-          sessionType: 'session',
-          messageCount: 0,
-          workspaceId: workspacePath,
-          isArchived: false,
-          isPinned: false,
-          parentSessionId: null,
-          worktreeId: worktree.id,
-          childCount: 0,
-          uncommittedCount: 0,
-        });
-
-        // Initialize workstream state with worktree type
-        store.set(workstreamStateAtom(result.id), {
-          type: 'worktree',
-          worktreeId: worktree.id,
-        });
-
-        // Select the new worktree session
-        setSelectedWorkstream({
-          workspacePath,
-          selection: { type: 'worktree', id: result.id },
-        });
-      }
-    } catch (error) {
-      console.error('[AgentMode] Failed to create worktree session:', error);
-      // Re-throw so callers awaiting the promise (e.g. WorktreeBaseBranchPicker)
-      // can surface the error to the user instead of silently closing.
-      throw error;
-    }
-  }, [workspacePath, addSession, setSelectedWorkstream, defaultModel, isWorktreesAvailable, isGitRepo]);
-
-  // Create session in an existing worktree and return the session ID
-  // This is the core logic shared by both addSessionToWorktree and createWorktreeSession
-  const createWorktreeSessionCore = useCallback(async (worktreeId: string): Promise<string | null> => {
-    if (!window.electronAPI) return null;
-
-    // Get the worktree data to use its name
-    const worktreeResult = await window.electronAPI.invoke('worktree:get', worktreeId);
-    if (!worktreeResult?.worktree) {
-      throw new Error('Worktree not found');
+  const tipCreateWorktreeRequest = useAtomValue(tipCreateWorktreeSessionRequestAtom);
+  const processedTipCreateWorktreeRequestRef = useRef(0);
+  useEffect(() => {
+    if (
+      tipCreateWorktreeRequest === 0 ||
+      tipCreateWorktreeRequest === processedTipCreateWorktreeRequestRef.current
+    ) {
+      return;
     }
 
-    const worktree = worktreeResult.worktree;
+    processedTipCreateWorktreeRequestRef.current = tipCreateWorktreeRequest;
+    void dispatchCreateNewWorktreeSession(undefined);
+  }, [tipCreateWorktreeRequest, dispatchCreateNewWorktreeSession]);
 
-    // Create session with worktree association (no parentSessionId - this is NOT a workstream)
-    const sessionId = crypto.randomUUID();
-    const parsedCoreModel = defaultModel ? ModelIdentifier.tryParse(defaultModel) : null;
-    const coreProvider = parsedCoreModel?.provider || 'claude-code';
-    const result = await window.electronAPI.invoke('sessions:create', {
-      session: {
-        id: sessionId,
-        provider: coreProvider,
-        model: defaultModel,
-        title: 'New Session',
-        worktreeId: worktree.id,
-      },
-      workspaceId: workspacePath,
-    });
-
-    if (result.success && result.id) {
-      // Add to session list
-      addSession({
-        id: result.id,
-        title: 'New Session',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        provider: coreProvider,
-        model: defaultModel,
-        sessionType: 'session',
-        messageCount: 0,
-        workspaceId: workspacePath,
-        isArchived: false,
-        isPinned: false,
-        parentSessionId: null,
-        worktreeId: worktree.id,
-        childCount: 0,
-        uncommittedCount: 0,
-      });
-
-      // Initialize workstream state with worktree type
-      store.set(workstreamStateAtom(result.id), {
-        type: 'worktree',
-        worktreeId: worktree.id,
-      });
-
-      // Select the new session within the worktree
-      setSelectedWorkstream({
-        workspacePath,
-        selection: { type: 'worktree', id: result.id },
-      });
-
-      return result.id;
-    } else {
-      throw new Error(result.error || 'Failed to create session');
-    }
-  }, [workspacePath, addSession, setSelectedWorkstream, defaultModel]);
-
-  // Add session to an existing worktree (void return, shows error notification on failure)
-  const addSessionToWorktree = useCallback(async (worktreeId: string) => {
-    try {
-      await createWorktreeSessionCore(worktreeId);
-    } catch (error) {
-      errorNotificationService.showError(
-        'Failed to Create Session',
-        error instanceof Error ? error.message : 'An unexpected error occurred while adding a session to the worktree.',
-        { duration: 5000 }
-      );
-    }
-  }, [createWorktreeSessionCore]);
-
-  // Create session in worktree and return the session ID (for use by plan mode)
+  // `createWorktreeSession` returns the new id (for plan-mode integration);
+  // wraps the core action atom and swallows errors.
   const createWorktreeSession = useCallback(async (worktreeId: string): Promise<string | null> => {
     try {
-      return await createWorktreeSessionCore(worktreeId);
+      return await dispatchCreateWorktreeSessionCore(worktreeId);
     } catch (error) {
       console.error('[AgentMode] Failed to create worktree session:', error);
       return null;
     }
-  }, [createWorktreeSessionCore]);
+  }, [dispatchCreateWorktreeSessionCore]);
 
   // Session management atoms (declared early so blitz handler can reference refreshSessions)
   const refreshSessions = useSetAtom(refreshSessionListAtom);
-  const removeSessionFromAtom = useSetAtom(removeSessionFullAtom);
-  const updateSessionStore = useSetAtom(updateSessionStoreAtom);
-
-  // Create new blitz - opens the blitz dialog
-  const createNewBlitz = useCallback(() => {
-    if (!isBlitzAlphaEnabled || !isGitRepo) return;
-    setShowBlitzDialog(true);
-  }, [isBlitzAlphaEnabled, isGitRepo]);
 
   // Handle blitz creation result
   const handleBlitzCreated = useCallback(async (result: any) => {
@@ -672,317 +454,24 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
     refreshSessions();
   }, [blitzAnalysisCreated, workspacePath, addSession, refreshSessions]);
 
-  // Open session by ID
-  const openSessionInTab = useCallback(async (sessionId: string) => {
-    // console.log('[AgentMode] openSessionInTab called with:', sessionId);
-
-    // Check session list for parentSessionId (more reliable than aiLoadSession)
-    try {
-      const result = await window.electronAPI.invoke('sessions:list', workspacePath, { includeArchived: false });
-      if (!result.success) {
-        throw new Error('Failed to load session list');
-      }
-
-      const sessionListItem = result.sessions.find((s: any) => s.id === sessionId);
-      // console.log('[AgentMode] Session list item:', sessionListItem?.id, 'parentSessionId:', sessionListItem?.parentSessionId);
-
-      // Check if session is in the registry - if not, add it
-      // This handles cases where a session was just created (e.g., via rebase conflict resolution)
-      const registry = store.get(sessionRegistryAtom);
-      if (sessionListItem && !registry.has(sessionId)) {
-        // console.log('[AgentMode] Session not in registry, adding it');
-        addSession({
-          id: sessionListItem.id,
-          title: sessionListItem.title || 'Untitled Session',
-          createdAt: sessionListItem.createdAt,
-          updatedAt: sessionListItem.updatedAt,
-          provider: sessionListItem.provider || 'claude-code',
-          model: sessionListItem.model,
-          sessionType: sessionListItem.sessionType || 'session',
-          messageCount: sessionListItem.messageCount || 0,
-          workspaceId: workspacePath,
-          isArchived: sessionListItem.isArchived || false,
-          isPinned: sessionListItem.isPinned || false,
-          worktreeId: sessionListItem.worktreeId || null,
-          parentSessionId: sessionListItem.parentSessionId || null,
-          childCount: sessionListItem.childCount || 0,
-          uncommittedCount: sessionListItem.uncommittedCount || 0,
-        });
-
-        // If it's a worktree session, initialize workstream state
-        if (sessionListItem.worktreeId) {
-          // console.log('[AgentMode] Initializing worktree state for session');
-          store.set(workstreamStateAtom(sessionId), {
-            type: 'worktree',
-            worktreeId: sessionListItem.worktreeId,
-          });
-        }
-      }
-
-      if (sessionListItem?.parentSessionId) {
-        // This is a child session in a workstream
-        // console.log('[AgentMode] Child session detected, parent:', sessionListItem.parentSessionId);
-
-        // CRITICAL: Load the parent's children first to populate the workstream state
-        // This ensures the child session IDs are in the state before we set active child
-        await store.set(loadSessionChildrenAtom, {
-          parentSessionId: sessionListItem.parentSessionId,
-          workspacePath,
-        });
-        // console.log('[AgentMode] Parent children loaded');
-
-        // Now set the active child in the workstream state (and mark as read)
-        store.set(setActiveSessionInWorkstreamAtom, {
-          workstreamId: sessionListItem.parentSessionId,
-          sessionId,
-        });
-        // console.log('[AgentMode] Active child set to:', sessionId);
-
-        // Finally, select the parent workstream
-        const parentState = store.get(workstreamStateAtom(sessionListItem.parentSessionId));
-        const parentType = parentState.type === 'worktree' ? 'worktree'
-          : parentState.type === 'workstream' ? 'workstream'
-          : 'session';
-
-        // console.log('[AgentMode] Selecting parent workstream:', sessionListItem.parentSessionId, 'type:', parentType);
-        setSelectedWorkstream({
-          workspacePath,
-          selection: { type: parentType, id: sessionListItem.parentSessionId },
-        });
-      } else {
-        // This is a root session - check its type
-        const state = store.get(workstreamStateAtom(sessionId));
-        const type = state.type === 'worktree' ? 'worktree'
-          : state.type === 'workstream' ? 'workstream'
-          : 'session';
-
-        setSelectedWorkstream({
-          workspacePath,
-          selection: { type, id: sessionId },
-        });
-      }
-    } catch (error) {
-      console.error('[AgentMode] Failed to load session data:', error);
-      // Fallback: treat as a simple session
-      setSelectedWorkstream({
-        workspacePath,
-        selection: { type: 'session', id: sessionId },
-      });
-    }
-  }, [workspacePath, setSelectedWorkstream, addSession]);
-
   // Handle @@session reference link clicks from transcript
   const requestedSessionId = useAtomValue(requestOpenSessionAtom);
   const setRequestedSessionId = useSetAtom(requestOpenSessionAtom);
   useEffect(() => {
     if (requestedSessionId) {
       setRequestedSessionId(null);
-      openSessionInTab(requestedSessionId);
+      void dispatchOpenSessionInTab(requestedSessionId);
     }
-  }, [requestedSessionId, setRequestedSessionId, openSessionInTab]);
+  }, [requestedSessionId, setRequestedSessionId, dispatchOpenSessionInTab]);
 
-  // Handle child session selection from workstream group
-  // Opens the parent workstream and sets the child as active
-  const handleChildSessionSelect = useCallback(async (
-    childSessionId: string,
-    parentId: string,
-    parentType: 'workstream' | 'worktree'
-  ) => {
-    if (parentType === 'worktree') {
-      // For worktrees, parentId is the worktree ID (not a session ID)
-      // We need to select the child session directly, which has a worktreeId field
-      // The workstreamSessionsAtom will find sibling sessions via the worktreeId
-
-      // Track active session for worktree (for "return to last session" feature)
-      store.set(setWorktreeActiveSessionAtom, {
-        worktreeId: parentId,
-        sessionId: childSessionId,
-      });
-
-      // Set the clicked child as active (and mark as read)
-      store.set(setActiveSessionInWorkstreamAtom, {
-        workstreamId: parentId,
-        sessionId: childSessionId,
-      });
-
-      setSelectedWorkstream({
-        workspacePath,
-        selection: { type: 'session', id: childSessionId },
-      });
-    } else {
-      // For workstreams, parentId is a session ID
-      // Load the parent's children to populate workstream state
-      await store.set(loadSessionChildrenAtom, {
-        parentSessionId: parentId,
-        workspacePath,
-      });
-
-      // Set the clicked child as active and mark as read
-      store.set(setWorkstreamActiveChildAtom, {
-        workstreamId: parentId,
-        childId: childSessionId,
-      });
-      store.set(markSessionReadAtom, childSessionId);
-
-      // Select the parent workstream
-      setSelectedWorkstream({
-        workspacePath,
-        selection: { type: parentType, id: parentId },
-      });
-    }
-  }, [workspacePath, setSelectedWorkstream]);
-
-  // Handle session selection from list (for root sessions/workstreams)
-  // Also handles child sessions by detecting parentSessionId and redirecting to parent
-  const handleSessionSelect = useCallback((sessionId: string) => {
-    // Check if this is a child session - if so, redirect to the parent workstream
-    const registry = store.get(sessionRegistryAtom);
-    const sessionMeta = registry.get(sessionId);
-    if (sessionMeta?.parentSessionId) {
-      // Blitz children have worktreeId - select directly as worktree sessions
-      // so they get full worktree UI (git operations, terminal, merge buttons)
-      if (sessionMeta.worktreeId) {
-        const state = store.get(workstreamStateAtom(sessionId));
-        if (state.type !== 'worktree') {
-          store.set(workstreamStateAtom(sessionId), {
-            type: 'worktree',
-            worktreeId: sessionMeta.worktreeId,
-          });
-        }
-        store.set(setWorktreeActiveSessionAtom, {
-          worktreeId: sessionMeta.worktreeId,
-          sessionId,
-        });
-        setSelectedWorkstream({
-          workspacePath,
-          selection: { type: 'worktree', id: sessionId },
-        });
-        return;
-      }
-
-      // Non-worktree child session - select the parent workstream instead
-      handleChildSessionSelect(sessionId, sessionMeta.parentSessionId, 'workstream');
-      return;
-    }
-
-    // Determine the actual type by checking the workstream state
-    const state = store.get(workstreamStateAtom(sessionId));
-    // Map internal state type ('single') to selection type ('session')
-    const type = state.type === 'worktree' ? 'worktree'
-      : state.type === 'workstream' ? 'workstream'
-      : 'session';
-
-    // Track active session for worktree (for "return to last session" feature)
-    const sessionData = store.get(sessionStoreAtom(sessionId));
-    if (sessionData?.worktreeId) {
-      store.set(setWorktreeActiveSessionAtom, {
-        worktreeId: sessionData.worktreeId,
-        sessionId,
-      });
-    }
-
-    setSelectedWorkstream({
-      workspacePath,
-      selection: { type, id: sessionId },
-    });
-  }, [workspacePath, setSelectedWorkstream, handleChildSessionSelect]);
-
-  // Branch a session - creates a fork at the current message
-  const handleSessionBranch = useCallback(async (sessionId: string) => {
-    try {
-      // console.log('[AgentMode] Branching session:', sessionId);
-
-      // Call IPC to create a branch
-      const result = await window.electronAPI.invoke('sessions:branch', {
-        parentSessionId: sessionId,
-        workspacePath
-      });
-
-      if (result.success && result.session) {
-        // console.log('[AgentMode] Branch created:', result.session.id);
-
-        // Refresh session list to show the new branch
-        refreshSessions();
-
-        // Open the new branch
-        await openSessionInTab(result.session.id);
-      } else {
-        console.error('[AgentMode] Failed to branch session:', result.error);
-        errorNotificationService.showError('Failed to branch conversation', result.error || 'Unknown error');
-      }
-    } catch (err) {
-      console.error('[AgentMode] Error branching session:', err);
-      errorNotificationService.showError('Failed to branch conversation', String(err));
-    }
-  }, [workspacePath, refreshSessions, openSessionInTab]);
-
-  // Delete a session
-  const handleSessionDelete = useCallback(async (sessionId: string) => {
-    try {
-      const result = await window.electronAPI.invoke('sessions:delete', sessionId);
-      if (result.success) {
-        // Remove from atom store
-        removeSessionFromAtom(sessionId);
-
-        // If this was the selected session, clear selection
-        if (selectedWorkstream?.id === sessionId) {
-          setSelectedWorkstream({ workspacePath, selection: null });
-        }
-      } else {
-        console.error('[AgentMode] Failed to delete session:', result.error);
-        errorNotificationService.showError('Failed to delete session', result.error || 'Unknown error');
-      }
-    } catch (err) {
-      console.error('[AgentMode] Error deleting session:', err);
-      errorNotificationService.showError('Failed to delete session', String(err));
-    }
-  }, [removeSessionFromAtom, selectedWorkstream, workspacePath, setSelectedWorkstream]);
-
-  // Archive a session
-  const handleSessionArchive = useCallback(async (sessionId: string) => {
-    try {
-      const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
-      if (result.success) {
-        // Update in atom store (syncs both sessionStoreAtom and sessionRegistryAtom)
-        updateSessionStore({ sessionId, updates: { isArchived: true } });
-
-        // If this was the selected session, clear selection
-        if (selectedWorkstream?.id === sessionId) {
-          setSelectedWorkstream({ workspacePath, selection: null });
-        }
-      } else {
-        console.error('[AgentMode] Failed to archive session:', result.error);
-      }
-    } catch (err) {
-      console.error('[AgentMode] Error archiving session:', err);
-    }
-  }, [updateSessionStore, selectedWorkstream, workspacePath, setSelectedWorkstream]);
-
-  // Rename a session
-  const [renamedSession, setRenamedSession] = useState<{ id: string; title: string } | null>(null);
-  const handleSessionRename = useCallback(async (sessionId: string, newName: string) => {
-    try {
-      const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, { title: newName });
-      if (result.success) {
-        // Update in atom store (syncs both sessionStoreAtom and sessionRegistryAtom)
-        updateSessionStore({ sessionId, updates: { title: newName, updatedAt: Date.now() } });
-        // Sub-sessions render from SessionHistory's workstreamChildrenCache, not from
-        // sessionRegistryAtom. The cache only patches when its `renamedSession` prop
-        // changes, so trigger that here.
-        setRenamedSession({ id: sessionId, title: newName });
-      } else {
-        console.error('[AgentMode] Failed to rename session:', result.error);
-      }
-    } catch (err) {
-      console.error('[AgentMode] Error renaming session:', err);
-    }
-  }, [updateSessionStore]);
-
-  // Expose ref methods
+  // Expose ref methods. All implementations dispatch to action atoms; the
+  // setter identities returned by useSetAtom are stable, so the deps array
+  // does not churn.
   useImperativeHandle(ref, () => ({
-    createNewSession,
-    createNewWorktreeSession,
-    openSessionInTab,
+    createNewSession: (initialDraft?: string) => dispatchCreateNewSession(initialDraft),
+    createNewWorktreeSession: (options?: { baseBranch?: string; name?: string }) =>
+      dispatchCreateNewWorktreeSession(options),
+    openSessionInTab: (sessionId: string) => dispatchOpenSessionInTab(sessionId),
     closeActiveTab: () => {
       // Route to workstream panel - it will only close editor tabs if they have focus
       workstreamPanelRef.current?.closeActiveTab();
@@ -996,7 +485,11 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
     previousTab: () => {
       // TODO: Implement tab navigation
     },
-  }), [createNewSession, createNewWorktreeSession, openSessionInTab, workspacePath, setSelectedWorkstream]);
+  }), [
+    dispatchCreateNewSession,
+    dispatchCreateNewWorktreeSession,
+    dispatchOpenSessionInTab,
+  ]);
 
   // Handle worktree archived - refresh the session list to show updated state
   const handleWorktreeArchived = useCallback(() => {
@@ -1013,6 +506,18 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
   const selectedAgentRole = useAtomValue(selectedAgentRoleAtom);
   const isSelectedMetaAgent = selectedWorkstreamId !== null && selectedAgentRole === 'meta-agent';
 
+  // Subscribe to the session quick-open request signal. SessionHistory bumps
+  // `sessionQuickOpenRequestedAtom` when the user clicks the quick-search
+  // button; here we forward to the inbound `onOpenQuickSearch` prop (App
+  // owns the dialog ref).
+  const sessionQuickOpenRequested = useAtomValue(sessionQuickOpenRequestedAtom);
+  const lastQuickOpenSeenRef = useRef(sessionQuickOpenRequested);
+  useEffect(() => {
+    if (sessionQuickOpenRequested === lastQuickOpenSeenRef.current) return;
+    lastQuickOpenSeenRef.current = sessionQuickOpenRequested;
+    onOpenQuickSearch?.();
+  }, [sessionQuickOpenRequested, onOpenQuickSearch]);
+
   // Content for the right side
   const rightContent = selectedWorkstream ? (
     isSelectedMetaAgent ? (
@@ -1021,7 +526,7 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
         workspacePath={workspacePath}
         isActive={isActive}
         sessionId={selectedWorkstream.id}
-        onOpenSessionInAgent={(sessionId) => handleSessionSelect(sessionId)}
+        onOpenSessionInAgent={dispatchSelectSession}
       />
     ) : (
       <AgentWorkstreamPanel
@@ -1030,7 +535,7 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
         workstreamId={selectedWorkstream.id}
         workstreamType={selectedWorkstream.type}
         onFileOpen={onFileOpen}
-        onAddSessionToWorktree={addSessionToWorktree}
+        onAddSessionToWorktree={dispatchAddSessionToWorktree}
         onCreateWorktreeSession={createWorktreeSession}
         onWorktreeArchived={handleWorktreeArchived}
         isGitRepo={isGitRepo}
@@ -1042,7 +547,7 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
     <div className="agent-mode-empty flex flex-col items-center justify-center h-full gap-4 text-nim-muted">
       <p className="m-0 text-sm">Select a session or create a new one to get started</p>
       <button
-        onClick={() => createNewSession()}
+        onClick={() => dispatchCreateNewSession(undefined)}
         className="agent-mode-new-button py-2 px-4 rounded-md border border-nim-border bg-nim-bg-secondary text-nim cursor-pointer text-sm transition-colors hover:bg-nim-bg-active"
       >
         New Session
@@ -1050,45 +555,17 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
     </div>
   );
 
-  // Content for the left side (session history)
-  // Only pass worktree props if the feature is available (developer mode + feature enabled)
-  const leftContent = (
-    <SessionHistory
-      workspacePath={workspacePath}
-      activeSessionId={actualActiveSessionId}
-      onSessionSelect={handleSessionSelect}
-      onChildSessionSelect={handleChildSessionSelect}
-      onSessionDelete={handleSessionDelete}
-      onSessionArchive={handleSessionArchive}
-      onSessionRename={handleSessionRename}
-      renamedSession={renamedSession}
-      onSessionBranch={handleSessionBranch}
-      onNewSession={createNewSession}
-      onNewWorktreeSession={isWorktreesAvailable ? createNewWorktreeSession : undefined}
-      onNewBlitz={isBlitzAvailable ? createNewBlitz : undefined}
-      onAddSessionToWorktree={isWorktreesAvailable ? addSessionToWorktree : undefined}
-      isGitRepo={isGitRepo}
-      collapsedGroups={collapsedGroups}
-      onCollapsedGroupsChange={(groups) => setCollapsedGroups(groups)}
-      sortOrder={sortOrder}
-      onSortOrderChange={(order) => setSortOrder(order)}
-      onOpenQuickSearch={onOpenQuickSearch}
-      mode="agent"
-    />
-  );
+  // Content for the left side (session history). SessionHistory now reads
+  // workspace path, active session, layout preferences, and all handlers
+  // directly from atoms; no props are required.
+  const leftContent = <SessionHistory />;
 
   const viewMode = useAtomValue(viewModeAtom);
 
-  // Double-click a kanban card: select the session (kanban exit is handled
-  // globally by registerWorkstreamSelectedHook in setSelectedWorkstreamAtom)
-  const handleKanbanSessionOpen = useCallback((sessionId: string) => {
-    handleSessionSelect(sessionId);
-  }, [handleSessionSelect]);
-
   const kanbanContent = (
     <SessionKanbanBoard
-      onSessionSelect={handleSessionSelect}
-      onSessionOpen={handleKanbanSessionOpen}
+      onSessionSelect={dispatchSelectSession}
+      onSessionOpen={dispatchSelectSession}
     />
   );
 
@@ -1104,8 +581,8 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
         collapsed={historyCollapsed}
       />
       <BlitzDialog
-        isOpen={showBlitzDialog}
-        onClose={() => setShowBlitzDialog(false)}
+        isOpen={blitzDialogOpen}
+        onClose={() => setBlitzDialogOpen(false)}
         onCreated={handleBlitzCreated}
         workspacePath={workspacePath}
       />

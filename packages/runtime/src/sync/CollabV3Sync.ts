@@ -17,7 +17,7 @@
  */
 
 import type { AgentMessage } from '../ai/server/types';
-import { truncateContentForSync } from './syncContentTruncator';
+import { shouldSyncMessageForSessionRoom, truncateContentForSync } from './syncContentTruncator';
 import type {
   SyncConfig,
   SyncStatus,
@@ -234,6 +234,14 @@ interface EncryptedCreateWorktreeResponse {
   error?: string;
 }
 
+interface IndexClientMetadataPatch {
+  sessionId: string;
+  encryptedClientMetadata?: string;
+  clientMetadataIv?: string;
+  isExecuting?: boolean;
+  lastReadAt?: number;
+}
+
 type ClientMessage =
   | { type: 'syncRequest'; sinceId?: string; sinceSeq?: number }
   | { type: 'appendMessage'; message: EncryptedMessage }
@@ -241,6 +249,7 @@ type ClientMessage =
   | { type: 'deleteSession' }
   | { type: 'indexSyncRequest'; projectId?: string }
   | { type: 'indexUpdate'; session: SessionIndexEntry }
+  | { type: 'indexClientMetadataPatch'; patch: IndexClientMetadataPatch }
   | { type: 'indexBatchUpdate'; sessions: SessionIndexEntry[] }
   | { type: 'indexDelete'; sessionId: string }
   | { type: 'deviceAnnounce'; device: DeviceInfo }
@@ -551,6 +560,61 @@ function buildClientMetadataFromRaw(
   if (draftUpdatedAt) result.draftUpdatedAt = draftUpdatedAt;
   if (hasNamingMarker) result.hasBeenNamed = hasBeenNamed;
   return result;
+}
+
+const INDEX_CLIENT_METADATA_ONLY_KEYS = new Set([
+  'currentContext',
+  'hasPendingPrompt',
+  'isExecuting',
+  'lastReadAt',
+  'phase',
+  'tags',
+  'draftInput',
+  'draftUpdatedAt',
+  'hasBeenNamed',
+  'updatedAt',
+]);
+
+function isIndexClientMetadataOnlyUpdate(metadata: Partial<SyncedSessionMetadata>): boolean {
+  const keys = Object.keys(metadata);
+  const hasPatchField =
+    'currentContext' in metadata ||
+    'hasPendingPrompt' in metadata ||
+    'isExecuting' in metadata ||
+    'lastReadAt' in metadata ||
+    'phase' in metadata ||
+    'tags' in metadata ||
+    'draftInput' in metadata ||
+    'draftUpdatedAt' in metadata ||
+    'hasBeenNamed' in metadata;
+
+  return hasPatchField && keys.every((key) => INDEX_CLIENT_METADATA_ONLY_KEYS.has(key));
+}
+
+function buildClientMetadataFromCacheEntry(entry: Pick<
+  CachedSessionIndex,
+  'currentContext' | 'hasPendingPrompt' | 'phase' | 'tags' | 'draftInput' | 'draftUpdatedAt' | 'hasBeenNamed'
+>): ClientMetadata | undefined {
+  if (
+    !entry.currentContext &&
+    entry.hasPendingPrompt === undefined &&
+    !entry.phase &&
+    !entry.tags &&
+    entry.draftInput === undefined &&
+    entry.hasBeenNamed === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    currentContext: entry.currentContext,
+    hasPendingPrompt: entry.hasPendingPrompt,
+    phase: entry.phase,
+    tags: entry.tags,
+    draftInput: entry.draftInput,
+    draftUpdatedAt: entry.draftUpdatedAt,
+    hasBeenNamed: entry.hasBeenNamed,
+  };
 }
 
 /**
@@ -1016,6 +1080,77 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // Key: sessionId, Value: partial metadata to merge when session is cached
   const pendingMetadataUpdates = new Map<string, Partial<SyncedSessionMetadata>>();
 
+  async function sendIndexUpdate(baseEntry: CachedSessionIndex): Promise<void> {
+    if (!indexWs || !config.encryptionKey) {
+      console.error('[CollabV3] Cannot send session update: index socket or encryption key missing');
+      return;
+    }
+
+    const { encryptedProjectId, projectIdIv } = await encryptProjectId(baseEntry.projectId, config.encryptionKey);
+
+    const indexEntry: SessionIndexEntry = {
+      sessionId: baseEntry.sessionId,
+      encryptedProjectId,
+      projectIdIv,
+      provider: baseEntry.provider,
+      model: baseEntry.model,
+      mode: baseEntry.mode,
+      sessionType: baseEntry.sessionType,
+      parentSessionId: baseEntry.parentSessionId,
+      worktreeId: baseEntry.worktreeId,
+      isArchived: baseEntry.isArchived,
+      isPinned: baseEntry.isPinned,
+      messageCount: baseEntry.messageCount,
+      lastMessageAt: baseEntry.lastMessageAt,
+      createdAt: baseEntry.createdAt,
+      updatedAt: baseEntry.updatedAt,
+      pendingExecution: baseEntry.pendingExecution,
+      isExecuting: baseEntry.isExecuting,
+      lastReadAt: baseEntry.lastReadAt,
+    };
+
+    if (baseEntry.title) {
+      const { encryptedTitle, titleIv } = await encryptTitle(baseEntry.title, config.encryptionKey);
+      indexEntry.encryptedTitle = encryptedTitle;
+      indexEntry.titleIv = titleIv;
+    }
+
+    const clientMeta = buildClientMetadataFromCacheEntry(baseEntry);
+    if (clientMeta) {
+      const { encryptedClientMetadata, clientMetadataIv } = await encryptClientMetadata(clientMeta, config.encryptionKey);
+      indexEntry.encryptedClientMetadata = encryptedClientMetadata;
+      indexEntry.clientMetadataIv = clientMetadataIv;
+    }
+
+    sessionIndexCache.set(baseEntry.sessionId, baseEntry);
+    const indexMsg: ClientMessage = { type: 'indexUpdate', session: indexEntry };
+    indexWs.send(JSON.stringify(indexMsg));
+  }
+
+  async function sendIndexClientMetadataPatch(baseEntry: CachedSessionIndex): Promise<void> {
+    if (!indexWs || !config.encryptionKey) {
+      console.error('[CollabV3] Cannot send index metadata patch: index socket or encryption key missing');
+      return;
+    }
+
+    const patch: IndexClientMetadataPatch = {
+      sessionId: baseEntry.sessionId,
+      isExecuting: baseEntry.isExecuting,
+      lastReadAt: baseEntry.lastReadAt,
+    };
+
+    const clientMeta = buildClientMetadataFromCacheEntry(baseEntry);
+    if (clientMeta) {
+      const { encryptedClientMetadata, clientMetadataIv } = await encryptClientMetadata(clientMeta, config.encryptionKey);
+      patch.encryptedClientMetadata = encryptedClientMetadata;
+      patch.clientMetadataIv = clientMetadataIv;
+    }
+
+    sessionIndexCache.set(baseEntry.sessionId, baseEntry);
+    const patchMsg: ClientMessage = { type: 'indexClientMetadataPatch', patch };
+    indexWs.send(JSON.stringify(patchMsg));
+  }
+
   /**
    * Apply any pending metadata updates for a session that was just cached.
    * This handles the case where isExecuting is pushed before the session is in the cache.
@@ -1056,78 +1191,17 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       hasPendingPrompt: 'hasPendingPrompt' in pending ? pending.hasPendingPrompt : cached.hasPendingPrompt,
       phase: 'phase' in pending ? (pending as any).phase : cached.phase,
       tags: 'tags' in pending ? (pending as any).tags : cached.tags,
+      lastReadAt: 'lastReadAt' in pending ? (pending as any).lastReadAt : cached.lastReadAt,
       draftInput: 'draftInput' in pending ? (pending as any).draftInput : cached.draftInput,
       draftUpdatedAt: 'draftUpdatedAt' in pending ? (pending as any).draftUpdatedAt : cached.draftUpdatedAt,
       hasBeenNamed: 'hasBeenNamed' in pending ? (pending as any).hasBeenNamed : cached.hasBeenNamed,
     };
 
-    // Update cache with decrypted values
-    sessionIndexCache.set(sessionId, updatedCache);
-
-    // For wire transmission, encrypt sensitive fields - encryption is required
-    if (!config.encryptionKey) {
-      console.error('[CollabV3] Cannot send session update: no encryption key');
-      return;
+    if (isIndexClientMetadataOnlyUpdate(pending)) {
+      await sendIndexClientMetadataPatch(updatedCache);
+    } else {
+      await sendIndexUpdate(updatedCache);
     }
-
-    // Encrypt projectId
-    const { encryptedProjectId, projectIdIv } = await encryptProjectId(updatedCache.projectId, config.encryptionKey);
-
-    // Build wire entry - DO NOT include plaintext values
-    const indexEntry: SessionIndexEntry = {
-      sessionId: updatedCache.sessionId,
-      encryptedProjectId,
-      projectIdIv,
-      provider: updatedCache.provider,
-      model: updatedCache.model,
-      mode: updatedCache.mode,
-      sessionType: updatedCache.sessionType,
-      parentSessionId: updatedCache.parentSessionId,
-      worktreeId: updatedCache.worktreeId,
-      isArchived: updatedCache.isArchived,
-      isPinned: updatedCache.isPinned,
-      messageCount: updatedCache.messageCount,
-      lastMessageAt: updatedCache.lastMessageAt,
-      createdAt: updatedCache.createdAt,
-      updatedAt: updatedCache.updatedAt,
-      pendingExecution: updatedCache.pendingExecution,
-      isExecuting: updatedCache.isExecuting,
-    };
-
-    // Encrypt title
-    if (updatedCache.title) {
-      const { encryptedTitle, titleIv } = await encryptTitle(updatedCache.title, config.encryptionKey);
-      indexEntry.encryptedTitle = encryptedTitle;
-      indexEntry.titleIv = titleIv;
-    }
-
-    // Encrypt client metadata (context usage, pending prompt state, phase, tags, draft, etc.)
-    if (
-      updatedCache.currentContext ||
-      updatedCache.hasPendingPrompt !== undefined ||
-      updatedCache.phase ||
-      updatedCache.tags ||
-      updatedCache.draftInput !== undefined ||
-      updatedCache.hasBeenNamed !== undefined
-    ) {
-      const clientMeta: ClientMetadata = {
-        currentContext: updatedCache.currentContext,
-        hasPendingPrompt: updatedCache.hasPendingPrompt,
-        phase: updatedCache.phase,
-        tags: updatedCache.tags,
-        draftInput: updatedCache.draftInput,
-        draftUpdatedAt: updatedCache.draftUpdatedAt,
-        hasBeenNamed: updatedCache.hasBeenNamed,
-      };
-      const { encryptedClientMetadata, clientMetadataIv } = await encryptClientMetadata(clientMeta, config.encryptionKey);
-      indexEntry.encryptedClientMetadata = encryptedClientMetadata;
-      indexEntry.clientMetadataIv = clientMetadataIv;
-    }
-
-    // Send to server
-    const indexMsg: ClientMessage = { type: 'indexUpdate', session: indexEntry };
-    // console.log('[CollabV3] Sending deferred index_update for session:', sessionId, 'isExecuting:', indexEntry.isExecuting);
-    indexWs.send(JSON.stringify(indexMsg));
   }
 
   // Pending fetch index request (resolves when index_sync_response is received)
@@ -2283,6 +2357,9 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
           // Send each message
           for (const message of messages) {
+            if (!shouldSyncMessageForSessionRoom(message.source, message.metadata, message.content)) {
+              continue;
+            }
             const encrypted = await encryptMessage(message, config.encryptionKey!);
             const clientMsg: ClientMessage = { type: 'appendMessage', message: encrypted };
             ws.send(JSON.stringify(clientMsg));
@@ -2424,6 +2501,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       const pending = pendingMetadataUpdates.get(session.id);
       const cachedIsExecuting = pending?.isExecuting ?? existingCache?.isExecuting;
       const cachedHasPendingPrompt = pending?.hasPendingPrompt ?? existingCache?.hasPendingPrompt;
+      const cachedLastReadAt = pending?.lastReadAt ?? existingCache?.lastReadAt;
 
       const entry: SessionIndexEntry = {
         sessionId: session.id,
@@ -2445,6 +2523,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
         isExecuting: cachedIsExecuting,
+        lastReadAt: cachedLastReadAt,
       };
 
       // Encrypt title - encryption is required
@@ -2458,10 +2537,27 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       const rawClientMeta = buildClientMetadataFromRaw(session.metadata, {
         hasBeenNamed: session.hasBeenNamed,
       });
-      // Merge in cached hasPendingPrompt (transient state not stored in PGLite)
-      const clientMeta: ClientMetadata | undefined = (rawClientMeta || cachedHasPendingPrompt !== undefined)
-        ? { ...rawClientMeta, hasPendingPrompt: cachedHasPendingPrompt }
-        : undefined;
+      // Merge in transient fields that are not reliably persisted in PGLite before sync runs.
+      const clientMeta: ClientMetadata | undefined =
+        rawClientMeta ||
+        cachedHasPendingPrompt !== undefined ||
+        pending?.currentContext !== undefined ||
+        pending?.phase !== undefined ||
+        pending?.tags !== undefined ||
+        pending?.draftInput !== undefined ||
+        pending?.draftUpdatedAt !== undefined ||
+        pending?.hasBeenNamed !== undefined
+          ? {
+              ...rawClientMeta,
+              currentContext: pending?.currentContext ?? rawClientMeta?.currentContext,
+              hasPendingPrompt: cachedHasPendingPrompt,
+              phase: pending?.phase ?? rawClientMeta?.phase,
+              tags: pending?.tags ?? rawClientMeta?.tags,
+              draftInput: pending?.draftInput ?? rawClientMeta?.draftInput,
+              draftUpdatedAt: pending?.draftUpdatedAt ?? rawClientMeta?.draftUpdatedAt,
+              hasBeenNamed: pending?.hasBeenNamed ?? rawClientMeta?.hasBeenNamed,
+            }
+          : undefined;
       if (clientMeta) {
         const { encryptedClientMetadata, clientMetadataIv } = await encryptClientMetadata(clientMeta, config.encryptionKey);
         entry.encryptedClientMetadata = encryptedClientMetadata;
@@ -2494,6 +2590,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         hasPendingPrompt: cachedHasPendingPrompt,
         phase: clientMeta?.phase,
         tags: clientMeta?.tags,
+        lastReadAt: cachedLastReadAt,
         draftInput: clientMeta?.draftInput,
         draftUpdatedAt: clientMeta?.draftUpdatedAt,
         hasBeenNamed: clientMeta?.hasBeenNamed,
@@ -2762,6 +2859,9 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
             console.warn('[CollabV3] Cannot push message - no encryption key or session room not connected');
             return;
           }
+          if (!shouldSyncMessageForSessionRoom(change.message.source, change.message.metadata, change.message.content)) {
+            return;
+          }
           try {
             const encrypted = await encryptMessage(change.message, session.encryptionKey);
             // console.log('[CollabV3] Encrypted message:', {
@@ -2879,76 +2979,6 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           // or the session will resort to the top of the list on other devices.
           const updatedAt = meta.updatedAt ?? undefined;
 
-          // Helper to build and send encrypted index entry
-          const sendIndexUpdate = async (baseEntry: CachedSessionIndex) => {
-            if (!config.encryptionKey) {
-              console.error('[CollabV3] Cannot send session update: no encryption key');
-              return;
-            }
-
-            // Encrypt projectId for wire
-            const { encryptedProjectId, projectIdIv } = await encryptProjectId(baseEntry.projectId, config.encryptionKey);
-
-            // Start with the cache entry (stores decrypted values)
-            const indexEntry: SessionIndexEntry = {
-              sessionId: baseEntry.sessionId,
-              encryptedProjectId,
-              projectIdIv,
-              provider: baseEntry.provider,
-              model: baseEntry.model,
-              mode: baseEntry.mode,
-              sessionType: baseEntry.sessionType,
-              parentSessionId: baseEntry.parentSessionId,
-              worktreeId: baseEntry.worktreeId,
-              isArchived: baseEntry.isArchived,
-              isPinned: baseEntry.isPinned,
-              messageCount: baseEntry.messageCount,
-              lastMessageAt: baseEntry.lastMessageAt,
-              createdAt: baseEntry.createdAt,
-              updatedAt: baseEntry.updatedAt,
-              pendingExecution: baseEntry.pendingExecution,
-              isExecuting: baseEntry.isExecuting,
-              lastReadAt: baseEntry.lastReadAt,
-            };
-
-            // Encrypt title for wire
-            if (baseEntry.title) {
-              const { encryptedTitle, titleIv } = await encryptTitle(baseEntry.title, config.encryptionKey);
-              indexEntry.encryptedTitle = encryptedTitle;
-              indexEntry.titleIv = titleIv;
-            }
-
-            // Encrypt client metadata for wire
-            if (
-              baseEntry.currentContext ||
-              baseEntry.hasPendingPrompt !== undefined ||
-              baseEntry.phase ||
-              baseEntry.tags ||
-              baseEntry.draftInput !== undefined ||
-              baseEntry.hasBeenNamed !== undefined
-            ) {
-              const clientMeta: ClientMetadata = {
-                currentContext: baseEntry.currentContext,
-                hasPendingPrompt: baseEntry.hasPendingPrompt,
-                phase: baseEntry.phase,
-                tags: baseEntry.tags,
-                draftInput: baseEntry.draftInput,
-                draftUpdatedAt: baseEntry.draftUpdatedAt,
-                hasBeenNamed: baseEntry.hasBeenNamed,
-              };
-              const { encryptedClientMetadata, clientMetadataIv } = await encryptClientMetadata(clientMeta, config.encryptionKey);
-              indexEntry.encryptedClientMetadata = encryptedClientMetadata;
-              indexEntry.clientMetadataIv = clientMetadataIv;
-            }
-
-            // Update local cache with decrypted values
-            sessionIndexCache.set(sessionId, baseEntry);
-
-            // console.log('[CollabV3] sendIndexUpdate:', sessionId, 'hasEncryptedClientMeta:', !!indexEntry.encryptedClientMetadata, 'hasDraftInput:', baseEntry.draftInput !== undefined);
-            const indexMsg: ClientMessage = { type: 'indexUpdate', session: indexEntry };
-            indexWs!.send(JSON.stringify(indexMsg));
-          };
-
           // Build index entry by merging with cached data
           // This allows partial updates (e.g., just title) to work
           // console.log('[CollabV3] metadata_updated index path: sessionId:', sessionId, 'hasCached:', !!cached, 'indexConnected:', indexConnected);
@@ -2982,7 +3012,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               draftUpdatedAt: 'draftUpdatedAt' in meta ? (meta as any).draftUpdatedAt : cached.draftUpdatedAt,
               hasBeenNamed: 'hasBeenNamed' in meta ? (meta as any).hasBeenNamed : cached.hasBeenNamed,
             };
-            await sendIndexUpdate(updatedCache);
+            if (isIndexClientMetadataOnlyUpdate(meta)) {
+              await sendIndexClientMetadataPatch(updatedCache);
+            } else {
+              await sendIndexUpdate(updatedCache);
+            }
           } else if (meta.title && meta.provider) {
             // New session - need at least title and provider
             const now = updatedAt ?? Date.now();
@@ -3028,8 +3062,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               'worktreeId' in meta ||
               'isArchived' in meta ||
               'isPinned' in meta ||
+              'currentContext' in meta ||
+              'hasPendingPrompt' in meta ||
               'phase' in meta ||
               'tags' in meta ||
+              'lastReadAt' in meta ||
               'draftInput' in meta ||
               'draftUpdatedAt' in meta ||
               'hasBeenNamed' in meta ||
@@ -3045,8 +3082,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               if ('worktreeId' in meta) existing.worktreeId = (meta as any).worktreeId;
               if ('isArchived' in meta) existing.isArchived = meta.isArchived;
               if ('isPinned' in meta) existing.isPinned = (meta as any).isPinned;
+              if ('currentContext' in meta) existing.currentContext = meta.currentContext;
+              if ('hasPendingPrompt' in meta) existing.hasPendingPrompt = meta.hasPendingPrompt;
               if ('phase' in meta) (existing as any).phase = (meta as any).phase;
               if ('tags' in meta) (existing as any).tags = (meta as any).tags;
+              if ('lastReadAt' in meta) (existing as any).lastReadAt = (meta as any).lastReadAt;
               if ('draftInput' in meta) (existing as any).draftInput = (meta as any).draftInput;
               if ('draftUpdatedAt' in meta) (existing as any).draftUpdatedAt = (meta as any).draftUpdatedAt;
               if ('hasBeenNamed' in meta) (existing as any).hasBeenNamed = (meta as any).hasBeenNamed;

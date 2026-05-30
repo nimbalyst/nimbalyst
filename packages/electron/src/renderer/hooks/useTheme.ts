@@ -347,7 +347,9 @@ function clearCustomThemeVariables(): void {
 /**
  * Get the effective base theme for a theme ID.
  * Handles 'system' and 'auto' by checking OS preference.
- * For file-based themes, we determine dark/light from the theme metadata.
+ * For extension/file-based themes, we determine dark/light from the theme's
+ * `isDark` metadata (the same source the UI uses in applyThemeToDOM), falling
+ * back to the theme ID name only when the theme isn't in the registry yet.
  */
 function getEffectiveBaseTheme(themeId: string): ConfigTheme {
   // Handle 'system' and 'auto' by checking OS preference
@@ -360,7 +362,16 @@ function getEffectiveBaseTheme(themeId: string): ConfigTheme {
   if (themeId === 'light') return 'light';
   if (themeId === 'dark') return 'dark';
 
-  // For file-based themes, we need to check if they're dark or light.
+  // Extension-contributed themes live in the in-memory runtime registry.
+  // Resolve dark/light from their actual `isDark` flag instead of guessing
+  // from the ID, so themes like `rose-pine` resolve dark in Monaco even
+  // though their ID has no `-dark` suffix.
+  const registryTheme = getRuntimeTheme(themeId);
+  if (registryTheme) {
+    return registryTheme.isDark ? 'dark' : 'light';
+  }
+
+  // Fallback for file-based themes not in the registry: infer from the ID name.
   // Common dark theme IDs contain 'dark' in their name.
   if (themeId.includes('dark')) {
     return 'dark';

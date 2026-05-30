@@ -218,6 +218,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   onGetContentReady,
   onManualSaveReady,
 }) => {
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const [activeConfig, setActiveConfig] = useState(initialCollabConfig);
   const syncProviderRef = useRef<DocumentSyncProvider | null>(null);
   const collabProviderRef = useRef<CollabLexicalProvider | null>(null);
@@ -258,6 +259,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   const createHistoryClient = useCallback(() => new CollabHistoryClient({
     serverUrl: activeConfig.serverUrl,
     getJwt: activeConfig.getJwt,
+    urlExtraQuery: activeConfig.urlExtraQuery,
     orgId: activeConfig.orgId,
     documentId: activeConfig.documentId,
     documentKey: activeConfig.documentKey,
@@ -296,6 +298,14 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     }
     return true;
   }, []);
+
+  const runManualSave = useCallback(async (): Promise<void> => {
+    try {
+      await createRevisionFromCurrentSnapshot('manual');
+    } catch (error) {
+      console.warn('[CollaborativeTabEditor] Failed to create manual revision', error);
+    }
+  }, [createRevisionFromCurrentSnapshot]);
 
   const ensureBootstrapRevision = useCallback(async (): Promise<void> => {
     const controller = historyControllerRef.current;
@@ -578,15 +588,34 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   // meaningful in collaboration mode even though there is no local disk save.
   useEffect(() => {
     if (onManualSaveReady) {
-      onManualSaveReady(async () => {
-        try {
-          await createRevisionFromCurrentSnapshot('manual');
-        } catch (error) {
-          console.warn('[CollaborativeTabEditor] Failed to create manual revision', error);
-        }
-      });
+      onManualSaveReady(runManualSave);
     }
-  }, [createRevisionFromCurrentSnapshot, onManualSaveReady]);
+  }, [onManualSaveReady, runManualSave]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    // Capture-phase listener so Cmd/Ctrl+S inside the collab editor records
+    // a manual revision before Lexical's own keybinding swallows the event.
+    // The parent TabEditor also wires Cmd+S via onManualSaveReady, but its
+    // React handler runs on bubble and Lexical can stop propagation before
+    // it fires.
+    const isMac = /Mac/i.test(navigator.userAgent);
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isAppModifier = isMac ? event.metaKey : event.ctrlKey;
+      if (!isAppModifier || event.altKey || event.shiftKey || event.key.toLowerCase() !== 's') {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      void runManualSave();
+    };
+
+    root.addEventListener('keydown', onKeyDown, true);
+    return () => root.removeEventListener('keydown', onKeyDown, true);
+  }, [runManualSave]);
 
   // Periodic auto snapshots for collaborative docs. We watch the current
   // editor snapshot on a low-frequency loop, mark when content last changed,
@@ -766,6 +795,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
       },
       getBasisSequence: () => syncProvider.getLastSeq(),
       getStatus: () => syncProvider.getStatus(),
+      waitForPendingWrites: (timeoutMs?: number) => syncProvider.waitForPendingWrites(timeoutMs),
     };
     historyControllerRef.current = controller;
 
@@ -785,7 +815,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   }, [bumpHistoryControllers, createHistoryClient, documentType, ensureBootstrapRevision, filePath, lexicalEditor]);
 
   return (
-    <div className="collaborative-tab-editor" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div ref={rootRef} className="collaborative-tab-editor" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Connection status bar -- subscribes to Jotai atom, isolated re-renders */}
       <CollabStatusBar
         filePath={filePath}
@@ -951,6 +981,7 @@ const ExtensionCollabBranch: React.FC<ExtensionCollabBranchProps> = ({
       applySnapshot: effectiveAdapter ? (bytes) => effectiveAdapter.restoreRevisionSnapshot(bytes) : undefined,
       getBasisSequence: () => syncProvider.getLastSeq(),
       getStatus: () => syncProvider.getStatus(),
+      waitForPendingWrites: (timeoutMs?: number) => syncProvider.waitForPendingWrites(timeoutMs),
     };
 
     onHistoryControllerChange(controller);

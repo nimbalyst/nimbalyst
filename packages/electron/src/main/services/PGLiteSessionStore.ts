@@ -3,6 +3,7 @@
  */
 
 import { toMillis } from '../utils/timestampUtils';
+import { parseJsonObjectColumn } from '../utils/jsonColumn';
 
 import type {
   SessionStore,
@@ -17,6 +18,20 @@ import type {
 
 type PGliteLike = {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
+  searchTranscriptEventSessions?(
+    query: string,
+    opts?: {
+      limit?: number;
+      sessionIds?: string[];
+      eventType?: 'user_message' | 'assistant_message' | null;
+      cutoffDate?: Date | null;
+    },
+  ): Promise<Array<{ session_id: string; rank: number }>>;
+  searchSessionTitles?(
+    workspaceId: string,
+    query: string,
+    opts?: { includeArchived?: boolean },
+  ): Promise<Array<{ session_id: string; rank: number }>>;
 };
 
 type EnsureReadyFn = () => Promise<void>;
@@ -28,6 +43,36 @@ function buildSessionArchiveFilter(includeArchived: boolean, sessionAlias = 's',
 
   return `AND (${sessionAlias}.is_archived = FALSE OR ${sessionAlias}.is_archived IS NULL)
           AND (${sessionAlias}.worktree_id IS NULL OR ${worktreeAlias}.is_archived = FALSE OR ${worktreeAlias}.is_archived IS NULL)`;
+}
+
+// Shared with other JSON-typed column readers; see ../utils/jsonColumn.ts
+// for the metadata-corruption postmortem.
+const normalizeJsonObject = parseJsonObjectColumn;
+
+/**
+ * Parse a TEXT column that's supposed to hold JSON back into the value the
+ * runtime expects. Under PGLite (JSONB) reads return parsed values directly,
+ * under SQLite (TEXT) reads return raw strings. Without this normalization
+ * any caller doing `{ ...session.metadata }` or `session.documentContext.foo`
+ * silently iterates the string character by character (metadata) or returns
+ * `undefined` for every field access (documentContext / providerConfig /
+ * lastDocumentState). The metadata case is especially nasty because the
+ * spread output gets re-serialized and written back, growing the row ~9x
+ * per cycle until a single session metadata column hits hundreds of MB.
+ * See `updateSessionTokenUsage` in SessionManager and the
+ * `feedback_local_state_vs_server_state` memory.
+ */
+function parseJsonColumn(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') {
+    if (value.length === 0) return null;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value;
 }
 
 
@@ -134,7 +179,9 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
       messageCount: 0,
       updatedAt: toMillis(row.updated_at)!,
       createdAt: toMillis(row.created_at)!,
-      metadata: row.metadata,
+      // Sync clients (mobile, peer devices) expect a parsed object here.
+      // See `parseJsonColumn` for the SQLite/PGLite shape difference.
+      metadata: normalizeJsonObject(row.metadata),
       messages: undefined as SyncedMessage[] | undefined,
     };
   });
@@ -396,10 +443,36 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       if (metadata.draftInput !== undefined) pushUpdate('draft_input =', metadata.draftInput ?? null);
       // NOTE: tokenUsage removed - it's derived from ai_agent_messages /context responses
       // NOTE: queuedPrompts removed - now uses separate queued_prompts table for atomic operations
-      // Handle metadata field (the JSON blob) - do a shallow merge
+      // Handle metadata field (the JSON blob) - do a shallow merge.
+      //
+      // Defense-in-depth: refuse any payload that isn't a plain object.
+      // A caller passing a string here (e.g. a SQLite read that returned
+      // the raw JSON text and got threaded back into update unchanged)
+      // would otherwise spread to char-by-char numeric keys, get JSON-
+      // stringified, written back, and re-corrupted on the next read.
+      // We saw a single session's metadata column grow to 216 MB this
+      // way before catching it. Drop the update on the floor and log
+      // loudly so the upstream caller surfaces in main.log instead of
+      // silently amplifying corruption.
       if (metadata.metadata !== undefined) {
-        updates.push(`metadata = COALESCE(metadata, '{}'::jsonb) || $${values.length + 1}::jsonb`);
-        values.push(JSON.stringify(metadata.metadata));
+        const incoming = metadata.metadata;
+        if (
+          incoming === null ||
+          typeof incoming !== 'object' ||
+          Array.isArray(incoming)
+        ) {
+          console.warn(
+            `[PGLiteSessionStore] updateMetadata refused non-object metadata for session ${sessionId}: type=${typeof incoming}, isArray=${Array.isArray(incoming)}`,
+          );
+        } else {
+          const { rows } = await db.query<{ metadata: unknown }>(
+            `SELECT metadata FROM ai_sessions WHERE id = $1`,
+            [sessionId],
+          );
+          const existingMetadata = normalizeJsonObject(rows[0]?.metadata);
+          updates.push(`metadata = $${values.length + 1}`);
+          values.push(JSON.stringify({ ...existingMetadata, ...incoming }));
+        }
       }
       if ((metadata as any).hasBeenNamed !== undefined) pushUpdate('has_been_named =', (metadata as any).hasBeenNamed);
       if (metadata.isArchived !== undefined) pushUpdate('is_archived =', metadata.isArchived);
@@ -446,7 +519,10 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
 
       // NOTE: tokenUsage is no longer stored in ai_sessions
       // It's derived from ai_agent_messages /context responses when loading sessions
-      const metadata = row.metadata ?? {};
+      // Parse JSON columns at the boundary so downstream callers (e.g.
+      // SessionManager.updateSessionTokenUsage) can safely spread them.
+      // See `parseJsonColumn` for the SQLite-vs-PGLite read-shape mismatch.
+      const metadata = normalizeJsonObject(row.metadata);
 
       return {
         id: row.id,
@@ -467,8 +543,8 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         createdAt: toMillis(row.created_at)!,
         updatedAt: toMillis(row.updated_at)!,
         metadata,
-        documentContext: row.document_context ?? undefined,
-        providerConfig: row.provider_config ?? undefined,
+        documentContext: parseJsonColumn(row.document_context) ?? undefined,
+        providerConfig: parseJsonColumn(row.provider_config) ?? undefined,
         providerSessionId: row.provider_session_id ?? undefined,
         lastReadMessageTimestamp: row.last_read_ms ? Number(row.last_read_ms) : undefined,
         hasBeenNamed: row.has_been_named ?? false,
@@ -480,7 +556,10 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         branchedAt: toMillis(row.branched_at) ?? undefined,
         branchedFromProviderSessionId: row.branched_from_provider_session_id ?? undefined,
         // Document context service state for transition detection
-        lastDocumentState: row.last_document_state ?? undefined,
+        lastDocumentState:
+          (parseJsonColumn(row.last_document_state) as
+            | { filePath: string; contentHash: string }
+            | undefined) ?? undefined,
       } satisfies ChatSession;
     },
 
@@ -503,7 +582,8 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       );
 
       return rows.map((row: any) => {
-        const metadata = row.metadata ?? {};
+        // Parse JSON columns at the boundary -- see `parseJsonColumn`.
+        const metadata = normalizeJsonObject(row.metadata);
         return {
           id: row.id,
           provider: row.provider,
@@ -523,8 +603,8 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           createdAt: toMillis(row.created_at)!,
           updatedAt: toMillis(row.updated_at)!,
           metadata,
-          documentContext: row.document_context ?? undefined,
-          providerConfig: row.provider_config ?? undefined,
+          documentContext: parseJsonColumn(row.document_context) ?? undefined,
+          providerConfig: parseJsonColumn(row.provider_config) ?? undefined,
           providerSessionId: row.provider_session_id ?? undefined,
           lastReadMessageTimestamp: row.last_read_ms ? Number(row.last_read_ms) : undefined,
           hasBeenNamed: row.has_been_named ?? false,
@@ -584,7 +664,12 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         const updatedAt = toMillis(row.effective_updated_at ?? row.updated_at)!;
         const branchedAt = toMillis(row.branched_at) ?? undefined;
         const childCount = parseInt(row.child_count) || 0;
-        const metadata = row.metadata ?? {};
+        // Parse JSON columns at the boundary -- see `parseJsonColumn`.
+        // Without this, `metadata.tags`, `metadata.phase`, `metadata.hasUnread`
+        // etc. all read as undefined under the SQLite backend (because
+        // `metadata` is a raw JSON string), so kanban tags/phase disappear
+        // from the session list view.
+        const metadata = normalizeJsonObject(row.metadata);
         return {
           id: row.id,
           provider: row.provider,
@@ -635,7 +720,6 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       const timeRange = options?.timeRange ?? '30d';
       const direction = options?.direction ?? 'all';
 
-      // Use plainto_tsquery which handles arbitrary user input safely
       const searchTerms = query.trim();
 
       // Calculate cutoff date for time range filter
@@ -647,11 +731,86 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         cutoffDate.setDate(cutoffDate.getDate() - days);
       }
 
-      // Run two separate queries and union in memory for better performance
-      // This allows each query to use indexes more efficiently
+      // Hydrate ai_sessions rows for a set of session IDs. Used by both backends.
+      const hydrateSessions = async (sessionIds: string[]): Promise<any[]> => {
+        if (sessionIds.length === 0) return [];
+        const { rows } = await db.query<any>(
+          `SELECT
+            s.id,
+            s.provider,
+            s.model,
+            s.session_type,
+            s.mode,
+            s.agent_role,
+            s.created_by_session_id,
+            s.title,
+            s.workspace_id,
+            s.worktree_id,
+            s.parent_session_id,
+            s.created_at,
+            s.updated_at,
+            s.is_archived,
+            s.is_pinned,
+            s.branched_from_session_id,
+            s.branch_point_message_id,
+            s.branched_at,
+            COALESCE(child_stats.child_count, 0) as child_count
+          FROM ai_sessions s
+          LEFT JOIN worktrees w ON s.worktree_id = w.id
+          LEFT JOIN (
+            SELECT parent_session_id, COUNT(*) AS child_count
+            FROM ai_sessions
+            WHERE parent_session_id IS NOT NULL AND workspace_id = $2
+            GROUP BY parent_session_id
+          ) child_stats ON child_stats.parent_session_id = s.id
+          WHERE s.id = ANY($1)
+            AND s.workspace_id = $2
+            ${archiveFilter}`,
+          [sessionIds, workspaceId]
+        );
+        return rows;
+      };
 
-      // Query 1: Search session titles (fast)
-      const titleQuery = db.query<any>(
+      // Build a map of session ID -> best rank from both sources
+      const sessionRanks = new Map<string, number>();
+      const sessionRows = new Map<string, any>();
+
+      if (db.searchTranscriptEventSessions) {
+        // SQLite path: use FTS5 helpers, then hydrate session rows.
+        // bm25 returns lower-is-better; invert into "higher is better" rank
+        // so the sort order below matches the PG ts_rank_cd semantics.
+        const bm25ToRank = (bm25: number) => (bm25 === 0 ? 1 : 1 / (1 + bm25));
+
+        const [titleHits, contentHits] = await Promise.all([
+          db.searchSessionTitles!(workspaceId, searchTerms, { includeArchived }),
+          db.searchTranscriptEventSessions(searchTerms, {
+            cutoffDate,
+            eventType: direction === 'input' ? 'user_message' : direction === 'output' ? 'assistant_message' : null,
+          }),
+        ]);
+
+        // Title matches outweigh content matches, mirroring the PG `* 2` boost.
+        const titleRanks = new Map<string, number>();
+        for (const hit of titleHits) {
+          titleRanks.set(hit.session_id, bm25ToRank(hit.rank) * 2);
+        }
+        const contentRanks = new Map<string, number>();
+        for (const hit of contentHits) {
+          contentRanks.set(hit.session_id, bm25ToRank(hit.rank));
+        }
+
+        const allIds = Array.from(new Set([...titleRanks.keys(), ...contentRanks.keys()]));
+        const hydrated = await hydrateSessions(allIds);
+        for (const row of hydrated) {
+          const t = titleRanks.get(row.id) ?? 0;
+          const c = contentRanks.get(row.id) ?? 0;
+          const rank = Math.max(t, c);
+          sessionRanks.set(row.id, rank);
+          sessionRows.set(row.id, { ...row, rank });
+        }
+      } else {
+        // PGLite path: inline to_tsvector / plainto_tsquery + ts_rank_cd.
+        const titleQuery = db.query<any>(
         `SELECT
           s.id,
           s.provider,
@@ -687,37 +846,30 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         [workspaceId, searchTerms]
       );
 
-      // Query 2: Search canonical transcript events (uses GIN index on searchable_text)
-      // Only returns session IDs that match - we'll join with session data in memory
-      // Includes time range filter; direction maps to event_type filter
-      const contentQueryParams: any[] = [searchTerms];
-      let contentQuerySql = `SELECT DISTINCT t.session_id,
-          MAX(ts_rank_cd(to_tsvector('english', COALESCE(t.searchable_text, '')), plainto_tsquery('english', $1))) as rank
-        FROM ai_transcript_events t
-        WHERE t.searchable = TRUE
-          AND to_tsvector('english', COALESCE(t.searchable_text, '')) @@ plainto_tsquery('english', $1)`;
+      const contentQuery = (() => {
+        const contentQueryParams: any[] = [searchTerms];
+        let contentQuerySql = `SELECT DISTINCT t.session_id,
+            MAX(ts_rank_cd(to_tsvector('english', COALESCE(t.searchable_text, '')), plainto_tsquery('english', $1))) as rank
+          FROM ai_transcript_events t
+          WHERE t.searchable = TRUE
+            AND to_tsvector('english', COALESCE(t.searchable_text, '')) @@ plainto_tsquery('english', $1)`;
 
-      if (cutoffDate) {
-        contentQueryParams.push(cutoffDate);
-        contentQuerySql += ` AND t.created_at >= $${contentQueryParams.length}`;
-      }
+        if (cutoffDate) {
+          contentQueryParams.push(cutoffDate);
+          contentQuerySql += ` AND t.created_at >= $${contentQueryParams.length}`;
+        }
 
-      if (direction === 'input') {
-        contentQuerySql += ` AND t.event_type = 'user_message'`;
-      } else if (direction === 'output') {
-        contentQuerySql += ` AND t.event_type = 'assistant_message'`;
-      }
+        if (direction === 'input') {
+          contentQuerySql += ` AND t.event_type = 'user_message'`;
+        } else if (direction === 'output') {
+          contentQuerySql += ` AND t.event_type = 'assistant_message'`;
+        }
 
-      contentQuerySql += ' GROUP BY t.session_id';
+        contentQuerySql += ' GROUP BY t.session_id';
+        return db.query<any>(contentQuerySql, contentQueryParams);
+      })();
 
-      const contentQuery = db.query<any>(contentQuerySql, contentQueryParams);
-
-      // Run both queries in parallel
       const [titleResult, contentResult] = await Promise.all([titleQuery, contentQuery]);
-
-      // Build a map of session ID -> best rank from both sources
-      const sessionRanks = new Map<string, number>();
-      const sessionRows = new Map<string, any>();
 
       // Add title matches
       for (const row of titleResult.rows) {
@@ -732,43 +884,12 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
 
       // If we have content matches not in title results, fetch their session data
       if (contentSessionIds.length > 0) {
-        const { rows: contentSessions } = await db.query<any>(
-          `SELECT
-            s.id,
-            s.provider,
-            s.model,
-            s.session_type,
-            s.mode,
-            s.agent_role,
-            s.created_by_session_id,
-            s.title,
-            s.workspace_id,
-            s.worktree_id,
-            s.parent_session_id,
-            s.created_at,
-            s.updated_at,
-            s.is_archived,
-            s.is_pinned,
-            s.branched_from_session_id,
-            s.branch_point_message_id,
-            s.branched_at,
-            COALESCE(child_stats.child_count, 0) as child_count
-          FROM ai_sessions s
-          LEFT JOIN worktrees w ON s.worktree_id = w.id
-          LEFT JOIN (
-            SELECT parent_session_id, COUNT(*) AS child_count
-            FROM ai_sessions
-            WHERE parent_session_id IS NOT NULL AND workspace_id = $2
-            GROUP BY parent_session_id
-          ) child_stats ON child_stats.parent_session_id = s.id
-          WHERE s.id = ANY($1)
-            AND s.workspace_id = $2
-            ${archiveFilter}`,
-          [contentSessionIds, workspaceId]
-        );
+        const contentSessions = await hydrateSessions(contentSessionIds);
 
         // Add content matches with their ranks
-        const contentRankMap = new Map(contentResult.rows.map((r: any) => [r.session_id, r.rank]));
+        const contentRankMap = new Map<string, number>(
+          contentResult.rows.map((r: any) => [r.session_id, Number(r.rank ?? 0)]),
+        );
         for (const row of contentSessions) {
           const contentRank = contentRankMap.get(row.id) || 0;
           const existingRank = sessionRanks.get(row.id) || 0;
@@ -786,6 +907,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           sessionRanks.set(contentRow.session_id, Math.max(existingRank, contentRow.rank));
         }
       }
+      } // end PGLite branch
 
       // Convert to array and sort by rank DESC, updated_at DESC
       const rows = Array.from(sessionRows.values())

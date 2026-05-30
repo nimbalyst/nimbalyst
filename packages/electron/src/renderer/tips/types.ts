@@ -7,8 +7,19 @@
  */
 
 import type { ContentMode } from '../types/WindowModeTypes';
+import type { FeatureUsageRecord } from '../../shared/featureUsage';
 
 export type { ContentMode };
+
+export interface TipTriggerContext {
+  currentMode: ContentMode;
+  workspacePath?: string;
+  isGitRepo: boolean;
+  isWorktreesAvailable: boolean;
+  featureUsage: Record<string, FeatureUsageRecord>;
+  hasBeenUsed: (feature: string) => boolean;
+  hasReachedCount: (feature: string, threshold: number) => boolean;
+}
 
 /**
  * Trigger conditions for when to show a tip
@@ -17,7 +28,7 @@ export interface TipTrigger {
   /** Screen/mode that must be active, or '*' for any */
   screen?: ContentMode | '*';
   /** Custom predicate - return true when tip should show */
-  condition: () => boolean;
+  condition: (context: TipTriggerContext) => boolean;
   /** Delay (ms) after conditions are met before showing. Default: 2000 */
   delay?: number;
   /** Priority for deconfliction. Higher = higher priority. Default: 0 */

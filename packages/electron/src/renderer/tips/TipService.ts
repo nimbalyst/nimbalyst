@@ -19,20 +19,20 @@ export function shouldShowTip(
   // Globally disabled (shared with walkthroughs)
   if (!state.enabled) return false;
 
+  // Newer versions should re-show even if the previous version was dismissed
+  // or completed. History tracks the last version the user saw.
+  if (tip.version !== undefined) {
+    const history = state.history?.[tip.id];
+    if (history?.version !== undefined && history.version !== tip.version) {
+      return true;
+    }
+  }
+
   // Already completed (user clicked primary action)
   if (state.completed.includes(tip.id)) return false;
 
   // Already dismissed (user clicked X)
   if (state.dismissed.includes(tip.id)) return false;
-
-  // Check for version update (allow re-showing if version changed)
-  if (tip.version !== undefined) {
-    const history = state.history?.[tip.id];
-    if (history?.version !== undefined && history.version !== tip.version) {
-      // New version -- allow showing again
-      return true;
-    }
-  }
 
   return true;
 }

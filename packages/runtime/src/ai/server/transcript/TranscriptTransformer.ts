@@ -16,6 +16,7 @@
  */
 
 import { TranscriptWriter } from './TranscriptWriter';
+import { InMemoryTranscriptEventStore } from './InMemoryTranscriptEventStore';
 import type { ITranscriptEventStore, TranscriptEvent } from './types';
 import { ClaudeCodeRawParser } from './parsers/ClaudeCodeRawParser';
 import { CodexRawParser } from './parsers/CodexRawParser';
@@ -337,7 +338,65 @@ export class TranscriptTransformer {
         return true;
       }
 
-      const result = await this.transformMessages(sessionId, messages, provider);
+      // Fast path: when the real store supports a batch insert, stage every
+      // canonical event in an in-memory store, then flush in one IPC round
+      // trip. Without staging the transformer issues N writer calls × ~1ms
+      // postMessage round-trip each through SQLiteDatabaseProxy, which makes
+      // the lazy-migration first-open of any large session feel hung
+      // (observed ~14s for ~3k events). Real-store lookups (e.g.
+      // `findByProviderToolCallId`) safely return null on the fresh path
+      // because `transformFromBeginning` only runs when no canonical events
+      // exist for this session yet.
+      let result: { lastRawMessageId: number; eventsWritten: number };
+      const realInsertEvents = this.transcriptStore.insertEvents?.bind(this.transcriptStore);
+      if (realInsertEvents) {
+        const staging = new InMemoryTranscriptEventStore();
+        result = await this.transformMessages(sessionId, messages, provider, false, staging);
+        const staged = staging.getAllEvents();
+        if (staged.length > 0) {
+          // Split into "simple" events (no parentEventId) and "derived"
+          // events (parentEventId points at another event in the same
+          // batch). Simple events go through one bulk insert. Derived
+          // events — currently just `tool_progress` — are rare and need
+          // the parent's real id, so we insert them one-at-a-time after
+          // building the staging→real id map.
+          const simple = staged.filter((e) => e.parentEventId == null);
+          const derived = staged.filter((e) => e.parentEventId != null);
+
+          const flushedSimple = await realInsertEvents(
+            simple.map((e) => {
+              const { id: _stagingId, ...rest } = e;
+              return rest;
+            }),
+          );
+
+          const stagingIdToReal = new Map<number, number>();
+          for (let i = 0; i < simple.length; i++) {
+            stagingIdToReal.set(simple[i].id, flushedSimple[i].id);
+          }
+
+          const flushedDerived: TranscriptEvent[] = [];
+          for (const child of derived) {
+            const realParentId = child.parentEventId != null
+              ? stagingIdToReal.get(child.parentEventId) ?? null
+              : null;
+            const { id: _stagingId, ...rest } = child;
+            const inserted = await this.transcriptStore.insertEvent({
+              ...rest,
+              parentEventId: realParentId,
+            });
+            stagingIdToReal.set(child.id, inserted.id);
+            flushedDerived.push(inserted);
+          }
+
+          if (this.onEventWritten) {
+            for (const ev of flushedSimple) this.onEventWritten(ev);
+            for (const ev of flushedDerived) this.onEventWritten(ev);
+          }
+        }
+      } else {
+        result = await this.transformMessages(sessionId, messages, provider);
+      }
 
       await this.metadataStore.updateTransformStatus(sessionId, {
         transformVersion: TranscriptTransformer.CURRENT_VERSION,
@@ -432,9 +491,17 @@ export class TranscriptTransformer {
     messages: RawMessage[],
     provider: string,
     isResume = false,
+    writeStore?: ITranscriptEventStore,
   ): Promise<{ lastRawMessageId: number; eventsWritten: number }> {
-    const writer = new TranscriptWriter(this.transcriptStore, provider);
+    // `writeStore` lets `transformFromBeginning` stage events into an
+    // in-memory store so the entire batch can be flushed in one
+    // round-trip. When omitted we write straight to the real store.
+    const targetStore = writeStore ?? this.transcriptStore;
+    const writer = new TranscriptWriter(targetStore, provider);
     const parser = this.createParser(provider);
+    // Suppress per-event notifications when staging — `transformFromBeginning`
+    // refires onEventWritten with real persisted ids after the flush.
+    const suppressNotify = writeStore != null;
 
     // When resuming from a prior batch, suppress result chunk text emission.
     // The result chunk always echoes the assistant text. If the assistant chunk
@@ -445,7 +512,7 @@ export class TranscriptTransformer {
       parser.setSuppressResultChunkText(true);
     }
 
-    const startSequence = await this.transcriptStore.getNextSequence(sessionId);
+    const startSequence = await targetStore.getNextSequence(sessionId);
     writer.seedSequence(startSequence);
 
     const toolEventIds = new Map<string, number>();
@@ -458,22 +525,24 @@ export class TranscriptTransformer {
       hasToolCall: (id: string) => toolEventIds.has(id),
       hasSubagent: (id: string) => subagentEventIds.has(id),
       findByProviderToolCallId: (id: string) =>
-        this.transcriptStore.findByProviderToolCallId(id, sessionId),
+        targetStore.findByProviderToolCallId(id, sessionId),
       findActiveToolCallByRawProviderId: (rawId: string) =>
-        this.transcriptStore.findActiveToolCallByRawProviderId(rawId, sessionId),
+        targetStore.findActiveToolCallByRawProviderId(rawId, sessionId),
     };
 
     for (const msg of messages) {
       try {
         const descriptors = await parser.parseMessage(msg, context);
         for (const desc of descriptors) {
-          const event = await this.processDescriptorWithNotify(
-            writer,
-            sessionId,
-            desc,
-            toolEventIds,
-            subagentEventIds,
-          );
+          const event = suppressNotify
+            ? await this.processDescriptor(writer, sessionId, desc, toolEventIds, subagentEventIds, targetStore)
+            : await this.processDescriptorWithNotify(
+                writer,
+                sessionId,
+                desc,
+                toolEventIds,
+                subagentEventIds,
+              );
           if (event) eventsWritten++;
         }
       } catch {
@@ -515,10 +584,11 @@ export class TranscriptTransformer {
     desc: CanonicalEventDescriptor,
     toolEventIds: Map<string, number>,
     subagentEventIds: Map<string, number>,
+    storeOverride?: ITranscriptEventStore,
   ): Promise<TranscriptEvent | null> {
     return processDescriptorShared(
       writer,
-      this.transcriptStore,
+      storeOverride ?? this.transcriptStore,
       sessionId,
       desc,
       toolEventIds,

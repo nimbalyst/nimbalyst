@@ -71,6 +71,7 @@ export {
   activeSessionIdAtom,
   sessionProcessingAtom,
   sessionUnreadAtom,
+  sessionLastActivityAtom,
   sessionPendingPromptAtom,
   sessionWakeupAtom,
   sessionHasPendingInteractivePromptAtom,

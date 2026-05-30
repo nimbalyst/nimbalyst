@@ -73,6 +73,7 @@ interface AppServerItem {
 
 export class CodexAppServerRawParser implements IRawMessageParser {
   private toolIdCounter = 0;
+  private readonly seenNotificationKeysByTurnId = new Map<string, Set<string>>();
   /**
    * Per-batch in-flight raw-itemId -> synthetic edit-group ID mapping. Mirrors
    * the SDK parser's behavior: started+completed events from the same batch
@@ -134,6 +135,9 @@ export class CodexAppServerRawParser implements IRawMessageParser {
     const method = envelope.method;
     const params = envelope.params;
     if (!method || !params) return descriptors;
+    if (this.isDuplicateNotification(method, params)) {
+      return descriptors;
+    }
 
     switch (method) {
       case 'item/started': {
@@ -269,6 +273,63 @@ export class CodexAppServerRawParser implements IRawMessageParser {
       }
     }
     return descriptors;
+  }
+
+  private isDuplicateNotification(method: string, params: AppServerEnvelope['params']): boolean {
+    const notificationKey = this.buildNotificationKey(method, params);
+    if (!notificationKey) {
+      return false;
+    }
+
+    const turnId = this.extractTurnId(params) ?? 'no-turn';
+    const seenKeys = this.seenNotificationKeysByTurnId.get(turnId) ?? new Set<string>();
+    if (!this.seenNotificationKeysByTurnId.has(turnId)) {
+      this.seenNotificationKeysByTurnId.set(turnId, seenKeys);
+    }
+
+    if (seenKeys.has(notificationKey)) {
+      return true;
+    }
+
+    seenKeys.add(notificationKey);
+    return false;
+  }
+
+  private buildNotificationKey(method: string, params: AppServerEnvelope['params']): string | null {
+    switch (method) {
+      case 'item/started':
+      case 'item/completed': {
+        const itemId = params?.item?.id;
+        const turnId = this.extractTurnId(params) ?? 'no-turn';
+        if (typeof itemId !== 'string' || !itemId) {
+          return null;
+        }
+        return `${method}:${turnId}:${itemId}`;
+      }
+      case 'turn/completed':
+      case 'turn/failed': {
+        const turnId = params?.turn?.id;
+        if (typeof turnId !== 'string' || !turnId) {
+          return null;
+        }
+        return `${method}:${turnId}`;
+      }
+      default:
+        return null;
+    }
+  }
+
+  private extractTurnId(params: AppServerEnvelope['params']): string | null {
+    if (!params) {
+      return null;
+    }
+    if (typeof params.turnId === 'string' && params.turnId) {
+      return params.turnId;
+    }
+    if (typeof params.turn?.id === 'string' && params.turn.id) {
+      return params.turn.id;
+    }
+    return null;
   }
 
   private async parseCollabAgentToolCallStarted(
@@ -411,10 +472,9 @@ export class CodexAppServerRawParser implements IRawMessageParser {
     const descriptors: CanonicalEventDescriptor[] = [{
       type: 'tool_call_started',
       // Use the SDK-transport tool name so the renderer's special-case
-      // routing in RichTranscriptView picks AsyncEditToolResultCard (which
-      // fetches diffs from session_files + history snapshots via
-      // getToolCallDiffs). See CodexAppServerProtocol.handleItemCompleted for
-      // the parallel decision in the live stream path.
+      // routing in RichTranscriptView picks the main-enriched file_change
+      // renderer. See CodexAppServerProtocol.handleItemCompleted for the
+      // parallel decision in the live stream path.
       toolName: 'file_change',
       toolDisplayName: 'apply_patch',
       arguments: args,

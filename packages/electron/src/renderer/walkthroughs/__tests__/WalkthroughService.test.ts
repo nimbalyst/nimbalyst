@@ -1,5 +1,8 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { calculateCalloutPosition } from '../WalkthroughService';
+import { calculateCalloutPosition, shouldShowWalkthrough } from '../WalkthroughService';
+import type { WalkthroughDefinition, WalkthroughState } from '../types';
 
 /**
  * Build a fake target element whose `getBoundingClientRect()` returns the given rect.
@@ -107,5 +110,33 @@ describe('calculateCalloutPosition', () => {
       const explicit = calculateCalloutPosition(target, 'right', false);
       expect(omitted).toEqual(explicit);
     });
+  });
+});
+
+describe('shouldShowWalkthrough', () => {
+  const state: WalkthroughState = {
+    enabled: true,
+    completed: ['walkthrough-test'],
+    dismissed: ['walkthrough-test'],
+    history: {
+      'walkthrough-test': {
+        shownAt: 1,
+        completedAt: 2,
+        dismissedAt: 3,
+        version: 1,
+      },
+    },
+  };
+
+  const walkthrough: WalkthroughDefinition = {
+    id: 'walkthrough-test',
+    name: 'Test Walkthrough',
+    version: 2,
+    trigger: {},
+    steps: [],
+  };
+
+  it('re-shows a walkthrough when the version changes', () => {
+    expect(shouldShowWalkthrough(state, walkthrough)).toBe(true);
   });
 });

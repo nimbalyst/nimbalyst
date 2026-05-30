@@ -1147,12 +1147,62 @@ class ToolCallMatcherImpl {
     }
   }
 
+  // Tool-call diffs are immutable once the tool has finished: the inputs are
+  // the historical ai_agent_messages content and the post-edit session_files
+  // metadata. Without dedup, every AsyncEditToolResultCard mount on the
+  // transcript fires its own 4-query lookup -- a session with 20 edit cards
+  // pegs the SQLite worker as the cards all mount in parallel. Cache the
+  // result by (sessionId, toolCallItemId, timestamp) and dedup in-flight
+  // requests so N concurrent callers share one query.
+  private diffCache = new Map<string, ToolCallDiffResult[]>();
+  private diffInFlight = new Map<string, Promise<ToolCallDiffResult[]>>();
+  private readonly DIFF_CACHE_MAX_ENTRIES = 500;
+
+  private diffCacheKey(sessionId: string, toolCallItemId: string, ts?: number): string {
+    return `${sessionId} ${toolCallItemId} ${ts ?? ''}`;
+  }
+
+  /** Invalidate cached diffs for a session (e.g. when its messages are mutated). */
+  invalidateDiffCacheForSession(sessionId: string): void {
+    const prefix = `${sessionId} `;
+    for (const key of this.diffCache.keys()) {
+      if (key.startsWith(prefix)) this.diffCache.delete(key);
+    }
+  }
+
   /**
    * Get file diffs caused by a specific tool call.
    * Looks up matches by tool_call_item_id, then extracts diff data from
    * the raw ai_agent_messages content (tool arguments).
    */
   async getDiffsForToolCall(
+    sessionId: string,
+    toolCallItemId: string,
+    toolCallTimestamp?: number
+  ): Promise<ToolCallDiffResult[]> {
+    const cacheKey = this.diffCacheKey(sessionId, toolCallItemId, toolCallTimestamp);
+    const cached = this.diffCache.get(cacheKey);
+    if (cached) return cached;
+    const inFlight = this.diffInFlight.get(cacheKey);
+    if (inFlight) return inFlight;
+
+    const promise = this.computeDiffsForToolCall(sessionId, toolCallItemId, toolCallTimestamp);
+    this.diffInFlight.set(cacheKey, promise);
+    try {
+      const result = await promise;
+      // Cap the cache to avoid unbounded growth in long-lived sessions.
+      if (this.diffCache.size >= this.DIFF_CACHE_MAX_ENTRIES) {
+        const firstKey = this.diffCache.keys().next().value;
+        if (firstKey !== undefined) this.diffCache.delete(firstKey);
+      }
+      this.diffCache.set(cacheKey, result);
+      return result;
+    } finally {
+      this.diffInFlight.delete(cacheKey);
+    }
+  }
+
+  private async computeDiffsForToolCall(
     sessionId: string,
     toolCallItemId: string,
     toolCallTimestamp?: number

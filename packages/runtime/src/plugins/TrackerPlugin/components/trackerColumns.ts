@@ -57,7 +57,7 @@ export interface TypeColumnConfig {
 
 /** Columns that exist independent of schema field definitions */
 const STRUCTURAL_COLUMNS: TrackerColumnDef[] = [
-  { id: 'type', label: 'Type', width: 28, sortable: true, render: 'type-icon', defaultVisible: true, builtin: true },
+  { id: 'type', label: 'Type', width: 64, minWidth: 64, sortable: true, render: 'type-icon', defaultVisible: true, builtin: true },
   { id: 'key', label: 'Key', width: 90, sortable: true, render: 'text', defaultVisible: true, sortKey: 'issueKey', builtin: true },
   { id: 'updated', label: 'Updated', width: 100, sortable: true, render: 'date', defaultVisible: true, sortKey: 'lastIndexed', builtin: true },
   { id: 'module', label: 'Source', width: 150, minWidth: 100, sortable: true, render: 'module', defaultVisible: false, builtin: true },

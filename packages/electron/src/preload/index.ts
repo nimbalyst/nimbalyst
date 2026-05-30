@@ -857,6 +857,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
         documentId,
         pendingUpdateBase64,
       }) as Promise<{ success: boolean; error?: string }>,
+    seedSharedDocument: (
+      workspacePath: string,
+      documentId: string,
+      documentType: string,
+      content: string,
+    ) =>
+      ipcRenderer.invoke('document-sync:seed-shared-document', {
+        workspacePath,
+        documentId,
+        documentType,
+        content,
+      }) as Promise<{ success: boolean; error?: string }>,
     getLocalOrigin: (workspacePath: string, documentId: string) =>
       ipcRenderer.invoke('document-sync:get-local-origin', {
         workspacePath,

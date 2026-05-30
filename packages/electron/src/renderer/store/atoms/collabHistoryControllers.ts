@@ -34,6 +34,8 @@ export interface CollabHistoryController {
   getBasisSequence: () => number;
   /** Current sync status -- restore is blocked while this is unsafe. */
   getStatus: () => DocumentSyncStatus;
+  /** Wait for local collab writes to settle before restore-sensitive actions. */
+  waitForPendingWrites?: (timeoutMs?: number) => Promise<boolean>;
 }
 
 const controllers = new Map<string, CollabHistoryController>();

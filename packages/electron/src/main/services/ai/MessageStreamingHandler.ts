@@ -114,6 +114,12 @@ interface AIServiceInternal {
     targetWindow: Electron.BrowserWindow | null,
     source: string,
   ): Promise<void>;
+  tryDispatchNextQueuedPrompt(
+    sessionId: string,
+    workspacePath: string,
+    targetWindow: Electron.BrowserWindow | null,
+    source: string,
+  ): Promise<boolean>;
   runAutoContextCommand(
     session: SessionData,
     workspacePath: string,
@@ -1985,7 +1991,6 @@ export class MessageStreamingHandler {
                         tokens: contextFillTokens,
                         contextWindow: contextWindowForDisplay,
                       },
-                      updatedAt: Date.now(),
                     } as any,
                   });
                 }
@@ -2095,7 +2100,6 @@ export class MessageStreamingHandler {
                         tokens: contextFillTokens,
                         contextWindow: codexContextWindow,
                       },
-                      updatedAt: Date.now(),
                     } as any,
                   });
                 }
@@ -2228,8 +2232,25 @@ export class MessageStreamingHandler {
             const willResume = session.provider === 'claude-code'
               && typeof (provider as any).willResumeAfterCompletion === 'function'
               && (provider as any).willResumeAfterCompletion();
-            if (hasTeammates || willResume) {
-              logger.main.info(`[AIService] Deferring endSession for ${session.id} - ${hasTeammates ? 'teammates still active' : 'lead resuming'}`);
+            const queuedChainAlreadyActive = this.svc.sessionsProcessingQueue.has(session.id);
+            let queuedContinuationScheduled = false;
+            if (!hasTeammates && !willResume && !queuedChainAlreadyActive) {
+              queuedContinuationScheduled = await this.svc.tryDispatchNextQueuedPrompt(
+                session.id,
+                workspacePath,
+                BrowserWindow.fromWebContents(event.sender),
+                'completion-handler queue',
+              );
+            }
+            if (hasTeammates || willResume || queuedChainAlreadyActive || queuedContinuationScheduled) {
+              const reason = hasTeammates
+                ? 'teammates still active'
+                : willResume
+                ? 'lead resuming'
+                : queuedChainAlreadyActive
+                ? 'queued continuation already active'
+                : 'queued continuation scheduled';
+              logger.main.info(`[AIService] Deferring endSession for ${session.id} - ${reason}`);
             } else {
               await stateManager.endSession(session.id);
               // Stop file watcher after a brief delay to let pending
@@ -2364,75 +2385,11 @@ export class MessageStreamingHandler {
       }
 
       // Clear executing and pending prompt flags for mobile sync
-      if (syncProvider) {
+      if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
         syncProvider.pushChange(session.id, {
           type: 'metadata_updated',
           metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
         });
-      }
-
-      // TESTING: Queue processing from main process instead of renderer
-      // OLD: Queue processing is handled by the renderer (AgenticPanel) to keep SDK instantiation in one place
-      try {
-        // Check the per-session guard before processing - triggerQueueProcessing IPC may already be handling this
-        if (!this.svc.sessionsProcessingQueue.has(session.id)) {
-          const { getQueuedPromptsStore } = await import('../RepositoryManager');
-          const queueStore = getQueuedPromptsStore();
-          const pendingPrompts = await queueStore.listPending(session.id);
-
-          if (pendingPrompts.length > 0) {
-            const nextPrompt = pendingPrompts[0];
-            logger.main.info(`[AIService] Processing next queued prompt from main process: ${nextPrompt.id} for session ${session.id}`);
-
-            // Claim the prompt atomically
-            const claimed = await queueStore.claim(nextPrompt.id);
-            if (claimed) {
-              // Mark session as processing before the setImmediate
-              this.svc.sessionsProcessingQueue.add(session.id);
-
-              // Notify renderer that prompt was claimed (so UI removes it from queue list)
-              safeSend(event, 'ai:promptClaimed', {
-                sessionId: session.id,
-                promptId: claimed.id,
-              });
-
-              // Recursively call sendMessage with the queued prompt
-              const docContext = {
-                ...claimed.documentContext,
-                queuedPromptId: claimed.id,
-                attachments: claimed.attachments,
-              };
-
-              // Use setImmediate to avoid stack overflow and let this response complete first
-              setImmediate(async () => {
-                try {
-                  await this.svc.sendMessageHandler!(event, claimed.prompt, docContext as any, session.id, workspacePath);
-                  // Mark as completed
-                  await queueStore.complete(claimed.id);
-                } catch (queueError) {
-                  logger.main.error(`[AIService] Failed to process queued prompt ${claimed.id}:`, queueError);
-                  await queueStore.fail(claimed.id, queueError instanceof Error ? queueError.message : 'Unknown error');
-                } finally {
-                  this.svc.sessionsProcessingQueue.delete(session.id);
-                  try {
-                    await this.svc.continueQueuedPromptChain(
-                      session.id,
-                      workspacePath,
-                      BrowserWindow.fromWebContents(event.sender),
-                      'completion-handler queue finally'
-                    );
-                  } catch (chainErr) {
-                    logger.main.error('[AIService] completion-handler queue finally: error checking for pending prompts:', chainErr);
-                  }
-                }
-              });
-            }
-          }
-        } else {
-          logger.main.info(`[AIService] Skipping completion-handler queue processing for session ${session.id} - already processing`);
-        }
-      } catch (queueError) {
-        logger.main.error('[AIService] Error checking queued prompts:', queueError);
       }
 
       // Clean up queued prompt tracking
@@ -2495,8 +2452,25 @@ export class MessageStreamingHandler {
         const willResumeOnError = session.provider === 'claude-code'
           && typeof (provider as any).willResumeAfterCompletion === 'function'
           && (provider as any).willResumeAfterCompletion();
-        if (hasTeammatesOnError || willResumeOnError) {
-          logger.main.info(`[AIService] Deferring endSession for ${session.id} on error - ${hasTeammatesOnError ? 'teammates still active' : 'lead resuming'}`);
+        const queuedChainAlreadyActiveOnError = this.svc.sessionsProcessingQueue.has(session.id);
+        let queuedContinuationScheduledOnError = false;
+        if (!hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {
+          queuedContinuationScheduledOnError = await this.svc.tryDispatchNextQueuedPrompt(
+            session.id,
+            workspacePath,
+            BrowserWindow.fromWebContents(event.sender),
+            'error-handler queue',
+          );
+        }
+        if (hasTeammatesOnError || willResumeOnError || queuedChainAlreadyActiveOnError || queuedContinuationScheduledOnError) {
+          const reason = hasTeammatesOnError
+            ? 'teammates still active'
+            : willResumeOnError
+            ? 'lead resuming'
+            : queuedChainAlreadyActiveOnError
+            ? 'queued continuation already active'
+            : 'queued continuation scheduled';
+          logger.main.info(`[AIService] Deferring endSession for ${session.id} on error - ${reason}`);
         } else {
           await stateManager.endSession(session.id);
           // Stop file watcher - session ended on error
@@ -2505,7 +2479,7 @@ export class MessageStreamingHandler {
         }
 
         // Clear executing and pending prompt flags for mobile sync on error
-        if (syncProvider) {
+        if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
           syncProvider.pushChange(session.id, {
             type: 'metadata_updated',
             metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
@@ -2541,67 +2515,6 @@ export class MessageStreamingHandler {
       if (queuedPromptId) {
         this.svc.processingQueuedPromptIds.delete(queuedPromptId);
         logger.main.info(`[AIService] Cleared prompt tracking for ${queuedPromptId} (error path)`);
-      }
-
-      // Process next queued prompt even on error/abort
-      // This ensures queued prompts fire when user cancels a question
-      if (session?.id && event?.sender && !this.svc.sessionsProcessingQueue.has(session.id)) {
-        try {
-          const { getQueuedPromptsStore } = await import('../RepositoryManager');
-          const queueStore = getQueuedPromptsStore();
-          const pendingPrompts = await queueStore.listPending(session.id);
-
-          if (pendingPrompts.length > 0) {
-            const nextPrompt = pendingPrompts[0];
-            logger.main.info(`[AIService] Processing next queued prompt after error/abort: ${nextPrompt.id} for session ${session.id}`);
-
-            // Claim the prompt atomically
-            const claimed = await queueStore.claim(nextPrompt.id);
-            if (claimed) {
-              // Mark session as processing before the setImmediate
-              this.svc.sessionsProcessingQueue.add(session.id);
-
-              // Notify renderer that prompt was claimed (so UI removes it from queue list)
-              safeSend(event, 'ai:promptClaimed', {
-                sessionId: session.id,
-                promptId: claimed.id,
-              });
-
-              // Recursively call sendMessage with the queued prompt
-              const docContext = {
-                ...claimed.documentContext,
-                queuedPromptId: claimed.id,
-                attachments: claimed.attachments,
-              };
-
-              // Use setImmediate to avoid stack overflow and let this response complete first
-              setImmediate(async () => {
-                try {
-                  await this.svc.sendMessageHandler!(event, claimed.prompt, docContext as any, session.id, workspacePath);
-                  // Mark as completed
-                  await queueStore.complete(claimed.id);
-                } catch (queueError) {
-                  logger.main.error(`[AIService] Failed to process queued prompt ${claimed.id}:`, queueError);
-                  await queueStore.fail(claimed.id, queueError instanceof Error ? queueError.message : 'Unknown error');
-                } finally {
-                  this.svc.sessionsProcessingQueue.delete(session.id);
-                  try {
-                    await this.svc.continueQueuedPromptChain(
-                      session.id,
-                      workspacePath,
-                      BrowserWindow.fromWebContents(event.sender),
-                      'error-handler queue finally'
-                    );
-                  } catch (chainErr) {
-                    logger.main.error('[AIService] error-handler queue finally: error checking for pending prompts:', chainErr);
-                  }
-                }
-              });
-            }
-          }
-        } catch (queueError) {
-          logger.main.error('[AIService] Error checking queued prompts after error/abort:', queueError);
-        }
       }
 
       throw error;

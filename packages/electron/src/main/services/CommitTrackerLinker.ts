@@ -62,6 +62,18 @@ export function parseIssueKeys(commitMessage: string, prefix?: string): IssueKey
   return matches;
 }
 
+export function getIssueKeyPrefix(issueKey: string | null | undefined): string | undefined {
+  if (typeof issueKey !== 'string') return undefined;
+
+  const trimmed = issueKey.trim();
+  if (trimmed.length === 0) return undefined;
+
+  const separatorIndex = trimmed.indexOf('-');
+  if (separatorIndex <= 0) return undefined;
+
+  return trimmed.slice(0, separatorIndex).toUpperCase();
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -180,13 +192,16 @@ export class CommitTrackerLinker {
 
     // Get the workspace issue key prefix
     const prefixResult = await db.query(
-      `SELECT DISTINCT SPLIT_PART(issue_key, '-', 1) as prefix
+      `SELECT DISTINCT issue_key
        FROM tracker_items
        WHERE workspace = $1 AND issue_key IS NOT NULL
-       LIMIT 1`,
+       ORDER BY issue_key ASC
+       LIMIT 25`,
       [event.workspacePath]
     );
-    const prefix = prefixResult.rows[0]?.prefix;
+    const prefix = prefixResult.rows
+      .map((row: { issue_key?: string | null }) => getIssueKeyPrefix(row.issue_key))
+      .find((value: string | undefined): value is string => Boolean(value));
 
     const matches = parseIssueKeys(event.commitMessage, prefix);
     if (matches.length === 0) return;

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { FeatureUsageRecord } from '../../main/services/FeatureUsageService';
+import type { FeatureUsageRecord } from '../../shared/featureUsage';
 
 /**
  * Hook for querying and recording feature usage from renderer components.
