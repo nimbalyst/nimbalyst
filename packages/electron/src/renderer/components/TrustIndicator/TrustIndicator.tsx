@@ -138,7 +138,10 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
       return 'shield';
     }
     if (isTrusted) {
-      if (status.permissionMode === 'bypass-all') return 'warning';
+      // bypass-all ("Allow All") used to show a warning triangle when it was a
+      // blanket bypass. With Claude Code's auto-classifier reviewing operations
+      // (PR #379), the warning is no longer accurate -- show a shield instead.
+      if (status.permissionMode === 'bypass-all') return 'shield';
       if (status.permissionMode === 'allow-all') return 'shield';
       return 'verified_user';
     }
@@ -160,8 +163,6 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
   const getIndicatorColorClass = (): string => {
     const statusClass = getStatusClass();
     switch (statusClass) {
-      case 'bypass-all':
-        return 'text-[var(--nim-warning)]';
       case 'loading':
         return 'text-[var(--nim-text-faint)]';
       default:
