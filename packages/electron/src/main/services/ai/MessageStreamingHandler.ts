@@ -19,6 +19,8 @@ import {
   ModelRegistry,
   isAgentProvider,
   onAgentMessageBatch,
+  formatSessionTitleWithTemplate,
+  getSessionProgressNamingConfig,
   type AIProvider,
   type SessionManager,
 } from '@nimbalyst/runtime/ai/server';
@@ -395,7 +397,8 @@ export class MessageStreamingHandler {
     // Update session title if this is the first user message
     if (session.messages.length === 0 || (session.messages.length === 1 && session.messages[0].type === 'user_message')) {
       // Generate a provisional title from the first message without locking out auto-naming
-      const title = message.length > 100 ? message.substring(0, 97) + '...' : message;
+      const rawTitle = message.length > 100 ? message.substring(0, 97) + '...' : message;
+      const title = formatSessionTitleWithTemplate(rawTitle, getSessionProgressNamingConfig().titleTemplate);
       await this.svc.sessionManager.updateSessionTitle(session.id, title, {
         force: true,
         markAsNamed: false,
