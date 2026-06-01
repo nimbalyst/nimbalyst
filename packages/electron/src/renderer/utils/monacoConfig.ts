@@ -7,6 +7,11 @@
 
 import { loader } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor';
+import {
+  getThemesWithMonacoDefinition,
+  onThemesChanged,
+  type MonacoThemeContribution,
+} from '@nimbalyst/runtime';
 
 // Import workers using Vite's ?worker syntax
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker.js?worker';
@@ -15,7 +20,7 @@ import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker.js?worker';
 import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker.js?worker';
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker.js?worker';
 
-// Track registered custom themes
+// Track registered custom themes (built-in + extension-contributed)
 const registeredThemes = new Set<string>();
 
 /**
@@ -135,6 +140,37 @@ function defineCustomMonacoThemes(): void {
 }
 
 /**
+ * Define a single Monaco theme from an extension contribution.
+ * Idempotent -- redefining the same id is allowed (Monaco overwrites).
+ */
+function defineExtensionMonacoTheme(themeId: string, def: MonacoThemeContribution): void {
+  monaco.editor.defineTheme(themeId, {
+    base: def.base,
+    inherit: def.inherit ?? true,
+    rules: def.rules,
+    colors: def.colors,
+  });
+  registeredThemes.add(themeId);
+}
+
+/**
+ * Walk the runtime theme registry and register a Monaco theme for every
+ * entry that carries a `monaco` block. Safe to call repeatedly; each
+ * call replaces previously-registered definitions.
+ */
+function syncMonacoThemesFromRegistry(): void {
+  const themes = getThemesWithMonacoDefinition();
+  for (const theme of themes) {
+    if (!theme.monaco) continue;
+    try {
+      defineExtensionMonacoTheme(theme.id, theme.monaco);
+    } catch (error) {
+      console.error(`[Monaco] Failed to register extension theme '${theme.id}':`, error);
+    }
+  }
+}
+
+/**
  * Check if a Monaco theme name is registered (custom or built-in)
  */
 export function isMonacoThemeRegistered(themeName: string): boolean {
@@ -171,8 +207,16 @@ export function initMonacoEditor(): void {
   // Configure @monaco-editor/react to use the local npm package instead of CDN
   loader.config({ monaco });
 
-  // Define custom themes after Monaco is configured
+  // Define built-in custom themes (solarized, monokai) after Monaco is configured
   defineCustomMonacoThemes();
+
+  // Pick up any extension-contributed Monaco themes already in the
+  // registry, then subscribe so future extension loads/unloads
+  // re-register their Monaco definitions.
+  syncMonacoThemesFromRegistry();
+  onThemesChanged(() => {
+    syncMonacoThemesFromRegistry();
+  });
 
   console.log('[Monaco] Configuration complete');
 }

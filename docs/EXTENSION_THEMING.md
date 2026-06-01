@@ -96,6 +96,7 @@ Each theme contribution has the following properties:
 | `name` | string | Yes | Display name shown in the theme picker |
 | `isDark` | boolean | Yes | Whether this is a dark theme (determines base fallback colors) |
 | `colors` | object | Yes | Partial color overrides (see available colors below) |
+| `monaco` | object | No | Optional Monaco editor theme. When present, code editors honor the extension's syntax-highlighting palette. See [Monaco Theme Contribution](#monaco-theme-contribution). |
 
 ## Available Color Keys
 
@@ -237,6 +238,89 @@ Here's a complete example of a "Nord" inspired dark theme:
   }
 }
 ```
+
+## Monaco Theme Contribution
+
+By default, extension themes only style the UI shell (sidebars, panels, buttons) via `--nim-*` CSS variables. Monaco-backed editors (code files, JSON, etc.) fall back to the built-in `vs` or `vs-dark` theme based on `isDark`.
+
+To style the editor surface itself -- syntax token colors, gutter, line numbers, the editor background -- add an optional `monaco` block to your theme contribution. The runtime registers it as a real Monaco theme via `monaco.editor.defineTheme()` under the namespaced id `extensionId:themeId`, and code editors switch to it when the user activates the theme.
+
+### Schema
+
+```json
+{
+  "monaco": {
+    "base": "vs-dark",
+    "inherit": true,
+    "rules": [
+      { "token": "comment", "foreground": "6272a4", "fontStyle": "italic" },
+      { "token": "keyword", "foreground": "ff79c6" },
+      { "token": "string",  "foreground": "f1fa8c" }
+    ],
+    "colors": {
+      "editor.background": "#282a36",
+      "editor.foreground": "#f8f8f2",
+      "editorLineNumber.foreground": "#6272a4",
+      "editor.selectionBackground": "#44475a"
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `base` | `"vs" \| "vs-dark" \| "hc-black" \| "hc-light"` | Yes | Built-in Monaco theme to inherit from |
+| `inherit` | boolean | No (default `true`) | Whether unspecified rules/colors inherit from `base` |
+| `rules` | array | Yes | Syntax token rules. Each rule is `{ token, foreground?, background?, fontStyle? }`. Colors are hex strings WITHOUT a leading `#` (Monaco convention). `fontStyle` accepts space-separated `italic`, `bold`, `underline`. |
+| `colors` | object | Yes | Map of Monaco color ids (e.g. `"editor.background"`) to color strings. Full color id list: <https://github.com/microsoft/vscode/blob/main/src/vs/editor/common/core/editorColorRegistry.ts>. |
+
+### Token list
+
+Monaco's standard tokens include: `comment`, `keyword`, `string`, `number`, `type`, `class`, `function`, `variable`, `constant`, `parameter`, `punctuation`, `operator`, plus language-scoped variants (e.g. `keyword.js`, `string.escape.html`). See <https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor.ITokenThemeRule.html>.
+
+### Full example (Dracula)
+
+```json
+{
+  "id": "dracula",
+  "name": "Dracula",
+  "isDark": true,
+  "colors": {
+    "bg": "#282a36",
+    "bg-secondary": "#1e1f29",
+    "text": "#f8f8f2",
+    "primary": "#bd93f9",
+    "border": "#44475a"
+  },
+  "monaco": {
+    "base": "vs-dark",
+    "inherit": true,
+    "rules": [
+      { "token": "comment", "foreground": "6272a4", "fontStyle": "italic" },
+      { "token": "keyword", "foreground": "ff79c6" },
+      { "token": "string", "foreground": "f1fa8c" },
+      { "token": "number", "foreground": "bd93f9" },
+      { "token": "type", "foreground": "8be9fd", "fontStyle": "italic" },
+      { "token": "function", "foreground": "50fa7b" },
+      { "token": "variable", "foreground": "f8f8f2" },
+      { "token": "constant", "foreground": "bd93f9" }
+    ],
+    "colors": {
+      "editor.background": "#282a36",
+      "editor.foreground": "#f8f8f2",
+      "editor.selectionBackground": "#44475a",
+      "editor.lineHighlightBackground": "#44475a55",
+      "editorCursor.foreground": "#f8f8f0",
+      "editorLineNumber.foreground": "#6272a4",
+      "editorLineNumber.activeForeground": "#f8f8f2"
+    }
+  }
+}
+```
+
+### What happens when the Monaco block is omitted
+
+The extension theme still paints the UI shell, but Monaco-backed editors fall back to `vs` (when `isDark: false`) or `vs-dark` (when `isDark: true`). No editor crash; just no custom syntax palette.
 
 ## Theme Selection
 

@@ -5,6 +5,10 @@
  * Extensions can use these types to contribute custom themes.
  */
 
+import type { MonacoThemeContribution } from '@nimbalyst/extension-sdk';
+
+export type { MonacoThemeContribution, MonacoTokenRule } from '@nimbalyst/extension-sdk';
+
 /**
  * Built-in theme identifiers.
  * Only 'light' and 'dark' are true built-in themes with hardcoded colors.
@@ -156,6 +160,12 @@ export interface Theme {
   colors: ExtendedThemeColors;
   /** Extension ID that contributed this theme (undefined for built-in) */
   contributedBy?: string;
+  /**
+   * Optional Monaco editor theme definition. Carried through from the
+   * extension manifest so the renderer Monaco bridge can register it
+   * via `monaco.editor.defineTheme()` when the registry changes.
+   */
+  monaco?: MonacoThemeContribution;
 }
 
 /**
@@ -175,6 +185,12 @@ export interface ThemeContribution {
    * Missing colors will fall back to the appropriate base theme (light or dark).
    */
   colors: Partial<ThemeColors>;
+  /**
+   * Optional Monaco editor theme definition. When present, the renderer
+   * registers a matching Monaco theme so code editors honor the
+   * extension's syntax-highlighting palette.
+   */
+  monaco?: MonacoThemeContribution;
 }
 
 /**

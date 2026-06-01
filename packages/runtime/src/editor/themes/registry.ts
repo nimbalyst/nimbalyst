@@ -417,9 +417,19 @@ export function registerThemeContribution(
     isDark: contribution.isDark,
     colors: { ...baseColors, ...derivedColors, ...contribution.colors },
     contributedBy: extensionId,
+    monaco: contribution.monaco,
   };
 
   return registerTheme(theme);
+}
+
+/**
+ * Get themes that carry a Monaco editor theme definition.
+ * Used by the renderer Monaco bridge to register matching themes via
+ * `monaco.editor.defineTheme()`.
+ */
+export function getThemesWithMonacoDefinition(): Theme[] {
+  return getAllThemes().filter(t => t.monaco !== undefined);
 }
 
 /**

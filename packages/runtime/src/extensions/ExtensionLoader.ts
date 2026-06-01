@@ -629,6 +629,65 @@ function validateManifest(
                 suggestion: 'colors must be an object mapping color keys to color values',
               });
             }
+            // Optional Monaco block: validates shape only -- token rules /
+            // editor color keys are passed through to Monaco verbatim.
+            if (themeRecord.monaco !== undefined) {
+              const monacoBlock = themeRecord.monaco as Record<string, unknown>;
+              if (
+                typeof monacoBlock !== 'object' ||
+                monacoBlock === null ||
+                Array.isArray(monacoBlock)
+              ) {
+                errors.push({
+                  error: `themes[${index}].monaco must be an object when present`,
+                  field: `contributions.themes[${index}].monaco`,
+                  suggestion: 'Provide { base, rules, colors } to define a Monaco theme',
+                });
+              } else {
+                const validBases = ['vs', 'vs-dark', 'hc-black', 'hc-light'];
+                if (typeof monacoBlock.base !== 'string' || !validBases.includes(monacoBlock.base as string)) {
+                  errors.push({
+                    error: `themes[${index}].monaco.base must be one of ${validBases.join(', ')}`,
+                    field: `contributions.themes[${index}].monaco.base`,
+                    suggestion: 'Pick "vs" for light or "vs-dark" for dark base',
+                  });
+                }
+                if (monacoBlock.inherit !== undefined && typeof monacoBlock.inherit !== 'boolean') {
+                  errors.push({
+                    error: `themes[${index}].monaco.inherit must be boolean when present`,
+                    field: `contributions.themes[${index}].monaco.inherit`,
+                  });
+                }
+                if (!Array.isArray(monacoBlock.rules)) {
+                  errors.push({
+                    error: `themes[${index}].monaco.rules must be an array`,
+                    field: `contributions.themes[${index}].monaco.rules`,
+                    suggestion: 'Provide an array of { token, foreground?, background?, fontStyle? } rules',
+                  });
+                } else {
+                  monacoBlock.rules.forEach((rule, ruleIndex) => {
+                    const ruleRecord = rule as Record<string, unknown>;
+                    if (typeof ruleRecord?.token !== 'string' || !ruleRecord.token) {
+                      errors.push({
+                        error: `themes[${index}].monaco.rules[${ruleIndex}] missing 'token'`,
+                        field: `contributions.themes[${index}].monaco.rules[${ruleIndex}].token`,
+                      });
+                    }
+                  });
+                }
+                if (
+                  typeof monacoBlock.colors !== 'object' ||
+                  monacoBlock.colors === null ||
+                  Array.isArray(monacoBlock.colors)
+                ) {
+                  errors.push({
+                    error: `themes[${index}].monaco.colors must be an object`,
+                    field: `contributions.themes[${index}].monaco.colors`,
+                    suggestion: 'Map Monaco color ids (e.g. "editor.background") to color strings',
+                  });
+                }
+              }
+            }
           });
         }
       }

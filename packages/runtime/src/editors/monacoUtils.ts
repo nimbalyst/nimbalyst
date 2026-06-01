@@ -5,13 +5,16 @@
  */
 
 import type { ConfigTheme } from '../editor';
+import { getTheme } from '../editor/themes/registry';
 
 /**
- * Map of theme IDs to their Monaco theme names.
- * Includes both current built-in IDs and legacy namespaced extension IDs.
- * These must match the themes defined in monacoConfig.ts.
+ * Static map of theme IDs to their Monaco theme names.
+ * Covers the built-in solarized/monokai themes registered in
+ * monacoConfig.ts as well as the legacy namespaced IDs they used to ship
+ * under. Extension-contributed themes are resolved dynamically via the
+ * theme registry below.
  */
-const EXTENSION_THEME_TO_MONACO: Record<string, string> = {
+const BUILTIN_THEME_TO_MONACO: Record<string, string> = {
   // Current built-in theme IDs
   'solarized-light': 'solarized-light',
   'solarized-dark': 'solarized-dark',
@@ -24,24 +27,34 @@ const EXTENSION_THEME_TO_MONACO: Record<string, string> = {
 };
 
 /**
- * Map Nimbalyst theme to Monaco editor theme
+ * Map Nimbalyst theme to Monaco editor theme.
  *
- * Monaco provides these built-in themes:
- * - 'vs' - Light theme
- * - 'vs-dark' - Dark theme
- * - 'hc-black' - High contrast dark theme
- * - 'hc-light' - High contrast light theme
+ * Resolution order for `extensionThemeId`:
+ *   1. Built-in/legacy mapping in `BUILTIN_THEME_TO_MONACO`.
+ *   2. Registry lookup -- if the theme is registered and carries a
+ *      `monaco` definition, the namespaced theme id IS the Monaco theme
+ *      name (the renderer bridge registers it under that id).
+ *   3. Fallback to base Monaco theme using `isDark` / `nimbalystTheme`.
  *
- * We also define custom themes for extension themes like Solarized and Monokai.
- *
- * @param nimbalystTheme - The Nimbalyst theme (built-in or extension)
- * @param isDark - Optional: whether the theme is dark (required for unknown extension themes)
- * @param extensionThemeId - Optional: the full extension theme ID for custom theme mapping
+ * Monaco built-in themes:
+ *   - 'vs'        : light
+ *   - 'vs-dark'   : dark
+ *   - 'hc-black'  : high contrast dark
+ *   - 'hc-light'  : high contrast light
  */
 export function getMonacoTheme(nimbalystTheme: ConfigTheme, isDark?: boolean, extensionThemeId?: string): string {
-  // Check if there's a custom Monaco theme for this extension theme
-  if (extensionThemeId && EXTENSION_THEME_TO_MONACO[extensionThemeId]) {
-    return EXTENSION_THEME_TO_MONACO[extensionThemeId];
+  if (extensionThemeId) {
+    const builtin = BUILTIN_THEME_TO_MONACO[extensionThemeId];
+    if (builtin) {
+      return builtin;
+    }
+
+    // Extension-contributed Monaco theme: the bridge registers the
+    // theme under its namespaced id, so we can return it verbatim.
+    const registered = getTheme(extensionThemeId);
+    if (registered?.monaco) {
+      return extensionThemeId;
+    }
   }
 
   switch (nimbalystTheme) {

@@ -52,6 +52,8 @@ export type {
   Theme as NimbalystTheme,
   // ThemeContribution is exported from runtime's extensions/types.ts
   ThemeChangeEvent,
+  MonacoThemeContribution,
+  MonacoTokenRule,
 } from './themes/types';
 export { isBuiltInTheme, getThemeExtensionId } from './themes/types';
 
@@ -71,6 +73,7 @@ export {
   onActiveThemeChanged,
   hasTheme,
   getThemeColor,
+  getThemesWithMonacoDefinition,
 } from './themes/registry';
 
 // Node types - for advanced customization

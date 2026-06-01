@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Claude Opus 4.8 is now selectable in the Claude provider (1M context, dateless ID `claude-opus-4-8`) and is the default Claude model for new installs. (#473)
 - Claude Code variants `opus-4-7` and `opus-4-7-1m` pinned to Opus 4.7 so it stays selectable after the canonical `opus` alias was bumped to 4.8. (#473)
+- Extension themes can contribute Monaco editor themes via an optional `monaco` block in `contributions.themes[]`, defining `base`, `rules`, and `colors`. Monaco-backed editors register the theme dynamically and switch to it when the user activates the theme; omitting the block keeps the previous `vs` / `vs-dark` fallback.
 <!-- New features go here -->
 
 ### Changed
