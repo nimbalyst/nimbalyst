@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildInitialSessionNamingReminderPrompt,
+  buildSessionNamingTemplateInstruction,
   buildClaudeSessionProgressReviewPrompt,
   buildSessionProgressNamingReminderPrompt,
   countUserTurns,
+  formatSessionTitleWithTemplate,
   parseClaudeSessionProgressReviewResponse,
   shouldReviewSessionProgressNaming,
   SESSION_PROGRESS_NAMING_NO_CHANGE,
@@ -47,9 +50,9 @@ describe('sessionProgressNaming', () => {
       userMessage('4'),
     ];
 
-    expect(shouldReviewSessionProgressNaming(messages, { enabled: false, cadenceTurns: 2 })).toBe(false);
-    expect(shouldReviewSessionProgressNaming(messages, { enabled: true, cadenceTurns: 3 })).toBe(false);
-    expect(shouldReviewSessionProgressNaming(messages, { enabled: true, cadenceTurns: 4 })).toBe(true);
+    expect(shouldReviewSessionProgressNaming(messages, { enabled: false, cadenceTurns: 2, titleTemplate: '' })).toBe(false);
+    expect(shouldReviewSessionProgressNaming(messages, { enabled: true, cadenceTurns: 3, titleTemplate: '' })).toBe(false);
+    expect(shouldReviewSessionProgressNaming(messages, { enabled: true, cadenceTurns: 4, titleTemplate: '' })).toBe(true);
   });
 
   it('parses claude review replies and ignores NO_CHANGE', () => {
@@ -66,11 +69,24 @@ describe('sessionProgressNaming', () => {
     expect(normalizeSessionProgressNamingConfig({ enabled: true, cadenceTurns: 0 })).toEqual({
       enabled: true,
       cadenceTurns: 1,
+      titleTemplate: '',
     });
     expect(normalizeSessionProgressNamingConfig({ enabled: true, cadenceTurns: 88 })).toEqual({
       enabled: true,
       cadenceTurns: 50,
+      titleTemplate: '',
     });
+    expect(normalizeSessionProgressNamingConfig({ enabled: true, cadenceTurns: 5, titleTemplate: '【{name}】' })).toEqual({
+      enabled: true,
+      cadenceTurns: 5,
+      titleTemplate: '【{name}】',
+    });
+  });
+
+  it('formats titles with configured templates', () => {
+    expect(formatSessionTitleWithTemplate('Nimbalyst/开发 标题状态更新', '【{name}】')).toBe('【Nimbalyst/开发 标题状态更新】');
+    expect(formatSessionTitleWithTemplate('Nimbalyst/开发 标题状态更新', '')).toBe('Nimbalyst/开发 标题状态更新');
+    expect(buildSessionNamingTemplateInstruction('【{name}】')).toContain('A session title template is configured');
   });
 
   it('builds prompts with current title and phase context', () => {
@@ -78,16 +94,22 @@ describe('sessionProgressNaming', () => {
       currentTitle: '【Nimbalyst/开发】代码开发',
       currentPhase: 'implementing',
       cadenceTurns: 10,
+      titleTemplate: '【{name}】',
     });
     expect(reminderPrompt).toContain('Current title: "【Nimbalyst/开发】代码开发"');
     expect(reminderPrompt).toContain('Current phase: "implementing"');
+    expect(reminderPrompt).toContain('A session title template is configured: "【{name}】"');
 
     const claudePrompt = buildClaudeSessionProgressReviewPrompt({
       currentTitle: '【Nimbalyst/开发】代码开发',
       currentPhase: 'implementing',
       cadenceTurns: 10,
+      titleTemplate: '【{name}】',
     });
     expect(claudePrompt).toContain('name|phase');
     expect(claudePrompt).toContain('Current title: 【Nimbalyst/开发】代码开发');
+
+    const initialPrompt = buildInitialSessionNamingReminderPrompt('【{name}】');
+    expect(initialPrompt).toContain('A session title template is configured: "【{name}】"');
   });
 });

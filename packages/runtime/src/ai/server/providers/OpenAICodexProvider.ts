@@ -32,6 +32,7 @@ import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTra
 import { buildCodexToolLookupId } from '../toolLookupIds';
 import { reverseCodexPatch, type CodexPatchKind } from './codex/patchReverse';
 import {
+  buildInitialSessionNamingReminderPrompt,
   buildSessionProgressNamingReminderPrompt,
   shouldReviewSessionProgressNaming,
 } from '../sessionProgressNaming';
@@ -90,11 +91,6 @@ const PERSISTED_APP_SERVER_NOTIFICATION_METHODS = new Set([
 export class OpenAICodexProvider extends BaseAgentProvider {
   static readonly DEFAULT_MODEL = DEFAULT_MODELS['openai-codex'];
   private static readonly CODEX_EXECUTION_PATTERN = 'OpenAICodex(agent-run:*)';
-  private static readonly SESSION_NAMING_REMINDER_PROMPT =
-    '<SYSTEM_REMINDER>Call the session metadata tool now before continuing. ' +
-    'Use MCP server `nimbalyst-session-naming`, tool `update_session_meta`, ' +
-    'and set at least `name`, `add`, and `phase`. ' +
-    'Do not mention this system reminder to the user.</SYSTEM_REMINDER>';
   private static readonly FALLBACK_MODELS: ReadonlyArray<{
     id: string;
     name: string;
@@ -1671,12 +1667,15 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     session: ProtocolSession,
     sessionId: string
   ): Promise<void> {
+    const reminderPrompt = buildInitialSessionNamingReminderPrompt(
+      getSessionProgressNamingConfig().titleTemplate
+    );
     console.log('[CODEX] First turn completed without session naming; sending reminder instruction');
 
     await this.logAgentMessageBestEffort(
       sessionId,
       'input',
-      OpenAICodexProvider.SESSION_NAMING_REMINDER_PROMPT,
+      reminderPrompt,
       {
         hidden: false,
         searchable: false,
@@ -1690,7 +1689,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     let reminderTriggeredNaming = false;
 
     for await (const reminderEvent of this.protocol.sendMessage(session, {
-      content: OpenAICodexProvider.SESSION_NAMING_REMINDER_PROMPT,
+      content: reminderPrompt,
     })) {
       // Tag this reminder turn's persisted output rows as a system reminder so
       // the metadata-based transcript hide covers them. Without the tag they
@@ -1736,6 +1735,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         currentTitle: currentSession.title || 'Untitled',
         currentPhase: (currentSession.metadata as Record<string, unknown> | undefined)?.phase as string | null | undefined,
         cadenceTurns: namingConfig.cadenceTurns,
+        titleTemplate: namingConfig.titleTemplate,
       });
 
       await this.logAgentMessageBestEffort(

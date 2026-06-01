@@ -11,6 +11,11 @@ import { createServer, IncomingMessage, ServerResponse } from "http";
 import { parse as parseUrl } from "url";
 import { randomUUID } from "crypto";
 import { requireMcpAuth } from "./mcpAuth";
+import {
+  buildSessionNamingTemplateInstruction,
+  formatSessionTitleWithTemplate,
+  getSessionProgressNamingConfig,
+} from "@nimbalyst/runtime/ai/server";
 
 // Store active SSE transports and their metadata
 interface TransportMetadata {
@@ -303,7 +308,7 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
               name: {
                 type: "string",
                 description:
-                  'A concise session name (2-5 words) with descriptive part first. Examples: "Authentication bug fix", "Dark mode implementation", "Database layer refactor". Only set this on the first call, or when the user explicitly asks you to rename the session.',
+                  `A concise session name (2-5 words) with descriptive part first. Examples: "Authentication bug fix", "Dark mode implementation", "Database layer refactor". Only set this on the first call, or when the user explicitly asks you to rename the session. ${buildSessionNamingTemplateInstruction(getSessionProgressNamingConfig().titleTemplate)}`,
               },
               add: {
                 type: "array",
@@ -382,6 +387,7 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
       // Capture state before changes for the widget transition display
       const before = await snapshotMeta();
       const notes: string[] = [];
+      const titleTemplate = getSessionProgressNamingConfig().titleTemplate;
 
       // Handle name (write-once)
       if (sessionName) {
@@ -410,8 +416,9 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
         }
 
         try {
-          await updateSessionTitleFn!(aiSessionId, sessionName);
-          notes.push(`Set name: "${sessionName}"`);
+          const formattedSessionName = formatSessionTitleWithTemplate(sessionName, titleTemplate);
+          await updateSessionTitleFn!(aiSessionId, formattedSessionName);
+          notes.push(`Set name: "${formattedSessionName}"`);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : "Unknown error";
           console.error("[Session Naming MCP] Failed to update session title:", error);

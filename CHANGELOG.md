@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Agent Features settings now include an option to auto-refresh session title and phase from progress reviews for OpenAI Codex sessions, including a configurable review cadence.
+- Agent Features settings now include an option to auto-refresh session title and phase from progress reviews for OpenAI Codex sessions, including a configurable review cadence and a user-defined title template with a `{name}` placeholder.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

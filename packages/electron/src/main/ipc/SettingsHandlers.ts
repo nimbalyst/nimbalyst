@@ -124,22 +124,28 @@ export function registerSettingsHandlers() {
     });
 
     safeHandle('session-progress-naming:get', () => {
-        const current = getAppSetting<{ enabled?: boolean; cadenceTurns?: number }>('sessionProgressNaming');
+        const current = getAppSetting<{ enabled?: boolean; cadenceTurns?: number; titleTemplate?: string }>('sessionProgressNaming');
+        const template = typeof current?.titleTemplate === 'string' ? current.titleTemplate.trim() : '';
         return {
             enabled: current?.enabled === true,
             cadenceTurns: Number.isFinite(Number(current?.cadenceTurns))
                 ? Math.max(1, Math.min(50, Math.round(Number(current?.cadenceTurns))))
                 : 10,
+            titleTemplate: template.includes('{name}') ? template.slice(0, 200) : '',
         };
     });
 
     safeHandle('session-progress-naming:set', (_event, config: unknown) => {
-        const raw = (config && typeof config === 'object') ? config as { enabled?: unknown; cadenceTurns?: unknown } : {};
+        const raw = (config && typeof config === 'object')
+            ? config as { enabled?: unknown; cadenceTurns?: unknown; titleTemplate?: unknown }
+            : {};
+        const rawTemplate = typeof raw.titleTemplate === 'string' ? raw.titleTemplate.trim() : '';
         const normalized = {
             enabled: raw.enabled === true,
             cadenceTurns: Number.isFinite(Number(raw.cadenceTurns))
                 ? Math.max(1, Math.min(50, Math.round(Number(raw.cadenceTurns))))
                 : 10,
+            titleTemplate: rawTemplate.includes('{name}') ? rawTemplate.slice(0, 200) : '',
         };
         setAppSetting('sessionProgressNaming', normalized);
         SessionNamingService.getInstance().setSessionProgressNaming(normalized);

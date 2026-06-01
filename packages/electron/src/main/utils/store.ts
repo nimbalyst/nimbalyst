@@ -29,6 +29,7 @@ export interface TrackerSyncPolicySetting {
 export interface SessionProgressNamingSetting {
   enabled?: boolean;
   cadenceTurns?: number;
+  titleTemplate?: string;
 }
 
 /**

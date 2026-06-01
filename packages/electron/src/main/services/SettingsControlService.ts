@@ -163,7 +163,7 @@ export class SettingsControlService {
       completionSoundEnabled: getAppSetting<boolean>('completionSoundEnabled') ?? false,
       spellcheckEnabled: getAppSetting<boolean>('spellcheckEnabled') ?? true,
       preferredAgentLanguage: getAppSetting<string>('preferredAgentLanguage') ?? '',
-      sessionProgressNaming: getAppSetting('sessionProgressNaming') ?? { enabled: false, cadenceTurns: 10 },
+      sessionProgressNaming: getAppSetting('sessionProgressNaming') ?? { enabled: false, cadenceTurns: 10, titleTemplate: '' },
       voiceMode: getAppSetting<unknown>('voiceMode') ?? null,
       sessionSync: sync
         ? {
@@ -454,20 +454,22 @@ export class SettingsControlService {
 
   async setSessionProgressNaming(
     sessionId: string,
-    args: { enabled: boolean; cadenceTurns?: number },
+    args: { enabled: boolean; cadenceTurns?: number; titleTemplate?: string },
   ): Promise<
     SettingsToolResult<
-      { enabled: boolean; cadenceTurns: number } | undefined,
-      { enabled: boolean; cadenceTurns: number }
+      { enabled: boolean; cadenceTurns: number; titleTemplate: string } | undefined,
+      { enabled: boolean; cadenceTurns: number; titleTemplate: string }
     >
   > {
     rateLimit(sessionId);
-    const before = getAppSetting<{ enabled?: boolean; cadenceTurns?: number }>('sessionProgressNaming');
+    const before = getAppSetting<{ enabled?: boolean; cadenceTurns?: number; titleTemplate?: string }>('sessionProgressNaming');
+    const rawTemplate = typeof args.titleTemplate === 'string' ? args.titleTemplate.trim() : '';
     const normalized = {
       enabled: args.enabled === true,
       cadenceTurns: Number.isFinite(Number(args.cadenceTurns))
         ? Math.max(1, Math.min(50, Math.round(Number(args.cadenceTurns))))
         : 10,
+      titleTemplate: rawTemplate.includes('{name}') ? rawTemplate.slice(0, 200) : '',
     };
     setAppSetting('sessionProgressNaming', normalized);
     SessionNamingService.getInstance().setSessionProgressNaming(normalized);
@@ -480,6 +482,9 @@ export class SettingsControlService {
             cadenceTurns: Number.isFinite(Number(before.cadenceTurns))
               ? Math.max(1, Math.min(50, Math.round(Number(before.cadenceTurns))))
               : 10,
+            titleTemplate: typeof before.titleTemplate === 'string' && before.titleTemplate.trim().includes('{name}')
+              ? before.titleTemplate.trim().slice(0, 200)
+              : '',
           }
         : undefined,
       after: normalized,

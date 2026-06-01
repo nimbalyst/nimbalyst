@@ -243,7 +243,7 @@ const TOOLS = [
   {
     name: "ai_set_session_progress_naming",
     description:
-      "Enable or disable automatic session title/phase refresh based on progress reviews, and configure how many user turns elapse between reviews. Currently applies to OpenAI Codex sessions.",
+      "Enable or disable automatic session title/phase refresh based on progress reviews, configure how many user turns elapse between reviews, and optionally set a session title template using the {name} placeholder. Currently applies to OpenAI Codex sessions.",
     inputSchema: {
       type: "object",
       properties: {
@@ -251,6 +251,10 @@ const TOOLS = [
         cadenceTurns: {
           type: "number",
           description: "How many user turns between progress reviews. Integer from 1 to 50.",
+        },
+        titleTemplate: {
+          type: "string",
+          description: "Optional session title template. Must include the {name} placeholder, for example 【{name}】 or Session: {name}.",
         },
       },
       required: ["enabled"],
@@ -411,6 +415,7 @@ function createSettingsMcpServer(aiSessionId: string, workspaceId: string | unde
             await svc.setSessionProgressNaming(aiSessionId, {
               enabled: !!args.enabled,
               cadenceTurns: args.cadenceTurns,
+              titleTemplate: args.titleTemplate,
             }),
           );
 
