@@ -284,4 +284,6 @@ export interface ITranscriptEventStore {
     options?: { excludeEventTypes?: TranscriptEventType[] },
   ): Promise<TranscriptEvent[]>;
   deleteSessionEvents(sessionId: string): Promise<void>;
+  /** Delete canonical events for a session whose sequence is >= the given value. */
+  deleteEventsAtOrAfterSequence(sessionId: string, sequence: number): Promise<void>;
 }

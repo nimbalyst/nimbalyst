@@ -106,6 +106,10 @@
       "import": "./dist/storage/repositories/AgentMessagesRepository.js",
       "types": "./dist/storage/repositories/AgentMessagesRepository.d.ts"
     },
+    "./storage/repositories/TranscriptEventRepository": {
+      "import": "./dist/storage/repositories/TranscriptEventRepository.js",
+      "types": "./dist/storage/repositories/TranscriptEventRepository.d.ts"
+    },
     "./sync": {
       "import": "./dist/sync/index.js",
       "types": "./dist/sync/index.d.ts"

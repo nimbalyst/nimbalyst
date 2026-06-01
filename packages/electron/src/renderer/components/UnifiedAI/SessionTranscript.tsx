@@ -1187,6 +1187,40 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     }
   }, [sessionId, sessionData, messages, getEffectiveDocumentContext, aiMode, workspacePath, updateSessionStore]);
 
+  const handleEditLastUserMessage = useCallback(async (newContent: string) => {
+    const trimmed = newContent.trim();
+    if (!trimmed) return;
+
+    const lastIdx = messages.length - 1;
+    const lastMessage = messages[lastIdx];
+    if (lastMessage?.type === 'user_message') {
+      const optimisticMessages = [...messages];
+      optimisticMessages[lastIdx] = { ...lastMessage, text: trimmed };
+      updateSessionStore({
+        sessionId,
+        updates: { messages: optimisticMessages },
+      });
+    }
+
+    try {
+      const effectiveContext = await getEffectiveDocumentContext();
+      const docContext = {
+        ...serializeDocumentContext(effectiveContext),
+        mode: aiMode,
+        inputType: 'user' as const,
+      };
+      await window.electronAPI.invoke(
+        'ai:editLastUserMessage',
+        sessionId,
+        trimmed,
+        workspacePath,
+        docContext,
+      );
+    } catch (error) {
+      console.error('[SessionTranscript] Failed to edit last user message:', error);
+    }
+  }, [sessionId, workspacePath, aiMode, getEffectiveDocumentContext, messages, updateSessionStore]);
+
   const handleTodoClick = useCallback((todo: TodoItem) => {
     onTodoClick?.(todo);
   }, [onTodoClick]);
@@ -2112,6 +2146,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             onOpenInExternalEditor={hasExternalEditor ? handleOpenInExternalEditor : undefined}
             externalEditorName={externalEditorName}
             onCompact={handleCompact}
+            onEditLastUserMessage={handleEditLastUserMessage}
             promptAdditions={showPromptAdditions ? promptAdditions : null}
             currentTeammates={transcriptTeammates}
             waitingForNoun={waitingForNoun}

@@ -445,6 +445,14 @@ export function createTranscriptEventStore(
       await db.query(`DELETE FROM ai_transcript_events WHERE session_id = $1`, [sessionId]);
     },
 
+    async deleteEventsAtOrAfterSequence(sessionId, sequence): Promise<void> {
+      await ensureReady();
+      await db.query(
+        `DELETE FROM ai_transcript_events WHERE session_id = $1 AND sequence >= $2`,
+        [sessionId, sequence],
+      );
+    },
+
     async getEventById(id): Promise<TranscriptEvent | null> {
       await ensureReady();
 

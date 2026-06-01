@@ -11,6 +11,10 @@ export interface AgentMessagesStore {
   list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]>;
   /** Get message counts for multiple sessions in a single query */
   getMessageCounts?(sessionIds: string[]): Promise<Map<string, number>>;
+  /** Return the most recent raw message for a session, or null if none. */
+  getLastMessage?(sessionId: string): Promise<AgentMessage | null>;
+  /** Update the content of a single raw message by id. The raw log is otherwise append-only. */
+  updateMessageContent?(messageId: number, content: string): Promise<void>;
 }
 
 let storeInstance: AgentMessagesStore | null = null;
@@ -73,5 +77,22 @@ export const AgentMessagesRepository = {
       counts.set(sessionId, messages.length);
     }
     return counts;
+  },
+
+  async getLastMessage(sessionId: string): Promise<AgentMessage | null> {
+    const store = requireStore();
+    if (store.getLastMessage) {
+      return await store.getLastMessage(sessionId);
+    }
+    const messages = await store.list(sessionId, { includeHidden: true });
+    return messages.length > 0 ? messages[messages.length - 1] : null;
+  },
+
+  async updateMessageContent(messageId: number, content: string): Promise<void> {
+    const store = requireStore();
+    if (!store.updateMessageContent) {
+      throw new Error('Agent messages store does not support updateMessageContent');
+    }
+    await store.updateMessageContent(messageId, content);
   },
 };

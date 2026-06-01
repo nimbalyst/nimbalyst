@@ -154,5 +154,18 @@ export function createMockStore(): ITranscriptEventStore {
       }
       sequenceCounters.delete(sessionId);
     },
+
+    async deleteEventsAtOrAfterSequence(sessionId, sequence) {
+      const toRemove = events.filter(
+        (e) => e.sessionId === sessionId && e.sequence >= sequence,
+      );
+      for (const e of toRemove) {
+        events.splice(events.indexOf(e), 1);
+      }
+      const current = sequenceCounters.get(sessionId);
+      if (current != null && current > sequence) {
+        sequenceCounters.set(sessionId, sequence);
+      }
+    },
   };
 }

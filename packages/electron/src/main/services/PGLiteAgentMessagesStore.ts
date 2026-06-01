@@ -147,6 +147,51 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
       }
     },
 
+    async getLastMessage(sessionId: string): Promise<AgentMessage | null> {
+      await ensureReady();
+
+      const { rows } = await db.query<any>(
+        `SELECT id, session_id, created_at, source, direction, content, metadata, hidden, provider_message_id
+           FROM ai_agent_messages
+           WHERE session_id = $1
+           ORDER BY id DESC
+           LIMIT 1`,
+        [sessionId]
+      );
+
+      if (rows.length === 0) return null;
+
+      const row = rows[0];
+      let metadata = row.metadata;
+      if (typeof metadata === 'string') {
+        try {
+          metadata = JSON.parse(metadata);
+        } catch {
+          // Keep as string if parsing fails
+        }
+      }
+
+      return {
+        id: Number(row.id),
+        sessionId: row.session_id,
+        createdAt: row.created_at ? new Date(row.created_at) : undefined,
+        source: row.source,
+        direction: row.direction,
+        content: row.content,
+        metadata: metadata ?? undefined,
+        hidden: row.hidden ?? false,
+        providerMessageId: row.provider_message_id ?? undefined,
+      };
+    },
+
+    async updateMessageContent(messageId: number, content: string): Promise<void> {
+      await ensureReady();
+      await db.query(
+        `UPDATE ai_agent_messages SET content = $1 WHERE id = $2`,
+        [content, messageId]
+      );
+    },
+
     async list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]> {
       await ensureReady();
 

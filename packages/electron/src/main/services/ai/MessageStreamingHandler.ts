@@ -388,12 +388,17 @@ export class MessageStreamingHandler {
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
       mode: documentContext?.mode,
     };
-    // logger.main.info(`[AIService] Adding user message to session ${session.id}: "${message.substring(0, 50)}..." (queuedPromptId: ${queuedPromptId || 'none'}, mode: ${documentContext?.mode})`);
-    await this.svc.sessionManager.addMessage(userMessage, session.id);
-    // logger.main.info(`[AIService] User message added successfully to session ${session.id}`);
+    // The edit-in-place path has already UPDATEd the existing raw row and the
+    // canonical user_message event; appending another user message here would
+    // duplicate it in session.messages and in the conversation history that
+    // the provider forwards to the model API.
+    const isEditedInPlace = (documentContext as any)?.editedInPlace === true;
+    if (!isEditedInPlace) {
+      await this.svc.sessionManager.addMessage(userMessage, session.id);
+    }
 
     // Update session title if this is the first user message
-    if (session.messages.length === 0 || (session.messages.length === 1 && session.messages[0].type === 'user_message')) {
+    if (!isEditedInPlace && (session.messages.length === 0 || (session.messages.length === 1 && session.messages[0].type === 'user_message'))) {
       // Generate a provisional title from the first message without locking out auto-naming
       const title = message.length > 100 ? message.substring(0, 97) + '...' : message;
       await this.svc.sessionManager.updateSessionTitle(session.id, title, {

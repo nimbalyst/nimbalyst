@@ -445,6 +445,8 @@ interface RichTranscriptViewProps {
   onOpenSession?: (sessionId: string) => void;
   /** Optional: Callback to trigger /compact command */
   onCompact?: () => void;
+  /** Edit and re-send the tail user message. Pencil affordance only shows when the last message is a user prompt and the session is idle. */
+  onEditLastUserMessage?: (newContent: string) => Promise<void> | void;
   /** Optional: Prompt additions for debugging (system prompt, user message, and attachments) */
   promptAdditions?: {
     systemPromptAddition: string | null;
@@ -1018,12 +1020,15 @@ export const extractEditsFromToolMessage = (message: TranscriptViewMessage): any
 export const RichTranscriptView = React.forwardRef<
   { scrollToMessage: (index: number) => void; scrollToTop: () => void },
   RichTranscriptViewProps
->(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, appStartTime, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, persistScrollState = true }, ref) => {
+>(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, onEditLastUserMessage, promptAdditions, currentTeammates, waitingForNoun, appStartTime, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, persistScrollState = true }, ref) => {
   const [collapsedMessages, setCollapsedMessages] = useState<Set<number>>(new Set());
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollButtonRef = useRef<HTMLDivElement>(null);
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [showSearchBar, setShowSearchBar] = useState(false);
+
+  const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState<string>('');
 
   // Subscribe to the transcript tool-widget registry so extension
   // enable/disable cycles cause this view to re-render and pick up
@@ -2149,37 +2154,114 @@ export const RichTranscriptView = React.forwardRef<
         })()}
 
         <div className={`rich-transcript-message-content relative ${isNewGroup ? 'ml-6' : 'no-indent ml-0'}`}>
-          {/* Copy button - shows on hover */}
-          <div className="rich-transcript-message-copy-action absolute -top-1 right-0 z-[1]">
-            <button
-              onClick={() => copyTranscriptViewMessageContent(message, index)}
-              className={`rich-transcript-copy-button p-1.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)] ${copiedMessageIndex === index ? 'copied' : ''}`}
-              title="Copy as Markdown"
-            >
-              {copiedMessageIndex === index ? (
-                <MaterialSymbol icon="check" size={16} className="text-[var(--nim-success)]" />
-              ) : (
-                <MaterialSymbol icon="content_copy" size={16} className="text-[var(--nim-text-faint)]" />
+          {/* Action buttons - shown on hover. Edit only appears for the tail
+              user message when nothing is in flight; copy is always available. */}
+          <div className="rich-transcript-message-copy-action absolute -top-1 right-0 z-[1] flex items-center gap-1">
+            {isUser
+              && index === messages.length - 1
+              && !isWaitingForResponse
+              && !isProcessing
+              && !!onEditLastUserMessage
+              && editingMessageIndex !== index
+              && (
+                <button
+                  onClick={() => {
+                    const stripped = (message.text ?? '')
+                      .replace(/\s*<NIMBALYST_SYSTEM_MESSAGE>[\s\S]*?<\/NIMBALYST_SYSTEM_MESSAGE>/g, '')
+                      .trim();
+                    setEditDraft(stripped);
+                    setEditingMessageIndex(index);
+                  }}
+                  className="rich-transcript-edit-button p-1.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)]"
+                  title="Edit and re-send this message"
+                >
+                  <MaterialSymbol icon="edit" size={16} className="text-[var(--nim-text-faint)]" />
+                </button>
               )}
-            </button>
+            {editingMessageIndex !== index && (
+              <button
+                onClick={() => copyTranscriptViewMessageContent(message, index)}
+                className={`rich-transcript-copy-button p-1.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)] ${copiedMessageIndex === index ? 'copied' : ''}`}
+                title="Copy as Markdown"
+              >
+                {copiedMessageIndex === index ? (
+                  <MaterialSymbol icon="check" size={16} className="text-[var(--nim-success)]" />
+                ) : (
+                  <MaterialSymbol icon="content_copy" size={16} className="text-[var(--nim-text-faint)]" />
+                )}
+              </button>
+            )}
           </div>
-          <MessageSegment
-            message={message}
-            isUser={isUser}
-            isCollapsed={isCollapsed}
-            showToolCalls={false}
-            showThinking={settings.showThinking}
-            expandedTools={expandedTools}
-            onToggleToolExpand={toggleToolExpand}
-            documentContext={documentContext}
-            shouldShowLoginWidget={shouldShowLoginWidgetForIndex(index)}
-            sessionId={sessionId}
-            isLastMessage={index === messages.length - 1}
-            onOpenFile={onOpenFile}
-            onOpenSession={onOpenSession}
-            onCompact={onCompact}
-            provider={provider}
-          />
+          {editingMessageIndex === index ? (
+            <div className="rich-transcript-message-edit flex flex-col gap-2 p-2 rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)]">
+              <textarea
+                value={editDraft}
+                onChange={(e) => setEditDraft(e.target.value)}
+                autoFocus
+                rows={Math.max(3, Math.min(12, editDraft.split('\n').length))}
+                className="rich-transcript-message-edit-textarea w-full resize-y rounded-sm border border-[var(--nim-border)] bg-[var(--nim-bg)] p-2 text-sm text-[var(--nim-text)] font-mono focus:outline-none focus:border-[var(--nim-primary)]"
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setEditingMessageIndex(null);
+                    setEditDraft('');
+                  } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    const trimmed = editDraft.trim();
+                    if (!trimmed || !onEditLastUserMessage) return;
+                    void onEditLastUserMessage(trimmed);
+                    setEditingMessageIndex(null);
+                    setEditDraft('');
+                  }
+                }}
+              />
+              <div className="rich-transcript-message-edit-actions flex items-center justify-end gap-2">
+                <span className="text-[10px] text-[var(--nim-text-faint)] mr-auto">
+                  Cmd/Ctrl+Enter to send · Esc to cancel
+                </span>
+                <button
+                  onClick={() => {
+                    setEditingMessageIndex(null);
+                    setEditDraft('');
+                  }}
+                  className="px-2 py-1 text-xs rounded-md border border-[var(--nim-border)] bg-transparent cursor-pointer text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-hover)]"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    const trimmed = editDraft.trim();
+                    if (!trimmed || !onEditLastUserMessage) return;
+                    void onEditLastUserMessage(trimmed);
+                    setEditingMessageIndex(null);
+                    setEditDraft('');
+                  }}
+                  disabled={!editDraft.trim()}
+                  className="px-2 py-1 text-xs rounded-md border border-transparent bg-[var(--nim-primary)] text-white cursor-pointer hover:opacity-90 disabled:opacity-50"
+                >
+                  Save & re-send
+                </button>
+              </div>
+            </div>
+          ) : (
+            <MessageSegment
+              message={message}
+              isUser={isUser}
+              isCollapsed={isCollapsed}
+              showToolCalls={false}
+              showThinking={settings.showThinking}
+              expandedTools={expandedTools}
+              onToggleToolExpand={toggleToolExpand}
+              documentContext={documentContext}
+              shouldShowLoginWidget={shouldShowLoginWidgetForIndex(index)}
+              sessionId={sessionId}
+              isLastMessage={index === messages.length - 1}
+              onOpenFile={onOpenFile}
+              onOpenSession={onOpenSession}
+              onCompact={onCompact}
+              provider={provider}
+            />
+          )}
         </div>
 
         {/* Show elapsed time at the end of a completed assistant turn */}

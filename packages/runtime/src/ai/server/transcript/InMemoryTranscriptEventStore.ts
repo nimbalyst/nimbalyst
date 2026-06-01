@@ -163,6 +163,15 @@ export class InMemoryTranscriptEventStore implements ITranscriptEventStore {
     this.sequenceBySession.delete(sessionId);
   }
 
+  async deleteEventsAtOrAfterSequence(sessionId: string, sequence: number): Promise<void> {
+    this.events = this.events.filter(
+      e => !(e.sessionId === sessionId && e.sequence >= sequence),
+    );
+    if ((this.sequenceBySession.get(sessionId) ?? 0) > sequence) {
+      this.sequenceBySession.set(sessionId, sequence);
+    }
+  }
+
   getAllEvents(): TranscriptEvent[] {
     return [...this.events].sort((a, b) => a.sequence - b.sequence);
   }

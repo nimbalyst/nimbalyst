@@ -121,6 +121,13 @@ export interface AIProvider extends EventEmitter {
   setHiddenMode?(enabled: boolean): void;
 
   /**
+   * One-shot directive: skip the next user-direction agent-message log so the
+   * provider does not duplicate a row that the caller has already written.
+   * Used by the in-place message edit path.
+   */
+  setSkipNextInputLog?(skip: boolean): void;
+
+  /**
    * Clean up resources
    */
   destroy(): void;
@@ -170,6 +177,20 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
    * before the UI reloads.
    */
   private pendingWritePromises = new Set<Promise<void>>();
+
+  /**
+   * One-shot flag: when true, the next `logAgentMessage` call with
+   * direction='input' is skipped and the flag clears. Set by the
+   * "edit last user message" path so the freshly UPDATEd raw user row
+   * is not duplicated by the auto-insert that providers perform at the
+   * top of their `sendMessage` flow.
+   */
+  private skipNextInputLog = false;
+
+  /** Mark the next user-input log on this provider as a no-op (one-shot). */
+  setSkipNextInputLog(skip: boolean): void {
+    this.skipNextInputLog = skip;
+  }
 
   abstract initialize(config: ProviderConfig): Promise<void>;
   abstract sendMessage(
@@ -324,6 +345,12 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
     // Skip logging for stateless extension completions (no session row in DB)
     if (this.config.skipLogging) return;
 
+    // Honour the one-shot edit-path skip for user-input duplication.
+    if (direction === 'input' && this.skipNextInputLog) {
+      this.skipNextInputLog = false;
+      return;
+    }
+
     // Create timestamp HERE - this is the authoritative source
     // This same timestamp must be used for message.created_at, session.updated_at, and sync index
     const createdAt = new Date();
@@ -379,6 +406,11 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
     searchable?: boolean
   ): void {
     if (this.config.skipLogging) return;
+
+    if (direction === 'input' && this.skipNextInputLog) {
+      this.skipNextInputLog = false;
+      return;
+    }
 
     const createdAt = new Date();
     const isSearchable = searchable && content.length < 500000;

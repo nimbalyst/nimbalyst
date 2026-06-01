@@ -86,6 +86,8 @@ interface AgentTranscriptPanelProps {
   externalEditorName?: string;
   /** Optional: Callback to trigger /compact command */
   onCompact?: () => void;
+  /** Optional: Edit and re-send the tail user message (see RichTranscriptView). */
+  onEditLastUserMessage?: (newContent: string) => Promise<void> | void;
   /** Optional: Prompt additions for debugging (system prompt, user message, and attachments) */
   promptAdditions?: {
     systemPromptAddition: string | null;
@@ -144,6 +146,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   onOpenInExternalEditor,
   externalEditorName,
   onCompact,
+  onEditLastUserMessage,
   promptAdditions,
   appStartTime,
   renderEmbeddedFile,
@@ -383,6 +386,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
           onOpenFile={onFileClick}
           onOpenSession={onOpenSession}
           onCompact={onCompact}
+          onEditLastUserMessage={onEditLastUserMessage}
           promptAdditions={promptAdditions}
           currentTeammates={currentTeammates ?? sessionData.metadata?.currentTeammates as Array<{ agentId: string; status: 'running' | 'completed' | 'errored' | 'idle' }> | undefined}
           waitingForNoun={waitingForNoun}

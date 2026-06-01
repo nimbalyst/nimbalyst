@@ -2519,6 +2519,105 @@ export class AIService {
       return { success: false, error: 'No active provider for session' };
     });
 
+    // Edit the most recent user message and re-send. Only valid when the tail
+    // of ai_agent_messages is a user input row with no assistant reply yet --
+    // the raw log is otherwise append-only.
+    safeHandle('ai:editLastUserMessage', async (
+      event,
+      sessionId: string,
+      newContent: string,
+      workspacePath?: string,
+      documentContext?: any,
+    ) => {
+      if (!sessionId) {
+        throw new Error('Session ID is required to edit last user message');
+      }
+      if (typeof newContent !== 'string' || newContent.trim().length === 0) {
+        throw new Error('newContent must be a non-empty string');
+      }
+
+      const { AgentMessagesRepository } = await import(
+        '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository'
+      );
+      const { TranscriptEventRepository } = await import(
+        '@nimbalyst/runtime/storage/repositories/TranscriptEventRepository'
+      );
+      const { AISessionsRepository } = await import(
+        '@nimbalyst/runtime/storage/repositories/AISessionsRepository'
+      );
+
+      const last = await AgentMessagesRepository.getLastMessage(sessionId);
+      if (!last) {
+        return { success: false, error: 'No messages to edit' };
+      }
+      if (last.direction !== 'input') {
+        return {
+          success: false,
+          error: 'Last message is not a user prompt; cannot edit',
+        };
+      }
+      if (typeof last.id !== 'number') {
+        return { success: false, error: 'Last message has no id' };
+      }
+
+      // UPDATE in place so the React key (canonical event id) stays the same
+      // and the bubble reconciles without unmount/remount. We then ask the
+      // provider to skip its automatic input-log on the next sendMessage so
+      // we don't end up with two raw user rows for one logical message.
+      await AgentMessagesRepository.updateMessageContent(last.id, newContent);
+
+      const transcriptStore = TranscriptEventRepository.getStore();
+      const userMessageEvents = await transcriptStore.getSessionEvents(sessionId, {
+        eventTypes: ['user_message'],
+      });
+      const tailUserMessage = userMessageEvents[userMessageEvents.length - 1];
+      if (tailUserMessage) {
+        const nextPayload = {
+          ...(tailUserMessage.payload as Record<string, unknown>),
+        };
+        await transcriptStore.updateEventPayload(tailUserMessage.id, nextPayload);
+        await transcriptStore.updateEventText(tailUserMessage.id, newContent);
+        const updatedEvent = await transcriptStore.getEventById(tailUserMessage.id);
+        if (updatedEvent) {
+          for (const window of BrowserWindow.getAllWindows()) {
+            if (!window.isDestroyed()) {
+              window.webContents.send('transcript:event', updatedEvent);
+            }
+          }
+        }
+      }
+
+      const session = await AISessionsRepository.get(sessionId);
+      if (session) {
+        const provider = ProviderFactory.getProvider(
+          session.provider as AIProviderType,
+          sessionId,
+        );
+        if (provider && typeof provider.setSkipNextInputLog === 'function') {
+          provider.setSkipNextInputLog(true);
+        }
+      }
+
+      if (!this.sendMessageHandler) {
+        throw new Error('sendMessageHandler not initialized');
+      }
+      const editDocContext = {
+        ...(documentContext ?? {}),
+        editedInPlace: true,
+      };
+      const result = await this.sendMessageHandler(
+        event,
+        newContent,
+        editDocContext,
+        sessionId,
+        workspacePath,
+      );
+
+      this.analytics.sendEvent('ai_user_message_edited', {});
+
+      return { success: true, result };
+    });
+
     // Interrupt the current turn (graceful when possible) so queued prompts
     // are processed sooner. Providers that support a true mid-stream interrupt
     // (Claude Code) wrap up cleanly; others fall back to abort() via the
