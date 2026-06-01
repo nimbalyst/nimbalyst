@@ -7,7 +7,8 @@
 
 import type { MonacoThemeContribution } from '@nimbalyst/extension-sdk';
 
-export type { MonacoThemeContribution, MonacoTokenRule } from '@nimbalyst/extension-sdk';
+export type { MonacoThemeContribution, MonacoTokenRule, MonacoBaseTheme } from '@nimbalyst/extension-sdk';
+export { MONACO_BASE_THEMES } from '@nimbalyst/extension-sdk';
 
 /**
  * Built-in theme identifiers.

@@ -30,6 +30,15 @@ export type ThemeColorKey =
 export type ThemeColors = Partial<Record<ThemeColorKey, string>>;
 
 /**
+ * Built-in Monaco theme ids accepted as the `base` field on a
+ * `MonacoThemeContribution`. Single source of truth -- the manifest
+ * validator, the renderer registry helper, and consumer-facing docs
+ * all derive from this list.
+ */
+export const MONACO_BASE_THEMES = ['vs', 'vs-dark', 'hc-black', 'hc-light'] as const;
+export type MonacoBaseTheme = typeof MONACO_BASE_THEMES[number];
+
+/**
  * Monaco editor token rule -- mirrors monaco-editor's
  * `editor.ITokenThemeRule`. Keeping the shape redeclared (rather than
  * importing from monaco-editor) so extension manifests can be validated
@@ -58,7 +67,7 @@ export interface MonacoTokenRule {
  */
 export interface MonacoThemeContribution {
   /** Built-in Monaco theme used as the base for inheritance */
-  base: 'vs' | 'vs-dark' | 'hc-black' | 'hc-light';
+  base: MonacoBaseTheme;
   /**
    * Whether to inherit unspecified rules/colors from `base`.
    * Defaults to true (matches Monaco's `defineTheme` default).

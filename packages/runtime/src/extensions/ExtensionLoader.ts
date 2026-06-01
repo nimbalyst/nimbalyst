@@ -39,6 +39,7 @@ import type {
   ExtensionAIModel,
 } from './types';
 import type { CollabContentAdapter } from '@nimbalyst/extension-sdk';
+import { MONACO_BASE_THEMES } from '@nimbalyst/extension-sdk';
 import { getExtensionPlatformService } from './ExtensionPlatformService';
 import { registerThemeContribution } from '../editor/themes/registry';
 import { registerCollabContentAdapter } from '@nimbalyst/collab-adapters';
@@ -644,10 +645,9 @@ function validateManifest(
                   suggestion: 'Provide { base, rules, colors } to define a Monaco theme',
                 });
               } else {
-                const validBases = ['vs', 'vs-dark', 'hc-black', 'hc-light'];
-                if (typeof monacoBlock.base !== 'string' || !validBases.includes(monacoBlock.base as string)) {
+                if (typeof monacoBlock.base !== 'string' || !MONACO_BASE_THEMES.includes(monacoBlock.base as typeof MONACO_BASE_THEMES[number])) {
                   errors.push({
-                    error: `themes[${index}].monaco.base must be one of ${validBases.join(', ')}`,
+                    error: `themes[${index}].monaco.base must be one of ${MONACO_BASE_THEMES.join(', ')}`,
                     field: `contributions.themes[${index}].monaco.base`,
                     suggestion: 'Pick "vs" for light or "vs-dark" for dark base',
                   });
@@ -666,12 +666,27 @@ function validateManifest(
                   });
                 } else {
                   monacoBlock.rules.forEach((rule, ruleIndex) => {
+                    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
+                      errors.push({
+                        error: `themes[${index}].monaco.rules[${ruleIndex}] must be an object`,
+                        field: `contributions.themes[${index}].monaco.rules[${ruleIndex}]`,
+                      });
+                      return;
+                    }
                     const ruleRecord = rule as Record<string, unknown>;
-                    if (typeof ruleRecord?.token !== 'string' || !ruleRecord.token) {
+                    if (typeof ruleRecord.token !== 'string' || !ruleRecord.token) {
                       errors.push({
                         error: `themes[${index}].monaco.rules[${ruleIndex}] missing 'token'`,
                         field: `contributions.themes[${index}].monaco.rules[${ruleIndex}].token`,
                       });
+                    }
+                    for (const optKey of ['foreground', 'background', 'fontStyle'] as const) {
+                      if (ruleRecord[optKey] !== undefined && typeof ruleRecord[optKey] !== 'string') {
+                        errors.push({
+                          error: `themes[${index}].monaco.rules[${ruleIndex}].${optKey} must be a string when present`,
+                          field: `contributions.themes[${index}].monaco.rules[${ruleIndex}].${optKey}`,
+                        });
+                      }
                     }
                   });
                 }

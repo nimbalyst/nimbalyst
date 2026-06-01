@@ -322,6 +322,15 @@ Monaco's standard tokens include: `comment`, `keyword`, `string`, `number`, `typ
 
 The extension theme still paints the UI shell, but Monaco-backed editors fall back to `vs` (when `isDark: false`) or `vs-dark` (when `isDark: true`). No editor crash; just no custom syntax palette.
 
+### Disabling or uninstalling an extension that contributed a Monaco theme
+
+The same fallback rules as for UI themes apply (see "What happens when a theme disappears" above). When the extension that contributed a Monaco theme is disabled or uninstalled:
+
+- The runtime theme registry drops the namespaced theme id, and `getMonacoTheme()` stops returning that id -- Monaco-backed editors fall back to `vs` / `vs-dark` based on the missing theme's `isDark`.
+- Note that `monaco.editor.defineTheme()` does not expose an explicit "undefine" API. The theme definition stays cached inside Monaco for the lifetime of the renderer window, but nothing routes editors to it once the registry entry is gone. Re-enabling the extension re-registers the definition under the same id (Monaco overwrites the cached entry).
+
+Re-enabling the extension does not auto-restore the active theme selection; the user has to apply it manually.
+
 ## Theme Selection
 
 Users can select themes from the theme picker button in the navigation gutter. Extension themes appear in a separate section below the built-in themes (Light, Dark, Crystal Dark) with an "Extension" badge.

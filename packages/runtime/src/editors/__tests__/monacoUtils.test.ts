@@ -53,4 +53,25 @@ describe('getMonacoTheme', () => {
       unregister();
     }
   });
+
+  it('falls back to base Monaco theme after the extension theme is unregistered', () => {
+    const unregister = registerThemeContribution('test.ext.gone', {
+      id: 'fleeting',
+      name: 'Fleeting',
+      isDark: true,
+      colors: {},
+      monaco: {
+        base: 'vs-dark',
+        rules: [],
+        colors: { 'editor.background': '#000000' },
+      },
+    });
+    expect(getMonacoTheme('dark', true, 'test.ext.gone:fleeting')).toBe('test.ext.gone:fleeting');
+
+    unregister();
+
+    // After unregistration, the extension id no longer resolves to a
+    // registered theme and we fall back to the base Monaco theme.
+    expect(getMonacoTheme('dark', true, 'test.ext.gone:fleeting')).toBe('vs-dark');
+  });
 });

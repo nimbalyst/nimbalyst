@@ -10,6 +10,7 @@ import * as monaco from 'monaco-editor';
 import {
   getThemesWithMonacoDefinition,
   onThemesChanged,
+  MONACO_BASE_THEMES,
   type MonacoThemeContribution,
 } from '@nimbalyst/runtime';
 
@@ -159,11 +160,9 @@ function defineExtensionMonacoTheme(themeId: string, def: MonacoThemeContributio
  * call replaces previously-registered definitions.
  */
 function syncMonacoThemesFromRegistry(): void {
-  const themes = getThemesWithMonacoDefinition();
-  for (const theme of themes) {
-    if (!theme.monaco) continue;
+  for (const theme of getThemesWithMonacoDefinition()) {
     try {
-      defineExtensionMonacoTheme(theme.id, theme.monaco);
+      defineExtensionMonacoTheme(theme.id, theme.monaco!);
     } catch (error) {
       console.error(`[Monaco] Failed to register extension theme '${theme.id}':`, error);
     }
@@ -174,14 +173,23 @@ function syncMonacoThemesFromRegistry(): void {
  * Check if a Monaco theme name is registered (custom or built-in)
  */
 export function isMonacoThemeRegistered(themeName: string): boolean {
-  return registeredThemes.has(themeName) || ['vs', 'vs-dark', 'hc-black', 'hc-light'].includes(themeName);
+  return registeredThemes.has(themeName) || (MONACO_BASE_THEMES as readonly string[]).includes(themeName);
 }
 
 /**
  * Initialize Monaco Editor for Electron environment
  * Configures @monaco-editor/react to use the local npm package
  */
+let monacoInitialized = false;
+
 export function initMonacoEditor(): void {
+  if (monacoInitialized) {
+    // Guards against a hot-reload or accidental re-call doubling up
+    // listeners on the theme registry.
+    return;
+  }
+  monacoInitialized = true;
+
   console.log('[Monaco] Initializing Monaco Editor for Electron');
 
   // Configure Monaco environment with worker factory
@@ -214,9 +222,7 @@ export function initMonacoEditor(): void {
   // registry, then subscribe so future extension loads/unloads
   // re-register their Monaco definitions.
   syncMonacoThemesFromRegistry();
-  onThemesChanged(() => {
-    syncMonacoThemesFromRegistry();
-  });
+  onThemesChanged(syncMonacoThemesFromRegistry);
 
   console.log('[Monaco] Configuration complete');
 }

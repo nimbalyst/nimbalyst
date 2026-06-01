@@ -54,7 +54,9 @@ export type {
   ThemeChangeEvent,
   MonacoThemeContribution,
   MonacoTokenRule,
+  MonacoBaseTheme,
 } from './themes/types';
+export { MONACO_BASE_THEMES } from './themes/types';
 export { isBuiltInTheme, getThemeExtensionId } from './themes/types';
 
 // Theme Registry
