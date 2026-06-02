@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Meta-agent child sessions now inherit the parent session's provider and model instead of silently falling back to a Claude/Opus default for non-Claude parents.
 
 ### Removed
 <!-- Removed features go here -->
