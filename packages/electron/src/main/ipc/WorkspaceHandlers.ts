@@ -107,8 +107,13 @@ const NIMBALYST_LOCAL_DIRNAME = 'nimbalyst-local';
 
 // Get the ripgrep binary path for the current platform.
 // Resolves the rg bundled by the @vscode/ripgrep package at
-// node_modules/@vscode/ripgrep/bin/rg(.exe).
+// node_modules/@vscode/ripgrep/bin/rg(.exe). Result is cached for
+// the lifetime of the process — search is called frequently and
+// the binary doesn't move.
+let cachedRgPath: string | null = null;
 function getRipgrepPath(): string {
+    if (cachedRgPath !== null) return cachedRgPath;
+
     const platform = os.platform();
     const rgBinaryName = platform === 'win32' ? 'rg.exe' : 'rg';
     const isPackaged = app.isPackaged;
@@ -148,15 +153,15 @@ function getRipgrepPath(): string {
                     console.warn('[SEARCH] Could not set executable permission on ripgrep:', e);
                 }
             }
-            console.log('[SEARCH] Found ripgrep at:', testPath);
+            // console.log('[SEARCH] Found ripgrep at:', testPath);
+            cachedRgPath = testPath;
             return testPath;
-        } else {
-            console.log('[SEARCH] ripgrep not found at:', testPath);
         }
     }
 
     // Fall back to system rg
-    console.warn('[SEARCH] Could not find bundled ripgrep, falling back to system rg');
+    console.warn('[SEARCH] Could not find bundled ripgrep, falling back to system rg. Probed:', possibleRgPaths);
+    cachedRgPath = 'rg';
     return 'rg';
 }
 

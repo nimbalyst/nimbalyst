@@ -63,10 +63,10 @@ export function registerAttachmentHandlers() {
         sessionId
       );
 
-      console.log('[AttachmentHandlers] Save attachment result', {
-        success: result.success,
-        filename
-      });
+      // console.log('[AttachmentHandlers] Save attachment result', {
+      //   success: result.success,
+      //   filename
+      // });
 
       return result;
     } catch (error) {

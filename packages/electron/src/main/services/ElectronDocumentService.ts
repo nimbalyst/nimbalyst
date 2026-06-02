@@ -2213,9 +2213,15 @@ export class ElectronDocumentService implements DocumentService {
       const items: ParsedInlineTrackerCandidate[] = [];
       const lines = content.split('\n');
 
-      // Regex to match: text #type[id:... status:...]
-      // Accept any alphanumeric type with hyphens (e.g. bug, task, devblog-post, feature-request)
-      const trackerRegex = /(.+?)\s+#([\w-]+)\[(.+?)\]/;
+      // Anchor the tracker token on whitespace (or start-of-line) instead of
+      // leading with a lazy `.+?`. The previous pattern
+      // `/(.+?)\s+#([\w-]+)\[(.+?)\]/` had two unbounded lazy groups and
+      // exhibited O(N^2)+ catastrophic backtracking on long lines containing
+      // scattered `#`, `[`, `]` characters without a real tracker token. A
+      // single inline base64 image (`![](data:image/png;base64,...)`,
+      // ~300k chars on one line) locked the main process for 100+ seconds
+      // during the file-watcher-driven cache refresh after AI edits.
+      const trackerRegex = /(?:^|\s)#([\w-]+)\[([^\]\r\n]+)\]/;
 
       // Track whether we're inside a code block
       let inCodeBlock = false;
@@ -2234,6 +2240,18 @@ export class ElectronDocumentService implements DocumentService {
           continue;
         }
 
+        // Defense-in-depth: skip pathological lines before the regex runs.
+        // Real tracker syntax is well under 500 chars; anything longer is an
+        // inline base64 image, minified JSON, or similar — never a tracker.
+        if (line.length > 4096) {
+          continue;
+        }
+
+        // Cheap prefilter: a tracker token requires both `#` and `[`.
+        if (line.indexOf('#') < 0 || line.indexOf('[') < 0) {
+          continue;
+        }
+
         // Skip lines that are indented code blocks (4+ spaces or tab at start)
         if (line.match(/^(\s{4,}|\t)/)) {
           continue;
@@ -2241,18 +2259,27 @@ export class ElectronDocumentService implements DocumentService {
 
         const match = line.match(trackerRegex);
 
-        if (match) {
+        if (match && match.index !== undefined) {
+          // Reconstruct the title from the slice of the line preceding the
+          // tag. The new regex no longer captures the title group; deriving
+          // it positionally keeps the title O(N) instead of forcing the
+          // engine into a lazy-prefix backtrack.
+          const title = line.slice(0, match.index).trim();
+          if (!title) {
+            // Preserve original semantic: a tracker line must have a title.
+            continue;
+          }
+
           // Additional check: ensure the match is not inside inline code (backticks)
           // This prevents matching `#bug[...]` within inline code blocks
-          const matchIndex = line.indexOf(match[0]);
-          const beforeMatch = line.substring(0, matchIndex);
+          const beforeMatch = line.substring(0, match.index);
           const backtickCount = (beforeMatch.match(/`/g) || []).length;
 
           // If odd number of backticks before the match, we're inside inline code
           if (backtickCount % 2 !== 0) {
             continue;
           }
-          const [, title, type, propsStr] = match;
+          const [, type, propsStr] = match;
 
           // Parse key:value pairs
           const props: Record<string, string> = {};
@@ -2286,7 +2313,7 @@ export class ElectronDocumentService implements DocumentService {
             id: props.id || undefined,
             explicitId: Boolean(props.id),
             type: type as TrackerItemType,
-            title: title.trim().replace(/^- /, '').replace(/^\[ \] /, '').replace(/^\[x\] /, ''),
+            title: title.replace(/^- /, '').replace(/^\[ \] /, '').replace(/^\[x\] /, ''),
             description,
             status: (props.status || 'to-do') as any,
             priority: props.priority as any,

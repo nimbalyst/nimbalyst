@@ -1038,11 +1038,11 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       //   3. Otherwise, `createSession`.
       const cachedLiveSession = sessionId ? this.liveProtocolSessions.get(sessionId) : undefined;
       const existingSessionId = this.sessions.getSessionId(sessionId || '');
-      console.log('[CODEX] Session lookup:', {
-        sessionId,
-        existingSessionId,
-        action: cachedLiveSession ? 'REUSE' : (existingSessionId ? 'RESUME' : 'CREATE'),
-      });
+      // console.log('[CODEX] Session lookup:', {
+      //   sessionId,
+      //   existingSessionId,
+      //   action: cachedLiveSession ? 'REUSE' : (existingSessionId ? 'RESUME' : 'CREATE'),
+      // });
 
       const mcpServers = await this.mcpConfigService.getMcpServersConfig({
         sessionId,
@@ -1079,9 +1079,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         baseEnv.NIMBALYST_PRE_EDIT_DIR = sidecarDir;
         baseEnv.ELECTRON_RUN_AS_NODE = '1';
         codexEnv = baseEnv;
-        console.log('[CODEX] Pre-edit hook env configured:', { sessionId, sidecarDir });
+        // console.log('[CODEX] Pre-edit hook env configured:', { sessionId, sidecarDir });
       } else if (sessionId) {
-        console.log('[CODEX] Pre-edit hook sidecar dir resolver returned undefined', { sessionId });
+        // console.log('[CODEX] Pre-edit hook sidecar dir resolver returned undefined', { sessionId });
       }
 
       const resolvedModel = await this.getConfiguredModel();
@@ -1193,11 +1193,11 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         transport: this.transport,
       };
 
-      console.log('[CODEX] Session after create/resume:', {
-        sessionId,
-        protocolSessionId: session.id,
-        existingSessionId
-      });
+      // console.log('[CODEX] Session after create/resume:', {
+      //   sessionId,
+      //   protocolSessionId: session.id,
+      //   existingSessionId
+      // });
 
       // Create transcript adapter as event parser (returns ParsedItems for the streaming loop).
       // Canonical events are written by the TranscriptTransformer from raw ai_agent_messages.
@@ -1349,13 +1349,13 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       // createSession() succeeds so blocked turns survive restart.
       if (sessionId && session.id) {
         if (session.id !== existingSessionId) {
-          console.log('[CODEX] Saving new thread ID:', {
-            nimbalystSessionId: sessionId,
-            codexThreadId: session.id
-          });
+          // console.log('[CODEX] Saving new thread ID:', {
+          //   nimbalystSessionId: sessionId,
+          //   codexThreadId: session.id
+          // });
           this.sessions.captureSessionId(sessionId, session.id);
         } else {
-          console.log('[CODEX] Thread ID unchanged:', session.id);
+          // console.log('[CODEX] Thread ID unchanged:', session.id);
         }
       } else if (sessionId && !session.id) {
         console.error('[CODEX] WARNING: Stream completed but thread ID was never captured!');
@@ -1922,9 +1922,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
           },
         ],
       };
-      console.log('[CODEX] PreToolUse hook configured:', { command: hookCommand });
+      // console.log('[CODEX] PreToolUse hook configured:', { command: hookCommand });
     } else {
-      console.log('[CODEX] PreToolUse hook resolver returned undefined; pre-edit race protection not configured');
+      // console.log('[CODEX] PreToolUse hook resolver returned undefined; pre-edit race protection not configured');
     }
 
     return configOverrides;
@@ -2631,14 +2631,13 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
     // Diagnostic: confirms the app-server pre/post-edit pipeline fired.
     // Keep this terse -- one line per file_change item -- so production logs
-    // stay scannable. Verbose `diffPreviews` removed; if you need them for
-    // debugging, set debugFlags.diffTrace in app settings (TODO -- not wired).
-    console.log('[CODEX][APPSERVER] file_change ' + JSON.stringify({
-      sessionId,
-      itemId,
-      kinds: item.changes.map(c => c.kind?.type),
-      paths: item.changes.map(c => c.path),
-    }));
+    // stay scannable.
+    // console.log('[CODEX][APPSERVER] file_change ' + JSON.stringify({
+    //   sessionId,
+    //   itemId,
+    //   kinds: item.changes.map(c => c.kind?.type),
+    //   paths: item.changes.map(c => c.path),
+    // }));
 
     // Dedup -- guard against any defensive re-emission of item.completed for
     // the same item id. Reuses the existing per-session set the SDK path uses.

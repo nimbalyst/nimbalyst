@@ -1732,7 +1732,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       await manager.updateSessionTitle(sessionId, trimmed);
 
       this.emit('session:title-updated', { sessionId, title: trimmed });
-      console.log(`[CLAUDE-CODE] generated session title for ${sessionId}: "${trimmed}"`);
+      // console.log(`[CLAUDE-CODE] generated session title for ${sessionId}: "${trimmed}"`);
     } catch (error) {
       console.warn('[CLAUDE-CODE] generateSessionTitle failed:', (error as Error)?.message ?? error);
     }
@@ -1784,7 +1784,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // kanban/sidebar and iOS pick up the write the same way they would
       // for an MCP-tool-driven update via SessionNamingService.
       this.emit('session:metadata-updated', { sessionId, metadata: update });
-      console.log(`[CLAUDE-CODE] applied side-question tags+phase for ${sessionId}: ${JSON.stringify(update)}`);
+      // console.log(`[CLAUDE-CODE] applied side-question tags+phase for ${sessionId}: ${JSON.stringify(update)}`);
     } catch (error) {
       // Most likely "Query closed before response received" on short turns -- expected
       console.warn('[CLAUDE-CODE] tags+phase side-question failed:', (error as Error)?.message ?? error);

@@ -24,7 +24,6 @@ import { AlphaFeatureTag, getDefaultAlphaFeatures } from '../../../shared/alphaF
 import { BetaFeatureTag } from '../../../shared/betaFeatures';
 import { DeveloperFeatureTag, DEVELOPER_FEATURES, getDefaultDeveloperFeatures, enableAllDeveloperFeatures, disableAllDeveloperFeatures, areAllDeveloperFeaturesEnabled } from '../../../shared/developerFeatures';
 import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
-import { setDebugFlags as mirrorDebugFlagsToGlobal, type NimbalystDebugFlags } from '@nimbalyst/runtime/utils/debugFlags';
 
 // Voice type - all available OpenAI Realtime voices
 export type VoiceId = 'alloy' | 'ash' | 'ballad' | 'coral' | 'echo' | 'sage' | 'shimmer' | 'verse' | 'marin' | 'cedar';
@@ -2063,71 +2062,3 @@ export const copyFilePathAtom = atom(
     }
   }
 );
-
-// ============================================================================
-// Debug Flags
-// Internal logging toggles. Off by default. Toggled in Settings -> Advanced.
-// Mirrored onto globalThis.__nimbalystDebugFlags so the synchronous
-// `diffTrace()` helper in @nimbalyst/runtime can read without depending on Jotai.
-// ============================================================================
-
-const DEFAULT_DEBUG_FLAGS: NimbalystDebugFlags = { diffTrace: false };
-
-export const debugFlagsAtom = atom<NimbalystDebugFlags>(DEFAULT_DEBUG_FLAGS);
-
-/**
- * Update both the Jotai atom and the global mirror so all consumers stay in sync.
- * Used by the IPC listener and by setter atoms.
- */
-function applyDebugFlags(flags: NimbalystDebugFlags): void {
-  mirrorDebugFlagsToGlobal(flags);
-  store.set(debugFlagsAtom, flags);
-}
-
-/**
- * Set debug flags (partial update). Persists to main process and updates the atom + mirror.
- */
-export const setDebugFlagsAtom = atom(
-  null,
-  async (get, _set, updates: Partial<NimbalystDebugFlags>) => {
-    const current = get(debugFlagsAtom);
-    const merged: NimbalystDebugFlags = { ...current, ...updates };
-    applyDebugFlags(merged);
-    if (typeof window !== 'undefined' && window.electronAPI) {
-      try {
-        await window.electronAPI.invoke('debug-flags:set', updates);
-      } catch (error) {
-        console.error('[appSettings] Failed to persist debug flags:', error);
-      }
-    }
-  }
-);
-
-/**
- * Initialize debug flags from main process. Call once at app startup.
- * Also installs a one-time IPC listener for `debug-flags:changed` so toggles in another
- * window propagate.
- */
-let debugFlagsListenerInstalled = false;
-export async function initDebugFlags(): Promise<NimbalystDebugFlags> {
-  if (typeof window === 'undefined' || !window.electronAPI) {
-    return DEFAULT_DEBUG_FLAGS;
-  }
-  try {
-    const flags = (await window.electronAPI.invoke('debug-flags:get')) as NimbalystDebugFlags | null;
-    const merged: NimbalystDebugFlags = { ...DEFAULT_DEBUG_FLAGS, ...(flags ?? {}) };
-    applyDebugFlags(merged);
-
-    if (!debugFlagsListenerInstalled && typeof window.electronAPI.on === 'function') {
-      window.electronAPI.on('debug-flags:changed', (next: NimbalystDebugFlags) => {
-        applyDebugFlags({ ...DEFAULT_DEBUG_FLAGS, ...(next ?? {}) });
-      });
-      debugFlagsListenerInstalled = true;
-    }
-
-    return merged;
-  } catch (error) {
-    console.error('[appSettings] Failed to load debug flags:', error);
-    return DEFAULT_DEBUG_FLAGS;
-  }
-}

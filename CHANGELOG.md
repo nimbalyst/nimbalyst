@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Claude Opus 4.8 is now selectable in the Claude provider (1M context, dateless ID `claude-opus-4-8`) and is the default Claude model for new installs. (#473)
+- Claude Code variants `opus-4-7` and `opus-4-7-1m` pinned to Opus 4.7 so it stays selectable after the canonical `opus` alias was bumped to 4.8. (#473)
+- Extension themes can contribute Monaco editor themes via an optional `monaco` block in `contributions.themes[]`, defining `base`, `rules`, and `colors`. Monaco-backed editors register the theme dynamically and switch to it when the user activates the theme; omitting the block keeps the previous `vs` / `vs-dark` fallback.
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Default Claude model bumped from `claude-opus-4-7` to `claude-opus-4-8`. Existing sessions keep their configured model; only new sessions and "reset to default" pick up 4.8. (#473)
+
+### Fixed
+<!-- Bug fixes go here -->
+- Fixed an EPIPE feedback loop where the main-process uncaught-exception handler re-entered itself when stderr was broken on Linux, flooding the log until the process died.
+- Meta-agent child sessions now inherit the parent session's provider and model instead of silently falling back to a Claude/Opus default for non-Claude parents.
+
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.63.9] - 2026-06-02
+
+
+### Added
 <!-- New features go here -->
 
 ### Changed
@@ -16,7 +38,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
-- Fixed an EPIPE feedback loop where the main-process uncaught-exception handler re-entered itself when stderr was broken on Linux, flooding the log until the process died.
+- Meta-agent child sessions now inherit the parent session's provider and model instead of silently falling back to a Claude/Opus default for non-Claude parents.
+- Public builds no longer spam logs with normal-path AI, sync, auth, git, and diff-trace diagnostics.
+- OpenAI Codex settings panel no longer triggers an infinite re-render loop.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.63.8] - 2026-06-02
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+- AI edits to markdown files with inline base64 images no longer trigger multi-minute main-process beachballs.
+- Tool calls no longer get stuck at "running" when multiple AI sessions are open.
+- Workstream parent sessions now rise to the top when a child session becomes active.
+- AskUserQuestion, ExitPlanMode, and GitCommitProposal widgets now render via MCP-prefixed tool names.
+- Workspace search now caches the resolved ripgrep path instead of reprobe-logging on every keystroke.
+- Quick Open no longer stalls while listing prompts, and older prompts now appear in results again.
+- Tracker labels no longer crash the backfill on reconnect or gain a phantom leading `null` on SQLite.
+- New Worktree no longer stays disabled in git repos when the initial probe races mount.
+- Calc Sheets PARSE ERR rows are legible in dark mode.
+- Document-edit usage analytics no longer crash on either database backend.
+- Database backups now clean up stranded temp files and catch up after sleep or startup gaps.
+- Database Browser now shows SQLite backup sizes.
 
 ### Removed
 <!-- Removed features go here -->

@@ -104,6 +104,10 @@ export class SQLiteBackupService {
   async createBackup(): Promise<{ success: boolean; error?: string }> {
     this.metadata.lastBackupAttempt = new Date().toISOString();
 
+    // Declared outside the try so the catch can clean up the temp .sqlite and
+    // its WAL/SHM siblings on partial failure.
+    let tempPath: string | null = null;
+
     try {
       const liveDb = this.sqlite.getRawHandle();
       if (!liveDb) {
@@ -120,7 +124,7 @@ export class SQLiteBackupService {
       }
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const tempPath = path.join(this.backupDir, `temp-backup-${timestamp}.sqlite`);
+      tempPath = path.join(this.backupDir, `temp-backup-${timestamp}.sqlite`);
 
       this.log('info', '[SQLite Backup] Starting online backup', { tempPath });
       await liveDb.backup(tempPath);
@@ -129,11 +133,18 @@ export class SQLiteBackupService {
 
       const verification = await this.sqlite.verifyBackup(tempPath);
       if (!verification.valid) {
-        await fs.rm(tempPath, { force: true });
+        await this.removeTempBackup(tempPath);
         return { success: false, error: `Verification failed: ${verification.error}` };
       }
 
       const rotated = await this.rotateBackups(tempPath, timestamp, sizeBytes);
+      // better-sqlite3's online backup opens the destination in WAL mode
+      // and leaves `.sqlite-shm`/`.sqlite-wal` siblings next to the file.
+      // The rotation moves the main file but the siblings stay behind —
+      // accumulating one shm+wal pair per backup. Clean them up here.
+      // (If rotation rejected due to size guard, it already removed the
+      // main file; the siblings still need cleaning.)
+      await this.removeTempBackupSiblings(tempPath);
       if (rotated) {
         this.metadata.lastSuccessfulBackup = timestamp;
       }
@@ -142,6 +153,9 @@ export class SQLiteBackupService {
       return { success: true };
     } catch (err) {
       this.log('error', '[SQLite Backup] Failed to create backup', err);
+      if (tempPath) {
+        await this.removeTempBackup(tempPath);
+      }
       await this.saveMetadata();
       return { success: false, error: (err as Error).message };
     }
@@ -176,24 +190,37 @@ export class SQLiteBackupService {
     return { ...this.metadata };
   }
 
-  /** Remove backup files older than `maxAgeDays`. Default 30. */
-  async cleanupOldCorruptedBackups(maxAgeDays = 30): Promise<void> {
+  /**
+   * Remove stranded `temp-backup-*` files in the backup folder. Catches the
+   * `.sqlite`, `.sqlite-shm`, and `.sqlite-wal` siblings left behind by
+   * older builds or by partial failures. Per-call cleanup in createBackup()
+   * keeps the steady-state empty, so this is a safety net for upgrades.
+   */
+  async cleanupOldCorruptedBackups(): Promise<void> {
     try {
       const entries = await fs.readdir(this.backupDir, { withFileTypes: true });
-      const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
       for (const entry of entries) {
         if (!entry.isFile()) continue;
         if (!entry.name.startsWith('temp-backup-')) continue;
         const full = path.join(this.backupDir, entry.name);
-        const stat = await fs.stat(full);
-        if (stat.mtimeMs < cutoff) {
-          this.log('info', '[SQLite Backup] Removing stale temp file', { name: entry.name });
-          await fs.rm(full, { force: true });
-        }
+        this.log('info', '[SQLite Backup] Removing stranded temp file', { name: entry.name });
+        await fs.rm(full, { force: true });
       }
     } catch (err) {
       this.log('warn', '[SQLite Backup] Cleanup failed', err);
     }
+  }
+
+  /** Remove a temp .sqlite file and its WAL/SHM siblings. */
+  private async removeTempBackup(tempPath: string): Promise<void> {
+    await fs.rm(tempPath, { force: true });
+    await this.removeTempBackupSiblings(tempPath);
+  }
+
+  /** Remove only the WAL/SHM siblings (used after a successful rename of the main file). */
+  private async removeTempBackupSiblings(tempPath: string): Promise<void> {
+    await fs.rm(`${tempPath}-wal`, { force: true });
+    await fs.rm(`${tempPath}-shm`, { force: true });
   }
 
   // --------------------------------------------------------------------------

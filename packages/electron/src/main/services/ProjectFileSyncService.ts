@@ -160,7 +160,7 @@ export class ProjectFileSyncService {
 
               const fileMs = Date.now() - fileStart;
               if (fileMs >= MANIFEST_SLOW_FILE_MS) {
-                logger.main.info(`[ProjectFileSync] slow file ${path.relative(workspacePath, filePath)}: ${fileMs}ms (read=${readMs}ms hash=${hashMs}ms size=${content.length}B)`);
+                // logger.main.info(`[ProjectFileSync] slow file ${path.relative(workspacePath, filePath)}: ${fileMs}ms (read=${readMs}ms hash=${hashMs}ms size=${content.length}B)`);
               }
             } catch (err) {
               logger.main.error(`[ProjectFileSync] Failed to process ${filePath}:`, err);
@@ -168,10 +168,10 @@ export class ProjectFileSyncService {
             processed++;
             if (processed % MANIFEST_PROGRESS_BATCH === 0) {
               const elapsed = Date.now() - phaseStart;
-              logger.main.info(`[ProjectFileSync] buildManifest progress: ${processed}/${mdFiles.length} files in ${elapsed}ms (read=${totalReadMs}ms hash=${totalHashMs}ms bytes=${totalBytes})`);
+              // logger.main.info(`[ProjectFileSync] buildManifest progress: ${processed}/${mdFiles.length} files in ${elapsed}ms (read=${totalReadMs}ms hash=${totalHashMs}ms bytes=${totalBytes})`);
             }
           }
-          logger.main.info(`[ProjectFileSync] buildManifest done: ${processed} files in ${Date.now() - phaseStart}ms (read=${totalReadMs}ms hash=${totalHashMs}ms bytes=${totalBytes})`);
+          // logger.main.info(`[ProjectFileSync] buildManifest done: ${processed} files in ${Date.now() - phaseStart}ms (read=${totalReadMs}ms hash=${totalHashMs}ms bytes=${totalBytes})`);
         },
       );
 
@@ -276,7 +276,7 @@ export class ProjectFileSyncService {
     const newCount = response.newFiles.length;
     const deleteCount = response.deletedSyncIds.length;
     const needFromClientCount = response.needFromClient.length;
-    logger.main.info(`[ProjectFileSync] handleSyncResponse start: updated=${updatedCount} new=${newCount} deleted=${deleteCount} needFromClient=${needFromClientCount}`);
+    // logger.main.info(`[ProjectFileSync] handleSyncResponse start: updated=${updatedCount} new=${newCount} deleted=${deleteCount} needFromClient=${needFromClientCount}`);
 
     // Write updated/new files from server to disk
     const writePhaseStart = Date.now();
@@ -344,7 +344,7 @@ export class ProjectFileSyncService {
       }
     }
 
-    logger.main.info(`[ProjectFileSync] Sync complete for project ${projectId} (total ${Date.now() - startedAt}ms)`);
+    // logger.main.info(`[ProjectFileSync] Sync complete for project ${projectId} (total ${Date.now() - startedAt}ms)`);
   }
 
   // MARK: - Remote Updates

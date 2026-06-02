@@ -1194,7 +1194,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
       throw new Error('worktreePath is required');
     }
 
-    logger.info('Getting worktree commits', { worktreePath, baseBranchOverride });
+    // logger.info('Getting worktree commits', { worktreePath, baseBranchOverride });
 
     const git: SimpleGit = simpleGit(worktreePath);
 
@@ -1320,7 +1320,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
         }
       }
 
-      logger.info('Found worktree commits', { count: commits.length });
+      // logger.info('Found worktree commits', { count: commits.length });
       return commits;
     } catch (error) {
       logger.error('Failed to get worktree commits', { error, worktreePath });
@@ -2240,7 +2240,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
       throw new Error('worktreePath is required');
     }
 
-    logger.info('Getting changed files', { worktreePath });
+    // logger.info('Getting changed files', { worktreePath });
 
     const git: SimpleGit = simpleGit(worktreePath);
 
@@ -2287,7 +2287,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
         changedFiles.push({ path: file.path, status, staged });
       }
 
-      logger.info('Found changed files', { count: changedFiles.length });
+      // logger.info('Found changed files', { count: changedFiles.length });
       return changedFiles;
     } catch (error) {
       logger.error('Failed to get changed files', { error, worktreePath });

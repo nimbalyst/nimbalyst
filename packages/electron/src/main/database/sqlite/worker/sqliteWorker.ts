@@ -386,6 +386,12 @@ async function handle(req: RequestEnvelope): Promise<unknown> {
     case 'getBackupStatus':
       return backupService ? backupService.getBackupStatus() : null;
 
+    case 'cleanupBackups':
+      if (backupService) {
+        await backupService.cleanupOldCorruptedBackups();
+      }
+      return { ok: true };
+
     case 'pragmaRead': {
       const { name } = req.payload as PragmaReadPayload;
       const handle = ensureInitialized().getRawHandle();

@@ -22,6 +22,11 @@ function makeFakeDb(seed: Row[]) {
   const query = vi.fn(async <T = unknown>(sql: string, params: unknown[] = []): Promise<{ rows: T[] }> => {
     const norm = sql.replace(/\s+/g, ' ').trim();
 
+    if (norm.startsWith('SELECT COUNT(*) AS pending FROM ai_agent_messages')) {
+      const pending = table.filter((r) => r.message_kind === null).length;
+      return { rows: [{ pending }] as unknown as T[] };
+    }
+
     if (norm.startsWith('SELECT id, source, direction, content, metadata, hidden')) {
       sqlCounts.select += 1;
       const lastId = params[0] as number;

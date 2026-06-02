@@ -201,6 +201,31 @@ export function initSessionStateListeners(): () => void {
   reconcileSessionStateSubscription();
 
   /**
+   * If the session that just had turn-boundary or message activity has a
+   * workstream parent in the registry, also bump the parent's
+   * `markSessionTurnActivityAtom` for the same workspace. Without this, the
+   * agent-mode sort in SessionHistory reads `turnActivity.get(parent.id)`,
+   * gets undefined, and falls back to the parent's registry `updatedAt` —
+   * which never bumps during streaming (intentionally, to avoid render churn).
+   * The visible symptom: workstream containers stayed several rows down the
+   * TODAY group even while their active child was streaming new messages.
+   */
+  const bumpParentTurnActivity = (
+    sessionId: string,
+    workspacePath: string,
+    timestamp: number,
+  ) => {
+    const meta = store.get(sessionRegistryAtom).get(sessionId);
+    const parentId = meta?.parentSessionId;
+    if (!parentId) return;
+    store.set(markSessionTurnActivityAtom, {
+      sessionId: parentId,
+      workspacePath,
+      timestamp,
+    });
+  };
+
+  /**
    * Handle session state change events.
    * These events come from the AI provider and track the session lifecycle.
    */
@@ -283,6 +308,7 @@ export function initSessionStateListeners(): () => void {
           workspacePath: resolvedWorkspacePath,
           timestamp: turnBoundaryTimestamp,
         });
+        bumpParentTurnActivity(sessionId, resolvedWorkspacePath, turnBoundaryTimestamp);
         break;
 
       case 'session:streaming':
@@ -315,6 +341,7 @@ export function initSessionStateListeners(): () => void {
           workspacePath: resolvedWorkspacePath,
           timestamp: turnBoundaryTimestamp,
         });
+        bumpParentTurnActivity(sessionId, resolvedWorkspacePath, turnBoundaryTimestamp);
         break;
 
       // Session has finished (successfully or with error)
@@ -334,6 +361,7 @@ export function initSessionStateListeners(): () => void {
           workspacePath: resolvedWorkspacePath,
           timestamp: turnBoundaryTimestamp,
         });
+        bumpParentTurnActivity(sessionId, resolvedWorkspacePath, turnBoundaryTimestamp);
 
         // Clear any pending throttle timer for this session - the final reload below
         // will fetch the complete state, so a stale throttled reload is unnecessary
@@ -531,6 +559,15 @@ export function initSessionStateListeners(): () => void {
     // The registry's `updatedAt` stays at the value from the last DB refresh
     // — sort order during a live turn is driven by `markSessionTurnActivityAtom`,
     // not by per-message timestamps.
+    // Per-message bumps are limited to the row's own relative-time label.
+    // Do NOT write `markSessionTurnActivityAtom` here or bump the parent's
+    // turn-activity: those drive the agent-mode sort (via
+    // `workspaceSessionTurnActivityAtom`), and per-chunk writes re-fire the
+    // SessionHistory sort cascade and the downstream `session-files:get-by-session`
+    // storm that the May 28 fix (commit 3d613ecfc) eliminated. Parent
+    // workstream rows still rise to the top via the turn-boundary bumps in
+    // the `session:started`/`waiting`/`completed` cases above; that's the
+    // intended cadence for re-sorts.
     store.set(sessionLastActivityAtom(sessionId), Date.now());
 
     // Only mutate the registry to flip `isArchived: false` when it actually

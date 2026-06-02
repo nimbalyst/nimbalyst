@@ -88,7 +88,7 @@ class ClaudeUsageServiceImpl {
     this.lastActivityTime = Date.now();
 
     if (this.isSleeping) {
-      logger.main.info('[ClaudeUsageService] Waking up due to activity');
+      // logger.main.info('[ClaudeUsageService] Waking up due to activity');
       this.isSleeping = false;
       this.startPolling();
       // Immediate refresh on wake
@@ -174,7 +174,7 @@ class ClaudeUsageServiceImpl {
       this.pollTick();
     }, POLL_INTERVAL_MS);
 
-    logger.main.info('[ClaudeUsageService] Started polling (every 30 minutes)');
+    // logger.main.info('[ClaudeUsageService] Started polling (every 30 minutes)');
   }
 
   private stopPolling(): void {

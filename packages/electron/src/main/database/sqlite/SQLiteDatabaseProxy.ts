@@ -620,7 +620,7 @@ export class SQLiteDatabaseProxy {
         return null;
       },
       async cleanupOldCorruptedBackups() {
-        // Wire through the worker if/when we re-introduce this.
+        await self.send('cleanupBackups');
       },
     } as unknown as AppDatabaseBackupService;
   }

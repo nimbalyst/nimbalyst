@@ -84,6 +84,13 @@ class InMemoryMetadataStore implements ISessionMetadataStore {
  * in the cache, a fresh store is created and tracked for MRU eviction.
  */
 class RoutingStore implements ITranscriptEventStore {
+  // Globally unique id allocator shared across every per-session
+  // InMemoryTranscriptEventStore created by this routing store. Without
+  // this, each per-session store mints ids starting at 1, so event ids
+  // collide across sessions and id-keyed updates (mergeEventPayload,
+  // updateEventPayload, getEventById) silently land on the wrong session.
+  private nextEventId = 1;
+
   constructor(
     private cache: Map<string, InMemoryTranscriptEventStore>,
     private touchMRU: (sessionId: string) => void,
@@ -94,7 +101,7 @@ class RoutingStore implements ITranscriptEventStore {
     let s = this.cache.get(sessionId);
     const isNew = !s;
     if (!s) {
-      s = new InMemoryTranscriptEventStore();
+      s = new InMemoryTranscriptEventStore(() => this.nextEventId++);
       this.cache.set(sessionId, s);
     }
     this.touchMRU(sessionId);

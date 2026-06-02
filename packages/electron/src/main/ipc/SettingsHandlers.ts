@@ -22,7 +22,6 @@ import {
     getEnableAllBetaFeatures, setEnableAllBetaFeatures,
     getDeveloperFeatures, setDeveloperFeatures, isDeveloperFeatureAvailable,
     isShowTrayIcon,
-    getDebugFlags, setDebugFlags, type DebugFlags,
     setPreferredAgentLanguage,
     getMultiProjectMode, setMultiProjectMode,
     getOpenProjectPaths, setOpenProjectPaths,
@@ -347,22 +346,6 @@ export function registerSettingsHandlers() {
     // Check if a specific developer feature is available (developer mode + feature enabled)
     safeHandle('developer-features:is-available', (_event, tag: string) => {
         return isDeveloperFeatureAvailable(tag as any);
-    });
-
-    // Debug flags (verbose logging toggles, off by default)
-    safeHandle('debug-flags:get', () => {
-        return getDebugFlags();
-    });
-
-    safeHandle('debug-flags:set', (_event, flags: Partial<DebugFlags>) => {
-        setDebugFlags(flags);
-        // Mirror to all renderers so the in-renderer atom + window mirror stay in sync without
-        // a full reload. Renderers register a listener for 'debug-flags:changed'.
-        const next = getDebugFlags();
-        for (const win of BrowserWindow.getAllWindows()) {
-            win.webContents.send('debug-flags:changed', next);
-        }
-        logger.store.info('[SettingsHandlers] Debug flags updated:', next);
     });
 
     // Get recent projects

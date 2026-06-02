@@ -255,19 +255,46 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
   // Check if workspace is a git repository (needed for worktree feature).
   // Writes the per-workspace `isGitRepoAtom` so SessionHistory and the
   // worktree action atoms can read it without prop drilling.
+  //
+  // Past bug: the effect's only dep is `workspacePath`, so a single
+  // transient failure (electronAPI not ready, IPC reject) would write
+  // `false` and the atom would stay false forever, leaving the
+  // New Worktree / New Blitz / Super Loop buttons disabled even though
+  // the workspace is a git repo. Only write `false` when we have a
+  // definitive answer from the IPC; bail out silently otherwise and
+  // retry shortly until electronAPI is available.
   useEffect(() => {
-    if (!workspacePath || !window.electronAPI?.invoke) {
-      store.set(isGitRepoAtom(workspacePath), false);
-      return;
-    }
+    if (!workspacePath) return;
 
-    window.electronAPI.invoke('git:is-repo', workspacePath)
-      .then(result => {
-        store.set(isGitRepoAtom(workspacePath), Boolean(result?.success && result.isRepo));
-      })
-      .catch(() => {
-        store.set(isGitRepoAtom(workspacePath), false);
-      });
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const probe = () => {
+      if (cancelled) return;
+      const invoke = window.electronAPI?.invoke;
+      if (!invoke) {
+        // electronAPI not ready yet — retry briefly. Don't lock the
+        // atom to `false` in the meantime.
+        retryTimer = setTimeout(probe, 250);
+        return;
+      }
+      invoke('git:is-repo', workspacePath)
+        .then(result => {
+          if (cancelled) return;
+          store.set(isGitRepoAtom(workspacePath), Boolean(result?.success && result.isRepo));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          store.set(isGitRepoAtom(workspacePath), false);
+        });
+    };
+
+    probe();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [workspacePath]);
 
   // Push navigation entry when selected workstream changes (unified cross-mode navigation)

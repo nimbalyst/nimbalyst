@@ -25,6 +25,12 @@ export function projectLabelsToValues(map: LabelsMap | undefined): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const entry of Object.values(map)) {
+    // Defensive: a corrupted map may carry non-object entries (a known
+    // failure mode was a `data->'labelsMap'` round-trip that left character-
+    // keyed string entries spread into the map). Skip anything that isn't a
+    // proper LabelEntry rather than emitting `undefined`/`null` to the UI.
+    if (!entry || typeof entry !== 'object') continue;
+    if (typeof entry.value !== 'string') continue;
     if (entry.tombstone) continue;
     if (seen.has(entry.value)) continue;
     seen.add(entry.value);
@@ -106,6 +112,41 @@ export function mergeLabelMaps(
     }
   }
   return merged;
+}
+
+/**
+ * Coerce the `labels` value read out of a tracker row's JSONB `data`
+ * column into the `string[] | undefined` shape the rest of the pipeline
+ * (notably `applyLabelDiff`) expects.
+ *
+ * Why this exists: some legacy rows were written with `data.labels`
+ * double-stringified -- i.e. the value of `labels` is a JSON-encoded
+ * string like `"[\"editor\", \"lexical\"]"` instead of a JSON array.
+ * That broke the backfill path on every startup (`(newValues ?? []).filter
+ * is not a function`), the items never got a `sync_id`, and they re-entered
+ * the candidate set on every reconnect.
+ *
+ * Fix at the DB-to-domain boundary so the wrong shape can never reach
+ * the labels CRDT. New writes go through the typed payload path and
+ * produce `string[]`, so this is a one-way legacy compatibility shim.
+ */
+export function normalizeLegacyLabelValues(raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (Array.isArray(raw)) {
+    return raw.filter((v): v is string => typeof v === 'string');
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((v): v is string => typeof v === 'string');
+      }
+    } catch {
+      // not JSON -- treat as a no-op rather than crashing the read path
+    }
+    return undefined;
+  }
+  return undefined;
 }
 
 function defaultIdFactory(): string {

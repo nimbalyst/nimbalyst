@@ -66,6 +66,21 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'drop_transcript_events',
       sqlFile: path.join(schemaDir, '0005_drop_transcript_events.sql'),
     },
+    {
+      version: 6,
+      name: 'message_kind_index',
+      sqlFile: path.join(schemaDir, '0006_message_kind_index.sql'),
+    },
+    {
+      version: 7,
+      name: 'rebuild_fts_after_kind',
+      sqlFile: path.join(schemaDir, '0007_rebuild_fts_after_kind.sql'),
+    },
+    {
+      version: 8,
+      name: 'guard_fts_triggers',
+      sqlFile: path.join(schemaDir, '0008_guard_fts_triggers.sql'),
+    },
   ];
 }
 

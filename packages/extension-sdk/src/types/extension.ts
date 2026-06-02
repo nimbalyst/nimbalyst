@@ -14,7 +14,7 @@ import type {
   SettingsPanelProps,
 } from './panel';
 import type { BackendModuleContribution, ExtensionPermissionId } from './permissions';
-import type { ThemeColors } from './theme';
+import type { MonacoThemeContribution, ThemeColors } from './theme';
 import type { ExtensionCollabService } from './collab';
 
 /**
@@ -553,6 +553,16 @@ export interface ThemeContribution {
    * Missing colors will fall back to the appropriate base theme.
    */
   colors: ThemeColors;
+
+  /**
+   * Optional Monaco editor theme definition. When present, the runtime
+   * registers a Monaco theme (via `monaco.editor.defineTheme`) using the
+   * namespaced theme id and routes Monaco-backed editors to it whenever
+   * this theme is active. When absent, Monaco-backed editors fall back to
+   * the appropriate base Monaco theme (`vs` / `vs-dark`) based on
+   * `isDark`.
+   */
+  monaco?: MonacoThemeContribution;
 }
 
 /**

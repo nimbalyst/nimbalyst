@@ -33,7 +33,7 @@ import type {
   TrackerRowSnapshot,
   LabelsMap,
 } from '@nimbalyst/runtime/sync';
-import { mergeLabelMaps, projectLabelsToValues } from '@nimbalyst/runtime/sync';
+import { mergeLabelMaps, normalizeLegacyLabelValues, projectLabelsToValues } from '@nimbalyst/runtime/sync';
 import type { TrackerItem } from '@nimbalyst/runtime';
 import { trackerRecordToItem, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { logger } from '../../utils/logger';
@@ -182,11 +182,22 @@ export class TrackerPGLiteStore implements TrackerPersistence {
     // server-confirmed envelope only adds and tombstones; it never deletes
     // entry IDs, so a stale incoming payload with fewer entries does not
     // erase concurrent local additions a peer hasn't ack'd yet.
-    const priorRow = await this.db.query<{ labels_map: LabelsMap | null }>(
+    const priorRow = await this.db.query<{ labels_map: LabelsMap | string | null }>(
       `SELECT (data->'labelsMap') AS labels_map FROM tracker_items WHERE id = $1`,
       [envelope.itemId],
     );
-    const priorLabelsMap: LabelsMap | undefined = priorRow.rows[0]?.labels_map ?? undefined;
+    // Nimbalyst runs over either PGLite or better-sqlite3. The `data->'key'`
+    // sub-extraction is NOT shape-uniform across the two backends: PGLite
+    // returns a parsed JS object, but SQLite's JSON1 `->` operator returns
+    // the sub-value as TEXT (a JSON string). If we let a string through,
+    // `mergeLabelMaps({...string}, incoming)` spreads the JSON characters
+    // into numeric-keyed entries, then merges in the real UUID-keyed
+    // entries on top -- and `projectLabelsToValues` emits a leading `null`
+    // in the values list because the first character entry has no `.value`.
+    // The typeof check below handles both backends without privileging one.
+    const rawLabelsMap = priorRow.rows[0]?.labels_map ?? undefined;
+    const priorLabelsMap: LabelsMap | undefined =
+      typeof rawLabelsMap === 'string' ? safeParseLabelsMap(rawLabelsMap) : rawLabelsMap;
     const mergedLabelsMap = mergeLabelMaps(priorLabelsMap, payload.labels);
     const mergedLabels = projectLabelsToValues(mergedLabelsMap);
     // Mutate the payload in place so `payloadToRecord` -> trackerRecordToItem
@@ -807,7 +818,7 @@ function pgliteRowToTrackerItem(row: PGLiteTrackerItemRow, workspacePath: string
     authorIdentity: (data.authorIdentity as TrackerItem['authorIdentity']) ?? null,
     lastModifiedBy: (data.lastModifiedBy as TrackerItem['lastModifiedBy']) ?? null,
     createdByAgent: data.createdByAgent as boolean | undefined,
-    labels: data.labels as string[] | undefined,
+    labels: normalizeLegacyLabelValues(data.labels),
     labelsMap: data.labelsMap as TrackerItem['labelsMap'],
     linkedSessions: data.linkedSessions as string[] | undefined,
     linkedCommitSha: data.linkedCommitSha as string | undefined,
@@ -821,6 +832,17 @@ function safeParseStringArray(raw: string): string[] | undefined {
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed as string[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function safeParseLabelsMap(raw: string): LabelsMap | undefined {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as LabelsMap)
+      : undefined;
   } catch {
     return undefined;
   }

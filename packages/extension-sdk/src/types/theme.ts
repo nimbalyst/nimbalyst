@@ -30,6 +30,59 @@ export type ThemeColorKey =
 export type ThemeColors = Partial<Record<ThemeColorKey, string>>;
 
 /**
+ * Built-in Monaco theme ids accepted as the `base` field on a
+ * `MonacoThemeContribution`. Single source of truth -- the manifest
+ * validator, the renderer registry helper, and consumer-facing docs
+ * all derive from this list.
+ */
+export const MONACO_BASE_THEMES = ['vs', 'vs-dark', 'hc-black', 'hc-light'] as const;
+export type MonacoBaseTheme = typeof MONACO_BASE_THEMES[number];
+
+/**
+ * Monaco editor token rule -- mirrors monaco-editor's
+ * `editor.ITokenThemeRule`. Keeping the shape redeclared (rather than
+ * importing from monaco-editor) so extension manifests can be validated
+ * and processed in contexts that don't bundle Monaco.
+ */
+export interface MonacoTokenRule {
+  /** Token id (e.g. 'comment', 'keyword.js', 'string.escape') */
+  token: string;
+  /** Hex color WITHOUT leading '#' (Monaco convention) */
+  foreground?: string;
+  /** Hex color WITHOUT leading '#' */
+  background?: string;
+  /** Space-separated styles: 'italic', 'bold', 'underline' */
+  fontStyle?: string;
+}
+
+/**
+ * Monaco editor theme contribution embedded in a ThemeContribution.
+ * When present, the runtime registers a matching Monaco theme via
+ * `monaco.editor.defineTheme()` and routes Monaco-backed editors
+ * (code files, JSON, etc.) to use it.
+ *
+ * `base` selects the Monaco built-in theme to inherit from. `rules`
+ * carries token-level color rules; `colors` carries Monaco's
+ * editor.* color keys (e.g. 'editor.background').
+ */
+export interface MonacoThemeContribution {
+  /** Built-in Monaco theme used as the base for inheritance */
+  base: MonacoBaseTheme;
+  /**
+   * Whether to inherit unspecified rules/colors from `base`.
+   * Defaults to true (matches Monaco's `defineTheme` default).
+   */
+  inherit?: boolean;
+  /** Token rules applied to syntax-highlighted text */
+  rules: MonacoTokenRule[];
+  /**
+   * Editor color overrides keyed by Monaco color id
+   * (e.g. 'editor.background', 'editor.foreground').
+   */
+  colors: Record<string, string>;
+}
+
+/**
  * Where a theme entry returned by `theme:list` originated from.
  */
 export type ThemeManifestOrigin = 'builtin' | 'user' | 'extension';

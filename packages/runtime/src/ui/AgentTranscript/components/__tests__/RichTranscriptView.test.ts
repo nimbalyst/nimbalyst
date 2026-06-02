@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { TranscriptViewMessage } from '../../../../ai/server/transcript/TranscriptProjector';
 import {
   extractEditsFromToolMessage,
+  isInteractiveWidgetTool,
   isTranscriptAtBottom,
   parseUnifiedDiffToReplacements,
   shouldAutoScrollTranscript,
+  stripMcpPrefix,
   toolCallDiffsToEdits,
 } from '../RichTranscriptView';
 
@@ -410,5 +412,38 @@ describe('transcript auto-scroll thresholds', () => {
 
   it('still auto-scrolls when the transcript was sticky before the new content arrived', () => {
     expect(shouldAutoScrollTranscript(true, 200)).toBe(true);
+  });
+});
+
+// Regression coverage for the user-reported bug on 2026-06-01: the
+// "Thinking…" indicator stayed rendered on top of an AskUserQuestion widget
+// that had already arrived in the transcript. The check at
+// `isWaitingForResponse` was `toolName === 'AskUserQuestion'` strict equality,
+// but the MCP-prefixed tool name `mcp__nimbalyst-mcp__AskUserQuestion` (the
+// actual name on the wire for the in-app MCP server) never matches.
+// The widget registry knew about both forms — the suppression check didn't.
+describe('interactive widget tool name normalization', () => {
+  it('strips the mcp__<server>__ prefix from MCP tool names', () => {
+    expect(stripMcpPrefix('mcp__nimbalyst-mcp__AskUserQuestion')).toBe('AskUserQuestion');
+    expect(stripMcpPrefix('mcp__nimbalyst__AskUserQuestion')).toBe('AskUserQuestion');
+    expect(stripMcpPrefix('AskUserQuestion')).toBe('AskUserQuestion');
+    expect(stripMcpPrefix('Read')).toBe('Read');
+  });
+
+  it('recognizes interactive widget tools whether bare or MCP-prefixed', () => {
+    expect(isInteractiveWidgetTool('AskUserQuestion')).toBe(true);
+    expect(isInteractiveWidgetTool('ExitPlanMode')).toBe(true);
+    expect(isInteractiveWidgetTool('ToolPermission')).toBe(true);
+    expect(isInteractiveWidgetTool('GitCommitProposal')).toBe(true);
+
+    expect(isInteractiveWidgetTool('mcp__nimbalyst-mcp__AskUserQuestion')).toBe(true);
+    expect(isInteractiveWidgetTool('mcp__nimbalyst-mcp__ExitPlanMode')).toBe(true);
+    expect(isInteractiveWidgetTool('mcp__nimbalyst__GitCommitProposal')).toBe(true);
+
+    expect(isInteractiveWidgetTool('Read')).toBe(false);
+    expect(isInteractiveWidgetTool('mcp__nimbalyst-mcp__SomeOtherTool')).toBe(false);
+    expect(isInteractiveWidgetTool(undefined)).toBe(false);
+    expect(isInteractiveWidgetTool(null)).toBe(false);
+    expect(isInteractiveWidgetTool('')).toBe(false);
   });
 });

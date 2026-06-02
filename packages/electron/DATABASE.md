@@ -1,6 +1,38 @@
-# Electron Database (PGLite)
+# Electron Database (PGLite + better-sqlite3)
 
-The app uses **PGLite** (PostgreSQL in WebAssembly) for all data storage.
+Nimbalyst currently runs over **two** persistence backends and code must
+work on either: **PGLite** (PostgreSQL in WebAssembly, the original
+backend) and **better-sqlite3** (the migration target). Both back the
+same `AppDatabase` interface; the active backend is selected per workspace
+during database initialization. Do not assume one or the other in code
+you write — the migration is in progress and the user's machine may be
+running either.
+
+## Backend-divergent behaviors (read this before reading/writing JSON columns)
+
+| Concern | PGLite | better-sqlite3 |
+| --- | --- | --- |
+| `data->'key'` sub-extraction | returns parsed JS object/value | returns JSON-encoded TEXT |
+| Whole-column JSONB read | parsed object | TEXT (already handled at most call sites) |
+| Concurrent writers | single worker; PID lock | WriteCoordinator serializes write lane |
+
+**JSONB sub-extraction is not shape-uniform.** A query like
+`SELECT (data->'someKey') AS x FROM ...` returns a parsed object on PGLite
+but a JSON string on SQLite. Code that consumes `x` MUST either:
+
+1. Select the whole `data` column and access the sub-field after parsing
+   the column (use the standard `typeof row.data === 'string' ? JSON.parse(row.data) : row.data` idiom), or
+2. Defensively parse the sub-extracted value:
+   ```ts
+   const raw = row.x;
+   const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+   ```
+
+A real bug from this divergence (2026-06-02): `applyRemoteItem` in
+`TrackerPGLiteStore.ts` selected `data->'labelsMap'` directly, trusted it
+was a parsed object, and on SQLite produced corrupted tracker rows whose
+`labelsMap` was a hybrid character-keyed string spread with the real CRDT
+entries merged on top.
 
 **CRITICAL: Never use localStorage in the renderer process.** All persistent state must be stored via IPC to the main process using either:
 - **app-settings store** (`src/main/utils/store.ts`) for global app settings
@@ -9,10 +41,11 @@ The app uses **PGLite** (PostgreSQL in WebAssembly) for all data storage.
 
 ## Database System
 
-- **Technology**: PGLite running in Node.js worker thread
+- **Technology**: PGLite (Node.js worker) or better-sqlite3 (worker_threads with WriteCoordinator), selected at init time
 - **Storage**: Persistent file-based database with ACID compliance
-- **Worker architecture**: Isolated worker thread prevents module conflicts
-- **Bundling**: PGLite is fully bundled in packaged apps
+- **Worker architecture**: Both backends use an isolated worker thread
+- **Bundling**: Both engines are fully bundled in packaged apps
+- **SQLite write coordination**: A WriteCoordinator serializes writes into a batched lane and chunks background work, avoiding head-of-line blocking that PGLite suffered from
 
 ## Database Tables
 
