@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Fixed an EPIPE feedback loop where the main-process uncaught-exception handler re-entered itself when stderr was broken on Linux, flooding the log until the process died.
 
 ### Removed
 <!-- Removed features go here -->
