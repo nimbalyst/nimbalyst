@@ -106,9 +106,9 @@ export async function resolveGitCommitProposalPromptId(
 
     const resolvedId = resolveGitCommitProposalPromptIdFromRows(promptId, proposalRows, responseRows);
     if (resolvedId) {
-      console.log(
-        `[gitCommitProposalPromptUtils] Remapped git commit prompt ID from ${promptId} to ${resolvedId}`,
-      );
+      // console.log(
+      //   `[gitCommitProposalPromptUtils] Remapped git commit prompt ID from ${promptId} to ${resolvedId}`,
+      // );
       return resolvedId;
     }
   } catch (error) {

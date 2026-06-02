@@ -100,6 +100,13 @@ export async function runAgentMessagesBackfill(
     historicalTransientsDeleted: 0,
   };
   const deleteTransients = options.deleteTransients !== false;
+  // Entry log fires before any await so we can verify the function was even
+  // reached. Past observation: on a 1.36M-row DB the function appeared to
+  // never run -- no [AgentMessagesBackfill] lines of any kind in the log --
+  // and we had no way to distinguish "never invoked", "scheduled but
+  // unresolved", and "ran to completion with updated=0".
+  logger.main.info('[AgentMessagesBackfill] starting');
+  const startedAt = Date.now();
   try {
     const result = await backfillAndCleanup(
       db,
@@ -123,6 +130,13 @@ export async function runAgentMessagesBackfill(
       logger.main.error('[AgentMessagesBackfill] historical transient cleanup failed:', err);
     }
   }
+  const elapsedMs = Date.now() - startedAt;
+  logger.main.info(
+    `[AgentMessagesBackfill] complete in ${elapsedMs}ms ` +
+      `backfilled=${stats.searchableTextBackfilled} ` +
+      `transientsDeleted=${stats.transientsDeleted} ` +
+      `historicalTransientsDeleted=${stats.historicalTransientsDeleted}`,
+  );
   return stats;
 }
 
@@ -134,6 +148,23 @@ async function backfillAndCleanup(
   let updated = 0;
   let deleted = 0;
   let lastId = 0;
+
+  // Initial pending-count log lets us see how much work the loop intends to
+  // do. On healthy DBs this is small (the new write path sets message_kind
+  // at insert time). On DBs that predate the extractor it can be 1M+, in
+  // which case per-row UPDATEs across the worker IPC are the bottleneck.
+  try {
+    const { rows: pendingRows } = await db.query<{ pending: number }>(
+      `SELECT COUNT(*) AS pending FROM ai_agent_messages WHERE message_kind IS NULL`,
+    );
+    const pending = Number(pendingRows[0]?.pending ?? 0);
+    logger.main.info(`[AgentMessagesBackfill] pending rows: ${pending}`);
+  } catch (err) {
+    logger.main.warn('[AgentMessagesBackfill] pending-count probe failed:', err);
+  }
+
+  let chunkIdx = 0;
+  let lastProgressLogAt = Date.now();
 
   // Gate on `message_kind IS NULL` so each row is visited exactly once across
   // the DB's lifetime. The live write path sets message_kind at insert time
@@ -152,6 +183,7 @@ async function backfillAndCleanup(
     if (rows.length === 0) break;
 
     const toDelete: number[] = [];
+    let perRowFailures = 0;
 
     for (const row of rows) {
       if (deleteTransients && row.source === 'claude-code' && isTransientContentString(row.content)) {
@@ -175,11 +207,38 @@ async function backfillAndCleanup(
         metadata,
         hidden,
       });
-      await db.query(
-        `UPDATE ai_agent_messages SET searchable_text = $1, message_kind = $2 WHERE id = $3`,
-        [searchableText, messageKind, row.id],
+      // Catch per-row so a single bad UPDATE doesn't abort the whole pass.
+      // The pre-instrumentation version threw out of the loop on the first
+      // failure, leaving the entire historical backlog unbackfilled. We log
+      // the row id + error code/stack and move on; the outer loop's
+      // `WHERE message_kind IS NULL` gate ensures retries on next startup.
+      try {
+        await db.query(
+          `UPDATE ai_agent_messages SET searchable_text = $1, message_kind = $2 WHERE id = $3`,
+          [searchableText, messageKind, row.id],
+        );
+        updated += 1;
+      } catch (err) {
+        perRowFailures += 1;
+        if (perRowFailures <= 3) {
+          const code = (err as { code?: string })?.code;
+          const stack = (err as Error)?.stack;
+          logger.main.error(
+            `[AgentMessagesBackfill] UPDATE failed for row id=${row.id} ` +
+              `source=${row.source} dir=${row.direction} code=${code ?? 'n/a'}: ` +
+              `${(err as Error).message}\n${stack ?? ''}`,
+          );
+        }
+        // Force the loop to advance past this id so we don't retry it
+        // forever within this run. Subsequent startups will revisit via the
+        // `message_kind IS NULL` filter -- which is fine because the error
+        // signal is what we're after right now.
+      }
+    }
+    if (perRowFailures > 0) {
+      logger.main.warn(
+        `[AgentMessagesBackfill] chunk had ${perRowFailures} UPDATE failures (showed first 3)`,
       );
-      updated += 1;
     }
 
     if (toDelete.length > 0) {
@@ -192,6 +251,18 @@ async function backfillAndCleanup(
     }
 
     lastId = rows[rows.length - 1].id;
+    chunkIdx += 1;
+    // Heartbeat at most every 5s so we can see real-time progress without
+    // flooding the log. Bounded by chunkIdx too so test runs with chunkSize=1
+    // don't go silent for 5s when they finish in milliseconds.
+    const now = Date.now();
+    if (now - lastProgressLogAt >= 5000 || chunkIdx % 50 === 0) {
+      logger.main.info(
+        `[AgentMessagesBackfill] progress chunks=${chunkIdx} updated=${updated} ` +
+          `deleted=${deleted} lastId=${lastId}`,
+      );
+      lastProgressLogAt = now;
+    }
     if (rows.length < chunkSize) break;
   }
 

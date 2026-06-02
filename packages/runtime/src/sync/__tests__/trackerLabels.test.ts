@@ -7,7 +7,13 @@
  * dedup) surface with a clear pointer.
  */
 import { describe, it, expect } from 'vitest';
-import { applyLabelDiff, mergeLabelMaps, projectLabelsToValues, type LabelsMap } from '../trackerLabels';
+import {
+  applyLabelDiff,
+  mergeLabelMaps,
+  normalizeLegacyLabelValues,
+  projectLabelsToValues,
+  type LabelsMap,
+} from '../trackerLabels';
 
 describe('trackerLabels', () => {
   describe('projectLabelsToValues', () => {
@@ -24,6 +30,21 @@ describe('trackerLabels', () => {
     it('returns empty array for undefined or empty map', () => {
       expect(projectLabelsToValues(undefined)).toEqual([]);
       expect(projectLabelsToValues({})).toEqual([]);
+    });
+
+    it('skips non-object / malformed entries (corrupted-map defense)', () => {
+      // Reproduces the shape seen after a `data->'labelsMap'` string
+      // round-trip leaked into `mergeLabelMaps` as the `local` argument:
+      // {...stringJSON, ...realMap} -> hybrid character-keyed entries
+      // plus the real UUID entries. The projection must skip the character
+      // junk and emit only the real values, never a leading null.
+      const corrupted = {
+        '0': '{' as unknown as { id: string; value: string },
+        '1': '"' as unknown as { id: string; value: string },
+        'uuid-a': { id: 'uuid-a', value: 'editor' },
+        'uuid-b': { id: 'uuid-b', value: 'lexical' },
+      } as unknown as LabelsMap;
+      expect(projectLabelsToValues(corrupted)).toEqual(['editor', 'lexical']);
     });
   });
 
@@ -100,6 +121,57 @@ describe('trackerLabels', () => {
       expect(mergeLabelMaps(undefined, undefined)).toEqual({});
       expect(mergeLabelMaps({ a: { id: 'a', value: 'bug' } }, undefined)).toEqual({ a: { id: 'a', value: 'bug' } });
       expect(mergeLabelMaps(undefined, { a: { id: 'a', value: 'bug' } })).toEqual({ a: { id: 'a', value: 'bug' } });
+    });
+  });
+
+  describe('normalizeLegacyLabelValues', () => {
+    it('passes through a string array', () => {
+      expect(normalizeLegacyLabelValues(['bug', 'urgent'])).toEqual(['bug', 'urgent']);
+    });
+
+    it('filters non-string entries out of arrays', () => {
+      expect(normalizeLegacyLabelValues(['bug', 123, null, 'urgent'])).toEqual(['bug', 'urgent']);
+    });
+
+    it('parses a JSON-stringified array (legacy double-stringified rows)', () => {
+      // Exactly the shape observed for the 8 backfill-failing items:
+      // data.labels stored as a JSON string instead of a JSON array.
+      expect(normalizeLegacyLabelValues('["editor", "lexical", "diff"]'))
+        .toEqual(['editor', 'lexical', 'diff']);
+    });
+
+    it('returns undefined for non-JSON strings', () => {
+      expect(normalizeLegacyLabelValues('not json')).toBeUndefined();
+    });
+
+    it('returns undefined for null/undefined', () => {
+      expect(normalizeLegacyLabelValues(undefined)).toBeUndefined();
+      expect(normalizeLegacyLabelValues(null)).toBeUndefined();
+    });
+
+    it('returns undefined for object inputs (would otherwise crash applyLabelDiff)', () => {
+      // Defensive: a CRDT LabelsMap accidentally read out of data.labels
+      // must not silently become a values array.
+      expect(normalizeLegacyLabelValues({ a: { id: 'a', value: 'bug' } })).toBeUndefined();
+    });
+
+    it('output is safe to feed to applyLabelDiff for every supported input', () => {
+      // Lock the contract: whatever this helper returns, applyLabelDiff
+      // must accept without throwing. Regression guard against the
+      // "(newValues ?? []).filter is not a function" crash.
+      const inputs: unknown[] = [
+        undefined,
+        null,
+        ['bug'],
+        ['bug', 42, 'urgent'],
+        '["editor", "lexical"]',
+        'not json',
+        { a: { id: 'a', value: 'bug' } },
+      ];
+      for (const raw of inputs) {
+        const values = normalizeLegacyLabelValues(raw);
+        expect(() => applyLabelDiff(undefined, values, () => 'id')).not.toThrow();
+      }
     });
   });
 });

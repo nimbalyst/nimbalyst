@@ -68,7 +68,7 @@ export async function executeGitCommit(
     try {
       const git: SimpleGit = simpleGit(workspacePath);
       const repoHasCommits = await hasCommits(git);
-      log.info(`${logContext} Starting commit in ${workspacePath} with ${filesToStage?.length || 0} files (hasCommits: ${repoHasCommits})`);
+      // log.info(`${logContext} Starting commit in ${workspacePath} with ${filesToStage?.length || 0} files (hasCommits: ${repoHasCommits})`);
 
       const toGitPath = (f: string) => {
         const rel = isAbsolute(f) ? relative(workspacePath, f) : f;
@@ -94,7 +94,7 @@ export async function executeGitCommit(
           };
         }
 
-        log.info(`${logContext} Successfully committed: ${result.commit}`);
+        // log.info(`${logContext} Successfully committed: ${result.commit}`);
         let commitDate: string | undefined;
         try {
           const showResult = await git.show([result.commit, '--no-patch', '--format=%aI']);
@@ -108,9 +108,9 @@ export async function executeGitCommit(
 
       const initialStatus = await git.status();
       const originallyStaged = new Set([...initialStatus.staged, ...initialStatus.created]);
-      log.info(`${logContext} Originally staged files: ${originallyStaged.size}`);
+      // log.info(`${logContext} Originally staged files: ${originallyStaged.size}`);
 
-      log.info(`${logContext} Resetting staging area before staging selected files`);
+      // log.info(`${logContext} Resetting staging area before staging selected files`);
       if (repoHasCommits) {
         await git.reset(['HEAD']);
       } else if (originallyStaged.size > 0) {
@@ -118,14 +118,14 @@ export async function executeGitCommit(
       }
 
       const filesToStageRelative = filesToStage.map(toGitPath);
-      log.info(`${logContext} Staging files (raw): ${filesToStage.join(', ')}`);
-      log.info(`${logContext} Staging files (git-relative): ${filesToStageRelative.join(', ')}`);
+      // log.info(`${logContext} Staging files (raw): ${filesToStage.join(', ')}`);
+      // log.info(`${logContext} Staging files (git-relative): ${filesToStageRelative.join(', ')}`);
 
       await git.add(['--all', '--', ...filesToStage]);
 
       const status = await git.status();
       const stagedFiles = new Set([...status.staged, ...status.created]);
-      log.info(`${logContext} After staging - staged files: [${[...status.staged].join(', ')}], created files: [${[...status.created].join(', ')}]`);
+      // log.info(`${logContext} After staging - staged files: [${[...status.staged].join(', ')}], created files: [${[...status.created].join(', ')}]`);
 
       if (stagedFiles.size === 0) {
         log.warn(`${logContext} No files were staged despite add() succeeding. Requested: [${filesToStage.join(', ')}], git-relative: [${filesToStageRelative.join(', ')}]`);
@@ -163,7 +163,7 @@ export async function executeGitCommit(
       }
 
       const result = await git.commit(message);
-      log.info(`${logContext} Commit result: hash=${result.commit || 'empty'}, changes=${result.summary?.changes || 0}`);
+      // log.info(`${logContext} Commit result: hash=${result.commit || 'empty'}, changes=${result.summary?.changes || 0}`);
 
       if (!result.commit) {
         log.warn(`${logContext} Commit returned empty hash - nothing was committed`);
@@ -183,7 +183,7 @@ export async function executeGitCommit(
         await git.add(filesToRestage);
       }
 
-      log.info(`${logContext} Successfully committed: ${result.commit}`);
+      // log.info(`${logContext} Successfully committed: ${result.commit}`);
 
       let commitDate: string | undefined;
       try {

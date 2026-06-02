@@ -285,7 +285,7 @@ export function registerSuperLoopHandlers(): void {
         throw new Error('worktreeId is required');
       }
 
-      logger.info('Getting super loop by worktree', { worktreeId });
+      // logger.info('Getting super loop by worktree', { worktreeId });
 
       const loop = await superLoopService.getLoopByWorktreeId(worktreeId);
 

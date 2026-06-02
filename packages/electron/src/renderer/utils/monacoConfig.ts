@@ -7,6 +7,13 @@
 
 import { loader } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor';
+import {
+  getThemesWithMonacoDefinition,
+  onThemesChanged,
+  MONACO_BASE_THEMES,
+  toMonacoExtensionThemeName,
+  type MonacoThemeContribution,
+} from '@nimbalyst/runtime';
 
 // Import workers using Vite's ?worker syntax
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker.js?worker';
@@ -15,7 +22,7 @@ import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker.js?worker';
 import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker.js?worker';
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker.js?worker';
 
-// Track registered custom themes
+// Track registered custom themes (built-in + extension-contributed)
 const registeredThemes = new Set<string>();
 
 /**
@@ -135,17 +142,64 @@ function defineCustomMonacoThemes(): void {
 }
 
 /**
+ * Define a single Monaco theme from an extension contribution. The
+ * caller is responsible for passing a Monaco-legal theme name (see
+ * `toMonacoExtensionThemeName`); Monaco's `defineTheme` throws on names
+ * that don't match `/^[a-z0-9\-]+$/`. Idempotent -- redefining the same
+ * id is allowed (Monaco overwrites).
+ */
+function defineExtensionMonacoTheme(monacoThemeName: string, def: MonacoThemeContribution): void {
+  monaco.editor.defineTheme(monacoThemeName, {
+    base: def.base,
+    inherit: def.inherit ?? true,
+    rules: def.rules,
+    colors: def.colors,
+  });
+  registeredThemes.add(monacoThemeName);
+}
+
+/**
+ * Walk the runtime theme registry and register a Monaco theme for every
+ * entry that carries a `monaco` block. Safe to call repeatedly; each
+ * call replaces previously-registered definitions.
+ *
+ * The extension theme id (e.g. `com.acme.themes:dracula`) is sanitized
+ * via `toMonacoExtensionThemeName` because Monaco rejects theme names
+ * with `.` or `:`. `getMonacoTheme` runs the same transform on the
+ * lookup side so `setTheme` finds the registered entry.
+ */
+function syncMonacoThemesFromRegistry(): void {
+  for (const theme of getThemesWithMonacoDefinition()) {
+    const monacoName = toMonacoExtensionThemeName(theme.id);
+    try {
+      defineExtensionMonacoTheme(monacoName, theme.monaco!);
+    } catch (error) {
+      console.error(`[Monaco] Failed to register extension theme '${theme.id}' (as '${monacoName}'):`, error);
+    }
+  }
+}
+
+/**
  * Check if a Monaco theme name is registered (custom or built-in)
  */
 export function isMonacoThemeRegistered(themeName: string): boolean {
-  return registeredThemes.has(themeName) || ['vs', 'vs-dark', 'hc-black', 'hc-light'].includes(themeName);
+  return registeredThemes.has(themeName) || (MONACO_BASE_THEMES as readonly string[]).includes(themeName);
 }
 
 /**
  * Initialize Monaco Editor for Electron environment
  * Configures @monaco-editor/react to use the local npm package
  */
+let monacoInitialized = false;
+
 export function initMonacoEditor(): void {
+  if (monacoInitialized) {
+    // Guards against a hot-reload or accidental re-call doubling up
+    // listeners on the theme registry.
+    return;
+  }
+  monacoInitialized = true;
+
   console.log('[Monaco] Initializing Monaco Editor for Electron');
 
   // Configure Monaco environment with worker factory
@@ -171,8 +225,14 @@ export function initMonacoEditor(): void {
   // Configure @monaco-editor/react to use the local npm package instead of CDN
   loader.config({ monaco });
 
-  // Define custom themes after Monaco is configured
+  // Define built-in custom themes (solarized, monokai) after Monaco is configured
   defineCustomMonacoThemes();
+
+  // Pick up any extension-contributed Monaco themes already in the
+  // registry, then subscribe so future extension loads/unloads
+  // re-register their Monaco definitions.
+  syncMonacoThemesFromRegistry();
+  onThemesChanged(syncMonacoThemesFromRegistry);
 
   console.log('[Monaco] Configuration complete');
 }

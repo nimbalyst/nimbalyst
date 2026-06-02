@@ -107,7 +107,7 @@ export class CommitTrackerLinker {
     const settings = this.getSettings(event.workspacePath);
     if (!settings.enabled) return;
 
-    logger.main.info(`[CommitTrackerLinker] Commit detected: ${event.commitHash.slice(0, 7)} in ${event.workspacePath}`);
+    // logger.main.info(`[CommitTrackerLinker] Commit detected: ${event.commitHash.slice(0, 7)} in ${event.workspacePath}`);
 
     // When enabled, always parse issue keys. Auto-close is gated separately.
     await this.linkByIssueKeys(event, settings);

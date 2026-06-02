@@ -83,6 +83,47 @@ export const markSessionStreamingAtom = atom(
 );
 
 /**
+ * Defense-in-depth for the May 28 perf fix (commit 3d613ecfc) and its Jun 2
+ * regression (commit 3d78447dd). `markSessionTurnActivityAtom` drives the
+ * agent-mode SessionHistory sort via `workspaceSessionTurnActivityAtom`; any
+ * caller that writes it per chunk re-fires the sort cascade and the downstream
+ * `session-files:get-by-session` storm. The expected cadence is one write per
+ * turn-boundary lifecycle event (started / streaming / waiting / completed /
+ * error / interrupted), so >5 writes per second for the same session is
+ * structurally impossible and indicates a misuse — log a loud warning in dev.
+ */
+const TURN_ACTIVITY_RATE_WINDOW_MS = 1_000;
+const TURN_ACTIVITY_RATE_LIMIT = 5;
+const turnActivityWriteTimes = new Map<string, number[]>();
+const TURN_ACTIVITY_DEV_GUARD =
+  typeof process !== 'undefined' && process.env?.NODE_ENV === 'development';
+
+function recordTurnActivityWrite(workspacePath: string, sessionId: string): void {
+  if (!TURN_ACTIVITY_DEV_GUARD) return;
+  const key = `${workspacePath}\0${sessionId}`;
+  const now = Date.now();
+  const recent = (turnActivityWriteTimes.get(key) ?? []).filter(
+    (ts) => now - ts < TURN_ACTIVITY_RATE_WINDOW_MS
+  );
+  recent.push(now);
+  turnActivityWriteTimes.set(key, recent);
+  if (recent.length > TURN_ACTIVITY_RATE_LIMIT) {
+    console.warn(
+      `[sessionActivity] markSessionTurnActivityAtom fired ${recent.length}x in ` +
+        `${TURN_ACTIVITY_RATE_WINDOW_MS}ms for session ${sessionId}. ` +
+        'This atom drives the agent-mode session-list sort; per-chunk writes ' +
+        'reopen the SessionHistory sort cascade and the session-files:get-by-session ' +
+        'storm fixed in commit 3d613ecfc on 2026-05-28. Only call this from ' +
+        'turn-boundary events (session:started/streaming/waiting/completed/error/' +
+        'interrupted), never from ai:message-logged or other per-message paths.',
+      new Error('markSessionTurnActivityAtom rate-limit stack')
+    );
+    // Reset the window so we get one warning per burst, not one per write.
+    turnActivityWriteTimes.set(key, []);
+  }
+}
+
+/**
  * Record that a session crossed a turn boundary in the agent lifecycle.
  * This feeds throttled sidebar ordering in agent mode.
  */
@@ -91,6 +132,8 @@ export const markSessionTurnActivityAtom = atom(
   (get, set, payload: { sessionId: string; workspacePath: string; timestamp?: number }) => {
     const { sessionId, workspacePath } = payload;
     const timestamp = payload.timestamp ?? Date.now();
+
+    recordTurnActivityWrite(workspacePath, sessionId);
 
     const workspaceMap = new Map(get(globalSessionTurnActivityAtom));
     const turnsForWorkspace = new Map(workspaceMap.get(workspacePath) ?? new Map<string, number>());

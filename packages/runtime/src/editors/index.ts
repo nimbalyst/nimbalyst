@@ -22,4 +22,4 @@ export type { MonacoEditorProps, MonacoEditorConfig } from './MonacoEditor';
 export { MonacoCodeEditor } from './MonacoCodeEditor';
 export type { MonacoCodeEditorProps, MonacoDiffModeConfig } from './MonacoCodeEditor';
 
-export { getMonacoTheme, getMonacoLanguage } from './monacoUtils';
+export { getMonacoTheme, getMonacoLanguage, toMonacoExtensionThemeName } from './monacoUtils';

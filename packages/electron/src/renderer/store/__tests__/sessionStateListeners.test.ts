@@ -19,7 +19,37 @@ import {
   sessionHasPendingInteractivePromptAtom,
   sessionProcessingAtom,
   sessionPendingPromptsAtom,
+  sessionRegistryAtom,
+  sessionLastActivityAtom,
+  type SessionMeta,
 } from '../atoms/sessions';
+import {
+  globalSessionTurnActivityAtom,
+} from '../atoms/sessionActivity';
+
+function seedRegistry(entries: Array<Partial<SessionMeta> & { id: string }>): void {
+  const map = new Map(store.get(sessionRegistryAtom));
+  const now = Date.now();
+  for (const e of entries) {
+    map.set(e.id, {
+      id: e.id,
+      title: e.title ?? e.id,
+      provider: e.provider ?? 'claude',
+      sessionType: (e.sessionType ?? 'session') as SessionMeta['sessionType'],
+      workspaceId: e.workspaceId ?? '/ws/test-project',
+      worktreeId: e.worktreeId ?? null,
+      parentSessionId: e.parentSessionId ?? null,
+      childCount: e.childCount ?? 0,
+      uncommittedCount: e.uncommittedCount ?? 0,
+      createdAt: e.createdAt ?? now,
+      updatedAt: e.updatedAt ?? now,
+      messageCount: e.messageCount ?? 0,
+      isArchived: e.isArchived ?? false,
+      isPinned: e.isPinned ?? false,
+    } as SessionMeta);
+  }
+  store.set(sessionRegistryAtom, map);
+}
 
 type EventHandler = (...args: any[]) => void;
 
@@ -292,5 +322,133 @@ describe('regression: streaming after a pending prompt', () => {
 
     // Pending must remain true so SessionListItem keeps the warning icon.
     expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(true);
+  });
+});
+
+// Regression coverage for the user-reported bug on 2026-06-01: workstream
+// parents stayed several rows down the TODAY group even though a child session
+// had just received a new message. `workspaceSessionTurnActivityAtom` keys the
+// sort by sessionId; before the fix the listener only bumped the activity
+// timestamp for the child, never for its parent, so SessionHistory continued
+// to sort the parent by its stale registry `updatedAt`.
+describe('workstream sort: child activity bubbles to parent', () => {
+  it('session:started for a child bumps the parent workstream\'s turn activity', () => {
+    const parentId = uniqueSessionId('ws-parent');
+    const childId = uniqueSessionId('ws-child');
+    seedRegistry([
+      { id: parentId, sessionType: 'workstream', childCount: 1 },
+      { id: childId, parentSessionId: parentId },
+    ]);
+
+    const handler = handlers.get('ai-session-state:event');
+    handler!({
+      type: 'session:started',
+      sessionId: childId,
+      workspacePath: WS,
+      timestamp: 5_000,
+    });
+
+    const turnsForWs = store.get(globalSessionTurnActivityAtom).get(WS);
+    expect(turnsForWs?.get(childId)).toBe(5_000);
+    expect(turnsForWs?.get(parentId)).toBe(5_000);
+  });
+
+  it('ai:message-logged for a child bumps only the child\'s relative-time label, not turn-activity', () => {
+    // Per-message events deliberately do NOT bump `markSessionTurnActivityAtom`
+    // (for the child or its workstream parent). Per-chunk writes to that atom
+    // reopen the SessionHistory sort cascade and the `session-files:get-by-session`
+    // storm that the May 28 perf fix (commit 3d613ecfc) eliminated. Parent
+    // workstreams still rise to the top via the turn-boundary bumps in
+    // session:started/waiting/completed.
+    const parentId = uniqueSessionId('ws-parent-msg');
+    const childId = uniqueSessionId('ws-child-msg');
+    seedRegistry([
+      { id: parentId, sessionType: 'workstream', childCount: 1 },
+      { id: childId, parentSessionId: parentId },
+    ]);
+
+    const before = Date.now();
+    handlers.get('ai:message-logged')!({
+      sessionId: childId,
+      direction: 'output',
+      workspacePath: WS,
+    });
+
+    // Child relative-time label updates.
+    const childLive = store.get(sessionLastActivityAtom(childId));
+    expect(childLive).toBeGreaterThanOrEqual(before);
+
+    // Parent does NOT bump per-message — neither label nor turn activity.
+    const parentLive = store.get(sessionLastActivityAtom(parentId));
+    expect(parentLive).toBe(0);
+    const turnsForWs = store.get(globalSessionTurnActivityAtom).get(WS);
+    expect(turnsForWs?.get(parentId)).toBeUndefined();
+    expect(turnsForWs?.get(childId)).toBeUndefined();
+  });
+
+  it('session:completed for a child bumps the parent workstream\'s turn activity', () => {
+    const parentId = uniqueSessionId('ws-parent-done');
+    const childId = uniqueSessionId('ws-child-done');
+    seedRegistry([
+      { id: parentId, sessionType: 'workstream', childCount: 1 },
+      { id: childId, parentSessionId: parentId },
+    ]);
+
+    handlers.get('ai-session-state:event')!({
+      type: 'session:completed',
+      sessionId: childId,
+      workspacePath: WS,
+      timestamp: 9_000,
+    });
+
+    const turnsForWs = store.get(globalSessionTurnActivityAtom).get(WS);
+    expect(turnsForWs?.get(parentId)).toBe(9_000);
+  });
+});
+
+// Burst contract test for the May 28 perf fix (commit 3d613ecfc). The original
+// fix split the per-message label bump (`sessionLastActivityAtom`) from the
+// turn-boundary sort bump (`markSessionTurnActivityAtom`). The Jun 2 regression
+// (commit 3d78447dd) merged them back together inside `handleMessageLogged` and
+// re-introduced the SessionHistory sort cascade and the
+// `session-files:get-by-session` storm per streamed chunk. If this test fails,
+// someone has added a per-message write to `markSessionTurnActivityAtom`
+// (directly or via a helper like `bumpParentTurnActivity`). Don't relax it.
+describe('contract: per-message events must not bump turn activity', () => {
+  it('a burst of ai:message-logged events leaves turn activity untouched', () => {
+    const sid = uniqueSessionId('burst-solo');
+    seedRegistry([{ id: sid }]);
+
+    const handler = handlers.get('ai:message-logged')!;
+    for (let i = 0; i < 100; i++) {
+      handler({ sessionId: sid, direction: 'output', workspacePath: WS });
+    }
+
+    // Per-row label may bump (fine — only the row's relative-time label re-renders).
+    expect(store.get(sessionLastActivityAtom(sid))).toBeGreaterThan(0);
+
+    // Sort-driving atom must be empty: SessionHistory's `liveOrderTimestampMap`
+    // and `displayOrderTimestampMap` recompute on changes to this; per-chunk
+    // writes here re-fire the sort cascade.
+    const turnsForWs = store.get(globalSessionTurnActivityAtom).get(WS);
+    expect(turnsForWs?.get(sid)).toBeUndefined();
+  });
+
+  it('a burst of ai:message-logged events does not bump the workstream parent\'s turn activity either', () => {
+    const parentId = uniqueSessionId('burst-parent');
+    const childId = uniqueSessionId('burst-child');
+    seedRegistry([
+      { id: parentId, sessionType: 'workstream', childCount: 1 },
+      { id: childId, parentSessionId: parentId },
+    ]);
+
+    const handler = handlers.get('ai:message-logged')!;
+    for (let i = 0; i < 100; i++) {
+      handler({ sessionId: childId, direction: 'output', workspacePath: WS });
+    }
+
+    const turnsForWs = store.get(globalSessionTurnActivityAtom).get(WS);
+    expect(turnsForWs?.get(childId)).toBeUndefined();
+    expect(turnsForWs?.get(parentId)).toBeUndefined();
   });
 });

@@ -542,9 +542,9 @@ export async function handleGitCommitProposal(
       hidden: false,
       createdAt: now,
     });
-    console.log(
-      `[MCP Server] Persisted git commit proposal: ${proposalId}, notifying renderer for session: ${targetSessionId}`
-    );
+    // console.log(
+    //   `[MCP Server] Persisted git commit proposal: ${proposalId}, notifying renderer for session: ${targetSessionId}`
+    // );
     if (commitWindow) {
       // Include proposal data in the IPC so renderer-side consumers (the
       // GitCommit widget AND the voice forwarding path) can display the
@@ -823,9 +823,9 @@ export async function handleGitCommitProposal(
       settle(result, "ipc");
 
     const responseChannel = `git-commit-proposal-response:${sessionId || "unknown"}:${proposalId}`;
-    console.log(
-      `[MCP Server] Registering git commit proposal listener on channel: ${responseChannel}`
-    );
+    // console.log(
+    //   `[MCP Server] Registering git commit proposal listener on channel: ${responseChannel}`
+    // );
     ipcMain.on(responseChannel, onResponse);
 
     // Database polling fallback: if the IPC path fails (e.g., transport drop),

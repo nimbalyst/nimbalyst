@@ -249,11 +249,11 @@ export class AttachmentService {
       // Write file to disk
       await fs.writeFile(filepath, finalBuffer);
 
-      console.log('[AttachmentService] Saved attachment', {
-        filename,
-        size: finalBuffer.length,
-        sessionId
-      });
+      // console.log('[AttachmentService] Saved attachment', {
+      //   filename,
+      //   size: finalBuffer.length,
+      //   sessionId
+      // });
 
       // Determine attachment type (validated above, so always non-null)
       const attachmentType = this.getAttachmentType(finalMimeType)!;

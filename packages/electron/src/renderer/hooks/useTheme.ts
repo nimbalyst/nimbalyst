@@ -1,8 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import type { ConfigTheme } from '@nimbalyst/runtime';
 import { themeIdAtom, setThemeAtom, store, type ThemeId } from '@nimbalyst/runtime/store';
-import { getBaseThemeColors, getTheme as getRuntimeTheme, type ExtendedThemeColors } from '@nimbalyst/runtime';
+import { getBaseThemeColors, getTheme as getRuntimeTheme, onThemesChanged, type ExtendedThemeColors } from '@nimbalyst/runtime';
 
 /**
  * Map of ExtendedThemeColors keys to CSS variable names.
@@ -469,15 +469,35 @@ export function useTheme() {
   const themeId = useAtomValue(themeIdAtom) as string;
   const setTheme = useSetAtom(setThemeAtom);
 
-  // Compute effective base theme for Lexical and other components
-  // that only understand built-in theme names
+  // The runtime theme registry is populated asynchronously as extensions
+  // activate. `applyThemeToDOM` and `getEffectiveBaseTheme` both consult it
+  // synchronously, so if the persisted theme is extension-contributed and
+  // the extension hasn't finished activating yet, the very first apply
+  // races and falls back to the file-based `theme:get` IPC -- which the
+  // main process refuses with `Theme '<id>' not found. Did you call
+  // discoverThemes()?`, and the renderer's catch block paints the light
+  // fallback into the DOM. Subscribe to registry changes here so that the
+  // moment the extension appears in the registry we re-apply with the
+  // correct colors, and the re-render also re-runs `getEffectiveBaseTheme`
+  // so Lexical / Monaco / mermaid pick up the correct dark/light base.
+  const [registryVersion, setRegistryVersion] = useState(0);
+  useEffect(() => {
+    return onThemesChanged(() => {
+      setRegistryVersion(v => v + 1);
+    });
+  }, []);
+
+  // `registryVersion` is referenced so React re-renders this hook (and
+  // re-runs `getEffectiveBaseTheme` below) whenever the registry list
+  // changes -- it intentionally has no other consumer.
+  void registryVersion;
   const theme = getEffectiveBaseTheme(themeId) as ConfigTheme;
 
-  // When theme atom changes, also update DOM
-  // This handles programmatic theme changes from within React
+  // Apply the theme to the DOM when the active theme id changes OR when
+  // the registry catches up to it (covers the boot-time race above).
   useEffect(() => {
     void applyThemeToDOM(themeId as ThemeId);
-  }, [themeId]);
+  }, [themeId, registryVersion]);
 
   return { theme, themeId, setTheme };
 }

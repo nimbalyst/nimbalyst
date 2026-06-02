@@ -54,11 +54,11 @@ class CodexAuthServiceImpl {
   async getStatus(refreshToken = false): Promise<CodexAuthStatus> {
     const client = await this.ensureChild();
     const res = await client.request<AccountReadResponse>('account/read', { refreshToken });
-    logger.main.info('[CodexAuth] account/read result', {
-      refreshToken,
-      account: res.account ? { type: res.account.type, hasEmail: 'email' in res.account, planType: 'planType' in res.account ? res.account.planType : null } : null,
-      requiresOpenaiAuth: res.requiresOpenaiAuth,
-    });
+    // logger.main.info('[CodexAuth] account/read result', {
+    //   refreshToken,
+    //   account: res.account ? { type: res.account.type, hasEmail: 'email' in res.account, planType: 'planType' in res.account ? res.account.planType : null } : null,
+    //   requiresOpenaiAuth: res.requiresOpenaiAuth,
+    // });
     const status: CodexAuthStatus = {
       account: res.account,
       requiresOpenaiAuth: res.requiresOpenaiAuth,

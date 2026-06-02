@@ -178,7 +178,7 @@ export function createSuperLoopStore(db: PGliteLike, ensureDbReady?: EnsureReady
     async getLoopByWorktreeId(worktreeId: string): Promise<SuperLoop | null> {
       await ensureReady();
 
-      logger.debug('Getting super loop by worktree', { worktreeId });
+      // logger.debug('Getting super loop by worktree', { worktreeId });
 
       const { rows } = await db.query<SuperLoopRow>(
         `SELECT * FROM super_loops WHERE worktree_id = $1 ORDER BY created_at DESC LIMIT 1`,

@@ -22,6 +22,7 @@ import {
   buildFullDocumentTrackerId,
   parseFullDocumentTrackerId,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
+import { normalizeLegacyLabelValues } from '@nimbalyst/runtime/sync';
 import type { ElectronDocumentService } from '../../services/ElectronDocumentService';
 
 type McpToolResult = {
@@ -367,7 +368,7 @@ export function rowToTrackerItem(row: any): any {
     // Deprecated but kept for backward compat
     assigneeId: data.assigneeId || undefined,
     reporterId: data.reporterId || undefined,
-    labels: data.labels || undefined,
+    labels: normalizeLegacyLabelValues(data.labels),
     linkedSessions: (() => {
       const linkedSessions = getVisibleTrackerLinkedSessions(row, data.linkedSessions);
       return linkedSessions.length > 0 ? linkedSessions : undefined;

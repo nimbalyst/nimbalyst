@@ -444,7 +444,7 @@ export class UsageAnalyticsService {
         workspace_id,
         file_path,
         COUNT(*) as edit_count,
-        MAX(created_at) as last_edited_at,
+        MAX(timestamp) as last_edited_at,
         MAX(size_bytes) as size_bytes
       FROM document_history
       ${whereClause}
@@ -464,7 +464,11 @@ export class UsageAnalyticsService {
   }
 
   /**
-   * Get document edit counts over time
+   * Get document edit counts over time.
+   *
+   * `document_history.timestamp` is a BIGINT/INTEGER of epoch milliseconds on
+   * both backends, so we filter and bucket entirely in JS rather than juggling
+   * PG `DATE_TRUNC` / `to_timestamp` vs SQLite `strftime`.
    */
   async getDocumentEditTimeSeries(
     startDate: number,
@@ -472,51 +476,20 @@ export class UsageAnalyticsService {
     granularity: 'hour' | 'day' | 'week' | 'month' = 'day',
     workspaceId?: string
   ): Promise<{ timestamp: number; editCount: number }[]> {
-    if (this.isSQLiteBackend()) {
-      const whereClause = workspaceId
-        ? `WHERE workspace_id = $3 AND created_at >= to_timestamp($1 / 1000.0) AND created_at <= to_timestamp($2 / 1000.0)`
-        : `WHERE created_at >= to_timestamp($1 / 1000.0) AND created_at <= to_timestamp($2 / 1000.0)`;
-      const params = workspaceId ? [startDate, endDate, workspaceId] : [startDate, endDate];
-      const result = await this.db.query<{ created_at: unknown }>(
-        `SELECT created_at FROM document_history ${whereClause}`,
-        params,
-      );
-      return countsByTimeBucket(
-        result.rows.map((row) => toEpochMs(row.created_at)),
-        granularity,
-      ).map(({ timestamp, count }) => ({
-        timestamp,
-        editCount: count,
-      }));
-    }
-
-    const truncFunc = {
-      hour: 'hour',
-      day: 'day',
-      week: 'week',
-      month: 'month',
-    }[granularity];
-
     const whereClause = workspaceId
-      ? `WHERE workspace_id = $3 AND created_at >= to_timestamp($1 / 1000.0) AND created_at <= to_timestamp($2 / 1000.0)`
-      : `WHERE created_at >= to_timestamp($1 / 1000.0) AND created_at <= to_timestamp($2 / 1000.0)`;
-
+      ? `WHERE workspace_id = $3 AND timestamp >= $1 AND timestamp <= $2`
+      : `WHERE timestamp >= $1 AND timestamp <= $2`;
     const params = workspaceId ? [startDate, endDate, workspaceId] : [startDate, endDate];
-
-    const result = await this.db.query(
-      `SELECT
-        EXTRACT(EPOCH FROM DATE_TRUNC('${truncFunc}', created_at)) * 1000 as timestamp,
-        COUNT(*) as edit_count
-      FROM document_history
-      ${whereClause}
-      GROUP BY DATE_TRUNC('${truncFunc}', created_at)
-      ORDER BY timestamp ASC`,
-      params
+    const result = await this.db.query<{ timestamp: number | string | bigint }>(
+      `SELECT timestamp FROM document_history ${whereClause}`,
+      params,
     );
-
-    return result.rows.map((row: any) => ({
-      timestamp: parseFloat(row.timestamp),
-      editCount: parseInt(row.edit_count) || 0,
+    return countsByTimeBucket(
+      result.rows.map((row) => Number(row.timestamp)),
+      granularity,
+    ).map(({ timestamp, count }) => ({
+      timestamp,
+      editCount: count,
     }));
   }
 
