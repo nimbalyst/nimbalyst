@@ -517,7 +517,7 @@ async function tryCreateServer(port: number): Promise<any> {
             res.writeHead(200, {
               "Access-Control-Allow-Origin": "*",
               "Access-Control-Allow-Methods": "POST, OPTIONS",
-              "Access-Control-Allow-Headers": "Content-Type",
+              "Access-Control-Allow-Headers": "Content-Type, Authorization",
             });
           } else {
             res.writeHead(200, {
@@ -530,10 +530,10 @@ async function tryCreateServer(port: number): Promise<any> {
           return;
         }
 
-        // Issue #146: every non-OPTIONS request to /mcp must carry the
-        // per-launch bearer token. /clip stays open below (intentional, per
-        // plan: web-clipper extension fires from the user's browser).
-        if (pathname === "/mcp" && !requireMcpAuth(req)) {
+        // Issue #146: every non-OPTIONS request to /mcp or /clip must carry
+        // the per-launch bearer token. The browser extension must be configured
+        // with the token to authenticate clip requests.
+        if ((pathname === "/mcp" || pathname === "/clip") && !requireMcpAuth(req)) {
           res.writeHead(401);
           res.end("Unauthorized");
           return;
