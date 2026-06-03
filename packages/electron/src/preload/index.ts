@@ -1180,6 +1180,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('pr:gh-status-changed', handler);
   },
 
+  // PR review panel — GitHub API via `gh api` (Phase C of issue #307)
+  prDetectRemote: (workspacePath: string) =>
+    ipcRenderer.invoke('pr:detect-remote', workspacePath),
+  prList: (workspaceId: string, remote: string, filters?: unknown) =>
+    ipcRenderer.invoke('pr:list', workspaceId, remote, filters),
+  prGet: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:get', workspaceId, remote, number),
+  prFiles: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:files', workspaceId, remote, number),
+  prFileContents: (workspaceId: string, remote: string, ref: string, path: string) =>
+    ipcRenderer.invoke('pr:file-contents', workspaceId, remote, ref, path),
+  prCommits: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:commits', workspaceId, remote, number),
+  prChecks: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:checks', workspaceId, remote, number),
+  prConversation: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:conversation', workspaceId, remote, number),
+  prRefresh: (workspaceId: string, remote: string, number?: number) =>
+    ipcRenderer.invoke('pr:refresh', workspaceId, remote, number),
+
   // Archive progress operations
   archive: {
     getTasks: () => ipcRenderer.invoke('archive:get-tasks'),

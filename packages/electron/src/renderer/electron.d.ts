@@ -37,6 +37,98 @@ interface GhCliStatus {
   user?: string;
 }
 
+interface PullRequestReviewer {
+  login: string;
+  state: string;
+}
+
+interface PullRequestRow {
+  id: string;
+  workspaceId: string;
+  remote: string;
+  number: number;
+  title: string;
+  body: string | null;
+  state: 'open' | 'closed' | 'merged';
+  isDraft: boolean;
+  authorLogin: string | null;
+  authorAvatarUrl: string | null;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  mergeable: 'mergeable' | 'conflicting' | 'unknown' | null;
+  commentsCount: number;
+  reviewCommentsCount: number;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  ciStatus: 'success' | 'failure' | 'pending' | null;
+  reviewers: PullRequestReviewer[];
+  labels: string[];
+  raw: unknown;
+  etag: string | null;
+  createdAt: number;
+  updatedAt: number;
+  fetchedAt: number;
+}
+
+interface PullRequestFileRow {
+  prId: string;
+  path: string;
+  status: 'added' | 'modified' | 'removed' | 'renamed';
+  additions: number;
+  deletions: number;
+  patch: string | null;
+  previousPath: string | null;
+  fetchedAt: number;
+}
+
+interface PullRequestCommitRow {
+  prId: string;
+  sha: string;
+  message: string;
+  authorLogin: string | null;
+  authoredAt: number;
+}
+
+interface PullRequestCheckRow {
+  prId: string;
+  checkName: string;
+  status: 'queued' | 'in_progress' | 'completed';
+  conclusion:
+    | 'success'
+    | 'failure'
+    | 'neutral'
+    | 'cancelled'
+    | 'skipped'
+    | 'timed_out'
+    | 'action_required'
+    | null;
+  detailsUrl: string | null;
+  startedAt: number | null;
+  completedAt: number | null;
+  fetchedAt: number;
+}
+
+interface PullRequestTimelineEntry {
+  id: string;
+  type: 'issue_comment' | 'review' | 'review_comment';
+  authorLogin: string | null;
+  authorAvatarUrl: string | null;
+  body: string;
+  state?: string;
+  createdAt: number;
+  url: string | null;
+}
+
+interface PullRequestListFilters {
+  state?: 'open' | 'closed' | 'all';
+  awaitingMyReview?: boolean;
+  createdByMe?: boolean;
+  withConflicts?: boolean;
+  search?: string;
+}
+
 interface ElectronAPI {
   // File menu callbacks
   onFileNew: (callback: () => void) => () => void;
@@ -1126,6 +1218,54 @@ interface ElectronAPI {
     data?: GhCliStatus;
   }>;
   onGhCliStatusChanged: (callback: (status: GhCliStatus) => void) => () => void;
+
+  // PR review panel — GitHub API (Phase C of issue #307)
+  prDetectRemote: (workspacePath: string) => Promise<{
+    success: boolean;
+    error?: string;
+    data?: { remote: string; host: string } | null;
+  }>;
+  prList: (
+    workspaceId: string,
+    remote: string,
+    filters?: PullRequestListFilters,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestRow[] }>;
+  prGet: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestRow }>;
+  prFiles: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestFileRow[] }>;
+  prFileContents: (
+    workspaceId: string,
+    remote: string,
+    ref: string,
+    path: string,
+  ) => Promise<{ success: boolean; error?: string; data?: { content: string } }>;
+  prCommits: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestCommitRow[] }>;
+  prChecks: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestCheckRow[] }>;
+  prConversation: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestTimelineEntry[] }>;
+  prRefresh: (
+    workspaceId: string,
+    remote: string,
+    number?: number,
+  ) => Promise<{ success: boolean; error?: string; data?: { fetchedAt: number } }>;
 
   // Archive progress operations
   archive: {
