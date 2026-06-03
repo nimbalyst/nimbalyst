@@ -15,6 +15,7 @@ import {
   prRemoteAtom,
   prModeLayoutAtom,
   setPrModeLayoutAtom,
+  prListAtom,
   initPrModeLayout,
   type PrFilterChip,
 } from '../../store/atoms/pullRequests';
@@ -22,6 +23,7 @@ import { getPullRequestService } from '../../services/RendererPullRequestService
 import { GhOnboardingBanner } from './GhOnboardingBanner';
 import { PullRequestSidebar } from './PullRequestSidebar';
 import { PullRequestListView } from './PullRequestListView';
+import { PullRequestDetail } from './PullRequestDetail';
 
 interface PullRequestModeProps {
   workspacePath: string;
@@ -38,6 +40,7 @@ export function PullRequestMode({
   const remote = useAtomValue(prRemoteAtom);
   const layout = useAtomValue(prModeLayoutAtom);
   const setLayout = useSetAtom(setPrModeLayoutAtom);
+  const prList = useAtomValue(prListAtom);
 
   const remoteForWorkspace =
     remote && remote.workspacePath === workspacePath ? remote.remote : null;
@@ -108,14 +111,34 @@ export function PullRequestMode({
     />
   );
 
+  const selectedPr =
+    layout.selectedItemId != null
+      ? prList.find((pr) => pr.id === layout.selectedItemId) ?? null
+      : null;
+
   const mainContent = (
-    <div className="flex flex-col h-full w-full overflow-hidden">
-      <GhOnboardingBanner />
-      <PullRequestListView
-        workspaceId={workspacePath}
-        remote={remoteForWorkspace}
-        isActive={isActive}
-      />
+    <div className="flex flex-row h-full w-full overflow-hidden">
+      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+        <GhOnboardingBanner />
+        <PullRequestListView
+          workspaceId={workspacePath}
+          remote={remoteForWorkspace}
+          isActive={isActive}
+        />
+      </div>
+      {selectedPr && (
+        <div
+          className="shrink-0 border-l border-nim overflow-hidden"
+          style={{ width: layout.detailPanelWidth }}
+        >
+          <PullRequestDetail
+            workspaceId={workspacePath}
+            remote={remoteForWorkspace}
+            pr={selectedPr}
+            onClose={() => setLayout({ selectedItemId: null })}
+          />
+        </div>
+      )}
     </div>
   );
 

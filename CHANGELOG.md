@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PullRequestPollScheduler` that polls open PRs every 60s when the PR review panel is in the foreground and every 5min otherwise, broadcasting `pr:list-updated` after each successful tick so the renderer re-reads the cache. (#307)
 - A `pr-review` workspace mode with a navigation-gutter button that appears only when the active project has a GitHub remote, wired to PR atoms and listeners (gh status, remote detection, list-updated). (#307)
 - PR list view with a filter sidebar (open/closed/awaiting-review/created-by-me/with-conflicts/draft), title/number search, and sortable columns (last activity / created / number); selecting the state filter fetches via `gh`, the rest narrow client-side. (#307)
+- Read-only PR detail panel with Conversation, Files Changed (Monaco side-by-side diff), Commits, and Checks tabs; the panel re-fetches its visible tab every 60s while open. (#307)
 <!-- New features go here -->
 
 ### Changed
