@@ -41,7 +41,7 @@ function stateBadge(pr: PullRequestRowData): { label: string; className: string;
     case 'closed':
       return { label: 'Closed', className: 'text-white bg-[var(--nim-error)]', icon: 'cancel' };
     default:
-      return { label: 'Open', className: 'text-white bg-[var(--nim-success)]', icon: 'pull_request_alt' };
+      return { label: 'Open', className: 'text-white bg-[var(--nim-success)]', icon: 'radio_button_unchecked' };
   }
 }
 

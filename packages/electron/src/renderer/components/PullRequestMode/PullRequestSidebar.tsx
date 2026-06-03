@@ -16,7 +16,7 @@ interface PullRequestSidebarProps {
 }
 
 const FILTER_CHIPS: { id: PrFilterChip; label: string; icon: string }[] = [
-  { id: 'open', label: 'Open', icon: 'pull_request_alt' },
+  { id: 'open', label: 'Open', icon: 'radio_button_unchecked' },
   { id: 'closed', label: 'Closed', icon: 'cancel' },
   { id: 'awaiting-review', label: 'Awaiting my review', icon: 'rate_review' },
   { id: 'created-by-me', label: 'Created by me', icon: 'person' },
