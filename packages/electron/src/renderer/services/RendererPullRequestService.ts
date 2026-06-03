@@ -157,6 +157,30 @@ export class RendererPullRequestService {
     const res = await requireApi().prOpenWorktree(workspaceId, remote, number);
     return unwrap(res, 'pr:open-worktree');
   }
+
+  // ----- Per-project gh account selection (issue #307) -------------------
+
+  async listAccounts(): Promise<Array<{ login: string; host: string; active: boolean }>> {
+    const res = await requireApi().prGhAccounts();
+    return unwrap(res, 'pr:gh-accounts');
+  }
+
+  async getAccountConfig(
+    workspacePath?: string,
+  ): Promise<{ defaultAccount: string | null; override: string | null; effective: string | null }> {
+    const res = await requireApi().prGetAccountConfig(workspacePath);
+    return unwrap(res, 'pr:get-account-config');
+  }
+
+  async setDefaultAccount(login: string | null): Promise<void> {
+    const res = await requireApi().prSetDefaultAccount(login);
+    unwrap(res, 'pr:set-default-account');
+  }
+
+  async setAccountOverride(workspacePath: string, login: string | null): Promise<void> {
+    const res = await requireApi().prSetAccountOverride(workspacePath, login);
+    unwrap(res, 'pr:set-account-override');
+  }
 }
 
 let instance: RendererPullRequestService | null = null;

@@ -35,6 +35,13 @@ import { gitOperationLock } from '../services/GitOperationLock';
 import { gitRefWatcher } from '../file/GitRefWatcher';
 import { getDatabase } from '../database/initialize';
 import {
+  getEffectiveGhAccount,
+  getPrReviewDefaultGhAccount,
+  setPrReviewDefaultGhAccount,
+  getPrReviewGhAccountOverride,
+  savePrReviewGhAccountOverride,
+} from '../utils/store';
+import {
   initPullRequestPollScheduler,
   type PullRequestPollScheduler,
 } from '../services/PullRequestPollScheduler';
@@ -114,7 +121,12 @@ function getStore(): PullRequestsStore {
 
 function getService(): GhApiService {
   if (cachedService) return cachedService;
-  cachedService = new GhApiService(getStore());
+  // The resolver maps a workspace to its effective gh account (per-project
+  // override ?? global default). GhApiService turns that login into a token
+  // from gh's keyring per request; Nimbalyst stores only the login.
+  cachedService = new GhApiService(getStore(), (workspaceId) =>
+    getEffectiveGhAccount(workspaceId),
+  );
   return cachedService;
 }
 
@@ -147,6 +159,78 @@ export function registerPullRequestHandlers(): void {
       return errorResponse(error);
     }
   });
+
+  // ----- gh account selection (per-project, issue #307) ------------------
+
+  safeHandle(
+    'pr:gh-accounts',
+    async (): Promise<IPCResponse<Array<{ login: string; host: string; active: boolean }>>> => {
+      try {
+        const accounts = await ghCliDetector.listAccounts();
+        return { success: true, data: accounts };
+      } catch (error: unknown) {
+        logger.error('pr:gh-accounts failed', error);
+        return errorResponse(error);
+      }
+    },
+  );
+
+  safeHandle(
+    'pr:get-account-config',
+    async (
+      _event,
+      workspacePath?: string,
+    ): Promise<
+      IPCResponse<{ defaultAccount: string | null; override: string | null; effective: string | null }>
+    > => {
+      try {
+        return {
+          success: true,
+          data: {
+            defaultAccount: getPrReviewDefaultGhAccount() ?? null,
+            override: workspacePath ? getPrReviewGhAccountOverride(workspacePath) ?? null : null,
+            effective: getEffectiveGhAccount(workspacePath) ?? null,
+          },
+        };
+      } catch (error: unknown) {
+        logger.error('pr:get-account-config failed', error);
+        return errorResponse(error);
+      }
+    },
+  );
+
+  safeHandle(
+    'pr:set-default-account',
+    async (_event, login: string | null): Promise<IPCResponse<{ ok: boolean }>> => {
+      try {
+        setPrReviewDefaultGhAccount(login ?? undefined);
+        return { success: true, data: { ok: true } };
+      } catch (error: unknown) {
+        logger.error('pr:set-default-account failed', error);
+        return errorResponse(error);
+      }
+    },
+  );
+
+  safeHandle(
+    'pr:set-account-override',
+    async (
+      _event,
+      workspacePath: string,
+      login: string | null,
+    ): Promise<IPCResponse<{ ok: boolean }>> => {
+      if (!workspacePath) {
+        return { success: false, error: 'workspacePath required' };
+      }
+      try {
+        savePrReviewGhAccountOverride(workspacePath, login ?? undefined);
+        return { success: true, data: { ok: true } };
+      } catch (error: unknown) {
+        logger.error('pr:set-account-override failed', error);
+        return errorResponse(error);
+      }
+    },
+  );
 
   // ----- Remote detection (Phase C) --------------------------------------
 
@@ -238,16 +322,16 @@ export function registerPullRequestHandlers(): void {
     'pr:file-contents',
     async (
       _event,
-      _workspaceId: string,
+      workspaceId: string,
       remote: string,
       ref: string,
       path: string,
     ): Promise<IPCResponse<{ content: string }>> => {
-      if (!remote || !ref || !path) {
-        return { success: false, error: 'remote, ref, path required' };
+      if (!workspaceId || !remote || !ref || !path) {
+        return { success: false, error: 'workspaceId, remote, ref, path required' };
       }
       try {
-        const content = await getService().getFileContents(remote, ref, path);
+        const content = await getService().getFileContents(workspaceId, remote, ref, path);
         return { success: true, data: { content } };
       } catch (error: unknown) {
         logger.error('pr:file-contents failed', { remote, ref, path, error });

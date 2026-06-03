@@ -70,6 +70,9 @@ interface AppStoreSchema {
   releaseChannel?: ReleaseChannel;
   // Default AI model for new sessions (format: "provider:model" e.g., "claude-code:sonnet")
   defaultAIModel?: string;
+  // Default GitHub CLI account login for PR review (issue #307). A per-project
+  // override lives on WorkspaceState.prReviewGhAccountOverride.
+  prReviewDefaultGhAccount?: string;
   // Analytics
   analyticsEnabled?: boolean;
   // User onboarding
@@ -459,6 +462,9 @@ export interface WorkspaceState {
     enabled?: boolean;
     autoCloseOnCommit?: boolean;
   };
+  // PR review: gh CLI account login override for this project. When set, it
+  // wins over the global AppStoreSchema.prReviewDefaultGhAccount. (issue #307)
+  prReviewGhAccountOverride?: string;
   // Privileged extension capability grants scoped to this workspace.
   // Global-scope grants live on AppStoreSchema.extensionPermissionGrantsGlobal.
   // See packages/electron/src/main/extensions/permissionGrantStore.ts for the
@@ -1104,6 +1110,40 @@ export function getEffectiveTrackerAutomation(
     enabled: override.enabled ?? globalSettings.enabled,
     autoCloseOnCommit: override.autoCloseOnCommit ?? globalSettings.autoCloseOnCommit,
   };
+}
+
+// PR review gh-account selection (issue #307). Global default in app-settings,
+// per-project override in workspace state; resolver returns override ?? default.
+export function getPrReviewDefaultGhAccount(): string | undefined {
+  return getAppStore().get('prReviewDefaultGhAccount');
+}
+
+export function setPrReviewDefaultGhAccount(login: string | undefined): void {
+  const store = getAppStore();
+  if (login) {
+    store.set('prReviewDefaultGhAccount', login);
+  } else {
+    store.delete('prReviewDefaultGhAccount');
+  }
+}
+
+export function getPrReviewGhAccountOverride(workspacePath: string): string | undefined {
+  return getWorkspaceState(workspacePath).prReviewGhAccountOverride;
+}
+
+export function savePrReviewGhAccountOverride(workspacePath: string, login: string | undefined): void {
+  updateWorkspaceState(workspacePath, workspace => {
+    workspace.prReviewGhAccountOverride = login;
+  });
+}
+
+/** Resolve the effective gh account for a workspace: override ?? global default. */
+export function getEffectiveGhAccount(workspacePath?: string): string | undefined {
+  if (workspacePath) {
+    const override = getPrReviewGhAccountOverride(workspacePath);
+    if (override) return override;
+  }
+  return getPrReviewDefaultGhAccount();
 }
 
 export function normalizeAIProviderOverrides(overrides: AIProviderOverrides | undefined): AIProviderOverrides | undefined {

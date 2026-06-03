@@ -75,6 +75,34 @@ export class GhCliDetector {
   }
 
   /**
+   * List every account `gh` is logged into on github.com (and any other host),
+   * marking the active one. Used by the per-project account selector (#307).
+   */
+  async listAccounts(): Promise<Array<{ login: string; host: string; active: boolean }>> {
+    return new Promise((resolve) => {
+      try {
+        const env = { ...process.env, PATH: this.getEnhancedPath(), NO_COLOR: '1' };
+        const child = spawn(ghCommand(), ['auth', 'status'], {
+          timeout: SPAWN_TIMEOUT_MS,
+          shell: true,
+          env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let output = '';
+        let errorOutput = '';
+        child.stdout?.on('data', (d) => { output += d.toString(); });
+        child.stderr?.on('data', (d) => { errorOutput += d.toString(); });
+        child.on('close', () => {
+          resolve(parseAuthAccounts(`${output}\n${errorOutput}`));
+        });
+        child.on('error', () => resolve([]));
+      } catch {
+        resolve([]);
+      }
+    });
+  }
+
+  /**
    * Common-install-location PATH so we find `gh` even when it isn't on the
    * default Electron child-process PATH (especially on macOS GUI launches).
    */
@@ -242,6 +270,38 @@ function parseAuthStatus(text: string): { host?: string; user?: string } {
     return { host: legacy[1], user: legacy[2] };
   }
   return {};
+}
+
+/**
+ * Parse every account from `gh auth status` output, marking the active one.
+ *
+ * Each account appears as a "Logged in to <host> account <login>" line; the
+ * following "Active account: true/false" line (when present) flags the active
+ * one. Falls back to the legacy "Logged in to <host> as <login>" shape.
+ */
+function parseAuthAccounts(text: string): Array<{ login: string; host: string; active: boolean }> {
+  const accounts: Array<{ login: string; host: string; active: boolean }> = [];
+  const re = /Logged in to (\S+) (?:account|as) (\S+)/g;
+  const matches: Array<{ host: string; login: string; index: number }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    matches.push({ host: m[1], login: m[2], index: m.index });
+  }
+  for (let i = 0; i < matches.length; i++) {
+    const start = matches[i].index;
+    const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
+    const block = text.slice(start, end);
+    accounts.push({
+      host: matches[i].host,
+      login: matches[i].login,
+      active: /Active account:\s*true/i.test(block),
+    });
+  }
+  // Older gh without an "Active account" line: a single account is active.
+  if (accounts.length === 1 && !/Active account:/i.test(text)) {
+    accounts[0].active = true;
+  }
+  return accounts;
 }
 
 export const ghCliDetector = new GhCliDetector();

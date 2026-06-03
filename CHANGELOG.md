@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Read-only PR detail panel with Conversation, Files Changed (Monaco side-by-side diff), Commits, and Checks tabs; the panel re-fetches its visible tab every 60s while open. (#307)
 - "Open branch in Claude Code" on a PR fetches the PR head into a worktree (reused if it already exists), links the worktree to the PR, and switches to Agent mode with it selected. (#307)
 - `NIMBALYST_GH_PATH` env var to pin a non-standard `gh` CLI location for PR review. (#307)
+- Per-project GitHub account for PR review: pick a global default `gh` account in User settings and override it per project in Project settings (GitHub panel). The selected account's token is resolved from the `gh` keyring per request and never stored by Nimbalyst. (#307)
 <!-- New features go here -->
 
 ### Changed

@@ -1211,6 +1211,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('pr:focus', { workspacePath, focused }),
   prOpenWorktree: (workspacePath: string, remote: string, number: number) =>
     ipcRenderer.invoke('pr:open-worktree', workspacePath, remote, number),
+
+  // PR review panel — per-project gh account selection (issue #307)
+  prGhAccounts: () => ipcRenderer.invoke('pr:gh-accounts'),
+  prGetAccountConfig: (workspacePath?: string) =>
+    ipcRenderer.invoke('pr:get-account-config', workspacePath),
+  prSetDefaultAccount: (login: string | null) =>
+    ipcRenderer.invoke('pr:set-default-account', login),
+  prSetAccountOverride: (workspacePath: string, login: string | null) =>
+    ipcRenderer.invoke('pr:set-account-override', workspacePath, login),
   onPrListUpdated: (callback: (payload: { workspacePath: string; remote: string }) => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,

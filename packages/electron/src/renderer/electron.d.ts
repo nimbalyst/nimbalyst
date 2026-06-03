@@ -1301,6 +1301,25 @@ interface ElectronAPI {
     };
   }>;
 
+  // PR review panel — per-project gh account selection (issue #307)
+  prGhAccounts: () => Promise<{
+    success: boolean;
+    error?: string;
+    data?: Array<{ login: string; host: string; active: boolean }>;
+  }>;
+  prGetAccountConfig: (workspacePath?: string) => Promise<{
+    success: boolean;
+    error?: string;
+    data?: { defaultAccount: string | null; override: string | null; effective: string | null };
+  }>;
+  prSetDefaultAccount: (
+    login: string | null,
+  ) => Promise<{ success: boolean; error?: string; data?: { ok: boolean } }>;
+  prSetAccountOverride: (
+    workspacePath: string,
+    login: string | null,
+  ) => Promise<{ success: boolean; error?: string; data?: { ok: boolean } }>;
+
   // Archive progress operations
   archive: {
     getTasks: () => Promise<{

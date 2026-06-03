@@ -31,7 +31,8 @@ export type SettingsCategory =
   | 'marketplace'
   | 'installed'
   | 'team'
-  | 'tracker-config';
+  | 'tracker-config'
+  | 'github';
 
 interface CategoryGroup {
   title: string;
@@ -228,6 +229,16 @@ Best for quick edits and tasks that do not require multi-file operations.`,
       ],
     }] : []),
     {
+      title: 'GitHub',
+      items: [
+        {
+          id: 'github' as SettingsCategory,
+          name: 'GitHub Account',
+          icon: <MaterialSymbol icon="merge" size={16} />,
+        },
+      ],
+    },
+    {
       title: 'Extensions',
       items: [
         {
@@ -268,6 +279,7 @@ Best for quick edits and tasks that do not require multi-file operations.`,
         categoryGroups.find(g => g.title === 'Collaboration'),
         categoryGroups.find(g => g.title === 'Agent Providers'),
         categoryGroups.find(g => g.title === 'Chat Providers'),
+        categoryGroups.find(g => g.title === 'GitHub'),
         categoryGroups.find(g => g.title === 'Extensions'),
       ].filter((g): g is CategoryGroup => g != null)
     : categoryGroups.filter(g => g.title !== 'Project' && g.title !== 'Collaboration');

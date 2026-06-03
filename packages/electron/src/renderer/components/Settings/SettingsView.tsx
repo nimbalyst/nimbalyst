@@ -31,6 +31,7 @@ import { PrivilegedExtensionsPanel } from './panels/PrivilegedExtensionsPanel';
 import { ThemesPanel } from './panels/ThemesPanel';
 import { TeamPanel } from './panels/TeamPanel';
 import { TrackerConfigPanel } from './panels/TrackerConfigPanel';
+import { GitHubAccountPanel } from './panels/GitHubAccountPanel';
 import { ExtensionMarketplacePanel } from './panels/ExtensionMarketplacePanel';
 import { walkthroughs } from '../../walkthroughs';
 import {
@@ -147,8 +148,8 @@ export function SettingsView({
   const [workspaceMcpServerCount, setWorkspaceMcpServerCount] = useState(0);
 
   // Valid categories for each scope
-  const projectCategories: SettingsCategory[] = ['agent-permissions', 'team', 'tracker-config', 'installed-extensions', 'claude-plugins', 'mcp-servers', 'claude-code', 'claude', 'openai', 'openai-codex', 'opencode', 'copilot-cli', 'lmstudio'];
-  const userCategories: SettingsCategory[] = ['claude-code', 'claude', 'openai', 'openai-codex', 'opencode', 'copilot-cli', 'lmstudio', 'sync', 'notifications', 'voice-mode', 'agent-features', 'advanced', 'marketplace', 'installed-extensions', 'claude-plugins', 'mcp-servers'];
+  const projectCategories: SettingsCategory[] = ['agent-permissions', 'team', 'tracker-config', 'github', 'installed-extensions', 'claude-plugins', 'mcp-servers', 'claude-code', 'claude', 'openai', 'openai-codex', 'opencode', 'copilot-cli', 'lmstudio'];
+  const userCategories: SettingsCategory[] = ['claude-code', 'claude', 'openai', 'openai-codex', 'opencode', 'copilot-cli', 'lmstudio', 'github', 'sync', 'notifications', 'voice-mode', 'agent-features', 'advanced', 'marketplace', 'installed-extensions', 'claude-plugins', 'mcp-servers'];
 
   // When initialCategory/initialScope props change, update state (for deep linking)
   useEffect(() => {
@@ -615,6 +616,13 @@ export function SettingsView({
         return <TeamPanel workspacePath={workspacePath ?? undefined} />;
       case 'tracker-config':
         return <TrackerConfigPanel workspacePath={workspacePath ?? undefined} />;
+      case 'github':
+        return (
+          <GitHubAccountPanel
+            scope={scope}
+            workspacePath={workspacePath ?? undefined}
+          />
+        );
       case 'marketplace':
         return (
           <ExtensionMarketplacePanel
