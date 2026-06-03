@@ -73,12 +73,13 @@ export function PullRequestDetail({
       <div className="shrink-0 border-b border-nim">
         <div className="flex items-start gap-2 px-4 pt-3">
           <button
-            className="flex items-center justify-center w-7 h-7 text-nim-muted hover:text-nim shrink-0 -ml-1"
+            className="flex items-center gap-1 px-2 h-7 text-xs text-nim-muted hover:text-nim border border-nim rounded shrink-0 -ml-1"
             onClick={onClose}
-            title="Close"
+            title="Back to pull requests"
             data-testid="pr-detail-close"
           >
-            <MaterialSymbol icon="close" size={18} />
+            <MaterialSymbol icon="arrow_back" size={16} />
+            Back
           </button>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 text-sm">

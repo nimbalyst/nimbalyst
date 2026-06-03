@@ -14,7 +14,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
-import { isDarkThemeAtom } from '@nimbalyst/runtime/store';
+import { getMonacoTheme } from '@nimbalyst/runtime/editors';
+import { isDarkThemeAtom, themeIdAtom } from '@nimbalyst/runtime/store';
 import { MonacoDiffViewer } from '../../HistoryDialog/MonacoDiffViewer';
 import {
   getPullRequestService,
@@ -44,6 +45,10 @@ export function FilesChangedTab({
 }: FilesChangedTabProps): JSX.Element {
   void workspaceId;
   const isDark = useAtomValue(isDarkThemeAtom);
+  const themeId = useAtomValue(themeIdAtom);
+  // Resolve the same Monaco theme the app's editors use, including custom /
+  // extension themes (passing themeId as both nimbalyst theme + extension id).
+  const monacoThemeName = getMonacoTheme(themeId, isDark, themeId);
   const [files, setFiles] = useState<PullRequestFileRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -190,6 +195,7 @@ export function FilesChangedTab({
             newContent={newContent}
             filePath={selectedFile.path}
             theme={isDark ? 'dark' : 'light'}
+            monacoThemeName={monacoThemeName}
           />
         )}
       </div>

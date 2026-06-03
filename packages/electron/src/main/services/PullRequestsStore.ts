@@ -411,11 +411,18 @@ export function createPullRequestsStore(db: PGliteLike, ensureDbReady?: EnsureRe
 
       await db.query('DELETE FROM pull_request_files WHERE pr_id = $1', [prId]);
 
+      // Dedupe by PK (pr_id, path); ON CONFLICT guards a concurrent replace
+      // racing the same pr_id (e.g. tab open + detail poll) from throwing a
+      // unique-constraint violation.
+      const seen = new Set<string>();
       for (const file of files) {
+        if (seen.has(file.path)) continue;
+        seen.add(file.path);
         await db.query(
           `INSERT INTO pull_request_files (
             pr_id, path, status, additions, deletions, patch, previous_path, fetched_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (pr_id, path) DO NOTHING`,
           [
             file.prId,
             file.path,
@@ -444,11 +451,17 @@ export function createPullRequestsStore(db: PGliteLike, ensureDbReady?: EnsureRe
 
       await db.query('DELETE FROM pull_request_commits WHERE pr_id = $1', [prId]);
 
+      // Dedupe by PK (pr_id, sha); ON CONFLICT guards a concurrent replace
+      // (tab open + detail poll) from a unique-constraint violation.
+      const seen = new Set<string>();
       for (const commit of commits) {
+        if (seen.has(commit.sha)) continue;
+        seen.add(commit.sha);
         await db.query(
           `INSERT INTO pull_request_commits (
             pr_id, sha, message, author_login, authored_at
-          ) VALUES ($1, $2, $3, $4, $5)`,
+          ) VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (pr_id, sha) DO NOTHING`,
           [
             commit.prId,
             commit.sha,
@@ -474,12 +487,19 @@ export function createPullRequestsStore(db: PGliteLike, ensureDbReady?: EnsureRe
 
       await db.query('DELETE FROM pull_request_checks WHERE pr_id = $1', [prId]);
 
+      // Dedupe by PK (pr_id, check_name); ON CONFLICT guards a concurrent
+      // replace. Check runs can legitimately repeat a name across the
+      // check-runs + legacy-status endpoints, so dedupe matters here too.
+      const seen = new Set<string>();
       for (const check of checks) {
+        if (seen.has(check.checkName)) continue;
+        seen.add(check.checkName);
         await db.query(
           `INSERT INTO pull_request_checks (
             pr_id, check_name, status, conclusion, details_url,
             started_at, completed_at, fetched_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (pr_id, check_name) DO NOTHING`,
           [
             check.prId,
             check.checkName,

@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol, MarkdownRenderer } from '@nimbalyst/runtime';
 import {
   getPullRequestService,
   type PullRequestRow,
@@ -75,8 +75,12 @@ export function ConversationTab({
           <span>opened this pull request</span>
           <span className="ml-auto">{formatRelative(pr.createdAt)}</span>
         </div>
-        <div className="px-3 py-2 text-sm text-nim whitespace-pre-wrap select-text">
-          {pr.body?.trim() || <span className="text-nim-faint italic">No description provided.</span>}
+        <div className="px-3 py-2 text-sm text-nim select-text">
+          {pr.body?.trim() ? (
+            <MarkdownRenderer content={pr.body} />
+          ) : (
+            <span className="text-nim-faint italic">No description provided.</span>
+          )}
         </div>
       </div>
 
@@ -105,8 +109,8 @@ export function ConversationTab({
               <span className="ml-auto">{formatRelative(entry.createdAt)}</span>
             </div>
             {entry.body.trim() && (
-              <div className="px-3 py-2 text-sm text-nim whitespace-pre-wrap select-text">
-                {entry.body}
+              <div className="px-3 py-2 text-sm text-nim select-text">
+                <MarkdownRenderer content={entry.body} />
               </div>
             )}
           </div>

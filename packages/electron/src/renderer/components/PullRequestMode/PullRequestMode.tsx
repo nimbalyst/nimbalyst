@@ -143,30 +143,33 @@ export function PullRequestMode({
     />
   );
 
+  // A selected PR takes over the whole content area (with a back-to-list
+  // button) instead of cramming into a side panel; the list is hidden while a
+  // PR is open. Both are kept mounted so returning to the list is instant and
+  // the Monaco diff isn't torn down mid-review by a list re-render.
   const mainContent = (
-    <div className="flex flex-row h-full w-full overflow-hidden">
-      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-        <GhOnboardingBanner />
-        <PullRequestListView
-          workspaceId={workspacePath}
-          remote={remoteForWorkspace}
-          isActive={isActive}
-        />
-      </div>
-      {selectedPr && (
-        <div
-          className="shrink-0 border-l border-nim overflow-hidden"
-          style={{ width: layout.detailPanelWidth }}
-        >
-          <PullRequestDetail
+    <div className="flex flex-col h-full w-full overflow-hidden">
+      <GhOnboardingBanner />
+      <div className="relative flex-1 min-h-0 overflow-hidden">
+        <div className={`absolute inset-0 ${selectedPr ? 'hidden' : 'flex'} flex-col`}>
+          <PullRequestListView
             workspaceId={workspacePath}
             remote={remoteForWorkspace}
-            pr={selectedPr}
-            onClose={() => setLayout({ selectedItemId: null })}
-            onOpenInClaudeCode={handleOpenInClaudeCode}
+            isActive={isActive}
           />
         </div>
-      )}
+        {selectedPr && (
+          <div className="absolute inset-0 flex flex-col">
+            <PullRequestDetail
+              workspaceId={workspacePath}
+              remote={remoteForWorkspace}
+              pr={selectedPr}
+              onClose={() => setLayout({ selectedItemId: null })}
+              onOpenInClaudeCode={handleOpenInClaudeCode}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 

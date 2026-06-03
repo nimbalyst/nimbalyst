@@ -7,13 +7,20 @@ interface MonacoDiffViewerProps {
   newContent: string;
   filePath: string;
   theme?: string;
+  /**
+   * Exact Monaco theme name to apply (e.g. from `getMonacoTheme(...)`), so the
+   * diff matches the app's active editor theme — including custom/extension
+   * themes. When omitted, falls back to the `theme` light/dark mapping.
+   */
+  monacoThemeName?: string;
 }
 
 export function MonacoDiffViewer({
   oldContent,
   newContent,
   filePath,
-  theme = 'light'
+  theme = 'light',
+  monacoThemeName,
 }: MonacoDiffViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const diffEditorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
@@ -23,8 +30,8 @@ export function MonacoDiffViewer({
 
     let disposed = false;
 
-    // Set Monaco theme based on current theme
-    const monacoTheme = theme === 'light' ? 'vs' : 'vs-dark';
+    // Prefer an explicit Monaco theme name (matches the app editor); else map.
+    const monacoTheme = monacoThemeName ?? (theme === 'light' ? 'vs' : 'vs-dark');
 
     // Detect language from file extension
     const language = getMonacoLanguage(filePath);
@@ -97,7 +104,7 @@ export function MonacoDiffViewer({
         console.error('[MonacoDiffViewer] Error disposing models:', error);
       }
     };
-  }, [oldContent, newContent, filePath, theme]);
+  }, [oldContent, newContent, filePath, theme, monacoThemeName]);
 
   return (
     <div className="monaco-diff-viewer flex flex-col h-full w-full overflow-hidden">
