@@ -33,6 +33,9 @@
 import type {
   BackendRuntimeContext,
   BackendToHostMessage,
+  BrokerMethodName,
+  BrokerPayloads,
+  BrokerResults,
   HostToBackendMessage,
 } from './extensionBackendRpc';
 import type { ExtensionPermissionId } from '@nimbalyst/extension-sdk';
@@ -112,6 +115,64 @@ export interface BackendServices {
    * Same as assertPermission but boolean-returning. Useful for branching.
    */
   hasPermission(permissionId: ExtensionPermissionId): boolean;
+
+  // -------------------------------------------------------------------------
+  // Phase 4 broker methods. Each round-trips to main via postMessage.
+  // EVERY method is permission-gated against the catalog:
+  //   1. assertPermission() on the client side (synchronous denial inside the
+  //      runtime — never round-trips when denied)
+  //   2. Main re-asserts via extensionCapabilityPolicy.assertPermission as
+  //      defense in depth, in case the runtime shim is bypassed or grants
+  //      were revoked between snapshot and call
+  //
+  // Per Q7 in phase-4-sdk-types-proposal: event-style methods (emitEvent,
+  // requestPermission, askUserQuestion) are PROVIDER-PRIVATE and intentionally
+  // NOT on this interface. They are injected by individual providers
+  // (e.g. AntigravityGeminiBridge) atop their own RPC surface, not by the
+  // generic backend services builder.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Persist a raw agent message via AgentMessagesRepository.
+   * Requires: `nimbalyst-database-write`.
+   */
+  logRaw(
+    sessionId: string,
+    direction: BrokerPayloads['logRaw']['direction'],
+    content: string,
+    metadata?: Record<string, unknown>
+  ): Promise<BrokerResults['logRaw']>;
+
+  /**
+   * Read a provider API key from the EXPLICIT Nimbalyst settings store ONLY.
+   * Never reads from process.env (per CLAUDE.md no-env-key rule). Returns
+   * `{ key: null }` if the user hasn't configured one.
+   * Requires: `secrets-read`.
+   */
+  getApiKey(providerId: string): Promise<BrokerResults['getApiKey']>;
+
+  /**
+   * Read a file rooted at workspacePath. Main-side enforces the workspace
+   * boundary - traversal outside workspacePath is rejected.
+   * Requires: `workspace-files`.
+   */
+  readWorkspaceFile(path: string): Promise<BrokerResults['readWorkspaceFile']>;
+
+  /**
+   * Write a file rooted at workspacePath. Main-side enforces the workspace
+   * boundary - writes outside workspacePath are rejected.
+   * Requires: `workspace-files`.
+   */
+  writeWorkspaceFile(path: string, content: string): Promise<BrokerResults['writeWorkspaceFile']>;
+
+  /**
+   * Register MCP tools with the McpConfigService so the host advertises them
+   * to coding-agent sessions.
+   * Requires: `mcp-server-register`.
+   */
+  registerMcpTools(
+    tools: BrokerPayloads['registerMcpTools']['tools']
+  ): Promise<BrokerResults['registerMcpTools']>;
 }
 
 class PermissionDeniedInRuntime extends Error {
@@ -123,8 +184,105 @@ class PermissionDeniedInRuntime extends Error {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Broker request/response plumbing
+// ---------------------------------------------------------------------------
+
+interface PendingBrokerCall {
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+}
+
+/**
+ * In-flight broker requests keyed by requestId. Shared across all service
+ * methods so a single response dispatch can route to the right caller.
+ * Populated by `makeBrokerCall`, drained by the bootstrap's onMessage
+ * handler when broker-response / broker-error arrives.
+ */
+const pendingBrokerCalls = new Map<string, PendingBrokerCall>();
+
+let brokerRequestSeq = 0;
+function nextBrokerRequestId(): string {
+  // Process-id + monotonically increasing counter. Unique within this runtime,
+  // which is all that matters since the host scopes responses by runtime.
+  brokerRequestSeq += 1;
+  return `brk-${process.pid}-${brokerRequestSeq}`;
+}
+
+function makeBrokerCall<M extends BrokerMethodName>(
+  send: SendToHost,
+  method: M,
+  payload: BrokerPayloads[M]
+): Promise<BrokerResults[M]> {
+  return new Promise<BrokerResults[M]>((resolve, reject) => {
+    const requestId = nextBrokerRequestId();
+    pendingBrokerCalls.set(requestId, {
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    });
+    try {
+      send({
+        kind: 'broker-request',
+        requestId,
+        method,
+        payload,
+      });
+    } catch (err) {
+      // postMessage itself failed - clean up and surface synchronously via reject.
+      pendingBrokerCalls.delete(requestId);
+      reject(err);
+    }
+  });
+}
+
+function resolveBrokerResponse(requestId: string, result: unknown): void {
+  const pending = pendingBrokerCalls.get(requestId);
+  if (!pending) return;
+  pendingBrokerCalls.delete(requestId);
+  pending.resolve(result);
+}
+
+function rejectBrokerResponse(
+  requestId: string,
+  error: { message: string; name?: string; code?: string; stack?: string }
+): void {
+  const pending = pendingBrokerCalls.get(requestId);
+  if (!pending) return;
+  pendingBrokerCalls.delete(requestId);
+  const e = new Error(error.message);
+  e.name = error.name ?? 'BrokerError';
+  if (error.stack) e.stack = error.stack;
+  if (error.code) (e as { code?: string }).code = error.code;
+  pending.reject(e);
+}
+
+// ---------------------------------------------------------------------------
+// Broker-event subscribers (for emitEvent fan-in on the backend side).
+// ---------------------------------------------------------------------------
+
+type BrokerEventHandler = (payload: unknown) => void;
+const brokerEventSubscribers = new Map<string, Set<BrokerEventHandler>>();
+
+function dispatchBrokerEvent(event: string, payload: unknown): void {
+  const handlers = brokerEventSubscribers.get(event);
+  if (!handlers) return;
+  for (const handler of handlers) {
+    try {
+      handler(payload);
+    } catch {
+      // Subscriber errors must not break the dispatch loop.
+    }
+  }
+}
+
 function buildServices(ctx: BackendRuntimeContext, send: SendToHost): BackendServices {
   const granted = new Set<ExtensionPermissionId>(ctx.grantedPermissions);
+
+  const assert = (permissionId: ExtensionPermissionId): void => {
+    if (!granted.has(permissionId)) {
+      throw new PermissionDeniedInRuntime(permissionId);
+    }
+  };
 
   return {
     workspacePath: ctx.workspacePath,
@@ -132,12 +290,59 @@ function buildServices(ctx: BackendRuntimeContext, send: SendToHost): BackendSer
     log: (level, message, data) => {
       send({ kind: 'log', level, message, data });
     },
-    assertPermission: (permissionId) => {
-      if (!granted.has(permissionId)) {
-        throw new PermissionDeniedInRuntime(permissionId);
-      }
-    },
+    assertPermission: assert,
     hasPermission: (permissionId) => granted.has(permissionId),
+
+    // -----------------------------------------------------------------------
+    // Phase 4 broker methods
+    // -----------------------------------------------------------------------
+
+    logRaw: (sessionId, direction, content, metadata) => {
+      // Synchronous in-runtime denial; main re-asserts as defense in depth.
+      assert('nimbalyst-database-write' as ExtensionPermissionId);
+      return makeBrokerCall(send, 'logRaw', { sessionId, direction, content, metadata });
+    },
+
+    getApiKey: (providerId) => {
+      assert('secrets-read' as ExtensionPermissionId);
+      return makeBrokerCall(send, 'getApiKey', { providerId });
+    },
+
+    readWorkspaceFile: (path) => {
+      assert('workspace-files' as ExtensionPermissionId);
+      return makeBrokerCall(send, 'readWorkspaceFile', { path });
+    },
+
+    writeWorkspaceFile: (path, content) => {
+      assert('workspace-files' as ExtensionPermissionId);
+      return makeBrokerCall(send, 'writeWorkspaceFile', { path, content });
+    },
+
+    registerMcpTools: (tools) => {
+      assert('mcp-server-register' as ExtensionPermissionId);
+      return makeBrokerCall(send, 'registerMcpTools', { tools });
+    },
+
+    // Per Q7: emitEvent / requestPermission / askUserQuestion are NOT injected
+    // here. Providers that need them layer their own bridge atop this object.
+  };
+}
+
+/**
+ * Internal hook used by integration tests to attach to broker-event fan-out.
+ * Not exposed on BackendServices because the MVP design has main pushing
+ * events one-way; backends consume them only via the host SDK shim.
+ */
+export function _subscribeBrokerEvent(event: string, handler: BrokerEventHandler): () => void {
+  let set = brokerEventSubscribers.get(event);
+  if (!set) {
+    set = new Set();
+    brokerEventSubscribers.set(event, set);
+  }
+  set.add(handler);
+  return () => {
+    set!.delete(handler);
+    if (set!.size === 0) brokerEventSubscribers.delete(event);
   };
 }
 
@@ -321,6 +526,18 @@ async function main(): Promise<void> {
       }
       case 'rpc-cancel': {
         loaded?.abortByRpcId.get(msg.id)?.abort();
+        break;
+      }
+      case 'broker-response': {
+        resolveBrokerResponse(msg.requestId, msg.result);
+        break;
+      }
+      case 'broker-error': {
+        rejectBrokerResponse(msg.requestId, msg.error);
+        break;
+      }
+      case 'broker-event': {
+        dispatchBrokerEvent(msg.event, msg.payload);
         break;
       }
       case 'shutdown': {

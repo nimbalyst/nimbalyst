@@ -25,6 +25,150 @@ import type { TrackerImporterContribution } from './trackerImporter';
 export const MAX_BACKEND_MODULES_PER_EXTENSION = 8;
 
 /**
+ * Manifest validation rejects extensions declaring more than this many
+ * AI agent providers, to keep the provider dropdown manageable and to
+ * bound the registration cost on the host side.
+ */
+export const MAX_AGENT_PROVIDERS_PER_EXTENSION = 4;
+
+/**
+ * How a provider discovers the model list shown in the UI model picker.
+ *
+ * - `static`  -- the list is fixed at manifest time and lives in the
+ *                contribution's `models` array. Use when the provider
+ *                supports a small, stable set of models.
+ * - `dynamic` -- the provider exposes a `listModels()` method on its
+ *                protocol implementation. The host calls it lazily and
+ *                caches the result for the session. Use when the set of
+ *                models depends on user credentials or remote discovery.
+ */
+export type AiAgentProviderModelDiscovery = 'static' | 'dynamic';
+
+/**
+ * A single static model entry advertised by an agent provider. Used
+ * only when `modelDiscovery` is `'static'`; dynamic providers populate
+ * model metadata at runtime via `listModels()` on the protocol.
+ */
+export interface AiAgentProviderModel {
+  /**
+   * Stable model id passed back to the provider on each turn. Opaque
+   * to the host; recorded in session history.
+   */
+  id: string;
+
+  /** Human-readable label shown in the model picker. */
+  name: string;
+
+  /**
+   * Whether this entry is the provider's default model selection.
+   * Exactly zero or one entry per contribution should set this.
+   */
+  default?: boolean;
+}
+
+/**
+ * Manifest contribution for an AI agent provider.
+ *
+ * An `AiAgentProviderContribution` makes an extension's coding-agent
+ * implementation available as a selectable provider in Nimbalyst's
+ * agentic coding session UI. The contribution is metadata only -- it
+ * describes the provider's identity, capabilities, and supported
+ * models -- while the protocol implementation lives in a backend
+ * module referenced by `backendModuleId`.
+ *
+ * The host wires manifest entries to runtime providers at session
+ * creation:
+ *
+ *   1. The user picks a provider from the agent-provider dropdown.
+ *   2. The host looks up the matching `AiAgentProviderContribution`.
+ *   3. The host loads `backendModuleId` (subject to the user having
+ *      granted the backing `BackendModuleContribution`) and asks it
+ *      for an `AgentProtocol` implementation.
+ *   4. The host creates an `AgentProtocolHost` and hands it to the
+ *      protocol implementation for the lifetime of the session.
+ *
+ * See `agents/AgentProtocolHost.ts` and the Phase 4 SDK design doc
+ * for the runtime contract.
+ */
+export interface AiAgentProviderContribution {
+  /**
+   * Stable provider id unique within the extension (e.g.
+   * `antigravity-gemini`). The host namespaces this with the
+   * extension id when persisting session-provider links, so a value
+   * unique within the extension is sufficient.
+   */
+  id: string;
+
+  /** Human-readable name shown in the provider dropdown. */
+  displayName: string;
+
+  /**
+   * Platform string surfaced in the provider details pane (e.g.
+   * `Gemini`, `Claude`, `OpenAI`). Treated as display text only.
+   */
+  platform: string;
+
+  /**
+   * Id of the `BackendModuleContribution` (same extension) that
+   * implements the `AgentProtocol` for this provider. The protocol
+   * implementation is loaded from this module; the contribution is
+   * hidden from the dropdown until the user has granted the module.
+   */
+  backendModuleId: string;
+
+  /**
+   * Whether the provider can resume an existing session by id.
+   * Defaults to `false`. When `true`, the host may call
+   * `protocol.resume(sessionId)` instead of `protocol.start(...)`.
+   */
+  supportsResume?: boolean;
+
+  /**
+   * Whether the provider can fork (clone) a session at a given
+   * canonical event index into a new branch. Defaults to `false`.
+   */
+  supportsForking?: boolean;
+
+  /**
+   * Whether the provider accepts user-attached files (images,
+   * documents) on a turn. Defaults to `false`.
+   */
+  supportsAttachments?: boolean;
+
+  /** How model discovery is performed. */
+  modelDiscovery: AiAgentProviderModelDiscovery;
+
+  /**
+   * Static model list. Used when `modelDiscovery` is `'static'`;
+   * ignored when `modelDiscovery` is `'dynamic'` (the host calls
+   * `listModels()` on the protocol instead). Validators may still
+   * require a non-empty array when `modelDiscovery === 'static'`.
+   */
+  models: AiAgentProviderModel[];
+
+  /**
+   * Optional map of label to extension-relative path. Each entry
+   * surfaces a bundled documentation file in the provider details
+   * pane (e.g. built-in tool docs). The host treats values as opaque
+   * paths and does not parse the files.
+   */
+  toolFileLinks?: Record<string, string>;
+
+  /**
+   * Material icon name shown next to `displayName` in the provider
+   * dropdown. Optional; the host falls back to a generic agent icon.
+   */
+  icon?: string;
+
+  /**
+   * Component name (key in `ExtensionModule.settingsPanel`) for an
+   * optional provider-specific settings panel. When present, the
+   * host renders this panel under the provider entry in Settings.
+   */
+  settingsPanelComponent?: string;
+}
+
+/**
  * Extension manifest schema (manifest.json)
  */
 export interface ExtensionManifest {
@@ -274,6 +418,23 @@ export interface ExtensionContributions {
    * create/merge path. See {@link TrackerImporterContribution}.
    */
   trackerImporters?: TrackerImporterContribution[];
+
+  /**
+   * AI agent providers contributed by this extension.
+   *
+   * Each entry registers a new agent-protocol provider (e.g. an
+   * Antigravity/Gemini integration) that the user can pick from the
+   * agent-provider dropdown in a coding session. The contribution
+   * declares its identity and capabilities here; the protocol
+   * implementation itself lives in a backend module referenced by
+   * `backendModuleId`.
+   *
+   * Granting the backing backend module is the consent that lets the
+   * provider run; an `aiAgentProviders` entry whose backend module has
+   * not been granted is hidden from the dropdown rather than failing
+   * at turn time.
+   */
+  aiAgentProviders?: AiAgentProviderContribution[];
 }
 
 /**

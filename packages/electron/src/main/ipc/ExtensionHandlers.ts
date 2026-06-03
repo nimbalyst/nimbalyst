@@ -40,6 +40,12 @@ import {
   isAllowedToContributeBackendModules,
   type BackendModuleAllowResult,
 } from '../extensions/backendModuleAllowlist';
+import { getAgentProviderRegistry } from '../extensions/AgentProviderRegistry';
+import type {
+  AiAgentProviderContribution,
+  BackendModuleContribution,
+  ExtensionManifest,
+} from '@nimbalyst/extension-sdk';
 
 /**
  * Validate `contributions.backendModules` on a parsed manifest, then apply
@@ -662,6 +668,52 @@ export async function getClaudePluginPaths(workspacePath?: string): Promise<Arra
 }
 
 /**
+ * Register each `aiAgentProviders` contribution from a parsed manifest into
+ * the AgentProviderRegistry. Skips contributions whose `backendModuleId`
+ * doesn't point at a surviving `backendModules` entry -- a contribution that
+ * lost its backing module (because validation stripped it, or it was never
+ * declared) is dead weight; hiding it from the dropdown is correct.
+ *
+ * Called from the list-installed scan AFTER validateAndScrubBackendModules
+ * has run so `manifest.contributions.backendModules` reflects what actually
+ * survived.
+ */
+function registerAgentProviderContributions(
+  manifest: ExtensionManifest,
+  extensionId: string,
+  extensionPath: string
+): void {
+  const contributions = manifest.contributions as
+    | { backendModules?: BackendModuleContribution[]; aiAgentProviders?: AiAgentProviderContribution[] }
+    | undefined;
+  const providers = contributions?.aiAgentProviders;
+  if (!providers || providers.length === 0) return;
+
+  const surviving = new Set<string>(
+    (contributions?.backendModules ?? []).map((m) => m.id)
+  );
+  const registry = getAgentProviderRegistry();
+  for (const provider of providers) {
+    if (!surviving.has(provider.backendModuleId)) {
+      logger.main.warn(
+        `[ExtensionHandlers] Extension ${extensionId} aiAgentProviders[${provider.id}] ` +
+          `references backendModuleId "${provider.backendModuleId}" which is not a surviving ` +
+          `backend module. Hiding the provider from the dropdown.`
+      );
+      continue;
+    }
+    registry.register({
+      extensionId,
+      contributionId: provider.id,
+      manifest,
+      contribution: provider,
+      backendModuleId: provider.backendModuleId,
+      extensionPath,
+    });
+  }
+}
+
+/**
  * Register IPC handlers for extension operations.
  */
 export function registerExtensionHandlers(): void {
@@ -921,6 +973,16 @@ export function registerExtensionHandlers(): void {
               isSymlink,
             });
 
+            // Catalog any `aiAgentProviders` whose backing backend module
+            // survived. The registry entry is metadata only; the host won't
+            // spawn the runtime until a session targeting this provider
+            // triggers the first-use consent flow.
+            registerAgentProviderContributions(
+              manifest as ExtensionManifest,
+              extensionId,
+              extensionPath
+            );
+
             // Register file patterns from customEditors
             if (manifest.contributions?.customEditors) {
               for (const editor of manifest.contributions.customEditors) {
@@ -1136,6 +1198,10 @@ export function registerExtensionHandlers(): void {
           if (manifest.id === extensionId) {
             // Found it - remove the symlink/directory
             await fs.rm(entryPath, { recursive: true, force: true });
+            // Evict any aiAgentProviders the extension had registered so
+            // the dropdown stops listing them. The PrivilegedExtensionHost
+            // handles its own teardown via handleExtensionUninstalled.
+            getAgentProviderRegistry().clearAll(extensionId);
             logger.main.info(`[ExtensionHandlers] Removed dev extension: ${extensionId} at ${entryPath}`);
             return { success: true };
           }
