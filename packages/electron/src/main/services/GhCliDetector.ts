@@ -16,6 +16,14 @@ const CACHE_DURATION_MS = 30_000;
 const SPAWN_TIMEOUT_MS = 10_000;
 
 /**
+ * The `gh` executable to spawn. Honors `NIMBALYST_GH_PATH` so E2E tests can
+ * point at a stub and users can pin a non-standard install location.
+ */
+function ghCommand(): string {
+  return process.env.NIMBALYST_GH_PATH || 'gh';
+}
+
+/**
  * Service to detect the GitHub CLI (`gh`) installation and authentication state.
  *
  * Used by the PR review panel. Nimbalyst never holds a GitHub token; this
@@ -101,7 +109,7 @@ export class GhCliDetector {
           PATH: this.getEnhancedPath(),
         };
 
-        const child = spawn('gh', ['--version'], {
+        const child = spawn(ghCommand(), ['--version'], {
           timeout: SPAWN_TIMEOUT_MS,
           shell: true,
           env,
@@ -155,7 +163,7 @@ export class GhCliDetector {
           NO_COLOR: '1',
         };
 
-        const child = spawn('gh', ['auth', 'status'], {
+        const child = spawn(ghCommand(), ['auth', 'status'], {
           timeout: SPAWN_TIMEOUT_MS,
           shell: true,
           env,
