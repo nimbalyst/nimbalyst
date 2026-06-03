@@ -96,6 +96,34 @@ export function PullRequestMode({
     [setLayout],
   );
 
+  const selectedPr =
+    layout.selectedItemId != null
+      ? prList.find((pr) => pr.id === layout.selectedItemId) ?? null
+      : null;
+
+  // Create (or reuse) a worktree on the PR branch, then jump to Agent mode
+  // with that worktree selected so the user can start a Claude Code session.
+  // NOTE: this hook (and every other) must run before the early return below,
+  // or switching to a project without a GitHub remote changes the hook count
+  // and React throws "Rendered fewer hooks than expected".
+  const handleOpenInClaudeCode = useCallback(async () => {
+    if (!selectedPr || !remoteForWorkspace) return;
+    try {
+      const worktree = await getPullRequestService().openWorktree(
+        workspacePath,
+        remoteForWorkspace,
+        selectedPr.number,
+      );
+      setSelectedWorkstream({
+        workspacePath,
+        selection: { type: 'worktree', id: worktree.id },
+      });
+      setWindowMode('agent');
+    } catch (err) {
+      console.error('[PullRequestMode] Failed to open PR worktree', err);
+    }
+  }, [selectedPr, remoteForWorkspace, workspacePath, setSelectedWorkstream, setWindowMode]);
+
   if (!remoteForWorkspace) {
     return (
       <div className="pr-review-mode flex flex-col h-full w-full overflow-hidden">
@@ -114,31 +142,6 @@ export function PullRequestMode({
       onToggleFilter={handleToggleFilter}
     />
   );
-
-  const selectedPr =
-    layout.selectedItemId != null
-      ? prList.find((pr) => pr.id === layout.selectedItemId) ?? null
-      : null;
-
-  // Create (or reuse) a worktree on the PR branch, then jump to Agent mode
-  // with that worktree selected so the user can start a Claude Code session.
-  const handleOpenInClaudeCode = useCallback(async () => {
-    if (!selectedPr || !remoteForWorkspace) return;
-    try {
-      const worktree = await getPullRequestService().openWorktree(
-        workspacePath,
-        remoteForWorkspace,
-        selectedPr.number,
-      );
-      setSelectedWorkstream({
-        workspacePath,
-        selection: { type: 'worktree', id: worktree.id },
-      });
-      setWindowMode('agent');
-    } catch (err) {
-      console.error('[PullRequestMode] Failed to open PR worktree', err);
-    }
-  }, [selectedPr, remoteForWorkspace, workspacePath, setSelectedWorkstream, setWindowMode]);
 
   const mainContent = (
     <div className="flex flex-row h-full w-full overflow-hidden">
