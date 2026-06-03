@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import {ClaudeForWindowsInstallation} from "../main/services/CLIManager.ts";
+import type { GhCliStatus } from '../main/services/GhCliDetector.ts';
 
 // Nimbalyst is an IDE-like application with many concurrent IPC listeners:
 // - File watching, git status, AI sessions, terminals, extensions, etc.
@@ -1169,6 +1170,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('worktree:list-gitignored', worktreePath),
   worktreeCleanGitignored: (worktreePath: string) =>
     ipcRenderer.invoke('worktree:clean-gitignored', worktreePath),
+
+  // PR review panel — gh CLI status (Phase A of issue #307)
+  ghCliStatus: () => ipcRenderer.invoke('pr:gh-status'),
+  ghCliRefreshStatus: () => ipcRenderer.invoke('pr:gh-refresh-status'),
+  onGhCliStatusChanged: (callback: (status: GhCliStatus) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: GhCliStatus) => callback(status);
+    ipcRenderer.on('pr:gh-status-changed', handler);
+    return () => ipcRenderer.removeListener('pr:gh-status-changed', handler);
+  },
 
   // Archive progress operations
   archive: {

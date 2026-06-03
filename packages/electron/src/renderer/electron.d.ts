@@ -29,6 +29,14 @@ interface ArchiveTask {
   error?: string;
 }
 
+interface GhCliStatus {
+  installed: boolean;
+  version?: string;
+  authed: boolean;
+  host?: string;
+  user?: string;
+}
+
 interface ElectronAPI {
   // File menu callbacks
   onFileNew: (callback: () => void) => () => void;
@@ -1105,6 +1113,19 @@ interface ElectronAPI {
     removed?: string[];
     count?: number;
   }>;
+
+  // PR review panel — gh CLI status (Phase A of issue #307)
+  ghCliStatus: () => Promise<{
+    success: boolean;
+    error?: string;
+    data?: GhCliStatus;
+  }>;
+  ghCliRefreshStatus: () => Promise<{
+    success: boolean;
+    error?: string;
+    data?: GhCliStatus;
+  }>;
+  onGhCliStatusChanged: (callback: (status: GhCliStatus) => void) => () => void;
 
   // Archive progress operations
   archive: {
