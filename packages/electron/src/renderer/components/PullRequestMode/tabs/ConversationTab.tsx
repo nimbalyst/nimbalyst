@@ -68,7 +68,8 @@ export function ConversationTab({
 
   return (
     <div className="pr-conversation-tab flex flex-col gap-3 p-4 overflow-y-auto h-full" data-testid="pr-conversation-tab">
-      {/* PR description */}
+      {/* ---- Description (the PR body) ---- */}
+      <SectionHeader label="Description" icon="description" />
       <div className="border border-nim rounded-md overflow-hidden">
         <div className="flex items-center gap-2 px-3 py-2 bg-nim-secondary border-b border-nim text-xs text-nim-muted">
           {pr.authorLogin && <span className="font-medium text-nim">{pr.authorLogin}</span>}
@@ -83,6 +84,13 @@ export function ConversationTab({
           )}
         </div>
       </div>
+
+      {/* ---- Conversation (comments + reviews) ---- */}
+      <SectionHeader
+        label="Conversation"
+        icon="forum"
+        count={timeline.length > 0 ? timeline.length : undefined}
+      />
 
       {error && (
         <div className="text-nim-error text-sm flex items-center gap-2">
@@ -119,6 +127,26 @@ export function ConversationTab({
 
       {!loading && timeline.length === 0 && !error && (
         <div className="text-nim-faint text-sm text-center py-4">No comments yet.</div>
+      )}
+    </div>
+  );
+}
+
+function SectionHeader({
+  label,
+  icon,
+  count,
+}: {
+  label: string;
+  icon: string;
+  count?: number;
+}): JSX.Element {
+  return (
+    <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-nim-faint mt-1 first:mt-0">
+      <MaterialSymbol icon={icon} size={14} />
+      <span>{label}</span>
+      {count !== undefined && (
+        <span className="text-nim-muted normal-case font-normal">({count})</span>
       )}
     </div>
   );
