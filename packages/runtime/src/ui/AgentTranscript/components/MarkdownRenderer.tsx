@@ -8,6 +8,7 @@ import {
   useTranscriptMarkdownStyles,
 } from '../contributions';
 import { escapeCurrencyDollars } from '../utils/escapeCurrencyDollars';
+import { rehypeAutolinkFilePaths } from '../markdown/rehypeAutolinkFilePaths';
 
 // Inject MarkdownRenderer styles once (for syntax highlighting, scrollbar, and overflow wrapper)
 const injectMarkdownRendererStyles = () => {
@@ -378,8 +379,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     [contributions.remarkPlugins],
   );
   const rehypePlugins = useMemo<PluggableList>(
-    () => [...contributions.rehypePlugins] as PluggableList,
-    [contributions.rehypePlugins],
+    () => [
+      // Autolink bare file paths into clickable file-open links. Only useful
+      // when there is a file-open handler to route the click to.
+      ...(onOpenFile ? [rehypeAutolinkFilePaths] : []),
+      ...contributions.rehypePlugins,
+    ] as PluggableList,
+    [contributions.rehypePlugins, onOpenFile],
   );
 
   // Pre-escape currency-pattern dollar signs so `remark-math` does not
@@ -565,8 +571,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
             </p>
           ),
           // Links
-          a: ({ href, children }) => {
-            const filePath = onOpenFile ? resolveTranscriptFilePathFromHref(href) : null;
+          a: ({ href, children, node }: any) => {
+            // Paths wrapped by `rehypeAutolinkFilePaths` carry a marker with the
+            // raw match (possibly with a :line:col suffix). They may be
+            // workspace-relative, which the markdown-href resolver rejects, so
+            // resolve them directly here and strip the location suffix before
+            // opening.
+            const autolinkedPath = node?.properties?.dataFilePath as string | undefined;
+            const resolvedAutolink =
+              onOpenFile && autolinkedPath ? stripLineAndColumnSuffix(autolinkedPath) : null;
+            const filePath =
+              resolvedAutolink ?? (onOpenFile ? resolveTranscriptFilePathFromHref(href) : null);
             const isSessionLink = onOpenSession && href && SESSION_UUID_RE.test(href.trim());
             const isInternalLink = filePath || isSessionLink;
             return (

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- File paths mentioned in AI transcripts are now clickable links that open the file, even when the agent writes them as plain text or inline code.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

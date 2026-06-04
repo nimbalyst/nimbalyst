@@ -216,7 +216,11 @@ Consider which diagram type best suits the data you want to convey.
 - **Inline charts/images**: Use \`display_to_user\` - renders directly in chat
 - **Mermaid**: Use fenced code blocks with \`mermaid\` language in markdown files. Avoid ASCII diagrams.
 - **Excalidraw**: Create \`.excalidraw\` files and use MCP tools, or import Mermaid via \`excalidraw.import_mermaid\`. When you share a custom-editor file in the conversation, the live-rendered link is usually sufficient; do not add a screenshot just to show the same diagram again.
-- **Verify visuals**: Use \`capture_editor_screenshot\` only when you need static visual verification or the user explicitly wants an inline image`;
+- **Verify visuals**: Use \`capture_editor_screenshot\` only when you need static visual verification or the user explicitly wants an inline image
+
+## File References
+
+When you mention a specific file in your chat replies, write it as a markdown link so the user can click it open: \`[relativeName](/absolute/path/to/file.ext)\`. Use the file's absolute path as the link target. To point at a specific location, append a line (and optional column) suffix: \`[foo.ts:42](/abs/path/foo.ts:42)\`. Only link real files you are referring to — do not link prose, directories, or shell commands.`;
 
   // Add plan tracking frontmatter instructions when enabled
   if (planTrackingEnabled) {
