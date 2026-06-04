@@ -2483,31 +2483,6 @@ class PGLiteWorker {
       throw error;
     }
 
-    // 0010_pr_commit_stats — per-commit additions/deletions (issue #307).
-    try {
-      await this.db.exec(`
-        DO $$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'pull_request_commits' AND column_name = 'additions'
-          ) THEN
-            ALTER TABLE pull_request_commits ADD COLUMN additions INTEGER NOT NULL DEFAULT 0;
-          END IF;
-          IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'pull_request_commits' AND column_name = 'deletions'
-          ) THEN
-            ALTER TABLE pull_request_commits ADD COLUMN deletions INTEGER NOT NULL DEFAULT 0;
-          END IF;
-        END $$;
-      `);
-      console.log('[PGLite Worker] pull_request_commits stats columns ensured');
-    } catch (error) {
-      console.error('[PGLite Worker] Failed to add pull_request_commits stats columns:', error);
-      throw error;
-    }
-
     console.log('[PGLite Worker] Creating pull_request_checks table...');
     try {
       await this.db.exec(`

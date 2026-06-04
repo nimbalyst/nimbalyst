@@ -1,12 +1,12 @@
 /**
  * GhOnboardingBanner — surfaces the `gh` CLI install/auth state inside the
- * PR review panel. Phase A of issue #307.
+ * PR review panel.
  *
  * Rendered as a sticky top bar by `PullRequestMode` when the cached
  * `GhCliStatus` indicates a problem. Self-contained — owns its own status
  * subscription so it can be dropped anywhere the PR review panel needs to
  * warn the user. Dismissal persistence is handled by the parent via the
- * `onDismiss` callback (wired to workspace-settings in Phase F).
+ * `onDismiss` callback (wired to workspace-settings).
  */
 
 import { useEffect, useState } from 'react';

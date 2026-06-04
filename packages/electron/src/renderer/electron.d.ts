@@ -1263,11 +1263,68 @@ interface ElectronAPI {
     remote: string,
     number: number,
   ) => Promise<{ success: boolean; error?: string; data?: PullRequestTimelineEntry[] }>;
+  prReviewThreads: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{
+    success: boolean;
+    error?: string;
+    data?: {
+      threads: Array<{
+        id: string;
+        isResolved: boolean;
+        isOutdated: boolean;
+        path: string | null;
+        line: number | null;
+        comments: Array<{
+          id: string;
+          authorLogin: string | null;
+          body: string;
+          createdAt: number;
+          url: string | null;
+        }>;
+      }>;
+      truncated: boolean;
+    };
+  }>;
   prRefresh: (
     workspaceId: string,
     remote: string,
     number?: number,
   ) => Promise<{ success: boolean; error?: string; data?: { fetchedAt: number } }>;
+
+  // PR review panel — review/merge actions + access control (issue #307)
+  prPermissions: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{
+    success: boolean;
+    error?: string;
+    data?: {
+      viewerLogin: string | null;
+      canApprove: boolean;
+      canMerge: boolean;
+      mergeMethods: { squash: boolean; merge: boolean; rebase: boolean };
+      mergeable: boolean | null;
+      mergeableState: string | null;
+      state: 'open' | 'closed' | 'merged';
+      isDraft: boolean;
+    };
+  }>;
+  prApprove: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+    body?: string,
+  ) => Promise<{ success: boolean; error?: string; data?: { ok: boolean } }>;
+  prMerge: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+    method: 'merge' | 'squash' | 'rebase',
+  ) => Promise<{ success: boolean; error?: string; data?: { merged: boolean; sha: string | null } }>;
 
   // PR review panel — polling scheduler (Phase D of issue #307)
   prStartPolling: (

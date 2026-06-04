@@ -1,5 +1,5 @@
 /**
- * Pull request review panel listeners (issue #307, Phase E).
+ * Pull request review panel listeners.
  *
  * Centralized IPC subscriber that populates the PR atoms. Follows
  * IPC_LISTENERS.md — components never subscribe to IPC directly; this runs

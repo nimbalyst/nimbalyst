@@ -2,12 +2,12 @@
  * PullRequestsStore - Database CRUD for the PR review panel cache.
  *
  * Backs the `pull_requests`, `pull_request_files`, `pull_request_commits`,
- * and `pull_request_checks` tables introduced in migration 0009 (issue #307,
- * Phase B). Pattern follows WorktreeStore — a factory that takes the
- * PGLite/SQLite handle and returns a typed object with CRUD methods.
+ * and `pull_request_checks` tables from migration 0009. Pattern follows
+ * WorktreeStore — a factory that takes the PGLite/SQLite handle and returns a
+ * typed object with CRUD methods.
  *
  * The store is main-process only; the renderer reads via the `pr:list` /
- * `pr:get` / `pr:files` IPC channels (Phase C).
+ * `pr:get` / `pr:files` IPC channels.
  *
  * Dual-backend caveat: `data->'key'` sub-extraction returns a parsed object
  * on PGLite but a JSON string on SQLite. We always select whole rows and

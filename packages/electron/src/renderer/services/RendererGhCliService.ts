@@ -1,9 +1,9 @@
 /**
  * RendererGhCliService - Renderer-side facade for the `gh` CLI detector.
  *
- * Thin wrapper over the preload bridge methods registered in Phase A of
- * issue #307. Used by the PR review panel's onboarding banner to surface
- * GitHub CLI install/auth state without exposing any credentials.
+ * Thin wrapper over the preload bridge methods. Used by the PR review panel's
+ * onboarding banner to surface GitHub CLI install/auth state without exposing
+ * any credentials.
  */
 
 import type { GhCliStatus as MainGhCliStatus } from '../../main/services/GhCliDetector';

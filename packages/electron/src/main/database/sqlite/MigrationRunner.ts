@@ -81,6 +81,11 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'guard_fts_triggers',
       sqlFile: path.join(schemaDir, '0008_guard_fts_triggers.sql'),
     },
+    {
+      version: 9,
+      name: 'worktree_pr_linkage',
+      sqlFile: path.join(schemaDir, '0009_worktree_pr_linkage.sql'),
+    },
   ];
 }
 

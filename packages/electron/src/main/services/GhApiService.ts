@@ -8,8 +8,6 @@
  *
  * Methods accept a `workspaceId` so cached rows persist scoped to a project,
  * and a `Remote` (owner/repo string) which is opaque to this service.
- *
- * Phase C of the PR review panel MVP (issue #307).
  */
 
 import { spawn } from 'child_process';
@@ -30,6 +28,8 @@ const logger = log.scope('GhApiService');
 const SPAWN_TIMEOUT_MS = 30_000;
 const DEFAULT_CACHE_LIST_SECONDS = 60;
 const DEFAULT_CACHE_DETAIL_SECONDS = 30;
+/** Page size for paginated REST fetches (`per_page=N`) and GraphQL `first:N`. */
+const API_PAGE_SIZE = 100;
 
 /**
  * The `gh` executable to spawn. Honors `NIMBALYST_GH_PATH` so E2E tests can
@@ -59,6 +59,60 @@ export interface TimelineEntry {
   state?: string;
   createdAt: number;
   url: string | null;
+}
+
+export type MergeMethod = 'merge' | 'squash' | 'rebase';
+
+export interface RepoPermissions {
+  admin: boolean;
+  maintain: boolean;
+  push: boolean;
+  triage: boolean;
+  pull: boolean;
+}
+
+/**
+ * Everything the renderer needs to decide which PR action buttons to show,
+ * all derived from `gh` (the authenticated user's repo permissions + the
+ * repo's allowed merge methods). No button is shown that the user's access
+ * doesn't permit.
+ */
+export interface RepoCapabilities {
+  viewerLogin: string | null;
+  permissions: RepoPermissions;
+  allowSquashMerge: boolean;
+  allowMergeCommit: boolean;
+  allowRebaseMerge: boolean;
+  deleteBranchOnMerge: boolean;
+}
+
+export interface MergeResult {
+  sha: string | null;
+  merged: boolean;
+  message?: string;
+}
+
+export interface ReviewThreadComment {
+  id: string;
+  authorLogin: string | null;
+  body: string;
+  createdAt: number;
+  url: string | null;
+}
+
+export interface ReviewThread {
+  id: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string | null;
+  line: number | null;
+  comments: ReviewThreadComment[];
+}
+
+export interface ReviewThreadsResult {
+  threads: ReviewThread[];
+  /** True when the PR has more than the fetched page of threads. */
+  truncated: boolean;
 }
 
 export class GhApiError extends Error {
@@ -524,7 +578,7 @@ export class GhApiService {
     if (filters.awaitingMyReview) {
       const query = `is:pr+is:open+review-requested:@me+repo:${remote}`;
       const stdout = await this.ghApi(
-        buildApiArgs(`search/issues?q=${query}&per_page=100`, {
+        buildApiArgs(`search/issues?q=${query}&per_page=${API_PAGE_SIZE}`, {
           cacheSeconds: DEFAULT_CACHE_LIST_SECONDS,
           paginate: true,
         }),
@@ -596,7 +650,7 @@ export class GhApiService {
     number: number,
   ): Promise<PullRequestFileRow[]> {
     const stdout = await this.ghApi(
-      buildApiArgs(`repos/${remote}/pulls/${number}/files?per_page=100`, {
+      buildApiArgs(`repos/${remote}/pulls/${number}/files?per_page=${API_PAGE_SIZE}`, {
         cacheSeconds: DEFAULT_CACHE_DETAIL_SECONDS,
         paginate: true,
       }),
@@ -614,7 +668,7 @@ export class GhApiService {
     number: number,
   ): Promise<PullRequestCommitRow[]> {
     const stdout = await this.ghApi(
-      buildApiArgs(`repos/${remote}/pulls/${number}/commits?per_page=100`, {
+      buildApiArgs(`repos/${remote}/pulls/${number}/commits?per_page=${API_PAGE_SIZE}`, {
         cacheSeconds: DEFAULT_CACHE_DETAIL_SECONDS,
         paginate: true,
       }),
@@ -666,7 +720,7 @@ export class GhApiService {
     // Modern check-runs endpoint.
     try {
       const stdout = await this.ghApi(
-        buildApiArgs(`repos/${remote}/commits/${headSha}/check-runs?per_page=100`, {
+        buildApiArgs(`repos/${remote}/commits/${headSha}/check-runs?per_page=${API_PAGE_SIZE}`, {
           cacheSeconds: DEFAULT_CACHE_DETAIL_SECONDS,
         }),
       workspaceId,);
@@ -724,7 +778,7 @@ export class GhApiService {
 
     try {
       const stdout = await this.ghApi(
-        buildApiArgs(`repos/${remote}/issues/${number}/comments?per_page=100`, {
+        buildApiArgs(`repos/${remote}/issues/${number}/comments?per_page=${API_PAGE_SIZE}`, {
           cacheSeconds: DEFAULT_CACHE_DETAIL_SECONDS,
           paginate: true,
         }),
@@ -746,7 +800,7 @@ export class GhApiService {
 
     try {
       const stdout = await this.ghApi(
-        buildApiArgs(`repos/${remote}/pulls/${number}/reviews?per_page=100`, {
+        buildApiArgs(`repos/${remote}/pulls/${number}/reviews?per_page=${API_PAGE_SIZE}`, {
           cacheSeconds: DEFAULT_CACHE_DETAIL_SECONDS,
           paginate: true,
         }),
@@ -796,6 +850,188 @@ export class GhApiService {
       return Buffer.from(payload.content, 'base64').toString('utf8');
     }
     return payload.content;
+  }
+
+  // ----- Review / merge actions + access control -------------------------
+
+  /** The login of the gh account Nimbalyst uses for this workspace's calls. */
+  async getViewerLogin(workspaceId: string): Promise<string | null> {
+    const stdout = await this.ghApi(
+      buildApiArgs('user', { cacheSeconds: 300 }),
+      workspaceId,
+    );
+    const payload = JSON.parse(stdout.trim()) as { login?: string };
+    return payload.login ?? null;
+  }
+
+  /**
+   * Repo-level capabilities for the authenticated user: their effective
+   * permissions and the merge methods the repo allows. GitHub only returns
+   * the `allow_*` flags to users with write access (null otherwise), which is
+   * fine — without `push` the merge buttons are hidden regardless.
+   */
+  async getRepoCapabilities(workspaceId: string, remote: Remote): Promise<RepoCapabilities> {
+    const stdout = await this.ghApi(
+      buildApiArgs(`repos/${remote}`, { cacheSeconds: DEFAULT_CACHE_LIST_SECONDS }),
+      workspaceId,
+    );
+    const payload = JSON.parse(stdout.trim()) as {
+      permissions?: Partial<RepoPermissions>;
+      allow_squash_merge?: boolean | null;
+      allow_merge_commit?: boolean | null;
+      allow_rebase_merge?: boolean | null;
+      delete_branch_on_merge?: boolean | null;
+    };
+    const perms = payload.permissions ?? {};
+    let viewerLogin: string | null = null;
+    try {
+      viewerLogin = await this.getViewerLogin(workspaceId);
+    } catch (error) {
+      logger.warn('viewer login fetch failed', { error });
+    }
+    return {
+      viewerLogin,
+      permissions: {
+        admin: Boolean(perms.admin),
+        maintain: Boolean(perms.maintain),
+        push: Boolean(perms.push),
+        triage: Boolean(perms.triage),
+        pull: Boolean(perms.pull),
+      },
+      allowSquashMerge: payload.allow_squash_merge === true,
+      allowMergeCommit: payload.allow_merge_commit === true,
+      allowRebaseMerge: payload.allow_rebase_merge === true,
+      deleteBranchOnMerge: Boolean(payload.delete_branch_on_merge),
+    };
+  }
+
+  /** Submit an APPROVE review. Fails (422) on your own PR — GitHub disallows self-approval. */
+  async approvePullRequest(
+    workspaceId: string,
+    remote: Remote,
+    number: number,
+    body?: string,
+  ): Promise<void> {
+    const args = [
+      'api',
+      '-X',
+      'POST',
+      `repos/${remote}/pulls/${number}/reviews`,
+      '-H',
+      'Accept: application/vnd.github+json',
+      '-H',
+      'X-GitHub-Api-Version: 2022-11-28',
+      '-f',
+      'event=APPROVE',
+    ];
+    if (body && body.trim()) {
+      args.push('-f', `body=${body}`);
+    }
+    await this.ghApi(args, workspaceId);
+  }
+
+  /** Merge the PR with the given method. Throws GhApiError on 405/409/422 (carries stderr). */
+  async mergePullRequest(
+    workspaceId: string,
+    remote: Remote,
+    number: number,
+    method: MergeMethod,
+  ): Promise<MergeResult> {
+    const args = [
+      'api',
+      '-X',
+      'PUT',
+      `repos/${remote}/pulls/${number}/merge`,
+      '-H',
+      'Accept: application/vnd.github+json',
+      '-H',
+      'X-GitHub-Api-Version: 2022-11-28',
+      '-f',
+      `merge_method=${method}`,
+    ];
+    const stdout = await this.ghApi(args, workspaceId);
+    const payload = JSON.parse(stdout.trim() || '{}') as {
+      sha?: string;
+      merged?: boolean;
+      message?: string;
+    };
+    return { sha: payload.sha ?? null, merged: Boolean(payload.merged), message: payload.message };
+  }
+
+  /**
+   * Inline review threads (line-level comments) with their resolution state.
+   * REST exposes the comments but not `isResolved`, so this is the one call
+   * that goes through `gh api graphql`. Capped at the first 100 threads /
+   * 100 comments per thread; `truncated` flags when there are more.
+   */
+  async getReviewThreads(
+    workspaceId: string,
+    remote: Remote,
+    number: number,
+  ): Promise<ReviewThreadsResult> {
+    const [owner, name] = remote.split('/');
+    const query =
+      'query($owner:String!,$name:String!,$number:Int!){' +
+      'repository(owner:$owner,name:$name){pullRequest(number:$number){' +
+      'reviewThreads(first:${API_PAGE_SIZE}){nodes{id isResolved isOutdated path line ' +
+      'comments(first:${API_PAGE_SIZE}){nodes{id author{login} body createdAt url}}} ' +
+      'pageInfo{hasNextPage}}}}}';
+    const args = [
+      'api',
+      'graphql',
+      '-f',
+      `query=${query}`,
+      '-F',
+      `owner=${owner}`,
+      '-F',
+      `name=${name}`,
+      '-F',
+      `number=${number}`,
+    ];
+    const stdout = await this.ghApi(args, workspaceId);
+    const parsed = JSON.parse(stdout.trim() || '{}') as {
+      data?: {
+        repository?: {
+          pullRequest?: {
+            reviewThreads?: {
+              nodes?: Array<{
+                id: string;
+                isResolved?: boolean;
+                isOutdated?: boolean;
+                path?: string | null;
+                line?: number | null;
+                comments?: {
+                  nodes?: Array<{
+                    id: string;
+                    author?: { login?: string } | null;
+                    body?: string;
+                    createdAt?: string;
+                    url?: string;
+                  }>;
+                };
+              }>;
+              pageInfo?: { hasNextPage?: boolean };
+            };
+          };
+        };
+      };
+    };
+    const node = parsed.data?.repository?.pullRequest?.reviewThreads;
+    const threads: ReviewThread[] = (node?.nodes ?? []).map((t) => ({
+      id: t.id,
+      isResolved: Boolean(t.isResolved),
+      isOutdated: Boolean(t.isOutdated),
+      path: t.path ?? null,
+      line: typeof t.line === 'number' ? t.line : null,
+      comments: (t.comments?.nodes ?? []).map((c) => ({
+        id: c.id,
+        authorLogin: c.author?.login ?? null,
+        body: c.body ?? '',
+        createdAt: c.createdAt ? new Date(c.createdAt).getTime() : 0,
+        url: c.url ?? null,
+      })),
+    }));
+    return { threads, truncated: Boolean(node?.pageInfo?.hasNextPage) };
   }
 }
 

@@ -1,5 +1,5 @@
 /**
- * FilesChangedTab — file list + Monaco side-by-side diff (issue #307, Phase G).
+ * FilesChangedTab — file list + Monaco side-by-side diff.
  *
  * Left: changed files with +/- and a status badge. Right: the selected file's
  * diff via the existing MonacoDiffViewer. Only one diff editor is mounted at a
@@ -43,7 +43,6 @@ export function FilesChangedTab({
   pr,
   refreshToken,
 }: FilesChangedTabProps): JSX.Element {
-  void workspaceId;
   const isDark = useAtomValue(isDarkThemeAtom);
   const themeId = useAtomValue(themeIdAtom);
   // Resolve the same Monaco theme the app's editors use, including custom /
@@ -131,7 +130,7 @@ export function FilesChangedTab({
   }, [workspaceId, remote, pr.baseRef, pr.headSha, selectedFile, refreshToken]);
 
   return (
-    <div className="pr-files-tab flex flex-row h-full overflow-hidden" data-testid="pr-files-tab">
+    <div className="pr-files-tab flex flex-row flex-1 min-h-0 overflow-hidden" data-testid="pr-files-tab">
       {/* File list */}
       <div className="w-64 shrink-0 border-r border-nim overflow-y-auto bg-nim-secondary">
         {loading && files.length === 0 ? (

@@ -597,6 +597,36 @@ export const addSessionToWorktreeActionAtom = atom(null, async (_get, set, workt
 });
 
 /**
+ * Select an existing worktree's session, or create one when the worktree has
+ * none yet, then return the selected session id. Used by the PR review
+ * "Open in Worktree" flow: opening a PR worktree must land the user on a live
+ * session, not the empty agent state. Idempotent — repeated
+ * opens of the same worktree reuse its earliest session instead of piling up.
+ */
+export const openWorktreeSessionActionAtom = atom(
+  null,
+  async (get, set, worktreeId: string): Promise<string | null> => {
+    const workspacePath = getWorkspacePath(get);
+    if (!workspacePath) return null;
+
+    const registry = get(sessionRegistryAtom);
+    const existing = Array.from(registry.values())
+      .filter((s) => s.worktreeId === worktreeId && !s.isArchived)
+      .sort((a, b) => a.createdAt - b.createdAt)[0];
+
+    if (existing) {
+      set(setSelectedWorkstreamAtom, {
+        workspacePath,
+        selection: { type: 'worktree', id: existing.id },
+      });
+      return existing.id;
+    }
+
+    return await set(createWorktreeSessionCoreActionAtom, worktreeId);
+  },
+);
+
+/**
  * Open the New Blitz dialog. Gated by the blitz alpha feature and the
  * per-workspace git-repo flag.
  */
@@ -643,4 +673,8 @@ export function dispatchOpenSessionInTab(sessionId: string): Promise<void> {
 
 export function dispatchCreateWorktreeSessionCore(worktreeId: string): Promise<string | null> {
   return store.set(createWorktreeSessionCoreActionAtom, worktreeId) as Promise<string | null>;
+}
+
+export function dispatchOpenWorktreeSession(worktreeId: string): Promise<string | null> {
+  return store.set(openWorktreeSessionActionAtom, worktreeId) as Promise<string | null>;
 }

@@ -1,9 +1,9 @@
 /**
- * PullRequestDetail — read-only PR detail panel (issue #307, Phase G).
+ * PullRequestDetail — read-only PR detail panel.
  *
- * Header (number, title, author, state, "Open on GitHub", and — when wired in
- * Phase H — "Open branch in Claude Code") plus a four-tab body: Conversation,
- * Files Changed, Commits, Checks.
+ * Header (number, title, author, state, "Open on GitHub", "Open in Worktree",
+ * Approve / Merge actions) plus a four-tab body: Conversation, Files Changed,
+ * Commits, Checks.
  *
  * While mounted it re-fetches the visible tab every 60s via a bumped
  * `refreshToken`, in addition to the list-level poll scheduler.
@@ -18,6 +18,7 @@ import {
   type PrDetailTab,
 } from '../../store/atoms/pullRequests';
 import type { PullRequestRow } from '../../services/RendererPullRequestService';
+import { PullRequestActions } from './PullRequestActions';
 import { ConversationTab } from './tabs/ConversationTab';
 import { FilesChangedTab } from './tabs/FilesChangedTab';
 import { CommitsTab } from './tabs/CommitsTab';
@@ -28,8 +29,8 @@ interface PullRequestDetailProps {
   remote: string;
   pr: PullRequestRow;
   onClose: () => void;
-  /** Provided in Phase H to wire the "Open branch in Claude Code" action. */
-  onOpenInClaudeCode?: () => void;
+  /** Wires the "Open in Worktree" action; omitted hides the button. */
+  onOpenInWorktree?: () => void;
 }
 
 const TABS: { id: PrDetailTab; label: string }[] = [
@@ -51,7 +52,7 @@ export function PullRequestDetail({
   remote,
   pr,
   onClose,
-  onOpenInClaudeCode,
+  onOpenInWorktree,
 }: PullRequestDetailProps): JSX.Element {
   const layout = useAtomValue(prModeLayoutAtom);
   const setLayout = useSetAtom(setPrModeLayoutAtom);
@@ -94,6 +95,13 @@ export function PullRequestDetail({
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <PullRequestActions
+              workspaceId={workspaceId}
+              remote={remote}
+              pr={pr}
+              refreshToken={refreshToken}
+              onActed={() => setRefreshToken((t) => t + 1)}
+            />
             {htmlUrl && (
               <button
                 className="flex items-center gap-1 px-2 py-1 text-xs text-nim-muted hover:text-nim border border-nim rounded transition-colors"
@@ -104,14 +112,15 @@ export function PullRequestDetail({
                 GitHub
               </button>
             )}
-            {onOpenInClaudeCode && (
+            {onOpenInWorktree && (
               <button
                 className="flex items-center gap-1 px-2 py-1 text-xs bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover rounded transition-colors"
-                onClick={onOpenInClaudeCode}
-                data-testid="pr-open-in-claude-code"
+                onClick={onOpenInWorktree}
+                data-testid="pr-open-in-worktree"
+                title="Create a worktree on this PR's branch"
               >
-                <MaterialSymbol icon="code" size={14} />
-                Open branch in Claude Code
+                <MaterialSymbol icon="account_tree" size={14} />
+                Open in Worktree
               </button>
             )}
           </div>
@@ -137,7 +146,7 @@ export function PullRequestDetail({
       </div>
 
       {/* Body */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
         {activeTab === 'conversation' && (
           <ConversationTab workspaceId={workspaceId} remote={remote} pr={pr} refreshToken={refreshToken} />
         )}

@@ -70,7 +70,7 @@ interface AppStoreSchema {
   releaseChannel?: ReleaseChannel;
   // Default AI model for new sessions (format: "provider:model" e.g., "claude-code:sonnet")
   defaultAIModel?: string;
-  // Default GitHub CLI account login for PR review (issue #307). A per-project
+  // Default GitHub CLI account login for PR review. A per-project
   // override lives on WorkspaceState.prReviewGhAccountOverride.
   prReviewDefaultGhAccount?: string;
   // Analytics
@@ -463,7 +463,7 @@ export interface WorkspaceState {
     autoCloseOnCommit?: boolean;
   };
   // PR review: gh CLI account login override for this project. When set, it
-  // wins over the global AppStoreSchema.prReviewDefaultGhAccount. (issue #307)
+  // wins over the global AppStoreSchema.prReviewDefaultGhAccount.
   prReviewGhAccountOverride?: string;
   // Privileged extension capability grants scoped to this workspace.
   // Global-scope grants live on AppStoreSchema.extensionPermissionGrantsGlobal.
@@ -1112,7 +1112,7 @@ export function getEffectiveTrackerAutomation(
   };
 }
 
-// PR review gh-account selection (issue #307). Global default in app-settings,
+// PR review gh-account selection. Global default in app-settings,
 // per-project override in workspace state; resolver returns override ?? default.
 export function getPrReviewDefaultGhAccount(): string | undefined {
   return getAppStore().get('prReviewDefaultGhAccount');

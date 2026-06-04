@@ -1,6 +1,6 @@
 /**
- * PullRequestListView — searchable, sortable, filterable PR list (issue #307,
- * Phase F). Mirrors the tracker main view's header + list structure.
+ * PullRequestListView — searchable, sortable, filterable PR list. Mirrors the
+ * tracker main view's header + list structure.
  *
  * Server-side filters (PR state, awaiting-my-review) drive the `gh api` fetch;
  * the rest (created-by-me, with-conflicts, draft, search, sort) are applied

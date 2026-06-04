@@ -1,7 +1,7 @@
 /**
  * PullRequestHandlers - IPC handlers for the integrated PR review panel.
  *
- * Phases A-C of issue #307. Covers:
+ * Covers:
  *   * `gh` CLI status probes (`pr:gh-status`, `pr:gh-refresh-status`)
  *   * Git remote detection (`pr:detect-remote`)
  *   * PR cache reads + GitHub fetches via `gh api`:
@@ -10,9 +10,6 @@
  *
  * All GitHub authentication is delegated to the `gh` CLI; Nimbalyst never
  * holds a GitHub token.
- *
- * Phase H (worktree linkage) and Phase D (polling scheduler) layer on top
- * of these channels in later commits.
  */
 
 import { BrowserWindow } from 'electron';
@@ -26,8 +23,11 @@ import {
   GhApiError,
   type ListFilters,
   type TimelineEntry,
+  type MergeMethod,
+  type ReviewThreadsResult,
 } from '../services/GhApiService';
 import { createPullRequestsStore, type PullRequestsStore } from '../services/PullRequestsStore';
+import { computePrPermissions, type PrPermissions } from '../services/prPermissions';
 import { GitStatusService } from '../services/GitStatusService';
 import { GitWorktreeService } from '../services/GitWorktreeService';
 import { createWorktreeStore, type Worktree } from '../services/WorktreeStore';
@@ -102,6 +102,16 @@ function emitWorktreeListChanged(workspacePath: string): void {
   }
 }
 
+/** Broadcast that a workspace's PR list changed (e.g. a PR was merged). */
+function emitPrListUpdated(workspacePath: string, remote: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('pr:list-updated', { workspacePath, remote });
+    }
+  }
+}
+
+
 /** Resolve the PR's web URL from cache, falling back to a constructed github.com URL. */
 function resolvePrUrl(cached: PullRequestRow | null, remote: string, number: number): string {
   const raw = cached?.raw as { html_url?: unknown } | undefined;
@@ -137,7 +147,7 @@ function getScheduler(): PullRequestPollScheduler {
 }
 
 export function registerPullRequestHandlers(): void {
-  // ----- gh CLI status (Phase A) -----------------------------------------
+  // ----- gh CLI status -----------------------------------------
 
   safeHandle('pr:gh-status', async (): Promise<IPCResponse<GhCliStatus>> => {
     try {
@@ -160,7 +170,7 @@ export function registerPullRequestHandlers(): void {
     }
   });
 
-  // ----- gh account selection (per-project, issue #307) ------------------
+  // ----- gh account selection (per-project) ------------------
 
   safeHandle(
     'pr:gh-accounts',
@@ -232,7 +242,7 @@ export function registerPullRequestHandlers(): void {
     },
   );
 
-  // ----- Remote detection (Phase C) --------------------------------------
+  // ----- Remote detection --------------------------------------
 
   safeHandle(
     'pr:detect-remote',
@@ -253,7 +263,7 @@ export function registerPullRequestHandlers(): void {
     },
   );
 
-  // ----- PR fetch via `gh api` (Phase C) ---------------------------------
+  // ----- PR fetch via `gh api` ---------------------------------
 
   safeHandle(
     'pr:list',
@@ -404,6 +414,27 @@ export function registerPullRequestHandlers(): void {
   );
 
   safeHandle(
+    'pr:review-threads',
+    async (
+      _event,
+      workspaceId: string,
+      remote: string,
+      number: number,
+    ): Promise<IPCResponse<ReviewThreadsResult>> => {
+      if (!workspaceId || !remote || !number) {
+        return { success: false, error: 'workspaceId, remote, number required' };
+      }
+      try {
+        const data = await getService().getReviewThreads(workspaceId, remote, number);
+        return { success: true, data };
+      } catch (error: unknown) {
+        logger.error('pr:review-threads failed', { remote, number, error });
+        return ghErrorResponse(error);
+      }
+    },
+  );
+
+  safeHandle(
     'pr:refresh',
     async (
       _event,
@@ -429,7 +460,102 @@ export function registerPullRequestHandlers(): void {
     },
   );
 
-  // ----- Worktree from PR (Phase H) --------------------------------------
+  // ----- Review / merge actions + access control ------------
+
+  safeHandle(
+    'pr:permissions',
+    async (
+      _event,
+      workspaceId: string,
+      remote: string,
+      number: number,
+    ): Promise<IPCResponse<PrPermissions>> => {
+      if (!workspaceId || !remote || !number) {
+        return { success: false, error: 'workspaceId, remote, number required' };
+      }
+      try {
+        const service = getService();
+        const caps = await service.getRepoCapabilities(workspaceId, remote);
+
+        // Read PR state from cache; fall back to a fetch if not cached yet.
+        let pr = await getStore().getByNumber(workspaceId, remote, number);
+        if (!pr) {
+          pr = await service.getPullRequest(workspaceId, remote, number);
+        }
+        const raw = pr.raw as { mergeable_state?: unknown } | undefined;
+        const mergeableState =
+          raw && typeof raw.mergeable_state === 'string' ? raw.mergeable_state : null;
+        const mergeable =
+          pr.mergeable === 'mergeable' ? true : pr.mergeable === 'conflicting' ? false : null;
+
+        const data = computePrPermissions(caps, {
+          state: pr.state,
+          isDraft: pr.isDraft,
+          authorLogin: pr.authorLogin,
+          mergeable,
+          mergeableState,
+        });
+        return { success: true, data };
+      } catch (error: unknown) {
+        logger.error('pr:permissions failed', { remote, number, error });
+        return ghErrorResponse(error);
+      }
+    },
+  );
+
+  safeHandle(
+    'pr:approve',
+    async (
+      _event,
+      workspaceId: string,
+      remote: string,
+      number: number,
+      body?: string,
+    ): Promise<IPCResponse<{ ok: boolean }>> => {
+      if (!workspaceId || !remote || !number) {
+        return { success: false, error: 'workspaceId, remote, number required' };
+      }
+      try {
+        const service = getService();
+        await service.approvePullRequest(workspaceId, remote, number, body);
+        // Refresh detail so the new review shows up; surface to other windows.
+        await service.getPullRequest(workspaceId, remote, number);
+        emitPrListUpdated(workspaceId, remote);
+        return { success: true, data: { ok: true } };
+      } catch (error: unknown) {
+        logger.error('pr:approve failed', { remote, number, error });
+        return ghErrorResponse(error);
+      }
+    },
+  );
+
+  safeHandle(
+    'pr:merge',
+    async (
+      _event,
+      workspaceId: string,
+      remote: string,
+      number: number,
+      method: MergeMethod,
+    ): Promise<IPCResponse<{ merged: boolean; sha: string | null }>> => {
+      if (!workspaceId || !remote || !number || !method) {
+        return { success: false, error: 'workspaceId, remote, number, method required' };
+      }
+      try {
+        const service = getService();
+        const result = await service.mergePullRequest(workspaceId, remote, number, method);
+        // Re-fetch so the PR flips to merged/closed in the cache + UI.
+        await service.getPullRequest(workspaceId, remote, number);
+        emitPrListUpdated(workspaceId, remote);
+        return { success: true, data: { merged: result.merged, sha: result.sha } };
+      } catch (error: unknown) {
+        logger.error('pr:merge failed', { remote, number, method, error });
+        return ghErrorResponse(error);
+      }
+    },
+  );
+
+  // ----- Worktree from PR --------------------------------------
 
   safeHandle(
     'pr:open-worktree',
@@ -507,7 +633,7 @@ export function registerPullRequestHandlers(): void {
     },
   );
 
-  // ----- Poll scheduler (Phase D) ----------------------------------------
+  // ----- Poll scheduler ----------------------------------------
 
   safeHandle(
     'pr:start-polling',

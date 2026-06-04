@@ -7,7 +7,7 @@
  * button appear.
  *
  * Covered: gutter button -> pr-review mode -> PR #42 row -> detail panel
- * (Conversation) -> "Open branch in Claude Code" action present.
+ * (Conversation) -> "Open in Worktree" action present.
  *
  * NOT covered here: actually creating the worktree (needs a fetchable origin
  * with a pull/N/head ref); the handler logic is exercised separately.
@@ -89,7 +89,7 @@ test.describe('PR review golden path', () => {
     });
 
     // The worktree action is wired (Phase H) and present in the header.
-    await expect(page.locator('[data-testid="pr-open-in-claude-code"]')).toBeVisible();
+    await expect(page.locator('[data-testid="pr-open-in-worktree"]')).toBeVisible();
   });
 
   test('switches to the Files Changed tab and renders a diff', async () => {

@@ -1,12 +1,8 @@
 /**
- * Pull request review panel atoms (issue #307).
+ * Pull request review panel atoms.
  *
  * Populated by store/listeners/pullRequestListeners.ts. Components read from
  * these atoms and never subscribe to IPC directly (see IPC_LISTENERS.md).
- *
- * Phase E declares the plumbing atoms. The list/detail views (Phases F/G)
- * read `prListAtom` / `prRemoteAtom` / `ghCliStatusAtom` and own their own
- * loading of detail rows.
  */
 
 import { atom } from 'jotai';
@@ -75,7 +71,7 @@ export type PrFilterChip =
 /** Sort keys for the PR list. */
 export type PrSortKey = 'updated' | 'created' | 'number';
 
-/** Detail-panel tabs (consumed in Phase G). */
+/** Detail-panel tabs. */
 export type PrDetailTab = 'conversation' | 'files' | 'commits' | 'checks';
 
 export interface PrModeLayout {

@@ -1,10 +1,14 @@
 /**
- * ConversationTab — read-only PR description + comment/review timeline
- * (issue #307, Phase G).
+ * ConversationTab — read-only PR description, inline review threads, and the
+ * comment/review timeline.
  *
- * Renders the PR body followed by a chronological feed of issue comments and
- * reviews from `pr:conversation`. Bodies are shown as wrapped plain text
- * (no Markdown rendering in the MVP — deferred to a follow-up).
+ * Three sections, each Markdown-rendered:
+ *   - Description: the PR body.
+ *   - Review threads: inline (line-level) review comments grouped by thread,
+ *     each tagged Open / Resolved (and Outdated when GitHub marks it so).
+ *     Resolved threads start collapsed. Sourced from `pr:review-threads`
+ *     (GraphQL — REST can't report resolution state).
+ *   - Conversation: PR-level issue comments + review summaries.
  */
 
 import { useEffect, useState } from 'react';
@@ -13,7 +17,9 @@ import {
   getPullRequestService,
   type PullRequestRow,
   type PullRequestTimelineEntry,
+  type ReviewThread,
 } from '../../../services/RendererPullRequestService';
+import { formatRelative } from '../prFormat';
 
 interface ConversationTabProps {
   workspaceId: string;
@@ -23,19 +29,6 @@ interface ConversationTabProps {
   refreshToken: number;
 }
 
-function formatRelative(ms: number): string {
-  if (!ms) return '';
-  const diff = Date.now() - ms;
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 30) return `${day}d ago`;
-  return `${Math.floor(day / 30)}mo ago`;
-}
-
 export function ConversationTab({
   workspaceId,
   remote,
@@ -43,6 +36,8 @@ export function ConversationTab({
   refreshToken,
 }: ConversationTabProps): JSX.Element {
   const [timeline, setTimeline] = useState<PullRequestTimelineEntry[]>([]);
+  const [threads, setThreads] = useState<ReviewThread[]>([]);
+  const [threadsTruncated, setThreadsTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -66,8 +61,32 @@ export function ConversationTab({
     };
   }, [workspaceId, remote, pr.number, refreshToken]);
 
+  // Review threads load independently — a GraphQL failure shouldn't blank the
+  // rest of the tab.
+  useEffect(() => {
+    let cancelled = false;
+    getPullRequestService()
+      .reviewThreads(workspaceId, remote, pr.number)
+      .then((res) => {
+        if (cancelled) return;
+        setThreads(res.threads);
+        setThreadsTruncated(res.truncated);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setThreads([]);
+          setThreadsTruncated(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, remote, pr.number, refreshToken]);
+
+  const unresolvedCount = threads.filter((t) => !t.isResolved).length;
+
   return (
-    <div className="pr-conversation-tab flex flex-col gap-3 p-4 overflow-y-auto h-full" data-testid="pr-conversation-tab">
+    <div className="pr-conversation-tab block p-4 space-y-3 overflow-y-auto flex-1 min-h-0" data-testid="pr-conversation-tab">
       {/* ---- Description (the PR body) ---- */}
       <SectionHeader label="Description" icon="description" />
       <div className="border border-nim rounded-md overflow-hidden">
@@ -84,6 +103,26 @@ export function ConversationTab({
           )}
         </div>
       </div>
+
+      {/* ---- Review threads (inline, line-level) ---- */}
+      {threads.length > 0 && (
+        <>
+          <SectionHeader
+            label="Review threads"
+            icon="rate_review"
+            count={threads.length}
+            note={unresolvedCount > 0 ? `${unresolvedCount} open` : 'all resolved'}
+          />
+          {threads.map((thread) => (
+            <ReviewThreadCard key={thread.id} thread={thread} />
+          ))}
+          {threadsTruncated && (
+            <div className="text-nim-faint text-[11px] italic">
+              Showing the first page of review threads.
+            </div>
+          )}
+        </>
+      )}
 
       {/* ---- Conversation (comments + reviews) ---- */}
       <SectionHeader
@@ -132,14 +171,74 @@ export function ConversationTab({
   );
 }
 
+/**
+ * One inline review thread: a file:line header with an Open/Resolved badge,
+ * collapsible (resolved threads start collapsed), with its comments rendered
+ * as Markdown.
+ */
+function ReviewThreadCard({ thread }: { thread: ReviewThread }): JSX.Element {
+  const [expanded, setExpanded] = useState(!thread.isResolved);
+  const location = thread.path
+    ? `${thread.path}${thread.line != null ? `:${thread.line}` : ''}`
+    : 'general';
+
+  return (
+    <div className="border border-nim rounded-md overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        className="w-full flex items-center gap-2 px-3 py-2 bg-nim-secondary border-b border-nim text-xs text-nim-muted text-left hover:text-nim transition-colors"
+        data-testid="pr-review-thread-header"
+      >
+        <MaterialSymbol icon={expanded ? 'expand_more' : 'chevron_right'} size={14} />
+        <span className="font-mono text-nim truncate flex-1" title={location}>
+          {location}
+        </span>
+        {thread.isOutdated && <span className="text-nim-faint shrink-0">outdated</span>}
+        <span
+          className={`flex items-center gap-1 shrink-0 ${
+            thread.isResolved ? 'text-nim-success' : 'text-nim-accent'
+          }`}
+        >
+          <MaterialSymbol
+            icon={thread.isResolved ? 'check_circle' : 'radio_button_unchecked'}
+            size={13}
+          />
+          {thread.isResolved ? 'Resolved' : 'Open'}
+        </span>
+        <span className="shrink-0">{thread.comments.length}</span>
+      </button>
+      {expanded && (
+        <div>
+          {thread.comments.map((c) => (
+            <div key={c.id} className="px-3 py-2 border-b border-nim last:border-b-0">
+              <div className="flex items-center gap-2 text-[11px] text-nim-muted mb-1">
+                {c.authorLogin && <span className="font-medium text-nim">{c.authorLogin}</span>}
+                <span className="ml-auto">{formatRelative(c.createdAt)}</span>
+              </div>
+              {c.body.trim() && (
+                <div className="text-sm text-nim select-text">
+                  <MarkdownRenderer content={c.body} />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SectionHeader({
   label,
   icon,
   count,
+  note,
 }: {
   label: string;
   icon: string;
   count?: number;
+  note?: string;
 }): JSX.Element {
   return (
     <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-nim-faint mt-1 first:mt-0">
@@ -148,6 +247,7 @@ function SectionHeader({
       {count !== undefined && (
         <span className="text-nim-muted normal-case font-normal">({count})</span>
       )}
+      {note && <span className="text-nim-muted normal-case font-normal">· {note}</span>}
     </div>
   );
 }

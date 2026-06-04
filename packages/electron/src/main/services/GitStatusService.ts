@@ -801,7 +801,7 @@ export class GitStatusService {
   /**
    * Parse the workspace's origin remote into an `owner/repo` tuple plus host.
    *
-   * Used by the PR review panel (issue #307) to decide whether to show the
+   * Used by the PR review panel to decide whether to show the
    * "Pull Requests" gutter button and to drive `gh api` requests. Supports
    * both SSH (`git@host:owner/repo.git`) and HTTPS (`https://host/owner/repo.git`)
    * origins, and arbitrary hosts (GitHub Enterprise — `gh` handles the

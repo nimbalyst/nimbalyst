@@ -1,10 +1,10 @@
 -- ----------------------------------------------------------------------------
 -- 0009_worktree_pr_linkage
 --
--- PR review panel cache (issue #307, Phase B). Adds:
+-- PR review panel cache. Adds:
 --   * pull_requests          — list/detail cache, one row per (workspace, remote, number)
 --   * pull_request_files     — per-file diff metadata (path, status, patch)
---   * pull_request_commits   — per-commit metadata (sha, message, author, time)
+--   * pull_request_commits   — per-commit metadata (sha, message, author, time, +/-)
 --   * pull_request_checks    — per-check-run metadata (name, status, conclusion)
 --   * worktrees.pr_*         — nullable columns binding a worktree to a PR (1:1)
 --
@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS pull_request_commits (
   message TEXT NOT NULL,
   author_login TEXT,
   authored_at TEXT NOT NULL,
+  additions INTEGER NOT NULL DEFAULT 0,
+  deletions INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (pr_id, sha)
 );
 

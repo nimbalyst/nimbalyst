@@ -279,7 +279,9 @@ function parseAuthStatus(text: string): { host?: string; user?: string } {
  * following "Active account: true/false" line (when present) flags the active
  * one. Falls back to the legacy "Logged in to <host> as <login>" shape.
  */
-function parseAuthAccounts(text: string): Array<{ login: string; host: string; active: boolean }> {
+export function parseAuthAccounts(
+  text: string,
+): Array<{ login: string; host: string; active: boolean }> {
   const accounts: Array<{ login: string; host: string; active: boolean }> = [];
   const re = /Logged in to (\S+) (?:account|as) (\S+)/g;
   const matches: Array<{ host: string; login: string; index: number }> = [];

@@ -1,8 +1,8 @@
 /**
  * PullRequestPollScheduler - background polling for the PR review panel.
  *
- * Phase D of issue #307. Single process-wide singleton that owns one timer
- * per (workspacePath, remote) pair. Cadence is:
+ * Single process-wide singleton that owns one timer per
+ * (workspacePath, remote) pair. Cadence is:
  *
  *   * 60s when the workspace is in the foreground set (PR review panel is
  *     mounted and the window has focus)

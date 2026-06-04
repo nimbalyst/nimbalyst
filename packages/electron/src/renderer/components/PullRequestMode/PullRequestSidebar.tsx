@@ -1,6 +1,6 @@
 /**
- * PullRequestSidebar — filter chips for the PR review list (issue #307,
- * Phase F). Mirrors the tracker sidebar's chip pattern.
+ * PullRequestSidebar — filter chips for the PR review list. Mirrors the
+ * tracker sidebar's chip pattern.
  *
  * `open` and `closed` are mutually exclusive (a PR is one or the other);
  * the remaining chips are independent client-side narrowing filters.

@@ -1,6 +1,6 @@
 /**
  * RendererPullRequestService - Renderer-side facade for the PR review panel
- * IPC channels registered in `PullRequestHandlers`. Issue #307 Phase C.
+ * IPC channels registered in `PullRequestHandlers`.
  *
  * Thin wrappers over `window.electronAPI.pr*` that unwrap the `IPCResponse`
  * envelope and throw on failure, so React components can `await` and
@@ -17,7 +17,11 @@ import type {
 import type {
   TimelineEntry as MainPullRequestTimelineEntry,
   ListFilters as MainPullRequestListFilters,
+  MergeMethod as MainMergeMethod,
+  ReviewThread as MainReviewThread,
+  ReviewThreadsResult as MainReviewThreadsResult,
 } from '../../main/services/GhApiService';
+import type { PrPermissions as MainPrPermissions } from '../../main/services/prPermissions';
 
 export type PullRequestRow = MainPullRequestRow;
 export type PullRequestFileRow = MainPullRequestFileRow;
@@ -26,6 +30,12 @@ export type PullRequestCheckRow = MainPullRequestCheckRow;
 export type PullRequestReviewer = MainPullRequestReviewer;
 export type PullRequestTimelineEntry = MainPullRequestTimelineEntry;
 export type PullRequestListFilters = MainPullRequestListFilters;
+export type MergeMethod = MainMergeMethod;
+export type ReviewThread = MainReviewThread;
+export type ReviewThreadsResult = MainReviewThreadsResult;
+
+/** What the user may do on a PR, per `gh` access control. */
+export type PullRequestPermissions = MainPrPermissions;
 
 type PrRemote = { remote: string; host: string };
 
@@ -115,7 +125,42 @@ export class RendererPullRequestService {
     return data.fetchedAt;
   }
 
-  // ----- Polling scheduler (Phase D of issue #307) -----------------------
+  async reviewThreads(
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ): Promise<ReviewThreadsResult> {
+    const res = await requireApi().prReviewThreads(workspaceId, remote, number);
+    return unwrap(res, 'pr:review-threads');
+  }
+
+  // ----- Review / merge actions + access control ------------
+
+  async permissions(
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ): Promise<PullRequestPermissions> {
+    const res = await requireApi().prPermissions(workspaceId, remote, number);
+    return unwrap(res, 'pr:permissions');
+  }
+
+  async approve(workspaceId: string, remote: string, number: number, body?: string): Promise<void> {
+    const res = await requireApi().prApprove(workspaceId, remote, number, body);
+    unwrap(res, 'pr:approve');
+  }
+
+  async merge(
+    workspaceId: string,
+    remote: string,
+    number: number,
+    method: MergeMethod,
+  ): Promise<{ merged: boolean; sha: string | null }> {
+    const res = await requireApi().prMerge(workspaceId, remote, number, method);
+    return unwrap(res, 'pr:merge');
+  }
+
+  // ----- Polling scheduler -----------------------
 
   async startPolling(workspacePath: string, workspaceId: string, remote: string): Promise<void> {
     const res = await requireApi().prStartPolling(workspacePath, workspaceId, remote);
@@ -146,9 +191,7 @@ export class RendererPullRequestService {
     return requireApi().onPrListUpdated(callback);
   }
 
-  /**
-   * Create (or reuse) a worktree bound to a PR and return it. Phase H.
-   */
+  /** Create (or reuse) a worktree bound to a PR and return it. */
   async openWorktree(
     workspaceId: string,
     remote: string,
@@ -158,7 +201,7 @@ export class RendererPullRequestService {
     return unwrap(res, 'pr:open-worktree');
   }
 
-  // ----- Per-project gh account selection (issue #307) -------------------
+  // ----- Per-project gh account selection -------------------
 
   async listAccounts(): Promise<Array<{ login: string; host: string; active: boolean }>> {
     const res = await requireApi().prGhAccounts();

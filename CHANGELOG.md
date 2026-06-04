@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `pr-review` workspace mode with a navigation-gutter button that appears only when the active project has a GitHub remote, wired to PR atoms and listeners (gh status, remote detection, list-updated). (#307)
 - PR list view with a filter sidebar (open/closed/awaiting-review/created-by-me/with-conflicts/draft), title/number search, and sortable columns (last activity / created / number); selecting the state filter fetches via `gh`, the rest narrow client-side. (#307)
 - Read-only PR detail panel with Conversation, Files Changed (Monaco side-by-side diff), Commits, and Checks tabs; the panel re-fetches its visible tab every 60s while open. (#307)
-- "Open branch in Claude Code" on a PR fetches the PR head into a worktree (reused if it already exists), links the worktree to the PR, and switches to Agent mode with it selected. (#307)
+- "Open in Worktree" on a PR fetches the PR head branch into a worktree (reused if it already exists), links the worktree to the PR, spawns/reuses an agent session in it, and switches to Agent mode. (#307)
+- Approve and merge a PR (squash / merge commit / rebase) from the detail header, gated by the viewer's `gh`-derived repo permissions and the repo's allowed merge methods; merging requires an explicit in-app confirm. (#307)
+- Inline review threads in the Conversation tab, grouped by file with Open/Resolved status and resolved threads collapsed by default (via `gh api graphql`). (#307)
 - `NIMBALYST_GH_PATH` env var to pin a non-standard `gh` CLI location for PR review. (#307)
 - Per-project GitHub account for PR review: pick a global default `gh` account in User settings and override it per project in Project settings (GitHub panel). The selected account's token is resolved from the `gh` keyring per request and never stored by Nimbalyst. (#307)
 <!-- New features go here -->
@@ -31,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 <!-- Bug fixes go here -->
 - PR review now shows an actionable message on a GitHub 404 (repo not found or the active `gh` account lacks access — check `gh auth status` / `gh auth switch`) instead of a raw error, and no longer prints a duplicated `api` in the failure text. (#307)
+- PR review cache tables are now created on the better-sqlite3 backend too (migration registered with the SQLite runner), not only on PGLite. (#307)
 - Fixed an EPIPE feedback loop where the main-process uncaught-exception handler re-entered itself when stderr was broken on Linux, flooding the log until the process died.
 - Meta-agent child sessions now inherit the parent session's provider and model instead of silently falling back to a Claude/Opus default for non-Claude parents.
 

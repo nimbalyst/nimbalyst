@@ -25,7 +25,7 @@ export interface Worktree {
   updatedAt?: number;
   isPinned?: boolean; // Whether this worktree is pinned to the top of the list
   isArchived?: boolean; // Whether this worktree is archived
-  // PR review panel linkage (issue #307, Phase B). One worktree <-> one PR.
+  // PR review panel linkage. One worktree <-> one PR.
   prNumber?: number;
   prRemote?: string;
   prUrl?: string;
@@ -397,10 +397,10 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
     /**
      * Bind a worktree to a GitHub pull request.
      *
-     * Used by `pr:open-worktree` (Phase H) so the worktree row carries the
+     * Used by `pr:open-worktree` so the worktree row carries the
      * PR number / remote / URL needed to render the "PR #N" badge in the
      * worktree list and to look the worktree up again next time the user
-     * clicks "Open branch in Claude Code" for the same PR.
+     * clicks "Open in Worktree" for the same PR.
      */
     async linkPullRequest(
       id: string,

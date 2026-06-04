@@ -1,11 +1,9 @@
 /**
- * PullRequestMode — top-level container for the GitHub PR review panel
- * (issue #307).
+ * PullRequestMode — top-level container for the GitHub PR review panel.
  *
  * Manages the poll lifecycle (start/stop + foreground focus + immediate poll
  * on enter), dispatches `pr:focus` so the main-process scheduler switches
- * cadence, and renders the sidebar + list (Phase F). The detail panel lands
- * in Phase G.
+ * cadence, and renders the sidebar + list + detail.
  */
 
 import { useCallback, useEffect } from 'react';
@@ -20,7 +18,7 @@ import {
   type PrFilterChip,
 } from '../../store/atoms/pullRequests';
 import { getPullRequestService } from '../../services/RendererPullRequestService';
-import { setSelectedWorkstreamAtom } from '../../store/atoms/sessions';
+import { dispatchOpenWorktreeSession } from '../../store/actions/sessionHistoryActions';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
 import { GhOnboardingBanner } from './GhOnboardingBanner';
 import { PullRequestSidebar } from './PullRequestSidebar';
@@ -43,7 +41,6 @@ export function PullRequestMode({
   const layout = useAtomValue(prModeLayoutAtom);
   const setLayout = useSetAtom(setPrModeLayoutAtom);
   const prList = useAtomValue(prListAtom);
-  const setSelectedWorkstream = useSetAtom(setSelectedWorkstreamAtom);
   const setWindowMode = useSetAtom(setWindowModeAtom);
 
   const remoteForWorkspace =
@@ -101,12 +98,13 @@ export function PullRequestMode({
       ? prList.find((pr) => pr.id === layout.selectedItemId) ?? null
       : null;
 
-  // Create (or reuse) a worktree on the PR branch, then jump to Agent mode
-  // with that worktree selected so the user can start a Claude Code session.
+  // Create (or reuse) a worktree on the PR's head branch (the branch being
+  // merged), then jump to Agent mode with that worktree selected so the dev
+  // can work the branch with an agent.
   // NOTE: this hook (and every other) must run before the early return below,
   // or switching to a project without a GitHub remote changes the hook count
   // and React throws "Rendered fewer hooks than expected".
-  const handleOpenInClaudeCode = useCallback(async () => {
+  const handleOpenInWorktree = useCallback(async () => {
     if (!selectedPr || !remoteForWorkspace) return;
     try {
       const worktree = await getPullRequestService().openWorktree(
@@ -114,15 +112,15 @@ export function PullRequestMode({
         remoteForWorkspace,
         selectedPr.number,
       );
-      setSelectedWorkstream({
-        workspacePath,
-        selection: { type: 'worktree', id: worktree.id },
-      });
+      // Reuse the worktree's existing session or spawn one, then select it —
+      // selecting by worktree id alone leaves the agent view empty because the
+      // selection id must be a session id.
+      await dispatchOpenWorktreeSession(worktree.id);
       setWindowMode('agent');
     } catch (err) {
       console.error('[PullRequestMode] Failed to open PR worktree', err);
     }
-  }, [selectedPr, remoteForWorkspace, workspacePath, setSelectedWorkstream, setWindowMode]);
+  }, [selectedPr, remoteForWorkspace, workspacePath, setWindowMode]);
 
   if (!remoteForWorkspace) {
     return (
@@ -165,7 +163,7 @@ export function PullRequestMode({
               remote={remoteForWorkspace}
               pr={selectedPr}
               onClose={() => setLayout({ selectedItemId: null })}
-              onOpenInClaudeCode={handleOpenInClaudeCode}
+              onOpenInWorktree={handleOpenInWorktree}
             />
           </div>
         )}

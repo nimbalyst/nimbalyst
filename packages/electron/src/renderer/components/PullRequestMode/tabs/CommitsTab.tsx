@@ -1,5 +1,5 @@
 /**
- * CommitsTab — chronological list of the PR's commits (issue #307, Phase G).
+ * CommitsTab — chronological list of the PR's commits.
  */
 
 import { useEffect, useState } from 'react';
@@ -9,25 +9,13 @@ import {
   type PullRequestRow,
   type PullRequestCommitRow,
 } from '../../../services/RendererPullRequestService';
+import { formatRelative } from '../prFormat';
 
 interface CommitsTabProps {
   workspaceId: string;
   remote: string;
   pr: PullRequestRow;
   refreshToken: number;
-}
-
-function formatRelative(ms: number): string {
-  if (!ms) return '';
-  const diff = Date.now() - ms;
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 30) return `${day}d ago`;
-  return `${Math.floor(day / 30)}mo ago`;
 }
 
 export function CommitsTab({ workspaceId, remote, pr, refreshToken }: CommitsTabProps): JSX.Element {
@@ -69,7 +57,7 @@ export function CommitsTab({ workspaceId, remote, pr, refreshToken }: CommitsTab
   };
 
   return (
-    <div className="pr-commits-tab flex flex-col h-full overflow-y-auto" data-testid="pr-commits-tab">
+    <div className="pr-commits-tab flex flex-col flex-1 min-h-0 overflow-y-auto" data-testid="pr-commits-tab">
       {loading && commits.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-6 text-nim-muted text-sm">
           <div className="spinner w-4 h-4 border-[2px] border-nim-secondary border-t-nim-accent rounded-full animate-spin" />

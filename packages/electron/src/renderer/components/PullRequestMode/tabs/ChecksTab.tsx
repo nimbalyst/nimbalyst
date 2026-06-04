@@ -1,5 +1,5 @@
 /**
- * ChecksTab — CI check runs grouped by outcome (issue #307, Phase G).
+ * ChecksTab — CI check runs grouped by outcome.
  *
  * Read-only. Each row links to the provider's run page in the system browser.
  */
@@ -89,7 +89,7 @@ export function ChecksTab({ workspaceId, remote, pr, refreshToken }: ChecksTabPr
   };
 
   return (
-    <div className="pr-checks-tab flex flex-col h-full overflow-y-auto" data-testid="pr-checks-tab">
+    <div className="pr-checks-tab flex flex-col flex-1 min-h-0 overflow-y-auto" data-testid="pr-checks-tab">
       {loading && checks.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-6 text-nim-muted text-sm">
           <div className="spinner w-4 h-4 border-[2px] border-nim-secondary border-t-nim-accent rounded-full animate-spin" />
