@@ -1,22 +1,23 @@
-# Nimbalyst v0.63.9
+# June 3rd Release
+
+### New Features
+
+- **Claude Opus 4.8** is now available in the Claude provider with 1M context, and is the default model for new installs.
+- **Claude Code Task List panel** — Claude Code sessions now show the agent's live task queue in the right sidebar, including status, owner, and blocked-by dependencies.
 
 ### Improvements
 
-- **Claude Opus 4.8 is available and the default for new Claude sessions.**
-- **AI session performance is better under load -** Streaming transcripts, background widgets, search, and long-running sessions put less pressure on the renderer, database and sync pipeline.
-- **Unified Quick Open -** Files, Sessions, Prompts, Projects, and Trackers now live in one tabbed launcher with better filters.
-- **Calc Sheets -** New `.calc.md` documents combine spreadsheet-style results with plain-text editing, units, currency handling, and assertions.
-- **Opt-in SQLite migration preview -** You can dry-run a move off PGLite, inspect validation results, and keep a rollback backup before switching.
-- **More contextual guidance -** Empty AI sessions and core surfaces now surface contextual tips for worktrees, trackers, shortcuts, themes, shared docs, mobile pairing, and more.
-- **Auto-update is quieter and cleaner -** Downloads now happen in the background, and mid-publish metadata gaps no longer throw a scary raw 404 toast.
-- **Worktree AI flows are smoother -** Worktree sessions now support manual vs smart commit mode, Commit with AI, and easier worktree-specific session search with `#worktree`.
-- **Startup and large-workspace responsiveness improved -** Shared-tracker startup, prompt search, quick open, and other heavy paths do less blocking work.
+- Default Claude model upgraded to Opus 4.8 for new sessions. Existing sessions keep their configured model.
+- Claude Code's opus-4-7 variants remain selectable for anyone who wants to stay on the previous model.
+- "Commit with AI" now includes relevant related files in the commit proposal.
 
 ### Fixed
 
-- AI edits to large markdown files with inline base64 images no longer trigger multi-minute beachballs.
-- Tool calls no longer get stuck at "running" when multiple AI sessions are open.
-- Parent workstream sessions now bubble up correctly when child sessions become active.
-- New Worktree no longer stays disabled because of early git-probe races.
-- Session history no longer pegs the renderer during heavy AI streaming.
-- Theme readability issues were cleaned up across light and dark themes, including Calc Sheets error rows and primary-button label contrast.
+- Claude Code sessions selected on Opus 4.8 now actually run on 4.8.
+- The AI Usage Report no longer crashes the app, and Claude Code session token totals are now reported accurately.
+- Tracker tool widgets no longer crash.
+- Commit proposal diff previews open at their normal size again instead of collapsing to a tiny popover.
+- Quick Open file search no longer lags while typing.
+- Terminal scrollback history is preserved even when output contains a stray NUL byte.
+- Meta-agent child sessions now inherit the parent session's provider and model.
+- The local `/clip` endpoint now rejects requests from arbitrary web pages.

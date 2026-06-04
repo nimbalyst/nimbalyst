@@ -326,8 +326,22 @@ const WidgetShell: React.FC<{ header: React.ReactNode; children: React.ReactNode
 // ---------- Per-action renderers ----------
 
 const SecondaryTypeBadges: React.FC<{ typeTags?: string[]; primaryType: string }> = ({ typeTags, primaryType }) => {
-  if (!typeTags) return null;
-  const secondary = typeTags.filter(t => t !== primaryType);
+  // Older transcripts may have persisted typeTags as a JSON-encoded string (SQLite
+  // shape) rather than an array; tolerate that instead of crashing the widget.
+  const tags: string[] | undefined = Array.isArray(typeTags)
+    ? typeTags
+    : typeof typeTags === 'string'
+      ? (() => {
+          try {
+            const parsed = JSON.parse(typeTags);
+            return Array.isArray(parsed) ? (parsed as string[]) : undefined;
+          } catch {
+            return undefined;
+          }
+        })()
+      : undefined;
+  if (!tags) return null;
+  const secondary = tags.filter(t => t !== primaryType);
   if (secondary.length === 0) return null;
   return (
     <>

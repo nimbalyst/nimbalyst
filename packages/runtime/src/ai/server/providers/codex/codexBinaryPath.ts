@@ -123,6 +123,8 @@ export function resolvePackagedCodexBinaryPath(
   ];
 
   const binaryRelativePaths = [
+    // 0.131+ layout (codex-sdk renamed the binary directory to `bin/`).
+    path.join('vendor', targetTriple, 'bin', binaryName),
     path.join('vendor', targetTriple, 'codex', binaryName),
     path.join('vendor', targetTriple, binaryName),
   ];

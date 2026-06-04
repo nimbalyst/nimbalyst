@@ -392,7 +392,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
             <FilesPane
               isOpen={isOpen}
               isActive={activeTab === 'files'}
-              query={query}
+              query={activeTab === 'files' ? query : ''}
               extFilter={fileExtFilter}
               workspacePath={workspacePath}
               currentFilePath={currentFilePath}
@@ -409,7 +409,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
             <InFilesPane
               isOpen={isOpen}
               isActive={activeTab === 'in-files'}
-              query={query}
+              query={activeTab === 'in-files' ? query : ''}
               extFilter={fileExtFilter}
               workspacePath={workspacePath}
               onFileSelect={onFileSelect}
@@ -420,7 +420,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
             <TrackersPane
               isOpen={isOpen}
               isActive={activeTab === 'trackers'}
-              query={query}
+              query={activeTab === 'trackers' ? query : ''}
               typeFilter={trackerTypeFilter}
               workspacePath={workspacePath}
               onTrackerSelect={handleTrackerSelectDefault}
@@ -431,7 +431,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
             <SessionsPane
               isOpen={isOpen}
               isActive={activeTab === 'sessions'}
-              query={query}
+              query={activeTab === 'sessions' ? query : ''}
               setQuery={setQuery}
               workspacePath={workspacePath}
               fileFilter={sessionFileFilter}
@@ -444,7 +444,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
             <PromptsPane
               isOpen={isOpen}
               isActive={activeTab === 'prompts'}
-              query={query}
+              query={activeTab === 'prompts' ? query : ''}
               workspacePath={workspacePath}
               onPromptSelect={onPromptSelect}
               onClose={onClose}
@@ -454,7 +454,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
             <ProjectsPane
               isOpen={isOpen}
               isActive={activeTab === 'projects'}
-              query={query}
+              query={activeTab === 'projects' ? query : ''}
               currentWorkspacePath={workspacePath}
               onClose={onClose}
             />
@@ -515,7 +515,7 @@ interface FilesPaneProps {
   onClose: () => void;
 }
 
-const FilesPane: React.FC<FilesPaneProps> = ({
+const FilesPane: React.FC<FilesPaneProps> = memo(({
   isOpen,
   isActive,
   query,
@@ -764,7 +764,7 @@ const FilesPane: React.FC<FilesPaneProps> = ({
       )}
     </div>
   );
-};
+});
 
 // =============================================================================
 // InFilesPane — content search (lazy, only runs when this tab is active)
@@ -781,7 +781,7 @@ interface InFilesPaneProps {
   onClose: () => void;
 }
 
-const InFilesPane: React.FC<InFilesPaneProps> = ({
+const InFilesPane: React.FC<InFilesPaneProps> = memo(({
   isOpen,
   isActive,
   query,
@@ -1009,7 +1009,7 @@ const InFilesPane: React.FC<InFilesPaneProps> = ({
       )}
     </div>
   );
-};
+});
 
 // =============================================================================
 // SessionsPane
@@ -1056,7 +1056,7 @@ interface SessionsPaneProps {
   onClose: () => void;
 }
 
-const SessionsPane: React.FC<SessionsPaneProps> = ({
+const SessionsPane: React.FC<SessionsPaneProps> = memo(({
   isOpen,
   isActive,
   query,
@@ -1074,16 +1074,17 @@ const SessionsPane: React.FC<SessionsPaneProps> = ({
   const [mouseHasMoved, setMouseHasMoved] = useState(false);
   const listRef = useRef<HTMLUListElement>(null);
   const searchDebounceRef = useRef<NodeJS.Timeout>();
+  const visibleQuery = isActive ? query : '';
 
   // @ typeahead — only active when query starts with @ and no file is selected yet
-  const isFileSearchMode = query.startsWith('@') && !fileFilter;
-  const fileSearchQuery = isFileSearchMode ? query.slice(1) : '';
+  const isFileSearchMode = visibleQuery.startsWith('@') && !fileFilter;
+  const fileSearchQuery = isFileSearchMode ? visibleQuery.slice(1) : '';
   const fileOptions = useAtomValue(fileMentionOptionsAtom(workspacePath));
   const searchFileMention = useSetAtom(searchFileMentionAtom);
 
   useEffect(() => {
     setSelectedIndex(0);
-  }, [query, fileFilter]);
+  }, [visibleQuery, fileFilter]);
 
   // Load all sessions when opened
   useEffect(() => {
@@ -1137,12 +1138,12 @@ const SessionsPane: React.FC<SessionsPaneProps> = ({
     // Typeahead mode: don't filter sessions; they're hidden behind typeahead anyway
     if (isFileSearchMode) return allSessions;
     // Normal title search
-    if (!query.trim()) return allSessions;
-    const q = query.toLowerCase();
+    if (!visibleQuery.trim()) return allSessions;
+    const q = visibleQuery.toLowerCase();
     return allSessions.filter((s) =>
       (s.title || 'New conversation').toLowerCase().includes(q),
     );
-  }, [allSessions, query, fileFilter, fileFilteredIds, isFileSearchMode]);
+  }, [allSessions, visibleQuery, fileFilter, fileFilteredIds, isFileSearchMode]);
 
   const handleFileTypeaheadSelect = useCallback(
     (option: TypeaheadOption) => {
@@ -1381,7 +1382,7 @@ const SessionsPane: React.FC<SessionsPaneProps> = ({
       </div>
     </div>
   );
-};
+});
 
 // =============================================================================
 // PromptsPane
@@ -1421,7 +1422,7 @@ interface PromptsPaneProps {
   onClose: () => void;
 }
 
-const PromptsPane: React.FC<PromptsPaneProps> = ({
+const PromptsPane: React.FC<PromptsPaneProps> = memo(({
   isOpen,
   isActive,
   query,
@@ -1436,10 +1437,11 @@ const PromptsPane: React.FC<PromptsPaneProps> = ({
   const [copiedPromptId, setCopiedPromptId] = useState<string | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const visibleQuery = isActive ? query : '';
 
   useEffect(() => {
     setSelectedIndex(0);
-  }, [query]);
+  }, [visibleQuery]);
 
   // Reset list synchronously before paint so the empty state doesn't flash
   // "No recent prompts" while the IPC call is in flight.
@@ -1464,10 +1466,10 @@ const PromptsPane: React.FC<PromptsPaneProps> = ({
   }, [isOpen, workspacePath]);
 
   const displayPrompts = useMemo(() => {
-    if (!query.trim()) return allPrompts;
-    const q = query.toLowerCase();
+    if (!visibleQuery.trim()) return allPrompts;
+    const q = visibleQuery.toLowerCase();
     return allPrompts.filter((p) => extractPromptText(p.content).toLowerCase().includes(q));
-  }, [query, allPrompts]);
+  }, [visibleQuery, allPrompts]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1603,7 +1605,7 @@ const PromptsPane: React.FC<PromptsPaneProps> = ({
       )}
     </div>
   );
-};
+});
 
 // =============================================================================
 // ProjectsPane
@@ -1632,7 +1634,7 @@ interface ProjectsPaneProps {
   onClose: () => void;
 }
 
-const ProjectsPane: React.FC<ProjectsPaneProps> = ({
+const ProjectsPane: React.FC<ProjectsPaneProps> = memo(({
   isOpen,
   isActive,
   query,
@@ -1643,10 +1645,11 @@ const ProjectsPane: React.FC<ProjectsPaneProps> = ({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [mouseHasMoved, setMouseHasMoved] = useState(false);
   const listRef = useRef<HTMLUListElement>(null);
+  const visibleQuery = isActive ? query : '';
 
   useEffect(() => {
     setSelectedIndex(0);
-  }, [query]);
+  }, [visibleQuery]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1673,12 +1676,12 @@ const ProjectsPane: React.FC<ProjectsPaneProps> = ({
   }, [isOpen, currentWorkspacePath]);
 
   const displayProjects = useMemo(() => {
-    if (!query.trim()) return projects;
-    const q = query.toLowerCase();
+    if (!visibleQuery.trim()) return projects;
+    const q = visibleQuery.toLowerCase();
     return projects.filter(
       (p) => p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q),
     );
-  }, [query, projects]);
+  }, [visibleQuery, projects]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1780,7 +1783,7 @@ const ProjectsPane: React.FC<ProjectsPaneProps> = ({
       )}
     </div>
   );
-};
+});
 
 // =============================================================================
 // TrackersPane — list / search tracker items, filter by type
@@ -1797,7 +1800,7 @@ interface TrackersPaneProps {
   onClose: () => void;
 }
 
-const TrackersPane: React.FC<TrackersPaneProps> = ({
+const TrackersPane: React.FC<TrackersPaneProps> = memo(({
   isOpen,
   isActive,
   query,
@@ -1811,10 +1814,11 @@ const TrackersPane: React.FC<TrackersPaneProps> = ({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [mouseHasMoved, setMouseHasMoved] = useState(false);
   const listRef = useRef<HTMLUListElement>(null);
+  const visibleQuery = isActive ? query : '';
 
   useEffect(() => {
     setSelectedIndex(0);
-  }, [query, typeFilter]);
+  }, [visibleQuery, typeFilter]);
 
   // Load all trackers when the dialog opens. The list-items IPC is fast
   // enough that we can do it eagerly; switching between types is in-memory.
@@ -1838,8 +1842,8 @@ const TrackersPane: React.FC<TrackersPaneProps> = ({
         (it) => it.type === typeFilter || (it.typeTags ?? []).includes(typeFilter),
       );
     }
-    if (query.trim()) {
-      const q = query.toLowerCase();
+    if (visibleQuery.trim()) {
+      const q = visibleQuery.toLowerCase();
       pool = pool.filter((it) => {
         if (it.title.toLowerCase().includes(q)) return true;
         if (it.issueKey?.toLowerCase().includes(q)) return true;
@@ -1855,7 +1859,7 @@ const TrackersPane: React.FC<TrackersPaneProps> = ({
       return tb - ta;
     });
     return pool.slice(0, 200);
-  }, [items, query, typeFilter]);
+  }, [items, visibleQuery, typeFilter]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1976,7 +1980,7 @@ const TrackersPane: React.FC<TrackersPaneProps> = ({
       )}
     </div>
   );
-};
+});
 
 function trackerTypeIcon(type: string): string {
   switch (type) {

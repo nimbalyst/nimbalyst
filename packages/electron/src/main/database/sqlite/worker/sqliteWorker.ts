@@ -54,6 +54,7 @@ import {
   type PgliteReadResponsePayload,
   type WorkerControlRequestPayload,
 } from './workerProtocol';
+import { assertWithinResponseLimit, ResponseTooLargeError } from './responseSizeGuard';
 import type { PGLiteHandle } from '../PGLiteToSQLiteMigrator';
 
 if (!parentPort) {
@@ -692,6 +693,23 @@ parentPort.on('message', async (msg: RequestEnvelope | BridgeResponseEnvelope) =
   const reqMsg = msg as RequestEnvelope;
   try {
     const data = await handle(reqMsg);
+    // Reject oversized payloads before postMessage rather than letting V8's
+    // structured-clone serializer grow a multi-GB buffer and abort the whole
+    // process. See responseSizeGuard.ts.
+    try {
+      assertWithinResponseLimit(data);
+    } catch (sizeErr) {
+      if (sizeErr instanceof ResponseTooLargeError) {
+        const sql = (reqMsg.payload as { sql?: string } | undefined)?.sql;
+        log('error', '[sqliteWorker] response exceeds size limit; rejecting to avoid OOM crash', {
+          type: reqMsg.type,
+          approxBytes: sizeErr.approxBytes,
+          limitBytes: sizeErr.limitBytes,
+          sql,
+        });
+      }
+      throw sizeErr;
+    }
     const response: ResponseEnvelope = { id: reqMsg.id, success: true, data };
     parentPort!.postMessage(response);
   } catch (err) {

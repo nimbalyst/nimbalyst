@@ -326,13 +326,35 @@ export async function removeBidirectionalLink(
   return changed;
 }
 
+/**
+ * Normalize the `type_tags` DB column into a string array.
+ *
+ * type_tags is TEXT[] in PGLite (returns string[]) but TEXT in SQLite (returns a
+ * JSON-encoded string). Without this, a raw string flows downstream and breaks
+ * `typeTags.filter` in the tracker tool widget. Falls back to `[fallbackType]` when
+ * the column is empty, null, or unparseable.
+ */
+export function normalizeTypeTags(rawTypeTags: unknown, fallbackType: string): string[] {
+  const parsed: string[] | undefined = Array.isArray(rawTypeTags)
+    ? (rawTypeTags as string[])
+    : typeof rawTypeTags === 'string'
+      ? (() => {
+          try {
+            const value = JSON.parse(rawTypeTags);
+            return Array.isArray(value) ? (value as string[]) : undefined;
+          } catch {
+            return undefined;
+          }
+        })()
+      : undefined;
+  return parsed && parsed.length > 0 ? parsed : [fallbackType];
+}
+
 /** Convert a raw DB row to a TrackerItem for the renderer */
 export function rowToTrackerItem(row: any): any {
   const data = typeof row.data === 'string' ? JSON.parse(row.data) : row.data || {};
-  // type_tags comes from the DB column; fall back to [type] for backward compat
-  const typeTags: string[] = row.type_tags && row.type_tags.length > 0
-    ? row.type_tags
-    : [row.type];
+  // type_tags comes from the DB column; fall back to [type] for backward compat.
+  const typeTags: string[] = normalizeTypeTags(row.type_tags, row.type);
   const result: any = {
     id: row.source === 'frontmatter' && row.source_ref
       ? buildFullDocumentTrackerId(row.type, row.source_ref)
@@ -2063,9 +2085,7 @@ export async function handleTrackerUpdate(
           [newTypeTags, row.id]
         );
       } else if (primaryTypeChanged) {
-        const existingTags: string[] = Array.isArray((row as any).type_tags)
-          ? ((row as any).type_tags as string[])
-          : [oldType];
+        const existingTags: string[] = normalizeTypeTags((row as any).type_tags, oldType);
         const preservedSecondary = existingTags.filter(
           (t) => t !== oldType && t !== row.type
         );
@@ -2175,9 +2195,7 @@ export async function handleTrackerUpdate(
         `SELECT type_tags FROM tracker_items WHERE id = $1`,
         [row.id]
       );
-      const currentTypeTags: string[] = updatedRow.rows[0]?.type_tags?.length > 0
-        ? updatedRow.rows[0].type_tags
-        : [row.type];
+      const currentTypeTags: string[] = normalizeTypeTags(updatedRow.rows[0]?.type_tags, row.type);
 
       const structured: Record<string, any> = {
         action: "updated" as const,

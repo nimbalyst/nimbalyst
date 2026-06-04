@@ -311,6 +311,51 @@ describe('UsageAnalyticsService on SQLite', () => {
       expect(series[0].totalTokens).toBe(330);
       expect(series[0].sessionCount).toBe(1);
     });
+
+    it('ignores non-turn.completed output rows (filtered in SQL, not JS)', async () => {
+      // Regression for the 2026-06-03 crash: the portable path used to SELECT
+      // `content` for every codex message and filter in JS, materializing
+      // multi-GB assistant/tool-output bodies. Now `turn.completed` is filtered
+      // in SQL via `metadata->>'eventType'`, so a huge non-turn output must be
+      // excluded entirely and never contribute tokens.
+      const t0 = Date.UTC(2026, 5, 1, 12, 0, 0);
+      await insertSession(db, {
+        id: 'codex-noise',
+        provider: 'openai-codex',
+        providerSessionId: 'codex-noise',
+        createdAtMs: t0,
+        metadata: {},
+      });
+      await insertMessage(db, {
+        sessionId: 'codex-noise',
+        direction: 'input',
+        content: 'hello',
+        metadata: { promptType: 'user' },
+        createdAtMs: t0 + 1_000,
+      });
+      // Large assistant output that is NOT a turn.completed event — the kind of
+      // row that used to bloat the payload. Its `usage` must be ignored.
+      await insertMessage(db, {
+        sessionId: 'codex-noise',
+        direction: 'output',
+        content: { text: 'x'.repeat(50_000), usage: { input_tokens: 9_999, output_tokens: 9_999 } },
+        metadata: { eventType: 'agent_message' },
+        createdAtMs: t0 + 2_000,
+      });
+      // The real usage-bearing turn.
+      await insertMessage(db, {
+        sessionId: 'codex-noise',
+        direction: 'output',
+        content: { usage: { input_tokens: 100, output_tokens: 30, cached_input_tokens: 0 } },
+        metadata: { eventType: 'turn.completed' },
+        createdAtMs: t0 + 3_000,
+      });
+
+      const series = await svc.getTimeSeriesData(t0 - 1, t0 + 24 * 3_600_000, 'day');
+      expect(series).toHaveLength(1);
+      expect(series[0].inputTokens).toBe(100);
+      expect(series[0].outputTokens).toBe(30);
+    });
   });
 
   describe('document_history methods (regression: were querying nonexistent created_at)', () => {

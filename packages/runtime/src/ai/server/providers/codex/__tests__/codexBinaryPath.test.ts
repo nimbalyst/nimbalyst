@@ -135,7 +135,7 @@ describe('codexBinaryPath', () => {
     expect(resolved).toBe(platformBinary);
   });
 
-  it('derives the sibling helper PATH dir for nested Codex binaries', () => {
+  it('derives the sibling helper PATH dir for legacy nested Codex binaries', () => {
     const binaryPath = path.join(
       '/tmp',
       'node_modules',
@@ -146,23 +146,22 @@ describe('codexBinaryPath', () => {
       'codex',
       'codex.exe'
     );
+    const legacyHelperDir = path.join(
+      '/tmp',
+      'node_modules',
+      '@openai',
+      'codex-win32-arm64',
+      'vendor',
+      'aarch64-pc-windows-msvc',
+      'path'
+    );
 
-    const entries = getCodexVendorPathEntries(binaryPath, () => true);
+    const entries = getCodexVendorPathEntries(binaryPath, (candidate) => candidate === legacyHelperDir);
 
-    expect(entries).toEqual([
-      path.join(
-        '/tmp',
-        'node_modules',
-        '@openai',
-        'codex-win32-arm64',
-        'vendor',
-        'aarch64-pc-windows-msvc',
-        'path'
-      ),
-    ]);
+    expect(entries).toEqual([legacyHelperDir]);
   });
 
-  it('derives the sibling helper PATH dir for flattened Codex binaries', () => {
+  it('derives the sibling helper PATH dir for legacy flattened Codex binaries', () => {
     const binaryPath = path.join(
       '/tmp',
       'node_modules',
@@ -172,6 +171,58 @@ describe('codexBinaryPath', () => {
       'aarch64-pc-windows-msvc',
       'codex.exe'
     );
+    const legacyHelperDir = path.join(
+      '/tmp',
+      'node_modules',
+      '@openai',
+      'codex-win32-arm64',
+      'vendor',
+      'aarch64-pc-windows-msvc',
+      'path'
+    );
+
+    const entries = getCodexVendorPathEntries(binaryPath, (candidate) => candidate === legacyHelperDir);
+
+    expect(entries).toEqual([legacyHelperDir]);
+  });
+
+  it('derives the sibling helper PATH dir for 0.131+ bin-layout Codex binaries', () => {
+    const binaryPath = path.join(
+      '/tmp',
+      'node_modules',
+      '@openai',
+      'codex-darwin-arm64',
+      'vendor',
+      'aarch64-apple-darwin',
+      'bin',
+      'codex'
+    );
+    const newHelperDir = path.join(
+      '/tmp',
+      'node_modules',
+      '@openai',
+      'codex-darwin-arm64',
+      'vendor',
+      'aarch64-apple-darwin',
+      'codex-path'
+    );
+
+    const entries = getCodexVendorPathEntries(binaryPath, (candidate) => candidate === newHelperDir);
+
+    expect(entries).toEqual([newHelperDir]);
+  });
+
+  it('prefers the new codex-path dir when both layouts coexist', () => {
+    const binaryPath = path.join(
+      '/tmp',
+      'node_modules',
+      '@openai',
+      'codex-darwin-arm64',
+      'vendor',
+      'aarch64-apple-darwin',
+      'bin',
+      'codex'
+    );
 
     const entries = getCodexVendorPathEntries(binaryPath, () => true);
 
@@ -180,10 +231,10 @@ describe('codexBinaryPath', () => {
         '/tmp',
         'node_modules',
         '@openai',
-        'codex-win32-arm64',
+        'codex-darwin-arm64',
         'vendor',
-        'aarch64-pc-windows-msvc',
-        'path'
+        'aarch64-apple-darwin',
+        'codex-path'
       ),
     ]);
   });

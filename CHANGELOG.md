@@ -9,9 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Claude Opus 4.8 is now selectable in the Claude provider (1M context, dateless ID `claude-opus-4-8`) and is the default Claude model for new installs. (#473)
-- Claude Code variants `opus-4-7` and `opus-4-7-1m` pinned to Opus 4.7 so it stays selectable after the canonical `opus` alias was bumped to 4.8. (#473)
-- Extension themes can contribute Monaco editor themes via an optional `monaco` block in `contributions.themes[]`, defining `base`, `rules`, and `colors`. Monaco-backed editors register the theme dynamically and switch to it when the user activates the theme; omitting the block keeps the previous `vs` / `vs-dark` fallback.
 - Internal scaffolding for the upcoming PR review panel: detects whether the `gh` CLI is installed and authenticated, with an onboarding banner that guides install/login without ever storing a GitHub token. (#307)
 - PR review cache schema (`pull_requests`, `pull_request_files`, `pull_request_commits`, `pull_request_checks`) and `worktrees.pr_*` linkage columns, plus a typed `PullRequestsStore` and `WorktreeStore.linkPullRequest` / `findByPullRequest` helpers. (#307)
 - `GhApiService` and IPC channels (`pr:list`, `pr:get`, `pr:files`, `pr:file-contents`, `pr:commits`, `pr:checks`, `pr:conversation`, `pr:refresh`, `pr:detect-remote`) that fetch GitHub data via `gh api` and persist normalized rows to the cache. (#307)
@@ -29,15 +26,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
-- Default Claude model bumped from `claude-opus-4-7` to `claude-opus-4-8`. Existing sessions keep their configured model; only new sessions and "reset to default" pick up 4.8. (#473)
 
 ### Fixed
-<!-- Bug fixes go here -->
 - PR review now shows an actionable message on a GitHub 404 (repo not found or the active `gh` account lacks access — check `gh auth status` / `gh auth switch`) instead of a raw error, and no longer prints a duplicated `api` in the failure text. (#307)
 - PR review cache tables are now created on the better-sqlite3 backend too (migration registered with the SQLite runner), not only on PGLite. (#307)
 - PR review: merged PRs now show as "Merged" (not "Closed") in the list, the Approve/Merge buttons refresh immediately after a merge (cache-bypassed refetch), and a success notice / "Merged" badge confirms the action. (#307)
+<!-- Bug fixes go here -->
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.64.4] - 2026-06-03
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- AI Usage Report no longer crashes the app on the SQLite backend.
+- Terminal scrollback is preserved when it contains a stray NUL byte, instead of discarding all saved history.
+- Claude Code session token totals in the AI Usage Report are no longer inflated.
+- Tracker tool widgets no longer crash on the SQLite backend over a JSON-string `type_tags` column.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.64.3] - 2026-06-03
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Release packaging validators now find the codex binary at its codex-sdk 0.131+ `vendor/<triple>/bin/` path, which broke the release build.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.64.2] - 2026-06-03
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Renderer build no longer breaks on the Anthropic SDK's Node-only agent-toolset (node:crypto/child_process/etc.), which broke the release build.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.64.1] - 2026-06-03
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- pdf-viewer extension build no longer bundles the host runtime (and the Anthropic SDK's Node built-ins), which broke the release build.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.64.0] - 2026-06-03
+
+
+### Added
+- Claude Opus 4.8 is now selectable in the Claude provider (1M context, dateless ID `claude-opus-4-8`) and is the default Claude model for new installs. (#473)
+- Claude Code variants `opus-4-7` and `opus-4-7-1m` pinned to Opus 4.7 so it stays selectable after the canonical `opus` alias was bumped to 4.8. (#473)
+- Extension themes can contribute Monaco editor themes via an optional `monaco` block in `contributions.themes[]`, defining `base`, `rules`, and `colors`. Monaco-backed editors register the theme dynamically and switch to it when the user activates the theme; omitting the block keeps the previous `vs` / `vs-dark` fallback.
+- Claude Code sessions now show a Task List panel in the right sidebar with the agent's SDK-native task queue (TaskCreate/TaskUpdate), including status, owner, and blocked-by dependencies.
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Default Claude model bumped from `claude-opus-4-7` to `claude-opus-4-8`. Existing sessions keep their configured model; only new sessions and "reset to default" pick up 4.8. (#473)
+- Bumped `@openai/codex-sdk` from 0.130.0 to 0.136.0; updated the binary path resolver for the new `vendor/<triple>/bin/codex` and `codex-path/` layout.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Claude Code sessions on Opus 4.8 now actually run on 4.8 (#531) Upgraded `@anthropic-ai/claude-agent-sdk` to 0.3.161 (and `@anthropic-ai/sdk` to 0.100.1 for its peer requirement).
+- Commit proposal diff peeks use the normal default size again instead of collapsing to a tiny bottom-right popover.
+- Quick Open file search no longer lags because hidden tabs stop re-rendering on each keystroke.
 - Fixed an EPIPE feedback loop where the main-process uncaught-exception handler re-entered itself when stderr was broken on Linux, flooding the log until the process died.
 - Meta-agent child sessions now inherit the parent session's provider and model instead of silently falling back to a Claude/Opus default for non-Claude parents.
+- iOS: fast typing into the prompt input no longer jumbles characters; synced drafts are no longer applied while the compose field has keyboard focus.
+- iOS: switching back to a recently-viewed session is now instant — the transcript keeps up to 3 sessions warm and no longer waits on the sync round-trip to reveal already-local messages.
+- iOS: fixed the transcript bundle failing to build (and shrank it ~3.8MB) by stopping a tool widget from importing the runtime barrel, which dragged the Anthropic SDK into the browser bundle.
+- "Commit with AI" now prompts the agent to include relevant, commitable, side-effect files.
+- Localhost `/clip` endpoint now rejects requests from arbitrary web pages, accepting only extension-origin JSON requests.
 
 
 ### Removed

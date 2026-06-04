@@ -25,6 +25,7 @@ import { isToolLikeMessage } from '@nimbalyst/runtime/ui/AgentTranscript/utils/m
 import { AIInput, AIInputRef } from './AIInput';
 import { PromptQueueList } from './PromptQueueList';
 import { TranscriptEmbeddedFileCard } from './TranscriptEmbeddedFileCard';
+import { getDiffPeekSizeForInteractiveWidgetHost } from './interactiveWidgetHostProxy';
 import { customEditorRegistry } from '../CustomEditors/registry';
 import { useDialog } from '../../contexts/DialogContext';
 import { FileGutter } from '../AIChat/FileGutter';
@@ -1756,7 +1757,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       get workspacePath() { return liveHostRef.current?.workspacePath ?? (workspacePath || ''); },
       get worktreeId() { return liveHostRef.current?.worktreeId ?? worktreeId; },
       get autoCommitEnabled() { return liveHostRef.current?.autoCommitEnabled ?? false; },
-      get diffPeekSize() { return liveHostRef.current?.diffPeekSize ?? { width: 0, height: 0 }; },
+      get diffPeekSize() { return getDiffPeekSizeForInteractiveWidgetHost(liveHostRef.current); },
       askUserQuestionSubmit: (...args) => liveHostRef.current!.askUserQuestionSubmit(...args),
       askUserQuestionCancel: (...args) => liveHostRef.current!.askUserQuestionCancel(...args),
       requestUserInputSubmit: (...args) => liveHostRef.current!.requestUserInputSubmit(...args),

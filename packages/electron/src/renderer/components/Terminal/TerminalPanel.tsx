@@ -10,6 +10,7 @@ import { useAtomValue } from 'jotai';
 import { init, Terminal, FitAddon, OSC8LinkProvider, UrlRegexProvider, type ITheme, type ILinkProvider, type ILink } from 'ghostty-web';
 import { themeIdAtom } from '@nimbalyst/runtime/store';
 import { TerminalContextMenu } from './TerminalContextMenu';
+import { sanitizeScrollback, stripProblematicEscapeSequences, cleanScrollback } from './scrollbackSanitization';
 
 // Type for terminal API is defined in electron.d.ts
 
@@ -58,74 +59,6 @@ async function waitForVisibleTerminalDimensions(
   throw new Error('Terminal container never became measurable');
 }
 
-/**
- * Strip escape sequences that can corrupt terminal state when replayed.
- *
- * When scrollback contains certain escape sequences and is written back to a fresh
- * terminal instance, these sequences can leave the terminal in a corrupted state
- * where old content appears mixed with new output.
- *
- * Problematic sequences include:
- * - Cursor save/restore (ESC 7, ESC 8, CSI s, CSI u)
- * - Scroll region settings (CSI r, CSI Ps;Ps r)
- * - Cursor position (CSI H, CSI Ps;Ps H, CSI f)
- * - Alternate screen buffer (CSI ?1049h/l, CSI ?47h/l, CSI ?1047h/l)
- * - Various DEC private modes that affect display
- */
-function stripProblematicEscapeSequences(raw: string): string {
-  // Remove cursor save/restore sequences
-  // ESC 7 (save) and ESC 8 (restore) - DEC sequences
-  let result = raw.replace(/\x1b[78]/g, '');
-
-  // Remove CSI cursor save/restore: CSI s and CSI u
-  result = result.replace(/\x1b\[s/g, '');
-  result = result.replace(/\x1b\[u/g, '');
-
-  // Remove scroll region settings: CSI r or CSI Ps;Ps r
-  // This matches ESC [ followed by optional numbers and semicolons, ending with 'r'
-  result = result.replace(/\x1b\[\d*;?\d*r/g, '');
-
-  // Remove absolute cursor positioning: CSI H, CSI f, CSI Ps;Ps H, CSI Ps;Ps f
-  // These position the cursor at specific row/col which can cause issues
-  result = result.replace(/\x1b\[\d*;?\d*[Hf]/g, '');
-
-  // Remove alternate screen buffer switches
-  // CSI ?1049h/l (alternate screen with save/restore cursor)
-  // CSI ?47h/l (alternate screen)
-  // CSI ?1047h/l (alternate screen, different variant)
-  result = result.replace(/\x1b\[\?(1049|47|1047)[hl]/g, '');
-
-  // Remove other problematic DEC private modes
-  // CSI ?1h/l (cursor keys mode)
-  // CSI ?25h/l (cursor visibility) - keep these as they're harmless
-  // CSI ?7h/l (autowrap) - can cause issues
-  result = result.replace(/\x1b\[\?7[hl]/g, '');
-
-  return result;
-}
-
-/**
- * Clean up scrollback content before restoring to terminal.
- *
- * The raw PTY output often contains excessive whitespace from terminal width
- * padding (e.g., zsh's PROMPT_SP feature fills the rest of the line with spaces
- * then uses carriage return to go back). When restoring scrollback to a terminal
- * with a different width, these sequences cause visual issues.
- *
- * This function removes runs of whitespace that precede carriage returns,
- * as these are used by shells to "clear" the rest of a line by overwriting.
- */
-function cleanScrollback(raw: string): string {
-  // Pattern explanation:
-  // [ \t]+  - One or more spaces or tabs
-  // \r      - Followed by carriage return (which moves cursor to line start)
-  // (?!\n)  - Negative lookahead: NOT followed by newline (preserve \r\n)
-  //
-  // This specifically targets the pattern: "text... <spaces> \r <more content>"
-  // which is zsh's technique for partial line markers
-  return raw.replace(/[ \t]+\r(?!\n)/g, '\r');
-}
-
 function getVisibleScreenLines(terminal: Terminal): string[] {
   const activeBuffer = terminal.buffer.active;
   const firstVisibleRow = Math.max(0, activeBuffer.length - terminal.rows);
@@ -141,98 +74,6 @@ function getVisibleScreenLines(terminal: Terminal): string[] {
 
 function escapeScreenLineForReplay(line: string): string {
   return line.replace(/\x1b/g, '').replace(/\r/g, '').replace(/\n/g, '');
-}
-
-/**
- * Sanitize scrollback data to remove invalid code points that could crash the terminal.
- *
- * When scrollback data gets corrupted (e.g., WASM memory issues, incomplete writes),
- * it may contain invalid code points outside the valid Unicode range (0x0 - 0x10FFFF).
- * The terminal's render loop will crash with "Invalid code point" errors when trying
- * to render these. This function validates each character and replaces invalid ones.
- *
- * Also detects null bytes and other binary corruption that can cause WASM memory
- * access errors in Ghostty's parser.
- *
- * Returns null if the data is severely corrupted (>1% invalid characters or contains
- * null bytes), indicating the scrollback should be discarded entirely.
- */
-function sanitizeScrollback(raw: string): string | null {
-  // Quick check for null bytes - indicates binary corruption
-  // Null bytes should never appear in terminal output and cause WASM memory errors
-  if (raw.includes('\x00')) {
-    console.warn('[TerminalPanel] Scrollback contains null bytes, discarding corrupted data');
-    return null;
-  }
-
-  // Check for excessive unexpected control characters (outside of ESC sequences)
-  // Control chars 0x01-0x06, 0x0E-0x1A (excluding common ones like \t, \n, \r, \x1b)
-  // High density of these indicates binary corruption
-  let suspiciousControlCount = 0;
-  for (let i = 0; i < raw.length; i++) {
-    const code = raw.charCodeAt(i);
-    // Count control chars that shouldn't appear frequently in terminal output
-    // 0x01-0x06 (SOH, STX, ETX, EOT, ENQ, ACK) and 0x0E-0x1A (SO, SI, DLE, etc.)
-    // Exclude: 0x07 (BEL - used in escape sequences), 0x08 (BS), 0x09 (TAB),
-    // 0x0A (LF), 0x0B (VT), 0x0C (FF), 0x0D (CR), 0x1B (ESC)
-    if ((code >= 0x01 && code <= 0x06) || (code >= 0x0E && code <= 0x1A)) {
-      suspiciousControlCount++;
-    }
-  }
-
-  // If more than 0.5% are suspicious control characters, likely binary corruption
-  const suspiciousRatio = suspiciousControlCount / raw.length;
-  if (suspiciousRatio > 0.005) {
-    console.warn(
-      `[TerminalPanel] Scrollback contains excessive control characters (${suspiciousControlCount}/${raw.length}, ${(suspiciousRatio * 100).toFixed(2)}%), discarding`
-    );
-    return null;
-  }
-
-  const MAX_VALID_CODE_POINT = 0x10FFFF;
-  let invalidCount = 0;
-  let result = '';
-
-  for (let i = 0; i < raw.length; i++) {
-    const codePoint = raw.codePointAt(i);
-
-    // Handle undefined (shouldn't happen but be safe)
-    if (codePoint === undefined) {
-      invalidCount++;
-      continue;
-    }
-
-    // Check if code point is valid Unicode
-    if (codePoint > MAX_VALID_CODE_POINT || codePoint < 0) {
-      invalidCount++;
-      // Replace invalid code point with Unicode replacement character
-      result += '\uFFFD';
-      continue;
-    }
-
-    // For surrogate pairs (code points > 0xFFFF), we need to handle both chars
-    if (codePoint > 0xFFFF) {
-      result += String.fromCodePoint(codePoint);
-      i++; // Skip the low surrogate
-    } else {
-      result += raw[i];
-    }
-  }
-
-  // If more than 1% of characters are invalid, the data is severely corrupted
-  const invalidRatio = invalidCount / raw.length;
-  if (invalidRatio > 0.01) {
-    console.warn(
-      `[TerminalPanel] Scrollback severely corrupted: ${invalidCount}/${raw.length} invalid characters (${(invalidRatio * 100).toFixed(1)}%)`
-    );
-    return null;
-  }
-
-  if (invalidCount > 0) {
-    console.warn(`[TerminalPanel] Sanitized ${invalidCount} invalid code points from scrollback`);
-  }
-
-  return result;
 }
 
 // Get terminal theme colors from CSS variables
@@ -296,6 +137,15 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   useEffect(() => {
     onExitRef.current = onExit;
   }, [onExit]);
+
+  // Auto-dismiss the scrollback-restore warning. It's purely informational
+  // ("live terminal output continues"), so it should not linger over the
+  // prompt line. Clears itself after a few seconds.
+  useEffect(() => {
+    if (!restoreWarning) return;
+    const timer = setTimeout(() => setRestoreWarning(null), 6000);
+    return () => clearTimeout(timer);
+  }, [restoreWarning]);
 
   // Handle context menu
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
@@ -859,7 +709,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
         <div
           style={{
             position: 'absolute',
-            bottom: '8px',
+            top: '8px',
             left: '8px',
             right: '8px',
             padding: '8px 12px',
@@ -868,9 +718,30 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
             color: 'var(--nim-text-muted)',
             fontSize: '12px',
             border: '1px solid var(--nim-border)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '8px',
           }}
         >
-          {restoreWarning}
+          <span>{restoreWarning}</span>
+          <button
+            type="button"
+            onClick={() => setRestoreWarning(null)}
+            aria-label="Dismiss"
+            style={{
+              flexShrink: 0,
+              background: 'none',
+              border: 'none',
+              color: 'var(--nim-text-muted)',
+              cursor: 'pointer',
+              fontSize: '14px',
+              lineHeight: 1,
+              padding: '0 2px',
+            }}
+          >
+            x
+          </button>
         </div>
       )}
 

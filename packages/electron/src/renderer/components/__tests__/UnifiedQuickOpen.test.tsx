@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 
 // The four legacy quick-open dialogs are now collapsed into UnifiedQuickOpen.
@@ -26,6 +26,11 @@ function setupElectronApiMock() {
           path: '/Users/ghinkle/sources/crystal',
           name: 'crystal',
           timestamp: 123,
+        },
+        {
+          path: '/Users/ghinkle/sources/aurora',
+          name: 'aurora',
+          timestamp: 122,
         },
       ];
     }
@@ -102,5 +107,40 @@ describe('UnifiedQuickOpen — Projects tab', () => {
     expect(window.electronAPI.workspaceManager.getOpenWorkspaces).toHaveBeenCalled();
     expect(window.electronAPI.workspaceManager.getRecentWorkspaces).not.toHaveBeenCalled();
     expect(await screen.findByText('crystal')).toBeTruthy();
+  });
+
+  it('does not filter hidden projects while typing in the Files tab', async () => {
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+    const store = createStore();
+
+    render(
+      <JotaiProvider store={store}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={vi.fn()}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="files"
+          onFileSelect={vi.fn()}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    await screen.findByText('crystal');
+    await screen.findByText('aurora');
+
+    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
+      target: { value: 'crystal' },
+    });
+
+    await waitFor(() => {
+      expect(window.electronAPI.searchWorkspaceFileNames).toHaveBeenCalledWith(
+        '/Users/ghinkle/sources/crystal',
+        'crystal',
+      );
+    });
+
+    expect(screen.getByText('aurora')).toBeTruthy();
   });
 });

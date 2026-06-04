@@ -14,8 +14,10 @@ public struct ComposeBar: View {
     let onCancel: () -> Void
     /// Optional queue callback -- when provided and session is executing, shows queue button instead of stop when user has typed text.
     var onQueue: ((String, [PendingAttachment]) -> Void)? = nil
-
-    @FocusState private var isFocused: Bool
+    /// Focus state owned by the parent so it can gate remote-draft application
+    /// on whether the user is actively typing. Mutating `wrappedValue = false`
+    /// from here still dismisses the keyboard.
+    var focused: FocusState<Bool>.Binding
     @State private var pendingAttachments: [PendingAttachment] = []
     @State private var showAttachmentSheet = false
     @State private var showPhotoPicker = false
@@ -94,7 +96,7 @@ public struct ComposeBar: View {
                     .padding(.vertical, 8)
                     .background(NimbalystColors.backgroundTertiary)
                     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .focused($isFocused)
+                    .focused(focused)
 
                 if isExecuting && canSend && onQueue != nil {
                     // Queue button: session is executing and user has typed text
@@ -102,7 +104,7 @@ public struct ComposeBar: View {
                         // Resign focus first so any in-flight keyboard dictation
                         // commits to the binding before we clear it; otherwise
                         // pending dictated text gets re-inserted after the clear.
-                        isFocused = false
+                        focused.wrappedValue = false
                         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
                         let attachments = pendingAttachments
                         text = ""
@@ -129,7 +131,7 @@ public struct ComposeBar: View {
                         // Resign focus first so any in-flight keyboard dictation
                         // commits to the binding before we clear it; otherwise
                         // pending dictated text gets re-inserted after the clear.
-                        isFocused = false
+                        focused.wrappedValue = false
                         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
                         let attachments = pendingAttachments
                         text = ""

@@ -154,9 +154,11 @@ for (const { entry, platformMacro } of allEntries) {
     });
   }
   // @openai/codex-<platform>-<arch>: the native `codex` binary sits at
-  // vendor/<target-triple>/codex (see codexBinaryPath.ts). Same cross-arch
-  // failure mode as claude-agent-sdk -- if the package exists but the
-  // vendored binary is missing, the cross-arch install step broke.
+  // vendor/<target-triple>/bin/codex on codex-sdk 0.131+ (older layouts used
+  // vendor/<triple>/codex/ or the triple dir directly). Keep these candidates
+  // in sync with codexBinaryPath.ts. Same cross-arch failure mode as
+  // claude-agent-sdk -- if the package exists but the vendored binary is
+  // missing, the cross-arch install step broke.
   const codexMatch = rawFrom.match(/@openai\/codex-([a-z0-9]+)-\$\{arch\}$/);
   if (codexMatch) {
     const plat = codexMatch[1];
@@ -167,6 +169,7 @@ for (const { entry, platformMacro } of allEntries) {
       label: `@openai/codex-${plat}-${buildArch}`,
       dir,
       candidatePaths: triple ? [
+        path.join(dir, 'vendor', triple, 'bin', binName),
         path.join(dir, 'vendor', triple, 'codex', binName),
         path.join(dir, 'vendor', triple, binName),
       ] : [],

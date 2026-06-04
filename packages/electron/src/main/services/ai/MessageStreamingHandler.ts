@@ -1936,17 +1936,16 @@ export class MessageStreamingHandler {
                 totalTokens: 0
               };
 
-              // Sum up tokens from all models in modelUsage.
-              // Note: modelUsage tokens are CUMULATIVE across all steps (for billing).
-              // For context window display, use contextFillTokens from last assistant message.
-              let newInputTokens = 0;
-              let newOutputTokens = 0;
+              // Cumulative input/output come from result.usage (chunk.usage), which Anthropic
+              // deduplicates by message.id. Do NOT sum modelUsage tokens for these -- the SDK
+              // over-counts them from duplicated assistant events (each message is emitted 2-3x,
+              // one event per content block), inflating the tooltip totals. See NIM-689.
+              // Cost still derives from modelUsage (the only per-model cost source; not displayed).
+              const newInputTokens = tokenUsage?.input_tokens || 0;
+              const newOutputTokens = tokenUsage?.output_tokens || 0;
               let newCostUSD = 0;
               for (const modelName of Object.keys(modelUsage)) {
-                const modelStats = modelUsage[modelName];
-                newInputTokens += modelStats.inputTokens || 0;
-                newOutputTokens += modelStats.outputTokens || 0;
-                newCostUSD += modelStats.costUSD || 0;
+                newCostUSD += modelUsage[modelName].costUSD || 0;
               }
 
               // Use the selected model's context window (resolved from model registry at session start).

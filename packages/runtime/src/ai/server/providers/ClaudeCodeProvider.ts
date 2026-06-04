@@ -94,6 +94,7 @@ import {
 } from './claudeCode/toolAuthorization';
 import { ClaudeCodeDeps } from './claudeCode/dependencyInjection';
 import { buildSdkOptions, type PromptStreamController } from './claudeCode/sdkOptionsBuilder';
+import { applyTaskListMutation, sortTaskList, type TaskListItem } from './claudeCode/taskListReconstruct';
 
 
 /**
@@ -122,6 +123,8 @@ const SDK_NATIVE_TOOLS: readonly string[] = [
   'ListMcpResources', 'ListMcpResourcesTool',
   'ReadMcpResource', 'ReadMcpResourceTool',
   'Config', 'Mcp',
+  // claude-agent-sdk 0.3.x additions (CLI-native multi-agent orchestration)
+  'Workflow', 'REPL',
 ];
 
 /**
@@ -149,6 +152,7 @@ export interface ScheduleWakeupRequest {
   prompt: string;
   reason: string;
 }
+
 
 export class ClaudeCodeProvider extends BaseAgentProvider {
   private currentMode?: 'planning' | 'agent'; // Track session mode for prompt customization and tool filtering
@@ -213,6 +217,13 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     lastToolName?: string;
     summary?: string;
   }>();
+
+  // SDK-native task-list tracking (TaskCreate/TaskUpdate tools — the shared,
+  // dependency-aware work queue, distinct from the sub-agent telemetry above).
+  // Reconstructed incrementally from tool args/results because TaskUpdate only
+  // sends the changed fields, never the full board. Surfaced to the UI via
+  // metadata.currentTaskList. Keyed by the SDK-assigned task id ("1", "2", ...).
+  private taskListItems = new Map<string, TaskListItem>();
 
   // MCP server status tracking: last known statuses for change detection
   private mcpServerStatuses: Map<string, McpServerStatusInfo> = new Map();
@@ -1024,6 +1035,13 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
                   this.processTeammateToolResult(sessionId, toolCall.name, toolCall.arguments, item.content, toolCall.isError === true, toolCall.id);
 
+                  // Mirror SDK-native task-list mutations into session metadata so
+                  // the UI can show the tasks for this session (TaskCreate id is
+                  // only available in the result, so capture happens here).
+                  if (!toolCall.isError) {
+                    this.captureTaskListMutation(sessionId, toolCall.name, toolCall.arguments, item.content);
+                  }
+
                   if (item.toolUseId) {
                     for (const task of this.activeTasks.values()) {
                       if (task.toolUseId === item.toolUseId && task.status === 'running') {
@@ -1183,11 +1201,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
               await this.toolHooksService.createTurnEndSnapshots();
             }
 
+            // Prefer result.usage (deduplicated by Anthropic via message.id). The SDK's
+            // modelUsage aggregate over-counts: the agent stream emits each assistant
+            // message 2-3x (one event per content block) and modelUsage sums the dupes,
+            // inflating cumulative input/output. Fall back to the modelUsage sum only when
+            // result.usage is missing. See NIM-689.
             let totalInputTokens = usageData?.input_tokens || 0;
             let totalOutputTokens = usageData?.output_tokens || 0;
-            if (modelUsageData) {
-              totalInputTokens = 0;
-              totalOutputTokens = 0;
+            if (!usageData && modelUsageData) {
               for (const modelName of Object.keys(modelUsageData)) {
                 const modelStats = modelUsageData[modelName];
                 totalInputTokens += modelStats.inputTokens || 0;
@@ -1386,19 +1407,26 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           await this.toolHooksService.createTurnEndSnapshots();
         }
 
-        // Calculate total input/output tokens from modelUsage if available (more accurate than usageData)
+        // Prefer result.usage (deduplicated by Anthropic via message.id) for token totals.
+        // modelUsage over-counts because the agent stream emits each assistant message
+        // 2-3x (one event per content block) and modelUsage sums the dupes. Use the
+        // modelUsage sum only as a fallback when result.usage is absent. Cost still comes
+        // from modelUsage (the only per-model cost source; not displayed). See NIM-689.
         let totalInputTokens = usageData?.input_tokens || 0;
         let totalOutputTokens = usageData?.output_tokens || 0;
         let totalCostUSD = 0;
 
         if (modelUsageData) {
-          // Sum up tokens from all models (in case multiple models were used)
-          totalInputTokens = 0;
-          totalOutputTokens = 0;
+          if (!usageData) {
+            totalInputTokens = 0;
+            totalOutputTokens = 0;
+          }
           for (const modelName of Object.keys(modelUsageData)) {
             const modelStats = modelUsageData[modelName];
-            totalInputTokens += modelStats.inputTokens || 0;
-            totalOutputTokens += modelStats.outputTokens || 0;
+            if (!usageData) {
+              totalInputTokens += modelStats.inputTokens || 0;
+              totalOutputTokens += modelStats.outputTokens || 0;
+            }
             totalCostUSD += modelStats.costUSD || 0;
           }
         }
@@ -2059,6 +2087,26 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       })();
     }
 
+    // Hydrate the in-memory task-list map from persisted metadata so TaskUpdate
+    // deltas in a resumed session merge onto the existing board instead of
+    // creating stubs (the map is per-provider-instance and starts empty).
+    if (sessionId && this.taskListItems.size === 0) {
+      (async () => {
+        try {
+          const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
+          const currentSession = await AISessionsRepository.get(sessionId);
+          const persisted = currentSession?.metadata?.currentTaskList;
+          if (Array.isArray(persisted)) {
+            for (const item of persisted as TaskListItem[]) {
+              if (item && typeof item.id === 'string') this.taskListItems.set(item.id, item);
+            }
+          }
+        } catch {
+          // Non-critical hydration
+        }
+      })();
+    }
+
     if (chunk.slash_commands && Array.isArray(chunk.slash_commands)) {
       this.slashCommands = chunk.slash_commands;
       ClaudeCodeProvider.cachedSdkSlashCommands = chunk.slash_commands;
@@ -2252,6 +2300,48 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       this.emit('message:logged', { sessionId, direction: 'output' });
     } catch (error) {
       console.error('[CLAUDE-CODE] Failed to update session metadata with tasks:', error);
+    }
+  }
+
+  /**
+   * Reconstruct the SDK-native task list from TaskCreate/TaskUpdate tool calls.
+   * TaskUpdate only carries the changed fields, so we keep a running map keyed by
+   * the SDK-assigned id and merge each mutation. TaskCreate does not echo the id
+   * in its args — it appears only in the result text ("Task #3 created ...") — so
+   * this must run on tool_result, not tool_use.
+   */
+  private captureTaskListMutation(
+    sessionId: string | undefined,
+    toolName: string,
+    args: Record<string, unknown> | undefined,
+    resultContent: unknown,
+  ): void {
+    if (!sessionId) return;
+    const resultText = typeof resultContent === 'string' ? resultContent : '';
+    const changed = applyTaskListMutation(this.taskListItems, toolName, args, resultText);
+    if (changed) {
+      this.emitTaskListUpdate(sessionId).catch(() => {});
+    }
+  }
+
+  private async emitTaskListUpdate(sessionId: string | undefined): Promise<void> {
+    if (!sessionId) return;
+    try {
+      const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
+      const currentSession = await AISessionsRepository.get(sessionId);
+      const currentMetadata = currentSession?.metadata || {};
+
+      await AISessionsRepository.updateMetadata(sessionId, {
+        metadata: {
+          ...currentMetadata,
+          // Sorted by numeric id so the board renders in creation order.
+          currentTaskList: sortTaskList(this.taskListItems.values()),
+        }
+      });
+
+      this.emit('message:logged', { sessionId, direction: 'output' });
+    } catch (error) {
+      console.error('[CLAUDE-CODE] Failed to update session metadata with task list:', error);
     }
   }
 

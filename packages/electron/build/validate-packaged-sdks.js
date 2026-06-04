@@ -264,8 +264,10 @@ function nativeBinaryChecks() {
     ],
   });
 
-  // 2. codex binary -- @openai/codex-<plat>-<arch>/vendor/<triple>/codex/codex(.exe)
-  // The actual binary lives one level deeper inside a `codex` subdirectory.
+  // 2. codex binary -- @openai/codex-<plat>-<arch>/vendor/<triple>/<bin|codex>/codex(.exe)
+  // Layout candidates must mirror codexBinaryPath.ts: codex-sdk 0.131+ moved
+  // the binary into a `bin/` subdirectory; older layouts used `codex/` or the
+  // triple dir directly. Keep this list in sync with that resolver.
   const triple = codexTargetTriple(targetPlatform, targetArch);
   if (triple) {
     const codexPlatDir = `codex-${targetPlatform === 'win32' ? 'win32' : targetPlatform}-${targetArch}`;
@@ -273,6 +275,7 @@ function nativeBinaryChecks() {
     out.push({
       label: 'codex binary (@openai/codex)',
       candidates: [
+        nmRel('@openai', codexPlatDir, 'vendor', triple, 'bin', codexBin),
         nmRel('@openai', codexPlatDir, 'vendor', triple, 'codex', codexBin),
         nmRel('@openai', codexPlatDir, 'vendor', triple, codexBin),
       ],

@@ -10,7 +10,11 @@
 
 import React, { useState, useCallback } from 'react';
 import { useAtomValue } from 'jotai';
-import { MaterialSymbol } from '../../../..';
+// Deep import, NOT the runtime barrel ('../../../..' resolves to
+// runtime/src/index.ts). The barrel re-exports ai/models.ts, which value-imports
+// the Anthropic SDK and drags node-only agent-toolset into the iOS transcript
+// browser bundle, breaking the build. Match the sibling widgets' deep path.
+import { MaterialSymbol } from '../../../icons/MaterialSymbol';
 import type { CustomToolWidgetProps } from './index';
 import { interactiveWidgetHostAtom } from '../../../../store/atoms/interactiveWidgetHost';
 

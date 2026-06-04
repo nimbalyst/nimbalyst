@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import ReactDOM from 'react-dom/client';
 import { Provider as JotaiProvider } from 'jotai';
 import { store } from '@nimbalyst/runtime/store';
@@ -49,6 +49,36 @@ interface BridgeMetadataUpdate {
   model?: string;
   mode?: string;
   isExecuting?: boolean;
+}
+
+// Up to N sessions kept mounted simultaneously. Switching back to a cached
+// session is then a CSS visibility toggle — no React reflow, no VList re-mount,
+// scroll position preserved.
+const CACHE_CAPACITY = 3;
+
+interface SessionEntry {
+  sessionId: string;
+  rawMessages: BridgeMessage[];
+  metadata: BridgeMetadataUpdate;
+}
+
+function lastMessageId(messages: BridgeMessage[]): string | null {
+  return messages.length > 0 ? messages[messages.length - 1].id : null;
+}
+
+function metadataEqual(a: BridgeMetadataUpdate, b: BridgeMetadataUpdate): boolean {
+  return (
+    a.title === b.title &&
+    a.provider === b.provider &&
+    a.model === b.model &&
+    a.mode === b.mode &&
+    a.isExecuting === b.isExecuting
+  );
+}
+
+interface TranscriptHandle {
+  scrollToMessage: (index: number) => void;
+  scrollToTop: () => void;
 }
 
 // ============================================================================
@@ -272,20 +302,34 @@ class TranscriptErrorBoundary extends React.Component<
 }
 
 // ============================================================================
-// Transcript App
+// Transcript App — multi-session LRU cache (CACHE_CAPACITY entries kept
+// mounted). Inactive sessions stay in the DOM with `visibility: hidden` so
+// their scroll position, expansion state, and virtual-list windows survive a
+// round trip. The active session is the one Swift's coordinator is currently
+// feeding via appendMessages/updateMetadata.
 // ============================================================================
 
 function TranscriptApp() {
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [rawMessages, setRawMessages] = useState<BridgeMessage[]>([]);
-  const [metadata, setMetadata] = useState<BridgeMetadataUpdate>({});
-  const rawMessagesRef = useRef<BridgeMessage[]>([]);
-  const viewMessagesRef = useRef<TranscriptViewMessage[]>([]);
-  const transcriptRef = useRef<{ scrollToMessage: (index: number) => void; scrollToTop: () => void }>(null);
-  const sessionDataRef = useRef<SessionData | null>(null);
+  // All hooks BEFORE any early return — see CLAUDE.md "React hooks rules".
+  const [sessions, setSessions] = useState<Record<string, SessionEntry>>({});
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
-  // Track sessionId in a ref so clearSession can access it without re-running the effect
-  const sessionIdRef = useRef<string | null>(null);
+  // Refs mirror state so bridge handlers (defined inside a useEffect with []
+  // deps) read current values without stale closures, and so cross-handler
+  // sync reads work correctly between batched React updates.
+  const sessionsRef = useRef<Record<string, SessionEntry>>({});
+  const activeSessionIdRef = useRef<string | null>(null);
+  sessionsRef.current = sessions;
+  activeSessionIdRef.current = activeSessionId;
+
+  // LRU order, oldest first. Touched on every loadSession.
+  const lruRef = useRef<string[]>([]);
+
+  // Per-session refs registered upward by SessionView so the bridge's
+  // scrollToTop / scrollToMessage / getPromptList can route to the active
+  // session's panel without re-rendering.
+  const transcriptRefsRef = useRef<Map<string, TranscriptHandle>>(new Map());
+  const sessionDataRefsRef = useRef<Map<string, SessionData>>(new Map());
 
   // Set up the bridge on window.nimbalyst - runs once on mount, never re-runs
   useEffect(() => {
@@ -297,71 +341,158 @@ function TranscriptApp() {
     const nimbalyst: Record<string, unknown> = {
       loadSession(data: BridgeSessionData) {
         try {
-          // Clean up previous session's widget host
-          if (sessionIdRef.current) {
-            setInteractiveWidgetHost(sessionIdRef.current, null);
+          const id = data.sessionId;
+          const incomingMessages = data.messages || [];
+          const incomingMetadata = data.metadata || {};
+
+          // Always activate and touch LRU — these are cheap and must happen on
+          // every call, including the no-op activation path below.
+          activeSessionIdRef.current = id;
+          lruRef.current = [...lruRef.current.filter((x) => x !== id), id];
+          // Widget host is stateless; (re)registering is idempotent.
+          setInteractiveWidgetHost(id, createMobileBridgeHost(id));
+
+          const prev = sessionsRef.current;
+          const existing = prev[id];
+
+          if (existing) {
+            // Cache hit. Swift re-sends the FULL message list on every switch
+            // (and an early call with 0 messages before GRDB emits). Replacing
+            // rawMessages with a fresh array reference would re-run the
+            // expensive transform and re-render the whole panel — defeating the
+            // cache. Only replace when there is genuinely new content; a switch
+            // back to an unchanged session must be a pure visibility toggle.
+            const supersedes =
+              incomingMessages.length > existing.rawMessages.length ||
+              (incomingMessages.length === existing.rawMessages.length &&
+                incomingMessages.length > 0 &&
+                lastMessageId(incomingMessages) !== lastMessageId(existing.rawMessages));
+            const metaChanged = !metadataEqual(existing.metadata, incomingMetadata);
+
+            if (!supersedes && !metaChanged) {
+              // Nothing changed — pure activation. No session-state churn, so
+              // the transform effect and VList never re-run.
+              setActiveSessionId(id);
+              return;
+            }
+
+            const next = {
+              ...prev,
+              [id]: {
+                sessionId: id,
+                // Keep the existing array reference when not superseded so the
+                // transform effect's [rawMessages] dep doesn't fire.
+                rawMessages: supersedes ? incomingMessages : existing.rawMessages,
+                metadata: incomingMetadata,
+              },
+            };
+            sessionsRef.current = next;
+            setSessions(next);
+            setActiveSessionId(id);
+            return;
           }
-          sessionIdRef.current = data.sessionId;
 
-          setSessionId(data.sessionId);
-          setRawMessages(data.messages || []);
-          rawMessagesRef.current = data.messages || [];
-          setMetadata(data.metadata || {});
-
-          // Set up interactive widget host for this session
-          const host = createMobileBridgeHost(data.sessionId);
-          setInteractiveWidgetHost(data.sessionId, host);
+          // Cache miss — create the entry and evict the LRU session if over
+          // capacity. Never evict the session being added.
+          let next: Record<string, SessionEntry> = {
+            ...prev,
+            [id]: { sessionId: id, rawMessages: incomingMessages, metadata: incomingMetadata },
+          };
+          if (Object.keys(next).length > CACHE_CAPACITY) {
+            const evict = lruRef.current.filter((x) => next[x] && x !== id)[0];
+            if (evict) {
+              const { [evict]: _dropped, ...rest } = next;
+              next = rest;
+              setInteractiveWidgetHost(evict, null);
+              transcriptRefsRef.current.delete(evict);
+              sessionDataRefsRef.current.delete(evict);
+              lruRef.current = lruRef.current.filter((x) => x !== evict);
+            }
+          }
+          sessionsRef.current = next;
+          setSessions(next);
+          setActiveSessionId(id);
         } catch (e) {
           postErrorToNative('loadSession', e);
         }
       },
 
       appendMessage(message: BridgeMessage) {
-        const updated = [...rawMessagesRef.current, message];
-        rawMessagesRef.current = updated;
-        setRawMessages(updated);
+        const activeId = activeSessionIdRef.current;
+        if (!activeId) return;
+        setSessions((prev) => {
+          const entry = prev[activeId];
+          if (!entry) return prev;
+          const updated = { ...entry, rawMessages: [...entry.rawMessages, message] };
+          const next = { ...prev, [activeId]: updated };
+          sessionsRef.current = next;
+          return next;
+        });
       },
 
       appendMessages(messages: BridgeMessage[]) {
         if (messages.length === 0) return;
-        const updated = [...rawMessagesRef.current, ...messages];
-        rawMessagesRef.current = updated;
-        setRawMessages(updated);
+        const activeId = activeSessionIdRef.current;
+        if (!activeId) return;
+        setSessions((prev) => {
+          const entry = prev[activeId];
+          if (!entry) return prev;
+          const updated = { ...entry, rawMessages: [...entry.rawMessages, ...messages] };
+          const next = { ...prev, [activeId]: updated };
+          sessionsRef.current = next;
+          return next;
+        });
       },
 
       updateMetadata(update: BridgeMetadataUpdate) {
-        setMetadata((prev) => ({ ...prev, ...update }));
+        const activeId = activeSessionIdRef.current;
+        if (!activeId) return;
+        setSessions((prev) => {
+          const entry = prev[activeId];
+          if (!entry) return prev;
+          const updated = { ...entry, metadata: { ...entry.metadata, ...update } };
+          const next = { ...prev, [activeId]: updated };
+          sessionsRef.current = next;
+          return next;
+        });
       },
 
       clearSession() {
-        if (sessionIdRef.current) {
-          setInteractiveWidgetHost(sessionIdRef.current, null);
-          sessionIdRef.current = null;
-        }
-        setSessionId(null);
-        setRawMessages([]);
-        rawMessagesRef.current = [];
-        setMetadata({});
+        // Drop every cached session. Existing native callers expect this to
+        // wipe the transcript completely; we keep that contract.
+        Object.keys(sessionsRef.current).forEach((id) => setInteractiveWidgetHost(id, null));
+        sessionsRef.current = {};
+        setSessions({});
+        activeSessionIdRef.current = null;
+        setActiveSessionId(null);
+        lruRef.current = [];
+        transcriptRefsRef.current.clear();
+        sessionDataRefsRef.current.clear();
       },
 
       scrollToTop() {
-        transcriptRef.current?.scrollToTop();
+        const id = activeSessionIdRef.current;
+        if (id) transcriptRefsRef.current.get(id)?.scrollToTop();
       },
 
       scrollToMessage(messageId: string) {
+        const id = activeSessionIdRef.current;
+        if (!id) return;
         // messageId is actually a UI message index (stringified) from getPromptList
         const index = parseInt(messageId, 10);
         if (!isNaN(index)) {
-          transcriptRef.current?.scrollToMessage(index);
+          transcriptRefsRef.current.get(id)?.scrollToMessage(index);
         }
       },
 
       getPromptList(): Array<{ id: string; text: string; createdAt: number }> {
+        const id = activeSessionIdRef.current;
+        if (!id) return [];
+        const sd = sessionDataRefsRef.current.get(id);
+        if (!sd) return [];
         // Use transformed UI messages (same as desktop PromptMarker extraction)
         // so that the returned indices match the VList item positions.
-        const messages = sessionDataRef.current?.messages;
-        if (!messages) return [];
-        return messages
+        return sd.messages
           .map((msg, index) => ({ msg, index }))
           .filter(({ msg }) => msg.type === 'user_message')
           .map(({ msg, index }) => ({
@@ -376,7 +507,9 @@ function TranscriptApp() {
       // Diagnostics for Safari Web Inspector console. Only attached in DEBUG
       // builds (Swift sets window.__nimbalystDebug via WKUserScript).
       nimbalyst._debugRaw = () => {
-        return rawMessagesRef.current.map((m) => {
+        const id = activeSessionIdRef.current;
+        const raws = id ? (sessionsRef.current[id]?.rawMessages ?? []) : [];
+        return raws.map((m) => {
           let parsedType: string | undefined;
           let itemType: string | undefined;
           let toolName: string | undefined;
@@ -400,12 +533,23 @@ function TranscriptApp() {
         });
       };
       nimbalyst._debugView = () => {
-        return viewMessagesRef.current.map((m) => ({
+        const id = activeSessionIdRef.current;
+        if (!id) return [];
+        const sd = sessionDataRefsRef.current.get(id);
+        if (!sd) return [];
+        return sd.messages.map((m) => ({
           type: m.type,
           toolName: (m as any).toolCall?.toolName,
           textPreview: m.text ? m.text.slice(0, 60) : undefined,
         }));
       };
+      nimbalyst._debugCache = () => ({
+        active: activeSessionIdRef.current,
+        lru: [...lruRef.current],
+        sessions: Object.fromEntries(
+          Object.entries(sessionsRef.current).map(([id, e]) => [id, { messages: e.rawMessages.length }]),
+        ),
+      });
     }
 
     (window as any).nimbalyst = nimbalyst;
@@ -422,65 +566,6 @@ function TranscriptApp() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Transform raw bridge messages to UI format via the canonical transcript
-  // pipeline (per-provider parser -> in-memory projector). Async because the
-  // parsers return Promises, even when backed by an in-memory store.
-  const [viewMessages, setViewMessages] = useState<TranscriptViewMessage[]>([]);
-
-  useEffect(() => {
-    if (!sessionId) {
-      setViewMessages([]);
-      return;
-    }
-    let cancelled = false;
-    try {
-      const provider = metadata.provider || 'claude-code';
-      const rawForTransform: RawMessage[] = rawMessages.map((m, i) => bridgeMessageToRaw(m, i + 1));
-      projectRawMessagesToViewMessages(rawForTransform, provider)
-        .then((vms) => {
-          if (cancelled) return;
-          try {
-            viewMessagesRef.current = vms;
-            setViewMessages(vms);
-          } catch (e) {
-            postErrorToNative('projectRawMessages:setState', e);
-          }
-        })
-        .catch((e) => {
-          if (!cancelled) postErrorToNative('projectRawMessages:async', e);
-        });
-    } catch (e) {
-      postErrorToNative('projectRawMessages:sync', e);
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, rawMessages, metadata.provider]);
-
-  const sessionData: SessionData | null = React.useMemo(() => {
-    if (!sessionId) return null;
-
-    let sessionStatus: string | undefined;
-    if (metadata.isExecuting) {
-      sessionStatus = 'running';
-    }
-
-    return {
-      id: sessionId,
-      provider: metadata.provider || 'unknown',
-      model: metadata.model,
-      mode: metadata.mode as 'planning' | 'agent' | undefined,
-      messages: viewMessages,
-      title: metadata.title,
-      createdAt: rawMessages[0]?.createdAt || Date.now(),
-      updatedAt: rawMessages[rawMessages.length - 1]?.createdAt || Date.now(),
-      metadata: sessionStatus ? { sessionStatus } : undefined,
-    };
-  }, [sessionId, rawMessages, metadata, viewMessages]);
-
-  // Keep ref in sync so the bridge's getPromptList can access transformed messages
-  sessionDataRef.current = sessionData;
 
   const handleCompact = useCallback(() => {
     try {
@@ -501,7 +586,19 @@ function TranscriptApp() {
     }
   }, []);
 
-  if (!sessionId || !sessionData) {
+  const registerTranscriptRef = useCallback((id: string, ref: TranscriptHandle | null) => {
+    if (ref) transcriptRefsRef.current.set(id, ref);
+    else transcriptRefsRef.current.delete(id);
+  }, []);
+
+  const registerSessionData = useCallback((id: string, data: SessionData | null) => {
+    if (data) sessionDataRefsRef.current.set(id, data);
+    else sessionDataRefsRef.current.delete(id);
+  }, []);
+
+  const cachedEntries = Object.values(sessions);
+
+  if (cachedEntries.length === 0 || activeSessionId === null) {
     return (
       <div style={{
         display: 'flex',
@@ -517,15 +614,128 @@ function TranscriptApp() {
   }
 
   return (
-    <AgentTranscriptPanel
-      ref={transcriptRef}
-      key={sessionId}
-      sessionId={sessionId}
-      sessionData={sessionData}
-      hideSidebar={true}
-      onCompact={handleCompact}
-      onFileClick={handleOpenFile}
-    />
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {cachedEntries.map((entry) => (
+        <SessionView
+          key={entry.sessionId}
+          entry={entry}
+          isActive={entry.sessionId === activeSessionId}
+          onCompact={handleCompact}
+          onOpenFile={handleOpenFile}
+          registerTranscriptRef={registerTranscriptRef}
+          registerSessionData={registerSessionData}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ============================================================================
+// SessionView — one per cached session. Hidden sessions stay mounted so their
+// DOM (scroll position, expansion state, virtual-list window) survives a swap.
+// ============================================================================
+
+interface SessionViewProps {
+  entry: SessionEntry;
+  isActive: boolean;
+  onCompact: () => void;
+  onOpenFile: (filePath: string) => void;
+  registerTranscriptRef: (id: string, ref: TranscriptHandle | null) => void;
+  registerSessionData: (id: string, data: SessionData | null) => void;
+}
+
+function SessionView({
+  entry,
+  isActive,
+  onCompact,
+  onOpenFile,
+  registerTranscriptRef,
+  registerSessionData,
+}: SessionViewProps) {
+  // All hooks before any early return.
+  const transcriptRef = useRef<TranscriptHandle>(null);
+  const [viewMessages, setViewMessages] = useState<TranscriptViewMessage[]>([]);
+
+  // Transform raw bridge messages to UI format via the canonical transcript
+  // pipeline (per-provider parser -> in-memory projector).
+  useEffect(() => {
+    let cancelled = false;
+    try {
+      const provider = entry.metadata.provider || 'claude-code';
+      const rawForTransform: RawMessage[] = entry.rawMessages.map((m, i) => bridgeMessageToRaw(m, i + 1));
+      projectRawMessagesToViewMessages(rawForTransform, provider)
+        .then((vms) => {
+          if (cancelled) return;
+          try {
+            setViewMessages(vms);
+          } catch (e) {
+            postErrorToNative('projectRawMessages:setState', e);
+          }
+        })
+        .catch((e) => {
+          if (!cancelled) postErrorToNative('projectRawMessages:async', e);
+        });
+    } catch (e) {
+      postErrorToNative('projectRawMessages:sync', e);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.rawMessages, entry.metadata.provider]);
+
+  const sessionData: SessionData = useMemo(() => {
+    let sessionStatus: string | undefined;
+    if (entry.metadata.isExecuting) {
+      sessionStatus = 'running';
+    }
+    return {
+      id: entry.sessionId,
+      provider: entry.metadata.provider || 'unknown',
+      model: entry.metadata.model,
+      mode: entry.metadata.mode as 'planning' | 'agent' | undefined,
+      messages: viewMessages,
+      title: entry.metadata.title,
+      createdAt: entry.rawMessages[0]?.createdAt || Date.now(),
+      updatedAt: entry.rawMessages[entry.rawMessages.length - 1]?.createdAt || Date.now(),
+      metadata: sessionStatus ? { sessionStatus } : undefined,
+    };
+  }, [entry, viewMessages]);
+
+  // Publish refs upward so the bridge can route scrollTo / getPromptList to
+  // the active session. Deregister on unmount (e.g. LRU eviction).
+  useEffect(() => {
+    registerTranscriptRef(entry.sessionId, transcriptRef.current);
+    registerSessionData(entry.sessionId, sessionData);
+    return () => {
+      registerTranscriptRef(entry.sessionId, null);
+      registerSessionData(entry.sessionId, null);
+    };
+  }, [entry.sessionId, sessionData, registerTranscriptRef, registerSessionData]);
+
+  // Stack all SessionViews via absolute positioning so they overlap; toggle
+  // visibility for the active one. visibility:hidden (rather than display:none)
+  // keeps layout alive so VList's ResizeObserver doesn't see a 0x0 size and
+  // reset its scroll state when we hide a session.
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        visibility: isActive ? 'visible' : 'hidden',
+        pointerEvents: isActive ? 'auto' : 'none',
+      }}
+      data-session-id={entry.sessionId}
+      data-active={isActive ? 'true' : 'false'}
+    >
+      <AgentTranscriptPanel
+        ref={transcriptRef}
+        sessionId={entry.sessionId}
+        sessionData={sessionData}
+        hideSidebar={true}
+        onCompact={onCompact}
+        onFileClick={onOpenFile}
+      />
+    </div>
   );
 }
 
