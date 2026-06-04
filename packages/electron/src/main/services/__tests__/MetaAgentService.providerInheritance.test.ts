@@ -130,29 +130,30 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
     vi.mocked(AISessionsRepository.get).mockReset();
   });
 
-  it('defaults to a dev-capable provider (claude-code) when the parent is a chat-only extension agent and no provider is given', async () => {
+  it('inherits the gemini parent provider+model when the parent is a chat-only extension agent and no provider is given', async () => {
     const service = MetaAgentService.getInstance();
     // The child-spawn path guards on this.aiService being present.
     (service as any).aiService = { queuePromptForSession: vi.fn() };
     vi.mocked(AISessionsRepository.get).mockResolvedValue(GEMINI_PARENT as any);
 
     // No explicit model/provider - the default delegated-child case. A gemini
-    // (antigravity-gemini-agent) parent is chat-only, so inheriting it would
-    // produce a child that cannot run commands or edit files. The fix redirects
-    // the child to the dev-capable default instead.
+    // (antigravity-gemini-agent) meta-agent parent spawns a gemini child by
+    // default, the same way a claude-code parent spawns claude-code children and
+    // an openai-codex parent spawns openai-codex children. The child inherits the
+    // parent provider+model verbatim.
     await (service as any).createChildSessionInternal('parent-gemini-session', '/workspace/path', {});
 
     expect(AISessionsRepository.create).toHaveBeenCalledTimes(1);
 
     const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
-    expect(created.provider).toBe('claude-code');
-    expect(created.model).toMatch(/^claude-code:/);
-    // The regression guard: the chat-only gemini parent must NOT be inherited.
-    expect(created.provider).not.toBe('antigravity-gemini-agent');
-    expect(created.model).not.toBe('antigravity-gemini-agent:gemini-flash-3.5');
+    expect(created.provider).toBe('antigravity-gemini-agent');
+    expect(created.model).toBe('antigravity-gemini-agent:gemini-flash-3.5');
+    // The regression guard: the gemini parent must NOT be silently redirected to
+    // claude-code anymore.
+    expect(created.provider).not.toBe('claude-code');
   });
 
-  it('honors an explicit args.provider so the model can deliberately spawn a gemini child', async () => {
+  it('honors an explicit args.provider so the model can deliberately spawn a gemini child from a claude-code parent', async () => {
     const service = MetaAgentService.getInstance();
     (service as any).aiService = { queuePromptForSession: vi.fn() };
     // Parent is dev-capable claude-code, but the caller explicitly asks for the
@@ -266,46 +267,39 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
     expect(created.model).toMatch(/^claude-code:/);
   });
 
-  it('forces claude-code when a chat-only parent inherits its own gemini MODEL via args.model (spawn_session inheritModel path)', async () => {
+  it('inherits the gemini MODEL via args.model from a gemini parent (spawn_session inheritModel path)', async () => {
     const service = MetaAgentService.getInstance();
     (service as any).aiService = { queuePromptForSession: vi.fn() };
     vi.mocked(AISessionsRepository.get).mockResolvedValue(GEMINI_PARENT as any);
 
-    // Regression guard for the confirmed inherited-model path: spawn_session with
-    // inheritModel passes the parent's gemini model verbatim as args.model. Under
-    // the old code the pre-resolution redirect was skipped (model wins, tryParse
-    // recovers the gemini provider), so the child stayed gemini - a chat-only
-    // worker that cannot do work. The post-resolution force must override it.
+    // spawn_session with inheritModel passes the parent's gemini model verbatim as
+    // args.model. The child keeps that model and tryParse recovers the gemini
+    // provider, so the child stays gemini - the desired same-provider inheritance.
     await (service as any).createChildSessionInternal('parent-gemini-session', '/workspace/path', {
       model: 'antigravity-gemini-agent:gemini-flash-3.5',
     });
 
     const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
-    expect(created.provider).toBe('claude-code');
-    expect(created.model).toMatch(/^claude-code:/);
-    expect(created.provider).not.toBe('antigravity-gemini-agent');
-    expect(created.model).not.toBe('antigravity-gemini-agent:gemini-flash-3.5');
+    expect(created.provider).toBe('antigravity-gemini-agent');
+    expect(created.model).toBe('antigravity-gemini-agent:gemini-flash-3.5');
+    expect(created.provider).not.toBe('claude-code');
   });
 
-  it('forces claude-code when a chat-only parent explicitly copies its own gemini provider into args.provider', async () => {
+  it('honors an explicit gemini provider on a gemini parent (explicit-copy path is no longer forced to claude-code)', async () => {
     const service = MetaAgentService.getInstance();
     (service as any).aiService = { queuePromptForSession: vi.fn() };
     vi.mocked(AISessionsRepository.get).mockResolvedValue(GEMINI_PARENT as any);
 
-    // Regression guard for the explicit-copy path: a weak parent model copies its
-    // own chat-only provider into args.provider. The old !args.provider gate on
-    // the pre-resolution redirect let this through. Because the PARENT is itself a
-    // non-dev extension agent, the post-resolution force overrides the resolved
-    // chat-only provider to claude-code. (Contrast with the CLAUDE-parent case
-    // below, where the same explicit gemini provider IS honored.)
+    // A gemini parent that copies its own provider into args.provider must be
+    // honored as gemini - the same-provider default. The old post-resolution force
+    // wrongly rewrote this to claude-code; that override is reverted.
     await (service as any).createChildSessionInternal('parent-gemini-session', '/workspace/path', {
       provider: 'antigravity-gemini-agent',
     });
 
     const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
-    expect(created.provider).toBe('claude-code');
-    expect(created.model).toMatch(/^claude-code:/);
-    expect(created.provider).not.toBe('antigravity-gemini-agent');
+    expect(created.provider).toBe('antigravity-gemini-agent');
+    expect(created.provider).not.toBe('claude-code');
   });
 });
 

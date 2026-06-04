@@ -15,7 +15,6 @@ import { database as databaseWorker } from '../database/PGLiteDatabaseWorker';
 import { getDatabase } from '../database/initialize';
 import { gitRefWatcher } from '../file/GitRefWatcher';
 import { AIService } from './ai/AIService';
-import { resolveExtensionAgentRef } from './ai/providerResolution';
 import {
   startMetaAgentServer,
   setMetaAgentToolFns,
@@ -62,6 +61,25 @@ interface CreateChildSessionArgs {
   prompt?: string;
   useWorktree?: boolean;
   worktreeId?: string;
+}
+
+function normalizeStoredChildModelIdentifier(
+  provider: string | null | undefined,
+  model: string | null | undefined
+): string | null {
+  if (!model) {
+    return null;
+  }
+
+  if (provider === 'claude-code' || model.startsWith('claude-code:')) {
+    const parsed = ModelIdentifier.parse(model);
+    if (provider === 'claude-code' && parsed.provider !== 'claude-code') {
+      throw new Error(`Claude Agent child sessions require a claude-code:* model identifier. Received: ${model}`);
+    }
+    return parsed.combined;
+  }
+
+  return model;
 }
 
 interface SpawnSessionArgs {
@@ -387,7 +405,7 @@ export class MetaAgentService {
       if (parentSession) {
         parentExists = true;
         parentProvider = parentSession.provider ?? null;
-        parentModel = parentSession.model ?? null;
+        parentModel = normalizeStoredChildModelIdentifier(parentProvider, parentSession.model ?? null);
         parentAgentRole = parentSession.agentRole ?? null;
         parentSessionType = parentSession.sessionType ?? null;
       }
@@ -395,71 +413,29 @@ export class MetaAgentService {
       // Best-effort lookup; fall through to the hardcoded default below.
     }
 
-    // Extension-agent providers (today: antigravity-gemini) are CHAT-ONLY: the
-    // child session would inherit them but get no file/shell/dev tools, so it
-    // cannot run commands or edit files. A meta-agent running on such a provider
-    // must therefore delegate real execution to a dev-capable child. When this
-    // parent is a non-dev-capable extension agent AND the caller did not pass an
-    // explicit provider, redirect the child to the dev-capable default
-    // (claude-code) instead of inheriting the chat-only parent. resolveExtension
-    // AgentRef() returns null for built-in providers (claude-code, openai-codex),
-    // so those dev-capable parents keep inheriting their own provider+model.
-    // An explicit args.provider still wins (the model can spawn a gemini child on
-    // purpose); when no provider is given we also drop the inherited parent model
-    // so the child does not pair a claude-code provider with a gemini model.
-    const DEV_CAPABLE_DEFAULT_PROVIDER: AIProviderType = 'claude-code';
-    const parentIsNonDevExtensionAgent =
-      parentExists && !!parentProvider && !!resolveExtensionAgentRef(parentProvider);
-    const redirectToDevCapable = parentIsNonDevExtensionAgent && !args.provider;
-    const effectiveParentProvider = redirectToDevCapable ? null : parentProvider;
-    const effectiveParentModel = redirectToDevCapable ? null : parentModel;
-
     const defaultModel =
-      effectiveParentModel ||
-      (redirectToDevCapable
-        ? ModelIdentifier.getDefaultModelId(DEV_CAPABLE_DEFAULT_PROVIDER)
-        : getDefaultAIModel() || 'claude-code:opus');
-    const model = args.model || defaultModel;
+      parentModel
+      || normalizeStoredChildModelIdentifier(null, getDefaultAIModel())
+      || 'claude-code:opus';
+    // For an explicit model, the model's own "provider:" prefix is
+    // authoritative (e.g. a claude-code parent launching an
+    // "openai-codex:gpt-5.5" action). Only fall back to the parent's provider
+    // for a bare, prefix-less variant; passing the parent provider for a
+    // self-describing identifier wrongly trips the claude-code mismatch guard.
+    const explicitModelProvider =
+      args.provider
+      ?? (args.model?.includes(':') ? ModelIdentifier.tryParse(args.model)?.provider ?? null : null)
+      ?? parentProvider;
+    const explicitModel = normalizeStoredChildModelIdentifier(explicitModelProvider, args.model ?? null);
+    const model = explicitModel || defaultModel;
     const parsed = ModelIdentifier.tryParse(model);
-    let provider = (args.provider ||
+    const provider = (args.provider ||
       parsed?.provider ||
-      effectiveParentProvider ||
-      DEV_CAPABLE_DEFAULT_PROVIDER) as AIProviderType;
-    // When the caller didn't pass an explicit model, prefer the inherited parent
-    // model verbatim (so a gemini-flash-3.5 parent keeps flash-3.5, not whatever
-    // ModelIdentifier.getDefaultModelId returns for that provider). For a
-    // chat-only parent being redirected, effectiveParentModel is null so this
-    // resolves to the dev-capable provider's own default model.
-    let normalizedModel =
-      args.model || effectiveParentModel || ModelIdentifier.getDefaultModelId(provider);
+      parentProvider ||
+      'claude-code') as AIProviderType;
+    const normalizedModel =
+      explicitModel || parentModel || ModelIdentifier.getDefaultModelId(provider);
 
-    // POST-RESOLUTION FORCE: a child of a chat-only (non-dev-capable) meta-agent
-    // must NEVER end up on a chat-only provider, or it cannot do work (no
-    // file/shell/dev tools) and is useless as a sub-agent worker. The
-    // pre-resolution redirect above only nulls the inherited PARENT provider/model;
-    // it does NOT catch a chat-only provider that re-enters through other paths:
-    //   (a) inherited MODEL path - spawn_session with inheritModel passes the
-    //       parent's gemini model verbatim as args.model, so model resolution
-    //       keeps it and ModelIdentifier.tryParse(model) recovers the gemini
-    //       provider via the parsed.provider fallback (2nd in the chain), which
-    //       sits AHEAD of the nulled effectiveParentProvider.
-    //   (b) explicit-copy path - a weak parent model copies its own gemini
-    //       provider into args.provider/args.model, bypassing the !args.provider
-    //       gate on the pre-resolution redirect.
-    // Both leave `provider` resolved to a non-dev extension-agent provider. This
-    // check keys on the RESOLVED provider string (not the inputs), so it covers
-    // inheritance, inherited-model, and explicit-copy uniformly. We only force
-    // when the resolved provider is ITSELF a non-dev extension agent
-    // (resolveExtensionAgentRef truthy); an explicit DEV-CAPABLE override
-    // (claude-code / openai-codex / openai-codex-acp) returns null from
-    // resolveExtensionAgentRef and is left untouched, so on-purpose dev-provider
-    // choices are honored. Dev-capable parents (claude-code, openai-codex) are
-    // unaffected because parentIsNonDevExtensionAgent is false for them.
-    const resolvedChildIsNonDevExtensionAgent = !!resolveExtensionAgentRef(provider);
-    if (parentIsNonDevExtensionAgent && resolvedChildIsNonDevExtensionAgent) {
-      provider = DEV_CAPABLE_DEFAULT_PROVIDER;
-      normalizedModel = ModelIdentifier.getDefaultModelId(DEV_CAPABLE_DEFAULT_PROVIDER);
-    }
     const callerProvidedTitle = !!args.title?.trim();
     const title = (args.title || this.deriveTitleFromPrompt(args.prompt) || 'Meta Task').trim();
 
