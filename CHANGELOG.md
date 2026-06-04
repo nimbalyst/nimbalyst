@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- New Gemini (Antigravity) marketplace extension, usable as an AI chat and meta-agent provider, with a usage indicator chip. (#558)
 
 ### Changed
 <!-- Changes to existing functionality go here -->

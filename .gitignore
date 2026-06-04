@@ -219,3 +219,7 @@ packages/browser-extension/nimbalyst-web-clipper.zip
 # accidentally-tracked SQLite caches
 packages/electron/data/*.db
 packages/electron/memories.db
+
+# Local RAG/memory-tool artifacts (SQLite stores + caches created in the cwd)
+memories.db
+.rag-cache/
