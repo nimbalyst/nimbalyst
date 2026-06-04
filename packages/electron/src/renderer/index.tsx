@@ -49,6 +49,10 @@ import {
   codexUsageIndicatorEnabledAtom,
   initCodexUsageIndicatorSetting,
 } from './store/atoms/codexUsageAtoms';
+import {
+  geminiUsageIndicatorEnabledAtom,
+  initGeminiUsageIndicatorSetting,
+} from './store/atoms/geminiUsageAtoms';
 import { initVoiceModeListeners } from './store/listeners/voiceModeListeners';
 import {
   autoCommitEnabledAtom,
@@ -153,6 +157,9 @@ await Promise.allSettled([
   }),
   initCodexUsageIndicatorSetting().then((enabled) => {
     store.set(codexUsageIndicatorEnabledAtom, enabled);
+  }),
+  initGeminiUsageIndicatorSetting().then((enabled) => {
+    store.set(geminiUsageIndicatorEnabledAtom, enabled);
   }),
   initAutoCommitSetting().then((enabled) => {
     store.set(autoCommitEnabledAtom, enabled);
