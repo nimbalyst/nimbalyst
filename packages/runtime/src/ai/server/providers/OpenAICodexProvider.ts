@@ -512,7 +512,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   static normalizeModelSelection(modelId: string): string {
     const normalized = modelId.trim().toLowerCase();
     if (OpenAICodexProvider.LEGACY_MODEL_ALIASES.has(normalized)) {
-      return 'openai-codex:gpt-5.4';
+      return 'openai-codex:gpt-5.5';
     }
 
     const parsed = ModelIdentifier.tryParse(modelId);
@@ -1781,7 +1781,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     const resolved = parsed ? parsed.model : configured.replace(/^openai-codex:/, '');
     const normalized = resolved.toLowerCase();
     if (normalized === 'openai-codex-cli' || normalized === 'default' || normalized === 'cli') {
-      return 'gpt-5.4';
+      return 'gpt-5.5';
     }
 
     // Pass the model directly to the Codex SDK without pre-validation.

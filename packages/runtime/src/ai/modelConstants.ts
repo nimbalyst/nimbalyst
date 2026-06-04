@@ -268,10 +268,10 @@ export const CLAUDE_CODE_VARIANTS_WITH_1M: readonly ClaudeCodeVariant[] = [
 
 export const DEFAULT_MODELS = {
   claude: 'claude:claude-opus-4-8',
-  openai: 'openai:gpt-5.4',
+  openai: 'openai:gpt-5.5',
   'claude-code': 'claude-code:opus-1m',
-  'openai-codex': 'openai-codex:gpt-5.4',
-  'openai-codex-acp': 'openai-codex-acp:gpt-5.4',
+  'openai-codex': 'openai-codex:gpt-5.5',
+  'openai-codex-acp': 'openai-codex-acp:gpt-5.5',
   lmstudio: 'lmstudio:local-model',
   opencode: 'opencode:anthropic/claude-sonnet-4-5',
   'copilot-cli': 'copilot-cli:default',

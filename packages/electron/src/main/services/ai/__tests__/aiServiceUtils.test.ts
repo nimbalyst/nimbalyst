@@ -7,10 +7,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // and the two const arrays.
 vi.mock('@nimbalyst/runtime/ai/server', () => ({
   OpenAICodexProvider: {
-    // Tests pass the model already prefixed with `openai-codex:` when they want
-    // it stripped, and pass bare model IDs otherwise. Pass-through is fine for
-    // exercising extractModelForProvider's branching.
-    normalizeModelSelection: (m: string) => m,
+    normalizeModelSelection: (m: string) => {
+      const normalized = m.trim().toLowerCase();
+      if (
+        normalized === 'openai-codex:openai-codex-cli' ||
+        normalized === 'openai-codex-cli' ||
+        normalized === 'openai-codex:default' ||
+        normalized === 'default' ||
+        normalized === 'openai-codex:cli' ||
+        normalized === 'cli'
+      ) {
+        return 'openai-codex:gpt-5.5';
+      }
+      return m;
+    },
   },
 }));
 
@@ -248,6 +258,11 @@ describe('aiServiceUtils', () => {
   describe('extractModelForProvider', () => {
     it('strips the openai-codex: prefix', () => {
       expect(extractModelForProvider('openai-codex:gpt-5', 'openai-codex')).toBe('gpt-5');
+    });
+
+    it('maps legacy openai-codex default aliases through provider normalization', () => {
+      expect(extractModelForProvider('openai-codex:openai-codex-cli', 'openai-codex')).toBe('gpt-5.5');
+      expect(extractModelForProvider('openai-codex:default', 'openai-codex')).toBe('gpt-5.5');
     });
 
     it('returns the full model unchanged for claude-code', () => {

@@ -570,7 +570,7 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
           .replace(/^openai-codex:/, '');
     const normalized = resolved.toLowerCase();
     if (!normalized || normalized === 'default' || normalized === 'cli') {
-      return 'gpt-5.4';
+      return 'gpt-5.5';
     }
     return resolved;
   }

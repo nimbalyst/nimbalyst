@@ -72,6 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Terminal scrollback is preserved when it contains a stray NUL byte, instead of discarding all saved history.
 - Claude Code session token totals in the AI Usage Report are no longer inflated.
 - Tracker tool widgets no longer crash on the SQLite backend over a JSON-string `type_tags` column.
+- Default OpenAI model selections for `openai`, `openai-codex`, and
+  `openai-codex-acp` now point to GPT-5.5 instead of GPT-5.4.
 
 ### Removed
 <!-- Removed features go here -->
