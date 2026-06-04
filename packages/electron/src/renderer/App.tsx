@@ -101,6 +101,8 @@ import { initAppCommandListeners } from './store/listeners/appCommandListeners';
 import { initClaudeUsageListeners } from './store/listeners/claudeUsageListeners';
 import { initClaudeCliTerminalListeners } from './store/listeners/claudeCliTerminalListeners';
 import { initCodexUsageListeners } from './store/listeners/codexUsageListeners';
+import { initGeminiUsageListeners } from './store/listeners/geminiUsageListeners';
+import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { initFileChangeListeners } from './store/listeners/fileChangeListeners';
 import { initMcpListeners } from './store/listeners/mcpListeners';
 import { initMenuCommandListeners } from './store/listeners/menuCommandListeners';
@@ -293,12 +295,29 @@ export default function App() {
     initOpenProjects();
     initWorkspaceStatePruner();
 
+    // Register extension-contributed agent provider ids with ModelIdentifier so
+    // provider-from-model derivation recognizes ids like "antigravity-gemini-agent"
+    // instead of falling back to claude-code.
+    {
+      const invoke = window.electronAPI?.invoke;
+      if (invoke) {
+        invoke('agent-providers:list')
+          .then((res: { success?: boolean; data?: Array<{ id: string }> }) => {
+            if (res?.success && Array.isArray(res.data)) {
+              for (const p of res.data) ModelIdentifier.registerExtensionProvider(p.id);
+            }
+          })
+          .catch(() => {});
+      }
+    }
+
     const cleanupActionPrompts = initActionPromptListeners();
     const cleanupAiCommands = initAiCommandListeners();
     const cleanupAppCommands = initAppCommandListeners();
     const cleanupClaude = initClaudeUsageListeners();
     const cleanupClaudeCliTerminal = initClaudeCliTerminalListeners();
     const cleanupCodex = initCodexUsageListeners();
+    const cleanupGemini = initGeminiUsageListeners();
     const cleanupFileChange = initFileChangeListeners();
     const cleanupMcp = initMcpListeners();
     const cleanupMenuCommand = initMenuCommandListeners();
@@ -325,6 +344,7 @@ export default function App() {
       cleanupClaude?.();
       cleanupClaudeCliTerminal?.();
       cleanupCodex?.();
+      cleanupGemini?.();
       cleanupFileChange?.();
       cleanupMcp?.();
       cleanupMenuCommand?.();

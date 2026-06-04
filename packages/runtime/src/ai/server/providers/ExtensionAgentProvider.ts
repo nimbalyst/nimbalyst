@@ -36,6 +36,7 @@ import type {
   ToolHandler,
   ChatAttachment,
   Message,
+  AgentToolDefinition,
 } from '../types';
 
 /**
@@ -65,10 +66,27 @@ export interface ExtensionAgentBridge {
     contributionId: string;
     sessionId: string;
     message: string;
+    /** Full model id (e.g. "antigravity-gemini-agent:gemini-3-flash-agent") so the bridge can createSession with the picked variant. */
+    model?: string;
     documentContext?: DocumentContext;
     messages?: Message[];
     workspacePath?: string;
     attachments?: ChatAttachment[];
+    /**
+     * Optional OpenAI-shaped tool definitions for this turn. The bridge
+     * forwards them into the backend session so its tool loop can present
+     * them. Additive — absent for built-in providers.
+     */
+    tools?: AgentToolDefinition[];
+    /**
+     * Optional system-prompt override for this turn. The bridge forwards it
+     * to the backend, which prepends it as the baseSystemPrompt ahead of the
+     * tool-envelope block. Used to deliver the meta-agent persona to
+     * extension agents (gemini-antigravity) the same way built-in providers
+     * receive it over the SDK system prompt. Additive — absent for normal
+     * (non-meta-agent) extension sessions, so their behavior is unchanged.
+     */
+    systemPrompt?: string;
   }): AsyncIterableIterator<StreamChunk>;
 
   abort(args: {
@@ -115,18 +133,22 @@ export interface ExtensionAgentProviderOptions {
   extensionId: string;
   contributionId: string;
   sessionId: string;
+  /** Full model id for this session; threaded to the bridge so the backend session is created with the picked variant. */
+  model?: string;
 }
 
 export class ExtensionAgentProvider extends EventEmitter implements AIProvider {
   readonly extensionId: string;
   readonly contributionId: string;
   readonly sessionId: string;
+  readonly model?: string;
 
   constructor(opts: ExtensionAgentProviderOptions) {
     super();
     this.extensionId = opts.extensionId;
     this.contributionId = opts.contributionId;
     this.sessionId = opts.sessionId;
+    this.model = opts.model;
   }
 
   async initialize(config: ProviderConfig): Promise<void> {
@@ -144,7 +166,9 @@ export class ExtensionAgentProvider extends EventEmitter implements AIProvider {
     sessionId?: string,
     messages?: Message[],
     workspacePath?: string,
-    attachments?: ChatAttachment[]
+    attachments?: ChatAttachment[],
+    tools?: AgentToolDefinition[],
+    systemPrompt?: string
   ): AsyncIterableIterator<StreamChunk> {
     return requireBridge().sendMessage({
       extensionId: this.extensionId,
@@ -154,10 +178,13 @@ export class ExtensionAgentProvider extends EventEmitter implements AIProvider {
       // updates its session id mid-stream when the SDK rotates it.
       sessionId: sessionId ?? this.sessionId,
       message,
+      model: this.model,
       documentContext,
       messages,
       workspacePath,
       attachments,
+      tools,
+      systemPrompt,
     });
   }
 

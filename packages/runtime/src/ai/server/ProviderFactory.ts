@@ -117,12 +117,14 @@ export class ProviderFactory {
     extensionId: string;
     contributionId: string;
     sessionId: string;
+    model?: string;
   }): ExtensionAgentProvider {
     const key = `extension-agent:${args.extensionId}/${args.contributionId}-${args.sessionId}`;
     const provider = new ExtensionAgentProvider({
       extensionId: args.extensionId,
       contributionId: args.contributionId,
       sessionId: args.sessionId,
+      model: args.model,
     });
     this.providers.set(key, provider);
     return provider;

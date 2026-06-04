@@ -8,6 +8,11 @@ import { promisify } from 'util';
 import { safeHandle } from '../../utils/ipcRegistry';
 import Store from 'electron-store';
 import {
+  isExtensionAgentProvider,
+  resolveExtensionAgentRef,
+} from './providerResolution';
+import { getAgentProviderRegistry } from '../../extensions/AgentProviderRegistry';
+import {
   SessionManager,
   ProviderFactory,
   ModelRegistry,
@@ -503,6 +508,15 @@ export class AIService {
     // NEVER fall back to process.env — users must explicitly set keys in settings.
     // Implicit env-var usage caused a user to burn $100+ on their personal Anthropic
     // account because Nimbalyst silently picked up ANTHROPIC_API_KEY from a .env file.
+
+    // Extension-agent providers (aiAgentProviders contributions) defer auth to
+    // the extension itself (e.g. Antigravity rides ~/.gemini OAuth). The host
+    // does not manage their API key. See providerResolution.ts for the shim
+    // until session.provider is widened to a discriminated union.
+    if (isExtensionAgentProvider(provider)) {
+      return 'not-required';
+    }
+
     switch (provider) {
       case 'claude':
         return globalApiKeys['anthropic'];
@@ -639,6 +653,13 @@ export class AIService {
     const { getQueuedPromptsStore } = await import('../RepositoryManager');
     const queueStore = getQueuedPromptsStore();
 
+    // Captures whether the just-settled child chain ended in 'error' so the
+    // meta-agent wakeup (onAfterSettled) can skip re-driving the parent for a
+    // dead child. endSession (in onChainSettled, which runs before onAfterSettled)
+    // evicts the child from the state manager, so its terminal status must be
+    // read in onChainSettled before that happens.
+    let settledChildErrored = false;
+
     return tryClaimAndDispatchNextQueuedPrompt({
       continueQueuedPromptChain: (nextSessionId, nextWorkspacePath, nextTargetWindow, nextSource) =>
         this.continueQueuedPromptChain(nextSessionId, nextWorkspacePath, nextTargetWindow, nextSource),
@@ -649,6 +670,23 @@ export class AIService {
           const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
           const childSession = await AISessionsRepository.get(sessionId);
           if (!childSession?.createdBySessionId) return;
+
+          // Honor fire-and-forget. spawn_session sets metadata.notifyParent=false
+          // on the child for /launch-new-session-style hand-offs where the parent
+          // does not want to be re-driven when the child settles. Without this
+          // guard, every child settle wakes the parent unconditionally, which
+          // re-drives the meta-agent in a loop. Matches the guard in
+          // MetaAgentService.handleChildSessionEvent.
+          const childMetadata = (childSession.metadata as Record<string, unknown> | undefined) ?? undefined;
+          if (childMetadata && childMetadata.notifyParent === false) return;
+
+          // Do not re-drive the parent when the child chain just settled in
+          // 'error'. A failed child (e.g. an antigravity 429) has no result to
+          // deliver, and waking the parent on every such settle is the meta-agent
+          // spin loop. Native children settle 'completed', so this is a no-op for
+          // them. settledChildErrored is captured in onChainSettled before
+          // endSession evicts the child's in-memory state.
+          if (settledChildErrored) return;
 
           const metaSession = await AISessionsRepository.get(childSession.createdBySessionId);
           if (!metaSession?.workspacePath) return;
@@ -672,6 +710,11 @@ export class AIService {
         // sendMessage was running. Now that the chain has fully drained, mark
         // the session idle and stop its file watcher.
         const stateManager = getSessionStateManager();
+        // Capture the child's terminal status BEFORE endSession evicts it from
+        // the state manager, so onAfterSettled can avoid waking the parent for a
+        // child that just failed. getSessionState reads the in-memory map, which
+        // endSession clears on the next line.
+        settledChildErrored = stateManager.getSessionState(settledSessionId)?.status === 'error';
         logger.main.info(`[AIService] ${settledSource}: chain settled for session ${settledSessionId}, ending session`);
         await stateManager.endSession(settledSessionId);
         this.hooklessWatcher.scheduleStop(settledSessionId, 500);
@@ -1624,39 +1667,43 @@ export class AIService {
       // Get API key using project-aware helper (considers project overrides)
       let apiKey = this.getApiKeyForProvider(provider, workspacePath);
 
-      // Validate API key requirement based on provider
-      switch (provider) {
-        case 'claude':
-          if (!apiKey) {
-            throw new Error('Anthropic API key not configured');
-          }
-          break;
-        case 'claude-code':
-          // Claude Code: API key is optional, uses SSO login if not provided
-          // No error if missing - will use SSO login
-          break;
-        case 'claude-code-cli':
-          // Genuine `claude` CLI: uses its own login/subscription, no API key.
-          break;
-        case 'openai':
-          if (!apiKey) {
-            throw new Error('OpenAI API key not configured');
-          }
-          break;
-        case 'openai-codex':
-          // Codex SDK uses its own auth (codex auth login), API key is optional
-          break;
-        case 'opencode':
-          // OpenCode uses its own config, API key is optional
-          break;
-        case 'copilot-cli':
-          // Copilot uses its own CLI auth (copilot auth login), no API key needed
-          break;
-        case 'lmstudio':
-          // LMStudio doesn't need an API key, just the base URL
-          break;
-        default:
-          throw new Error(`Unknown provider: ${provider}`);
+      // Validate API key requirement based on provider.
+      // Extension-agent providers defer auth to the extension itself, so they
+      // skip this switch entirely (no apiKey requirement on the host side).
+      if (!isExtensionAgentProvider(provider)) {
+        switch (provider) {
+          case 'claude':
+            if (!apiKey) {
+              throw new Error('Anthropic API key not configured');
+            }
+            break;
+          case 'claude-code':
+            // Claude Code: API key is optional, uses SSO login if not provided
+            // No error if missing - will use SSO login
+            break;
+          case 'claude-code-cli':
+            // Genuine `claude` CLI: uses its own login/subscription, no API key.
+            break;
+          case 'openai':
+            if (!apiKey) {
+              throw new Error('OpenAI API key not configured');
+            }
+            break;
+          case 'openai-codex':
+            // Codex SDK uses its own auth (codex auth login), API key is optional
+            break;
+          case 'opencode':
+            // OpenCode uses its own config, API key is optional
+            break;
+          case 'copilot-cli':
+            // Copilot uses its own CLI auth (copilot auth login), no API key needed
+            break;
+          case 'lmstudio':
+            // LMStudio doesn't need an API key, just the base URL
+            break;
+          default:
+            throw new Error(`Unknown provider: ${provider}`);
+        }
       }
 
       // Get model details if specified
@@ -1738,8 +1785,19 @@ export class AIService {
         });
       }
 
-      // Create and initialize provider
-      const providerInstance = ProviderFactory.createProvider(provider, session.id);
+      // Create and initialize provider. Extension-contributed agent providers
+      // are not in the built-in AIProviderType switch, so route them to the
+      // extension-agent factory (mirrors MessageStreamingHandler's lazy path).
+      // Calling createProvider for them would throw "Unknown provider".
+      const eagerExtAgentRef = resolveExtensionAgentRef(provider);
+      const providerInstance = eagerExtAgentRef
+        ? ProviderFactory.createExtensionAgentProvider({
+            extensionId: eagerExtAgentRef.extensionId,
+            contributionId: eagerExtAgentRef.contributionId,
+            sessionId: session.id,
+            model: session.model,
+          })
+        : ProviderFactory.createProvider(provider, session.id);
 
       // Build config based on provider type
       const initConfig: any = {
@@ -2763,6 +2821,7 @@ export class AIService {
       const showPromptAdditions = this.getSettingsStore().get('showPromptAdditions', false) as boolean;
       const showUsageIndicator = this.getSettingsStore().get('showUsageIndicator', true) as boolean;
       const showCodexUsageIndicator = this.getSettingsStore().get('showCodexUsageIndicator', true) as boolean;
+      const showGeminiUsageIndicator = this.getSettingsStore().get('showGeminiUsageIndicator', true) as boolean;
       const customClaudeCodePath = this.getSettingsStore().get('customClaudeCodePath', '') as string;
       const autoCommitEnabled = this.getSettingsStore().get('autoCommitEnabled', false) as boolean;
       const trackerAutomation = this.getSettingsStore().get('trackerAutomation', {
@@ -2786,6 +2845,7 @@ export class AIService {
         showPromptAdditions,
         showUsageIndicator,
         showCodexUsageIndicator,
+        showGeminiUsageIndicator,
         customClaudeCodePath,
         autoCommitEnabled,
         trackerAutomation,
@@ -2901,6 +2961,10 @@ export class AIService {
         this.getSettingsStore().set('showCodexUsageIndicator', settings.showCodexUsageIndicator);
       }
 
+      if (settings.showGeminiUsageIndicator !== undefined) {
+        this.getSettingsStore().set('showGeminiUsageIndicator', settings.showGeminiUsageIndicator);
+      }
+
       if (settings.customClaudeCodePath !== undefined) {
         this.getSettingsStore().set('customClaudeCodePath', settings.customClaudeCodePath);
       }
@@ -2937,43 +3001,64 @@ export class AIService {
     safeHandle('ai:testConnection', async (event, provider: string, workspacePath?: string) => {
       const apiKeys = this.getSettingsStore().get('apiKeys', {}) as Record<string, string>;
 
-      // Get the appropriate API key based on provider
+      // Get the appropriate API key based on provider.
+      // Extension-agent providers (aiAgentProviders contributions) handle their
+      // own auth inside the extension's backend module (e.g. Antigravity rides
+      // ~/.gemini OAuth via AntigravityServerManager.hasGeminiAuth). On the host
+      // side we treat them as 'not-required' and return success: the extension's
+      // own backend healthcheck would be the ideal probe, but that contract
+      // sits behind the seed PR's coordinated host scaffolding work. For now,
+      // accepting indicates the extension is installed + the provider is
+      // registered, which is what the user sees the green check confirming.
       let apiKey: string | undefined;
-      switch (provider) {
-        case 'claude':
-          apiKey = apiKeys['anthropic'];
-          if (!apiKey) {
-            return { success: false, error: 'Anthropic API key not configured' };
-          }
-          break;
-        case 'claude-code':
-          // Claude Code: API key is optional, uses SSO login if not provided
-          apiKey = apiKeys['claude-code'];
-          // No error if missing - will use SSO login
-          break;
-        case 'openai':
-          apiKey = apiKeys['openai'];
-          if (!apiKey) {
-            return { success: false, error: 'OpenAI API key not configured' };
-          }
-          break;
-        case 'openai-codex':
-          apiKey = apiKeys['openai-codex'];
-          break;
-        case 'opencode':
-          // OpenCode: API key is optional, uses its own config
-          apiKey = apiKeys['opencode'] || 'not-required';
-          break;
-        case 'copilot-cli':
-          // Copilot uses its own CLI auth, no API key needed
-          apiKey = 'not-required';
-          break;
-        case 'lmstudio':
-          // LMStudio doesn't need an API key, just test the connection
-          apiKey = 'not-required';
-          break;
-        default:
-          return { success: false, error: `Unknown provider: ${provider}` };
+      if (isExtensionAgentProvider(provider)) {
+        apiKey = 'not-required';
+      } else {
+        switch (provider) {
+          case 'claude':
+            apiKey = apiKeys['anthropic'];
+            if (!apiKey) {
+              return { success: false, error: 'Anthropic API key not configured' };
+            }
+            break;
+          case 'claude-code':
+            // Claude Code: API key is optional, uses SSO login if not provided
+            apiKey = apiKeys['claude-code'];
+            // No error if missing - will use SSO login
+            break;
+          case 'openai':
+            apiKey = apiKeys['openai'];
+            if (!apiKey) {
+              return { success: false, error: 'OpenAI API key not configured' };
+            }
+            break;
+          case 'openai-codex':
+            apiKey = apiKeys['openai-codex'];
+            break;
+          case 'opencode':
+            // OpenCode: API key is optional, uses its own config
+            apiKey = apiKeys['opencode'] || 'not-required';
+            break;
+          case 'copilot-cli':
+            // Copilot uses its own CLI auth, no API key needed
+            apiKey = 'not-required';
+            break;
+          case 'lmstudio':
+            // LMStudio doesn't need an API key, just test the connection
+            apiKey = 'not-required';
+            break;
+          default:
+            return { success: false, error: `Unknown provider: ${provider}` };
+        }
+      }
+
+      // Extension-agent providers: skip the per-provider connectivity probes
+      // below and return success directly. The 'try' block below contains
+      // provider-specific connectivity logic (list models, run a real SDK
+      // request, etc.) tied to each built-in id; none of it applies to an
+      // extension-agent and the IDs would all miss the conditional checks.
+      if (isExtensionAgentProvider(provider)) {
+        return { success: true, provider };
       }
 
       try {
@@ -3164,6 +3249,18 @@ export class AIService {
       };
       const allModels = await ModelRegistry.getAllModels(modelsConfig, enabledSet);
 
+      // Append extension-contributed agent provider models (see ai:getModels).
+      for (const agentEntry of getAgentProviderRegistry().list()) {
+        if (agentEntry.status === 'denied') continue;
+        for (const m of agentEntry.contribution.models ?? []) {
+          allModels.push({
+            id: m.id,
+            name: m.name,
+            provider: agentEntry.contributionId as AIProviderType,
+          });
+        }
+      }
+
       // Group ALL models by provider (for configuration UI)
       const grouped: Record<string, any[]> = {};
       for (const model of allModels) {
@@ -3345,6 +3442,31 @@ export class AIService {
         return true;
       });
 
+      // Surface extension-contributed agent providers (aiAgentProviders) in the
+      // picker. The built-in `enabledProviders` map is keyed on AIProviderType,
+      // so the filter above drops them; append after it. Each registered,
+      // non-denied entry contributes its manifest models under its flat
+      // contribution id -- the value session.provider carries and the host-side
+      // resolver (providerResolution.ts) looks up. Descriptor/affordance shape
+      // flagged for Greg's call in the seed PR.
+      const providerLabels: Record<string, string> = {};
+      const providerIcons: Record<string, string> = {};
+      for (const agentEntry of getAgentProviderRegistry().list()) {
+        if (agentEntry.status === 'denied') continue;
+        providerLabels[agentEntry.contributionId] =
+          agentEntry.contribution.displayName || agentEntry.contributionId;
+        if (agentEntry.contribution.icon) {
+          providerIcons[agentEntry.contributionId] = agentEntry.contribution.icon;
+        }
+        for (const m of agentEntry.contribution.models ?? []) {
+          enabledModels.push({
+            id: m.id,
+            name: m.name,
+            provider: agentEntry.contributionId as AIProviderType,
+          });
+        }
+      }
+
       // Group ENABLED models by provider (not all models)
       const grouped: Record<string, any[]> = {};
       for (const model of enabledModels) {
@@ -3368,7 +3490,12 @@ export class AIService {
           maxTokens: m.maxTokens
         })),
         grouped,  // This now contains only enabled models
-        providers: enabledProviders
+        providers: enabledProviders,
+        // Maps of extension contribution id -> manifest displayName / icon, so
+        // the picker labels extension agent groups (e.g. "Gemini" + auto_awesome)
+        // instead of prettifying the raw contribution id.
+        providerLabels,
+        providerIcons
       };
     });
 

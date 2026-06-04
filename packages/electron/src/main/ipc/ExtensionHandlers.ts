@@ -33,6 +33,7 @@ import {
 } from '../utils/store';
 import { registerFileExtension, clearRegisteredExtensions } from '../extensions/RegisteredFileTypes';
 import { validateBackendModules } from '@nimbalyst/extension-sdk';
+import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import type { ReleaseChannel } from '../utils/store';
 import { buildExtensionFindFilesPlan } from './extensionFindFilesPlan';
 import { database } from '../database/PGLiteDatabaseWorker';
@@ -145,7 +146,10 @@ export async function initializeExtensionFileTypes(): Promise<void> {
     const extensionDirs = await getAllExtensionDirectories();
     const currentChannel = getReleaseChannel();
 
-    for (const extensionsDir of extensionDirs) {
+    for (let dirIndex = 0; dirIndex < extensionDirs.length; dirIndex++) {
+      const extensionsDir = extensionDirs[dirIndex];
+      // extensionDirs[0] is the user extensions dir; the rest are built-in.
+      const isBuiltinDir = dirIndex > 0;
       let subdirs;
       try {
         subdirs = await fs.readdir(extensionsDir, { withFileTypes: true });
@@ -154,8 +158,9 @@ export async function initializeExtensionFileTypes(): Promise<void> {
       }
 
       for (const subdir of subdirs) {
+        const isSymlink = subdir.isSymbolicLink();
         let isDir = subdir.isDirectory();
-        if (!isDir && subdir.isSymbolicLink()) {
+        if (!isDir && isSymlink) {
           try {
             const targetPath = path.join(extensionsDir, subdir.name);
             const stat = await fs.stat(targetPath);
@@ -193,6 +198,24 @@ export async function initializeExtensionFileTypes(): Promise<void> {
               }
             }
           }
+
+          // Catalog aiAgentProviders into the AgentProviderRegistry here too,
+          // so the catalog is populated at boot and after every install /
+          // uninstall (this function is the shared rescan hook), not only when
+          // the renderer happens to invoke extensions:list-installed. Without
+          // this an installed agent-provider extension stays invisible to the
+          // model picker until a list-installed call lands. register() is
+          // idempotent and preserves consent status, so re-running is safe.
+          const agentExtensionId = manifest.id || subdir.name;
+          validateAndScrubBackendModules(manifest, agentExtensionId, {
+            isBuiltin: isBuiltinDir,
+            isSymlink,
+          });
+          registerAgentProviderContributions(
+            manifest as ExtensionManifest,
+            agentExtensionId,
+            extensionPath
+          );
         } catch {
           // Skip directories without valid manifest
         }
@@ -710,6 +733,13 @@ function registerAgentProviderContributions(
       backendModuleId: provider.backendModuleId,
       extensionPath,
     });
+    logger.main.info(
+      `[ExtensionHandlers] Registered agent provider: ${provider.id} (from ${extensionId})`
+    );
+    // Teach ModelIdentifier this provider id so provider-from-model derivation
+    // (sessions:create, sessionHistoryActions, etc.) resolves it instead of
+    // falling back to claude-code.
+    ModelIdentifier.registerExtensionProvider(provider.id);
   }
 }
 
@@ -1015,6 +1045,30 @@ export function registerExtensionHandlers(): void {
     } catch (error) {
       logger.main.error('[ExtensionHandlers] Failed to list installed extensions:', error);
       return [];
+    }
+  });
+
+  // List registered extension-contributed AI agent providers for the renderer
+  // (Settings AGENT PROVIDERS panel). Returns provider metadata from the
+  // AgentProviderRegistry; denied entries are hidden. The model picker gets
+  // models via ai:getModels; this is the provider-level listing.
+  safeHandle('agent-providers:list', async () => {
+    try {
+      const data = getAgentProviderRegistry()
+        .list()
+        .filter((entry) => entry.status !== 'denied')
+        .map((entry) => ({
+          id: entry.contributionId,
+          extensionId: entry.extensionId,
+          name: entry.contribution.displayName || entry.contributionId,
+          icon: entry.contribution.icon,
+          status: entry.status,
+          models: (entry.contribution.models ?? []).map((m) => ({ id: m.id, name: m.name })),
+        }));
+      return { success: true, data };
+    } catch (error) {
+      logger.main.error('[ExtensionHandlers] Failed to list agent providers:', error);
+      return { success: false, error: String(error), data: [] };
     }
   });
 

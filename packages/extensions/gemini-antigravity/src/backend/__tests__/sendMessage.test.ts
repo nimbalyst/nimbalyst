@@ -67,8 +67,9 @@ describe('gemini-antigravity backend sendMessage', () => {
     getModelResponse.mockResolvedValue('Hello from the model.');
 
     const { ctx, logRaw, toolExecutor } = makeCtx();
-    const api = await activate(ctx as never);
-    await api.createSession({
+    // activate() returns { methods }, so the lifecycle RPCs live under methods.
+    const { methods } = await activate(ctx as never);
+    await methods.createSession({
       sessionId: 's1',
       model: 'gemini-3-flash-agent',
       tools: [],
@@ -76,7 +77,7 @@ describe('gemini-antigravity backend sendMessage', () => {
     });
 
     const events: AnyProtocolEvent[] = [];
-    for await (const ev of api.sendMessage({ sessionId: 's1', message: 'hi' })) {
+    for await (const ev of methods.sendMessage({ sessionId: 's1', message: 'hi' })) {
       events.push(ev as AnyProtocolEvent);
     }
 
@@ -116,8 +117,8 @@ describe('gemini-antigravity backend sendMessage', () => {
     const { ctx, toolExecutor } = makeCtx();
     toolExecutor.mockResolvedValue('echoed-1');
 
-    const api = await activate(ctx as never);
-    await api.createSession({
+    const { methods } = await activate(ctx as never);
+    await methods.createSession({
       sessionId: 's2',
       model: 'gemini-3-flash-agent',
       tools: [{ type: 'function', function: { name: 'echo' } }],
@@ -125,7 +126,7 @@ describe('gemini-antigravity backend sendMessage', () => {
     });
 
     const events: AnyProtocolEvent[] = [];
-    for await (const ev of api.sendMessage({ sessionId: 's2', message: 'use the tool' })) {
+    for await (const ev of methods.sendMessage({ sessionId: 's2', message: 'use the tool' })) {
       events.push(ev as AnyProtocolEvent);
     }
 

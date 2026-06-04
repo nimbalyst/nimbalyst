@@ -345,6 +345,30 @@ const bridge: ExtensionAgentBridge = {
       await ensureModuleStarted(entry, workspacePath);
       const { backendModuleId } = findBackendModule(entry);
 
+      // Ensure the backend session exists before streaming the turn. The
+      // backend's sendMessage throws "session is not created" otherwise.
+      // createSession is idempotent on the backend (re-creation drops the
+      // prior session cleanly), so calling it per turn is safe.
+      //
+      // `tools` are threaded into createSession so the backend stores them as
+      // session-level defaults, AND into the sendMessage stream params below as
+      // a per-turn override. Both are optional/additive — absent for any
+      // extension that doesn't pass meta-agent tools.
+      await getPrivilegedExtensionHost().request({
+        extensionId: entry.extensionId,
+        moduleId: backendModuleId,
+        workspacePath,
+        method: 'createSession',
+        params: {
+          sessionId: args.sessionId,
+          workspacePath,
+          model: args.model,
+          tools: args.tools,
+          systemPrompt: args.systemPrompt,
+        },
+        requiredPermission: null,
+      });
+
       // Bounded queue between the host stream callbacks and the consumer.
       const queue: StreamChunk[] = [];
       let waiter: ((chunk: StreamChunk | null) => void) | null = null;
@@ -382,6 +406,8 @@ const bridge: ExtensionAgentBridge = {
           messages: args.messages,
           attachments: args.attachments,
           workspacePath,
+          tools: args.tools,
+          systemPrompt: args.systemPrompt,
         },
         requiredPermission: null,
       });

@@ -89,7 +89,7 @@ export function SettingsView({
   const posthog = usePostHog();
   const developerMode = useAtomValue(developerModeAtom);
 
-  const [selectedCategory, setSelectedCategory] = useState<SettingsCategory>(initialCategory || 'claude-code');
+  const [selectedCategory, setSelectedCategory] = useState<SettingsCategory | string>(initialCategory || 'claude-code');
   const [scope, setScope] = useState<SettingsScope>(initialScope || 'user');
 
   // AI Provider settings - using Jotai atoms (Phase 5b)
@@ -221,7 +221,7 @@ export function SettingsView({
   // When scope changes, ensure selected category is valid for that scope
   useEffect(() => {
     const validCategories = scope === 'project' ? projectCategories : userCategories;
-    if (!validCategories.includes(selectedCategory)) {
+    if (!validCategories.includes(selectedCategory as SettingsCategory)) {
       // Default to first valid category for the scope
       setSelectedCategory(scope === 'project' ? 'agent-permissions' : 'claude-code');
     }
@@ -675,8 +675,33 @@ export function SettingsView({
             onViewInstalled={() => setSelectedCategory('installed-extensions')}
           />
         );
-      default:
-        return null;
+      default: {
+        // An extension-contributed agent provider (e.g. antigravity-gemini-agent)
+        // was selected. Its models are usable from the chat model picker; its
+        // configuration lives in the extension, reachable from Installed Extensions.
+        const providerId = String(selectedCategory);
+        const label = providerId
+          .replace(/-agent$/, '')
+          .replace(/[-_]+/g, ' ')
+          .replace(/\b\w/g, (c) => c.toUpperCase());
+        return (
+          <div className="settings-extension-provider-panel">
+            <h2 className="text-lg font-semibold text-[var(--nim-text)] mb-2">{label}</h2>
+            <p className="text-sm text-[var(--nim-text-muted)] mb-4 max-w-[60ch]">
+              This agent provider comes from an installed extension. Choose its models from the
+              model selector in the chat input. To configure or manage the extension, open Installed
+              Extensions.
+            </p>
+            <button
+              type="button"
+              className="px-3 py-1.5 rounded text-xs bg-[var(--nim-bg-secondary)] text-[var(--nim-text)] border border-[var(--nim-border)] hover:bg-[var(--nim-bg-hover)]"
+              onClick={() => setSelectedCategory('installed-extensions')}
+            >
+              Open Installed Extensions
+            </button>
+          </div>
+        );
+      }
     }
   };
 
@@ -687,7 +712,7 @@ export function SettingsView({
   const handleScopeChange = (newScope: SettingsScope) => {
     setScope(newScope);
     // Only change category if current one is not available in the new scope
-    if (newScope === 'user' && projectOnlyCategories.includes(selectedCategory)) {
+    if (newScope === 'user' && projectOnlyCategories.includes(selectedCategory as SettingsCategory)) {
       // Switching to user scope from a project-only category
       setSelectedCategory('claude-code');
     }

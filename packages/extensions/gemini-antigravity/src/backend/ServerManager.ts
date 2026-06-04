@@ -172,6 +172,18 @@ export class AntigravityServerManager {
     }
   }
 
+  /**
+   * Return the live endpoint if the server is already running, else null.
+   *
+   * Read-only: this MUST NOT spawn the server or trigger discovery. It only
+   * reflects whatever endpoint ensureRunning() previously established. Used by
+   * the host's usage poller so opening the usage chip never fires up the
+   * language server.
+   */
+  currentEndpoint(): AntigravityEndpoint | null {
+    return this.endpoint;
+  }
+
   /** Stop the server if we own it. No-op when attached to the IDE's hub. */
   stop(): void {
     if (this.child && !this.child.killed) {

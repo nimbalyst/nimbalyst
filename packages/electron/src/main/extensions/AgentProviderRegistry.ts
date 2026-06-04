@@ -104,6 +104,32 @@ class AgentProviderRegistryImpl {
   }
 
   /**
+   * Look up an entry by `contributionId` alone (no extensionId).
+   *
+   * This is used by the host-side provider-resolution shim
+   * (`services/ai/providerResolution.ts`). Sessions today persist
+   * `session.provider` as the flat `AIProviderType` string union, which
+   * holds only the contribution id (`antigravity-gemini-agent`) and not
+   * the `${extensionId}/${contributionId}` composite key. The shim relies
+   * on this method to recover the full ref.
+   *
+   * Known limitation flagged for Greg's ratification in the seed PR:
+   * if two extensions ship contributions with the same `contributionId`,
+   * the first registered entry wins. The proper fix is widening
+   * `session.provider` to a discriminated union with an explicit
+   * `(extensionId, contributionId)` ref, which is a schema change that
+   * sits behind this shim.
+   *
+   * Returns first-match insertion-order entry or `undefined`.
+   */
+  findByContributionId(contributionId: string): AgentProviderEntry | undefined {
+    for (const entry of this.entries.values()) {
+      if (entry.contributionId === contributionId) return entry;
+    }
+    return undefined;
+  }
+
+  /**
    * Update the status of one entry. No-op if the key is unknown -- the
    * caller is allowed to be defensive without first checking presence.
    */

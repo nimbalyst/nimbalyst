@@ -30,6 +30,7 @@
  * to main. The main-side `assertPermission` is defense in depth.
  */
 
+import { pathToFileURL } from 'node:url';
 import type {
   BackendRuntimeContext,
   BackendToHostMessage,
@@ -173,6 +174,27 @@ export interface BackendServices {
   registerMcpTools(
     tools: BrokerPayloads['registerMcpTools']['tools']
   ): Promise<BrokerResults['registerMcpTools']>;
+
+  /**
+   * Execute a parsed tool call against the host's meta-agent tool fns and
+   * return the raw text result. This is the broker round-trip that backs the
+   * provider-private `ctx.services.toolExecutor` the agent module calls (Q7).
+   * The host dispatches the tool by name (spawn_session / create_session /
+   * list_spawned_sessions / ...) scoped to the supplied AI session id.
+   *
+   * Returns the raw string the tool fn produced (the backend folds it back
+   * into the model's next turn). The ambient extension contract types this as
+   * `Promise<unknown>`; we return the string directly.
+   *
+   * Requires: `nimbalyst-database-write` — spawning and inspecting child
+   * sessions reads and writes the host's session store.
+   */
+  toolExecutor(payload: {
+    sessionId: string;
+    workspacePath?: string;
+    name: string;
+    args: Record<string, unknown>;
+  }): Promise<unknown>;
 }
 
 class PermissionDeniedInRuntime extends Error {
@@ -323,6 +345,21 @@ function buildServices(ctx: BackendRuntimeContext, send: SendToHost): BackendSer
       return makeBrokerCall(send, 'registerMcpTools', { tools });
     },
 
+    toolExecutor: async (payload) => {
+      // Synchronous in-runtime denial; main re-asserts as defense in depth.
+      // Spawning/inspecting child sessions is a host session-store write.
+      assert('nimbalyst-database-write' as ExtensionPermissionId);
+      const res = await makeBrokerCall(send, 'toolExecutor', {
+        sessionId: payload.sessionId,
+        workspacePath: payload.workspacePath,
+        name: payload.name,
+        args: payload.args,
+      });
+      // The agent module's tool loop consumes the raw text result; unwrap the
+      // { result } envelope so callers get the string directly.
+      return res.result;
+    },
+
     // Per Q7: emitEvent / requestPermission / askUserQuestion are NOT injected
     // here. Providers that need them layer their own bridge atop this object.
   };
@@ -389,7 +426,13 @@ async function loadEntry(
   ctx: BackendRuntimeContext,
   services: BackendServices
 ): Promise<LoadedModule> {
-  const mod: Record<string, unknown> = await import(ctx.entryFilePath);
+  // On Windows, dynamic import() of an absolute path (e.g. C:\...\agent.js)
+  // throws ERR_UNSUPPORTED_ESM_URL_SCHEME: the ESM loader requires a file://
+  // URL. Convert unless the caller already passed a URL.
+  const entryUrl = ctx.entryFilePath.startsWith('file:')
+    ? ctx.entryFilePath
+    : pathToFileURL(ctx.entryFilePath).href;
+  const mod: Record<string, unknown> = await import(entryUrl);
   const activate =
     (mod.activate as ActivateFn | undefined) ??
     (mod.default as ActivateFn | undefined);

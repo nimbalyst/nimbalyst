@@ -10,7 +10,7 @@
     "aiAgentProviders": [
       {
         "id": "antigravity-gemini-agent",
-        "displayName": "Gemini 3.5 Flash (Antigravity)",
+        "displayName": "Gemini",
         "platform": "antigravity-gemini",
         "backendModuleId": "antigravity-server",
         "supportsResume": true,
@@ -32,7 +32,7 @@
             "name": "Gemini 3.5 Flash (Low)"
           }
         ],
-        "icon": "auto_awesome",
+        "icon": "gemini",
         "settingsPanelComponent": "AntigravityAgentSettings"
       }
     ],

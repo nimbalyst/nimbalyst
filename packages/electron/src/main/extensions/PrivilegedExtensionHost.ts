@@ -53,6 +53,7 @@ import {
   shrinkGrantsToDeclared,
   listEffectiveGrants,
   clearAllGrantsForExtension,
+  grantModulePermissions,
 } from './permissionGrantStore';
 import {
   raisePermissionPrompt,
@@ -75,6 +76,7 @@ import type {
 import { serializeError } from './extensionBackendRpc';
 import { AgentMessagesRepository } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
 import { store as appSettingsStore } from '../utils/store';
+import { dispatchMetaAgentTool } from '../mcp/metaAgentServer';
 
 /**
  * Authoritative map from broker method name to its required catalog permission.
@@ -97,6 +99,11 @@ const BROKER_METHOD_PERMISSIONS: {
   readWorkspaceFile: 'workspace-files',
   writeWorkspaceFile: 'workspace-files',
   registerMcpTools: 'mcp-server-register',
+  // Meta-agent tool dispatch (spawn_session / create_session / ...) reads and
+  // writes the host's session store. The catalog has no dedicated orchestration
+  // permission, so it gates on the high-risk DB-write grant the extension
+  // already declares for logRaw.
+  toolExecutor: 'nimbalyst-database-write',
 } as const;
 
 /** Public state of a single module the host is tracking. */
@@ -312,6 +319,28 @@ export class PrivilegedExtensionHost extends EventEmitter {
         reason: 'A workspace must be open to start privileged modules.',
       });
       return this.snapshot(managed);
+    }
+
+    // Dev convenience: when dev backend modules are explicitly allowed
+    // (NIMBALYST_ALLOW_DEV_BACKEND_MODULES=1 in a non-packaged build), auto-grant
+    // the module's declared permissions. The flag is the developer's explicit
+    // opt-in to trust dev backend modules, so a turn should not hang on a
+    // first-use consent prompt. A packaged build (no flag) still raises the
+    // prompt below. This grant is global so it persists across the dev session.
+    if (
+      process.env.NIMBALYST_ALLOW_DEV_BACKEND_MODULES === '1' &&
+      !app.isPackaged &&
+      declared.length > 0
+    ) {
+      grantModulePermissions({
+        extensionId: args.extensionId,
+        moduleId: args.module.id,
+        permissions: declared,
+        scope: 'global',
+      });
+      logger.main.info(
+        `[PrivilegedExtensionHost] dev auto-grant ${args.extensionId}/${args.module.id}: ${declared.join(', ')}`
+      );
     }
 
     // 2. Diff declared vs. existing grants.
@@ -851,6 +880,31 @@ export class PrivilegedExtensionHost extends EventEmitter {
       });
       await runtime.kill();
       managed.runtime = undefined;
+      return;
+    }
+
+    // Wait for the module to leave the transient 'starting' state (init-ack ->
+    // running, or init-error -> crashed) before returning. Callers like the
+    // extension-agent bridge treat 'starting' as a failure, so returning while
+    // init-ack is still in flight would spuriously reject a module that is
+    // milliseconds from ready. Yielding the event loop lets handleBackendMessage
+    // process the init-ack and flip the state.
+    const initDeadline = Date.now() + 20000;
+    while (managed.state.status === 'starting' && Date.now() < initDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (managed.state.status === 'starting') {
+      logger.main.error(
+        `[PrivilegedExtensionHost] ${logLabel} init timed out (no init-ack within 20s)`
+      );
+      this.setState(managed, {
+        status: 'crashed',
+        exitCode: null,
+        error: serializeError(new Error('Backend module init timed out')),
+        crashedAt: Date.now(),
+      });
+      await managed.runtime?.kill();
+      managed.runtime = undefined;
     }
   }
 
@@ -1240,6 +1294,22 @@ export class PrivilegedExtensionHost extends EventEmitter {
         const result: BrokerResults['registerMcpTools'] = {
           registered: payload.tools.map((t) => t.name),
         };
+        return result;
+      }
+      case 'toolExecutor': {
+        const payload = rawPayload as BrokerPayloads['toolExecutor'];
+        // Scope the tool to the AI session that emitted it (so spawn_session
+        // can find the caller) and the workspace it ran in. dispatchMetaAgentTool
+        // normalizes worktree workspace paths to the parent repo internally.
+        // The workspace falls back to the runtime's bound workspacePath when the
+        // backend didn't supply one.
+        const text = await dispatchMetaAgentTool(
+          payload.name,
+          payload.sessionId,
+          payload.workspacePath ?? ctx.workspacePath,
+          payload.args
+        );
+        const result: BrokerResults['toolExecutor'] = { result: text };
         return result;
       }
       default: {

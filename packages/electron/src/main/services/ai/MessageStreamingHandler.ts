@@ -19,6 +19,7 @@ import {
   ModelRegistry,
   isAgentProvider,
   onAgentMessageBatch,
+  buildMetaAgentSystemPrompt,
   type AIProvider,
   type SessionManager,
 } from '@nimbalyst/runtime/ai/server';
@@ -37,6 +38,7 @@ import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
+import { resolveExtensionAgentRef } from './providerResolution';
 import { extractFilePath } from './tools/extractFilePath';
 import { SoundNotificationService } from '../SoundNotificationService';
 import { notificationService } from '../NotificationService';
@@ -52,6 +54,8 @@ import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
+import { getMetaAgentOpenAITools } from '../../mcp/metaAgentServer';
+import { MetaAgentService } from '../MetaAgentService';
 import {
   shouldShowCommunityPopup,
   markCommunityPopupShown,
@@ -432,43 +436,57 @@ export class MessageStreamingHandler {
       let requiresApiKey = true;
       const effectiveWorkspacePath = session.workspacePath || workspacePath;
       apiKey = this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
-      switch (session.provider) {
-        case 'claude':
-          errorMessage = 'Anthropic API key not configured';
-          break;
-        case 'claude-code':
-          // Claude Code: API key is optional and uses OAuth login when not configured.
-          requiresApiKey = false;
-          break;
-        case 'claude-code-cli':
-          // Genuine `claude` CLI: uses its own login/subscription, no API key.
-          requiresApiKey = false;
-          break;
-        case 'openai':
-          errorMessage = 'OpenAI API key not configured';
-          break;
-        case 'openai-codex':
-          // Codex SDK uses its own auth (codex auth login), API key is optional
-          requiresApiKey = false;
-          break;
-        case 'openai-codex-acp':
-          // Codex ACP uses the codex-acp binary's own auth, API key is optional
-          requiresApiKey = false;
-          break;
-        case 'opencode':
-          // OpenCode uses its own config, API key is optional
-          requiresApiKey = false;
-          break;
-        case 'copilot-cli':
-          // Copilot uses its own CLI auth, no API key needed
-          requiresApiKey = false;
-          break;
-        case 'lmstudio':
-          // LMStudio doesn't need an API key, just the base URL
-          apiKey = 'not-required'; // Dummy value since LMStudio doesn't need a key
-          break;
-        default:
-          throw new Error(`Unknown provider: ${session.provider}`);
+
+      // Resolve the extension-agent ref (null for built-in providers). The
+      // built-in switch below is the legacy path; the registry lookup is the
+      // shim that lets aiAgentProviders contributions ride the same streaming
+      // hot path until `session.provider` is widened to a discriminated union
+      // (flagged in the seed PR).
+      const extensionAgentRef = resolveExtensionAgentRef(session.provider);
+
+      if (extensionAgentRef) {
+        // Extension-agent providers defer auth to their own backend module
+        // (e.g. Antigravity rides ~/.gemini OAuth). No host-side apiKey check.
+        requiresApiKey = false;
+      } else {
+        switch (session.provider) {
+          case 'claude':
+            errorMessage = 'Anthropic API key not configured';
+            break;
+          case 'claude-code':
+            // Claude Code: API key is optional and uses OAuth login when not configured.
+            requiresApiKey = false;
+            break;
+          case 'claude-code-cli':
+            // Genuine `claude` CLI: uses its own login/subscription, no API key.
+            requiresApiKey = false;
+            break;
+          case 'openai':
+            errorMessage = 'OpenAI API key not configured';
+            break;
+          case 'openai-codex':
+            // Codex SDK uses its own auth (codex auth login), API key is optional
+            requiresApiKey = false;
+            break;
+          case 'openai-codex-acp':
+            // Codex ACP uses the codex-acp binary's own auth, API key is optional
+            requiresApiKey = false;
+            break;
+          case 'opencode':
+            // OpenCode uses its own config, API key is optional
+            requiresApiKey = false;
+            break;
+          case 'copilot-cli':
+            // Copilot uses its own CLI auth, no API key needed
+            requiresApiKey = false;
+            break;
+          case 'lmstudio':
+            // LMStudio doesn't need an API key, just the base URL
+            apiKey = 'not-required'; // Dummy value since LMStudio doesn't need a key
+            break;
+          default:
+            throw new Error(`Unknown provider: ${session.provider}`);
+        }
       }
 
       if (!apiKey && requiresApiKey) {
@@ -478,7 +496,30 @@ export class MessageStreamingHandler {
       // Create the provider
       if (isProviderClaudeCode) {
       }
-      provider = ProviderFactory.createProvider(session.provider, session.id);
+      if (extensionAgentRef) {
+        // Route to the extension-agent factory branch. createExtensionAgentProvider
+        // is a thin wrapper that defers lazy-spawn of the backend module to the
+        // first `initialize` call routed through the AgentBridge. Cache key is
+        // namespaced to avoid collision with built-in providers.
+        provider =
+          ProviderFactory.getExtensionAgentProvider({
+            extensionId: extensionAgentRef.extensionId,
+            contributionId: extensionAgentRef.contributionId,
+            sessionId: session.id,
+          }) ??
+          ProviderFactory.createExtensionAgentProvider({
+            extensionId: extensionAgentRef.extensionId,
+            contributionId: extensionAgentRef.contributionId,
+            sessionId: session.id,
+            model: session.model,
+          });
+      } else {
+        // The inner switch above is exhaustive over AIProviderType + throws on
+        // default, so by this point session.provider is statically narrowable
+        // to AIProviderType. The cast makes the narrowing explicit since the
+        // exhaustiveness sits inside a conditional block.
+        provider = ProviderFactory.createProvider(session.provider as AIProviderType, session.id);
+      }
 
       if (isProviderClaudeCode) {
       }
@@ -1193,7 +1234,54 @@ export class MessageStreamingHandler {
         }
       }
 
-      for await (const chunk of provider.sendMessage(messageToSend, contextWithSession, session.id, sessionMessages, effectiveWorkspacePath, attachments)) {
+      // Meta-agent tools for extension-agent providers (e.g. gemini-antigravity).
+      // Built-in providers (claude-code, openai-codex) discover these same tools
+      // over the SSE MCP server instead, so we ONLY thread JSON tool defs for the
+      // extension-agent branch. Gated on the meta-agent server being up plus a
+      // session + workspace, mirroring McpConfigService parity for built-ins.
+      // `undefined` for built-in providers, so their sendMessage call shape is
+      // unchanged.
+      // resolveExtensionAgentRef is recomputed here (the earlier binding from
+      // the provider-creation block is out of scope); it's a cheap pure lookup.
+      const isExtensionAgentSession = !!resolveExtensionAgentRef(session.provider);
+      // Only a meta-agent extension session may receive spawn tools. A standard
+      // child session (created agentRole='standard' by MetaAgentService) must
+      // NOT get spawn tools, otherwise it can spawn grandchildren and trigger
+      // exponential recursion. This mirrors claude-code/openai-codex, where only
+      // a button-created meta-agent gets the spawn tools over the SSE MCP server
+      // and its standard children cannot spawn. Gate tools and persona on the
+      // SAME condition so they stay in lockstep.
+      const isMetaAgentExtensionSession =
+        isExtensionAgentSession && session.agentRole === 'meta-agent';
+      const extensionAgentTools =
+        isMetaAgentExtensionSession &&
+        MetaAgentService.getInstance().getPort() !== null &&
+        session.id &&
+        effectiveWorkspacePath
+          ? getMetaAgentOpenAITools()
+          : undefined;
+
+      // Meta-agent persona for extension-agent providers (e.g. gemini-antigravity).
+      // Built-in providers (claude-code, openai-codex) build this same persona
+      // internally over their SDK system prompt; extension agents have no
+      // equivalent, so without this they receive ONLY tool schemas and reply as
+      // a generic chat assistant ("how would you like to proceed?") instead of
+      // proactively setting session meta, surveying worktrees/sessions, and
+      // spawning child sessions. We reuse the SAME buildMetaAgentSystemPrompt
+      // source the built-in providers use (no duplicated persona text), and gate
+      // it strictly on agentRole === 'meta-agent' so a normal gemini chat session
+      // is unaffected. 'codex' tool-reference style renders plain tool names,
+      // matching how the extension's tool loop presents tools in its JSON
+      // envelope (no `mcp__` SDK prefix).
+      const extensionAgentSystemPrompt =
+        isMetaAgentExtensionSession
+          ? buildMetaAgentSystemPrompt('codex', 'default', {
+              provider: session.provider,
+              model: session.model ?? undefined,
+            })
+          : undefined;
+
+      for await (const chunk of provider.sendMessage(messageToSend, contextWithSession, session.id, sessionMessages, effectiveWorkspacePath, attachments, extensionAgentTools, extensionAgentSystemPrompt)) {
         if (!chunk) continue;
         chunkCount++;
 

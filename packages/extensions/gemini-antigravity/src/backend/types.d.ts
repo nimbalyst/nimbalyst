@@ -180,6 +180,25 @@ declare global {
   }
 
   // -------------------------------------------------------------------------
+  // Usage snapshot (read-only quota probe)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Result of getUsageSnapshot(). Mirrors the Codex usage chip's
+   * available/unavailable branch. When `available` is false the host renders a
+   * muted "--" chip with the `error` string in the tooltip; the language
+   * server is never spawned to satisfy a usage poll.
+   *
+   * `snapshot` is the AntigravityUsageSnapshot shape (account credits +
+   * per-model quota) returned by UsageMeter.getSnapshot(). It's typed as
+   * `unknown` here so this ambient file stays decoupled from the UsageMeter
+   * module; the main-side service narrows it.
+   */
+  type UsageSnapshotResult =
+    | { available: true; snapshot: unknown }
+    | { available: false; error: string };
+
+  // -------------------------------------------------------------------------
   // The API the backend module returns from activate()
   // -------------------------------------------------------------------------
 
@@ -203,6 +222,13 @@ declare global {
 
     /** Drop all state for a session (memory only; the host owns persisted DB). */
     cleanupSession(sessionId: string): Promise<void> | void;
+
+    /**
+     * Read-only usage/quota probe. Returns the live Antigravity usage snapshot
+     * (account credits + per-model quota) when the language server is already
+     * running, or an unavailable result otherwise. MUST NOT spawn the server.
+     */
+    getUsageSnapshot(): Promise<UsageSnapshotResult>;
   }
 }
 

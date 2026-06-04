@@ -100,6 +100,22 @@ export interface ToolCall {
   };
 }
 
+/**
+ * OpenAI function-calling shaped tool definition threaded to extension-agent
+ * providers so their tool loops (e.g. gemini-antigravity) can present the host's
+ * meta-agent tools as JSON in the model prompt. Built-in providers ignore this
+ * — they discover the same tools over an SSE MCP server instead. Optional and
+ * additive everywhere it appears so no built-in provider path is affected.
+ */
+export interface AgentToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+}
+
 export interface Message {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;

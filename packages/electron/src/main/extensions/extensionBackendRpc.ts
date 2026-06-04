@@ -163,7 +163,8 @@ export type BrokerMethodName =
   | 'getApiKey'
   | 'readWorkspaceFile'
   | 'writeWorkspaceFile'
-  | 'registerMcpTools';
+  | 'registerMcpTools'
+  | 'toolExecutor';
 
 /** Payload shapes for each broker method. Kept here so both sides share one truth. */
 export interface BrokerPayloads {
@@ -190,6 +191,16 @@ export interface BrokerPayloads {
       inputSchema?: unknown;
     }>;
   };
+  toolExecutor: {
+    /** AI session id the tool call belongs to (used to scope spawn_session). */
+    sessionId: string;
+    /** Workspace path; the host normalizes worktree paths to the parent repo. */
+    workspacePath?: string;
+    /** Tool name (may carry the mcp__nimbalyst-meta-agent__ prefix). */
+    name: string;
+    /** Parsed tool arguments. */
+    args: Record<string, unknown>;
+  };
 }
 
 /** Result shapes returned over broker-response for each method. */
@@ -199,6 +210,8 @@ export interface BrokerResults {
   readWorkspaceFile: { content: string };
   writeWorkspaceFile: { bytesWritten: number };
   registerMcpTools: { registered: string[] };
+  /** Raw text result the meta-agent tool fn returned. */
+  toolExecutor: { result: string };
 }
 
 export interface SerializedError {

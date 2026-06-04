@@ -27,6 +27,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { AntigravityServerManager } from './ServerManager';
+import { AntigravityUsageMeter } from './UsageMeter';
 import { AntigravityToolLoopProtocol } from './ToolLoopProtocol';
 
 // -------------------------------------------------------------------------
@@ -144,7 +145,7 @@ function makeSessionExecutor(
 // Default export: activate(ctx)
 // -------------------------------------------------------------------------
 
-async function activate(ctx: BackendActivateContext): Promise<BackendModuleApi> {
+async function activate(ctx: BackendActivateContext): Promise<{ methods: BackendModuleApi }> {
   const log = ctx.logger ?? console;
 
   // Apply host-provided config to the shared ServerManager. We don't ensureRunning()
@@ -160,6 +161,11 @@ async function activate(ctx: BackendActivateContext): Promise<BackendModuleApi> 
   );
 
   const sessions = new Map<string, SessionState>();
+
+  // Usage meter shares the singleton ServerManager. getUsageSnapshot() below
+  // reads it WITHOUT spawning: if no endpoint is live yet, it returns an
+  // unavailable result rather than firing up the language server.
+  const usageMeter = new AntigravityUsageMeter(AntigravityServerManager.shared());
 
   function getOrThrow(sessionId: string): SessionState {
     const s = sessions.get(sessionId);
@@ -379,9 +385,31 @@ async function activate(ctx: BackendActivateContext): Promise<BackendModuleApi> 
       session.toolLoop.abort();
       sessions.delete(sessionId);
     },
+
+    async getUsageSnapshot(): Promise<UsageSnapshotResult> {
+      // Read-only. Never spawn: if the language server isn't already running,
+      // report unavailable so the usage chip degrades to a muted state instead
+      // of starting the server from a background poll.
+      if (AntigravityServerManager.shared().currentEndpoint() === null) {
+        return { available: false, error: 'Gemini server not started yet' };
+      }
+      try {
+        const snapshot = await usageMeter.getSnapshot();
+        return { available: true, snapshot };
+      } catch (err) {
+        return {
+          available: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
   };
 
-  return api;
+  // The privileged backend bootstrap dispatches RPCs via `loaded.api.methods`,
+  // so the lifecycle methods must be returned under a `methods` key (not as a
+  // flat object). Without this wrapper no methods register and every
+  // createSession / sendMessage RPC fails with "Unknown method".
+  return { methods: api };
 }
 
 export default { activate };
