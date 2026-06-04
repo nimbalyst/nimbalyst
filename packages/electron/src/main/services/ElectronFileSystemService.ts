@@ -83,7 +83,13 @@ export class ElectronFileSystemService implements FileSystemService {
         rgArgs.push('-g', options.filePattern);
       }
 
-      rgArgs.push(query, searchPath);
+      // Terminate option parsing with `--` before the (possibly
+      // model-controlled) query so a value like `--pre=<binary>` is treated as
+      // a literal search pattern, not a ripgrep flag. ripgrep's --pre runs an
+      // arbitrary preprocessor binary per file, so argv/flag injection here
+      // would be remote code execution. execFile already blocks shell
+      // metacharacters; `--` blocks argv injection.
+      rgArgs.push('--', query, searchPath);
 
       logger.ai.info('[FileSystemService] Searching files', {
         query,

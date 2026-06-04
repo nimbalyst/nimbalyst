@@ -48,6 +48,16 @@ interface SessionState {
 const DEFAULT_MODEL_KEY = 'gemini-3-flash-agent';
 
 /**
+ * Read-only dev tool names. Calls with these names route to the host's
+ * `devToolExecutor` channel (gated on workspace-files) instead of the
+ * meta-agent orchestration channel `toolExecutor` (gated on db-write). A
+ * standard session only ever receives dev tools, and a meta-agent session only
+ * orchestration tools, so this routing is unambiguous per session. Keep in sync
+ * with the host's DEV_AGENT_TOOL_NAMES (devAgentTools.ts).
+ */
+const DEV_AGENT_TOOL_NAMES = new Set<string>(['read_file', 'list_files', 'search_files']);
+
+/**
  * Strip a provider prefix like "antigravity-gemini-agent:gemini-3-flash-agent"
  * down to the stable model key. Mirrors the renderer-side logic so the host
  * can hand us either form.
@@ -132,6 +142,11 @@ function makeSessionExecutor(
   session: SessionState,
 ): (name: string, args: Record<string, unknown>) => Promise<unknown> {
   return async (name, args) => {
+    // Read-only dev tools go through the workspace-files-gated channel; the
+    // host pins the jail to its bound workspace, so no path is sent.
+    if (DEV_AGENT_TOOL_NAMES.has(name)) {
+      return ctx.services.devToolExecutor({ name, args });
+    }
     return ctx.services.toolExecutor({
       sessionId: session.sessionId,
       workspacePath: session.workspacePath,

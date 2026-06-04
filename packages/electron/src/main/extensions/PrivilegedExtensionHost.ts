@@ -77,6 +77,7 @@ import { serializeError } from './extensionBackendRpc';
 import { AgentMessagesRepository } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
 import { store as appSettingsStore } from '../utils/store';
 import { dispatchMetaAgentTool } from '../mcp/metaAgentServer';
+import { dispatchDevAgentTool } from '../mcp/devAgentTools';
 
 /**
  * Authoritative map from broker method name to its required catalog permission.
@@ -104,6 +105,12 @@ const BROKER_METHOD_PERMISSIONS: {
   // permission, so it gates on the high-risk DB-write grant the extension
   // already declares for logRaw.
   toolExecutor: 'nimbalyst-database-write',
+  // Read-only dev tools (read_file / list_files / search_files) touch only the
+  // workspace filesystem, so they gate on the minimal low-risk grant - NOT the
+  // high-risk DB-write that orchestration needs. Separate method name keeps the
+  // anti-forge gate honest: the host derives this permission from the method
+  // name, never from the backend-supplied tool name.
+  devToolExecutor: 'workspace-files',
 } as const;
 
 /** Public state of a single module the host is tracking. */
@@ -1310,6 +1317,21 @@ export class PrivilegedExtensionHost extends EventEmitter {
           payload.args
         );
         const result: BrokerResults['toolExecutor'] = { result: text };
+        return result;
+      }
+      case 'devToolExecutor': {
+        const payload = rawPayload as BrokerPayloads['devToolExecutor'];
+        // Read-only dev tools (read_file / list_files / search_files). The jail
+        // root is the HOST-bound workspace (ctx.workspacePath), NEVER a
+        // backend-supplied path, so a compromised backend cannot read outside
+        // the workspace. ElectronFileSystemService's SafePathValidator blocks
+        // traversal within the call, and reads are size-capped.
+        const text = await dispatchDevAgentTool(
+          payload.name,
+          ctx.workspacePath,
+          payload.args
+        );
+        const result: BrokerResults['devToolExecutor'] = { result: text };
         return result;
       }
       default: {

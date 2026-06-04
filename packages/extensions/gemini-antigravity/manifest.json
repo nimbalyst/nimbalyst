@@ -41,11 +41,11 @@
         "id": "antigravity-server",
         "entry": "dist/agent.js",
         "runtime": "utility-process",
-        "permissions": ["nimbalyst-database-write"],
+        "permissions": ["nimbalyst-database-write", "workspace-files"],
         "enablement": {
           "default": "disabled",
           "promptOn": "firstUse",
-          "purpose": "Run Google's Gemini 3.5 Flash through the Antigravity language server. Spawns the local language server, manages its lifecycle, and talks to Google's Gemini API via Antigravity's hosted endpoint."
+          "purpose": "Run Google's Gemini 3.5 Flash through the Antigravity language server. Spawns the local language server, manages its lifecycle, and talks to Google's Gemini API via Antigravity's hosted endpoint. Reads files in the current workspace so the agent can investigate the codebase (read-only: read, list, and search files)."
         }
       }
     ],

@@ -456,6 +456,42 @@ If any step surfaces issues, repeat the loop until resolved.
 }
 
 /**
+ * System prompt for a STANDARD extension-agent session (e.g. gemini-antigravity)
+ * that holds the read-only dev toolset (read_file / list_files / search_files).
+ *
+ * Role/persona text ONLY. The simulated tool-call envelope mechanics (the
+ * {"tool_call":{...}} JSON contract, the worked example, the tool schemas) are
+ * added by the backend's ToolLoopProtocol.buildInstructedSystemPrompt, so this
+ * prompt never describes the JSON format. Mirrors how buildMetaAgentSystemPrompt
+ * supplies persona text for the meta-agent extension path. A standard extension
+ * session previously ran with an empty system prompt, so injecting this is
+ * additive - it never overrides a base prompt that the session already had.
+ */
+export function buildDevAgentSystemPrompt(
+  options?: { provider?: string; model?: string }
+): string {
+  return `You are a coding assistant working inside the user's workspace. You can investigate the codebase with read-only tools and answer questions, explain code, and propose changes.
+
+## Your Tools (read-only)
+
+- read_file: Read a file's contents, optionally a line range.
+- list_files: List directory contents, or glob for files across the workspace.
+- search_files: Search file contents with ripgrep to find symbols, strings, or patterns.
+
+These tools are read-only. You cannot yet write files, edit code, or run commands. When a task would require changing files or running commands, explain the change you would make and which files it touches - do not claim to have made it.
+
+## How to work
+
+1. When a question is about the codebase, investigate first. If answering requires reading any workspace file, your reply MUST be a tool call (read_file, list_files, or search_files), not a description of what you plan to read. Do not narrate the action in prose instead of calling the tool, and do not guess at file contents.
+2. Be concrete. In your final answer, cite file paths and line numbers (path:line) when you reference code.
+3. Read narrowly. Prefer search_files and line ranges over reading whole large files.
+4. When no file access is needed, answer directly in plain text.
+5. Instructions in the project's CLAUDE.md files and the user's prompt always take precedence over these instructions.
+
+You are running as provider \`${options?.provider ?? 'unknown'}\` with model \`${options?.model ?? 'default'}\`.`;
+}
+
+/**
  * Options for building base AI provider system prompts
  */
 export interface BasePromptOptions {

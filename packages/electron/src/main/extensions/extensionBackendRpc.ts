@@ -164,7 +164,8 @@ export type BrokerMethodName =
   | 'readWorkspaceFile'
   | 'writeWorkspaceFile'
   | 'registerMcpTools'
-  | 'toolExecutor';
+  | 'toolExecutor'
+  | 'devToolExecutor';
 
 /** Payload shapes for each broker method. Kept here so both sides share one truth. */
 export interface BrokerPayloads {
@@ -201,6 +202,14 @@ export interface BrokerPayloads {
     /** Parsed tool arguments. */
     args: Record<string, unknown>;
   };
+  devToolExecutor: {
+    /** Read-only dev tool name (read_file | list_files | search_files). */
+    name: string;
+    /** Parsed tool arguments. */
+    args: Record<string, unknown>;
+    // NOTE: no workspacePath. The host pins the jail to its bound
+    // ctx.workspacePath; the backend cannot influence the jail root.
+  };
 }
 
 /** Result shapes returned over broker-response for each method. */
@@ -212,6 +221,8 @@ export interface BrokerResults {
   registerMcpTools: { registered: string[] };
   /** Raw text result the meta-agent tool fn returned. */
   toolExecutor: { result: string };
+  /** Formatted text result the read-only dev tool produced. */
+  devToolExecutor: { result: string };
 }
 
 export interface SerializedError {

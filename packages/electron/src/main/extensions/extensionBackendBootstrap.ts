@@ -195,6 +195,20 @@ export interface BackendServices {
     name: string;
     args: Record<string, unknown>;
   }): Promise<unknown>;
+
+  /**
+   * Execute a read-only dev tool (read_file / list_files / search_files)
+   * against the host's bound workspace and return the formatted text result.
+   * Gated on `workspace-files` (low risk), separate from toolExecutor's
+   * db-write gate. The host pins the jail to its bound workspace; this payload
+   * carries no path, so the backend cannot redirect the jail root.
+   *
+   * Requires: `workspace-files`.
+   */
+  devToolExecutor(payload: {
+    name: string;
+    args: Record<string, unknown>;
+  }): Promise<unknown>;
 }
 
 class PermissionDeniedInRuntime extends Error {
@@ -357,6 +371,17 @@ function buildServices(ctx: BackendRuntimeContext, send: SendToHost): BackendSer
       });
       // The agent module's tool loop consumes the raw text result; unwrap the
       // { result } envelope so callers get the string directly.
+      return res.result;
+    },
+
+    devToolExecutor: async (payload) => {
+      // Synchronous in-runtime denial; main re-asserts as defense in depth.
+      // Read-only file access gates on the minimal workspace-files grant.
+      assert('workspace-files' as ExtensionPermissionId);
+      const res = await makeBrokerCall(send, 'devToolExecutor', {
+        name: payload.name,
+        args: payload.args,
+      });
       return res.result;
     },
 

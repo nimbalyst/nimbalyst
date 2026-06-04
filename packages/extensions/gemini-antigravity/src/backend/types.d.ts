@@ -135,6 +135,18 @@ declare global {
     }): Promise<unknown>;
 
     /**
+     * Read-only dev-tool dispatcher. Routes read_file / list_files /
+     * search_files to the host's filesystem service, gated on `workspace-files`
+     * (low risk) - NOT the db-write gate toolExecutor uses. The host pins the
+     * jail to its bound workspace, so this payload carries no path. Returns the
+     * formatted text result the backend folds into the model's next turn.
+     */
+    devToolExecutor(payload: {
+      name: string;
+      args: Record<string, unknown>;
+    }): Promise<unknown>;
+
+    /**
      * Optional emit-event channel for non-streaming side signals (prompt
      * additions, telemetry, debugging). The host decides what to do with these.
      */

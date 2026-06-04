@@ -20,6 +20,7 @@ import {
   isAgentProvider,
   onAgentMessageBatch,
   buildMetaAgentSystemPrompt,
+  buildDevAgentSystemPrompt,
   type AIProvider,
   type SessionManager,
 } from '@nimbalyst/runtime/ai/server';
@@ -55,6 +56,7 @@ import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { getMetaAgentOpenAITools } from '../../mcp/metaAgentServer';
+import { getDevAgentOpenAITools } from '../../mcp/devAgentTools';
 import { MetaAgentService } from '../MetaAgentService';
 import {
   shouldShowCommunityPopup,
@@ -1253,13 +1255,24 @@ export class MessageStreamingHandler {
       // SAME condition so they stay in lockstep.
       const isMetaAgentExtensionSession =
         isExtensionAgentSession && session.agentRole === 'meta-agent';
+      // A standard (non-meta-agent) extension session gets the read-only dev
+      // toolset (read_file / list_files / search_files) so the model can
+      // investigate the workspace through the SAME simulated tool loop. This
+      // mirrors built-in providers: a standard session has file tools, only a
+      // meta-agent session has orchestration tools. The dev tools dispatch over
+      // the broker's `devToolExecutor` (gated workspace-files), not the
+      // meta-agent SSE MCP server, so they need no MetaAgentService port.
+      const isStandardExtensionSession =
+        isExtensionAgentSession && session.agentRole !== 'meta-agent';
       const extensionAgentTools =
         isMetaAgentExtensionSession &&
         MetaAgentService.getInstance().getPort() !== null &&
         session.id &&
         effectiveWorkspacePath
           ? getMetaAgentOpenAITools()
-          : undefined;
+          : isStandardExtensionSession && session.id && effectiveWorkspacePath
+            ? getDevAgentOpenAITools()
+            : undefined;
 
       // Meta-agent persona for extension-agent providers (e.g. gemini-antigravity).
       // Built-in providers (claude-code, openai-codex) build this same persona
@@ -1279,7 +1292,12 @@ export class MessageStreamingHandler {
               provider: session.provider,
               model: session.model ?? undefined,
             })
-          : undefined;
+          : isStandardExtensionSession && session.id && effectiveWorkspacePath
+            ? buildDevAgentSystemPrompt({
+                provider: session.provider,
+                model: session.model ?? undefined,
+              })
+            : undefined;
 
       for await (const chunk of provider.sendMessage(messageToSend, contextWithSession, session.id, sessionMessages, effectiveWorkspacePath, attachments, extensionAgentTools, extensionAgentSystemPrompt)) {
         if (!chunk) continue;
