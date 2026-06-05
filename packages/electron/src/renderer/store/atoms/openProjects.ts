@@ -30,6 +30,20 @@ export interface OpenProject {
   openedAt: number;
 }
 
+interface InitialWorkspaceWindowState {
+  mode: 'workspace';
+  workspacePath?: string;
+  activeWorkspacePath?: string | null;
+  openProjectPaths?: string[];
+}
+
+interface ResolveInitialOpenProjectsInput {
+  persistedPaths: string[];
+  persistedActivePath: string | null;
+  restorePreviousProjects: boolean;
+  windowState: InitialWorkspaceWindowState | null;
+}
+
 const MAX_OPEN_PROJECTS = 8;
 
 /**
@@ -154,6 +168,68 @@ function basenameFromPath(p: string): string {
   return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
 }
 
+function normalizeProjectPaths(paths: unknown): string[] {
+  if (!Array.isArray(paths)) return [];
+
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const path of paths) {
+    if (typeof path !== 'string' || path.length === 0 || seen.has(path)) continue;
+    seen.add(path);
+    normalized.push(path);
+    if (normalized.length >= MAX_OPEN_PROJECTS) break;
+  }
+  return normalized;
+}
+
+function getWindowBootstrapState(initialState: unknown): InitialWorkspaceWindowState | null {
+  if (!initialState || typeof initialState !== 'object') return null;
+  const candidate = initialState as InitialWorkspaceWindowState;
+  if (candidate.mode !== 'workspace') return null;
+  return candidate;
+}
+
+export function resolveInitialOpenProjectsState({
+  persistedPaths,
+  persistedActivePath,
+  restorePreviousProjects,
+  windowState,
+}: ResolveInitialOpenProjectsInput): { paths: string[]; activePath: string | null } {
+  const normalizedPersistedPaths = normalizeProjectPaths(persistedPaths);
+  const normalizedWindowPaths = normalizeProjectPaths(windowState?.openProjectPaths ?? []);
+  const normalizedWindowActivePath =
+    windowState?.activeWorkspacePath && normalizedWindowPaths.includes(windowState.activeWorkspacePath)
+      ? windowState.activeWorkspacePath
+      : normalizedWindowPaths[0] ?? null;
+  const windowHasLiveRailState =
+    normalizedWindowPaths.length > 1 ||
+    (windowState?.workspacePath != null &&
+      normalizedWindowActivePath != null &&
+      normalizedWindowActivePath !== windowState.workspacePath);
+
+  if (windowHasLiveRailState) {
+    return {
+      paths: normalizedWindowPaths,
+      activePath: normalizedWindowActivePath,
+    };
+  }
+
+  if (restorePreviousProjects && normalizedPersistedPaths.length > 0) {
+    return {
+      paths: normalizedPersistedPaths,
+      activePath:
+        persistedActivePath && normalizedPersistedPaths.includes(persistedActivePath)
+          ? persistedActivePath
+          : normalizedPersistedPaths[0] ?? null,
+    };
+  }
+
+  return {
+    paths: normalizedWindowPaths,
+    activePath: normalizedWindowActivePath,
+  };
+}
+
 let initialized = false;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let unsubscribers: Array<() => void> = [];
@@ -174,30 +250,34 @@ export async function initOpenProjects(): Promise<void> {
   if (!window.electronAPI?.invoke) return;
 
   try {
-    const [mode, restorePrev, paths, activePath] = await Promise.all([
+    const [mode, restorePrev, paths, activePath, initialState] = await Promise.all([
       window.electronAPI.invoke('app:get-multi-project-mode') as Promise<boolean>,
       window.electronAPI.invoke('app:get-restore-previous-projects') as Promise<boolean>,
       window.electronAPI.invoke('app:get-open-projects') as Promise<string[]>,
       window.electronAPI.invoke('app:get-active-project-path') as Promise<string | null>,
+      window.electronAPI.getInitialState?.() ?? Promise.resolve(null),
     ]);
 
     store.set(multiProjectModeAtom, !!mode);
     store.set(restorePreviousProjectsAtom, !!restorePrev);
 
-    // Only rehydrate the rail when the user opted in. Otherwise the rail
-    // starts empty and is seeded by the project the user picks from the
-    // launch screen (handled in App.tsx loadInitialState).
-    if (restorePrev) {
-      const validPaths = Array.isArray(paths) ? paths.filter((p) => typeof p === 'string' && p.length > 0) : [];
-      const projects: OpenProject[] = validPaths.map((path) => ({
+    const { paths: initialPaths, activePath: initialActivePath } = resolveInitialOpenProjectsState({
+      persistedPaths: paths,
+      persistedActivePath: activePath,
+      restorePreviousProjects: !!restorePrev,
+      windowState: getWindowBootstrapState(initialState),
+    });
+
+    if (initialPaths.length > 0) {
+      const projects: OpenProject[] = initialPaths.map((path) => ({
         path,
         name: basenameFromPath(path),
         openedAt: Date.now(),
       }));
       store.set(openProjectsAtom, projects);
 
-      if (activePath && validPaths.includes(activePath)) {
-        store.set(activeWorkspacePathAtom, activePath);
+      if (initialActivePath && initialPaths.includes(initialActivePath)) {
+        store.set(activeWorkspacePathAtom, initialActivePath);
       } else if (projects.length > 0) {
         store.set(activeWorkspacePathAtom, projects[0].path);
       }

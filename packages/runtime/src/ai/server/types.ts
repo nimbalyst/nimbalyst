@@ -6,7 +6,11 @@ import type { ToolDefinition } from '../tools';
 import type { EffortLevel } from './effortLevels';
 import type { ToolResult } from './protocols/ProtocolInterface';
 import { ModelIdentifier } from './ModelIdentifier';
-import { CLAUDE_CODE_PINNED_SDK_MODELS } from '../modelConstants';
+import {
+  CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS,
+  CLAUDE_CODE_PINNED_SDK_MODELS,
+  normalizeClaudeCodeVariant,
+} from '../modelConstants';
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
 export type { ToolDefinition } from '../tools';
 export { ModelIdentifier } from './ModelIdentifier';
@@ -32,8 +36,8 @@ export interface DocumentContext {
   textSelection?: string;  // Just the selected text (filePath is already on document context)
   textSelectionTimestamp?: number | null;  // For staleness detection
 
-  // AI mode at time of message submission (planning vs agent)
-  mode?: 'planning' | 'agent';
+  // AI mode at time of message submission (planning vs agent vs auto)
+  mode?: 'planning' | 'agent' | 'auto';
 
   // Worktree context (for isolated AI coding sessions)
   worktreeId?: string;  // ID of the associated worktree
@@ -100,7 +104,7 @@ export interface Message {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
   timestamp: number;
-  mode?: 'planning' | 'agent';  // AI mode when message was sent (user messages only)
+  mode?: 'planning' | 'agent' | 'auto';  // AI mode when message was sent (user messages only)
   // Additional fields for rich message types
   edits?: unknown[];
   toolCall?: ToolCall;
@@ -194,7 +198,6 @@ export const CLAUDE_CODE_VARIANTS = ['opus', 'opus-4-7', 'opus-4-6', 'sonnet', '
  */
 export function resolveClaudeCodeModelVariant(configuredModel: string | undefined, defaultModel: string): string {
   type ClaudeCodeVariant = typeof CLAUDE_CODE_VARIANTS[number];
-  const fallback: ClaudeCodeVariant = 'sonnet';
   const configured = configuredModel || defaultModel;
 
   const toSdkBase = (variant: string): string => CLAUDE_CODE_PINNED_SDK_MODELS[variant as ClaudeCodeVariant] ?? variant;
@@ -217,12 +220,20 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
   const isExtended = normalized?.endsWith('-1m');
   const withoutContext = normalized?.replace(/-1m$/, '');
 
-  if (withoutContext && (CLAUDE_CODE_VARIANTS as readonly string[]).includes(withoutContext)) {
-    const sdkBase = toSdkBase(withoutContext);
+  const normalizedVariant = withoutContext ? normalizeClaudeCodeVariant(withoutContext) : null;
+  if (normalizedVariant) {
+    const sdkBase = toSdkBase(normalizedVariant);
     return isExtended ? `${sdkBase}[1m]` : sdkBase;
   }
 
-  return fallback;
+  const supported = CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS.join(', ');
+  if (parsed && parsed.provider !== 'claude-code') {
+    throw new Error(`Claude Agent requires a claude-code:* model identifier. Received: ${configured}`);
+  }
+
+  throw new Error(
+    `Unsupported Claude Agent model "${configured}". Must be one of: ${supported} (optionally with -1m suffix)`
+  );
 }
 
 export interface AIModel {
@@ -236,7 +247,7 @@ export interface AIModel {
 /** Structural type describing what role a session plays in the hierarchy */
 export type SessionType = 'session' | 'workstream' | 'blitz' | 'voice';
 
-export type SessionMode = 'planning' | 'agent';
+export type SessionMode = 'planning' | 'agent' | 'auto';
 
 export type AgentRole = 'standard' | 'meta-agent';
 

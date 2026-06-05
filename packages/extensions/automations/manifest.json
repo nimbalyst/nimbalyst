@@ -7,6 +7,20 @@
   "main": "dist/index.js",
   "styles": "dist/index.css",
   "apiVersion": "1.0.0",
+  "marketplace": {
+    "categories": ["ai-tools"],
+    "tags": ["automation", "scheduled-tasks", "agent", "workflow", "recurring"],
+    "icon": "schedule",
+    "featured": false,
+    "tagline": "Run recurring AI workflows from markdown automation definitions",
+    "longDescription": "Define recurring automations in markdown and let Nimbalyst run them on a schedule. Use them for routine reviews, status updates, content refreshes, and any repeatable AI workflow that should happen without starting a new session manually.",
+    "highlights": [
+      "Markdown-based automation definitions stored in your workspace",
+      "Recurring AI workflows for routine checks and updates",
+      "Built-in tools to list, create, and run automations",
+      "Fits alongside plans, docs, and the rest of your project files"
+    ]
+  },
   "permissions": {
     "filesystem": true,
     "ai": true

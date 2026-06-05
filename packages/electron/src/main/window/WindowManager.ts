@@ -24,6 +24,7 @@ import { FeatureTrackingService } from '../services/analytics/FeatureTrackingSer
 import { ExtensionLogService } from '../services/ExtensionLogService';
 import { getMcpConfigService } from '../mcpConfigServiceRef';
 import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
+import { addNimPreviewWorkspaceRoot } from '../protocols/nimPreviewProtocol';
 import { windows, windowStates, anyWindowReferencesWorkspace } from './windowState';
 
 // Window management
@@ -285,6 +286,7 @@ export function createWindow(
         // image components first render.
         if (isWorkspaceMode && workspacePath) {
             addNimAssetRoot(workspacePath);
+            addNimPreviewWorkspaceRoot(workspacePath);
         }
         if (isWorkspaceMode && workspacePath) {
             if (!documentServices.has(workspacePath)) {

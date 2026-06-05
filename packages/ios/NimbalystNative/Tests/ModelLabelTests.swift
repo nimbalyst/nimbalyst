@@ -9,14 +9,19 @@ final class ModelLabelTests: XCTestCase {
     // MARK: - Claude Code
 
     func testClaudeCodeCanonicalVariants() {
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus"), "Opus 4.7")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus"), "Opus 4.8")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:sonnet"), "Sonnet 4.6")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:haiku"), "Haiku 4.5")
     }
 
     func testClaudeCodeExtendedContextVariants() {
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus-1m"), "Opus 4.7")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus-1m"), "Opus 4.8")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:sonnet-1m"), "Sonnet 4.6")
+    }
+
+    func testClaudeCodeOpus48AliasVariants() {
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus-4-8"), "Opus 4.8")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus-4-8-1m"), "Opus 4.8")
     }
 
     func testClaudeCodePinnedVariant() {

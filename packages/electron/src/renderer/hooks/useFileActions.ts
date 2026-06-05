@@ -33,7 +33,7 @@ const SHAREABLE_EXTENSIONS = new Set([
 ]);
 
 /** Compound suffixes that need full-name matching (e.g. .mockup.html). */
-const SHAREABLE_SUFFIXES = ['.mockup.html'];
+const SHAREABLE_SUFFIXES = ['.mockup.html', '.calc.md', '.slides.md'];
 
 function isShareableFile(fileName: string): boolean {
   const lower = fileName.toLowerCase();

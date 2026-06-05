@@ -2379,6 +2379,168 @@ class PGLiteWorker {
     } catch (error) {
       console.error('[PGLite Worker] Failed to drop canonical_transform_* columns:', error);
     }
+
+    // ------------------------------------------------------------------------
+    // 0009_worktree_pr_linkage — PR review panel cache (issue #307, Phase B)
+    //
+    // Mirrors packages/electron/src/main/database/sqlite/schemas/
+    //   0009_worktree_pr_linkage.sql but uses native PG types:
+    //   * TIMESTAMPTZ instead of TEXT (with default now())
+    //   * JSONB instead of TEXT (defensive parse still required per
+    //     packages/electron/DATABASE.md to stay symmetric with the
+    //     SQLite backend, which stores these as JSON strings).
+    // ------------------------------------------------------------------------
+    console.log('[PGLite Worker] Creating pull_requests table...');
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS pull_requests (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          remote TEXT NOT NULL,
+          number INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          body TEXT,
+          state TEXT NOT NULL,
+          is_draft BOOLEAN NOT NULL DEFAULT FALSE,
+          author_login TEXT,
+          author_avatar_url TEXT,
+          head_ref TEXT NOT NULL,
+          head_sha TEXT NOT NULL,
+          base_ref TEXT NOT NULL,
+          mergeable TEXT,
+          comments_count INTEGER NOT NULL DEFAULT 0,
+          review_comments_count INTEGER NOT NULL DEFAULT 0,
+          additions INTEGER NOT NULL DEFAULT 0,
+          deletions INTEGER NOT NULL DEFAULT 0,
+          changed_files INTEGER NOT NULL DEFAULT 0,
+          ci_status TEXT,
+          reviewers JSONB NOT NULL DEFAULT '[]'::jsonb,
+          labels JSONB NOT NULL DEFAULT '[]'::jsonb,
+          raw JSONB NOT NULL,
+          etag TEXT,
+          created_at TIMESTAMPTZ NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL,
+          fetched_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pull_requests_workspace_remote_number
+          ON pull_requests(workspace_id, remote, number);
+        CREATE INDEX IF NOT EXISTS idx_pull_requests_workspace_state
+          ON pull_requests(workspace_id, state);
+        CREATE INDEX IF NOT EXISTS idx_pull_requests_updated
+          ON pull_requests(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_pull_requests_author
+          ON pull_requests(author_login);
+      `);
+      console.log('[PGLite Worker] pull_requests table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create pull_requests table:', error);
+      throw error;
+    }
+
+    console.log('[PGLite Worker] Creating pull_request_files table...');
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS pull_request_files (
+          pr_id TEXT NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+          path TEXT NOT NULL,
+          status TEXT NOT NULL,
+          additions INTEGER NOT NULL DEFAULT 0,
+          deletions INTEGER NOT NULL DEFAULT 0,
+          patch TEXT,
+          previous_path TEXT,
+          fetched_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (pr_id, path)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pull_request_files_pr ON pull_request_files(pr_id);
+      `);
+      console.log('[PGLite Worker] pull_request_files table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create pull_request_files table:', error);
+      throw error;
+    }
+
+    console.log('[PGLite Worker] Creating pull_request_commits table...');
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS pull_request_commits (
+          pr_id TEXT NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+          sha TEXT NOT NULL,
+          message TEXT NOT NULL,
+          author_login TEXT,
+          authored_at TIMESTAMPTZ NOT NULL,
+          additions INTEGER NOT NULL DEFAULT 0,
+          deletions INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (pr_id, sha)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pull_request_commits_pr ON pull_request_commits(pr_id);
+      `);
+      console.log('[PGLite Worker] pull_request_commits table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create pull_request_commits table:', error);
+      throw error;
+    }
+
+    console.log('[PGLite Worker] Creating pull_request_checks table...');
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS pull_request_checks (
+          pr_id TEXT NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+          check_name TEXT NOT NULL,
+          status TEXT NOT NULL,
+          conclusion TEXT,
+          details_url TEXT,
+          started_at TIMESTAMPTZ,
+          completed_at TIMESTAMPTZ,
+          fetched_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (pr_id, check_name)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pull_request_checks_pr ON pull_request_checks(pr_id);
+      `);
+      console.log('[PGLite Worker] pull_request_checks table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create pull_request_checks table:', error);
+      throw error;
+    }
+
+    // Worktree <-> PR linkage columns (one worktree <-> one PR).
+    try {
+      await this.db.exec(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'worktrees' AND column_name = 'pr_number'
+          ) THEN
+            ALTER TABLE worktrees ADD COLUMN pr_number INTEGER;
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'worktrees' AND column_name = 'pr_remote'
+          ) THEN
+            ALTER TABLE worktrees ADD COLUMN pr_remote TEXT;
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'worktrees' AND column_name = 'pr_url'
+          ) THEN
+            ALTER TABLE worktrees ADD COLUMN pr_url TEXT;
+          END IF;
+        END $$;
+      `);
+      await this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_worktrees_pr_lookup
+          ON worktrees(workspace_id, pr_remote, pr_number)
+          WHERE pr_number IS NOT NULL;
+      `);
+      console.log('[PGLite Worker] worktrees pr_* columns ensured');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to add worktrees pr_* columns:', error);
+      throw error;
+    }
   }
 
   async query(message) {

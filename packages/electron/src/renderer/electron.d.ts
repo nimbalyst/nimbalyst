@@ -29,6 +29,108 @@ interface ArchiveTask {
   error?: string;
 }
 
+interface GhCliStatus {
+  installed: boolean;
+  version?: string;
+  authed: boolean;
+  host?: string;
+  user?: string;
+}
+
+interface PullRequestReviewer {
+  login: string;
+  state: string;
+}
+
+interface PullRequestRow {
+  id: string;
+  workspaceId: string;
+  remote: string;
+  number: number;
+  title: string;
+  body: string | null;
+  state: 'open' | 'closed' | 'merged';
+  isDraft: boolean;
+  authorLogin: string | null;
+  authorAvatarUrl: string | null;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  mergeable: 'mergeable' | 'conflicting' | 'unknown' | null;
+  commentsCount: number;
+  reviewCommentsCount: number;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  ciStatus: 'success' | 'failure' | 'pending' | null;
+  reviewers: PullRequestReviewer[];
+  labels: string[];
+  raw: unknown;
+  etag: string | null;
+  createdAt: number;
+  updatedAt: number;
+  fetchedAt: number;
+}
+
+interface PullRequestFileRow {
+  prId: string;
+  path: string;
+  status: 'added' | 'modified' | 'removed' | 'renamed';
+  additions: number;
+  deletions: number;
+  patch: string | null;
+  previousPath: string | null;
+  fetchedAt: number;
+}
+
+interface PullRequestCommitRow {
+  prId: string;
+  sha: string;
+  message: string;
+  authorLogin: string | null;
+  authoredAt: number;
+  additions: number;
+  deletions: number;
+}
+
+interface PullRequestCheckRow {
+  prId: string;
+  checkName: string;
+  status: 'queued' | 'in_progress' | 'completed';
+  conclusion:
+    | 'success'
+    | 'failure'
+    | 'neutral'
+    | 'cancelled'
+    | 'skipped'
+    | 'timed_out'
+    | 'action_required'
+    | null;
+  detailsUrl: string | null;
+  startedAt: number | null;
+  completedAt: number | null;
+  fetchedAt: number;
+}
+
+interface PullRequestTimelineEntry {
+  id: string;
+  type: 'issue_comment' | 'review' | 'review_comment';
+  authorLogin: string | null;
+  authorAvatarUrl: string | null;
+  body: string;
+  state?: string;
+  createdAt: number;
+  url: string | null;
+}
+
+interface PullRequestListFilters {
+  state?: 'open' | 'closed' | 'all';
+  awaitingMyReview?: boolean;
+  createdByMe?: boolean;
+  withConflicts?: boolean;
+  search?: string;
+}
+
 interface ElectronAPI {
   // File menu callbacks
   onFileNew: (callback: () => void) => () => void;
@@ -129,7 +231,13 @@ interface ElectronAPI {
   reportUserActivity?: () => void;
 
   // Get initial window state
-  getInitialState: () => Promise<{ mode: string; workspacePath?: string; workspaceName?: string } | null>;
+  getInitialState: () => Promise<{
+    mode: string;
+    workspacePath?: string;
+    workspaceName?: string;
+    activeWorkspacePath?: string | null;
+    openProjectPaths?: string[];
+  } | null>;
 
   // Workspace operations
   getFolderContents: (dirPath: string) => Promise<FileTreeItem[]>;
@@ -930,6 +1038,7 @@ interface ElectronAPI {
         orgKeyFingerprint: string | null;
         serverUrl: string;
         userId: string;
+        personalOrgId?: string;
         userName?: string;
         userEmail?: string;
       };
@@ -1105,6 +1214,190 @@ interface ElectronAPI {
     removed?: string[];
     count?: number;
   }>;
+
+  // PR review panel — gh CLI status (Phase A of issue #307)
+  ghCliStatus: () => Promise<{
+    success: boolean;
+    error?: string;
+    data?: GhCliStatus;
+  }>;
+  ghCliRefreshStatus: () => Promise<{
+    success: boolean;
+    error?: string;
+    data?: GhCliStatus;
+  }>;
+  onGhCliStatusChanged: (callback: (status: GhCliStatus) => void) => () => void;
+
+  // PR review panel — GitHub API (Phase C of issue #307)
+  prDetectRemote: (workspacePath: string) => Promise<{
+    success: boolean;
+    error?: string;
+    data?: { remote: string; host: string } | null;
+  }>;
+  prList: (
+    workspaceId: string,
+    remote: string,
+    filters?: PullRequestListFilters,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestRow[] }>;
+  prGet: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestRow }>;
+  prFiles: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestFileRow[] }>;
+  prFileContents: (
+    workspaceId: string,
+    remote: string,
+    ref: string,
+    path: string,
+  ) => Promise<{ success: boolean; error?: string; data?: { content: string } }>;
+  prCommits: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestCommitRow[] }>;
+  prChecks: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestCheckRow[] }>;
+  prConversation: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestTimelineEntry[] }>;
+  prConversationRefresh: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{ success: boolean; error?: string; data?: PullRequestTimelineEntry[] }>;
+  prReviewThreads: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{
+    success: boolean;
+    error?: string;
+    data?: {
+      threads: Array<{
+        id: string;
+        isResolved: boolean;
+        isOutdated: boolean;
+        path: string | null;
+        line: number | null;
+        comments: Array<{
+          id: string;
+          authorLogin: string | null;
+          body: string;
+          createdAt: number;
+          url: string | null;
+        }>;
+      }>;
+      truncated: boolean;
+    };
+  }>;
+  prRefresh: (
+    workspaceId: string,
+    remote: string,
+    number?: number,
+  ) => Promise<{ success: boolean; error?: string; data?: { fetchedAt: number } }>;
+
+  // PR review panel — review/merge actions + access control (issue #307)
+  prPermissions: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+  ) => Promise<{
+    success: boolean;
+    error?: string;
+    data?: {
+      viewerLogin: string | null;
+      canApprove: boolean;
+      canMerge: boolean;
+      mergeMethods: { squash: boolean; merge: boolean; rebase: boolean };
+      mergeable: boolean | null;
+      mergeableState: string | null;
+      state: 'open' | 'closed' | 'merged';
+      isDraft: boolean;
+    };
+  }>;
+  prApprove: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+    body?: string,
+  ) => Promise<{ success: boolean; error?: string; data?: { ok: boolean } }>;
+  prComment: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+    body: string,
+  ) => Promise<{ success: boolean; error?: string; data?: { ok: boolean } }>;
+  prMerge: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+    method: 'merge' | 'squash' | 'rebase',
+    commitTitle?: string,
+    commitMessage?: string,
+  ) => Promise<{ success: boolean; error?: string; data?: { merged: boolean; sha: string | null } }>;
+
+  // PR review panel — polling scheduler (Phase D of issue #307)
+  prStartPolling: (
+    workspacePath: string,
+    workspaceId: string,
+    remote: string,
+  ) => Promise<{ success: boolean; error?: string; data?: { started: boolean } }>;
+  prStopPolling: (
+    workspacePath: string,
+  ) => Promise<{ success: boolean; error?: string; data?: { stopped: boolean } }>;
+  prPollNow: (
+    workspacePath: string,
+  ) => Promise<{ success: boolean; error?: string; data?: { ok: boolean } }>;
+  prFocus: (workspacePath: string, focused: boolean) => void;
+  onPrListUpdated: (
+    callback: (payload: { workspacePath: string; remote: string }) => void,
+  ) => () => void;
+  prOpenWorktree: (
+    workspacePath: string,
+    remote: string,
+    number: number,
+  ) => Promise<{
+    success: boolean;
+    error?: string;
+    data?: {
+      id: string;
+      name: string;
+      path: string;
+      branch: string;
+      prNumber?: number;
+      prRemote?: string;
+      prUrl?: string;
+    };
+  }>;
+
+  // PR review panel — per-project gh account selection (issue #307)
+  prGhAccounts: () => Promise<{
+    success: boolean;
+    error?: string;
+    data?: Array<{ login: string; host: string; active: boolean }>;
+  }>;
+  prGetAccountConfig: (workspacePath?: string) => Promise<{
+    success: boolean;
+    error?: string;
+    data?: { defaultAccount: string | null; override: string | null; effective: string | null };
+  }>;
+  prSetDefaultAccount: (
+    login: string | null,
+  ) => Promise<{ success: boolean; error?: string; data?: { ok: boolean } }>;
+  prSetAccountOverride: (
+    workspacePath: string,
+    login: string | null,
+  ) => Promise<{ success: boolean; error?: string; data?: { ok: boolean } }>;
 
   // Archive progress operations
   archive: {

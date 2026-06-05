@@ -799,6 +799,44 @@ export class GitStatusService {
   }
 
   /**
+   * Parse the workspace's origin remote into an `owner/repo` tuple plus host.
+   *
+   * Used by the PR review panel to decide whether to show the
+   * "Pull Requests" gutter button and to drive `gh api` requests. Supports
+   * both SSH (`git@host:owner/repo.git`) and HTTPS (`https://host/owner/repo.git`)
+   * origins, and arbitrary hosts (GitHub Enterprise — `gh` handles the
+   * underlying authentication; we only need to pass `owner/repo`).
+   *
+   * Returns null when no origin exists, when git is unavailable, or when the
+   * URL cannot be parsed.
+   */
+  async parseGitHubRemote(workspacePath: string): Promise<{ remote: string; host: string } | null> {
+    if (!workspacePath) {
+      return null;
+    }
+    if (!this.isGitRepository(workspacePath)) {
+      return null;
+    }
+    if (!isGitAvailable()) {
+      return null;
+    }
+
+    let remoteUrl: string;
+    try {
+      remoteUrl = execSync('git remote get-url origin', {
+        cwd: workspacePath,
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+    } catch {
+      return null;
+    }
+
+    return parseGitRemoteUrl(remoteUrl);
+  }
+
+  /**
    * Clear the cache for a specific workspace or all workspaces
    */
   clearCache(workspacePath?: string): void {
@@ -828,4 +866,40 @@ export class GitStatusService {
     }
   }
 
+}
+
+/**
+ * Pure helper that parses a git remote URL into `{ remote, host }`.
+ *
+ * Exported for unit testing and reuse by IPC handlers. Supports the four
+ * shapes git itself emits:
+ *   - `git@github.com:owner/repo.git`
+ *   - `ssh://git@github.com/owner/repo.git`
+ *   - `https://github.com/owner/repo.git`
+ *   - `https://github.com/owner/repo`
+ *
+ * Returns null when the URL doesn't resemble a git host URL or the path
+ * doesn't carry an `owner/repo` segment.
+ */
+export function parseGitRemoteUrl(url: string): { remote: string; host: string } | null {
+  if (!url) return null;
+
+  // SSH shorthand: git@host:owner/repo(.git)
+  const sshMatch = url.match(/^(?:[\w.-]+@)?([\w.-]+):([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
+  if (sshMatch) {
+    return { host: sshMatch[1], remote: sshMatch[2] };
+  }
+
+  // ssh:// or https:// URL
+  try {
+    const parsed = new URL(url);
+    const segments = parsed.pathname.replace(/^\//, '').split('/');
+    if (segments.length < 2) return null;
+    const owner = segments[0];
+    const repo = segments[1].replace(/\.git$/, '');
+    if (!owner || !repo) return null;
+    return { host: parsed.hostname, remote: `${owner}/${repo}` };
+  } catch {
+    return null;
+  }
 }

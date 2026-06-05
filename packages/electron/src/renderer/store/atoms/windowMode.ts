@@ -130,7 +130,7 @@ export async function initWindowMode(workspacePath: string): Promise<void> {
       );
 
       if (workspaceState?.activeMode) {
-        const validModes: ContentMode[] = ['files', 'agent', 'tracker', 'collab', 'settings'];
+        const validModes: ContentMode[] = ['files', 'agent', 'tracker', 'collab', 'pr-review', 'settings'];
         if (validModes.includes(workspaceState.activeMode)) {
           store.set(windowModeAtom, workspaceState.activeMode);
         }

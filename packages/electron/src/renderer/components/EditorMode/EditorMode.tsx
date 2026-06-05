@@ -5,7 +5,7 @@ import { useTabsActions, type TabData } from '../../contexts/TabsContext';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { fileDeletedAtomFamily } from '../../store/atoms/fileWatch';
 import { pushNavigationEntryAtom, isRestoringNavigationAtom, historyDialogFileAtom } from '../../store';
-import { newMockupRequestAtom, toggleAIChatPanelRequestAtom } from '../../store/atoms/appCommands';
+import { newBrowserTabRequestAtom, newMockupRequestAtom, toggleAIChatPanelRequestAtom } from '../../store/atoms/appCommands';
 import { useTabNavigation } from '../../hooks/useTabNavigation';
 import { handleWorkspaceFileSelect as handleWorkspaceFileSelectUtil } from '../../utils/workspaceFileOperations';
 import { createInitialFileContent, createMockupContent } from '../../utils/fileUtils';
@@ -827,7 +827,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizingRef.current) return;
 
-      const newWidth = Math.min(Math.max(150, e.clientX), 500);
+      const newWidth = Math.min(Math.max(200, e.clientX), 500);
       setSidebarWidth(newWidth);
     };
 
@@ -861,7 +861,9 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       try {
         const savedWidth = await window.electronAPI.getSidebarWidth(workspacePath);
         if (savedWidth && typeof savedWidth === 'number') {
-          setSidebarWidth(savedWidth);
+          // Clamp to the current drag-resize range so a width persisted
+          // under an older, smaller floor doesn't load too narrow.
+          setSidebarWidth(Math.min(Math.max(200, savedWidth), 500));
         }
       } catch (error) {
         console.error('Error loading sidebar width:', error);
@@ -978,6 +980,30 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
     void handleNewMockup();
   }, [newMockupVersion, workspacePath, selectedFolderPath, handleWorkspaceFileSelect]);
 
+  // React to the "New Browser Tab" command (Cmd+Shift+B) from the menu. The IPC
+  // subscription lives in store/listeners/appCommandListeners.ts; here we watch
+  // the counter and open a fileless browser virtual tab, mirroring the
+  // "New Browser Tab" entry in the sidebar's New File menu.
+  const newBrowserTabVersion = useAtomValue(newBrowserTabRequestAtom);
+  const newBrowserTabInitialVersionRef = useRef(newBrowserTabVersion);
+  useEffect(() => {
+    if (newBrowserTabVersion === newBrowserTabInitialVersionRef.current) return;
+
+    // The browser extension contributes a New File menu entry that opens a
+    // virtual:// tab. Reuse its virtualScheme so the command degrades to a
+    // no-op when the browser extension is disabled.
+    const browserTabType = extensionFileTypes.find(
+      (e) =>
+        e.action === 'openVirtualTab' &&
+        e.virtualScheme?.startsWith('virtual://com.nimbalyst.browser/'),
+    );
+    if (!browserTabType?.virtualScheme) return;
+
+    const id = `tab-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const title = encodeURIComponent(browserTabType.displayName);
+    void handleWorkspaceFileSelect(`${browserTabType.virtualScheme}${id}?title=${title}`);
+  }, [newBrowserTabVersion, extensionFileTypes, handleWorkspaceFileSelect]);
+
   // React to "toggle AI chat panel" (Cmd+Shift+A) from the menu. The IPC
   // subscription lives in store/listeners/appCommandListeners.ts.
   // Use a ref to debounce rapid calls (can happen with menu accelerators).
@@ -1022,7 +1048,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         const extType = extensionFileTypes.find(e => e.extension === extName);
         if (extType) {
           fullFileName = fileName.endsWith(extName) ? fileName : `${fileName}${extName}`;
-          content = extType.defaultContent;
+          content = extType.defaultContent ?? '';
         } else {
           // Fallback
           fullFileName = fileName;

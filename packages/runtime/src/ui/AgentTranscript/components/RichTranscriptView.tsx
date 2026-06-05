@@ -366,6 +366,51 @@ const REMINDER_KIND_LABELS: Record<string, string> = {
   wakeup_resume: 'Resumed from scheduled wakeup',
 };
 
+// Keyed by the known PermissionDeniedReasonType values from the SDK. Typed
+// here as a partial record so an unknown value (forward-compatible SDK
+// addition) falls back to the raw string or "SDK" in the renderer.
+const REASON_TYPE_LABELS: Partial<Record<string, string>> = {
+  classifier: 'Auto-mode classifier',
+  mode: 'Permission mode',
+  rule: 'Permission rule',
+  asyncAgent: 'Async agent',
+};
+
+const PermissionDeniedCard: React.FC<{
+  message: TranscriptViewMessage;
+}> = ({ message }) => {
+  const payload = message.systemMessage;
+  const toolName = payload?.deniedToolName ?? 'unknown tool';
+  const reason = payload?.deniedReason;
+  const reasonType = payload?.deniedReasonType;
+  const reasonLabel = (reasonType && REASON_TYPE_LABELS[reasonType]) ?? reasonType ?? 'SDK';
+
+  return (
+    <div
+      data-testid="permission-denied-card"
+      className="permission-denied-card ml-6 mb-2 rounded-md border border-[var(--nim-error)] bg-[var(--nim-error-bg,rgba(239,68,68,0.08))] px-3 py-2"
+    >
+      <div className="flex items-center gap-2 text-xs text-[var(--nim-error)]">
+        <MaterialSymbol icon="block" size={14} />
+        <span className="font-semibold uppercase tracking-[0.08em]">Tool denied</span>
+        <span className="text-[var(--nim-text-muted)]">·</span>
+        <code className="text-[11px] font-mono text-[var(--nim-text)]">{toolName}</code>
+        <span className="ml-auto text-[10px] text-[var(--nim-text-faint)]">
+          {formatMessageTime(message.createdAt?.getTime() ?? 0)}
+        </span>
+      </div>
+      {reason && (
+        <p className="m-0 mt-1.5 text-[0.875rem] leading-relaxed text-[var(--nim-text-muted)] whitespace-normal break-words">
+          {reason}
+        </p>
+      )}
+      <p className="m-0 mt-1 text-[10px] uppercase tracking-wide text-[var(--nim-text-faint)]">
+        Source: {reasonLabel}
+      </p>
+    </div>
+  );
+};
+
 const SystemReminderCard: React.FC<{
   message: TranscriptViewMessage;
 }> = ({ message }) => {
@@ -2066,6 +2111,31 @@ export const RichTranscriptView = React.forwardRef<
               <span className="text-[10px] shrink-0">{formatMessageTime(message.createdAt?.getTime() ?? 0)}</span>
             </div>
           )}
+        </div>
+      );
+    }
+
+    if (message.type === 'system_message' && message.systemMessage?.systemType === 'permission_denied') {
+      // Auto-mode classifier denials are paired with a re-prompt from the
+      // PermissionDenied SDK hook (see AgentToolHooks.createPermissionDeniedHook).
+      // The user sees the regular ToolPermission widget with the classifier
+      // reason in its warnings, so rendering the red "Tool denied" card on top
+      // of that would be redundant and confusing -- skip it.
+      //
+      // Other deny sources (`rule`, `mode`, `asyncAgent`, headless auto-deny)
+      // stay visible because no re-prompt happens for those paths.
+      if (message.systemMessage.deniedReasonType === 'classifier') {
+        return null;
+      }
+      return (
+        <div
+          key={messageKey}
+          data-message-index={index}
+          ref={(el) => {
+            if (el) messageRefs.current.set(index, el);
+          }}
+        >
+          <PermissionDeniedCard message={message} />
         </div>
       );
     }

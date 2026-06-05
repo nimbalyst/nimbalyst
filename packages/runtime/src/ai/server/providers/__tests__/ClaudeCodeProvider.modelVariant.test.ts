@@ -41,6 +41,11 @@ describe('resolveClaudeCodeModelVariant', () => {
       const result = resolveClaudeCodeModelVariant('claude-code:haiku-1m', DEFAULT_MODEL);
       expect(result).toBe('haiku[1m]');
     });
+
+    it('opus-4-8-1m alias resolves to opus[1m]', () => {
+      const result = resolveClaudeCodeModelVariant('claude-code:opus-4-8-1m', DEFAULT_MODEL);
+      expect(result).toBe('opus[1m]');
+    });
   });
 
   describe('SDK compatibility', () => {
@@ -72,6 +77,11 @@ describe('resolveClaudeCodeModelVariant', () => {
   });
 
   describe('pinned-version variants', () => {
+    it('opus-4-8 resolves to the canonical opus SDK alias', () => {
+      const result = resolveClaudeCodeModelVariant('claude-code:opus-4-8', DEFAULT_MODEL);
+      expect(result).toBe('opus');
+    });
+
     it('opus-4-7 resolves to the full claude-opus-4-7 SDK model ID', () => {
       // Pinned after the canonical `opus` alias was bumped to 4.8, so users
       // can keep selecting 4.7 explicitly.
@@ -101,14 +111,16 @@ describe('resolveClaudeCodeModelVariant', () => {
   });
 
   describe('fallback behavior', () => {
-    it('falls back to sonnet for unrecognized provider', () => {
-      // Hardcoded last-resort fallback is always sonnet, regardless of DEFAULT_MODEL
-      expect(resolveClaudeCodeModelVariant('openai:gpt-4', DEFAULT_MODEL)).toBe('sonnet');
+    it('throws for an unrecognized provider', () => {
+      expect(() => resolveClaudeCodeModelVariant('openai:gpt-4', DEFAULT_MODEL)).toThrow(
+        'Claude Agent requires a claude-code:* model identifier'
+      );
     });
 
-    it('falls back to sonnet for unrecognized variant', () => {
-      // Hardcoded last-resort fallback is always sonnet, regardless of DEFAULT_MODEL
-      expect(resolveClaudeCodeModelVariant('claude-code:unknown', DEFAULT_MODEL)).toBe('sonnet');
+    it('throws for an unrecognized variant', () => {
+      expect(() => resolveClaudeCodeModelVariant('claude-code:unknown', DEFAULT_MODEL)).toThrow(
+        'Unsupported Claude Agent model'
+      );
     });
 
     it('handles raw variant names without provider prefix', () => {
@@ -117,6 +129,10 @@ describe('resolveClaudeCodeModelVariant', () => {
 
     it('handles raw variant names with -1m suffix', () => {
       expect(resolveClaudeCodeModelVariant('opus-1m', DEFAULT_MODEL)).toBe('opus[1m]');
+    });
+
+    it('accepts raw opus-4-8 alias without provider prefix', () => {
+      expect(resolveClaudeCodeModelVariant('opus-4-8', DEFAULT_MODEL)).toBe('opus');
     });
   });
 });

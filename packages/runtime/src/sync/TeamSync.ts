@@ -34,6 +34,11 @@ import type {
   EncryptedDocIndexEntry,
   ServerTeamState,
 } from './teamSyncTypes';
+import type {
+  InboxEventKind,
+  InboxEventSourceKind,
+  InboxEventPayload,
+} from '@nimbalyst/collab-protocol';
 
 // ============================================================================
 // Encryption Utilities
@@ -158,6 +163,13 @@ export class TeamSyncProvider {
       this.reconnectAttempt = 0;
       this.setStatus('syncing');
       this.send({ type: 'teamSync' });
+      // Announce our personal org so the TeamRoom can route inbox events to
+      // our PersonalIndexRoom. Re-sent on every (re)connect (idempotent
+      // server-side); like `teamSync`, it must wait for the socket to be OPEN,
+      // so it lives here rather than after `connect()` resolves.
+      if (this.config.personalOrgId) {
+        this.announcePersonalOrg(this.config.personalOrgId);
+      }
     });
 
     ws.addEventListener('message', (event) => {
@@ -260,6 +272,49 @@ export class TeamSyncProvider {
   }
 
   // --------------------------------------------------------------------------
+  // Public API: Inbox-event fanout
+  // --------------------------------------------------------------------------
+
+  /**
+   * Announce this member's personal org id so the TeamRoom can address the
+   * member's PersonalIndexRoom for inbox fanout. Safe to call on every connect.
+   */
+  announcePersonalOrg(personalOrgId: string): void {
+    this.send({ type: 'announcePersonalOrg', personalOrgId });
+  }
+
+  /**
+   * Fan an inbox event out to a set of team members. The payload is encrypted
+   * with the org key (which every member holds) before it leaves this client;
+   * the server and relay never see plaintext. The TeamRoom mints the event id
+   * and delivers to each recipient's PersonalIndexRoom.
+   */
+  async fanoutInboxEvent(params: {
+    recipients: string[];
+    kind: InboxEventKind;
+    sourceKind: InboxEventSourceKind;
+    sourceId: string;
+    payload: InboxEventPayload;
+  }): Promise<void> {
+    if (params.recipients.length === 0) return;
+    // Reuse the org-key AES-GCM string encryptor; fields are generic
+    // (ciphertext + iv) regardless of the "title" naming.
+    const { encryptedTitle: encryptedPayload, titleIv: iv } = await encryptTitle(
+      JSON.stringify(params.payload),
+      this.config.encryptionKey
+    );
+    this.send({
+      type: 'inboxEventFanout',
+      recipients: params.recipients,
+      kind: params.kind,
+      sourceKind: params.sourceKind,
+      sourceId: params.sourceId,
+      encryptedPayload,
+      iv,
+    });
+  }
+
+  // --------------------------------------------------------------------------
   // Message Handling
   // --------------------------------------------------------------------------
 
@@ -303,6 +358,9 @@ export class TeamSyncProvider {
           break;
         case 'orgKeyRotated':
           this.handleOrgKeyRotated(message);
+          break;
+        case 'inboxEventFanoutAck':
+          // Best-effort fanout; nothing to reconcile on the sender side.
           break;
         case 'error':
           console.error('[TeamSync] Server error:', message.code, message.message);

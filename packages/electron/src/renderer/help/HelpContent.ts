@@ -50,6 +50,10 @@ export const HelpContent: Record<string, HelpEntry> = {
     title: 'New Folder',
     body: 'Create a new folder in the selected folder.',
   },
+  'file-tree-refresh-button': {
+    title: 'Refresh File Tree',
+    body: 'Reload the file list from disk to pick up files added or removed outside Nimbalyst.',
+  },
 
   // ============================================================================
   // Files Mode - Unified Header
@@ -300,6 +304,11 @@ export const HelpContent: Record<string, HelpEntry> = {
     title: 'Shared Documents',
     body: 'Browse and edit documents shared with your team in real-time. Collaborate on markdown, spreadsheets, and diagrams.',
     shortcut: KeyboardShortcuts.view.collabMode,
+  },
+  'pr-review-mode-button': {
+    title: 'Pull Requests',
+    body: 'Review GitHub pull requests without leaving the app: browse the list, read diffs and conversation, and approve or merge.',
+    shortcut: KeyboardShortcuts.view.prReviewMode,
   },
 
   // ============================================================================

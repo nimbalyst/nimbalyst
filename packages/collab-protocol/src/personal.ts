@@ -6,6 +6,14 @@
  * and one `ClientMessage` / `ServerMessage` union here.
  */
 
+import type {
+  InboxSyncRequestMessage,
+  MarkInboxReadMessage,
+  InboxSyncResponseMessage,
+  InboxEventBroadcastMessage,
+  MarkInboxReadResponseMessage,
+} from './inbox.js';
+
 // ============================================================================
 // Client -> Server Messages
 // ============================================================================
@@ -33,6 +41,8 @@ export type ClientMessage =
   | RequestMobilePushMessage
   | ProjectConfigUpdateMessage
   | SettingsSyncMessage
+  | InboxSyncRequestMessage
+  | MarkInboxReadMessage
   | PingMessage;
 
 /** Keep-alive ping message */
@@ -296,6 +306,9 @@ export type ServerMessage =
   | CreateWorktreeResponseBroadcastMessage
   | SessionControlBroadcastMessage
   | SettingsSyncBroadcastMessage
+  | InboxSyncResponseMessage
+  | InboxEventBroadcastMessage
+  | MarkInboxReadResponseMessage
   | ErrorMessage;
 
 /** Response to syncRequest */

@@ -26,6 +26,13 @@ export {
   type Theme as ConfigTheme,
 } from './EditorConfig';
 
+// Document comments configuration types
+export type {
+  CommentsConfig,
+  CommentMember,
+  CommentMentionPayload,
+} from './commenting/types';
+
 // Hooks
 export { useFlashMessage } from './hooks/useFlashMessage';
 export { useModal } from './hooks/useModal';

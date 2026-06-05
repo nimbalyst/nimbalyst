@@ -318,7 +318,21 @@ function validateManifest(manifestPath: string): {
               severity: "error",
             });
           }
-          if (typeof item.defaultContent !== "string") {
+          if (item.action === "openVirtualTab") {
+            // Action items open a fileless virtual tab instead of writing a
+            // file, so they need a virtualScheme rather than defaultContent.
+            if (
+              typeof item.virtualScheme !== "string" ||
+              !item.virtualScheme.startsWith("virtual://")
+            ) {
+              warnings.push({
+                field: `contributions.newFileMenu[${idx}].virtualScheme`,
+                message:
+                  'newFileMenu item with action "openVirtualTab" must have a "virtualScheme" starting with "virtual://"',
+                severity: "error",
+              });
+            }
+          } else if (typeof item.defaultContent !== "string") {
             warnings.push({
               field: `contributions.newFileMenu[${idx}].defaultContent`,
               message: 'newFileMenu item must have a "defaultContent" string',

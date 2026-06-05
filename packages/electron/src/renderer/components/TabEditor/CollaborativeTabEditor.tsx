@@ -33,7 +33,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MarkdownEditor, DocumentPathProvider } from '@nimbalyst/runtime';
-import { $convertFromEnhancedMarkdownString, getEditorTransformers } from '@nimbalyst/runtime/editor';
+import { $convertFromEnhancedMarkdownString, getEditorTransformers, type CommentsConfig } from '@nimbalyst/runtime/editor';
+import { getTeamSyncProvider } from '../../store/atoms/collabDocuments';
+import { buildCollabUri } from '../../utils/collabUri';
 import { FixedTabHeaderContainer, FixedTabHeaderRegistry } from '@nimbalyst/runtime/plugins/shared/fixedTabHeader';
 import { LexicalDiffHeaderAdapter } from '../UnifiedDiffHeader';
 import { DocumentSyncProvider, CollabHistoryClient } from '@nimbalyst/runtime/sync';
@@ -500,6 +502,58 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [providerFactory, activeConfig.initialContent, activeConfig.userName, activeConfig.userId, cursorColor]);
 
+  // Document comments config for the markdown collab branch. Comments live in
+  // the same shared Y.Doc (top-level `comments` array); @-mentions fan out as
+  // inbox events through the TeamSyncProvider.
+  const commentsMemoConfig = useMemo<CommentsConfig>(() => ({
+    getYDoc: () => collabProviderRef.current?.getYDoc() ?? null,
+    currentUser: {
+      id: activeConfig.userId,
+      name: activeConfig.userName || activeConfig.userEmail || activeConfig.userId,
+    },
+    getMembers: () => {
+      const teamProvider = getTeamSyncProvider(activeConfig.workspacePath);
+      const members = teamProvider?.getTeamState()?.members ?? [];
+      return members
+        .filter((m) => m.userId !== activeConfig.userId)
+        .map((m) => ({
+          userId: m.userId,
+          name: m.email || m.userId,
+          personalOrgId: m.personalOrgId,
+        }));
+    },
+    documentTitle: activeConfig.title,
+    documentId: activeConfig.documentId,
+    documentUri: buildCollabUri(activeConfig.orgId, activeConfig.documentId),
+    onMention: (recipientUserIds, payload) => {
+      const teamProvider = getTeamSyncProvider(activeConfig.workspacePath);
+      if (!teamProvider) {
+        console.warn('[CollaborativeTabEditor] No TeamSyncProvider for mention fanout');
+        return;
+      }
+      void teamProvider
+        .fanoutInboxEvent({
+          recipients: recipientUserIds,
+          kind: 'mention',
+          sourceKind: 'lexical_document',
+          sourceId: activeConfig.documentId,
+          payload,
+        })
+        .catch((err) => {
+          console.warn('[CollaborativeTabEditor] fanoutInboxEvent failed', err);
+        });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [
+    activeConfig.userId,
+    activeConfig.userName,
+    activeConfig.userEmail,
+    activeConfig.workspacePath,
+    activeConfig.title,
+    activeConfig.documentId,
+    activeConfig.orgId,
+  ]);
+
   const markdownConfig = useMemo(() => ({
     onUploadAsset: (file: File) => assetService.uploadFile(file),
     onAssetReferencesRemoved: (removedUris: string[]) => {
@@ -892,6 +946,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
                 onGetContent={handleGetContentReady}
                 onEditorReady={handleLexicalEditorReady}
                 collaborationConfig={collaborationMemoConfig}
+                commentsConfig={commentsMemoConfig}
               />
             </div>
           </DocumentPathProvider>

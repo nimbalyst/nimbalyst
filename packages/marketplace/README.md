@@ -91,7 +91,14 @@ Runs the extension's build step, zips it into a `.nimext` file in `dist/`, and w
 ./scripts/build-all-extensions.sh
 ```
 
-Finds all extensions in `packages/extensions/` that have a `manifest.json` and builds each one.
+Builds the curated release set listed in `release-extensions.txt`. That file is the source of truth for which extensions are public right now, including external extension repos that live alongside the monorepo. The script clears stale `.nimext` packages and `registry.json` from `dist/` before rebuilding.
+
+Each line in `release-extensions.txt` is a path relative to `packages/marketplace/`. Append `|skip-build` for external repos that should package their checked-in `dist/` output instead of running a local build, for example:
+
+```text
+../extensions/csv-spreadsheet
+../../../nimbalyst-mindmap|skip-build
+```
 
 ### Generate the registry
 

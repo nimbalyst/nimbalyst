@@ -30,7 +30,7 @@ import {
   $approveDiffs,
   $rejectDiffs
 } from '@nimbalyst/runtime';
-import { $getRoot, $getSelection, $isRangeSelection, SKIP_SCROLL_INTO_VIEW_TAG, COMMAND_PRIORITY_LOW } from 'lexical';
+import { $getRoot, $getSelection, $isRangeSelection, SKIP_SCROLL_INTO_VIEW_TAG, SKIP_DOM_SELECTION_TAG, COMMAND_PRIORITY_LOW } from 'lexical';
 import { DocumentHeaderContainer } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader';
 // Side-effect import: registers GenericFrontmatterHeader with DocumentHeaderRegistry
 import '@nimbalyst/runtime/plugins/FrontmatterPlugin';
@@ -57,6 +57,27 @@ import { diffTrace } from '@nimbalyst/runtime/utils/debugFlags';
 /** Normalize a file path for comparison: backslashes to forward slashes, strip trailing slashes. */
 function normalizePathForCompare(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/**
+ * Build the update tags for a programmatic external/agent content replacement.
+ *
+ * When the Lexical editor does NOT currently hold DOM focus (e.g. the user is
+ * typing in the AI chat box while an agent edits the open file), add
+ * SKIP_DOM_SELECTION_TAG so Lexical's reconciler does not move browser focus and
+ * selection into the contentEditable, which would hijack the user's keystrokes.
+ * When the editor IS focused (user is actively editing it), keep the prior
+ * behavior so selection stays in sync.
+ */
+function externalContentUpdateTags(editor: { getRootElement?: () => HTMLElement | null }): string[] {
+  const tags: string[] = [SKIP_SCROLL_INTO_VIEW_TAG];
+  const root = editor.getRootElement?.();
+  const editorHasFocus =
+    !!root && typeof document !== 'undefined' && root.contains(document.activeElement);
+  if (!editorHasFocus) {
+    tags.push(SKIP_DOM_SELECTION_TAG);
+  }
+  return tags;
 }
 
 interface TabEditorProps {
@@ -1121,7 +1142,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                 const root = $getRoot();
                 root.clear();
                 $convertFromEnhancedMarkdownString(content, transformers);
-              }, { tag: SKIP_SCROLL_INTO_VIEW_TAG });
+              }, { tag: externalContentUpdateTags(editorRef.current) });
             } else if (editorRef.current.setContent) {
               editorRef.current.setContent(content);
             }
@@ -1199,7 +1220,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                 const root = $getRoot();
                 root.clear();
                 $convertFromEnhancedMarkdownString(oldContent, transformers);
-              }, { tag: SKIP_SCROLL_INTO_VIEW_TAG });
+              }, { tag: externalContentUpdateTags(editorRef.current) });
 
               await new Promise((resolve) => setTimeout(resolve, 250));
 

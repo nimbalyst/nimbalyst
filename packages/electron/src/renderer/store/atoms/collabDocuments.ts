@@ -349,7 +349,7 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
     }
 
     store.set(workspaceHasTeamAtomFamily(workspacePath), true);
-    const { orgId, orgKeyBase64, orgKeyFingerprint, serverUrl, userId } = result.config;
+    const { orgId, orgKeyBase64, orgKeyFingerprint, serverUrl, userId, personalOrgId } = result.config;
     store.set(teamOrgIdAtomFamily(workspacePath), orgId);
 
     const { TeamSyncProvider } = await import('@nimbalyst/runtime/sync');
@@ -367,6 +367,10 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       serverUrl,
       orgId,
       userId,
+      // Announced to the TeamRoom on connect so inbox-event fanout can reach
+      // this member's PersonalIndexRoom. Undefined when personal sync is not
+      // yet configured locally.
+      personalOrgId,
       encryptionKey,
       orgKeyFingerprint,
       getJwt: async () => {

@@ -51,7 +51,7 @@ export class TranscriptWriter {
     sessionId: string,
     text: string,
     options?: {
-      mode?: 'agent' | 'planning';
+      mode?: 'agent' | 'planning' | 'auto';
       inputType?: 'user' | 'system_message';
       attachments?: UserMessagePayload['attachments'];
       createdAt?: Date;
@@ -76,7 +76,7 @@ export class TranscriptWriter {
     sessionId: string,
     text: string,
     options?: {
-      mode?: 'agent' | 'planning';
+      mode?: 'agent' | 'planning' | 'auto';
       createdAt?: Date;
       thinking?: string;
       thinkingSignature?: string;
@@ -138,6 +138,10 @@ export class TranscriptWriter {
       statusCode?: string;
       isAuthError?: boolean;
       reminderKind?: string;
+      deniedToolName?: string;
+      deniedReason?: string;
+      deniedReasonType?: string;
+      deniedInput?: Record<string, unknown>;
       searchable?: boolean;
       createdAt?: Date;
     },
@@ -147,6 +151,10 @@ export class TranscriptWriter {
       ...(options?.statusCode ? { statusCode: options.statusCode } : {}),
       ...(options?.isAuthError ? { isAuthError: true } : {}),
       ...(options?.reminderKind ? { reminderKind: options.reminderKind } : {}),
+      ...(options?.deniedToolName ? { deniedToolName: options.deniedToolName } : {}),
+      ...(options?.deniedReason ? { deniedReason: options.deniedReason } : {}),
+      ...(options?.deniedReasonType ? { deniedReasonType: options.deniedReasonType } : {}),
+      ...(options?.deniedInput ? { deniedInput: options.deniedInput } : {}),
     };
 
     return this.insertEvent(sessionId, {
@@ -464,6 +472,6 @@ interface LastEventState {
   id: number;
   eventType: TranscriptEventType;
   searchableText: string | null;
-  mode: 'agent' | 'planning' | undefined;
+  mode: 'agent' | 'planning' | 'auto' | undefined;
   subagentId: string | null;
 }

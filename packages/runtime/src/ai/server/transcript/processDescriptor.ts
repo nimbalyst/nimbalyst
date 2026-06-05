@@ -74,6 +74,10 @@ export async function processDescriptor(
         createdAt: desc.createdAt,
         isAuthError: desc.isAuthError,
         reminderKind: desc.reminderKind,
+        deniedToolName: desc.deniedToolName,
+        deniedReason: desc.deniedReason,
+        deniedReasonType: desc.deniedReasonType,
+        deniedInput: desc.deniedInput,
       });
     }
 

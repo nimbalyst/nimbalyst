@@ -33,6 +33,7 @@ import { AssetGcExtension } from './builtin/AssetGcExtension';
 import { AutoLinkExtension } from './builtin/AutoLinkExtension';
 import { CollabAssetLinkExtension } from './builtin/CollabAssetLinkExtension';
 import { CollapsibleExtension } from './builtin/CollapsibleExtension';
+import { CommentsExtension } from './builtin/CommentsExtension';
 import { DiffExtension } from './builtin/DiffExtension';
 import { DragDropPasteExtension } from './builtin/DragDropPasteExtension';
 import { EmbedExtension } from './builtin/EmbedExtension';
@@ -153,6 +154,7 @@ export function buildNimbalystRootExtension(
     ImagesExtension,
     PageBreakExtension,
     CollapsibleExtension,
+    CommentsExtension,
     LayoutExtension,
     KanbanBoardExtension,
     MermaidExtension,

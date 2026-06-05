@@ -1,0 +1,195 @@
+/**
+ * Theming for PrFileDiff (react-diff-view) — maps the library's `--diff-*`
+ * variables onto the nim palette and ships a GitHub-style Prism token palette.
+ * All rules are scoped under `.pr-diff-view` so nothing leaks globally.
+ */
+
+.pr-diff-view {
+  --diff-background-color: transparent;
+  --diff-text-color: var(--nim-text);
+  --diff-font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  /* Line + gutter backgrounds (alpha-based so they read on light or dark). */
+  --diff-gutter-insert-background-color: rgba(46, 160, 67, 0.18);
+  --diff-gutter-delete-background-color: rgba(248, 81, 73, 0.18);
+  --diff-code-insert-background-color: rgba(46, 160, 67, 0.12);
+  --diff-code-delete-background-color: rgba(248, 81, 73, 0.12);
+  --diff-code-insert-edit-background-color: rgba(46, 160, 67, 0.32);
+  --diff-code-delete-edit-background-color: rgba(248, 81, 73, 0.32);
+  --diff-selection-background-color: var(--nim-bg-active);
+
+  font-size: 12px;
+}
+
+.pr-diff-view .diff {
+  background-color: transparent;
+}
+
+/* Gutter (line numbers): de-emphasized, non-clickable cursor. */
+.pr-diff-view .diff-gutter {
+  color: var(--nim-text-faint);
+  cursor: default;
+}
+
+.pr-diff-view .diff-gutter-insert,
+.pr-diff-view .diff-gutter-delete {
+  color: var(--nim-text-muted);
+}
+
+/* Hunk header (`@@ -a,b +c,d @@`) — a quiet section separator. */
+.pr-diff-view .diff-hunk-header {
+  background-color: var(--nim-bg-secondary);
+  color: var(--nim-text-muted);
+  border-top: 1px solid var(--nim-border);
+  border-bottom: 1px solid var(--nim-border);
+}
+
+.pr-diff-view .diff-hunk-header-content {
+  padding: 3px 0.75em;
+  font-family: var(--diff-font-family);
+  font-size: 11px;
+}
+
+.pr-diff-view .diff-hunk-header-gutter {
+  background-color: var(--nim-bg-secondary);
+}
+
+/* Slightly tighter code cells; break only very long lines. */
+.pr-diff-view .diff-code {
+  padding: 0 0.5em;
+  word-break: break-word;
+}
+
+/* ===== Prism token palette (GitHub light) ===== */
+.pr-diff-view .token.comment,
+.pr-diff-view .token.prolog,
+.pr-diff-view .token.doctype,
+.pr-diff-view .token.cdata {
+  color: #6a737d;
+  font-style: italic;
+}
+
+.pr-diff-view .token.punctuation {
+  color: #24292e;
+}
+
+.pr-diff-view .token.keyword,
+.pr-diff-view .token.rule,
+.pr-diff-view .token.important,
+.pr-diff-view .token.atrule {
+  color: #d73a49;
+}
+
+.pr-diff-view .token.operator,
+.pr-diff-view .token.entity,
+.pr-diff-view .token.url {
+  color: #d73a49;
+}
+
+.pr-diff-view .token.string,
+.pr-diff-view .token.char,
+.pr-diff-view .token.attr-value,
+.pr-diff-view .token.regex {
+  color: #032f62;
+}
+
+.pr-diff-view .token.number,
+.pr-diff-view .token.boolean,
+.pr-diff-view .token.constant,
+.pr-diff-view .token.symbol {
+  color: #005cc5;
+}
+
+.pr-diff-view .token.property,
+.pr-diff-view .token.tag .token.punctuation {
+  color: #005cc5;
+}
+
+.pr-diff-view .token.function,
+.pr-diff-view .token.class-name,
+.pr-diff-view .token.attr-name {
+  color: #6f42c1;
+}
+
+.pr-diff-view .token.tag,
+.pr-diff-view .token.selector,
+.pr-diff-view .token.builtin {
+  color: #22863a;
+}
+
+.pr-diff-view .token.variable,
+.pr-diff-view .token.namespace {
+  color: #e36209;
+}
+
+.pr-diff-view .token.deleted {
+  color: #b31d28;
+}
+
+.pr-diff-view .token.inserted {
+  color: #22863a;
+}
+
+/* ===== Prism token palette (GitHub dark) ===== */
+.pr-diff-view--dark .token.comment,
+.pr-diff-view--dark .token.prolog,
+.pr-diff-view--dark .token.doctype,
+.pr-diff-view--dark .token.cdata {
+  color: #8b949e;
+}
+
+.pr-diff-view--dark .token.punctuation {
+  color: #c9d1d9;
+}
+
+.pr-diff-view--dark .token.keyword,
+.pr-diff-view--dark .token.rule,
+.pr-diff-view--dark .token.important,
+.pr-diff-view--dark .token.atrule,
+.pr-diff-view--dark .token.operator,
+.pr-diff-view--dark .token.entity,
+.pr-diff-view--dark .token.url {
+  color: #ff7b72;
+}
+
+.pr-diff-view--dark .token.string,
+.pr-diff-view--dark .token.char,
+.pr-diff-view--dark .token.attr-value,
+.pr-diff-view--dark .token.regex {
+  color: #a5d6ff;
+}
+
+.pr-diff-view--dark .token.number,
+.pr-diff-view--dark .token.boolean,
+.pr-diff-view--dark .token.constant,
+.pr-diff-view--dark .token.symbol,
+.pr-diff-view--dark .token.property,
+.pr-diff-view--dark .token.tag .token.punctuation {
+  color: #79c0ff;
+}
+
+.pr-diff-view--dark .token.function,
+.pr-diff-view--dark .token.class-name,
+.pr-diff-view--dark .token.attr-name {
+  color: #d2a8ff;
+}
+
+.pr-diff-view--dark .token.tag,
+.pr-diff-view--dark .token.selector,
+.pr-diff-view--dark .token.builtin {
+  color: #7ee787;
+}
+
+.pr-diff-view--dark .token.variable,
+.pr-diff-view--dark .token.namespace {
+  color: #ffa657;
+}
+
+.pr-diff-view--dark .token.deleted {
+  color: #ffa198;
+}
+
+.pr-diff-view--dark .token.inserted {
+  color: #7ee787;
+}

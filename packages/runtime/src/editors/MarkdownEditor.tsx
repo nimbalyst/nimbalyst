@@ -20,6 +20,7 @@ import {
   type EditorConfig,
   type ConfigTheme,
   type UploadedEditorAsset,
+  type CommentsConfig,
   $convertFromEnhancedMarkdownString,
   getEditorTransformers,
 } from '../editor';
@@ -90,6 +91,13 @@ export interface MarkdownEditorProps {
   onGetContent?: (getContentFn: () => string) => void;
 
   /**
+   * When set (collaborative documents only), enables document comments
+   * (text-selection MarkNode comments, `@`-mention picker, thread panel,
+   * inbox fanout). Passed straight through to `EditorConfig.comments`.
+   */
+  commentsConfig?: CommentsConfig;
+
+  /**
    * When set, the editor operates in collaborative mode:
    * - Content comes from Y.Doc instead of host.loadContent()
    * - CollaborationPlugin replaces HistoryPlugin
@@ -128,6 +136,7 @@ export function MarkdownEditor({
   onEditorReady,
   onGetContent: onGetContentProp,
   collaborationConfig,
+  commentsConfig,
 }: MarkdownEditorProps): React.ReactElement {
   const isCollabMode = !!collaborationConfig;
   // Personal sync: collab is active but disk operations continue
@@ -314,6 +323,9 @@ export function MarkdownEditor({
             : undefined,
         };
       })() : undefined,
+
+      // Document comments (collaborative documents only).
+      comments: commentsConfig,
     }),
     [
       config.theme,
@@ -340,6 +352,7 @@ export function MarkdownEditor({
       handleEditorReady,
       handleViewHistory,
       collaborationConfig,
+      commentsConfig,
     ]
   );
 

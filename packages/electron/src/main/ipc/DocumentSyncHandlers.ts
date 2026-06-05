@@ -12,7 +12,7 @@ import * as path from 'path';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl, getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
-import { isAuthenticated, getStytchUserId, getUserEmail, getAuthState, getPersonalSessionJwt, refreshPersonalSession } from '../services/StytchAuthService';
+import { isAuthenticated, getStytchUserId, getUserEmail, getAuthState, getPersonalOrgId, getPersonalSessionJwt, refreshPersonalSession } from '../services/StytchAuthService';
 import { findTeamForWorkspace, getOrgScopedJwt } from '../services/TeamService';
 import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIdentityKeyToOrg, fetchAndUnwrapOrgKey, clearOrgKey } from '../services/OrgKeyService';
 import { getWorkspaceState, updateWorkspaceState } from '../utils/store';
@@ -778,6 +778,9 @@ export function registerDocumentSyncHandlers(): void {
         orgKeyFingerprint,
         serverUrl,
         userId,
+        // Personal org id (stable across team session exchanges) so the
+        // TeamSyncProvider can announce it for inbox-event fanout routing.
+        personalOrgId: getPersonalOrgId() || undefined,
         userName: getUserDisplayName(userId),
         userEmail: getUserEmail() || undefined,
       },

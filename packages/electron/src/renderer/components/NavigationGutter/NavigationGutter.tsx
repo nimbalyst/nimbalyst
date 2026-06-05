@@ -17,7 +17,12 @@ import { VoiceModeButton } from '../UnifiedAI/VoiceModeButton';
 import { useExtensionGutterButtons, useExtensionBottomPanelButtons } from '../../extensions/panels/usePanels';
 import { HelpTooltip } from '../../help';
 import { setActiveSessionAtom } from '../../store';
-import { terminalFeatureAvailableAtom, syncEnabledAtom, syncEnabledProjectsAtom } from '../../store/atoms/appSettings';
+import {
+  developerModeAtom,
+  terminalFeatureAvailableAtom,
+  syncEnabledAtom,
+  syncEnabledProjectsAtom,
+} from '../../store/atoms/appSettings';
 import { workspaceHasTeamAtom } from '../../store/atoms/collabDocuments';
 import { stytchIsSignedInAtom } from '../../store/atoms/stytchAuth';
 import { useAlphaFeature } from '../../hooks/useAlphaFeature';
@@ -25,6 +30,7 @@ import { AlphaBadge } from '../common/AlphaBadge';
 import { UserMenuPopover } from './UserMenuPopover';
 import { GutterContextMenu } from './GutterContextMenu';
 import { type HideableGutterButton, hiddenGutterButtonsAtom } from '../../store/atoms/projectState';
+import { prRemoteAtom } from '../../store/atoms/pullRequests';
 
 export type NavigationMode = 'planning' | 'coding';
 export type SidebarView = 'files' | 'settings';
@@ -95,6 +101,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
 }) => {
   const posthog = usePostHog();
   const isDevMode = import.meta.env.DEV || window.IS_DEV_MODE;
+  const developerMode = useAtomValue(developerModeAtom);
   const setActiveSession = useSetAtom(setActiveSessionAtom);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuButtonRef = useRef<HTMLButtonElement>(null);
@@ -138,6 +145,16 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
 
   // Only show collab mode button when workspace has an active team AND collaboration alpha is enabled
   const hasTeam = useAtomValue(workspaceHasTeamAtom) && isCollaborationEnabled;
+
+  // Only show the PR review button when the active workspace has a GitHub
+  // remote (detected by pullRequestListeners). Guard on workspacePath so a
+  // stale remote from a previous project doesn't surface the button.
+  const prRemote = useAtomValue(prRemoteAtom);
+  const hasPrRemote =
+    developerMode &&
+    !!prRemote &&
+    !!workspacePath &&
+    prRemote.workspacePath === workspacePath;
 
   // Check if mobile sync is configured for this workspace
   const syncEnabled = useAtomValue(syncEnabledAtom);
@@ -183,6 +200,16 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
       icon: 'assignment',
       label: `Tracker (${getShortcutDisplay(KeyboardShortcuts.view.trackerMode)})`,
       contentMode: 'tracker',
+    },
+  ];
+
+  // Content mode buttons - PR review section
+  const contentModeButtonsPrReview: NavButton[] = [
+    {
+      id: 'pr-review-mode',
+      icon: 'merge',
+      label: `Pull Requests (${getShortcutDisplay(KeyboardShortcuts.view.prReviewMode)})`,
+      contentMode: 'pr-review',
     },
   ];
 
@@ -358,6 +385,35 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
           );
         })}
       </div>
+
+      {/* Content Mode Switcher - PR Review Group - only shown when workspace has a GitHub remote */}
+      {hasPrRemote && (
+        <div className="nav-section nav-content-modes flex flex-col items-center gap-1 w-full px-1.5 py-1">
+          {contentModeButtonsPrReview.map((button) => {
+            const testId = `${button.id}-button`;
+            return (
+              <HelpTooltip key={button.id} testId={testId} placement="right">
+                <button
+                  className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${contentMode === button.contentMode && !activeExtensionPanel ? 'active bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+                  onClick={() => {
+                    onExtensionPanelChange?.(null);
+                    handleButtonClick(button);
+                  }}
+                  aria-pressed={contentMode === button.contentMode && !activeExtensionPanel}
+                  data-mode={button.contentMode || button.id}
+                  data-testid={testId}
+                >
+                  <MaterialSymbol
+                    icon={button.icon}
+                    size={20}
+                    fill={contentMode === button.contentMode && !activeExtensionPanel}
+                  />
+                </button>
+              </HelpTooltip>
+            );
+          })}
+        </div>
+      )}
 
       {/* Content Mode Switcher - Collab Group (Shared Docs) - only shown when workspace has a team */}
       {hasTeam && (

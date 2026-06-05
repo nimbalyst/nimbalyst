@@ -113,12 +113,14 @@ import { initSyncListeners } from './store/listeners/syncListeners';
 import { initThemeListener } from './store/listeners/themeListeners';
 import { initThemeFallbackListener } from './store/listeners/themeFallbackListeners';
 import { initTrackerSyncListeners } from './store/listeners/trackerSyncListeners';
+import { initPullRequestListeners } from './store/listeners/pullRequestListeners';
 import { initWorktreeListeners } from './store/listeners/worktreeListeners';
 import { initBlitzListeners } from './store/listeners/blitzListeners';
 import { initUpdateListeners } from './store/listeners/updateListeners';
 import { initWalkthroughListeners } from './store/listeners/walkthroughListeners';
 import { initWakeupListeners } from './store/listeners/wakeupListener';
 import { TrackerMode } from './components/TrackerMode';
+import { PullRequestMode } from './components/PullRequestMode';
 import { CollabMode, type CollabModeRef } from './components/CollabMode';
 import { TerminalBottomPanel } from './components/TerminalBottomPanel';
 import { ProjectRail } from './components/ProjectRail';
@@ -160,7 +162,10 @@ import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store'
 import { extensionPanelAIContextAtom } from './store/atoms/extensionPanels';
 import { setDiffTreeGroupByDirectoryAtom, setAgentFileScopeModeAtom, setHiddenGutterButtonsAtom, hydrateFileGutterCollapsedAtom } from './store/atoms/projectState';
 import { toggleSessionHistoryCollapsedAtom, scrollToMessageAtom, initAgentModeLayout } from './store/atoms/agentMode';
-import { setDeveloperFeatureSettingsAtom } from './store/atoms/appSettings';
+import {
+  developerModeAtom,
+  setDeveloperFeatureSettingsAtom,
+} from './store/atoms/appSettings';
 import {
   agentInsertPlanReferenceRequestAtom,
   closeActiveTabRequestAtom,
@@ -305,6 +310,7 @@ export default function App() {
     const cleanupThemeFallback = initThemeFallbackListener();
     const cleanupTrackerSync = initTrackerSyncListeners();
     const cleanupWorktree = initWorktreeListeners();
+    const cleanupPullRequest = initPullRequestListeners();
     const cleanupBlitz = initBlitzListeners();
     const cleanupUpdate = initUpdateListeners();
     const cleanupWalkthrough = initWalkthroughListeners();
@@ -329,6 +335,7 @@ export default function App() {
       cleanupThemeFallback?.();
       cleanupTrackerSync?.();
       cleanupWorktree?.();
+      cleanupPullRequest?.();
       cleanupBlitz?.();
       cleanupUpdate?.();
       cleanupWalkthrough?.();
@@ -498,6 +505,7 @@ export default function App() {
 
   // Window mode - which view is active (files, agent, settings)
   const activeMode = useAtomValue(windowModeAtom);
+  const developerMode = useAtomValue(developerModeAtom);
   const setActiveMode = useSetAtom(setWindowModeAtom);
   const toggleAgentCollapsed = useSetAtom(toggleSessionHistoryCollapsedAtom);
   const updateDeveloperSettings = useSetAtom(setDeveloperFeatureSettingsAtom);
@@ -506,6 +514,12 @@ export default function App() {
   useEffect(() => {
     activeModeStateRef.current = activeMode;
   }, [activeMode]);
+
+  useEffect(() => {
+    if (activeMode === 'pr-review' && !developerMode) {
+      setActiveMode('files');
+    }
+  }, [activeMode, developerMode, setActiveMode]);
 
   const openMarketplaceInstallRequest = useCallback((request: { extensionId: string; requestedAt?: string }) => {
     if (!request.extensionId) return;
@@ -2187,6 +2201,25 @@ export default function App() {
                   workspacePath={workspacePath}
                   workspaceName={workspaceName || ''}
                   isActive={activeMode === 'tracker'}
+                  onSwitchToFilesMode={() => setActiveMode('files')}
+                />
+              )}
+            </div>
+
+            {/* PR Review Mode - always mounted, visibility controlled by display */}
+            <div
+              data-layout="pr-review-mode-wrapper"
+              className={`flex-1 flex-col overflow-hidden min-h-0 ${
+                activeMode === 'pr-review' && developerMode && !isFullscreenPanelActive
+                  ? 'flex'
+                  : 'hidden'
+              }`}
+            >
+              {workspacePath && developerMode && (
+                <PullRequestMode
+                  workspacePath={workspacePath}
+                  workspaceName={workspaceName || ''}
+                  isActive={activeMode === 'pr-review'}
                   onSwitchToFilesMode={() => setActiveMode('files')}
                 />
               )}

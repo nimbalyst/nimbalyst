@@ -287,6 +287,34 @@ export async function createApplicationMenu() {
                     }
                 },
                 {
+                    id: 'file-new-browser-tab',
+                    label: 'New Browser Tab',
+                    accelerator: KeyboardShortcuts.file.newBrowserTab,
+                    click: async () => {
+                        const focusedWindow = getFocusedWindow();
+                        if (!focusedWindow) return;
+
+                        const windowId = getWindowId(focusedWindow);
+                        if (windowId === null) return;
+
+                        const state = windowStates.get(windowId);
+                        if (state?.mode !== 'workspace' || !state.workspacePath) return;
+
+                        AnalyticsService.getInstance().sendEvent('menu_action_used', {
+                            menu: 'file',
+                            action: 'new_browser_tab',
+                            hasKeyboardEquivalent: true,
+                        });
+
+                        // Switch to files mode first (in case we're in agent mode),
+                        // then open the browser virtual tab once the mode settles.
+                        focusedWindow.webContents.send('set-content-mode', 'files');
+                        setTimeout(() => {
+                            focusedWindow.webContents.send('file-new-browser-tab');
+                        }, 50);
+                    }
+                },
+                {
                     id: 'file-new-extension-project',
                     label: 'New Extension Project...',
                     click: async () => {

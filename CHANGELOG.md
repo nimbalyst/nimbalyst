@@ -9,13 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Internal scaffolding for the upcoming PR review panel: detects whether the `gh` CLI is installed and authenticated, with an onboarding banner that guides install/login without ever storing a GitHub token. (#307)
+- PR review cache schema (`pull_requests`, `pull_request_files`, `pull_request_commits`, `pull_request_checks`) and `worktrees.pr_*` linkage columns, plus a typed `PullRequestsStore` and `WorktreeStore.linkPullRequest` / `findByPullRequest` helpers. (#307)
+- `GhApiService` and IPC channels (`pr:list`, `pr:get`, `pr:files`, `pr:file-contents`, `pr:commits`, `pr:checks`, `pr:conversation`, `pr:refresh`, `pr:detect-remote`) that fetch GitHub data via `gh api` and persist normalized rows to the cache. (#307)
+- `PullRequestPollScheduler` that polls open PRs every 60s when the PR review panel is in the foreground and every 5min otherwise, broadcasting `pr:list-updated` after each successful tick so the renderer re-reads the cache. (#307)
+- A `pr-review` workspace mode with a navigation-gutter button (with a help tooltip and the `Cmd/Ctrl+U` shortcut) that appears only when the active project has a GitHub remote, wired to PR atoms and listeners (gh status, remote detection, list-updated). (#307)
+- PR list view with a filter sidebar (open/closed/awaiting-review/created-by-me/with-conflicts/draft), title/number search, and sortable columns (last activity / created / number); selecting the state filter fetches via `gh`, the rest narrow client-side. (#307)
+- Read-only PR detail panel with Conversation, Files Changed (Monaco side-by-side diff), Commits, and Checks tabs; the panel re-fetches its visible tab every 60s while open. (#307)
+- "Open in Worktree" on a PR fetches the PR head branch into a worktree (reused if it already exists), links the worktree to the PR, spawns/reuses an agent session in it, and switches to Agent mode. (#307)
+- Approve and merge a PR (squash / merge commit / rebase) from the detail header, gated by the viewer's `gh`-derived repo permissions and the repo's allowed merge methods; merging requires an explicit in-app confirm. (#307)
+- Edit the merge commit title/message before merging (squash / merge-commit) via the merge dropdown's "Edit commit message…" option. (#307)
+- Inline review threads in the Conversation tab, grouped by file with Open/Resolved status and resolved threads collapsed by default (via `gh api graphql`). (#307)
+- `NIMBALYST_GH_PATH` env var to pin a non-standard `gh` CLI location for PR review. (#307)
+- Per-project GitHub account for PR review: pick a global default `gh` account in User settings and override it per project in Project settings (GitHub panel). The selected account's token is resolved from the `gh` keyring per request and never stored by Nimbalyst. (#307)
+- A guided walkthrough that introduces the PR review mode from the navigation gutter. (#307)
+- PR review Files Changed adds a "Collapsed diff" mode: a scrollable diff across all changed files with syntax highlighting, line numbers, and red/green backgrounds, switchable between unified and side-by-side (split) layouts. (#307)
+- Refresh button in the Files Mode sidebar header reloads the file tree from disk without using the Developer menu. (#259)
 <!-- New features go here -->
+- Claude Code sessions use the SDK's `permissionMode: 'auto'` classifier when workspace trust is "Allow All"; safe operations run silently, uncertain ones prompt the user. (#379)
+- File paths mentioned in AI transcripts are now clickable links that open the file, even when the agent writes them as plain text or inline code.
+- New Browser Tab command in the File menu (Cmd+Shift+B) opens a browser virtual tab in files mode.
+- Quick Open's Sessions tab can now search message contents (Shift+Tab or the in-input button), not just titles.
+- Inline comments on shared documents: select text to add a comment, reply in threads with @-mentions, and resolve threads, all synced in realtime across collaborators.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- PR review now uses a persistent master/detail layout with the PR list and filters fixed in the left sidebar. (#307)
+- PR review Files Changed groups files into a collapsible directory tree (expanded by default) and colors filenames by status instead of A/M/D letters. (#307)
+- PR list rows lead with the title at full width, moving the PR number to the metadata line so long titles stay readable. (#307)
+- PR review GitHub account settings now appear only in Developer Mode. (#307)
+- Calc Sheets now ship a Falcon 9 `.calc.md` demo and custom syntax coloring for headings, comments, variables, units, and formatters.
 
 ### Fixed
 - Inline tracker item edits now save back to the markdown file for markers without an explicit id, and due-date edits persist across a re-scan instead of being dropped (#404).
+- PR review now shows an actionable message on a GitHub 404 (repo not found or the active `gh` account lacks access — check `gh auth status` / `gh auth switch`) instead of a raw error, and no longer prints a duplicated `api` in the failure text. (#307)
+- PR review cache tables are now created on the better-sqlite3 backend too (migration registered with the SQLite runner), not only on PGLite. (#307)
+- PR review: merged PRs now show as "Merged" (not "Closed") in the list, the Approve/Merge buttons refresh immediately after a merge (cache-bypassed refetch), and a success notice / "Merged" badge confirms the action. (#307)
+<!-- Bug fixes go here -->
+- Context usage meter now opens its breakdown on click instead of hover, so the popover no longer lingers over and blocks the queued-prompt controls. (#429)
+- Effort Level selector now takes effect: sessions follow the selected/default effort instead of always running at "high".
+- Typing in the chat box no longer has keystrokes hijacked into an open markdown file while an agent is editing it.
+- Restored diff application in headless mode (tests and server-side diffing), which had started throwing on `getRootElement` after the chat-box focus fix.
+- Browser extension toolbar and URL bar now use the active theme's colors instead of rendering with a white URL box in dark mode.
 
 ### Removed
 <!-- Removed features go here -->

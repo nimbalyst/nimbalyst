@@ -1,4 +1,5 @@
 export { AgentTranscriptPanel } from './AgentTranscriptPanel';
+export { MarkdownRenderer } from './MarkdownRenderer';
 export { RichTranscriptView } from './RichTranscriptView';
 export { TranscriptSidebar } from './TranscriptSidebar';
 export { MessageSegment } from './MessageSegment';

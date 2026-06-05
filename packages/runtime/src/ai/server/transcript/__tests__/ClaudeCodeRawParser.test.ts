@@ -845,4 +845,75 @@ describe('ClaudeCodeRawParser', () => {
       expect(started.agentType).toBe('Explore');
     });
   });
+
+  describe('auto-mode permission_denied (issue #371)', () => {
+    it('parses system/permission_denied raw message into a system_message descriptor', async () => {
+      const parser = new ClaudeCodeRawParser();
+      const msg = makeRawMessage({
+        content: JSON.stringify({
+          type: 'system',
+          subtype: 'permission_denied',
+          tool_name: 'Bash',
+          tool_use_id: 'toolu_abc',
+          tool_input: { command: 'rm -rf /' },
+          decision_reason: 'Destructive operation',
+          decision_reason_type: 'classifier',
+          message: 'rm -rf is destructive and was auto-denied',
+        }),
+      });
+
+      const descriptors = await parser.parseMessage(msg, makeContext());
+
+      expect(descriptors).toHaveLength(1);
+      expect(descriptors[0]).toMatchObject({
+        type: 'system_message',
+        systemType: 'permission_denied',
+        deniedToolName: 'Bash',
+        deniedReason: 'Destructive operation',
+        deniedReasonType: 'classifier',
+        deniedInput: { command: 'rm -rf /' },
+        text: 'rm -rf is destructive and was auto-denied',
+      });
+    });
+
+    it('falls back to a synthesised text when SDK omits message field', async () => {
+      const parser = new ClaudeCodeRawParser();
+      const msg = makeRawMessage({
+        content: JSON.stringify({
+          type: 'system',
+          subtype: 'permission_denied',
+          tool_name: 'Write',
+          decision_reason: 'Protected path',
+        }),
+      });
+
+      const descriptors = await parser.parseMessage(msg, makeContext());
+
+      expect(descriptors).toHaveLength(1);
+      const desc = descriptors[0] as CanonicalEventDescriptor & { text?: string };
+      expect(desc.type).toBe('system_message');
+      expect(desc.text).toBe('Write was denied: Protected path');
+    });
+
+    it('handles permission_denied with no reason fields gracefully', async () => {
+      const parser = new ClaudeCodeRawParser();
+      const msg = makeRawMessage({
+        content: JSON.stringify({
+          type: 'system',
+          subtype: 'permission_denied',
+          tool_name: 'Edit',
+        }),
+      });
+
+      const descriptors = await parser.parseMessage(msg, makeContext());
+
+      expect(descriptors).toHaveLength(1);
+      expect(descriptors[0]).toMatchObject({
+        type: 'system_message',
+        systemType: 'permission_denied',
+        deniedToolName: 'Edit',
+        text: 'Edit was denied',
+      });
+    });
+  });
 });

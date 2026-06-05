@@ -68,6 +68,25 @@ function stripSystemReminderTags(content: string): string {
     .trim();
 }
 
+function normalizeStoredModelIdentifier(
+  provider: string | null | undefined,
+  model: string | undefined
+): string | undefined {
+  if (!model) {
+    return model;
+  }
+
+  if (provider === 'claude-code' || model.startsWith('claude-code:')) {
+    const parsed = ModelIdentifier.parse(model);
+    if (provider === 'claude-code' && parsed.provider !== 'claude-code') {
+      throw new Error(`Claude Agent sessions require a claude-code:* model identifier. Received: ${model}`);
+    }
+    return parsed.combined;
+  }
+
+  return model;
+}
+
 // Separate ID counter for server-message view models. Starts far from the
 // optimistic counter range (-1, -2, ...) used in the renderer to avoid collisions.
 let serverMsgIdCounter = -1_000_000;
@@ -836,7 +855,7 @@ export class SessionManager {
     providerConfig?: any,
     model?: string,
     sessionType?: SessionType,
-    mode?: 'planning' | 'agent',
+    mode?: 'planning' | 'agent' | 'auto',
     worktreeId?: string,
     worktreePath?: string,
     worktreeProjectPath?: string,
@@ -849,11 +868,12 @@ export class SessionManager {
     }
     const sessionId = uuidv4();
     const workspace = workspacePath;
+    const normalizedModel = normalizeStoredModelIdentifier(provider, model);
 
     await AISessionsRepository.create({
       id: sessionId,
       provider,
-      model,
+      model: normalizedModel,
       sessionType,
       mode,
       workspaceId: workspace,
@@ -880,7 +900,7 @@ export class SessionManager {
     const session: SessionData = {
       id: sessionId,
       provider,
-      model,
+      model: normalizedModel,
       sessionType,
       mode,
       createdAt: now,
@@ -1207,33 +1227,35 @@ export class SessionManager {
   }
 
   async updateSessionModel(sessionId: string, model: string): Promise<void> {
-    console.log(`[SessionManager] updateSessionModel called: sessionId=${sessionId}, model=${model}`);
-    const parsedModel = ModelIdentifier.tryParse(model);
+    const normalizedModel = normalizeStoredModelIdentifier(undefined, model) ?? model;
+    console.log(`[SessionManager] updateSessionModel called: sessionId=${sessionId}, model=${normalizedModel}`);
+    const parsedModel = ModelIdentifier.tryParse(normalizedModel);
     if (parsedModel) {
       await this.assertProviderSwitchAllowed(sessionId, parsedModel.provider);
     }
-    await AISessionsRepository.updateMetadata(sessionId, { model });
+    await AISessionsRepository.updateMetadata(sessionId, { model: normalizedModel });
     console.log(`[SessionManager] Database updated with new model`);
     if (this.currentSession?.id === sessionId) {
-      console.log(`[SessionManager] Updating current session model from ${this.currentSession.model} to ${model}`);
-      this.currentSession = { ...this.currentSession, model };
+      console.log(`[SessionManager] Updating current session model from ${this.currentSession.model} to ${normalizedModel}`);
+      this.currentSession = { ...this.currentSession, model: normalizedModel };
     }
   }
 
   async updateSessionProviderAndModel(sessionId: string, provider: string, model: string): Promise<void> {
-    console.log(`[SessionManager] updateSessionProviderAndModel called: sessionId=${sessionId}, provider=${provider}, model=${model}`);
+    const normalizedModel = normalizeStoredModelIdentifier(provider, model) ?? model;
+    console.log(`[SessionManager] updateSessionProviderAndModel called: sessionId=${sessionId}, provider=${provider}, model=${normalizedModel}`);
     await this.assertProviderSwitchAllowed(sessionId, provider);
     await AISessionsRepository.updateMetadata(sessionId, {
       provider,
-      model
+      model: normalizedModel
     });
     console.log(`[SessionManager] Database updated with new provider and model`);
     if (this.currentSession?.id === sessionId) {
-      console.log(`[SessionManager] Updating current session: provider ${this.currentSession.provider} -> ${provider}, model ${this.currentSession.model} -> ${model}`);
+      console.log(`[SessionManager] Updating current session: provider ${this.currentSession.provider} -> ${provider}, model ${this.currentSession.model} -> ${normalizedModel}`);
       this.currentSession = {
         ...this.currentSession,
         provider: provider as AIProviderType,
-        model
+        model: normalizedModel
       };
     }
   }

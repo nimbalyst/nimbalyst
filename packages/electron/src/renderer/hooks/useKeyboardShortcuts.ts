@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import type { ContentMode } from '../types/WindowModeTypes';
 import type { AgentModeRef } from '../components/AgentMode';
 import {
@@ -15,6 +15,8 @@ import {
   activeWorkspacePathAtom,
   closeOpenProjectAtom,
 } from '../store/atoms/openProjects';
+import { prRemoteAtom } from '../store/atoms/pullRequests';
+import { developerModeAtom } from '../store/atoms/appSettings';
 import posthog from 'posthog-js';
 
 interface KeyboardShortcutsOptions {
@@ -67,6 +69,7 @@ export function useKeyboardShortcuts({
   // Terminal panel atoms
   const toggleTerminalPanel = useSetAtom(toggleTerminalPanelAtom);
   const closeTerminalPanel = useSetAtom(closeTerminalPanelAtom);
+  const developerMode = useAtomValue(developerModeAtom);
 
   // Track if worktree creation is pending after mode switch
   const pendingWorktreeCreationRef = useRef(false);
@@ -140,6 +143,16 @@ export function useKeyboardShortcuts({
         e.preventDefault();
         e.stopPropagation();
         setActiveMode('collab');
+      }
+      // Cmd+U to switch to PR Review mode (only when the active workspace has a
+      // GitHub remote, mirroring the gutter button's visibility).
+      if (workspaceMode && developerMode && isAppModifier && !e.shiftKey && !e.altKey && e.key === 'u') {
+        const prRemote = store.get(prRemoteAtom);
+        if (prRemote && prRemote.workspacePath === store.get(activeWorkspacePathAtom)) {
+          e.preventDefault();
+          e.stopPropagation();
+          setActiveMode('pr-review');
+        }
       }
       // Ctrl+` for Terminal panel (Ctrl on all platforms, matching VS Code)
       if (workspaceMode && e.code === 'Backquote' && !e.shiftKey && !e.altKey &&
@@ -244,5 +257,6 @@ export function useKeyboardShortcuts({
     toggleAgentCollapsed,
     toggleTerminalPanel,
     closeTerminalPanel,
+    developerMode,
   ]);
 }

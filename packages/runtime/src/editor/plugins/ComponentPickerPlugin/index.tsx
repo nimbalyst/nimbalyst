@@ -15,7 +15,6 @@ import {
   INSERT_ORDERED_LIST_COMMAND,
   INSERT_UNORDERED_LIST_COMMAND,
 } from '@lexical/list';
-import {INSERT_EMBED_COMMAND} from '@lexical/react/LexicalAutoEmbedPlugin';
 import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
 import {INSERT_HORIZONTAL_RULE_COMMAND} from '@lexical/extension';
 import {$createHeadingNode, $createQuoteNode} from '@lexical/rich-text';
@@ -31,7 +30,6 @@ import {
 } from 'lexical';
 
 import useModal from '../../hooks/useModal';
-import {EmbedConfigs} from '../AutoEmbedPlugin';
 import {INSERT_COLLAPSIBLE_COMMAND} from '../CollapsiblePlugin';
 import InsertLayoutDialog from '../LayoutPlugin/InsertLayoutDialog';
 import {INSERT_PAGE_BREAK} from '../PageBreakPlugin';
@@ -287,17 +285,18 @@ function getBaseOptions(editor: LexicalEditor, showModal: ShowModal): TypeaheadM
       section: 'Layout',
       onSelect: () => editor.dispatchCommand(INSERT_PAGE_BREAK, undefined),
     },
-    ...EmbedConfigs.map(
-      (embedConfig) => ({
-        id: `embed-${embedConfig.type}`,
-        label: `Embed ${embedConfig.contentName}`,
-        icon: embedConfig.icon,
-        keywords: [...embedConfig.keywords, 'embed'],
-        section: 'Media',
-        onSelect: () =>
-          editor.dispatchCommand(INSERT_EMBED_COMMAND, embedConfig.type),
-      }),
-    ),
+    // Disabled until the embed insert handlers are implemented.
+    // ...EmbedConfigs.map(
+    //   (embedConfig) => ({
+    //     id: `embed-${embedConfig.type}`,
+    //     label: `Embed ${embedConfig.contentName}`,
+    //     icon: embedConfig.icon,
+    //     keywords: [...embedConfig.keywords, 'embed'],
+    //     section: 'Media',
+    //     onSelect: () =>
+    //       editor.dispatchCommand(INSERT_EMBED_COMMAND, embedConfig.type),
+    //   }),
+    // ),
     {
       id: 'collapsible',
       label: 'Collapsible',

@@ -72,6 +72,17 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
     // addTab will repair the state by adding the tab to tabOrder
   }
 
+  // Virtual (fileless) tabs have no disk content to switch to; open them
+  // directly. A custom editor registered for the matching `virtual://…` prefix
+  // renders them (e.g. the Browser extension's browser session editor).
+  if (filePath.startsWith('virtual://')) {
+    const tabId = tabs.addTab(filePath, '');
+    if (!tabId) {
+      console.error('[TABS] Failed to add virtual tab:', filePath);
+    }
+    return;
+  }
+
   try {
     const result = await window.electronAPI.switchWorkspaceFile(filePath);
     if (!result) {

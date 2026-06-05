@@ -54,6 +54,14 @@ export interface TeamSyncConfig {
   /** Current user's ID */
   userId: string;
 
+  /**
+   * Current user's PERSONAL org id. When set, it is announced to the TeamRoom
+   * on every (re)connect via `announcePersonalOrg`, so the server can address
+   * this member's PersonalIndexRoom for inbox-event fanout. Omitted when the
+   * personal org id is not yet resolvable locally (e.g. mobile sync disabled).
+   */
+  personalOrgId?: string;
+
   /** AES-256-GCM key for encrypting/decrypting document titles (org key) */
   encryptionKey: CryptoKey;
 

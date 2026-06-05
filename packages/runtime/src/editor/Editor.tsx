@@ -40,6 +40,7 @@ import TableCellResizer from './plugins/TableCellResizer';
 import TableHoverActionsPlugin from './plugins/TableHoverActionsPlugin';
 import ToolbarPlugin from './plugins/ToolbarPlugin';
 import TreeViewPlugin from './plugins/TreeViewPlugin';
+import CommentsPlugin from './plugins/CommentPlugin';
 import { SelectionAlwaysOnDisplay } from './plugins/SelectionAlwaysOnDisplayPlugin';
 import ListEnterFormatClearPlugin from './plugins/ListEnterFormatClearPlugin';
 import ContentEditable from './ui/ContentEditable';
@@ -313,6 +314,9 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
                   setIsLinkEditMode={setIsLinkEditMode}
                 />
               </>
+            )}
+            {floatingAnchorElem && config.comments && (
+              <CommentsPlugin config={config.comments} anchorElem={floatingAnchorElem} />
             )}
           </>
         ) : (

@@ -7,24 +7,44 @@ interface MonacoDiffViewerProps {
   newContent: string;
   filePath: string;
   theme?: string;
+  /**
+   * Exact Monaco theme name to apply (e.g. from `getMonacoTheme(...)`), so the
+   * diff matches the app's active editor theme — including custom/extension
+   * themes. When omitted, falls back to the `theme` light/dark mapping.
+   */
+  monacoThemeName?: string;
+  options?: monaco.editor.IDiffEditorConstructionOptions;
+  fitHeightToContent?: boolean;
+  onDiffReady?: () => void;
 }
 
 export function MonacoDiffViewer({
   oldContent,
   newContent,
   filePath,
-  theme = 'light'
+  theme = 'light',
+  monacoThemeName,
+  options,
+  fitHeightToContent = false,
+  onDiffReady,
 }: MonacoDiffViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const diffEditorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
+  const onDiffReadyRef = useRef(onDiffReady);
+
+  useEffect(() => {
+    onDiffReadyRef.current = onDiffReady;
+  }, [onDiffReady]);
 
   useEffect(() => {
     if (!containerRef.current) return;
 
     let disposed = false;
+    const localContainer = containerRef.current;
+    const cleanupDisposables: monaco.IDisposable[] = [];
 
-    // Set Monaco theme based on current theme
-    const monacoTheme = theme === 'light' ? 'vs' : 'vs-dark';
+    // Prefer an explicit Monaco theme name (matches the app editor); else map.
+    const monacoTheme = monacoThemeName ?? (theme === 'light' ? 'vs' : 'vs-dark');
 
     // Detect language from file extension
     const language = getMonacoLanguage(filePath);
@@ -57,6 +77,7 @@ export function MonacoDiffViewer({
       enableSplitViewResizing: false,
       // Silently handle unusual line terminators (U+2028, U+2029)
       unusualLineTerminators: 'auto',
+      ...options,
     });
 
     diffEditorRef.current = diffEditor;
@@ -65,10 +86,39 @@ export function MonacoDiffViewer({
     requestAnimationFrame(() => {
       if (!disposed) {
         try {
+          let reportedReady = false;
+          const reportReady = () => {
+            if (reportedReady) return;
+            reportedReady = true;
+            onDiffReadyRef.current?.();
+          };
+
+          const readyDisposable = diffEditor.onDidUpdateDiff(() => {
+            reportReady();
+            readyDisposable.dispose();
+          });
+
           diffEditor.setModel({
             original: originalModel,
             modified: modifiedModel
           });
+          if (fitHeightToContent) {
+            const syncHeight = () => {
+              if (disposed || !localContainer?.isConnected) return;
+              const modifiedHeight = diffEditor.getModifiedEditor().getContentHeight();
+              const originalHeight = diffEditor.getOriginalEditor().getContentHeight();
+              localContainer.style.height = `${Math.max(modifiedHeight, originalHeight, 120)}px`;
+              diffEditor.layout();
+            };
+
+            syncHeight();
+            cleanupDisposables.push(
+              diffEditor.getModifiedEditor().onDidContentSizeChange(syncHeight),
+            );
+            cleanupDisposables.push(
+              diffEditor.getOriginalEditor().onDidContentSizeChange(syncHeight),
+            );
+          }
         } catch (error) {
           console.error('[MonacoDiffViewer] Failed to set model:', error);
         }
@@ -78,6 +128,13 @@ export function MonacoDiffViewer({
     // Cleanup on unmount - dispose in correct order
     return () => {
       disposed = true;
+      for (const disposable of cleanupDisposables) {
+        try {
+          disposable.dispose();
+        } catch (error) {
+          console.error('[MonacoDiffViewer] Error disposing listener:', error);
+        }
+      }
 
       try {
         // First clear the model from the editor
@@ -97,11 +154,16 @@ export function MonacoDiffViewer({
         console.error('[MonacoDiffViewer] Error disposing models:', error);
       }
     };
-  }, [oldContent, newContent, filePath, theme]);
+  }, [oldContent, newContent, filePath, theme, monacoThemeName]);
 
   return (
-    <div className="monaco-diff-viewer flex flex-col h-full w-full overflow-hidden">
-      <div ref={containerRef} className="monaco-diff-container flex-1 overflow-hidden min-h-0" />
+    <div
+      className={`monaco-diff-viewer flex flex-col w-full overflow-hidden ${fitHeightToContent ? '' : 'h-full'}`}
+    >
+      <div
+        ref={containerRef}
+        className={`monaco-diff-container overflow-hidden min-h-0 ${fitHeightToContent ? '' : 'flex-1'}`}
+      />
     </div>
   );
 }

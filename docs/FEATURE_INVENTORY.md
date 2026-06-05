@@ -12,6 +12,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - **MockupLM editor** (`.mockup.html`) -- visual HTML/CSS mockup rendering with annotation layer
 - **PDF viewer** (`.pdf`)
 - **SQLite browser** (`.db`, `.sqlite`) -- table browsing, SQL query runner, AI tools
+- **Browser** (`.html`, `.htm`, `.browser.json`) -- native Chromium `WebContentsView` (not an iframe, so frame-blocking sites load), URL bar / back-forward / reload, workspace-scoped `nim-preview://` local preview, source-mode toggle, and agentic control AI tools (navigate, click, type, evaluate, scroll, get_page_info, screenshot) over editor-backed or agent-owned headless sessions
 - **Image generation project editor** (`.imgproj`) -- multi-variant AI image generation with iterative refinement
 - **Astro editor** (`.astro`) -- schema-aware frontmatter form header
 - **Image viewer** (`.png`, `.jpg`, `.gif`, `.svg`, `.webp`, `.bmp`, `.ico`)
@@ -153,6 +154,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - File watching with auto-reload on external changes
 - .gitignore-aware filtering
 - New file dialog with type selection and folder picker
+- New browser tab (Cmd+Shift+B) -- opens a fileless Browser virtual tab in files mode
 - Quick open (Cmd+O)
 - Content search across files (Cmd+Shift+F)
 - Auto-save (configurable interval)
@@ -318,7 +320,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 
 - Back/forward history (Cmd+[ / Cmd+])
 - Cross-mode navigation
-- Session quick open (Cmd+L)
+- Session quick open (Cmd+L) — Shift+Tab searches message contents, not just titles
 - Prompt quick open (Cmd+Shift+L)
 - Content search (Cmd+Shift+F)
 - Mouse back/forward button support

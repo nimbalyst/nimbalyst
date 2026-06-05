@@ -89,6 +89,65 @@ describe('TipProvider', () => {
     );
   });
 
+  it('does not show the mobile keep-awake tip when sync is disabled', async () => {
+    store.set(syncConfigAtom, {
+      ...store.get(syncConfigAtom),
+      enabled: false,
+      preventSleepMode: 'off',
+    });
+
+    render(
+      <JotaiProvider store={store as any}>
+        <TipProvider currentMode="files">
+          <InlineTipDisplay />
+        </TipProvider>
+      </JotaiProvider>
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(23_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('Keep your computer awake for mobile prompts')).toBeNull();
+    expect((window as any).electronAPI.invoke).not.toHaveBeenCalledWith(
+      'walkthroughs:record-shown',
+      'tip-mobile-keep-awake',
+      1,
+    );
+  });
+
+  it('does not show the mobile keep-awake tip when legacy keep-awake is already enabled', async () => {
+    store.set(syncConfigAtom, {
+      ...store.get(syncConfigAtom),
+      enabled: true,
+      preventSleepMode: undefined,
+      preventSleepWhenSyncing: true,
+    });
+
+    render(
+      <JotaiProvider store={store as any}>
+        <TipProvider currentMode="files">
+          <InlineTipDisplay />
+        </TipProvider>
+      </JotaiProvider>
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(23_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('Keep your computer awake for mobile prompts')).toBeNull();
+    expect((window as any).electronAPI.invoke).not.toHaveBeenCalledWith(
+      'walkthroughs:record-shown',
+      'tip-mobile-keep-awake',
+      1,
+    );
+  });
+
   it('does not activate tips when no empty transcript surface is mounted', async () => {
     render(
       <JotaiProvider store={store as any}>

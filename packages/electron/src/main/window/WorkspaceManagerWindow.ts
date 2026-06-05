@@ -303,8 +303,10 @@ export function setupWorkspaceManagerHandlers() {
 
   // Create workspace dialog
   safeHandle('workspace-manager:create-workspace-dialog', async () => {
+    const defaultPath = join(app.getPath('documents'), 'Untitled Workspace');
     const result = await dialog.showSaveDialog({
       title: 'Create New Workspace',
+      defaultPath,
       buttonLabel: 'Create',
       properties: ['createDirectory', 'showOverwriteConfirmation']
     });

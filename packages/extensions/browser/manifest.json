@@ -1,0 +1,87 @@
+{
+  "id": "com.nimbalyst.browser",
+  "name": "Browser",
+  "version": "1.0.0",
+  "description": "Native in-app browser surface for previewing HTML files and viewing live URLs",
+  "author": "Nimbalyst",
+  "main": "dist/index.js",
+  "styles": "dist/style.css",
+  "apiVersion": "1.0.0",
+  "marketplace": {
+    "categories": ["data"],
+    "tags": ["browser", "html", "preview", "viewer"],
+    "icon": "public",
+    "tagline": "Preview HTML files and browse live URLs without leaving Nimbalyst",
+    "longDescription": "Opens .html files in a real Chromium browsing context, with a URL bar, back/forward, reload, and screenshot capture. The page is rendered by a main-process WebContentsView positioned over the editor tab, so iframe-blocking sites (X-Frame-Options, CSP frame-ancestors) load normally. Toggle to source mode at any time to edit raw HTML in Monaco.",
+    "highlights": [
+      "Full Chromium rendering, not an iframe -- iframe-blocking sites load",
+      "Toolbar with URL bar, back/forward, reload, open external, screenshot",
+      "Source-mode toggle to edit raw HTML in Monaco",
+      "Workspace-scoped local preview server for relative asset resolution"
+    ],
+    "fileTypes": [".html", ".htm", ".browser.json"]
+  },
+  "permissions": {
+    "filesystem": true
+  },
+  "contributions": {
+    "customEditors": [
+      {
+        "filePatterns": ["*.html", "*.htm"],
+        "displayName": "Browser Preview",
+        "component": "BrowserEditor",
+        "priority": 20,
+        "supportsSourceMode": true,
+        "supportsDiffMode": false,
+        "showDocumentHeader": false
+      },
+      {
+        "filePatterns": ["*.browser.json"],
+        "displayName": "Browser Session",
+        "component": "BrowserSessionEditor",
+        "priority": 20,
+        "supportsSourceMode": true,
+        "supportsDiffMode": false,
+        "showDocumentHeader": false
+      },
+      {
+        "filePatterns": ["virtual://com.nimbalyst.browser/*"],
+        "displayName": "Browser",
+        "component": "BrowserSessionEditor",
+        "priority": 20,
+        "supportsSourceMode": false,
+        "supportsDiffMode": false,
+        "showDocumentHeader": false
+      }
+    ],
+    "aiTools": [
+      "browser.open_session",
+      "browser.open_local_preview",
+      "browser.list_sessions",
+      "browser.close_session",
+      "browser.navigate",
+      "browser.reload",
+      "browser.go_back",
+      "browser.go_forward",
+      "browser.get_page_info",
+      "browser.click",
+      "browser.type",
+      "browser.scroll",
+      "browser.evaluate",
+      "browser.screenshot"
+    ],
+    "fileIcons": {
+      "*.browser.json": "public"
+    },
+    "newFileMenu": [
+      {
+        "extension": "browser-tab",
+        "displayName": "Browser Tab",
+        "icon": "public",
+        "action": "openVirtualTab",
+        "virtualScheme": "virtual://com.nimbalyst.browser/",
+        "defaultContent": ""
+      }
+    ]
+  }
+}

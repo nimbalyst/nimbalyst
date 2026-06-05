@@ -41,6 +41,7 @@ function makeDeps(overrides: Partial<Parameters<typeof buildSdkOptions>[0]> = {}
     toolHooksService: {
       createPreToolUseHook: () => () => ({}),
       createPostToolUseHook: () => () => ({}),
+      createPermissionDeniedHook: () => () => ({}),
     },
     teammateManager: {
       resolveTeamContext: async () => undefined,

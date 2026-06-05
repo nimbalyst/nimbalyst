@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import {ClaudeForWindowsInstallation} from "../main/services/CLIManager.ts";
+import type { GhCliStatus } from '../main/services/GhCliDetector.ts';
 
 // Nimbalyst is an IDE-like application with many concurrent IPC listeners:
 // - File watching, git status, AI sessions, terminals, extensions, etc.
@@ -1169,6 +1170,84 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('worktree:list-gitignored', worktreePath),
   worktreeCleanGitignored: (worktreePath: string) =>
     ipcRenderer.invoke('worktree:clean-gitignored', worktreePath),
+
+  // PR review panel — gh CLI status (Phase A of issue #307)
+  ghCliStatus: () => ipcRenderer.invoke('pr:gh-status'),
+  ghCliRefreshStatus: () => ipcRenderer.invoke('pr:gh-refresh-status'),
+  onGhCliStatusChanged: (callback: (status: GhCliStatus) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: GhCliStatus) => callback(status);
+    ipcRenderer.on('pr:gh-status-changed', handler);
+    return () => ipcRenderer.removeListener('pr:gh-status-changed', handler);
+  },
+
+  // PR review panel — GitHub API via `gh api` (Phase C of issue #307)
+  prDetectRemote: (workspacePath: string) =>
+    ipcRenderer.invoke('pr:detect-remote', workspacePath),
+  prList: (workspaceId: string, remote: string, filters?: unknown) =>
+    ipcRenderer.invoke('pr:list', workspaceId, remote, filters),
+  prGet: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:get', workspaceId, remote, number),
+  prFiles: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:files', workspaceId, remote, number),
+  prFileContents: (workspaceId: string, remote: string, ref: string, path: string) =>
+    ipcRenderer.invoke('pr:file-contents', workspaceId, remote, ref, path),
+  prCommits: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:commits', workspaceId, remote, number),
+  prChecks: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:checks', workspaceId, remote, number),
+  prConversation: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:conversation', workspaceId, remote, number),
+  prConversationRefresh: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:conversation', workspaceId, remote, number, true),
+  prReviewThreads: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:review-threads', workspaceId, remote, number),
+  prRefresh: (workspaceId: string, remote: string, number?: number) =>
+    ipcRenderer.invoke('pr:refresh', workspaceId, remote, number),
+
+  // PR review panel — review/merge actions + access control (issue #307)
+  prPermissions: (workspaceId: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:permissions', workspaceId, remote, number),
+  prApprove: (workspaceId: string, remote: string, number: number, body?: string) =>
+    ipcRenderer.invoke('pr:approve', workspaceId, remote, number, body),
+  prComment: (workspaceId: string, remote: string, number: number, body: string) =>
+    ipcRenderer.invoke('pr:comment', workspaceId, remote, number, body),
+  prMerge: (
+    workspaceId: string,
+    remote: string,
+    number: number,
+    method: string,
+    commitTitle?: string,
+    commitMessage?: string,
+  ) => ipcRenderer.invoke('pr:merge', workspaceId, remote, number, method, commitTitle, commitMessage),
+
+  // PR review panel — polling scheduler (Phase D of issue #307)
+  prStartPolling: (workspacePath: string, workspaceId: string, remote: string) =>
+    ipcRenderer.invoke('pr:start-polling', workspacePath, workspaceId, remote),
+  prStopPolling: (workspacePath: string) =>
+    ipcRenderer.invoke('pr:stop-polling', workspacePath),
+  prPollNow: (workspacePath: string) =>
+    ipcRenderer.invoke('pr:poll-now', workspacePath),
+  prFocus: (workspacePath: string, focused: boolean) =>
+    ipcRenderer.send('pr:focus', { workspacePath, focused }),
+  prOpenWorktree: (workspacePath: string, remote: string, number: number) =>
+    ipcRenderer.invoke('pr:open-worktree', workspacePath, remote, number),
+
+  // PR review panel — per-project gh account selection (issue #307)
+  prGhAccounts: () => ipcRenderer.invoke('pr:gh-accounts'),
+  prGetAccountConfig: (workspacePath?: string) =>
+    ipcRenderer.invoke('pr:get-account-config', workspacePath),
+  prSetDefaultAccount: (login: string | null) =>
+    ipcRenderer.invoke('pr:set-default-account', login),
+  prSetAccountOverride: (workspacePath: string, login: string | null) =>
+    ipcRenderer.invoke('pr:set-account-override', workspacePath, login),
+  onPrListUpdated: (callback: (payload: { workspacePath: string; remote: string }) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      payload: { workspacePath: string; remote: string },
+    ) => callback(payload);
+    ipcRenderer.on('pr:list-updated', handler);
+    return () => ipcRenderer.removeListener('pr:list-updated', handler);
+  },
 
   // Archive progress operations
   archive: {

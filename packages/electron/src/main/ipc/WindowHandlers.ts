@@ -26,10 +26,18 @@ export function registerWindowHandlers() {
         if (!state) return null;
 
         if (state.mode === 'workspace' && state.workspacePath) {
+            const openProjectPaths = [state.workspacePath, ...(state.additionalWorkspacePaths ?? [])]
+                .filter((path, index, paths) => typeof path === 'string' && path.length > 0 && paths.indexOf(path) === index);
+            const activeWorkspacePath =
+                state.activeWorkspacePath && openProjectPaths.includes(state.activeWorkspacePath)
+                    ? state.activeWorkspacePath
+                    : state.workspacePath;
             return {
                 mode: 'workspace',
                 workspacePath: state.workspacePath,
                 workspaceName: basename(state.workspacePath),
+                activeWorkspacePath,
+                openProjectPaths,
             };
         }
 

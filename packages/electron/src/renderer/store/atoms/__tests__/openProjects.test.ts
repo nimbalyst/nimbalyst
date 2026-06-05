@@ -8,6 +8,7 @@ import {
   closeOpenProjectAtom,
   isOpenProjectsAtCapAtom,
   attachWorkspaceSwitchCleanup,
+  resolveInitialOpenProjectsState,
   type OpenProject,
 } from '../openProjects';
 import { activeSessionIdAtom, selectedWorkstreamAtom } from '../sessions';
@@ -231,6 +232,65 @@ describe('openProjects atoms', () => {
       jotaiStore.set(activeWorkspacePathAtom, '/ws/b');
 
       expect(jotaiStore.get(activeSessionIdAtom)).toBe('session-from-a');
+    });
+  });
+
+  describe('resolveInitialOpenProjectsState', () => {
+    it('prefers the live window rail state during a renderer reload', () => {
+      const result = resolveInitialOpenProjectsState({
+        persistedPaths: ['/ws/a', '/ws/b'],
+        persistedActivePath: '/ws/b',
+        restorePreviousProjects: false,
+        windowState: {
+          mode: 'workspace',
+          workspacePath: '/ws/a',
+          activeWorkspacePath: '/ws/b',
+          openProjectPaths: ['/ws/a', '/ws/b'],
+        },
+      });
+
+      expect(result).toEqual({
+        paths: ['/ws/a', '/ws/b'],
+        activePath: '/ws/b',
+      });
+    });
+
+    it('uses persisted state on launch when restore previous projects is enabled', () => {
+      const result = resolveInitialOpenProjectsState({
+        persistedPaths: ['/ws/a', '/ws/b'],
+        persistedActivePath: '/ws/b',
+        restorePreviousProjects: true,
+        windowState: {
+          mode: 'workspace',
+          workspacePath: '/ws/a',
+          activeWorkspacePath: '/ws/a',
+          openProjectPaths: ['/ws/a'],
+        },
+      });
+
+      expect(result).toEqual({
+        paths: ['/ws/a', '/ws/b'],
+        activePath: '/ws/b',
+      });
+    });
+
+    it('falls back to the current window workspace when restore previous projects is off', () => {
+      const result = resolveInitialOpenProjectsState({
+        persistedPaths: ['/ws/a', '/ws/b'],
+        persistedActivePath: '/ws/b',
+        restorePreviousProjects: false,
+        windowState: {
+          mode: 'workspace',
+          workspacePath: '/ws/a',
+          activeWorkspacePath: '/ws/a',
+          openProjectPaths: ['/ws/a'],
+        },
+      });
+
+      expect(result).toEqual({
+        paths: ['/ws/a'],
+        activePath: '/ws/a',
+      });
     });
   });
 });

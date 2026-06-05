@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { evaluateCalcSheet } from '../evaluator';
 import { parseCalcSheetDocument } from '../parser';
 
@@ -61,5 +64,27 @@ describe('Calc Sheets parser and evaluator', () => {
     const evaluated = evaluateCalcSheet(parsed.lines, parsed.frontmatter);
     expect(evaluated.bindings.get('gross_margin')?.formatted).toBe('80.0%');
     expect(evaluated.lineOutputs[3]).toBe('ASSERT OK');
+  });
+
+  it('supports markdown headings and comment lines in the demo sample', () => {
+    const content = readFileSync(
+      resolve(process.cwd(), 'packages/extensions/calc-sheets/samples/demo.calc.md'),
+      'utf8',
+    );
+
+    const parsed = parseCalcSheetDocument(content);
+    const evaluated = evaluateCalcSheet(parsed.lines, parsed.frontmatter);
+
+    expect(parsed.lines.some((line) => line.kind === 'section')).toBe(true);
+    expect(parsed.lines.some((line) => line.kind === 'comment')).toBe(true);
+    expect(parsed.lines.some((line) => line.kind === 'unknown')).toBe(false);
+    expect(evaluated.errorCount).toBe(0);
+    expect(evaluated.bindings.get('stage2_burn_fraction')?.formatted).toMatch(/%$/);
+
+    const assertionIndexes = parsed.lines
+      .filter((line) => line.kind === 'assert')
+      .map((line) => line.index);
+    expect(assertionIndexes.length).toBeGreaterThan(0);
+    expect(assertionIndexes.every((index) => evaluated.lineOutputs[index] === 'ASSERT OK')).toBe(true);
   });
 });

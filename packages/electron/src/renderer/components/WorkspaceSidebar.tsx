@@ -291,6 +291,18 @@ export function WorkspaceSidebar({
   };
 
   const handleNewFileTypeSelect = (fileType: NewFileType) => {
+    // Action items (e.g. "New Browser Tab") open a fileless virtual tab
+    // directly -- no name prompt, no file written.
+    if (typeof fileType === 'string' && fileType.startsWith('ext:')) {
+      const extType = extensionFileTypes.find(e => e.extension === fileType.slice(4));
+      if (extType?.action === 'openVirtualTab' && extType.virtualScheme) {
+        const id = `tab-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+        const title = encodeURIComponent(extType.displayName);
+        onFileSelect(`${extType.virtualScheme}${id}?title=${title}`);
+        return;
+      }
+    }
+
     // Priority: selected folder > parent of current file > workspace root
     if (selectedFolder) {
       setTargetFolder(selectedFolder);
@@ -368,7 +380,7 @@ export function WorkspaceSidebar({
       const extType = extensionFileTypes.find(e => e.extension === extName);
       if (extType) {
         fullFileName = fileName.endsWith(extName) ? fileName : `${fileName}${extName}`;
-        content = extType.defaultContent;
+        content = extType.defaultContent ?? '';
       } else {
         // Fallback
         fullFileName = fileName;
@@ -455,7 +467,7 @@ export function WorkspaceSidebar({
         const extType = extensionFileTypes.find(e => e.extension === extName);
         if (extType) {
           fullFileName = fileName.endsWith(extName) ? fileName : `${fileName}${extName}`;
-          content = extType.defaultContent;
+          content = extType.defaultContent ?? '';
         } else {
           fullFileName = fileName;
           content = '';
@@ -1122,6 +1134,19 @@ export function WorkspaceSidebar({
                     edit_square
                   </span>
                 </button>
+                <HelpTooltip testId="file-tree-refresh-button">
+                  <button
+                    data-testid="file-tree-refresh-button"
+                    className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+                    onClick={handleRefreshFileTree}
+                    title="Refresh file tree"
+                    aria-label="Refresh file tree"
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>
+                      refresh
+                    </span>
+                  </button>
+                </HelpTooltip>
                 <button
                   className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
                   onClick={handleNewFolder}

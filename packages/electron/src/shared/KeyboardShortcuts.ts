@@ -9,6 +9,7 @@ export const KeyboardShortcuts = {
     newFile: 'Cmd+N',
     newSession: 'Cmd+N',
     newSessionGlobal: 'Cmd+Shift+N',
+    newBrowserTab: 'Cmd+Shift+B',
     open: 'Cmd+O',
     openFolder: 'Cmd+Shift+O',
     save: 'Cmd+S',
@@ -49,6 +50,7 @@ export const KeyboardShortcuts = {
     toggleTerminalPanel: 'Ctrl+`',
     trackerMode: 'Cmd+T',
     collabMode: 'Cmd+D',
+    prReviewMode: 'Cmd+U',
     toggleSidebar: 'Cmd+B',
 
     // Navigation

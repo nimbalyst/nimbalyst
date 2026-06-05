@@ -20,6 +20,7 @@ This document explains how to create and maintain walkthrough guides and help co
 | `layout-controls-intro` | Layout Controls | 1 | agent | 35 | Layout controls visible with Files button enabled |
 | `session-kanban-intro` | Session Kanban Board | 1 | agent | 18 | Kanban button is visible |
 | `file-tree-tools` | File Tree Tools | 2 | files | 5 | Filter button is visible |
+| `pr-review-mode-intro` | Pull Requests Mode | 1 | any | 8 | PR review gutter button is visible (project has a GitHub remote) |
 
 ## When Walkthroughs Appear
 

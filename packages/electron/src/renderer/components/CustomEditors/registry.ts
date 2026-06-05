@@ -109,6 +109,27 @@ class CustomEditorRegistry {
   findMatchForFile(
     filePath: string
   ): { key: string; registration: CustomEditorRegistration } | undefined {
+    // Virtual (fileless) tabs have no basename suffix to match on. They are
+    // claimed by registrations whose key is a `virtual://…` prefix (declared as
+    // a filePattern like `virtual://com.nimbalyst.browser/*`). Longest matching
+    // prefix wins, mirroring the longest-suffix rule used for real files.
+    if (filePath.startsWith('virtual://')) {
+      const lowerPath = filePath.toLowerCase();
+      let bestVirtualKey: string | undefined;
+      for (const key of this.registrations.keys()) {
+        if (!key.startsWith('virtual://')) continue;
+        const prefix = key.endsWith('*') ? key.slice(0, -1) : key;
+        if (lowerPath.startsWith(prefix) && (!bestVirtualKey || key.length > bestVirtualKey.length)) {
+          bestVirtualKey = key;
+        }
+      }
+      if (bestVirtualKey) {
+        const registration = this.registrations.get(bestVirtualKey);
+        if (registration) return { key: bestVirtualKey, registration };
+      }
+      return undefined;
+    }
+
     const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
     const basename = (lastSlash >= 0 ? filePath.substring(lastSlash + 1) : filePath).toLowerCase();
 

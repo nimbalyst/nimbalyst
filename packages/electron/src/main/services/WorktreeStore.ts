@@ -25,6 +25,10 @@ export interface Worktree {
   updatedAt?: number;
   isPinned?: boolean; // Whether this worktree is pinned to the top of the list
   isArchived?: boolean; // Whether this worktree is archived
+  // PR review panel linkage. One worktree <-> one PR.
+  prNumber?: number;
+  prRemote?: string;
+  prUrl?: string;
 }
 
 /**
@@ -42,6 +46,29 @@ interface WorktreeRow {
   updated_at: Date | string | number;
   is_pinned?: boolean;
   is_archived?: boolean;
+  pr_number?: number | null;
+  pr_remote?: string | null;
+  pr_url?: string | null;
+}
+
+function mapWorktreeRow(row: WorktreeRow): Worktree {
+  const worktree: Worktree = {
+    id: row.id,
+    name: row.name,
+    displayName: row.display_name ?? undefined,
+    path: row.path,
+    branch: row.branch,
+    baseBranch: row.base_branch,
+    projectPath: row.workspace_id,
+    createdAt: toMillis(row.created_at)!,
+    updatedAt: toMillis(row.updated_at)!,
+    isPinned: row.is_pinned ?? false,
+    isArchived: row.is_archived ?? false,
+  };
+  if (row.pr_number != null) worktree.prNumber = row.pr_number;
+  if (row.pr_remote != null) worktree.prRemote = row.pr_remote;
+  if (row.pr_url != null) worktree.prUrl = row.pr_url;
+  return worktree;
 }
 
 /**
@@ -120,22 +147,7 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
         return null;
       }
 
-      const row = rows[0];
-      const worktree: Worktree = {
-        id: row.id,
-        name: row.name,
-        displayName: row.display_name ?? undefined,
-        path: row.path,
-        branch: row.branch,
-        baseBranch: row.base_branch,
-        projectPath: row.workspace_id,
-        createdAt: toMillis(row.created_at)!,
-        updatedAt: toMillis(row.updated_at)!,
-        isPinned: row.is_pinned ?? false,
-        isArchived: row.is_archived ?? false,
-      };
-
-      return worktree;
+      return mapWorktreeRow(rows[0]);
     },
 
     /**
@@ -157,19 +169,7 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
 
       const result = new Map<string, Worktree>();
       for (const row of rows) {
-        result.set(row.id, {
-          id: row.id,
-          name: row.name,
-          displayName: row.display_name ?? undefined,
-          path: row.path,
-          branch: row.branch,
-          baseBranch: row.base_branch,
-          projectPath: row.workspace_id,
-          createdAt: toMillis(row.created_at)!,
-          updatedAt: toMillis(row.updated_at)!,
-          isPinned: row.is_pinned ?? false,
-          isArchived: row.is_archived ?? false,
-        });
+        result.set(row.id, mapWorktreeRow(row));
       }
 
       return result;
@@ -193,22 +193,7 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
         return null;
       }
 
-      const row = rows[0];
-      const worktree: Worktree = {
-        id: row.id,
-        name: row.name,
-        displayName: row.display_name ?? undefined,
-        path: row.path,
-        branch: row.branch,
-        baseBranch: row.base_branch,
-        projectPath: row.workspace_id,
-        createdAt: toMillis(row.created_at)!,
-        updatedAt: toMillis(row.updated_at)!,
-        isPinned: row.is_pinned ?? false,
-        isArchived: row.is_archived ?? false,
-      };
-
-      return worktree;
+      return mapWorktreeRow(rows[0]);
     },
 
     /**
@@ -228,19 +213,7 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
         [workspaceId]
       );
 
-      const worktrees = rows.map(row => ({
-        id: row.id,
-        name: row.name,
-        displayName: row.display_name ?? undefined,
-        path: row.path,
-        branch: row.branch,
-        baseBranch: row.base_branch,
-        projectPath: row.workspace_id,
-        createdAt: toMillis(row.created_at)!,
-        updatedAt: toMillis(row.updated_at)!,
-        isPinned: row.is_pinned ?? false,
-        isArchived: row.is_archived ?? false,
-      }));
+      const worktrees = rows.map(mapWorktreeRow);
 
       logger.info('Found worktrees', { count: worktrees.length });
       return worktrees;
@@ -419,6 +392,55 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
       );
 
       logger.info('Worktree archived status updated', { id, isArchived });
+    },
+
+    /**
+     * Bind a worktree to a GitHub pull request.
+     *
+     * Used by `pr:open-worktree` so the worktree row carries the
+     * PR number / remote / URL needed to render the "PR #N" badge in the
+     * worktree list and to look the worktree up again next time the user
+     * clicks "Open in Worktree" for the same PR.
+     */
+    async linkPullRequest(
+      id: string,
+      pr: { prNumber: number; prRemote: string; prUrl: string }
+    ): Promise<void> {
+      await ensureReady();
+
+      logger.info('Linking worktree to PR', { id, prNumber: pr.prNumber, prRemote: pr.prRemote });
+
+      await db.query(
+        `UPDATE worktrees
+         SET pr_number = $2,
+             pr_remote = $3,
+             pr_url = $4,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [id, pr.prNumber, pr.prRemote, pr.prUrl]
+      );
+    },
+
+    /**
+     * Look up an existing worktree bound to a given PR. Used to make
+     * `pr:open-worktree` idempotent — if a worktree already exists for
+     * the PR, reuse it instead of creating a new one.
+     */
+    async findByPullRequest(
+      workspaceId: string,
+      remote: string,
+      prNumber: number
+    ): Promise<Worktree | null> {
+      await ensureReady();
+
+      const { rows } = await db.query<WorktreeRow>(
+        `SELECT * FROM worktrees
+         WHERE workspace_id = $1 AND pr_remote = $2 AND pr_number = $3
+         LIMIT 1`,
+        [workspaceId, remote, prNumber]
+      );
+
+      return rows.length === 0 ? null : mapWorktreeRow(rows[0]);
     },
 
     /**

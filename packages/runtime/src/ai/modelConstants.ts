@@ -200,6 +200,37 @@ export const OPENAI_MODELS: ModelDefinition[] = [
  *   `opus` to the next version.
  */
 export type ClaudeCodeVariant = 'opus' | 'sonnet' | 'haiku' | 'opus-4-7' | 'opus-4-6';
+export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-4-8';
+
+/**
+ * Accepted input aliases for Claude Agent model identifiers.
+ *
+ * `opus-4-8` is intentionally accepted as an alias for the canonical `opus`
+ * variant so legacy code paths (meta-agent, Agent tool, imported session IDs)
+ * can request the current Opus generation explicitly without requiring a
+ * duplicate visible picker entry.
+ */
+export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInput[] = [
+  'opus',
+  'opus-4-8',
+  'opus-4-7',
+  'opus-4-6',
+  'sonnet',
+  'haiku',
+] as const;
+
+const CLAUDE_CODE_VARIANT_INPUT_MAP: Readonly<Record<ClaudeCodeVariantInput, ClaudeCodeVariant>> = {
+  opus: 'opus',
+  'opus-4-8': 'opus',
+  'opus-4-7': 'opus-4-7',
+  'opus-4-6': 'opus-4-6',
+  sonnet: 'sonnet',
+  haiku: 'haiku',
+};
+
+export function normalizeClaudeCodeVariant(variant: string): ClaudeCodeVariant | null {
+  return CLAUDE_CODE_VARIANT_INPUT_MAP[variant.toLowerCase() as ClaudeCodeVariantInput] ?? null;
+}
 
 export const CLAUDE_CODE_VARIANT_VERSIONS: Record<ClaudeCodeVariant, string> = {
   opus: '4.8',

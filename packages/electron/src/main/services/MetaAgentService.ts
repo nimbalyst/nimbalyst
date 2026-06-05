@@ -62,6 +62,25 @@ interface CreateChildSessionArgs {
   worktreeId?: string;
 }
 
+function normalizeStoredChildModelIdentifier(
+  provider: string | null | undefined,
+  model: string | null | undefined
+): string | null {
+  if (!model) {
+    return null;
+  }
+
+  if (provider === 'claude-code' || model.startsWith('claude-code:')) {
+    const parsed = ModelIdentifier.parse(model);
+    if (provider === 'claude-code' && parsed.provider !== 'claude-code') {
+      throw new Error(`Claude Agent child sessions require a claude-code:* model identifier. Received: ${model}`);
+    }
+    return parsed.combined;
+  }
+
+  return model;
+}
+
 interface SpawnSessionArgs {
   title?: string;
   prompt: string;
@@ -363,20 +382,24 @@ export class MetaAgentService {
       const parentSession = await AISessionsRepository.get(metaSessionId);
       if (parentSession) {
         parentProvider = parentSession.provider ?? null;
-        parentModel = parentSession.model ?? null;
+        parentModel = normalizeStoredChildModelIdentifier(parentProvider, parentSession.model ?? null);
       }
     } catch {
       // Best-effort lookup; fall through to the hardcoded default below.
     }
 
-    const defaultModel = parentModel || getDefaultAIModel() || 'claude-code:opus';
-    const model = args.model || defaultModel;
+    const defaultModel =
+      parentModel
+      || normalizeStoredChildModelIdentifier(null, getDefaultAIModel())
+      || 'claude-code:opus';
+    const explicitModel = normalizeStoredChildModelIdentifier(args.provider ?? parentProvider, args.model ?? null);
+    const model = explicitModel || defaultModel;
     const parsed = ModelIdentifier.tryParse(model);
     const provider = (args.provider || parsed?.provider || parentProvider || 'claude-code') as AIProviderType;
     // When the caller didn't pass an explicit model, prefer the inherited parent
     // model verbatim (so a gemini-flash-3.5 parent keeps flash-3.5, not whatever
     // ModelIdentifier.getDefaultModelId returns for that provider).
-    const normalizedModel = args.model || parentModel || ModelIdentifier.getDefaultModelId(provider);
+    const normalizedModel = explicitModel || parentModel || ModelIdentifier.getDefaultModelId(provider);
     const callerProvidedTitle = !!args.title?.trim();
     const title = (args.title || this.deriveTitleFromPrompt(args.prompt) || 'Meta Task').trim();
 
