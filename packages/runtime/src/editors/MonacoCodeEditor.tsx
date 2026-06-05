@@ -14,7 +14,7 @@
  */
 
 import React, { useRef, useEffect, useCallback, useState } from 'react';
-import Editor, { DiffEditor, type OnMount } from '@monaco-editor/react';
+import Editor, { DiffEditor, type Monaco, type OnMount } from '@monaco-editor/react';
 import type { editor as MonacoEditorType, Selection } from 'monaco-editor';
 import type { ConfigTheme } from '../editor';
 import { getMonacoTheme, getMonacoLanguage } from './monacoUtils';
@@ -78,6 +78,7 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
 }) => {
   const editorRef = useRef<MonacoEditorType.IStandaloneCodeEditor | null>(null);
   const diffEditorRef = useRef<MonacoEditorType.IStandaloneDiffEditor | null>(null);
+  const monacoRef = useRef<Monaco | null>(null);
   const [content, setContent] = useState(initialContent);
   const initialContentRef = useRef(initialContent);
   const isProgrammaticChangeRef = useRef(false);
@@ -297,6 +298,7 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
    */
   const handleEditorMount: OnMount = useCallback((editor, monaco) => {
     editorRef.current = editor;
+    monacoRef.current = monaco;
 
     // Disable TypeScript/JavaScript diagnostics globally
     try {
@@ -324,6 +326,7 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
     if (onEditorReady) {
       onEditorReady({
         editor,
+        monaco,
         setContent: setEditorContent,
         getContent,
         showDiff,

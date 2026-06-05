@@ -6,6 +6,7 @@
  *
  * Events handled:
  * - file-new-mockup -> newMockupRequestAtom
+ * - file-new-browser-tab -> newBrowserTabRequestAtom
  * - toggle-ai-chat-panel -> toggleAIChatPanelRequestAtom
  *
  * Call initAppCommandListeners() once at app startup.
@@ -19,6 +20,7 @@ import {
   extensionMarketplaceInstallRequestAtom,
   fileSaveRequestAtom,
   marketplaceInstallProgressAtom,
+  newBrowserTabRequestAtom,
   navigationGoBackRequestAtom,
   navigationGoForwardRequestAtom,
   newMockupRequestAtom,
@@ -60,6 +62,11 @@ export function initAppCommandListeners(): () => void {
     store.set(newMockupRequestAtom, (v) => v + 1);
   });
   if (typeof u1 === 'function') cleanups.push(u1);
+
+  const uBrowserTab = window.electronAPI?.on?.('file-new-browser-tab', () => {
+    store.set(newBrowserTabRequestAtom, (v) => v + 1);
+  });
+  if (typeof uBrowserTab === 'function') cleanups.push(uBrowserTab);
 
   const u2 = window.electronAPI?.on?.('toggle-ai-chat-panel', () => {
     store.set(toggleAIChatPanelRequestAtom, (v) => v + 1);

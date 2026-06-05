@@ -161,6 +161,14 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
   // Per-tab Sessions sub-filter: when the user picks a file via @typeahead, we
   // store the chip here and the Sessions pane filters its list by it.
   const [sessionFileFilter, setSessionFileFilter] = useState<string | null>(null);
+  // Bumped to ask the Sessions pane to run a message-content search (Shift+Tab).
+  const [sessionContentNonce, setSessionContentNonce] = useState(0);
+  // Bumped to ask the Sessions pane to drop back to title-filter mode.
+  const [sessionContentClearNonce, setSessionContentClearNonce] = useState(0);
+  // Sessions pane reports its content-search status so the in-input button can reflect it.
+  const [sessionContentStatus, setSessionContentStatus] = useState<
+    'idle' | 'searching' | 'results'
+  >('idle');
   // Per-tab filter chip values, hoisted so they survive tab switches.
   const [fileExtFilter, setFileExtFilter] = useState<string | null>(null);
   const [trackerTypeFilter, setTrackerTypeFilter] = useState<string | null>(null);
@@ -214,6 +222,17 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
       if (e.key === 'Tab') {
         e.preventDefault();
         e.stopPropagation();
+        // On the Sessions tab, Shift+Tab runs a message-content search instead
+        // of cycling back a tab (mirrors Session History's content-search key).
+        if (
+          e.shiftKey &&
+          activeTab === 'sessions' &&
+          query.trim() &&
+          !query.startsWith('@')
+        ) {
+          setSessionContentNonce((n) => n + 1);
+          return;
+        }
         const idx = TAB_SPECS.findIndex((t) => t.id === activeTab);
         const nextIdx = e.shiftKey
           ? (idx - 1 + TAB_SPECS.length) % TAB_SPECS.length
@@ -265,9 +284,14 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isOpen, activeTab, switchTab]);
+  }, [isOpen, activeTab, switchTab, query]);
 
   if (!isOpen) return null;
+
+  // The in-input "Search contents" affordance only applies to the Sessions tab
+  // when there's a real query (not the @file-edited typeahead).
+  const showSessionContentHint =
+    activeTab === 'sessions' && !!query.trim() && !query.startsWith('@');
 
   const placeholder =
     activeTab === 'projects'
@@ -345,16 +369,45 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
             they're always reachable without leaving the keyboard row. */}
         <div className="unified-quick-open-search-bar px-2 py-1.5 border-b border-nim bg-nim">
           <div className="flex items-center gap-2">
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-0 relative">
               <input
                 ref={inputRef}
                 type="text"
-                className="unified-quick-open-search nim-input w-full text-sm py-1 px-2"
+                className={`unified-quick-open-search nim-input w-full text-sm py-1 px-2 ${
+                  showSessionContentHint ? 'pr-[156px]' : ''
+                }`}
                 placeholder={placeholder}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 data-testid="unified-quick-open-search"
               />
+              {showSessionContentHint &&
+                (sessionContentStatus === 'searching' ? (
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 text-xs text-nim-faint pointer-events-none">
+                    <MaterialSymbol icon="progress_activity" size={13} className="animate-spin" />
+                    Searching messages...
+                  </span>
+                ) : sessionContentStatus === 'results' ? (
+                  <button
+                    type="button"
+                    className="unified-quick-open-content-search-active absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 text-xs text-[var(--nim-primary)] bg-transparent border-none cursor-pointer px-2 py-1 rounded transition-colors duration-150 hover:bg-nim-hover"
+                    onClick={() => setSessionContentClearNonce((n) => n + 1)}
+                    title="Back to title search"
+                  >
+                    <MaterialSymbol icon="manage_search" size={13} />
+                    Message matches
+                    <MaterialSymbol icon="close" size={12} />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="unified-quick-open-content-search-hint absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 text-xs text-nim-muted bg-transparent border-none cursor-pointer px-2 py-1 rounded transition-colors duration-150 hover:bg-nim-hover hover:text-[var(--nim-primary)]"
+                    onClick={() => setSessionContentNonce((n) => n + 1)}
+                    title="Press Shift+Tab to search message contents"
+                  >
+                    ⇧⇥ Search contents
+                  </button>
+                ))}
             </div>
             {(activeTab === 'files' || activeTab === 'in-files') && (
               <FilterChip
@@ -436,6 +489,9 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
               workspacePath={workspacePath}
               fileFilter={sessionFileFilter}
               setFileFilter={setSessionFileFilter}
+              contentSearchNonce={sessionContentNonce}
+              contentClearNonce={sessionContentClearNonce}
+              onContentStatusChange={setSessionContentStatus}
               onSessionSelect={onSessionSelect}
               onClose={onClose}
             />
@@ -1052,6 +1108,9 @@ interface SessionsPaneProps {
   workspacePath: string;
   fileFilter: string | null;
   setFileFilter: (path: string | null) => void;
+  contentSearchNonce: number;
+  contentClearNonce: number;
+  onContentStatusChange: (status: 'idle' | 'searching' | 'results') => void;
   onSessionSelect: (sessionId: string) => void;
   onClose: () => void;
 }
@@ -1064,6 +1123,9 @@ const SessionsPane: React.FC<SessionsPaneProps> = memo(({
   workspacePath,
   fileFilter,
   setFileFilter,
+  contentSearchNonce,
+  contentClearNonce,
+  onContentStatusChange,
   onSessionSelect,
   onClose,
 }) => {
@@ -1072,6 +1134,11 @@ const SessionsPane: React.FC<SessionsPaneProps> = memo(({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [typeaheadIndex, setTypeaheadIndex] = useState(0);
   const [mouseHasMoved, setMouseHasMoved] = useState(false);
+  // Message-content search (Shift+Tab / button): null = title-filter mode,
+  // an array = showing sessions whose message text matched the query.
+  const [contentResults, setContentResults] = useState<SessionItem[] | null>(null);
+  const [contentSearchedQuery, setContentSearchedQuery] = useState<string | null>(null);
+  const [contentSearching, setContentSearching] = useState(false);
   const listRef = useRef<HTMLUListElement>(null);
   const searchDebounceRef = useRef<NodeJS.Timeout>();
   const visibleQuery = isActive ? query : '';
@@ -1085,6 +1152,67 @@ const SessionsPane: React.FC<SessionsPaneProps> = memo(({
   useEffect(() => {
     setSelectedIndex(0);
   }, [visibleQuery, fileFilter]);
+
+  // Run a full-text search over message contents for the current query.
+  const triggerContentSearch = useCallback(async () => {
+    const q = visibleQuery.trim();
+    if (!q || isFileSearchMode || fileFilter) return;
+    setContentSearching(true);
+    try {
+      const result = await window.electronAPI.invoke('sessions:search', workspacePath, q, {
+        includeArchived: false,
+      });
+      const sessions: SessionItem[] =
+        result?.success && Array.isArray(result.sessions) ? result.sessions : [];
+      setContentResults(sessions);
+      setContentSearchedQuery(q);
+      setSelectedIndex(0);
+    } catch {
+      setContentResults([]);
+      setContentSearchedQuery(q);
+    } finally {
+      setContentSearching(false);
+    }
+  }, [visibleQuery, isFileSearchMode, fileFilter, workspacePath]);
+
+  // Parent bumps contentSearchNonce on Shift+Tab; run the search via a ref so we
+  // don't re-fire every time the query (and thus the callback identity) changes.
+  const triggerRef = useRef(triggerContentSearch);
+  triggerRef.current = triggerContentSearch;
+  useEffect(() => {
+    if (contentSearchNonce > 0) triggerRef.current();
+  }, [contentSearchNonce]);
+
+  // Parent bumps contentClearNonce to drop back to title-filter mode.
+  useEffect(() => {
+    if (contentClearNonce > 0) {
+      setContentResults(null);
+      setContentSearchedQuery(null);
+      setSelectedIndex(0);
+    }
+  }, [contentClearNonce]);
+
+  // Report content-search status up so the parent's in-input button can reflect it.
+  useEffect(() => {
+    onContentStatusChange(
+      contentSearching ? 'searching' : contentResults !== null ? 'results' : 'idle',
+    );
+  }, [contentSearching, contentResults, onContentStatusChange]);
+
+  // Drop back to title-filter mode when the query no longer matches what we
+  // content-searched, or when @file filtering takes over.
+  useEffect(() => {
+    if (contentResults === null) return;
+    const stale =
+      visibleQuery.trim() !== contentSearchedQuery ||
+      isFileSearchMode ||
+      !!fileFilter ||
+      !isActive;
+    if (stale) {
+      setContentResults(null);
+      setContentSearchedQuery(null);
+    }
+  }, [visibleQuery, contentSearchedQuery, contentResults, isFileSearchMode, fileFilter, isActive]);
 
   // Load all sessions when opened
   useEffect(() => {
@@ -1137,13 +1265,15 @@ const SessionsPane: React.FC<SessionsPaneProps> = memo(({
     }
     // Typeahead mode: don't filter sessions; they're hidden behind typeahead anyway
     if (isFileSearchMode) return allSessions;
+    // Content-search mode: show sessions whose message text matched
+    if (contentResults !== null) return contentResults;
     // Normal title search
     if (!visibleQuery.trim()) return allSessions;
     const q = visibleQuery.toLowerCase();
     return allSessions.filter((s) =>
       (s.title || 'New conversation').toLowerCase().includes(q),
     );
-  }, [allSessions, visibleQuery, fileFilter, fileFilteredIds, isFileSearchMode]);
+  }, [allSessions, visibleQuery, fileFilter, fileFilteredIds, isFileSearchMode, contentResults]);
 
   const handleFileTypeaheadSelect = useCallback(
     (option: TypeaheadOption) => {

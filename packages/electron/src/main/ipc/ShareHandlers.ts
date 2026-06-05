@@ -35,6 +35,8 @@ const FILE_EXTENSION_TO_VIEWER_TYPE: Record<string, string> = {
 /** Compound file extensions that need full suffix matching (e.g. .mockup.html). */
 const COMPOUND_EXTENSION_TO_VIEWER_TYPE: Record<string, string> = {
   '.mockup.html': 'mockup',
+  '.calc.md': 'calc',
+  '.slides.md': 'slides',
 };
 
 /** Get the viewer type for a file path, or null for the default HTML viewer. */

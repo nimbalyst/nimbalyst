@@ -17,6 +17,7 @@ import {
   Transaction,
   YArrayEvent,
   YEvent,
+  YMapEvent,
 } from 'yjs';
 
 export type Comment = {
@@ -32,6 +33,7 @@ export type Thread = {
   comments: Array<Comment>;
   id: string;
   quote: string;
+  resolved: boolean;
   type: 'thread';
 };
 
@@ -68,11 +70,15 @@ export function createThread(
   quote: string,
   comments: Array<Comment>,
   id?: string,
+  resolved?: boolean,
 ): Thread {
   return {
     comments,
     id: id === undefined ? createUID() : id,
     quote,
+    // Backward-compatible: threads created/synced before resolve existed have
+    // no `resolved` field, so default to unresolved.
+    resolved: resolved === undefined ? false : resolved,
     type: 'thread',
   };
 }
@@ -82,6 +88,7 @@ function cloneThread(thread: Thread): Thread {
     comments: Array.from(thread.comments),
     id: thread.id,
     quote: thread.quote,
+    resolved: thread.resolved,
     type: 'thread',
   };
 }
@@ -222,6 +229,40 @@ export class CommentStore {
     return null;
   }
 
+  /**
+   * Mark a thread resolved (or unresolved). Unlike delete, this preserves the
+   * thread, its comments, and the document MarkNode -- it only flips a flag.
+   * Updates both the local array and the shared Y.Map so the state syncs to
+   * collaborators. Mirrors `addComment`'s index-based lookup of the thread's
+   * shared map.
+   */
+  setThreadResolved(thread: Thread, resolved: boolean): void {
+    const nextComments = Array.from(this._comments);
+    // The YJS types explicitly use `any` as well.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sharedCommentsArray: YArray<any> | null = this._getCollabComments();
+
+    for (let i = 0; i < nextComments.length; i++) {
+      const comment = nextComments[i];
+      if (comment.type === 'thread' && comment.id === thread.id) {
+        if (comment.resolved === resolved) {
+          return;
+        }
+        const newThread = cloneThread(comment);
+        newThread.resolved = resolved;
+        nextComments.splice(i, 1, newThread);
+        if (this.isCollaborative() && sharedCommentsArray !== null) {
+          this._withRemoteTransaction(() => {
+            sharedCommentsArray.get(i).set('resolved', resolved);
+          });
+        }
+        this._comments = nextComments;
+        triggerOnChange(this);
+        return;
+      }
+    }
+  }
+
   registerOnChange(onChange: () => void): () => void {
     const changeListeners = this._changeListeners;
     changeListeners.add(onChange);
@@ -275,6 +316,7 @@ export class CommentStore {
       sharedMap.set('timeStamp', commentOrThread.timeStamp);
     } else {
       sharedMap.set('quote', commentOrThread.quote);
+      sharedMap.set('resolved', commentOrThread.resolved);
       const commentsArray = new YArray();
       commentOrThread.comments.forEach((comment, i) => {
         const sharedChildComment = this._createCollabSharedMap(comment);
@@ -384,6 +426,7 @@ export class CommentStore {
                                   ),
                               ),
                             id,
+                            map.get('resolved') as boolean | undefined,
                           )
                         : createComment(
                             map.get('content'),
@@ -416,6 +459,27 @@ export class CommentStore {
                   });
                   offset++;
                 }
+              }
+            }
+          } else if (event instanceof YMapEvent) {
+            // A field on a thread's shared map changed (e.g. `resolved` toggled
+            // by a collaborator). The thread/comment array structure is
+            // unchanged, so reflect the new value onto the local thread.
+            const target = event.target;
+            if (
+              target instanceof YMap &&
+              event.keysChanged.has('resolved') &&
+              target.get('type') === 'thread'
+            ) {
+              const threadId = target.get('id');
+              const resolved = target.get('resolved') === true;
+              const existing = this._comments.find(
+                (t) => t.type === 'thread' && t.id === threadId,
+              ) as Thread | undefined;
+              if (existing && existing.resolved !== resolved) {
+                this._withLocalTransaction(() => {
+                  this.setThreadResolved(existing, resolved);
+                });
               }
             }
           }

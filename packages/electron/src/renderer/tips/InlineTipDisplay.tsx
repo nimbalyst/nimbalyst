@@ -1,14 +1,14 @@
 /**
  * InlineTipDisplay
  *
- * Always renders a tip in the empty panel of a new AI session. Cycles
- * through every defined tip (priority-sorted) -- dismissed/completed state
- * is recorded for analytics but does NOT remove a tip from rotation.
+ * Renders the currently active tip in the empty panel of a new AI session.
+ * The active tip is chosen by TipProvider based on tip eligibility, or by
+ * an explicit user action like browsing tips.
  *
  * Lifecycle:
- *  - On mount, picks the highest-priority tip if no tip is currently active.
- *  - Dismiss / action / Next all advance to the next tip in rotation so
- *    the inline slot is never empty while a new-session panel is open.
+ *  - On mount, it only registers that an inline tip surface exists.
+ *  - TipProvider decides whether an eligible tip should be activated.
+ *  - Dismiss / action clear the active tip; Next is explicit user browsing.
  *
  * Footer controls:
  *  - "Next" cycles forward.
@@ -54,15 +54,6 @@ export function InlineTipDisplay() {
     return () => setVisibleCount((n) => Math.max(0, n - 1));
   }, [setVisibleCount]);
 
-  // Ensure a tip is always selected while this surface is mounted.
-  useEffect(() => {
-    if (activeTipId) return;
-    if (orderedTips.length === 0) return;
-    const first = orderedTips[0];
-    setActiveTipId(first.id);
-    recordTipShown(first.id, first.version);
-  }, [activeTipId, setActiveTipId]);
-
   const activeTip = useMemo(() => {
     if (!activeTipId) return null;
     return orderedTips.find((t) => t.id === activeTipId) ?? null;
@@ -94,8 +85,8 @@ export function InlineTipDisplay() {
       surface: 'inline_empty_transcript',
     });
     markTipDismissed(activeTip.id, activeTip.version);
-    advance('tip_navigated', { direction: 'next', reason: 'dismiss' });
-  }, [activeTip, posthog, advance]);
+    setActiveTipId(null);
+  }, [activeTip, posthog, setActiveTipId]);
 
   const handleAction = useCallback(() => {
     if (!activeTip?.content.action) return;
@@ -107,8 +98,8 @@ export function InlineTipDisplay() {
     });
     activeTip.content.action.onClick();
     markTipCompleted(activeTip.id, activeTip.version);
-    advance('tip_navigated', { direction: 'next', reason: 'action' });
-  }, [activeTip, posthog, advance]);
+    setActiveTipId(null);
+  }, [activeTip, posthog, setActiveTipId]);
 
   const handleSecondaryAction = useCallback(() => {
     if (!activeTip?.content.secondaryAction) return;

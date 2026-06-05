@@ -386,17 +386,36 @@ export interface AgentWorkflowsContribution {
  * New file menu contribution.
  */
 export interface NewFileMenuContribution {
-  /** File extension with dot (e.g., '.csv') */
+  /**
+   * Identifier for the menu item. For `createFile` actions this is the file
+   * extension with dot (e.g., '.csv') and is appended to the typed name. For
+   * `openVirtualTab` actions it is just a unique key.
+   */
   extension: string;
 
-  /** Name shown in menu */
+  /** Name shown in menu (rendered as "New {displayName}") */
   displayName: string;
 
   /** Material icon name */
   icon: string;
 
-  /** Initial file content */
-  defaultContent: string;
+  /**
+   * What selecting the item does. Defaults to `createFile`.
+   * - `createFile`: prompts for a name and writes a file with `defaultContent`.
+   * - `openVirtualTab`: opens a fileless editor tab at `<virtualScheme><id>`
+   *   (no file on disk, no name prompt). The custom editor registered for that
+   *   virtual prefix renders it.
+   */
+  action?: 'createFile' | 'openVirtualTab';
+
+  /** Initial file content (for `createFile`). */
+  defaultContent?: string;
+
+  /**
+   * For `openVirtualTab`: the `virtual://…/` prefix to open. A unique id (and a
+   * `?title=` derived from displayName) is appended by the host.
+   */
+  virtualScheme?: string;
 }
 
 export interface CustomEditorContribution {

@@ -1,0 +1,353 @@
+/* Document comments UI. Uses canonical --nim-* theme variables. */
+
+/* --- Floating "Add comment" affordance ------------------------------------ */
+.nim-add-comment-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--nim-text);
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  z-index: 60;
+}
+.nim-add-comment-button:hover {
+  background: var(--nim-bg-hover);
+}
+.nim-add-comment-button .material-symbols-outlined {
+  font-size: 16px;
+}
+
+/* --- Composer popover ------------------------------------------------------ */
+.nim-comment-composer-popover {
+  z-index: 60;
+  width: 300px;
+}
+
+.nim-comment-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+/* Positioning context for the placeholder, which Lexical renders as a sibling
+   of the contenteditable (not inside it). */
+.nim-comment-composer-editor {
+  position: relative;
+}
+
+.nim-comment-composer-input {
+  position: relative;
+  min-height: 48px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--nim-text);
+  background: var(--nim-bg);
+  border: 1px solid var(--nim-border);
+  border-radius: 6px;
+  outline: none;
+}
+
+.nim-comment-composer-placeholder {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  font-size: 13px;
+  color: var(--nim-text-faint);
+  pointer-events: none;
+  user-select: none;
+}
+
+.nim-comment-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.nim-comment-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.nim-comment-btn-cancel {
+  color: var(--nim-text-muted);
+  background: transparent;
+  border-color: var(--nim-border);
+}
+.nim-comment-btn-cancel:hover {
+  background: var(--nim-bg-hover);
+}
+.nim-comment-btn-submit {
+  color: var(--nim-on-primary);
+  background: var(--nim-primary);
+}
+.nim-comment-btn-submit:hover:not(:disabled) {
+  background: var(--nim-primary-hover);
+}
+.nim-comment-btn-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.nim-comment-btn-resolve,
+.nim-comment-btn-unresolve,
+.nim-comment-btn-delete-thread {
+  color: var(--nim-text-muted);
+  background: transparent;
+  border-color: var(--nim-border);
+  align-self: flex-start;
+}
+.nim-comment-btn-resolve:hover,
+.nim-comment-btn-unresolve:hover {
+  background: var(--nim-bg-hover);
+  color: var(--nim-text);
+}
+.nim-comment-btn-delete-thread:hover {
+  background: var(--nim-bg-hover);
+  color: var(--nim-error);
+}
+
+/* The Resolve / Unresolve and Delete buttons sit on one row. */
+.nim-comment-thread-footer .nim-comment-btn-resolve,
+.nim-comment-thread-footer .nim-comment-btn-unresolve {
+  margin-right: 6px;
+}
+
+/* --- Reserve space for the docked panel ------------------------------------ */
+/* The toggle/panel portal into `.editor-container` (the editor pane). When the
+   panel is open, push the scrollable content left so text isn't hidden. */
+.editor-container.comments-panel-open .editor-scroller {
+  padding-right: 336px;
+}
+
+/* --- Panel toggle ---------------------------------------------------------- */
+.nim-comments-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  color: var(--nim-text-muted);
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  z-index: 55;
+}
+.nim-comments-toggle:hover,
+.nim-comments-toggle.active {
+  color: var(--nim-text);
+  background: var(--nim-bg-hover);
+}
+.nim-comments-toggle .material-symbols-outlined {
+  font-size: 18px;
+}
+.nim-comments-toggle-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--nim-on-primary);
+  text-align: center;
+  background: var(--nim-primary);
+  border-radius: 8px;
+}
+
+/* --- Side panel (docked to the right of the editor pane) ------------------- */
+.nim-comments-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--nim-bg-secondary);
+  border-left: 1px solid var(--nim-border);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.18);
+  z-index: 10;
+  overflow: hidden;
+}
+
+.nim-comments-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--nim-border);
+}
+.nim-comments-panel-icon {
+  font-size: 18px;
+  color: var(--nim-text-muted);
+}
+.nim-comments-panel-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--nim-text);
+}
+.nim-comments-panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--nim-text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.nim-comments-panel-close:hover {
+  color: var(--nim-text);
+  background: var(--nim-bg-hover);
+}
+.nim-comments-panel-close .material-symbols-outlined {
+  font-size: 18px;
+}
+
+.nim-comments-panel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.nim-comments-empty {
+  padding: 24px 12px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--nim-text-faint);
+}
+
+.nim-comment-thread {
+  padding: 8px;
+  margin-bottom: 8px;
+  background: var(--nim-bg);
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.nim-comment-thread.active {
+  border-color: var(--nim-primary);
+  box-shadow: 0 0 0 1px var(--nim-primary);
+}
+.nim-comment-thread.resolved {
+  opacity: 0.7;
+  background: var(--nim-bg-secondary);
+}
+.nim-comment-thread.resolved .nim-comment-thread-footer {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.nim-comment-resolved-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 4px;
+  color: var(--nim-success, #3fa66a);
+  vertical-align: text-bottom;
+}
+.nim-comment-resolved-badge .material-symbols-outlined {
+  font-size: 14px;
+}
+.nim-comment-resolved-summary {
+  flex: 1;
+  font-size: 11px;
+  color: var(--nim-text-faint);
+}
+
+.nim-comment-quote {
+  margin-bottom: 6px;
+  padding-left: 8px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--nim-text-muted);
+  border-left: 3px solid var(--nim-highlight-border, var(--nim-border));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nim-comment {
+  padding: 4px 0;
+}
+.nim-comment-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.nim-comment-author {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--nim-text);
+}
+.nim-comment-time {
+  flex: 1;
+  font-size: 11px;
+  color: var(--nim-text-faint);
+}
+.nim-comment-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--nim-text-faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+}
+.nim-comment:hover .nim-comment-delete {
+  opacity: 1;
+}
+.nim-comment-delete:hover {
+  color: var(--nim-error);
+}
+.nim-comment-delete .material-symbols-outlined {
+  font-size: 15px;
+}
+.nim-comment-content {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--nim-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.nim-comment-thread-footer {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.nim-comment-thread-footer .nim-comment-composer {
+  box-shadow: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+}

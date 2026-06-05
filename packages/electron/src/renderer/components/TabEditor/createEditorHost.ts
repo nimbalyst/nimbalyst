@@ -146,6 +146,9 @@ export function createEditorHost(options: EditorHostOptions): EditorHost {
 
     // ============ SAVING ============
     async saveContent(content: string | ArrayBuffer): Promise<void> {
+      // Virtual (fileless) tabs have no disk backing; swallow saves so editors
+      // that call saveContent on a virtual path don't hit the disk save IPC.
+      if (options.filePath.startsWith('virtual://')) return;
       return options.saveContent(content);
     },
 

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import type { NodeKey } from 'lexical';
 import type { Provider } from '@lexical/yjs';
 import type { Doc } from 'yjs';
+import type { CommentsConfig } from './commenting/types';
 
 /**
  * Configuration interface for the Nimbalyst component.
@@ -172,6 +173,15 @@ export interface EditorConfig {
      */
     initialEditorState?: (() => void) | string;
   };
+
+  /**
+   * When set, enables document comments (text-selection comments via MarkNode
+   * with an `@`-mention picker and a thread side-panel). Only meaningful for a
+   * collaborative document; the host supplies the shared Y.Doc, the current
+   * user, team members, document metadata, and the inbox-fanout callback. See
+   * `commenting/types.ts`.
+   */
+  comments?: CommentsConfig;
 }
 
 export const DEFAULT_EDITOR_CONFIG: EditorConfig = {

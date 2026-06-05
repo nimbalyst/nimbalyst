@@ -94,6 +94,7 @@ import { usePostHog } from 'posthog-js/react';
 import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom } from '../../store/atoms/appSettings';
 import { supportsEffortLevel, parseEffortLevel, type EffortLevel } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
+import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
 import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPeekSizeAtoms';
 import { registerSessionWorkspace, loadInitialSessionFileState } from '../../store/listeners/fileStateListeners';
@@ -285,7 +286,7 @@ const readFile = async (filePath: string): Promise<{ success: boolean; content?:
   try {
     const result = await window.electronAPI.readFileContent(filePath);
     if (!result) {
-      return { success: false, error: 'No response from file reader' };
+      return { success: false, error: `File not found: ${filePath}` };
     }
     if (!result.success) {
       return { success: false, error: result.error || 'Failed to read file' };
@@ -1170,8 +1171,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   }, [sessionId, setIsProcessing]);
 
   const handleFileClick = useCallback((filePath: string) => {
-    onFileClick?.(filePath);
-  }, [onFileClick]);
+    const baseDir = sessionWorktreePath ?? workspacePath;
+    onFileClick?.(resolveTranscriptClickPath(filePath, baseDir));
+  }, [onFileClick, sessionWorktreePath, workspacePath]);
 
   const setRequestOpenSession = useSetAtom(requestOpenSessionAtom);
   const handleOpenSession = useCallback((targetSessionId: string) => {

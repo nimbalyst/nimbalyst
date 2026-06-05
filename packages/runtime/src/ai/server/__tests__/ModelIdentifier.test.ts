@@ -26,6 +26,15 @@ describe('ModelIdentifier', () => {
       expect(id.isExtendedContext).toBe(true);
     });
 
+    it('normalizes claude-code opus-4-8 alias to canonical opus', () => {
+      const id = ModelIdentifier.parse('claude-code:opus-4-8-1m');
+      expect(id.provider).toBe('claude-code');
+      expect(id.model).toBe('opus-1m');
+      expect(id.combined).toBe('claude-code:opus-1m');
+      expect(id.baseVariant).toBe('opus');
+      expect(id.isExtendedContext).toBe(true);
+    });
+
     it('parses valid openai model identifiers', () => {
       const id = ModelIdentifier.parse('openai:gpt-4o');
       expect(id.provider).toBe('openai');
@@ -97,6 +106,13 @@ describe('ModelIdentifier', () => {
       expect(id.model).toBe('sonnet-1m'); // Normalized to lowercase
       expect(id.baseVariant).toBe('sonnet');
       expect(id.isExtendedContext).toBe(true);
+    });
+
+    it('accepts explicit opus-4-8 alias and normalizes to canonical opus', () => {
+      const id = ModelIdentifier.create('claude-code', 'Opus-4-8');
+      expect(id.provider).toBe('claude-code');
+      expect(id.model).toBe('opus');
+      expect(id.combined).toBe('claude-code:opus');
     });
 
     it('throws on invalid claude-code variant', () => {

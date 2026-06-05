@@ -12,6 +12,9 @@
 #   claude-plugin/ (if present, when manifest declares contributions.claudePlugin)
 #   screenshots/   (if present)
 #   README.md      (if present)
+#
+# Set NIMBALYST_SKIP_BUILD=1 to package the existing dist/ output without
+# running the extension's local build script.
 
 set -e
 
@@ -49,7 +52,9 @@ EXT_NAME=$(node -p "require('$MANIFEST').name")
 echo "Building $EXT_NAME ($EXT_ID) v$EXT_VERSION..."
 
 # Build the extension if it has a build script
-if [ -f "$EXTENSION_PATH/package.json" ]; then
+if [ "${NIMBALYST_SKIP_BUILD:-0}" = "1" ]; then
+  echo "  Skipping build and packaging existing dist/"
+elif [ -f "$EXTENSION_PATH/package.json" ]; then
   HAS_BUILD=$(node -p "!!require('$EXTENSION_PATH/package.json').scripts?.build" 2>/dev/null || echo "false")
   if [ "$HAS_BUILD" = "true" ]; then
     echo "  Running build..."

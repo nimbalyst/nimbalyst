@@ -1,4 +1,5 @@
 import { CalcSheetEditor } from './CalcSheetEditor';
+import { CalcSheetShareViewer } from './CalcSheetShareViewer';
 import './styles.css';
 
 export async function activate(): Promise<void> {
@@ -11,4 +12,5 @@ export async function deactivate(): Promise<void> {
 
 export const components = {
   CalcSheetEditor,
+  CalcSheetShareViewer,
 };

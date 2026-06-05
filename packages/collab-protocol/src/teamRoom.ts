@@ -5,6 +5,12 @@
  * shared document index, and org key rotation broadcasts.
  */
 
+import type {
+  AnnouncePersonalOrgMessage,
+  InboxEventFanoutMessage,
+  InboxEventFanoutAckMessage,
+} from './inbox.js';
+
 // ============================================================================
 // Client -> Server Messages
 // ============================================================================
@@ -17,7 +23,9 @@ export type TeamClientMessage =
   | TeamDocIndexSyncRequestMessage
   | TeamDocIndexRegisterMessage
   | TeamDocIndexUpdateMessage
-  | TeamDocIndexRemoveMessage;
+  | TeamDocIndexRemoveMessage
+  | AnnouncePersonalOrgMessage
+  | InboxEventFanoutMessage;
 
 /** Request full team state snapshot */
 export interface TeamSyncRequestMessage {
@@ -97,6 +105,7 @@ export type TeamServerMessage =
   | TeamDocIndexBroadcastMessage
   | TeamDocIndexRemoveBroadcastMessage
   | TeamOrgKeyRotatedMessage
+  | InboxEventFanoutAckMessage
   | TeamErrorMessage;
 
 /** Full team state snapshot */
@@ -236,4 +245,10 @@ export interface MemberInfo {
   email: string | null;
   hasKeyEnvelope: boolean;
   hasIdentityKey: boolean;
+  /**
+   * The member's personal org id, used to address their PersonalIndexRoom
+   * (`org:{personalOrgId}:user:{userId}:index`) for inbox-event fanout.
+   * Null until the member's client announces it via `announcePersonalOrg`.
+   */
+  personalOrgId?: string | null;
 }

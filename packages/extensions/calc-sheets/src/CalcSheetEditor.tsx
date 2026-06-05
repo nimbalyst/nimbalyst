@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { IDisposable } from 'monaco-editor';
 import type { EditorHostProps } from '@nimbalyst/extension-sdk';
 import { MonacoEditor } from '@nimbalyst/runtime';
+import { applyCalcSheetMonaco } from './calcSheetMonaco';
 import { evaluateCalcSheet } from './evaluator';
 import { parseCalcSheetDocument } from './parser';
 
@@ -157,13 +158,15 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
   const attachEditor = useCallback((wrapper: any) => {
     editorRef.current = wrapper;
     const editor = wrapper?.editor;
-    if (!editor) return;
+    const monaco = wrapper?.monaco;
+    if (!editor || !monaco) return;
 
     contentListenerRef.current?.dispose();
     scrollListenerRef.current?.dispose();
     contentSizeListenerRef.current?.dispose();
     layoutListenerRef.current?.dispose();
 
+    applyCalcSheetMonaco(editor, monaco, host.theme);
     refreshLayout(editor);
     if (gutterRef.current) {
       gutterRef.current.scrollTop = editor.getScrollTop();
@@ -186,13 +189,19 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
     layoutListenerRef.current = editor.onDidLayoutChange(() => {
       refreshLayout(editor);
     });
-  }, [refreshLayout, composeRawContent]);
+  }, [refreshLayout, composeRawContent, host.theme]);
 
   useEffect(() => {
     return host.onFileChanged((nextRawContent) => {
       setRawContent(nextRawContent);
     });
   }, [host]);
+
+  useEffect(() => {
+    if (editorRef.current?.editor && editorRef.current?.monaco) {
+      applyCalcSheetMonaco(editorRef.current.editor, editorRef.current.monaco, host.theme);
+    }
+  }, [host.theme, parsed]);
 
   if (rawContent === null && !loadError) {
     return <div className="calc-sheets calc-sheets--loading">Loading calc sheet...</div>;

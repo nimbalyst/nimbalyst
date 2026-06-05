@@ -686,6 +686,16 @@
   border-bottom: 2px solid rgba(255, 212, 0, 0.7);
 }
 
+/* Resolved comment threads keep their mark but render muted (dotted, faint). */
+.nim-mark.resolved {
+  background: transparent;
+  border-bottom: 1px dotted var(--nim-text-faint);
+}
+.nim-mark.resolved.selected {
+  background: var(--nim-highlight-bg);
+  border-bottom: 1px dotted var(--nim-highlight-border);
+}
+
 /* ===== EMBED BLOCKS ===== */
 
 .nim-embed-block {

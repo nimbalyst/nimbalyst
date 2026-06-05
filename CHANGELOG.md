@@ -11,12 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 <!-- New features go here -->
 - Edit the most recent user message before the model has replied. A pencil button next to the copy action opens an inline editor; submitting rewrites the raw message in place and re-runs the turn against the provider, with the canonical transcript reprojected from the edited raw. Scoped to the v0 slice of #493 — earlier-message edits, branches, and per-message delete remain tracked on the issue. The pencil is disabled (with an explanatory tooltip) when the session's project syncs across devices, since the in-place row edit does not yet propagate over sync. (#503)
+- File paths mentioned in AI transcripts are now clickable links that open the file, even when the agent writes them as plain text or inline code.
+- New Browser Tab command in the File menu (Cmd+Shift+B) opens a browser virtual tab in files mode.
+- Quick Open's Sessions tab can now search message contents (Shift+Tab or the in-input button), not just titles.
+- Inline comments on shared documents: select text to add a comment, reply in threads with @-mentions, and resolve threads, all synced in realtime across collaborators.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Calc Sheets now ship a Falcon 9 `.calc.md` demo and custom syntax coloring for headings, comments, variables, units, and formatters.
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Effort Level selector now takes effect: sessions follow the selected/default effort instead of always running at "high".
+- Typing in the chat box no longer has keystrokes hijacked into an open markdown file while an agent is editing it.
+- Restored diff application in headless mode (tests and server-side diffing), which had started throwing on `getRootElement` after the chat-box focus fix.
+- Browser extension toolbar and URL bar now use the active theme's colors instead of rendering with a white URL box in dark mode.
 - Runtime declaration files now emit to `dist/<path>` matching the `package.json` "exports" type targets, instead of drifting to `dist/runtime/src/<path>`. This left every `@nimbalyst/runtime/...` subpath's types dangling and could fail the electron TypeScript check under exports-based resolution.
 
 ### Removed

@@ -969,10 +969,13 @@ export class ElectronDocumentService implements DocumentService {
       return null;
     }
 
-    // Find the virtual document descriptor
+    // Find the virtual document descriptor. Only built-in virtual docs (welcome,
+    // tracker views, etc.) have loadable text content here. Extension-owned
+    // virtual tabs (e.g. `virtual://com.nimbalyst.browser/…`) are rendered by
+    // their custom editor and have no content to load, so a miss is expected --
+    // return null quietly rather than logging an error on every such tab open.
     const virtualDoc = Object.values(VIRTUAL_DOCS).find(doc => doc.virtualPath === virtualPath);
     if (!virtualDoc) {
-      console.error(`[DocumentService] Unknown virtual document: ${virtualPath}`);
       return null;
     }
 

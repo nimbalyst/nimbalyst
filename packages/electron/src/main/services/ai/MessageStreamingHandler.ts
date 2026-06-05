@@ -33,7 +33,7 @@ import {
 } from '@nimbalyst/runtime/ai/server/types';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
-import { parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
@@ -57,6 +57,7 @@ import {
   markCommunityPopupShown,
   wasCommunityPopupShownThisLaunch,
   incrementCompletedSessionsWithTools,
+  getDefaultEffortLevel,
 } from '../../utils/store';
 import {
   safeSend,
@@ -483,14 +484,14 @@ export class MessageStreamingHandler {
       if (isProviderClaudeCode) {
       }
 
+      const reinitEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
       const reinitConfig: any = {
         apiKey,
         maxTokens: (session.providerConfig as any)?.maxTokens,
         temperature: (session.providerConfig as any)?.temperature,
-        // Pass effort level from session metadata (Opus 4.6 adaptive reasoning)
-        ...((session.metadata as any)?.effortLevel && {
-          effortLevel: parseEffortLevel((session.metadata as any).effortLevel),
-        }),
+        // Effort level: explicit session value, else the app-wide default the
+        // selector displays (Opus 4.6 adaptive reasoning).
+        ...(reinitEffortLevel && { effortLevel: reinitEffortLevel }),
       };
 
       // Add baseUrl for LMStudio
@@ -1070,13 +1071,12 @@ export class MessageStreamingHandler {
       } else {
         // Refresh credentials every turn for all providers so key changes in settings apply immediately.
         const freshApiKey = this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
+        const turnEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
         await provider.initialize({
           apiKey: freshApiKey,
           maxTokens: (session.providerConfig as any)?.maxTokens,
           temperature: (session.providerConfig as any)?.temperature,
-          ...((session.metadata as any)?.effortLevel && {
-            effortLevel: parseEffortLevel((session.metadata as any).effortLevel),
-          }),
+          ...(turnEffortLevel && { effortLevel: turnEffortLevel }),
         });
       }
 

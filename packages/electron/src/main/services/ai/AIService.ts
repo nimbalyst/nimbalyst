@@ -21,7 +21,7 @@ import {
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
-import { parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { SessionStore } from '@nimbalyst/runtime';
 import {
   ModelIdentifier,
@@ -64,7 +64,8 @@ import {
   markCommunityPopupShown,
   normalizeAIProviderOverrides,
   shouldShowCommunityPopup,
-  wasCommunityPopupShownThisLaunch
+  wasCommunityPopupShownThisLaunch,
+  getDefaultEffortLevel
 } from '../../utils/store';
 import { mergeAISettings, getAIProviderOverridesWithWorktreeFallback } from '../../utils/aiSettingsMerge';
 import { DocumentContextService, type RawDocumentContext, type PreparedDocumentContext } from '@nimbalyst/runtime';
@@ -522,13 +523,12 @@ export class AIService {
     const effectiveWorkspacePath = session.workspacePath || workspacePath;
     const apiKey = this.getApiKeyForProvider('claude-code', effectiveWorkspacePath);
 
+    const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
     const config: ProviderConfig = {
       maxTokens: (session.providerConfig as any)?.maxTokens,
       temperature: (session.providerConfig as any)?.temperature,
       ...(apiKey ? { apiKey } : {}),
-      ...((session.metadata as any)?.effortLevel && {
-        effortLevel: parseEffortLevel((session.metadata as any).effortLevel),
-      }),
+      ...(effortLevel && { effortLevel }),
     };
 
     const fullModel = session.model || session.providerConfig?.model;
@@ -1729,16 +1729,19 @@ export class AIService {
         if (providerSettings?.['claude-code']?.allowedTools) {
           initConfig.allowedTools = providerSettings['claude-code'].allowedTools;
         }
-        // Pass effort level from session metadata (Opus 4.6 adaptive reasoning)
-        if ((session.metadata as any)?.effortLevel) {
-          initConfig.effortLevel = parseEffortLevel((session.metadata as any).effortLevel);
+        // Effort level: explicit session value, else the app-wide default the
+        // selector displays (Opus 4.6 adaptive reasoning).
+        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+        if (effortLevel) {
+          initConfig.effortLevel = effortLevel;
         }
       }
 
       // Pass effort level for OpenAI Codex
       if (provider === 'openai-codex') {
-        if ((session.metadata as any)?.effortLevel) {
-          initConfig.effortLevel = parseEffortLevel((session.metadata as any).effortLevel);
+        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+        if (effortLevel) {
+          initConfig.effortLevel = effortLevel;
         }
       }
 

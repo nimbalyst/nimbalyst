@@ -10,8 +10,12 @@
  * - Combined format is always "provider:model"
  */
 
-import { AIProviderType, AI_PROVIDER_TYPES, CLAUDE_CODE_VARIANTS } from './types';
-import { DEFAULT_MODELS } from '../modelConstants';
+import { AIProviderType, AI_PROVIDER_TYPES } from './types';
+import {
+  CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS,
+  DEFAULT_MODELS,
+  normalizeClaudeCodeVariant,
+} from '../modelConstants';
 
 /**
  * Valid Claude Code model suffixes (e.g., -1m for 1M context window)
@@ -130,14 +134,15 @@ export class ModelIdentifier {
         }
       }
 
-      if (!(CLAUDE_CODE_VARIANTS as readonly string[]).includes(baseVariant)) {
+      const normalizedVariant = normalizeClaudeCodeVariant(baseVariant);
+      if (!normalizedVariant) {
         throw new Error(
-          `Invalid Claude Code variant: ${model}. Must be one of: ${CLAUDE_CODE_VARIANTS.join(', ')} (optionally with -1m suffix)`
+          `Invalid Claude Code variant: ${model}. Must be one of: ${CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS.join(', ')} (optionally with -1m suffix)`
         );
       }
 
       // Normalize to lowercase for consistency
-      return new ModelIdentifier(provider, baseVariant + suffix);
+      return new ModelIdentifier(provider, normalizedVariant + suffix);
     }
 
     if (provider === 'openai-codex') {

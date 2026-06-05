@@ -18,6 +18,18 @@ export function getFileName(filePath: string): string {
     const docMatch = filePath.match(/:doc:(.+)$/);
     return docMatch ? docMatch[1] : filePath;
   }
+  // virtual://<scheme>/<segment>?title=…&… -> fileless tabs may carry a display
+  // title in the query (e.g. a browser tab's page title). Fall back to the last
+  // path segment with the query stripped so the name never leaks `?url=…`.
+  if (filePath.startsWith('virtual://')) {
+    const queryIndex = filePath.indexOf('?');
+    if (queryIndex >= 0) {
+      const title = new URLSearchParams(filePath.slice(queryIndex + 1)).get('title');
+      if (title) return title;
+      return basename(filePath.slice(0, queryIndex));
+    }
+    return basename(filePath);
+  }
   return basename(filePath);
 }
 

@@ -12,7 +12,11 @@ export interface ExtensionFileType {
   extension: string;
   displayName: string;
   icon: string;
-  defaultContent: string;
+  defaultContent?: string;
+  /** 'createFile' (default) writes a file; 'openVirtualTab' opens a fileless tab. */
+  action?: 'createFile' | 'openVirtualTab';
+  /** For 'openVirtualTab': the virtual:// prefix to open. */
+  virtualScheme?: string;
 }
 
 interface NewFileMenuProps {
@@ -105,5 +109,7 @@ export function contributionToExtensionFileType(
     displayName: contribution.displayName,
     icon: contribution.icon,
     defaultContent: contribution.defaultContent,
+    action: contribution.action,
+    virtualScheme: contribution.virtualScheme,
   };
 }

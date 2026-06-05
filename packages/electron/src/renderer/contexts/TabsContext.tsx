@@ -288,6 +288,7 @@ export function TabsProvider({
       content,
       isDirty: false,
       isPinned: false,
+      isVirtual: filePath.startsWith('virtual://'),
       contentHash: simpleHash(content),
       contentLoadedAt: new Date()
     };

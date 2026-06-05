@@ -1,7 +1,7 @@
 /**
  * Tip: Mobile Keep-Awake
  *
- * Shows when user has sync enabled but preventSleepMode is 'off',
+ * Shows when user has sync enabled and effective sleep prevention is 'off',
  * suggesting they enable keep-awake so their computer doesn't sleep
  * while mobile sync is active.
  */
@@ -36,10 +36,10 @@ export const mobileKeepAwakeTip: TipDefinition = {
     screen: '*',
     condition: () => {
       const syncConfig = store.get(syncConfigAtom);
-      return (
-        syncConfig.enabled &&
-        (syncConfig.preventSleepMode === 'off' || !syncConfig.preventSleepMode)
-      );
+      const effectivePreventSleepMode =
+        syncConfig.preventSleepMode ?? (syncConfig.preventSleepWhenSyncing ? 'always' : 'off');
+
+      return syncConfig.enabled && effectivePreventSleepMode === 'off';
     },
     delay: 3000,
     priority: 10,

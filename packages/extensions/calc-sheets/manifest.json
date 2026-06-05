@@ -20,7 +20,13 @@
       "Custom editor embeds directly inside markdown documents",
       "YAML frontmatter for currency, units, and display defaults"
     ],
-    "fileTypes": [".calc.md"]
+    "fileTypes": [".calc.md"],
+    "screenshots": [
+      {
+        "alt": "Calc Sheets editor showing assumptions, formulas, and live result gutters",
+        "fileToOpen": "samples/demo.calc.md"
+      }
+    ]
   },
   "permissions": {
     "filesystem": true

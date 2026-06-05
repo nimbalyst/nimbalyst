@@ -7,6 +7,7 @@
  */
 
 export * from './roomIds.js';
+export * from './inbox.js';
 export * from './personal.js';
 export * from './teamDocument.js';
 export * from './teamDocumentHistory.js';

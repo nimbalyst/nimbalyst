@@ -31,6 +31,7 @@ import { anyWindowReferencesWorkspace } from '../window/windowState';
 import { ElectronDocumentService, setupDocumentServiceHandlers } from '../services/ElectronDocumentService';
 import { ElectronFileSystemService } from '../services/ElectronFileSystemService';
 import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
+import { addNimPreviewWorkspaceRoot } from '../protocols/nimPreviewProtocol';
 import { getMcpConfigService } from '../index';
 import { addToRecentItems, getWorkspaceNavigationHistory } from '../utils/store';
 import { navigationHistoryService } from '../services/NavigationHistoryService';
@@ -77,6 +78,7 @@ function ensureServicesForPath(window: BrowserWindow, workspacePath: string): vo
     }
 
     addNimAssetRoot(workspacePath);
+    addNimPreviewWorkspaceRoot(workspacePath);
 
     if (!documentServices.has(workspacePath)) {
         const docService = new ElectronDocumentService(workspacePath);

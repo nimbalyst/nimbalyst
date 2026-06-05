@@ -56,7 +56,6 @@ import {
   $convertFromEnhancedMarkdownString,
   $convertToEnhancedMarkdownString,
 } from '../../markdown';
-import {INSERT_EMBED_COMMAND} from '@lexical/react/LexicalAutoEmbedPlugin';
 import {INSERT_HORIZONTAL_RULE_COMMAND} from '@lexical/extension';
 import {$isHeadingNode} from '@lexical/rich-text';
 import {
@@ -110,7 +109,6 @@ import DropdownColorPicker from '../../ui/DropdownColorPicker';
 import ThemeToggle from '../../ui/ThemeToggle';
 import {getSelectedNode} from '../../utils/getSelectedNode';
 import {sanitizeUrl} from '../../utils/url';
-import {EmbedConfigs} from '../AutoEmbedPlugin';
 import {INSERT_COLLAPSIBLE_COMMAND} from '../CollapsiblePlugin';
 import {InsertImageDialog} from '../ImagesPlugin';
 import InsertLayoutDialog from '../LayoutPlugin/InsertLayoutDialog';
@@ -1284,6 +1282,7 @@ export default function ToolbarPlugin({
                   <i className="icon caret-right" />
                   <span className="text">Collapsible container</span>
                 </DropDownItem>
+                {/* Disabled until the embed insert handlers are implemented.
                 {!markdownOnly && EmbedConfigs.map((embedConfig) => (
                   <DropDownItem
                     key={embedConfig.type}
@@ -1297,7 +1296,7 @@ export default function ToolbarPlugin({
                     {embedConfig.icon}
                     <span className="text">{embedConfig.contentName}</span>
                   </DropDownItem>
-                ))}
+                ))} */}
                 </DropDown>
               </div>
             </>

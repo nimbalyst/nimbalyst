@@ -5,6 +5,20 @@
   "description": "Structured planning and tracking with YAML frontmatter",
   "author": "Nimbalyst",
   "apiVersion": "1.0.0",
+  "marketplace": {
+    "categories": ["ai-tools"],
+    "tags": ["planning", "tracker", "implementation", "frontmatter", "workflow"],
+    "icon": "checklist",
+    "featured": false,
+    "tagline": "Structured plan, implement, and tracker workflows for AI sessions",
+    "longDescription": "Planning adds the structured workflows behind Nimbalyst's design, implementation, and tracker commands. Use it to create plan documents, execute them with progress tracking, and manage bugs, tasks, and decisions with consistent YAML-backed structure.",
+    "highlights": [
+      "Structured design and implementation workflows",
+      "Tracker commands for bugs, tasks, ideas, and decisions",
+      "Progress-aware plan execution in AI sessions",
+      "Markdown and YAML frontmatter that stay git-friendly"
+    ]
+  },
   "permissions": {
     "filesystem": true,
     "ai": true
