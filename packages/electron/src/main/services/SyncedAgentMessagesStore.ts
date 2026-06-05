@@ -136,5 +136,22 @@ export function createSyncedAgentMessagesStore(
       }
       return counts;
     },
+
+    async getLastMessage(sessionId: string): Promise<AgentMessage | null> {
+      if (!baseStore.getLastMessage) {
+        throw new Error('Base store does not support getLastMessage');
+      }
+      return baseStore.getLastMessage(sessionId);
+    },
+
+    async updateMessageContent(messageId: number, content: string): Promise<void> {
+      if (!baseStore.updateMessageContent) {
+        throw new Error('Base store does not support updateMessageContent');
+      }
+      // Local-only: in-place edits are intentionally not propagated over sync
+      // (the edit affordance is gated off for sync-enabled projects). Delegate
+      // to the base store without a sync push.
+      await baseStore.updateMessageContent(messageId, content);
+    },
   };
 }

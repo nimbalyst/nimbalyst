@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Edit the most recent user message before the model has replied. A pencil button next to the copy action opens an inline editor; submitting updates the message in place (same canonical event id, no flicker) and re-runs the turn against the provider. Scoped to the v0 slice of #493 — earlier-message edits, branches, and per-message delete remain tracked on the issue. The pencil is disabled (with an explanatory tooltip) when the session's project syncs across devices, since the in-place row edit does not yet propagate over sync. (#503)
+- Edit the most recent user message before the model has replied. A pencil button next to the copy action opens an inline editor; submitting rewrites the raw message in place and re-runs the turn against the provider, with the canonical transcript reprojected from the edited raw. Scoped to the v0 slice of #493 — earlier-message edits, branches, and per-message delete remain tracked on the issue. The pencil is disabled (with an explanatory tooltip) when the session's project syncs across devices, since the in-place row edit does not yet propagate over sync. (#503)
 
 ### Changed
 <!-- Changes to existing functionality go here -->

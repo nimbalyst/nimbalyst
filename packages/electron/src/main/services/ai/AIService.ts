@@ -2539,8 +2539,8 @@ export class AIService {
       const { AgentMessagesRepository } = await import(
         '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository'
       );
-      const { TranscriptEventRepository } = await import(
-        '@nimbalyst/runtime/storage/repositories/TranscriptEventRepository'
+      const { TranscriptMigrationRepository } = await import(
+        '@nimbalyst/runtime/storage/repositories/TranscriptMigrationRepository'
       );
       const { AISessionsRepository } = await import(
         '@nimbalyst/runtime/storage/repositories/AISessionsRepository'
@@ -2560,35 +2560,27 @@ export class AIService {
         return { success: false, error: 'Last message has no id' };
       }
 
-      // UPDATE in place so the React key (canonical event id) stays the same
-      // and the bubble reconciles without unmount/remount. We then ask the
-      // provider to skip its automatic input-log on the next sendMessage so
-      // we don't end up with two raw user rows for one logical message.
+      // Canonical transcript events are derived in-memory from the raw log now
+      // (TranscriptRuntime keeps a per-session cache). Update the raw row in
+      // place -- its id is unchanged -- then evict the session so the next read
+      // reprojects from the edited raw and the runtime's onEventWritten wiring
+      // re-broadcasts the refreshed user_message to the renderer. We also ask
+      // the provider to skip its automatic input-log on the next sendMessage so
+      // the re-run doesn't append a duplicate raw user row.
       await AgentMessagesRepository.updateMessageContent(last.id, newContent);
 
-      const transcriptStore = TranscriptEventRepository.getStore();
-      const userMessageEvents = await transcriptStore.getSessionEvents(sessionId, {
-        eventTypes: ['user_message'],
-      });
-      const tailUserMessage = userMessageEvents[userMessageEvents.length - 1];
-      if (tailUserMessage) {
-        await transcriptStore.updateEventText(tailUserMessage.id, newContent);
-        const updatedEvent = await transcriptStore.getEventById(tailUserMessage.id);
-        if (updatedEvent) {
-          for (const window of BrowserWindow.getAllWindows()) {
-            if (!window.isDestroyed()) {
-              window.webContents.send('transcript:event', updatedEvent);
-            }
-          }
-        }
-      }
-
       const session = await AISessionsRepository.get(sessionId);
-      if (session) {
-        const provider = ProviderFactory.getProvider(
-          session.provider as AIProviderType,
-          sessionId,
-        );
+      const providerType = session?.provider as AIProviderType | undefined;
+
+      if (providerType) {
+        const migrationService = TranscriptMigrationRepository.getService();
+        await migrationService.forceReparseSession(sessionId, providerType);
+        // Force the reprojection now so the edited user_message is re-broadcast
+        // (via the runtime's onEventWritten callback) before the assistant turn
+        // streams in.
+        await migrationService.getCanonicalEvents(sessionId, providerType);
+
+        const provider = ProviderFactory.getProvider(providerType, sessionId);
         if (provider && typeof provider.setSkipNextInputLog === 'function') {
           provider.setSkipNextInputLog(true);
         }
