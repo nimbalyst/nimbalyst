@@ -317,10 +317,37 @@ export function updateTrackerInFrontmatter(
  * Finds a line matching `... #type[id:ITEM_ID ...]` and rewrites the metadata fields.
  * Returns the updated content, or null if the item was not found.
  */
+/**
+ * Item/record field names that map to a different key in the compact inline
+ * `#type[...]` marker grammar. The re-scan parser reads the marker key (e.g.
+ * `due`), so the serializer must write that key, not the UI field name (e.g.
+ * `dueDate`). Without this a due-date edit is written as `dueDate:` and dropped
+ * on the next scan (GitHub #404).
+ */
+export const INLINE_FIELD_TO_MARKER_KEY: Record<string, string> = {
+  dueDate: 'due',
+};
+
+/**
+ * Normalize a marker's leading text to the same shape the indexer stores as the
+ * item title (strip a list/checkbox prefix, collapse whitespace, lowercase).
+ * Used to locate id-less markers by title.
+ */
+function normalizeInlineTitleForMatch(title: string): string {
+  return title
+    .replace(/^- /, '')
+    .replace(/^\[ \] /, '')
+    .replace(/^\[x\] /, '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
 export function updateInlineTrackerItem(
   content: string,
   itemId: string,
-  updates: Record<string, any>
+  updates: Record<string, any>,
+  fallbackLocator?: { lineNumber?: number; title?: string }
 ): string | null {
   const lines = content.split('\n');
   let found = false;
@@ -330,27 +357,67 @@ export function updateInlineTrackerItem(
     `^(.+?)\\s+#([a-z][\\w-]*)\\[(.+?)\\](.*)$`
   );
 
+  const hasFallback =
+    fallbackLocator != null &&
+    (fallbackLocator.lineNumber != null || fallbackLocator.title != null);
+
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(inlineRegex);
     if (!match) continue;
 
     const [, textContent, type, propsStr, trailing] = match;
 
-    // Parse existing props to check if this is the right item
+    // Parse existing props to identify this marker.
     const props = parseInlineProps(propsStr);
-    if (props.id !== itemId) continue;
 
-    // Apply updates
+    // Explicit-id markers match by id. Id-less markers (their id is a
+    // deterministic hash that never reaches the file) fall back to a line +
+    // title match supplied by the caller; both provided signals must agree, so
+    // a drifted file fails to a no-op rather than editing the wrong marker.
+    let isMatch: boolean;
+    if (props.id) {
+      isMatch = props.id === itemId;
+    } else if (hasFallback) {
+      // Id-less markers: require the marker type, line, and title to all agree.
+      // An id-less item's id is a deterministic `${type}_${hash}`, so the marker
+      // type must match the itemId prefix. Requiring all three avoids editing the
+      // wrong marker after the file has drifted.
+      const typeOk = itemId.startsWith(`${type}_`);
+      const lineOk =
+        fallbackLocator!.lineNumber != null && fallbackLocator!.lineNumber === i + 1;
+      const titleOk =
+        fallbackLocator!.title != null &&
+        normalizeInlineTitleForMatch(textContent) ===
+          normalizeInlineTitleForMatch(fallbackLocator!.title);
+      isMatch = typeOk && lineOk && titleOk;
+    } else {
+      isMatch = false;
+    }
+    if (!isMatch) continue;
+
+    // Apply updates, mapping item field names to their inline marker key.
     for (const [key, value] of Object.entries(updates)) {
       if (key === 'title') {
         // Title is the text before #type[...], handled separately below
         continue;
       }
+      if (key === 'description') {
+        // An inline item's description lives in the indented block below the
+        // marker, not as a marker prop. Writing it here would pollute the marker
+        // and be ignored by the re-scan parser, so leave it out.
+        continue;
+      }
+      const markerKey = INLINE_FIELD_TO_MARKER_KEY[key] ?? key;
+      if (markerKey !== key) {
+        // Drop any stale prop written under the UI field name (e.g. a previously
+        // mis-written `dueDate:`) so it cannot shadow the canonical marker key.
+        delete props[key];
+      }
       if (value === null || value === undefined) {
         // Remove the prop when set to null/undefined
-        delete props[key];
+        delete props[markerKey];
       } else {
-        props[key] = value;
+        props[markerKey] = value;
       }
     }
 
@@ -404,7 +471,7 @@ function parseInlineProps(propsStr: string): Record<string, string> {
 /** Serialize props back to inline format: id:X status:Y priority:Z */
 function serializeInlineProps(props: Record<string, string>): string {
   // Maintain a consistent field order
-  const order = ['id', 'status', 'priority', 'owner', 'created', 'updated', 'tags', 'archived'];
+  const order = ['id', 'status', 'priority', 'owner', 'created', 'updated', 'due', 'tags', 'archived'];
   const parts: string[] = [];
 
   for (const key of order) {

@@ -1791,8 +1791,13 @@ export class ElectronDocumentService implements DocumentService {
     if (fileContent !== null) {
       let updatedContent: string;
       if (source === 'inline') {
-        // Inline items: rewrite #type[...] metadata in the line
-        const result = updateInlineTrackerItem(fileContent, itemId, updates);
+        // Inline items: rewrite #type[...] metadata in the line. Markers without
+        // an explicit id: are located via the row's line + title, since the id is
+        // a deterministic hash that never reaches the file (GitHub #404).
+        const result = updateInlineTrackerItem(fileContent, itemId, updates, {
+          lineNumber: row.line_number != null ? Number(row.line_number) : undefined,
+          title: typeof row.title === 'string' ? row.title : undefined,
+        });
         if (!result) {
           throw new Error(`Could not find inline item ${itemId} in ${relativePath}`);
         }
