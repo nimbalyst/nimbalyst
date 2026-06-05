@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inline review threads in the Conversation tab, grouped by file with Open/Resolved status and resolved threads collapsed by default (via `gh api graphql`). (#307)
 - `NIMBALYST_GH_PATH` env var to pin a non-standard `gh` CLI location for PR review. (#307)
 - Per-project GitHub account for PR review: pick a global default `gh` account in User settings and override it per project in Project settings (GitHub panel). The selected account's token is resolved from the `gh` keyring per request and never stored by Nimbalyst. (#307)
+- A guided walkthrough that introduces the PR review mode from the navigation gutter. (#307)
 <!-- New features go here -->
 
 ### Changed
