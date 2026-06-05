@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PR review cache tables are now created on the better-sqlite3 backend too (migration registered with the SQLite runner), not only on PGLite. (#307)
 - PR review: merged PRs now show as "Merged" (not "Closed") in the list, the Approve/Merge buttons refresh immediately after a merge (cache-bypassed refetch), and a success notice / "Merged" badge confirms the action. (#307)
 <!-- Bug fixes go here -->
+- Context usage meter now opens its breakdown on click instead of hover, so the popover no longer lingers over and blocks the queued-prompt controls. (#429)
 - Effort Level selector now takes effect: sessions follow the selected/default effort instead of always running at "high".
 - Typing in the chat box no longer has keystrokes hijacked into an open markdown file while an agent is editing it.
 - Restored diff application in headless mode (tests and server-side diffing), which had started throwing on `getRootElement` after the chat-box focus fix.
