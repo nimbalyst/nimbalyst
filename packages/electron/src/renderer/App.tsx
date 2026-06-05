@@ -125,7 +125,7 @@ import { ProjectRail } from './components/ProjectRail';
 import {
   activeWorkspacePathAtom,
   multiProjectModeAtom,
-  addOpenProjectAtom as addOpenProjectAction,
+  seedRailFromInitialState,
 } from './store/atoms/openProjects';
 import { registerDocumentLinkPlugin } from './plugins/registerDocumentLinkPlugin';
 import { registerAIChatPlugin } from './plugins/registerAIChatPlugin';
@@ -439,7 +439,6 @@ export default function App() {
   // (which is wired to that state) re-renders for the new project.
   const isMultiProjectMode = useAtomValue(multiProjectModeAtom);
   const railActivePath = useAtomValue(activeWorkspacePathAtom);
-  const addOpenProject = useSetAtom(addOpenProjectAction);
   const setRailActivePath = useSetAtom(activeWorkspacePathAtom);
   // NOTE: fileTree, sidebarWidth, isNewFileDialogOpen, newFileDirectory, isHistoryDialogOpen moved to EditorMode
   // NOTE: Navigation dialogs (QuickOpen, SessionQuickOpen, PromptQuickOpen, ProjectQuickOpen) are now managed by DialogProvider
@@ -1605,13 +1604,18 @@ export default function App() {
               // Initialize unified navigation history
               await initNavigationHistory(initialState.workspacePath);
 
-              // Seed the multi-project rail: this window's primary
-              // workspace is always represented in the rail (visible only
-              // when multiProjectMode is on, hidden otherwise).
-              addOpenProject({
-                path: initialState.workspacePath,
-                name: initialState.workspaceName ?? initialState.workspacePath,
-                openedAt: Date.now(),
+              // Re-seed the multi-project rail from the window's full
+              // project set. The primary workspace is always represented
+              // (visible only when multiProjectMode is on). On a renderer
+              // reload the main-process window state still holds every warm
+              // additional project, so the rail restores all of them plus
+              // the in-view active path; on cold launch the additional set
+              // is empty and only the primary is seeded (#530).
+              seedRailFromInitialState(store, {
+                workspacePath: initialState.workspacePath,
+                workspaceName: initialState.workspaceName ?? undefined,
+                additionalWorkspacePaths: initialState.additionalWorkspacePaths,
+                activeWorkspacePath: initialState.activeWorkspacePath,
               });
             }
           }
@@ -1624,7 +1628,7 @@ export default function App() {
     };
 
     loadInitialState();
-  }, [addOpenProject]);
+  }, []);
 
   // Multi-project rail switch: when the rail's active path changes, mirror
   // it into the legacy `workspacePath` useState so the rest of the App

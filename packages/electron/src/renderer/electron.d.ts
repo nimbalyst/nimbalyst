@@ -129,7 +129,7 @@ interface ElectronAPI {
   reportUserActivity?: () => void;
 
   // Get initial window state
-  getInitialState: () => Promise<{ mode: string; workspacePath?: string; workspaceName?: string } | null>;
+  getInitialState: () => Promise<{ mode: string; workspacePath?: string; workspaceName?: string; additionalWorkspacePaths?: string[]; activeWorkspacePath?: string | null } | null>;
 
   // Workspace operations
   getFolderContents: (dirPath: string) => Promise<FileTreeItem[]>;

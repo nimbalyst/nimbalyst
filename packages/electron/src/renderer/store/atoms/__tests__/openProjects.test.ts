@@ -8,6 +8,7 @@ import {
   closeOpenProjectAtom,
   isOpenProjectsAtCapAtom,
   attachWorkspaceSwitchCleanup,
+  seedRailFromInitialState,
   type OpenProject,
 } from '../openProjects';
 import { activeSessionIdAtom, selectedWorkstreamAtom } from '../sessions';
@@ -231,6 +232,67 @@ describe('openProjects atoms', () => {
       jotaiStore.set(activeWorkspacePathAtom, '/ws/b');
 
       expect(jotaiStore.get(activeSessionIdAtom)).toBe('session-from-a');
+    });
+  });
+
+  describe('seedRailFromInitialState', () => {
+    // Regression for issue #530: a renderer reload (Cmd+R) in multi-project
+    // mode collapsed the rail to the single primary project because
+    // `loadInitialState` only re-seeded `workspacePath`. The main-process
+    // `windowStates` map still holds every warm project across a reload, so
+    // the rail must rebuild the full set from the initial-state payload.
+    it('restores the primary plus every additional project after reload', () => {
+      seedRailFromInitialState(jotaiStore, {
+        workspacePath: '/ws/a',
+        workspaceName: 'a',
+        additionalWorkspacePaths: ['/ws/b', '/ws/c'],
+        activeWorkspacePath: '/ws/b',
+      });
+
+      expect(jotaiStore.get(openProjectsAtom).map((p) => p.path)).toEqual([
+        '/ws/a',
+        '/ws/b',
+        '/ws/c',
+      ]);
+    });
+
+    it('restores the in-view active project, not the last one added', () => {
+      seedRailFromInitialState(jotaiStore, {
+        workspacePath: '/ws/a',
+        additionalWorkspacePaths: ['/ws/b', '/ws/c'],
+        activeWorkspacePath: '/ws/b',
+      });
+
+      // addOpenProjectAtom activates each project as it is added, so without
+      // the final restore the active path would leak to '/ws/c'.
+      expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/b');
+    });
+
+    it('falls back to the primary as active when activeWorkspacePath is absent', () => {
+      seedRailFromInitialState(jotaiStore, {
+        workspacePath: '/ws/a',
+        additionalWorkspacePaths: ['/ws/b'],
+      });
+
+      expect(jotaiStore.get(openProjectsAtom).map((p) => p.path)).toEqual(['/ws/a', '/ws/b']);
+      expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/a');
+    });
+
+    it('seeds only the primary when there are no additional projects (cold launch)', () => {
+      seedRailFromInitialState(jotaiStore, { workspacePath: '/ws/a', workspaceName: 'a' });
+
+      expect(jotaiStore.get(openProjectsAtom).map((p) => p.path)).toEqual(['/ws/a']);
+      expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/a');
+    });
+
+    it('ignores blank and duplicate additional paths', () => {
+      seedRailFromInitialState(jotaiStore, {
+        workspacePath: '/ws/a',
+        additionalWorkspacePaths: ['', '/ws/a', '/ws/b'],
+        activeWorkspacePath: '/ws/a',
+      });
+
+      expect(jotaiStore.get(openProjectsAtom).map((p) => p.path)).toEqual(['/ws/a', '/ws/b']);
     });
   });
 });

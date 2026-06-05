@@ -26,10 +26,17 @@ export function registerWindowHandlers() {
         if (!state) return null;
 
         if (state.mode === 'workspace' && state.workspacePath) {
+            // Expose the full window project set so the renderer can rebuild
+            // the multi-project rail after a reload. `windowStates` survives
+            // a renderer reload but resets on cold launch, so a populated
+            // `additionalWorkspacePaths` already signals "this was a refresh"
+            // — the rail restores every warm project, not just the primary (#530).
             return {
                 mode: 'workspace',
                 workspacePath: state.workspacePath,
                 workspaceName: basename(state.workspacePath),
+                additionalWorkspacePaths: state.additionalWorkspacePaths ?? [],
+                activeWorkspacePath: state.activeWorkspacePath ?? state.workspacePath,
             };
         }
 

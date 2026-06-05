@@ -261,6 +261,61 @@ export function attachWorkspaceSwitchCleanup(jotaiStore: JotaiStore): () => void
 }
 
 /**
+ * Shape of the per-window initial state used to rebuild the rail. Mirrors
+ * the `get-initial-state` IPC payload (`WindowHandlers.ts`).
+ */
+export interface RailInitialState {
+  workspacePath: string;
+  workspaceName?: string;
+  /** Warm rail projects beyond the primary, kept alive across reload. */
+  additionalWorkspacePaths?: string[];
+  /** Project that was in-view before reload; defaults to the primary. */
+  activeWorkspacePath?: string | null;
+}
+
+/**
+ * Re-seed the multi-project rail from a window's initial state.
+ *
+ * Adds the primary workspace plus every warm `additionalWorkspacePaths`
+ * entry, then restores the in-view project via `activeWorkspacePath`. This
+ * is the renderer-side counterpart to the main-process `windowStates` map:
+ * the map survives a renderer reload (Cmd+R) but resets on a cold launch, so
+ * its `additionalWorkspacePaths` already encode "this was a refresh" — the
+ * rail rebuilds the full set instead of collapsing to the primary (#530).
+ *
+ * `addOpenProjectAtom` activates each project as it is added, so the final
+ * `activeWorkspacePathAtom` write restores the project that was visible
+ * before reload rather than whichever was added last. Dedups and the
+ * 8-project cap are enforced by `addOpenProjectAtom`.
+ */
+export function seedRailFromInitialState(
+  jotaiStore: JotaiStore,
+  initialState: RailInitialState
+): void {
+  const { workspacePath, workspaceName, additionalWorkspacePaths, activeWorkspacePath } =
+    initialState;
+  if (!workspacePath) return;
+
+  jotaiStore.set(addOpenProjectAtom, {
+    path: workspacePath,
+    name: workspaceName ?? basenameFromPath(workspacePath),
+    openedAt: Date.now(),
+  });
+
+  for (const path of additionalWorkspacePaths ?? []) {
+    if (typeof path === 'string' && path.length > 0 && path !== workspacePath) {
+      jotaiStore.set(addOpenProjectAtom, {
+        path,
+        name: basenameFromPath(path),
+        openedAt: Date.now(),
+      });
+    }
+  }
+
+  jotaiStore.set(activeWorkspacePathAtom, activeWorkspacePath ?? workspacePath);
+}
+
+/**
  * Notify the main process about the new active workspace path so the
  * single-active-per-window resources (file watcher, runtime-global
  * FileSystemService) transition atomically. Centralized here so every
