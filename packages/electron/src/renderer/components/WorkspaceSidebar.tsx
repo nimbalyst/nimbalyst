@@ -1134,6 +1134,19 @@ export function WorkspaceSidebar({
                     edit_square
                   </span>
                 </button>
+                <HelpTooltip testId="file-tree-refresh-button">
+                  <button
+                    data-testid="file-tree-refresh-button"
+                    className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+                    onClick={handleRefreshFileTree}
+                    title="Refresh file tree"
+                    aria-label="Refresh file tree"
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>
+                      refresh
+                    </span>
+                  </button>
+                </HelpTooltip>
                 <button
                   className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
                   onClick={handleNewFolder}

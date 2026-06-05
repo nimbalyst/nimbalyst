@@ -50,6 +50,10 @@ export const HelpContent: Record<string, HelpEntry> = {
     title: 'New Folder',
     body: 'Create a new folder in the selected folder.',
   },
+  'file-tree-refresh-button': {
+    title: 'Refresh File Tree',
+    body: 'Reload the file list from disk to pick up files added or removed outside Nimbalyst.',
+  },
 
   // ============================================================================
   // Files Mode - Unified Header
