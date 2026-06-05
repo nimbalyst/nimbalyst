@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.63.1",
+  "version": "0.64.4",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -50,8 +50,8 @@
     "marketing:screenshots:grep": "playwright test --config=marketing/playwright.marketing.config.ts --grep"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.126",
-    "@anthropic-ai/sdk": "^0.81.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.161",
+    "@anthropic-ai/sdk": "^0.100.1",
     "@electric-sql/pglite": "0.3.14",
     "@electron-toolkit/utils": "^4.0.0",
     "@excalidraw/excalidraw": "0.17.6",
@@ -64,7 +64,7 @@
     "@nimbalyst/extension-datamodellm": "*",
     "@nimbalyst/mockuplm": "*",
     "@nimbalyst/runtime": "*",
-    "@openai/codex-sdk": "^0.130.0",
+    "@openai/codex-sdk": "^0.136.0",
     "@stytch/vanilla-js": "^5.42.0",
     "@types/glob": "^8.1.0",
     "@types/js-yaml": "^4.0.9",
@@ -264,6 +264,27 @@
       {
         "from": "out/sqlite-worker.bundle.js",
         "to": "sqlite-worker.bundle.js"
+      },
+      {
+        "from": "node_modules/better-sqlite3",
+        "to": "node_modules/better-sqlite3",
+        "filter": [
+          "**/*",
+          "!deps/**",
+          "!src/**",
+          "!docs/**",
+          "!.github/**",
+          "!*.md",
+          "!binding.gyp"
+        ]
+      },
+      {
+        "from": "../../node_modules/bindings",
+        "to": "node_modules/bindings"
+      },
+      {
+        "from": "../../node_modules/file-uri-to-path",
+        "to": "node_modules/file-uri-to-path"
       },
       {
         "from": "../../node_modules/@electric-sql/pglite/dist/pglite.data",

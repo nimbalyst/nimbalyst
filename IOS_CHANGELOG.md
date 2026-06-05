@@ -20,6 +20,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 <!-- Removed features go here -->
 
+## [1.1.1] - 2026-06-03
+
+Reliability and responsiveness improvements for following and controlling desktop AI sessions from iPhone and iPad.
+
+### Added
+- Structured agent prompts now render on iOS for richer review and approval flows
+
+### Changed
+- Session transcripts stay live and visible during active AI turns
+- Session back navigation feels smoother and more reliable
+- Switching back to a recent session now feels instant
+
+### Fixed
+- Later-turn Codex tool calls now render correctly in transcripts
+- Codex app-server transport sessions now display messages correctly
+- Session archive state now syncs correctly from desktop to iOS
+- Duplicate session titles no longer appear after sync
+- Broken desktop auth discovery now recovers cleanly instead of silently stalling mobile sync
+- Git commit proposal cancellation now completes correctly from iOS
+- Synced drafts no longer jumble the compose input while you type
+
 ## [1.1.0] - 2026-04-29
 
 First public App Store release since 1.0. The 1.0.1 draft was never shipped; its changes are folded into 1.1.0.

@@ -1,95 +1,58 @@
 /**
- * Hook for opening navigation dialogs with proper typing.
+ * Hook for opening the unified navigation dialog with proper typing.
  *
- * This hook provides convenience functions for opening navigation dialogs
- * with the correct data types, making it easier to use from App.tsx.
+ * The five legacy quick-open dialogs have been collapsed into one tabbed
+ * dialog. Each opener picks the initial tab; while the dialog is open the
+ * five global shortcuts (⌘O, ⌘⇧F, ⌘L, ⌘⇧L, ⌘⇧P) jump between tabs.
  */
 
 import { useCallback } from 'react';
 import { useDialog } from '../contexts/DialogContext';
 import { DIALOG_IDS } from './registry';
-import type {
-  QuickOpenData,
-  SessionQuickOpenData,
-  PromptQuickOpenData,
-  ProjectQuickOpenData,
-} from './navigation';
+import type { UnifiedQuickOpenData } from './navigation';
+import type { UnifiedQuickOpenTab } from '../components/UnifiedQuickOpen';
 
 export interface UseNavigationDialogsReturn {
-  openQuickOpen: (data: QuickOpenData) => void;
-  openSessionQuickOpen: (data: SessionQuickOpenData) => void;
-  openPromptQuickOpen: (data: PromptQuickOpenData) => void;
-  openProjectQuickOpen: (data: ProjectQuickOpenData) => void;
+  openUnifiedQuickOpen: (data: UnifiedQuickOpenData) => void;
+  openQuickOpen: (data: Omit<UnifiedQuickOpenData, 'initialTab'>) => void;
+  openInFiles: (data: Omit<UnifiedQuickOpenData, 'initialTab'>) => void;
+  openSessionQuickOpen: (data: Omit<UnifiedQuickOpenData, 'initialTab'>) => void;
+  openPromptQuickOpen: (data: Omit<UnifiedQuickOpenData, 'initialTab'>) => void;
+  openProjectQuickOpen: (data: Omit<UnifiedQuickOpenData, 'initialTab'>) => void;
   closeNavigationDialogs: () => void;
 }
 
-/**
- * Hook for opening navigation dialogs.
- *
- * Usage:
- * ```tsx
- * const { openQuickOpen, openSessionQuickOpen } = useNavigationDialogs();
- *
- * // Open QuickOpen with callbacks
- * openQuickOpen({
- *   workspacePath: '/path/to/workspace',
- *   currentFilePath: '/path/to/current/file.md',
- *   onFileSelect: (filePath) => handleFileSelect(filePath),
- * });
- * ```
- */
 export function useNavigationDialogs(): UseNavigationDialogsReturn {
   const { open, close, activeDialogs } = useDialog();
 
-  const openQuickOpen = useCallback(
-    (data: QuickOpenData) => {
-      open(DIALOG_IDS.QUICK_OPEN, data);
+  const openWithTab = useCallback(
+    (initialTab: UnifiedQuickOpenTab) =>
+      (data: Omit<UnifiedQuickOpenData, 'initialTab'>) => {
+        open(DIALOG_IDS.UNIFIED_QUICK_OPEN, { ...data, initialTab });
+      },
+    [open],
+  );
+
+  const openUnifiedQuickOpen = useCallback(
+    (data: UnifiedQuickOpenData) => {
+      open(DIALOG_IDS.UNIFIED_QUICK_OPEN, data);
     },
     [open],
   );
 
-  const openSessionQuickOpen = useCallback(
-    (data: SessionQuickOpenData) => {
-      open(DIALOG_IDS.SESSION_QUICK_OPEN, data);
-    },
-    [open],
-  );
-
-  const openPromptQuickOpen = useCallback(
-    (data: PromptQuickOpenData) => {
-      open(DIALOG_IDS.PROMPT_QUICK_OPEN, data);
-    },
-    [open],
-  );
-
-  const openProjectQuickOpen = useCallback(
-    (data: ProjectQuickOpenData) => {
-      open(DIALOG_IDS.PROJECT_QUICK_OPEN, data);
-    },
-    [open],
-  );
-
-  // Close all navigation dialogs
   const closeNavigationDialogs = useCallback(() => {
-    const navigationDialogIds = [
-      DIALOG_IDS.QUICK_OPEN,
-      DIALOG_IDS.SESSION_QUICK_OPEN,
-      DIALOG_IDS.PROMPT_QUICK_OPEN,
-      DIALOG_IDS.PROJECT_QUICK_OPEN,
-    ];
-
-    navigationDialogIds.forEach((id) => {
-      if (activeDialogs.includes(id)) {
-        close(id);
-      }
-    });
+    if (activeDialogs.includes(DIALOG_IDS.UNIFIED_QUICK_OPEN)) {
+      close(DIALOG_IDS.UNIFIED_QUICK_OPEN);
+    }
   }, [close, activeDialogs]);
 
   return {
-    openQuickOpen,
-    openSessionQuickOpen,
-    openPromptQuickOpen,
-    openProjectQuickOpen,
+    openUnifiedQuickOpen,
+    openQuickOpen: openWithTab('files'),
+    openInFiles: openWithTab('in-files'),
+    openSessionQuickOpen: openWithTab('sessions'),
+    openPromptQuickOpen: openWithTab('prompts'),
+    openProjectQuickOpen: openWithTab('projects'),
     closeNavigationDialogs,
   };
 }

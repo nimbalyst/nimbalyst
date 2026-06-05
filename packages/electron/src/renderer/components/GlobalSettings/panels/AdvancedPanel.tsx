@@ -18,8 +18,6 @@ import {
   areAllDeveloperFeaturesEnabled,
   enableAllDeveloperFeatures,
   disableAllDeveloperFeatures,
-  debugFlagsAtom,
-  setDebugFlagsAtom,
   type ReleaseChannel,
   type ExternalEditorType,
   type PreferredTerminalShell,
@@ -100,10 +98,6 @@ export function AdvancedPanel() {
   const [developerSettings] = useAtom(developerFeatureSettingsAtom);
   const [, updateDeveloperSettings] = useAtom(setDeveloperFeatureSettingsAtom);
   const { developerMode, developerFeatures } = developerSettings;
-
-  // Debug flags (verbose logging toggles, off by default)
-  const debugFlags = useAtomValue(debugFlagsAtom);
-  const updateDebugFlags = useSetAtom(setDebugFlagsAtom);
 
   // Tracker automation settings
   const trackerAutomation = useAtomValue(trackerAutomationAtom);
@@ -356,34 +350,6 @@ export function AdvancedPanel() {
           </p>
         </div>
       )}
-
-      {/* ── Debug Logging ── */}
-      <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
-        <h4 className="provider-panel-section-title text-base font-semibold mb-3 text-[var(--nim-text)]">Debug Logging</h4>
-        <p className="text-sm leading-relaxed text-[var(--nim-text-muted)] mb-4">
-          Verbose tracing for internal subsystems. Off by default. Toggle on when reproducing a bug, then check the renderer console (Cmd+Opt+I).
-        </p>
-
-        <div className="setting-item py-2" data-testid="debug-flag-diff-trace">
-          <label className="setting-label">
-            <input
-              type="checkbox"
-              checked={debugFlags.diffTrace ?? false}
-              onChange={(e) => {
-                void updateDebugFlags({ diffTrace: e.target.checked });
-              }}
-              className="setting-checkbox"
-            />
-            <div className="setting-text">
-              <span className="setting-name">Diff Trace</span>
-              <span className="setting-description">
-                Logs every step of the AI-edit / diff pipeline (DocumentModel, DiskBackedStore, TabEditor, DiffPlugin, file-change listeners).
-                Filter the console for <code>[diff-trace]</code>.
-              </span>
-            </div>
-          </label>
-        </div>
-      </div>
 
       {/* ── Release Channel ── */}
       <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">

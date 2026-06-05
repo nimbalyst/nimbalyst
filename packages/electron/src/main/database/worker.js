@@ -927,6 +927,35 @@ class PGLiteWorker {
       throw error;
     }
 
+    // Add searchable_text + message_kind columns (Phase 1A of canonical
+    // transcript deprecation; see nimbalyst-local/plans/canonical-transcript-deprecation.md).
+    // searchable_text carries user-visible plaintext extracted from the raw
+    // payload at insert time. message_kind is the provider-agnostic
+    // categorization ('user' | 'assistant' | 'tool' | 'system' | 'meta').
+    // Both default NULL; a separate backfill pass populates existing rows.
+    try {
+      await this.db.exec(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'ai_agent_messages' AND column_name = 'searchable_text'
+          ) THEN
+            ALTER TABLE ai_agent_messages ADD COLUMN searchable_text TEXT;
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'ai_agent_messages' AND column_name = 'message_kind'
+          ) THEN
+            ALTER TABLE ai_agent_messages ADD COLUMN message_kind TEXT;
+          END IF;
+        END $$;
+      `);
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to add searchable_text/message_kind columns:', error);
+      throw error;
+    }
+
     // NOTE: We used to drop the old FTS index here unconditionally, but that was wrong
     // because it would drop the index that the user just built via the dialog.
     // The old non-partial index (without WHERE searchable = true) is no longer created,
@@ -964,6 +993,20 @@ class PGLiteWorker {
     } catch (error) {
       // Non-fatal: searches will still work, just slower without the index
       console.warn('[PGLite Worker] Failed to create FTS GIN index:', error);
+    }
+
+    // Phase 2 of canonical-transcript-deprecation: GIN index over
+    // ai_agent_messages.searchable_text so the raw table can serve FTS
+    // directly. The legacy `content` GIN index above stays in place until
+    // the transcript_events drop in Phase 4; both indexes coexist briefly.
+    try {
+      await this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_ai_agent_messages_searchable_text_fts
+        ON ai_agent_messages USING GIN(to_tsvector('english', COALESCE(searchable_text, '')))
+        WHERE searchable_text IS NOT NULL
+      `);
+    } catch (error) {
+      console.warn('[PGLite Worker] Failed to create searchable_text GIN index:', error);
     }
 
     // AI Tool Call <-> File Edit linkage table
@@ -1503,6 +1546,35 @@ class PGLiteWorker {
       throw error;
     }
 
+    // Add searchable_text + message_kind columns (Phase 1A of canonical
+    // transcript deprecation; see nimbalyst-local/plans/canonical-transcript-deprecation.md).
+    // searchable_text carries user-visible plaintext extracted from the raw
+    // payload at insert time. message_kind is the provider-agnostic
+    // categorization ('user' | 'assistant' | 'tool' | 'system' | 'meta').
+    // Both default NULL; a separate backfill pass populates existing rows.
+    try {
+      await this.db.exec(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'ai_agent_messages' AND column_name = 'searchable_text'
+          ) THEN
+            ALTER TABLE ai_agent_messages ADD COLUMN searchable_text TEXT;
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'ai_agent_messages' AND column_name = 'message_kind'
+          ) THEN
+            ALTER TABLE ai_agent_messages ADD COLUMN message_kind TEXT;
+          END IF;
+        END $$;
+      `);
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to add searchable_text/message_kind columns:', error);
+      throw error;
+    }
+
     // NOTE: We used to drop the old FTS index here unconditionally, but that was wrong
     // because it would drop the index that the user just built via the dialog.
     // The old non-partial index (without WHERE searchable = true) is no longer created,
@@ -1540,6 +1612,20 @@ class PGLiteWorker {
     } catch (error) {
       // Non-fatal: searches will still work, just slower without the index
       console.warn('[PGLite Worker] Failed to create FTS GIN index:', error);
+    }
+
+    // Phase 2 of canonical-transcript-deprecation: GIN index over
+    // ai_agent_messages.searchable_text so the raw table can serve FTS
+    // directly. Coexists briefly with the legacy `content` GIN index until
+    // Phase 4 drops ai_transcript_events.
+    try {
+      await this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_ai_agent_messages_searchable_text_fts
+        ON ai_agent_messages USING GIN(to_tsvector('english', COALESCE(searchable_text, '')))
+        WHERE searchable_text IS NOT NULL
+      `);
+    } catch (error) {
+      console.warn('[PGLite Worker] Failed to create searchable_text GIN index:', error);
     }
 
     // Queued Prompts table - stores prompts queued from any device for execution
@@ -2175,61 +2261,10 @@ class PGLiteWorker {
       // Non-fatal
     }
 
-    // Migration: Create ai_transcript_events table for canonical transcript storage
-    // This is the product-facing canonical layer; ai_agent_messages remains the raw source log.
-    const { TRANSCRIPT_EVENTS_CREATE_TABLE, TRANSCRIPT_EVENTS_INDEXES } = require('./schemas/transcriptEvents');
-    try {
-      await this.db.exec(TRANSCRIPT_EVENTS_CREATE_TABLE);
-      // PGLite requires one statement per exec for indexes
-      for (const indexStmt of TRANSCRIPT_EVENTS_INDEXES) {
-        await this.db.exec(indexStmt);
-      }
-      console.log('[PGLite Worker] ai_transcript_events table created successfully');
-    } catch (error) {
-      console.error('[PGLite Worker] Failed to create ai_transcript_events table:', error);
-      // Non-fatal - transcript features will be unavailable but app continues
-    }
-
-    // Migration: Add canonical transform projection columns to ai_sessions
-    try {
-      await this.db.exec(`
-        DO $$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'ai_sessions' AND column_name = 'canonical_transform_version'
-          ) THEN
-            ALTER TABLE ai_sessions ADD COLUMN canonical_transform_version INTEGER;
-          END IF;
-
-          IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'ai_sessions' AND column_name = 'canonical_last_raw_message_id'
-          ) THEN
-            ALTER TABLE ai_sessions ADD COLUMN canonical_last_raw_message_id BIGINT;
-          END IF;
-
-          IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'ai_sessions' AND column_name = 'canonical_last_transformed_at'
-          ) THEN
-            ALTER TABLE ai_sessions ADD COLUMN canonical_last_transformed_at TIMESTAMPTZ;
-          END IF;
-
-          IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'ai_sessions' AND column_name = 'canonical_transform_status'
-          ) THEN
-            ALTER TABLE ai_sessions ADD COLUMN canonical_transform_status TEXT
-              CHECK (canonical_transform_status IN ('pending', 'complete', 'error'));
-          END IF;
-        END $$;
-      `);
-      console.log('[PGLite Worker] canonical transform columns added to ai_sessions');
-    } catch (error) {
-      console.error('[PGLite Worker] Failed to add canonical transform columns:', error);
-      // Non-fatal - lazy transformation will be unavailable but app continues
-    }
+    // Phase 4 of canonical-transcript-deprecation: ai_transcript_events is
+    // gone. The forward-only drop at the bottom of createSchemas ensures any
+    // legacy installs lose the table and its watermark columns on the next
+    // launch; we no longer create it here.
 
     // Migration: local-only shared-document origin bindings for re-upload.
     try {
@@ -2271,12 +2306,21 @@ class PGLiteWorker {
 
     // Migration: Ensure ai_tool_call_file_edits FK points to ai_agent_messages (not ai_transcript_events).
     // A previous buggy migration may have re-pointed it to ai_transcript_events.
+    //
+    // Join through pg_class.relname instead of `'ai_transcript_events'::regclass`
+    // — Phase 4 of canonical-transcript-deprecation drops that table, and
+    // bare `::regclass` against a missing relation throws "relation does not
+    // exist", which the catch below converts into avoidable error noise on
+    // every startup of a fresh / already-cleaned database.
     try {
       const fkCheck = await this.db.query(`
-        SELECT conname FROM pg_constraint
-        WHERE conrelid = 'ai_tool_call_file_edits'::regclass
-          AND conname = 'fk_atcfe_message'
-          AND confrelid = 'ai_transcript_events'::regclass
+        SELECT c.conname
+        FROM pg_constraint c
+        JOIN pg_class cr ON cr.oid = c.conrelid
+        JOIN pg_class cf ON cf.oid = c.confrelid
+        WHERE cr.relname = 'ai_tool_call_file_edits'
+          AND c.conname = 'fk_atcfe_message'
+          AND cf.relname = 'ai_transcript_events'
       `);
       if (fkCheck.rows.length > 0) {
         await this.db.exec(`TRUNCATE ai_tool_call_file_edits`);
@@ -2290,6 +2334,50 @@ class PGLiteWorker {
       }
     } catch (error) {
       console.error('[PGLite Worker] Failed to fix ai_tool_call_file_edits FK:', error);
+    }
+
+    // Phase 4 of canonical-transcript-deprecation: drop the persisted
+    // canonical transcript events table and its watermark columns on
+    // ai_sessions. Canonical events live in TranscriptRuntime's in-memory
+    // per-session cache; raw ai_agent_messages is the sole persisted source.
+    try {
+      await this.db.exec(`DROP TABLE IF EXISTS ai_transcript_events CASCADE`);
+      console.log('[PGLite Worker] ai_transcript_events table dropped');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to drop ai_transcript_events:', error);
+    }
+    try {
+      await this.db.exec(`
+        DO $$
+        BEGIN
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'ai_sessions' AND column_name = 'canonical_transform_version'
+          ) THEN
+            ALTER TABLE ai_sessions DROP COLUMN canonical_transform_version;
+          END IF;
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'ai_sessions' AND column_name = 'canonical_last_raw_message_id'
+          ) THEN
+            ALTER TABLE ai_sessions DROP COLUMN canonical_last_raw_message_id;
+          END IF;
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'ai_sessions' AND column_name = 'canonical_last_transformed_at'
+          ) THEN
+            ALTER TABLE ai_sessions DROP COLUMN canonical_last_transformed_at;
+          END IF;
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'ai_sessions' AND column_name = 'canonical_transform_status'
+          ) THEN
+            ALTER TABLE ai_sessions DROP COLUMN canonical_transform_status;
+          END IF;
+        END $$;
+      `);
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to drop canonical_transform_* columns:', error);
     }
   }
 

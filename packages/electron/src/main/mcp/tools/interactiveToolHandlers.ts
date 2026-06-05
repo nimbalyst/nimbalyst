@@ -7,6 +7,7 @@ import { getSessionStateManager } from "@nimbalyst/runtime/ai/server/SessionStat
 import { notificationService } from "../../services/NotificationService";
 import { TrayManager } from "../../tray/TrayManager";
 import { findWindowIdForWorkspacePath } from "../mcpWorkspaceResolver";
+import { setSessionPendingPrompt } from "../../services/ai/pendingPromptPersistence";
 import {
   resolveRequestUserInputPromptTargets,
   resolveToolUseIdFromMcpRequest,
@@ -541,9 +542,9 @@ export async function handleGitCommitProposal(
       hidden: false,
       createdAt: now,
     });
-    console.log(
-      `[MCP Server] Persisted git commit proposal: ${proposalId}, notifying renderer for session: ${targetSessionId}`
-    );
+    // console.log(
+    //   `[MCP Server] Persisted git commit proposal: ${proposalId}, notifying renderer for session: ${targetSessionId}`
+    // );
     if (commitWindow) {
       // Include proposal data in the IPC so renderer-side consumers (the
       // GitCommit widget AND the voice forwarding path) can display the
@@ -562,6 +563,8 @@ export async function handleGitCommitProposal(
 
     // Notify tray of pending prompt
     TrayManager.getInstance().onPromptCreated(targetSessionId);
+    // Persist pending-prompt bit + push to mobile
+    void setSessionPendingPrompt(targetSessionId, true);
   } catch (error) {
     console.error("[MCP Server] Failed to persist git commit proposal:", error);
     // Continue anyway - worst case is no durability
@@ -660,6 +663,8 @@ export async function handleGitCommitProposal(
         reasoning: proposalArgs.reasoning,
       });
     }
+    // Persist resolved state + push to mobile
+    void setSessionPendingPrompt(targetSessionId, false);
 
     console.log(
       `[MCP Server] Auto-commit completed: ${commitResult.commitHash || "no changes"}`
@@ -818,9 +823,9 @@ export async function handleGitCommitProposal(
       settle(result, "ipc");
 
     const responseChannel = `git-commit-proposal-response:${sessionId || "unknown"}:${proposalId}`;
-    console.log(
-      `[MCP Server] Registering git commit proposal listener on channel: ${responseChannel}`
-    );
+    // console.log(
+    //   `[MCP Server] Registering git commit proposal listener on channel: ${responseChannel}`
+    // );
     ipcMain.on(responseChannel, onResponse);
 
     // Database polling fallback: if the IPC path fails (e.g., transport drop),
@@ -1071,6 +1076,74 @@ export async function handleRequestUserInput(
     };
   }
 
+  // Per-type required-shape validation. The MCP input schema is intentionally
+  // flat (all per-type properties optional, only type/id/label required) because
+  // OpenAI's function-calling schema converter mangles `oneOf` unions and the
+  // agent ends up guessing -- see the comment above REQUEST_USER_INPUT_FIELD_SCHEMA.
+  // That permissiveness means the agent occasionally emits a field like
+  // `{ type: "singleSelect", id, label }` with no `options` array, and the
+  // widget then throws "Cannot read properties of undefined (reading 'map')"
+  // when it tries to seed/render the field. Catch it here and return a precise
+  // error so the agent can retry with the right shape.
+  const fieldShapeErrors: string[] = [];
+  for (const field of fields) {
+    if (!field || typeof field !== "object") {
+      fieldShapeErrors.push("each field must be an object");
+      continue;
+    }
+    const fieldId = typeof field.id === "string" ? field.id : "<missing id>";
+    switch (field.type) {
+      case "multiSelect":
+        if (!Array.isArray(field.items) || field.items.length === 0) {
+          fieldShapeErrors.push(
+            `multiSelect field '${fieldId}' requires a non-empty items[] array of { id, title }`,
+          );
+        }
+        break;
+      case "singleSelect":
+        if (!Array.isArray(field.options) || field.options.length === 0) {
+          fieldShapeErrors.push(
+            `singleSelect field '${fieldId}' requires a non-empty options[] array of { id, label }`,
+          );
+        }
+        break;
+      case "reorder":
+        if (!Array.isArray(field.items) || field.items.length === 0) {
+          fieldShapeErrors.push(
+            `reorder field '${fieldId}' requires a non-empty items[] array of { id, title }`,
+          );
+        }
+        break;
+      case "editText":
+        if (typeof field.initialText !== "string") {
+          fieldShapeErrors.push(
+            `editText field '${fieldId}' requires an initialText string (may be empty)`,
+          );
+        }
+        break;
+      case "confirm":
+        // No required-by-type properties beyond the base { type, id, label }.
+        break;
+      default:
+        fieldShapeErrors.push(
+          `field '${fieldId}' has unknown or missing type '${String(field.type)}' (expected one of multiSelect, singleSelect, reorder, editText, confirm)`,
+        );
+    }
+  }
+  if (fieldShapeErrors.length > 0) {
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            "Error: PromptForUserInput received malformed field(s). Fix and retry:\n  - "
+            + fieldShapeErrors.join("\n  - "),
+        },
+      ],
+      isError: true,
+    };
+  }
+
   const promptId =
     await resolveToolUseIdFromMcpRequest(request, sessionId, "PromptForUserInput") ||
     `rui-${sessionId || "unknown"}-${Date.now()}`;
@@ -1091,6 +1164,9 @@ export async function handleRequestUserInput(
     }).catch((err) => {
       console.error("[MCP Server] Failed to update session status:", err);
     });
+    // Persist pending-prompt bit + push to mobile so the sidebar indicator
+    // survives renderer reloads and reaches other devices.
+    void setSessionPendingPrompt(sessionId, true);
   }
 
   // Notify renderer so the widget can pick up the prompt data immediately
@@ -1153,6 +1229,8 @@ export async function handleRequestUserInput(
           isStreaming: true,
         }).catch(() => {});
         TrayManager.getInstance().onPromptResolved(sessionId);
+        // Persist resolved state + push to mobile.
+        void setSessionPendingPrompt(sessionId, false);
         // Notify renderer to clear the pending indicator and remove from atom.
         try {
           BrowserWindow.getAllWindows().forEach((w) => {

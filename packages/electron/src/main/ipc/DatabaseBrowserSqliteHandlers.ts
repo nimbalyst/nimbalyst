@@ -48,6 +48,55 @@ export interface SqliteBrowserBackendDeps {
 type Sanitizer = (s: string) => string;
 const sanitize: Sanitizer = (name) => name.replace(/[^a-zA-Z0-9_]/g, '');
 
+type DashboardBackupInfo = {
+  timestamp: string;
+  size?: number;
+  sizeBytes?: number;
+  verified: boolean;
+} | null;
+
+type DashboardBackupStatus = {
+  currentBackup: DashboardBackupInfo;
+  previousBackup: DashboardBackupInfo;
+  oldestBackup: DashboardBackupInfo;
+  lastBackupAttempt: string | null;
+  lastSuccessfulBackup: string | null;
+} | null;
+
+function normalizeDashboardBackupInfo(info: unknown): DashboardBackupInfo {
+  if (!info || typeof info !== 'object') {
+    return null;
+  }
+
+  const candidate = info as Record<string, unknown>;
+  const size = typeof candidate.size === 'number'
+    ? candidate.size
+    : typeof candidate.sizeBytes === 'number'
+      ? candidate.sizeBytes
+      : undefined;
+
+  return {
+    timestamp: typeof candidate.timestamp === 'string' ? candidate.timestamp : '',
+    size,
+    verified: candidate.verified === true,
+  };
+}
+
+function normalizeDashboardBackupStatus(status: unknown): DashboardBackupStatus {
+  if (!status || typeof status !== 'object') {
+    return null;
+  }
+
+  const candidate = status as Record<string, unknown>;
+  return {
+    currentBackup: normalizeDashboardBackupInfo(candidate.currentBackup),
+    previousBackup: normalizeDashboardBackupInfo(candidate.previousBackup),
+    oldestBackup: normalizeDashboardBackupInfo(candidate.oldestBackup),
+    lastBackupAttempt: typeof candidate.lastBackupAttempt === 'string' ? candidate.lastBackupAttempt : null,
+    lastSuccessfulBackup: typeof candidate.lastSuccessfulBackup === 'string' ? candidate.lastSuccessfulBackup : null,
+  };
+}
+
 /**
  * Pure-logic backend exposed for unit testing. Tests construct it with a
  * real `SQLiteDatabase`, so this class can still reach for getRawHandle
@@ -252,7 +301,7 @@ export function registerDatabaseBrowserSqliteHandlers(deps: SqliteBrowserHandler
       // payload shape stays identical to the PGLite-side handler.
       let backupStatus: unknown = null;
       try {
-        backupStatus = await proxy.getBackupStatusAsync();
+        backupStatus = normalizeDashboardBackupStatus(await proxy.getBackupStatusAsync());
       } catch {
         backupStatus = null;
       }

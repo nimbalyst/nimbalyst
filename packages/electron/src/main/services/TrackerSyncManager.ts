@@ -291,7 +291,7 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
     // the cast is intentional and matches DocumentSyncHandlers' approach.
     createWebSocket: ((url: string) => new WebSocket(url)) as unknown as TrackerSyncEngineConfig['createWebSocket'],
     onStatusChange: (status) => {
-      logger.main.info('[TrackerSyncManager] onStatusChange for', workspacePath, '->', status);
+      // logger.main.info('[TrackerSyncManager] onStatusChange for', workspacePath, '->', status);
       const entry = engines.get(workspacePath);
       if (entry) {
         entry.status = status;
@@ -312,11 +312,11 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
       }
     },
     onItemApplied: (applied) => {
-      logger.main.info('[TrackerSyncManager] onItemApplied for', workspacePath, 'itemId:', applied.itemId, 'tombstone:', applied.isTombstone);
+      // logger.main.info('[TrackerSyncManager] onItemApplied for', workspacePath, 'itemId:', applied.itemId, 'tombstone:', applied.isTombstone);
       emitItemApplied(workspacePath, applied);
     },
     onConfigChange: (roomConfig) => {
-      logger.main.info('[TrackerSyncManager] onConfigChange for', workspacePath, 'issueKeyPrefix:', roomConfig.issueKeyPrefix);
+      // logger.main.info('[TrackerSyncManager] onConfigChange for', workspacePath, 'issueKeyPrefix:', roomConfig.issueKeyPrefix);
       const entry = engines.get(workspacePath);
       if (entry) {
         entry.config = roomConfig;

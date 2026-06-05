@@ -518,7 +518,7 @@
   padding: 12px 32px;
   font-size: 15px;
   font-weight: 600;
-  color: white;
+  color: var(--nim-on-primary);
   background: var(--nim-primary);
   border: none;
   border-radius: 8px;
@@ -587,7 +587,7 @@
 }
 
 .unified-onboarding-nav-button.primary {
-  color: white;
+  color: var(--nim-on-primary);
   background: var(--nim-primary);
   border: none;
   box-shadow: 0 2px 8px color-mix(in srgb, var(--nim-primary) 20%, transparent);

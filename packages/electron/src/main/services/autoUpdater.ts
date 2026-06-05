@@ -185,13 +185,24 @@ export class AutoUpdaterService {
       // Manual checks (`Check for Updates` menu item) and download errors
       // still surface so the user gets feedback when they asked for it
       // or are mid-download.
-      const isTransientNetworkCheckError =
-        stage === 'check' && errorType === 'network' && !wasManualCheck;
-      if (!isTransientNetworkCheckError) {
-        // Send error to frontmost window via toast system
-        this.sendToFrontmostWindow('update-toast:error', {
-          message: err.message
-        });
+      //
+      // Same treatment for `release_pending` (404 on `latest-*.yml`): the
+      // release workflow pushes the tag minutes before it uploads metadata,
+      // so every alpha client polling during the build window would otherwise
+      // see "Cannot find latest-mac.yml ... HttpError: 404" -- functionally
+      // identical to "no update available". Background polls get nothing;
+      // manual checks get a friendly "release is being published" toast
+      // instead of the raw HttpError dump.
+      const isTransientCheckError =
+        stage === 'check' &&
+        (errorType === 'network' || errorType === 'release_pending') &&
+        !wasManualCheck;
+      if (!isTransientCheckError) {
+        const message =
+          errorType === 'release_pending'
+            ? 'A new release is being published. Check back in a few minutes.'
+            : err.message;
+        this.sendToFrontmostWindow('update-toast:error', { message });
       }
 
       this.sendToAllWindows('update-error', err.message);

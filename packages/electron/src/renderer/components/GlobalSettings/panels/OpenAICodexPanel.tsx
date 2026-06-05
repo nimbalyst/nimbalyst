@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { ProviderConfig, Model } from '../../Settings/SettingsView';
 import { SettingsToggle } from '../SettingsToggle';
@@ -40,7 +40,8 @@ export function OpenAICodexPanel({
   const usageIndicatorEnabled = useAtomValue(codexUsageIndicatorEnabledAtom);
   const setUsageIndicatorEnabled = useSetAtom(setCodexUsageIndicatorEnabledAtom);
 
-  const acpConfig = useAtomValue(getProviderConfigAtom('openai-codex-acp'));
+  const acpConfigAtom = useMemo(() => getProviderConfigAtom('openai-codex-acp'), []);
+  const acpConfig = useAtomValue(acpConfigAtom);
   const setProviderConfig = useSetAtom(setProviderConfigAtom);
   const acpEnabled = acpConfig?.enabled === true;
   const handleAcpToggle = (enabled: boolean) => {

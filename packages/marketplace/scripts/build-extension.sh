@@ -9,6 +9,7 @@
 # The .nimext file is a zip containing:
 #   manifest.json
 #   dist/          (built extension bundle)
+#   claude-plugin/ (if present, when manifest declares contributions.claudePlugin)
 #   screenshots/   (if present)
 #   README.md      (if present)
 
@@ -68,6 +69,14 @@ if [ -d "$EXTENSION_PATH/dist" ]; then
   cp -r "$EXTENSION_PATH/dist" "$TEMP_DIR/dist"
 else
   echo "Warning: No dist/ directory found. Extension may not have been built."
+fi
+
+# Copy claude-plugin if present. The manifest's contributions.claudePlugin.path
+# is resolved relative to the installed extension root, so the SKILL.md and
+# plugin.json files have to ship inside the .nimext or ExtensionHandlers logs
+# "Claude plugin path not found" and the skill never reaches Claude Code.
+if [ -d "$EXTENSION_PATH/claude-plugin" ]; then
+  cp -r "$EXTENSION_PATH/claude-plugin" "$TEMP_DIR/claude-plugin"
 fi
 
 # Copy screenshots if present

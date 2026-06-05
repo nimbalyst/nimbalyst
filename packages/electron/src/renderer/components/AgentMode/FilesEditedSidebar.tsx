@@ -53,6 +53,7 @@ import { isPathInWorkspace } from '../../../shared/pathUtils';
 import { FilesScopeDropdown } from './FilesScopeDropdown';
 import { GitOperationsPanel } from './GitOperationsPanel';
 import { TodoPanel } from './TodoPanel';
+import { TaskListPanel } from './TaskListPanel';
 import { TeammatePanel } from './TeammatePanel';
 import { TrackerPanel } from './TrackerPanel';
 
@@ -640,6 +641,11 @@ export const FilesEditedSidebar: React.FC<FilesEditedSidebarProps> = React.memo(
       {/* Todo Panel - shows agent's current tasks */}
       {activeSessionId && (
         <TodoPanel sessionId={activeSessionId} />
+      )}
+
+      {/* Task List Panel - shows the SDK-native task queue (TaskCreate/TaskUpdate) */}
+      {activeSessionId && (
+        <TaskListPanel sessionId={activeSessionId} />
       )}
 
       {/* Teammate Panel - shows agent's current teammates */}

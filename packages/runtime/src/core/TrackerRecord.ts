@@ -244,8 +244,24 @@ export function trackerRecordToItem(record: TrackerRecord): TrackerItem {
 export function dbRowToRecord(row: any): TrackerRecord {
   const data = typeof row.data === 'string' ? JSON.parse(row.data) : row.data || {};
 
-  const typeTags: string[] = row.type_tags?.length > 0
-    ? row.type_tags
+  // type_tags is TEXT[] in PGLite (returns string[]) but TEXT in SQLite (returns a
+  // JSON-encoded string). Parse the SQLite shape back into an array, otherwise a raw
+  // string flows downstream and breaks array operations on typeTags.
+  const rawTypeTags = row.type_tags;
+  const parsedTypeTags: string[] | undefined = Array.isArray(rawTypeTags)
+    ? rawTypeTags
+    : typeof rawTypeTags === 'string'
+      ? (() => {
+          try {
+            const parsed = JSON.parse(rawTypeTags);
+            return Array.isArray(parsed) ? (parsed as string[]) : undefined;
+          } catch {
+            return undefined;
+          }
+        })()
+      : undefined;
+  const typeTags: string[] = parsedTypeTags && parsedTypeTags.length > 0
+    ? parsedTypeTags
     : [row.type];
 
   // Separate system keys from user fields

@@ -45,6 +45,7 @@ import {
 } from '../../modelConstants';
 import { isBedrockToolSearchError } from '../utils/errorDetection';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
+import { TranscriptMigrationRepository } from '../../../storage/repositories/TranscriptMigrationRepository';
 import { TeammateManager, type TeammateToLeadMessage } from './TeammateManager';
 import path from 'path';
 import os from 'os';
@@ -93,6 +94,7 @@ import {
 } from './claudeCode/toolAuthorization';
 import { ClaudeCodeDeps } from './claudeCode/dependencyInjection';
 import { buildSdkOptions, type PromptStreamController } from './claudeCode/sdkOptionsBuilder';
+import { applyTaskListMutation, sortTaskList, type TaskListItem } from './claudeCode/taskListReconstruct';
 
 
 /**
@@ -121,6 +123,18 @@ const SDK_NATIVE_TOOLS: readonly string[] = [
   'ListMcpResources', 'ListMcpResourcesTool',
   'ReadMcpResource', 'ReadMcpResourceTool',
   'Config', 'Mcp',
+  // claude-agent-sdk 0.3.x additions (CLI-native multi-agent orchestration)
+  'Workflow', 'REPL',
+];
+
+/**
+ * Tools the CLI emits as tool_use but Nimbalyst services handle as a side effect
+ * inside this provider (see the `tool_use` switch). Their tool_result from the CLI
+ * is informational only -- routing them through `this.toolHandler` would throw
+ * "Unknown tool", so we treat them like SDK_NATIVE_TOOLS for the warn/route check.
+ */
+const NIMBALYST_HANDLED_TOOLS: readonly string[] = [
+  'ScheduleWakeup',
 ];
 
 /**
@@ -138,6 +152,7 @@ export interface ScheduleWakeupRequest {
   prompt: string;
   reason: string;
 }
+
 
 export class ClaudeCodeProvider extends BaseAgentProvider {
   private currentMode?: 'planning' | 'agent'; // Track session mode for prompt customization and tool filtering
@@ -202,6 +217,13 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     lastToolName?: string;
     summary?: string;
   }>();
+
+  // SDK-native task-list tracking (TaskCreate/TaskUpdate tools — the shared,
+  // dependency-aware work queue, distinct from the sub-agent telemetry above).
+  // Reconstructed incrementally from tool args/results because TaskUpdate only
+  // sends the changed fields, never the full board. Surfaced to the UI via
+  // metadata.currentTaskList. Keyed by the SDK-assigned task id ("1", "2", ...).
+  private taskListItems = new Map<string, TaskListItem>();
 
   // MCP server status tracking: last known statuses for change detection
   private mcpServerStatuses: Map<string, McpServerStatusInfo> = new Map();
@@ -881,6 +903,17 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             const isSearchable = isSearchableAssistantChunk(chunk);
 
             this.logAgentMessageNonBlocking(sessionId, 'claude-code', 'output', rawChunkJson, undefined, hideMessages, providerMessageId, isSearchable);
+            // Drive incremental transcript transformation. Without this, the
+            // canonical store only advances on the next aiLoadSession from
+            // the renderer, which never fires when the user's active session
+            // isn't this one -- so widgets keyed on canonical events (e.g.
+            // developer_git_commit_proposal's GitCommitConfirmationWidget)
+            // never appear when a turn pauses mid-stream waiting on user
+            // input. Fire-and-forget so the chunk loop stays responsive;
+            // the per-session lock inside TranscriptTransformer serializes
+            // concurrent calls and the next chunk picks up anything that
+            // hadn't flushed in time.
+            this.scheduleTranscriptProcessing(sessionId);
           }
 
           // if (chunkCount <= 5) {
@@ -956,8 +989,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                 }
 
                 const isSdkNativeTool = SDK_NATIVE_TOOLS.includes(toolName);
-                if (!toolName || isMcp || isSdkNativeTool || isSubagent) {
-                  // Handled by SDK or is a subagent spawn
+                const isNimbalystHandled = NIMBALYST_HANDLED_TOOLS.includes(toolName);
+                if (!toolName || isMcp || isSdkNativeTool || isNimbalystHandled || isSubagent) {
+                  // Handled by SDK, a subagent spawn, or a Nimbalyst side-effect handler above
                 } else if (this.toolHandler) {
                   // Unknown, non-MCP, non-whitelisted tool. Almost always means Anthropic
                   // added a new CLI-native tool we haven't added to SDK_NATIVE_TOOLS yet.
@@ -1000,6 +1034,13 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                   }
 
                   this.processTeammateToolResult(sessionId, toolCall.name, toolCall.arguments, item.content, toolCall.isError === true, toolCall.id);
+
+                  // Mirror SDK-native task-list mutations into session metadata so
+                  // the UI can show the tasks for this session (TaskCreate id is
+                  // only available in the result, so capture happens here).
+                  if (!toolCall.isError) {
+                    this.captureTaskListMutation(sessionId, toolCall.name, toolCall.arguments, item.content);
+                  }
 
                   if (item.toolUseId) {
                     for (const task of this.activeTasks.values()) {
@@ -1058,6 +1099,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                   };
 
                   await this.flushPendingWrites();
+                  if (sessionId) await this.processTranscriptMessages(sessionId);
                   yield { type: 'complete', isComplete: true };
                   breakOuter = true;
                   break;
@@ -1153,16 +1195,20 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           // requests, but the consumer sees completion immediately.
           if (typeof chunk === 'object' && chunk !== null && chunk.type === 'result' && !completeEmitted) {
             await this.flushPendingWrites();
+            if (sessionId) await this.processTranscriptMessages(sessionId);
 
             if (this.toolHooksService && this.toolHooksService.getEditedFiles().size > 0) {
               await this.toolHooksService.createTurnEndSnapshots();
             }
 
+            // Prefer result.usage (deduplicated by Anthropic via message.id). The SDK's
+            // modelUsage aggregate over-counts: the agent stream emits each assistant
+            // message 2-3x (one event per content block) and modelUsage sums the dupes,
+            // inflating cumulative input/output. Fall back to the modelUsage sum only when
+            // result.usage is missing. See NIM-689.
             let totalInputTokens = usageData?.input_tokens || 0;
             let totalOutputTokens = usageData?.output_tokens || 0;
-            if (modelUsageData) {
-              totalInputTokens = 0;
-              totalOutputTokens = 0;
+            if (!usageData && modelUsageData) {
               for (const modelName of Object.keys(modelUsageData)) {
                 const modelStats = modelUsageData[modelName];
                 totalInputTokens += modelStats.inputTokens || 0;
@@ -1354,25 +1400,33 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         // before the final messages (e.g. compact_boundary, continuation, result)
         // have been committed, causing a stale transcript.
         await this.flushPendingWrites();
+        if (sessionId) await this.processTranscriptMessages(sessionId);
 
         // Create snapshots for all files edited during this turn
         if (this.toolHooksService && this.toolHooksService.getEditedFiles().size > 0) {
           await this.toolHooksService.createTurnEndSnapshots();
         }
 
-        // Calculate total input/output tokens from modelUsage if available (more accurate than usageData)
+        // Prefer result.usage (deduplicated by Anthropic via message.id) for token totals.
+        // modelUsage over-counts because the agent stream emits each assistant message
+        // 2-3x (one event per content block) and modelUsage sums the dupes. Use the
+        // modelUsage sum only as a fallback when result.usage is absent. Cost still comes
+        // from modelUsage (the only per-model cost source; not displayed). See NIM-689.
         let totalInputTokens = usageData?.input_tokens || 0;
         let totalOutputTokens = usageData?.output_tokens || 0;
         let totalCostUSD = 0;
 
         if (modelUsageData) {
-          // Sum up tokens from all models (in case multiple models were used)
-          totalInputTokens = 0;
-          totalOutputTokens = 0;
+          if (!usageData) {
+            totalInputTokens = 0;
+            totalOutputTokens = 0;
+          }
           for (const modelName of Object.keys(modelUsageData)) {
             const modelStats = modelUsageData[modelName];
-            totalInputTokens += modelStats.inputTokens || 0;
-            totalOutputTokens += modelStats.outputTokens || 0;
+            if (!usageData) {
+              totalInputTokens += modelStats.inputTokens || 0;
+              totalOutputTokens += modelStats.outputTokens || 0;
+            }
             totalCostUSD += modelStats.costUSD || 0;
           }
         }
@@ -1441,6 +1495,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       if (isAbort) {
         // Abort is expected - user cancelled, don't log as error
         await this.flushPendingWrites();
+        if (sessionId) await this.processTranscriptMessages(sessionId);
         if (!completeEmitted) {
           yield {
             type: 'complete',
@@ -1484,6 +1539,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         // is already cleaned up; this error was raised after the turn was
         // delivered (e.g. teammate streamInput failure).
         await this.flushPendingWrites();
+        if (sessionId) await this.processTranscriptMessages(sessionId);
         if (!completeEmitted) {
           yield {
             type: 'complete'
@@ -1578,6 +1634,56 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
    * Uses two undocumented SDK methods (generateSessionTitle and askSideQuestion
    * exist in 0.2.117 runtime but are not on the public sdk.d.ts surface).
    */
+
+  // Per-session "transcript processing already scheduled" flag. The streaming
+  // chunk loop fires scheduleTranscriptProcessing per chunk, so without this
+  // we'd queue one processNewMessages run per chunk; the per-session lock
+  // inside TranscriptTransformer would serialize them, but we'd still pay N
+  // DB roundtrips for what could have been one. Setting the flag at schedule
+  // time and clearing it when the run starts coalesces bursts of chunks into
+  // at most one in-flight run + one queued run per session.
+  private transcriptProcessingScheduled: Set<string> = new Set();
+
+  /**
+   * Schedule a non-blocking pass over any unprocessed rows in
+   * ai_agent_messages for this session. Mirrors what OpenCodeProvider,
+   * CopilotCLIProvider, and OpenAICodexACPProvider do synchronously, but
+   * fired-and-forgotten so the high-throughput Claude Code chunk loop stays
+   * responsive. End-of-turn callers should still `await
+   * processTranscriptMessages` directly to guarantee post-flush consistency.
+   */
+  private scheduleTranscriptProcessing(sessionId: string): void {
+    if (!TranscriptMigrationRepository.hasService()) return;
+    if (this.transcriptProcessingScheduled.has(sessionId)) return;
+    this.transcriptProcessingScheduled.add(sessionId);
+    queueMicrotask(() => {
+      this.transcriptProcessingScheduled.delete(sessionId);
+      void this.processTranscriptMessages(sessionId);
+    });
+  }
+
+  /**
+   * Drive the canonical transcript transformer forward for this session.
+   * Best-effort: failures here must not abort the streaming turn, and the
+   * next call (or end-of-turn aiLoadSession from the renderer) will catch
+   * up. Without this, canonical events only get materialized when the
+   * renderer's active session is read, so mid-turn widgets (the commit
+   * proposal pending widget, AskUserQuestion, ExitPlanMode) never appear
+   * when the user is viewing a different session.
+   */
+  private async processTranscriptMessages(sessionId: string): Promise<void> {
+    try {
+      if (TranscriptMigrationRepository.hasService()) {
+        await TranscriptMigrationRepository.getService().processNewMessages(
+          sessionId,
+          'claude-code',
+        );
+      }
+    } catch {
+      // Best effort -- next chunk or post-flush call will catch up.
+    }
+  }
+
   private async maybeFireSessionNamingSideQuestion(
     queryRef: Query,
     sessionId: string,
@@ -1654,7 +1760,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       await manager.updateSessionTitle(sessionId, trimmed);
 
       this.emit('session:title-updated', { sessionId, title: trimmed });
-      console.log(`[CLAUDE-CODE] generated session title for ${sessionId}: "${trimmed}"`);
+      // console.log(`[CLAUDE-CODE] generated session title for ${sessionId}: "${trimmed}"`);
     } catch (error) {
       console.warn('[CLAUDE-CODE] generateSessionTitle failed:', (error as Error)?.message ?? error);
     }
@@ -1706,7 +1812,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // kanban/sidebar and iOS pick up the write the same way they would
       // for an MCP-tool-driven update via SessionNamingService.
       this.emit('session:metadata-updated', { sessionId, metadata: update });
-      console.log(`[CLAUDE-CODE] applied side-question tags+phase for ${sessionId}: ${JSON.stringify(update)}`);
+      // console.log(`[CLAUDE-CODE] applied side-question tags+phase for ${sessionId}: ${JSON.stringify(update)}`);
     } catch (error) {
       // Most likely "Query closed before response received" on short turns -- expected
       console.warn('[CLAUDE-CODE] tags+phase side-question failed:', (error as Error)?.message ?? error);
@@ -1981,6 +2087,26 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       })();
     }
 
+    // Hydrate the in-memory task-list map from persisted metadata so TaskUpdate
+    // deltas in a resumed session merge onto the existing board instead of
+    // creating stubs (the map is per-provider-instance and starts empty).
+    if (sessionId && this.taskListItems.size === 0) {
+      (async () => {
+        try {
+          const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
+          const currentSession = await AISessionsRepository.get(sessionId);
+          const persisted = currentSession?.metadata?.currentTaskList;
+          if (Array.isArray(persisted)) {
+            for (const item of persisted as TaskListItem[]) {
+              if (item && typeof item.id === 'string') this.taskListItems.set(item.id, item);
+            }
+          }
+        } catch {
+          // Non-critical hydration
+        }
+      })();
+    }
+
     if (chunk.slash_commands && Array.isArray(chunk.slash_commands)) {
       this.slashCommands = chunk.slash_commands;
       ClaudeCodeProvider.cachedSdkSlashCommands = chunk.slash_commands;
@@ -2174,6 +2300,48 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       this.emit('message:logged', { sessionId, direction: 'output' });
     } catch (error) {
       console.error('[CLAUDE-CODE] Failed to update session metadata with tasks:', error);
+    }
+  }
+
+  /**
+   * Reconstruct the SDK-native task list from TaskCreate/TaskUpdate tool calls.
+   * TaskUpdate only carries the changed fields, so we keep a running map keyed by
+   * the SDK-assigned id and merge each mutation. TaskCreate does not echo the id
+   * in its args — it appears only in the result text ("Task #3 created ...") — so
+   * this must run on tool_result, not tool_use.
+   */
+  private captureTaskListMutation(
+    sessionId: string | undefined,
+    toolName: string,
+    args: Record<string, unknown> | undefined,
+    resultContent: unknown,
+  ): void {
+    if (!sessionId) return;
+    const resultText = typeof resultContent === 'string' ? resultContent : '';
+    const changed = applyTaskListMutation(this.taskListItems, toolName, args, resultText);
+    if (changed) {
+      this.emitTaskListUpdate(sessionId).catch(() => {});
+    }
+  }
+
+  private async emitTaskListUpdate(sessionId: string | undefined): Promise<void> {
+    if (!sessionId) return;
+    try {
+      const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
+      const currentSession = await AISessionsRepository.get(sessionId);
+      const currentMetadata = currentSession?.metadata || {};
+
+      await AISessionsRepository.updateMetadata(sessionId, {
+        metadata: {
+          ...currentMetadata,
+          // Sorted by numeric id so the board renders in creation order.
+          currentTaskList: sortTaskList(this.taskListItems.values()),
+        }
+      });
+
+      this.emit('message:logged', { sessionId, direction: 'output' });
+    } catch (error) {
+      console.error('[CLAUDE-CODE] Failed to update session metadata with task list:', error);
     }
   }
 

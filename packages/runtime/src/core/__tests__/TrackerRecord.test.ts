@@ -250,6 +250,31 @@ describe('dbRowToRecord', () => {
     const record = dbRowToRecord(row);
     expect(record.typeTags).toEqual(['idea']);
   });
+
+  it('parses the SQLite JSON-string shape for type_tags', () => {
+    const row = {
+      id: 'x',
+      type: 'bug',
+      type_tags: '["bug","task"]',
+      data: { title: 'From SQLite' },
+      workspace: '/ws',
+      document_path: '',
+      line_number: null,
+      created: new Date(),
+      updated: new Date(),
+      last_indexed: new Date(),
+      issue_number: null,
+      issue_key: null,
+      content: null,
+      archived: false,
+      source: 'native',
+      source_ref: null,
+      sync_status: 'local',
+    };
+
+    const record = dbRowToRecord(row);
+    expect(record.typeTags).toEqual(['bug', 'task']);
+  });
 });
 
 describe('recordToDbParams', () => {

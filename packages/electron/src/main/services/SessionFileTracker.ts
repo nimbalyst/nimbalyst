@@ -393,7 +393,7 @@ export class SessionFileTracker {
             console.error(`[SessionFileTracker] Failed to refresh metadata for ${filePath}:`, refreshError);
           }
         } else {
-          console.warn(`[SessionFileTracker] No document service found for workspace: ${workspaceId}`);
+          // console.warn(`[SessionFileTracker] No document service found for workspace: ${workspaceId}`);
         }
       } else if (linkType === 'read') {
         metadata = extractReadMetadata(toolName, args, result);

@@ -50,6 +50,7 @@ import { FeatureUsageService, FEATURES } from '../FeatureUsageService.ts';
 import { historyManager } from '../../HistoryManager';
 import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
+import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import {
   shouldShowCommunityPopup,
@@ -692,15 +693,13 @@ export class MessageStreamingHandler {
     };
     this.installListener(provider, 'session:metadata-updated', onSessionMetadataUpdated);
 
-    // Helper to sync pending prompt state to mobile
+    // Helper to persist pending-prompt state to ai_sessions.metadata AND
+    // push the change to mobile in one call. See pendingPromptPersistence.ts
+    // for why we persist locally: the in-memory atom can desync from reality
+    // if a resolve event is missed (renderer reload, HMR, late delivery),
+    // and the only recovery is rehydrating from the DB on next list refresh.
     const syncPendingPrompt = (sessionId: string, hasPendingPrompt: boolean) => {
-      const sp = getSyncProvider();
-      if (sp) {
-        sp.pushChange(sessionId, {
-          type: 'metadata_updated',
-          metadata: { hasPendingPrompt, updatedAt: Date.now() },
-        });
-      }
+      void setSessionPendingPrompt(sessionId, hasPendingPrompt);
     };
 
     // Listen for ExitPlanMode confirmation requests and forward to renderer
@@ -1884,24 +1883,24 @@ export class MessageStreamingHandler {
             // }
             // if (modelUsage) {
             // }
-            if (fullResponse) {
-              logger.ai.info('[AIService] Assistant final response', {
-                length: fullResponse.length,
-                preview: previewForLog(fullResponse)
-              });
-            } else {
-              logger.ai.info('[AIService] Assistant response empty', {
-                edits: edits.length,
-                streamed: hasStreamingContent,
-                toolCalls: toolCallCount
-              });
-            }
-            if (edits.length > 0) {
-              logger.ai.info('[AIService] Collected edits', {
-                editCount: edits.length,
-                replacementCounts: edits.map(edit => Array.isArray(edit.replacements) ? edit.replacements.length : 0)
-              });
-            }
+            // if (fullResponse) {
+            //   logger.ai.info('[AIService] Assistant final response', {
+            //     length: fullResponse.length,
+            //     preview: previewForLog(fullResponse)
+            //   });
+            // } else {
+            //   logger.ai.info('[AIService] Assistant response empty', {
+            //     edits: edits.length,
+            //     streamed: hasStreamingContent,
+            //     toolCalls: toolCallCount
+            //   });
+            // }
+            // if (edits.length > 0) {
+            //   logger.ai.info('[AIService] Collected edits', {
+            //     editCount: edits.length,
+            //     replacementCounts: edits.map(edit => Array.isArray(edit.replacements) ? edit.replacements.length : 0)
+            //   });
+            // }
 
             // Send completion metrics with token usage if available
             safeSend(event, 'ai:performanceMetrics', {
@@ -1942,17 +1941,16 @@ export class MessageStreamingHandler {
                 totalTokens: 0
               };
 
-              // Sum up tokens from all models in modelUsage.
-              // Note: modelUsage tokens are CUMULATIVE across all steps (for billing).
-              // For context window display, use contextFillTokens from last assistant message.
-              let newInputTokens = 0;
-              let newOutputTokens = 0;
+              // Cumulative input/output come from result.usage (chunk.usage), which Anthropic
+              // deduplicates by message.id. Do NOT sum modelUsage tokens for these -- the SDK
+              // over-counts them from duplicated assistant events (each message is emitted 2-3x,
+              // one event per content block), inflating the tooltip totals. See NIM-689.
+              // Cost still derives from modelUsage (the only per-model cost source; not displayed).
+              const newInputTokens = tokenUsage?.input_tokens || 0;
+              const newOutputTokens = tokenUsage?.output_tokens || 0;
               let newCostUSD = 0;
               for (const modelName of Object.keys(modelUsage)) {
-                const modelStats = modelUsage[modelName];
-                newInputTokens += modelStats.inputTokens || 0;
-                newOutputTokens += modelStats.outputTokens || 0;
-                newCostUSD += modelStats.costUSD || 0;
+                newCostUSD += modelUsage[modelName].costUSD || 0;
               }
 
               // Use the selected model's context window (resolved from model registry at session start).
@@ -2255,7 +2253,7 @@ export class MessageStreamingHandler {
                 : queuedChainAlreadyActive
                 ? 'queued continuation already active'
                 : 'queued continuation scheduled';
-              logger.main.info(`[AIService] Deferring endSession for ${session.id} - ${reason}`);
+              // logger.main.info(`[AIService] Deferring endSession for ${session.id} - ${reason}`);
             } else {
               await stateManager.endSession(session.id);
               // Stop file watcher after a brief delay to let pending
@@ -2276,17 +2274,17 @@ export class MessageStreamingHandler {
                 : 'Response complete';
               const sessionLabel = session.title || session.provider;
 
-              logger.ai.info('[AIService] Notification content', {
-                sessionId: session.id,
-                lastTextPreview: previewForLog(lastTextSection.trim()),
-                prevTextPreview: previewForLog(prevTextSection),
-                fullResponsePreview: previewForLog(fullResponse),
-                selectedSource: lastTextSection.trim()
-                  ? 'lastTextSection'
-                  : prevTextSection
-                  ? 'prevTextSection'
-                  : 'fullResponse',
-              });
+              // logger.ai.info('[AIService] Notification content', {
+              //   sessionId: session.id,
+              //   lastTextPreview: previewForLog(lastTextSection.trim()),
+              //   prevTextPreview: previewForLog(prevTextSection),
+              //   fullResponsePreview: previewForLog(fullResponse),
+              //   selectedSource: lastTextSection.trim()
+              //     ? 'lastTextSection'
+              //     : prevTextSection
+              //     ? 'prevTextSection'
+              //     : 'fullResponse',
+              // });
 
               await notificationService.showNotification({
                 title: `${sessionLabel} -- Response Ready`,

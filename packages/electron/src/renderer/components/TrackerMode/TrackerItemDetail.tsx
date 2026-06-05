@@ -1517,7 +1517,7 @@ const CommentsSection: React.FC<{ itemId: string; comments?: any[] }> = ({ itemI
         <button
           onClick={handleSubmit}
           disabled={!newComment.trim() || submitting}
-          className="px-2 py-1 rounded text-xs bg-nim-primary text-white disabled:opacity-40 hover:opacity-90 transition-opacity"
+          className="px-2 py-1 rounded text-xs bg-nim-primary text-nim-on-primary disabled:opacity-40 hover:opacity-90 transition-opacity"
         >
           Post
         </button>

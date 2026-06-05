@@ -10,11 +10,9 @@ import { registerDialog } from '../contexts/DialogContext';
 
 // Navigation dialogs - mutually exclusive
 export const DIALOG_IDS = {
-  // Navigation group - mutually exclusive
-  QUICK_OPEN: 'quick-open',
-  SESSION_QUICK_OPEN: 'session-quick-open',
-  PROMPT_QUICK_OPEN: 'prompt-quick-open',
-  PROJECT_QUICK_OPEN: 'project-quick-open',
+  // Navigation group: one tabbed dialog combines Files, In Files, Sessions,
+  // Prompts, and Projects. Opened with an initialTab (defaults to Files).
+  UNIFIED_QUICK_OPEN: 'unified-quick-open',
 
   // Help group
   KEYBOARD_SHORTCUTS: 'keyboard-shortcuts',

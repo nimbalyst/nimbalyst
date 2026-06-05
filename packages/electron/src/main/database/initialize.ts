@@ -3,8 +3,9 @@
  * Handles PGLite database setup and migration on app startup
  */
 
-import { app } from 'electron';
+import { app, powerMonitor } from 'electron';
 import * as fs from 'fs';
+import * as fsp from 'fs/promises';
 import path from 'path';
 import { database, legacyPgliteDatabase } from './PGLiteDatabaseWorker';
 import { resolveBackend } from './sqlite/BackendSelector';
@@ -167,33 +168,11 @@ export async function initializeDatabase(): Promise<SessionStore> {
     // from ai_transcript_events) left users with the symptom that a session
     // opens to an empty transcript until the user manually right-click ->
     // "Reprocess transcript". Resetting the metadata here puts those
-    // sessions back into the "never transformed" branch so the lazy
-    // TranscriptTransformer.ensureUpToDate path regenerates events on first
-    // open. Idempotent: NULLs only the rows that need it, no-op once healed.
-    try {
-      const repairResult = await database.query<{ id: string }>(
-        `UPDATE ai_sessions
-           SET canonical_transform_version = NULL,
-               canonical_last_raw_message_id = NULL,
-               canonical_last_transformed_at = NULL,
-               canonical_transform_status = NULL
-         WHERE canonical_transform_status = 'complete'
-           AND NOT EXISTS (
-             SELECT 1 FROM ai_transcript_events e WHERE e.session_id = ai_sessions.id
-           )
-         RETURNING id`,
-      );
-      if (repairResult.rows.length > 0) {
-        logger.main.warn(
-          `[Database] Reset canonical_transform_status on ${repairResult.rows.length} sessions whose canonical events table was empty (likely post-PGLite-migration). They will be re-transformed lazily on first open.`,
-        );
-      }
-    } catch (repairErr) {
-      // Don't block startup if the repair fails (e.g. on a backend that
-      // doesn't support the query yet). The user-facing fallback is still
-      // the per-session "Reprocess transcript" context-menu action.
-      logger.main.error('[Database] Canonical transform metadata repair failed:', repairErr);
-    }
+    // Phase 4 of canonical-transcript-deprecation: ai_transcript_events and
+    // its watermark columns are gone. The legacy self-heal that NULLed
+    // canonical_transform_* when the events table was empty is no longer
+    // needed because there is no persisted state to drift out of sync with;
+    // the in-memory runtime always rebuilds from raw on demand.
 
     // Self-heal sessions whose metadata is the artifact of `{...stringValue}`
     // somewhere upstream -- the spread treated each char of a string as a
@@ -309,6 +288,33 @@ export async function initializeDatabase(): Promise<SessionStore> {
 
     // Start periodic backup timer (only in production, not in tests)
     if (process.env.PLAYWRIGHT !== '1') {
+      // Sweep stranded temp-backup-* files left behind by previous runs.
+      // The on-quit cleanup catches today's runs, but anything from before
+      // the cleanup wiring was in place — or from a crash that skipped quit —
+      // accumulates in db-backups/ and sqlite-db.backups/ until startup.
+      try {
+        await database.getBackupService()?.cleanupOldCorruptedBackups?.();
+      } catch (err) {
+        logger.main.warn('[Database] Startup backup cleanup failed:', err);
+      }
+
+      // The active backend's service only sweeps its own dir. After PGLite ->
+      // SQLite migration (the common case now), `db-backups/` is orphaned —
+      // no service ever touches it, and historical PGLite bugs left
+      // temp-backup-* dirs accumulating there forever (~34 per user observed
+      // on greg's machine). Sweep both backend dirs unconditionally.
+      try {
+        await sweepStrandedTempBackups(userDataPath);
+      } catch (err) {
+        logger.main.warn('[Database] Cross-backend temp-backup sweep failed:', err);
+      }
+
+      // If we missed a backup window (e.g. macOS slept through the 4h
+      // setInterval), fire one now. setInterval pauses during system sleep
+      // and does NOT catch up on wake, so a single overnight sleep silently
+      // skips the snapshot.
+      void runStalenessBackup('startup');
+
       periodicBackupTimer = setInterval(async () => {
         logger.main.info('[Database] Running periodic backup...');
         const result = await database.createBackup();
@@ -318,6 +324,15 @@ export async function initializeDatabase(): Promise<SessionStore> {
           logger.main.warn('[Database] Periodic backup failed:', result.error);
         }
       }, BACKUP_INTERVAL_MS);
+
+      // Cover the macOS-sleep case: when the laptop wakes after sleeping
+      // longer than BACKUP_INTERVAL_MS, the setInterval timer has effectively
+      // been paused — we may have just missed one or more backup windows.
+      // Check staleness on resume and snapshot if needed.
+      powerMonitor.on('resume', () => {
+        logger.main.info('[Database] System resumed from sleep; checking backup staleness');
+        void runStalenessBackup('resume');
+      });
 
       logger.main.info(`[Database] Periodic backup enabled (every ${BACKUP_INTERVAL_MS / (60 * 60 * 1000)} hours)`);
     }
@@ -351,6 +366,120 @@ export function getDatabase() {
 
 export function getLiveSqliteDatabaseProxy(): SQLiteDatabaseProxy | null {
   return sqliteDatabase;
+}
+
+/**
+ * Run a backup if the last successful one is older than BACKUP_INTERVAL_MS.
+ * Used at startup (to catch up after Nimbalyst was closed during a backup
+ * window) and on system resume (to catch up after macOS pauses setInterval
+ * during sleep). The interval itself runs unchanged; this is purely an
+ * "is the latest backup stale?" gate.
+ *
+ * Reads `backup-metadata.json` from disk so we don't need to plumb an async
+ * status accessor through the SQLite worker proxy (its sync facade returns
+ * null and the dashboard uses a different path).
+ */
+async function runStalenessBackup(trigger: 'startup' | 'resume'): Promise<void> {
+  try {
+    const userDataPath = process.env.NIMBALYST_USER_DATA_PATH
+      || (process.env.PLAYWRIGHT === '1' ? path.join(app.getPath('temp'), 'nimbalyst-test-db') : null)
+      || app.getPath('userData');
+    const metadataPaths = [
+      path.join(userDataPath, 'sqlite-db.backups', 'backup-metadata.json'),
+      path.join(userDataPath, 'db-backups', 'backup-metadata.json'),
+    ];
+
+    let lastSuccessMs = 0;
+    for (const p of metadataPaths) {
+      if (!fs.existsSync(p)) continue;
+      try {
+        const raw = JSON.parse(fs.readFileSync(p, 'utf-8')) as {
+          lastSuccessfulBackup?: string | null;
+        };
+        const stamp = raw.lastSuccessfulBackup;
+        if (!stamp) continue;
+        // The backup services store this with `:` and `.` replaced by `-`
+        // (e.g. "2026-06-02T03-04-41-264Z"). Reverse before parsing.
+        const ms = Date.parse(unmangleIsoTimestamp(stamp));
+        if (Number.isFinite(ms) && ms > lastSuccessMs) lastSuccessMs = ms;
+      } catch (parseErr) {
+        logger.main.warn(`[Database] Could not read backup metadata at ${p}:`, parseErr);
+      }
+    }
+
+    const ageMs = Date.now() - lastSuccessMs;
+    if (lastSuccessMs > 0 && ageMs < BACKUP_INTERVAL_MS) {
+      logger.main.info(`[Database] Backup not stale on ${trigger} (age ${Math.round(ageMs / 60000)}m); skipping`);
+      return;
+    }
+    const ageLabel = lastSuccessMs > 0 ? `${Math.round(ageMs / 60000)}m` : 'unknown';
+    logger.main.info(`[Database] Running ${trigger} backup (last success ${ageLabel} ago)`);
+    const result = await database.createBackup();
+    if (result.success) {
+      logger.main.info(`[Database] ${trigger} backup completed successfully`);
+    } else {
+      logger.main.warn(`[Database] ${trigger} backup failed:`, result.error);
+    }
+  } catch (err) {
+    logger.main.warn(`[Database] Staleness backup (${trigger}) errored:`, err);
+  }
+}
+
+/**
+ * Sweep stranded `temp-backup-*` entries from both backend backup directories,
+ * regardless of which backend is currently active.
+ *
+ * Background: each backend's BackupService only knows about its own dir, so
+ * post-migration installs (SQLite active) never touch `db-backups/`, and
+ * any pre-migration install that ever ran a buggy PGLite cleanup left
+ * `temp-backup-*` dirs there forever. Conversely, a user who rolls back
+ * to PGLite would leave the SQLite dir un-swept. This is a one-shot,
+ * idempotent floor: it only removes `temp-backup-*` (always garbage),
+ * never the named rolling slots (`*.backup-current/previous/oldest`),
+ * which might still be useful for cross-backend rollback.
+ */
+async function sweepStrandedTempBackups(userDataPath: string): Promise<void> {
+  const dirs = [
+    path.join(userDataPath, 'db-backups'),
+    path.join(userDataPath, 'sqlite-db.backups'),
+  ];
+  let removed = 0;
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    let entries: import('fs').Dirent[];
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      logger.main.warn(`[Database] Could not read ${dir}:`, err);
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.name.startsWith('temp-backup-')) continue;
+      const full = path.join(dir, entry.name);
+      try {
+        await fsp.rm(full, { recursive: true, force: true });
+        removed++;
+      } catch (err) {
+        logger.main.warn(`[Database] Failed to remove ${full}:`, err);
+      }
+    }
+  }
+  if (removed > 0) {
+    logger.main.info(`[Database] Swept ${removed} stranded temp-backup entries across backend dirs`);
+  }
+}
+
+/**
+ * Undo the `:` / `.` -> `-` substitution that the backup services apply when
+ * naming files. e.g. `2026-06-02T03-04-41-264Z` -> `2026-06-02T03:04:41.264Z`.
+ * The date half (before `T`) has no separators to restore.
+ */
+function unmangleIsoTimestamp(stamp: string): string {
+  const t = stamp.indexOf('T');
+  if (t < 0) return stamp;
+  const date = stamp.slice(0, t);
+  const timeWithMs = stamp.slice(t + 1).replace(/-(\d{3}Z)$/, '.$1');
+  return `${date}T${timeWithMs.replace(/-/g, ':')}`;
 }
 
 /**

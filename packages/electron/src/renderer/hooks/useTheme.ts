@@ -1,8 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import type { ConfigTheme } from '@nimbalyst/runtime';
 import { themeIdAtom, setThemeAtom, store, type ThemeId } from '@nimbalyst/runtime/store';
-import { getBaseThemeColors, getTheme as getRuntimeTheme, type ExtendedThemeColors } from '@nimbalyst/runtime';
+import { getBaseThemeColors, getTheme as getRuntimeTheme, onThemesChanged, type ExtendedThemeColors } from '@nimbalyst/runtime';
 
 /**
  * Map of ExtendedThemeColors keys to CSS variable names.
@@ -26,6 +26,7 @@ const CSS_VAR_MAP: Record<keyof ExtendedThemeColors, string> = {
   'border-focus': '--nim-border-focus',
   'primary': '--nim-primary',
   'primary-hover': '--nim-primary-hover',
+  'on-primary': '--nim-on-primary',
   'link': '--nim-link',
   'link-hover': '--nim-link-hover',
   'success': '--nim-success',
@@ -124,6 +125,65 @@ export function initializeTheme(): void {
 }
 
 /**
+ * Parse a CSS color into [r, g, b] in [0, 255]. Returns null if the format
+ * isn't recognized (e.g. hsl(), color-mix(), or a named color we don't know).
+ * Only handles the formats themes actually emit: #rgb, #rrggbb, #rrggbbaa,
+ * rgb()/rgba().
+ */
+function parseColorToRgb(value: string): [number, number, number] | null {
+  const trimmed = value.trim();
+  const hex = trimmed.match(/^#([0-9a-f]{3,8})$/i);
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+    if (h.length === 6 || h.length === 8) {
+      const r = parseInt(h.slice(0, 2), 16);
+      const g = parseInt(h.slice(2, 4), 16);
+      const b = parseInt(h.slice(4, 6), 16);
+      if (![r, g, b].some(Number.isNaN)) return [r, g, b];
+    }
+    return null;
+  }
+  const rgb = trimmed.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (rgb) return [parseInt(rgb[1]), parseInt(rgb[2]), parseInt(rgb[3])];
+  return null;
+}
+
+/** WCAG relative luminance for an sRGB color. */
+function relativeLuminance([r, g, b]: [number, number, number]): number {
+  const linear = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+}
+
+function contrastRatio(a: number, b: number): number {
+  const [lo, hi] = a < b ? [a, b] : [b, a];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/**
+ * Pick a readable foreground for a `primary`-style background.
+ *
+ * Preserves the historical default of white text on the brand color when it
+ * meets the WCAG large-text/UI minimum (3.0:1), and only flips to a dark
+ * foreground when white is illegible. This stops light/pastel accents (e.g.
+ * Rose Pine dawn's #ebbcba) from rendering near-invisible labels while
+ * keeping the look of the default blue button unchanged. Returns null if the
+ * background color string isn't a format we can parse, in which case the
+ * base theme's `on-primary` is used.
+ */
+function deriveOnPrimary(primary: string): string | null {
+  const rgb = parseColorToRgb(primary);
+  if (!rgb) return null;
+  const l = relativeLuminance(rgb);
+  const whiteContrast = contrastRatio(l, 1);
+  if (whiteContrast >= 3.0) return '#ffffff';
+  return '#111827';
+}
+
+/**
  * Derive missing colors from the theme's base colors.
  * This ensures tables, code blocks, etc. match the theme's color scheme
  * even if the theme author didn't explicitly specify these colors.
@@ -133,6 +193,15 @@ function deriveColorsFromTheme(
   baseColors: ExtendedThemeColors
 ): ExtendedThemeColors {
   const derived: Partial<ExtendedThemeColors> = {};
+
+  // Primary foreground: when a theme contributes its own `primary` but no
+  // `on-primary`, pick the readable foreground from the primary's luminance
+  // rather than inheriting the base theme's `on-primary` (which was paired
+  // with a totally different background).
+  if (!themeColors['on-primary'] && themeColors['primary']) {
+    const derivedOnPrimary = deriveOnPrimary(themeColors['primary']);
+    if (derivedOnPrimary) derived['on-primary'] = derivedOnPrimary;
+  }
 
   // Table colors: derive from theme's background colors if not specified
   if (!themeColors['table-header'] && themeColors['bg-secondary']) {
@@ -278,7 +347,7 @@ export async function applyThemeToDOM(theme: ThemeId): Promise<void> {
       root.setAttribute('data-theme', resolvedTheme);
 
       const baseColors = getBaseThemeColors(isDark);
-      const mergedColors = { ...baseColors, ...registryTheme.colors };
+      const mergedColors = deriveColorsFromTheme(registryTheme.colors, baseColors);
       for (const [key, cssVar] of Object.entries(CSS_VAR_MAP)) {
         const colorKey = key as keyof ExtendedThemeColors;
         const value = mergedColors[colorKey];
@@ -400,15 +469,35 @@ export function useTheme() {
   const themeId = useAtomValue(themeIdAtom) as string;
   const setTheme = useSetAtom(setThemeAtom);
 
-  // Compute effective base theme for Lexical and other components
-  // that only understand built-in theme names
+  // The runtime theme registry is populated asynchronously as extensions
+  // activate. `applyThemeToDOM` and `getEffectiveBaseTheme` both consult it
+  // synchronously, so if the persisted theme is extension-contributed and
+  // the extension hasn't finished activating yet, the very first apply
+  // races and falls back to the file-based `theme:get` IPC -- which the
+  // main process refuses with `Theme '<id>' not found. Did you call
+  // discoverThemes()?`, and the renderer's catch block paints the light
+  // fallback into the DOM. Subscribe to registry changes here so that the
+  // moment the extension appears in the registry we re-apply with the
+  // correct colors, and the re-render also re-runs `getEffectiveBaseTheme`
+  // so Lexical / Monaco / mermaid pick up the correct dark/light base.
+  const [registryVersion, setRegistryVersion] = useState(0);
+  useEffect(() => {
+    return onThemesChanged(() => {
+      setRegistryVersion(v => v + 1);
+    });
+  }, []);
+
+  // `registryVersion` is referenced so React re-renders this hook (and
+  // re-runs `getEffectiveBaseTheme` below) whenever the registry list
+  // changes -- it intentionally has no other consumer.
+  void registryVersion;
   const theme = getEffectiveBaseTheme(themeId) as ConfigTheme;
 
-  // When theme atom changes, also update DOM
-  // This handles programmatic theme changes from within React
+  // Apply the theme to the DOM when the active theme id changes OR when
+  // the registry catches up to it (covers the boot-time race above).
   useEffect(() => {
     void applyThemeToDOM(themeId as ThemeId);
-  }, [themeId]);
+  }, [themeId, registryVersion]);
 
   return { theme, themeId, setTheme };
 }

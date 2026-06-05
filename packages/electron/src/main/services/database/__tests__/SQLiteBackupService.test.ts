@@ -130,4 +130,35 @@ describe('SQLiteBackupService', () => {
     await svc.createBackup();
     expect(svc.hasBackups()).toBe(true);
   });
+
+  it('does not leave temp-backup-* WAL/SHM siblings behind after success', async () => {
+    // better-sqlite3's online backup writes the destination in WAL mode, so
+    // every call leaves `temp-backup-<ts>.sqlite-shm` and `.sqlite-wal` next
+    // to the temp file. The rotation only renames the main `.sqlite`; the
+    // siblings used to accumulate one pair per backup until the 30-day
+    // cleanup ran on quit. The fix removes them immediately.
+    await svc.createBackup();
+    await svc.createBackup();
+    await svc.createBackup();
+
+    const stragglers = fs
+      .readdirSync(backupDir)
+      .filter((n) => n.startsWith('temp-backup-'));
+    expect(stragglers).toEqual([]);
+  });
+
+  it('cleanupOldCorruptedBackups removes pre-existing stranded temp files', async () => {
+    // Simulate stragglers from an older build that didn't clean WAL/SHM siblings.
+    fs.writeFileSync(path.join(backupDir, 'temp-backup-2024-01-01.sqlite'), 'x');
+    fs.writeFileSync(path.join(backupDir, 'temp-backup-2024-01-01.sqlite-wal'), '');
+    fs.writeFileSync(path.join(backupDir, 'temp-backup-2024-01-01.sqlite-shm'), 'y');
+    // A rolling backup file that must survive cleanup.
+    fs.writeFileSync(path.join(backupDir, 'nimbalyst.backup-current.sqlite'), 'real');
+
+    await svc.cleanupOldCorruptedBackups();
+
+    const remaining = fs.readdirSync(backupDir);
+    expect(remaining.some((n) => n.startsWith('temp-backup-'))).toBe(false);
+    expect(remaining).toContain('nimbalyst.backup-current.sqlite');
+  });
 });

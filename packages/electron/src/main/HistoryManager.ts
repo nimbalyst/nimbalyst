@@ -975,15 +975,23 @@ export class HistoryManager {
           await database.initialize();
         }
 
-        // Use json_extract (not the ->> operator) so SQLite's planner can
-        // match this against idx_history_pending_session_file (migration 2).
-        // PGLite is happy with either form. Putting the sessionId predicate
-        // first lets the index lookup happen before the file_path filter.
+        // SQLite uses json_extract so the planner can match
+        // idx_history_pending_session_file (migration 2). PGLite needs the
+        // PostgreSQL ->> operator: its metadata column is jsonb, and
+        // json_extract has no (jsonb, unknown) overload there. The dialect
+        // split is required -- a single form cannot satisfy both engines.
+        const isSqlite = database.getEngine() === 'sqlite';
+        const sessionIdExpr = isSqlite
+          ? `json_extract(metadata, '$.sessionId')`
+          : `metadata->>'sessionId'`;
+        const statusExpr = isSqlite
+          ? `json_extract(metadata, '$.status')`
+          : `metadata->>'status'`;
         const result = await database.query<{ file_path: string }>(`
           SELECT DISTINCT file_path
           FROM document_history
-          WHERE json_extract(metadata, '$.sessionId') = $1
-            AND json_extract(metadata, '$.status') = 'pending-review'
+          WHERE ${sessionIdExpr} = $1
+            AND ${statusExpr} = 'pending-review'
             AND file_path LIKE $2
         `, [sessionId, workspacePath + '%']);
 

@@ -9,7 +9,8 @@ interface TableStat {
 
 interface BackupInfo {
   timestamp: string;
-  size: number;
+  size?: number;
+  sizeBytes?: number;
   verified: boolean;
 }
 
@@ -50,12 +51,25 @@ interface Props {
   onTableSelect: (tableName: string) => void;
 }
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number | null | undefined): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
+    return 'Unknown';
+  }
   if (bytes === 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function getBackupSizeBytes(backup: BackupInfo): number | null {
+  if (typeof backup.size === 'number' && Number.isFinite(backup.size)) {
+    return backup.size;
+  }
+  if (typeof backup.sizeBytes === 'number' && Number.isFinite(backup.sizeBytes)) {
+    return backup.sizeBytes;
+  }
+  return null;
 }
 
 // Parse a Postgres-style size string ("80MB", "1GB", "5kB") into bytes.
@@ -200,7 +214,7 @@ export function DatabaseDashboard({ onTableSelect }: Props) {
               {stats.backupStatus.currentBackup && (
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-[var(--nim-text-muted)]">Current Backup Size</span>
-                  <span>{formatBytes(stats.backupStatus.currentBackup.size)}</span>
+                  <span>{formatBytes(getBackupSizeBytes(stats.backupStatus.currentBackup))}</span>
                 </div>
               )}
               {backupCount === 0 && (

@@ -36,6 +36,7 @@ const CSS_VAR_MAP: Record<keyof ExtendedThemeColors, string> = {
   'border-focus': '--nim-border-focus',
   'primary': '--nim-primary',
   'primary-hover': '--nim-primary-hover',
+  'on-primary': '--nim-on-primary',
   'link': '--nim-link',
   'link-hover': '--nim-link-hover',
   'success': '--nim-success',

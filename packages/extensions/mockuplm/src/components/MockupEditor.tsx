@@ -803,7 +803,7 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(function MockupEdit
             }}
             className={`px-3 py-1 text-xs border rounded cursor-pointer ${
               isInteractive
-                ? 'bg-nim-primary text-white border-nim-primary font-bold'
+                ? 'bg-nim-primary text-nim-on-primary border-nim-primary font-bold'
                 : 'bg-nim border-nim text-nim font-normal'
             }`}
             title={isInteractive ? 'Switch to Select mode (click to select elements)' : 'Switch to Interactive mode (click to interact with mockup)'}
@@ -853,7 +853,7 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(function MockupEdit
             onClick={handleToggleDrawing}
             className={`px-3 py-1 text-xs border border-nim rounded cursor-pointer ${
               isDrawingMode
-                ? 'bg-nim-primary text-white font-bold'
+                ? 'bg-nim-primary text-nim-on-primary font-bold'
                 : 'bg-nim text-nim font-normal'
             }`}
             title={isDrawingMode ? 'Exit drawing mode' : 'Draw annotations for AI'}

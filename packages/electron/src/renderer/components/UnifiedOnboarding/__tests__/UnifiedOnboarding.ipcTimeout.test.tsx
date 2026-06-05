@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Regression coverage for nimbalyst#260.
  *

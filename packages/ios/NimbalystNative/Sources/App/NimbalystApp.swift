@@ -390,9 +390,13 @@ struct IPadNavigationView: View {
                     .foregroundStyle(.secondary)
                 #endif
             } else if let session = selectedSession {
+                // No `.id(session.id)` — SessionDetailView handles in-place
+                // session swap (see swapSession) so SwiftUI reuses the same
+                // view, the same TranscriptWebView, and the React-side
+                // multi-session DOM cache inside it when the user picks a
+                // different session in the sidebar.
                 SessionDetailView(session: session)
                     .environmentObject(appState)
-                    .id(session.id)
             } else {
                 Text("Select a session")
                     .foregroundStyle(.secondary)

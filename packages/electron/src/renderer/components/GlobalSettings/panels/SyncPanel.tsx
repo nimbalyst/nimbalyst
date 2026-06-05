@@ -550,7 +550,7 @@ export function SyncPanel() {
               onClick={() => handleEnvironmentSwitch('development')}
               className={`flex-1 px-3 py-2 text-xs border border-nim rounded-md cursor-pointer ${
                 currentEnvironment === 'development'
-                  ? 'bg-nim-primary text-white font-semibold'
+                  ? 'bg-nim-primary text-nim-on-primary font-semibold'
                   : 'bg-nim-secondary text-nim-muted font-normal'
               }`}
             >
@@ -560,7 +560,7 @@ export function SyncPanel() {
               onClick={() => handleEnvironmentSwitch('production')}
               className={`flex-1 px-3 py-2 text-xs border border-nim rounded-md cursor-pointer ${
                 currentEnvironment === 'production'
-                  ? 'bg-nim-primary text-white font-semibold'
+                  ? 'bg-nim-primary text-nim-on-primary font-semibold'
                   : 'bg-nim-secondary text-nim-muted font-normal'
               }`}
             >
@@ -626,7 +626,7 @@ export function SyncPanel() {
               })
             ) : (
               <div className="flex items-center gap-3 p-2.5 bg-nim-secondary rounded-lg">
-                <div className="w-9 h-9 rounded-full bg-nim-primary flex items-center justify-center text-white font-semibold text-sm">
+                <div className="w-9 h-9 rounded-full bg-nim-primary flex items-center justify-center text-nim-on-primary font-semibold text-sm">
                   {(stytchAuth.user.name?.first_name?.[0] || stytchAuth.user.emails[0]?.email[0] || '?').toUpperCase()}
                 </div>
                 <div className="flex-1">
@@ -725,7 +725,7 @@ export function SyncPanel() {
                   <button
                     type="submit"
                     disabled={authLoading || !isStytchAvailable || !email}
-                    className={`w-full px-4 py-2.5 bg-nim-primary border-none rounded-md text-white font-medium text-[13px] ${
+                    className={`w-full px-4 py-2.5 bg-nim-primary border-none rounded-md text-nim-on-primary font-medium text-[13px] ${
                       authLoading ? 'cursor-wait' : 'cursor-pointer'
                     } ${(authLoading || !email) ? 'opacity-70' : 'opacity-100'}`}
                   >
@@ -760,7 +760,7 @@ export function SyncPanel() {
             <button
               onClick={() => setShowAuthForm(true)}
               disabled={!isStytchAvailable}
-              className={`px-5 py-2 bg-nim-primary border-none rounded-md text-white font-medium text-[13px] ${
+              className={`px-5 py-2 bg-nim-primary border-none rounded-md text-nim-on-primary font-medium text-[13px] ${
                 isStytchAvailable ? 'cursor-pointer opacity-100' : 'cursor-not-allowed opacity-50'
               }`}
             >
@@ -813,7 +813,7 @@ export function SyncPanel() {
               </div>
               {/* Pair Device button - right side of card */}
               <button
-                  className="self-center flex flex-col items-center gap-1.5 px-4 py-2.5 bg-nim-primary border-none rounded-lg text-white text-[14px] font-medium cursor-pointer hover:bg-nim-primary-hover disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                  className="self-center flex flex-col items-center gap-1.5 px-4 py-2.5 bg-nim-primary border-none rounded-lg text-nim-on-primary text-[14px] font-medium cursor-pointer hover:bg-nim-primary-hover disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                   onClick={() => {
                     if (enabledProjectCount === 0) {
                       setPairError('Enable at least one project to sync before pairing your device.');

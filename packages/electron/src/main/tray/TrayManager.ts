@@ -882,7 +882,7 @@ export class TrayManager {
         workspacePath: row.workspace_id || '',
         status: 'running',
         isStreaming: false,
-        hasPendingPrompt: !!metadata.pendingAskUserQuestion,
+        hasPendingPrompt: !!metadata.hasPendingPrompt,
         hasUnread: !!metadata.hasUnread,
       };
     } catch (error) {

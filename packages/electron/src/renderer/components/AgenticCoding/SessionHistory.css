@@ -48,7 +48,7 @@
 
 .session-history-card.active .session-history-card-icon {
   background-color: var(--nim-primary);
-  color: white;
+  color: var(--nim-on-primary);
 }
 
 .session-history-card-content {

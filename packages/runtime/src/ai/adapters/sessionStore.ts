@@ -28,6 +28,14 @@ export interface SessionMeta {
   isArchived: boolean;
   isPinned: boolean;
   hasUnread?: boolean;
+  /**
+   * Authoritative pending-interactive-prompt bit, persisted in
+   * `ai_sessions.metadata.hasPendingPrompt` and synced across devices.
+   * Set/cleared by the main-process prompt handlers on every open/resolve.
+   * Renderer mirrors into `sessionHasPendingInteractivePromptAtom` on
+   * session list refresh so a stale in-memory atom gets corrected.
+   */
+  hasPendingInteractivePrompt?: boolean;
   // Kanban board phase and tags (from metadata JSONB)
   phase?: string;
   tags?: string[];

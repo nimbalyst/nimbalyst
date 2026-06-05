@@ -684,6 +684,78 @@ describe('TranscriptTransformer', () => {
       expect((eventsAfterBatch2[0].payload as any).result).toBe('File contents here');
     });
 
+    // Regression: the live incremental processing path keeps a watermark
+    // across processNewMessages calls. Session cb82f2eb / 68a60f57: the
+    // nimbalyst_tool_use is processed in one batch, the
+    // git_commit_proposal_response (source=nimbalyst) arrives later in a
+    // subsequent batch. The widget reads toolCall.result, so the second batch
+    // must update the existing tool_call event to status=completed.
+    it('attaches a git_commit_proposal_response from a resume batch to a tool_use from a previous batch', async () => {
+      const proposalId = 'toolu_proposal_incremental';
+
+      const batch1Messages = [
+        makeRawMessage({
+          id: 1,
+          sessionId: SESSION_ID,
+          direction: 'output',
+          content: JSON.stringify({
+            type: 'nimbalyst_tool_use',
+            id: proposalId,
+            name: 'developer_git_commit_proposal',
+            input: {
+              filesToStage: [{ path: 'src/foo.ts', status: 'modified' }],
+              commitMessage: 'fix: thing',
+            },
+          }),
+        }),
+      ];
+      const rawStore1 = createMockRawStore(batch1Messages);
+      const transformer1 = new TranscriptTransformer(rawStore1, transcriptStore, metadataStore);
+
+      await transformer1.processNewMessages(SESSION_ID, PROVIDER);
+
+      const eventsAfterBatch1 = await transcriptStore.getSessionEvents(SESSION_ID);
+      expect(eventsAfterBatch1).toHaveLength(1);
+      expect(eventsAfterBatch1[0].eventType).toBe('tool_call');
+      expect((eventsAfterBatch1[0].payload as any).status).toBe('running');
+
+      // Resume batch: the user clicked Commit, the IPC handler wrote a
+      // git_commit_proposal_response row with source='nimbalyst'.
+      const batch2Messages = [
+        ...batch1Messages,
+        makeRawMessage({
+          id: 2,
+          sessionId: SESSION_ID,
+          source: 'nimbalyst',
+          direction: 'output',
+          content: JSON.stringify({
+            type: 'git_commit_proposal_response',
+            proposalId,
+            action: 'committed',
+            commitHash: 'abc1234',
+            commitDate: '2026-06-01T18:08:59-04:00',
+            filesCommitted: ['src/foo.ts'],
+            commitMessage: 'fix: thing',
+            respondedAt: 1780347621666,
+            respondedBy: 'desktop',
+          }),
+        }),
+      ];
+      const rawStore2 = createMockRawStore(batch2Messages);
+      const transformer2 = new TranscriptTransformer(rawStore2, transcriptStore, metadataStore);
+
+      await transformer2.processNewMessages(SESSION_ID, PROVIDER);
+
+      const eventsAfterBatch2 = await transcriptStore.getSessionEvents(SESSION_ID);
+      expect(eventsAfterBatch2).toHaveLength(1);
+      const payload = eventsAfterBatch2[0].payload as any;
+      expect(payload.status).toBe('completed');
+      expect(typeof payload.result).toBe('string');
+      const parsedResult = JSON.parse(payload.result);
+      expect(parsedResult.action).toBe('committed');
+      expect(parsedResult.commitHash).toBe('abc1234');
+    });
+
     it('transforms system messages', async () => {
       const rawStore = createMockRawStore([
         makeRawMessage({

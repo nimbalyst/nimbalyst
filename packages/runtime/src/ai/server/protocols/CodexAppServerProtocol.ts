@@ -211,7 +211,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       throw new Error('[CodexAppServer] thread/start did not return a thread id');
     }
     raw.threadId = threadId;
-    console.log('[CODEX][APPSERVER] thread started:', threadId);
+    // console.log('[CODEX][APPSERVER] thread started:', threadId);
     return {
       id: threadId,
       platform: this.platform,
@@ -249,7 +249,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
     try {
       const resumeResponse = await raw.client.request<ThreadResumeResponse>('thread/resume', resumeParams);
       raw.threadId = resumeResponse?.thread?.id ?? sessionId;
-      console.log('[CODEX][APPSERVER] thread resumed:', raw.threadId);
+      // console.log('[CODEX][APPSERVER] thread resumed:', raw.threadId);
       return { id: raw.threadId, platform: this.platform, raw: raw as unknown as ProtocolSession['raw'] };
     } catch (err) {
       console.warn('[CODEX][APPSERVER] thread/resume failed, falling back to thread/start:', err);
@@ -392,11 +392,11 @@ export class CodexAppServerProtocol implements AgentProtocol {
     const binary = resolveCodexBinaryPath(this.resolveCodexPathOverride);
     const env = this.buildEnv(options, binary);
     const cwd = options.workspacePath || process.cwd();
-    console.log('[CODEX][APPSERVER] spawning child:', {
-      binary,
-      cwd,
-      helperPathEntries: getCodexVendorPathEntries(binary),
-    });
+    // console.log('[CODEX][APPSERVER] spawning child:', {
+    //   binary,
+    //   cwd,
+    //   helperPathEntries: getCodexVendorPathEntries(binary),
+    // });
     const child = spawn(binary, ['app-server', '--listen', 'stdio://'], {
       env,
       cwd,
@@ -616,9 +616,10 @@ export class CodexAppServerProtocol implements AgentProtocol {
   ): void {
     const params = paramsUnknown as Record<string, unknown> | undefined;
     const summary = summarizeNotificationParams(method, paramsUnknown);
-    if (summary) {
-      console.log('[CODEX][APPSERVER] notification:', method, summary);
-    }
+    void summary;
+    // if (summary) {
+    //   console.log('[CODEX][APPSERVER] notification:', method, summary);
+    // }
     // Emit a raw_event for every notification so transcript persistence has a
     // complete log, just like the SDK adapter does for SDK events.
     push({

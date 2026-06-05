@@ -178,7 +178,7 @@ export const NewFileDialog: React.FC<NewFileDialogProps> = ({
               <div
                 className={`new-file-folder-item flex items-center gap-2 py-1.5 px-2.5 rounded cursor-pointer text-[13px] ${
                   isSelected
-                    ? 'bg-nim-primary text-white'
+                    ? 'bg-nim-primary text-nim-on-primary'
                     : 'text-nim hover:bg-nim-hover'
                 }`}
                 onClick={() => handleFolderSelect(folder.path)}
@@ -186,7 +186,7 @@ export const NewFileDialog: React.FC<NewFileDialogProps> = ({
                 <MaterialSymbol
                   icon="folder"
                   size={16}
-                  className={isSelected ? 'text-white' : 'text-nim-muted'}
+                  className={isSelected ? 'text-nim-on-primary' : 'text-nim-muted'}
                 />
                 <span>{folder.name}</span>
               </div>
@@ -260,7 +260,7 @@ export const NewFileDialog: React.FC<NewFileDialogProps> = ({
                 <div
                   className={`new-file-folder-item flex items-center gap-2 py-1.5 px-2.5 rounded cursor-pointer text-[13px] ${
                     currentDirectory === workspacePath
-                      ? 'bg-nim-primary text-white'
+                      ? 'bg-nim-primary text-nim-on-primary'
                       : 'text-nim hover:bg-nim-hover'
                   }`}
                   onClick={() => handleFolderSelect(workspacePath)}
@@ -268,7 +268,7 @@ export const NewFileDialog: React.FC<NewFileDialogProps> = ({
                   <MaterialSymbol
                     icon="folder"
                     size={16}
-                    className={currentDirectory === workspacePath ? 'text-white' : 'text-nim-muted'}
+                    className={currentDirectory === workspacePath ? 'text-nim-on-primary' : 'text-nim-muted'}
                   />
                   <span>{workspaceName} (root)</span>
                 </div>
@@ -317,7 +317,7 @@ export const NewFileDialog: React.FC<NewFileDialogProps> = ({
             </button>
             <button
               type="submit"
-              className="py-1.5 px-4 text-[13px] rounded cursor-pointer transition-colors duration-200 bg-nim-primary border border-nim-primary text-white hover:bg-nim-primary-hover"
+              className="py-1.5 px-4 text-[13px] rounded cursor-pointer transition-colors duration-200 bg-nim-primary border border-nim-primary text-nim-on-primary hover:bg-nim-primary-hover"
             >
               Create
             </button>

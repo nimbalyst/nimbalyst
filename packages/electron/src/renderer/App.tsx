@@ -2117,11 +2117,14 @@ export default function App() {
                     onCloseWorkspace={handleCloseWorkspace}
                     onOpenQuickSearch={() => {
                       if (dialogRef.current && workspacePath) {
-                        dialogRef.current.open(DIALOG_IDS.QUICK_OPEN, {
+                        dialogRef.current.open(DIALOG_IDS.UNIFIED_QUICK_OPEN, {
                           workspacePath,
                           currentFilePath: currentFilePathRef.current,
+                          initialTab: 'files',
                           onFileSelect: handleQuickOpenFileSelect,
                           onFolderSelect: handleQuickOpenFolderSelect,
+                          onSessionSelect: handleSessionQuickOpenSelect,
+                          onPromptSelect: handlePromptQuickOpenSelect,
                         });
                       }
                     }}
@@ -2149,9 +2152,14 @@ export default function App() {
                   onFileOpen={handleWorkspaceFileSelect}
                   onOpenQuickSearch={() => {
                     if (dialogRef.current && workspacePath) {
-                      dialogRef.current.open(DIALOG_IDS.SESSION_QUICK_OPEN, {
+                      dialogRef.current.open(DIALOG_IDS.UNIFIED_QUICK_OPEN, {
                         workspacePath,
+                        currentFilePath: currentFilePathRef.current,
+                        initialTab: 'sessions',
+                        onFileSelect: handleQuickOpenFileSelect,
+                        onFolderSelect: handleQuickOpenFolderSelect,
                         onSessionSelect: handleSessionQuickOpenSelect,
+                        onPromptSelect: handlePromptQuickOpenSelect,
                       });
                     }
                   }}

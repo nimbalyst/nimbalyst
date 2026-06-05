@@ -1942,6 +1942,10 @@ app.whenReady().then(async () => {
     // enforced by the MCP servers. Mirrors the pattern used for
     // `meta-agent:get-server-port`.
     if (process.env.PLAYWRIGHT === '1' || process.env.PLAYWRIGHT_TEST === 'true' || process.env.NODE_ENV === 'test') {
+        safeHandle('mcp:get-server-port', async () => {
+            const port = (global as any).mcpServerPort;
+            return { success: typeof port === 'number', port: typeof port === 'number' ? port : null };
+        });
         safeHandle('mcp:get-auth-token', async () => {
             const token = getMcpAuthToken();
             return { success: token !== null, token };

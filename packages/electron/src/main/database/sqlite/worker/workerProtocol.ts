@@ -289,6 +289,7 @@ export type WorkerRequestType =
   | 'createBackup'
   | 'verifyBackup'
   | 'getBackupStatus'
+  | 'cleanupBackups'
   | 'migrationPreflight'
   | 'migrationStart'
   | 'migrationStartDryRun'

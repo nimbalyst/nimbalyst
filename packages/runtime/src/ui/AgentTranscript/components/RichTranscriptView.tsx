@@ -552,6 +552,25 @@ const WRITE_TOOL_NAMES = new Set(['write', 'notebookedit']);
  */
 const INTERACTIVE_WIDGET_TOOLS = new Set(['ToolPermission', 'ExitPlanMode', 'AskUserQuestion', 'GitCommitProposal']);
 
+/**
+ * MCP tools arrive as `mcp__<server>__<toolName>` (server name may contain
+ * dashes or underscores). When the tool was registered with a bare name like
+ * `AskUserQuestion` on the in-app MCP server, the SDK forwards it as
+ * `mcp__nimbalyst-mcp__AskUserQuestion`. Strict equality against the bare set
+ * misses, so the suppression / grouping logic below uses the un-prefixed name.
+ *
+ * Exported for tests; mirrored on the renderer in `sessions.ts`.
+ */
+export function stripMcpPrefix(toolName: string): string {
+  const match = toolName.match(/^mcp__[^_]+(?:_[^_]+)*__(.+)$/);
+  return match ? match[1] : toolName;
+}
+
+export function isInteractiveWidgetTool(toolName: string | null | undefined): boolean {
+  if (!toolName) return false;
+  return INTERACTIVE_WIDGET_TOOLS.has(stripMcpPrefix(toolName));
+}
+
 const isFileModifyingTool = (name?: string): boolean => {
   if (!name) return false;
   const normalized = name.toLowerCase();
@@ -1194,8 +1213,15 @@ export const RichTranscriptView = React.forwardRef<
     // Session is waiting for the USER to answer — not thinking, don't show the indicator.
     // Check the prop (live IPC state) AND scan messages directly (survives session reloads).
     if (hasPendingInteractivePrompt) return false;
+    // Match BOTH the bare tool name and the MCP-prefixed form
+    // (`mcp__nimbalyst-mcp__AskUserQuestion`); strict equality on just the
+    // bare name left the "Thinking…" indicator rendered on top of the
+    // already-rendered AskUserQuestion widget.
     const hasPendingQuestion = messages.some(
-      msg => isToolLikeMessage(msg) && msg.toolCall?.toolName === 'AskUserQuestion' && !msg.toolCall.result
+      msg => isToolLikeMessage(msg)
+        && !!msg.toolCall
+        && stripMcpPrefix(msg.toolCall.toolName ?? '') === 'AskUserQuestion'
+        && !msg.toolCall.result
     );
     if (hasPendingQuestion) return false;
     // Check isProcessing prop first (most reliable for queued prompts from mobile)
@@ -1936,14 +1962,14 @@ export const RichTranscriptView = React.forwardRef<
     // NEVER hide interactive tool widgets (ToolPermission, ExitPlanMode, etc.) that require user action.
     // Also never hide assistant messages that would carry interactive widgets in toolMessagesBefore.
     if (message.type === 'assistant_message' || isToolLikeMessage(message)) {
-      const isInteractiveWidget = isToolLikeMessage(message) && message.toolCall?.toolName &&
-        INTERACTIVE_WIDGET_TOOLS.has(message.toolCall.toolName);
+      const isInteractiveWidget = isToolLikeMessage(message)
+        && isInteractiveWidgetTool(message.toolCall?.toolName);
       // For assistant messages, check if preceding tool messages contain interactive widgets
       let hasInteractiveToolsBefore = false;
       if (message.type === 'assistant_message') {
         let checkPrev = index - 1;
         while (checkPrev >= 0 && isToolLikeMessage(messages[checkPrev])) {
-          if (messages[checkPrev].toolCall?.toolName && INTERACTIVE_WIDGET_TOOLS.has(messages[checkPrev].toolCall!.toolName!)) {
+          if (isInteractiveWidgetTool(messages[checkPrev].toolCall?.toolName)) {
             hasInteractiveToolsBefore = true;
             break;
           }
@@ -2004,8 +2030,7 @@ export const RichTranscriptView = React.forwardRef<
     // (ToolPermission / ExitPlanMode / AskUserQuestion /
     // GitCommitProposal) so the user can still act on prompts.
     if (isTool && message.toolCall) {
-      const toolName = message.toolCall.toolName;
-      const isInteractiveWidget = toolName ? INTERACTIVE_WIDGET_TOOLS.has(toolName) : false;
+      const isInteractiveWidget = isInteractiveWidgetTool(message.toolCall.toolName);
       if (!settings.showToolCalls && !isInteractiveWidget) {
         return null;
       }
@@ -2150,8 +2175,7 @@ export const RichTranscriptView = React.forwardRef<
           const visibleToolMessages = settings.showToolCalls
             ? toolMessagesBefore
             : toolMessagesBefore.filter(
-                ({ message: toolMsg }) =>
-                  !!toolMsg.toolCall?.toolName && INTERACTIVE_WIDGET_TOOLS.has(toolMsg.toolCall.toolName)
+                ({ message: toolMsg }) => isInteractiveWidgetTool(toolMsg.toolCall?.toolName)
               );
           if (visibleToolMessages.length === 0) return null;
           return (

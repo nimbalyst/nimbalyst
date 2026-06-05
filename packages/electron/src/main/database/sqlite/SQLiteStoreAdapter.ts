@@ -55,8 +55,12 @@ export interface StoreDbAdapter {
   ): Promise<Array<{ id: number; rank: number }>>;
 
   /**
-   * Full-text search over `ai_transcript_events.searchable_text`. Returns
-   * `(session_id, rank)` rows. Mirror of `searchAgentMessages`.
+   * Full-text search over `ai_agent_messages.searchable_text`, grouped by
+   * session. Returns `(session_id, rank)` rows. Mirror of `searchAgentMessages`.
+   *
+   * The `eventType` filter is a legacy alias: `user_message` -> message_kind
+   * `user`, `assistant_message` -> message_kind `assistant`, null -> the
+   * default `user|assistant|system` set.
    */
   searchTranscriptEventSessions?(
     query: string,
@@ -119,41 +123,41 @@ export function createSQLiteStoreAdapter(
 
     async searchTranscriptEventSessions(query, opts) {
       const limit = opts?.limit ?? 100;
-      // bm25() requires the FTS5 table reference to be unaliased.
-      const clauses: string[] = [
-        'ai_transcript_events_fts MATCH $q',
-        't.searchable = 1',
-      ];
+      // Phase 2 of canonical-transcript-deprecation: search is now served by
+      // `ai_agent_messages_fts` over the extracted `searchable_text` column.
+      // The legacy event_type filter (`user_message` / `assistant_message`)
+      // is mapped to the new `message_kind` classification.
       const binds: Record<string, unknown> = { q: query, lim: limit };
+      const extra: string[] = [];
+
       if (opts?.sessionIds && opts.sessionIds.length > 0) {
         const placeholders = opts.sessionIds.map((_, i) => `$sid${i}`).join(', ');
-        clauses.push(`t.session_id IN (${placeholders})`);
+        extra.push(`t.session_id IN (${placeholders})`);
         opts.sessionIds.forEach((id, i) => {
           binds[`sid${i}`] = id;
         });
       }
-      if (opts?.eventType) {
-        binds.evt = opts.eventType;
-        clauses.push('t.event_type = $evt');
+      if (opts?.eventType === 'user_message') {
+        extra.push(`t.message_kind = 'user'`);
+      } else if (opts?.eventType === 'assistant_message') {
+        extra.push(`t.message_kind = 'assistant'`);
+      } else {
+        extra.push(`t.message_kind IN ('user', 'assistant', 'system')`);
       }
       if (opts?.cutoffDate) {
         binds.cutoff = opts.cutoffDate.toISOString();
-        clauses.push('t.created_at >= $cutoff');
+        extra.push('t.created_at >= $cutoff');
       }
-      // FTS5 exposes a virtual `rank` column on a MATCH query that equals
-      // bm25(table) with table-default weights. We use it instead of a
-      // bare bm25() call so the query plan stays inside the FTS5
-      // "auxiliary function" context that bm25 requires.
-      const otherClauses = clauses.filter((c) => c !== 'ai_transcript_events_fts MATCH $q');
+
       const sql = `SELECT t.session_id,
                           MIN(fts.rank) AS rank
                    FROM (
                      SELECT rowid, rank
-                     FROM ai_transcript_events_fts
-                     WHERE ai_transcript_events_fts MATCH $q
+                     FROM ai_agent_messages_fts
+                     WHERE ai_agent_messages_fts MATCH $q
                    ) AS fts
-                   JOIN ai_transcript_events AS t ON t.rowid = fts.rowid
-                   WHERE ${otherClauses.length > 0 ? otherClauses.join(' AND ') : '1=1'}
+                   JOIN ai_agent_messages AS t ON t.id = fts.rowid
+                   WHERE ${extra.length > 0 ? extra.join(' AND ') : '1=1'}
                    GROUP BY t.session_id
                    ORDER BY rank
                    LIMIT $lim`;
@@ -163,32 +167,30 @@ export function createSQLiteStoreAdapter(
 
     async searchTranscriptEvents(query, opts) {
       const limit = opts?.limit ?? 100;
-      const clauses: string[] = [
-        'ai_transcript_events_fts MATCH $q',
-        't.searchable = 1',
-      ];
+      // Phase 2: the on-disk derived events table is going away. This helper
+      // now returns ai_agent_messages rows whose searchable_text matches and
+      // whose message_kind is a user-visible kind. Callers re-derive
+      // canonical events from the in-memory runtime if they need them.
       const binds: Record<string, unknown> = { q: query, lim: limit };
+      const extra: string[] = [`t.message_kind IN ('user', 'assistant', 'system')`];
+
       if (opts?.sessionIds && opts.sessionIds.length > 0) {
         const placeholders = opts.sessionIds.map((_, i) => `$sid${i}`).join(', ');
-        clauses.push(`t.session_id IN (${placeholders})`);
+        extra.push(`t.session_id IN (${placeholders})`);
         opts.sessionIds.forEach((id, i) => {
           binds[`sid${i}`] = id;
         });
       }
 
-      // See searchTranscriptEventSessions for why the FTS5 lookup runs in
-      // its own subquery and uses the virtual `rank` column instead of
-      // bm25() directly.
-      const otherClauses = clauses.filter((c) => c !== 'ai_transcript_events_fts MATCH $q');
-      const sql = `SELECT t.id, t.session_id, t.sequence, t.created_at, t.event_type, t.searchable_text,
-                          t.payload, t.parent_event_id, t.searchable, t.subagent_id, t.provider, t.provider_tool_call_id
+      const sql = `SELECT t.id, t.session_id, t.created_at, t.source, t.direction,
+                          t.content, t.metadata, t.hidden, t.searchable_text, t.message_kind
                    FROM (
                      SELECT rowid, rank
-                     FROM ai_transcript_events_fts
-                     WHERE ai_transcript_events_fts MATCH $q
+                     FROM ai_agent_messages_fts
+                     WHERE ai_agent_messages_fts MATCH $q
                    ) AS fts
-                   JOIN ai_transcript_events AS t ON t.id = fts.rowid
-                   WHERE ${otherClauses.length > 0 ? otherClauses.join(' AND ') : '1=1'}
+                   JOIN ai_agent_messages AS t ON t.id = fts.rowid
+                   WHERE ${extra.length > 0 ? extra.join(' AND ') : '1=1'}
                    ORDER BY fts.rank
                    LIMIT $lim`;
       const { rows } = await db.query<Record<string, unknown>>(sql, [binds]);

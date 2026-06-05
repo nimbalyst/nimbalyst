@@ -1,13 +1,16 @@
 /**
- * Auth-rejection E2E for the internal MCP HTTP servers.
+ * Security E2E for the internal MCP HTTP servers and /clip endpoint.
  *
  * Issue #146: every internal MCP server must require a per-launch bearer token
  * so a malicious page open in the user's browser cannot fire side-effecting
- * tool calls at the localhost ports. This test boots the app, derives the
- * meta-agent server port (existing test-only IPC), and verifies that:
+ * tool calls at the localhost ports. Separately, /clip must reject arbitrary
+ * web pages while still accepting browser-extension JSON requests. This test
+ * boots the app, derives the relevant localhost ports, and verifies that:
  *   1. An anonymous request returns 401 (no Authorization header).
  *   2. A request with a wrong token returns 401.
  *   3. A request with the correct token succeeds (initialize handshake).
+ *   4. Website-style /clip requests are rejected.
+ *   5. Extension-origin JSON /clip requests still succeed.
  *
  * The token is fetched via a test-only `mcp:get-auth-token` IPC handler, the
  * same pattern used for `meta-agent:get-server-port`.
@@ -49,6 +52,16 @@ async function getMetaAgentServerPort(): Promise<number> {
   return result.port;
 }
 
+async function getMcpServerPort(): Promise<number> {
+  const result = await invokeElectron<{ success: boolean; port: number | null }>(
+    'mcp:get-server-port',
+  );
+  if (!result.success || !result.port) {
+    throw new Error(`MCP HTTP server port unavailable: ${JSON.stringify(result)}`);
+  }
+  return result.port;
+}
+
 async function getMcpAuthToken(): Promise<string> {
   const result = await invokeElectron<{ success: boolean; token: string | null }>(
     'mcp:get-auth-token',
@@ -86,6 +99,22 @@ async function postInitialize(port: number, headers: Record<string, string>): Pr
       ...headers,
     },
     body: JSON.stringify(INITIALIZE_PAYLOAD),
+  });
+}
+
+async function postClip(
+  port: number,
+  headers: Record<string, string>,
+  body?: string,
+): Promise<Response> {
+  return await fetch(`http://127.0.0.1:${port}/clip`, {
+    method: 'POST',
+    headers,
+    body: body ?? JSON.stringify({
+      title: 'clip-auth-spec',
+      url: 'https://example.com',
+      content: '# Test clip',
+    }),
   });
 }
 
@@ -135,4 +164,46 @@ test('correct-token requests to the meta-agent MCP server succeed', async () => 
   // The MCP transport responds 200 to a valid initialize. We don't read the
   // body here -- the assertion is purely that auth was accepted.
   expect(response.status).toBe(200);
+});
+
+test('anonymous website-style clip requests are rejected with 403', async () => {
+  const port = await getMcpServerPort();
+  const response = await postClip(port, {
+    'Content-Type': 'text/plain;charset=UTF-8',
+    Origin: 'https://evil.example.com',
+  }, JSON.stringify({
+    title: 'forbidden-clip',
+    url: 'https://evil.example.com',
+    content: '# should not save',
+  }));
+
+  expect(response.status).toBe(403);
+});
+
+test('extension-origin clip requests with non-json content type are rejected with 415', async () => {
+  const port = await getMcpServerPort();
+  const response = await postClip(port, {
+    'Content-Type': 'text/plain;charset=UTF-8',
+    Origin: 'chrome-extension://abcdefghijklmnop',
+  }, JSON.stringify({
+    title: 'bad-content-type',
+    url: 'https://example.com',
+    content: '# should not save',
+  }));
+
+  expect(response.status).toBe(415);
+});
+
+test('extension-origin clip requests with json content type succeed', async () => {
+  const port = await getMcpServerPort();
+  const response = await postClip(port, {
+    'Content-Type': 'application/json',
+    Origin: 'chrome-extension://abcdefghijklmnop',
+  });
+
+  expect(response.status).toBe(200);
+  const payload = await response.json() as { success?: boolean; path?: string };
+  expect(payload.success).toBe(true);
+  expect(typeof payload.path).toBe('string');
+  await fs.access(payload.path!);
 });

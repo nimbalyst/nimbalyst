@@ -181,7 +181,7 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
     async getByPath(path: string): Promise<Worktree | null> {
       await ensureReady();
 
-      logger.info('Getting worktree by path', { path });
+      // logger.info('Getting worktree by path', { path });
 
       const { rows } = await db.query<WorktreeRow>(
         `SELECT * FROM worktrees WHERE path = $1 LIMIT 1`,

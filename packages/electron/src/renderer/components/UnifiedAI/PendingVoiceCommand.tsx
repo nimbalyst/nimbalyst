@@ -221,7 +221,7 @@ export function PendingVoiceCommand({ sessionId, onSubmit }: PendingVoiceCommand
           </button>
           <button
             onClick={handleSubmit}
-            className="flex items-center gap-1.5 py-1.5 px-3.5 border-none rounded-md bg-nim-primary text-white text-[13px] font-medium cursor-pointer transition-all duration-150 hover:bg-nim-primary-hover"
+            className="flex items-center gap-1.5 py-1.5 px-3.5 border-none rounded-md bg-nim-primary text-nim-on-primary text-[13px] font-medium cursor-pointer transition-all duration-150 hover:bg-nim-primary-hover"
           >
             Send Now
             <MaterialSymbol icon="arrow_forward" size={16} />

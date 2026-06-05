@@ -53,7 +53,7 @@ export function registerCodexAuthHandlers(): void {
     try {
       const status = await codexAuthService.getStatus();
       const result = toCheckLoginResult(status);
-      log.info('[CodexAuthHandlers] check-login:', { isLoggedIn: result.isLoggedIn, authMode: result.authMode });
+      // log.info('[CodexAuthHandlers] check-login:', { isLoggedIn: result.isLoggedIn, authMode: result.authMode });
       return result;
     } catch (error: any) {
       log.warn('[CodexAuthHandlers] check-login failed:', error?.message ?? error);

@@ -24,6 +24,7 @@ import {
     resolveGitCommitProposalPromptId,
 } from '../services/ai/gitCommitProposalPromptUtils';
 import { enrichTranscriptMessagesWithToolCallDiffs } from '../services/TranscriptToolCallEnricher';
+import { setSessionPendingPrompt } from '../services/ai/pendingPromptPersistence';
 
 // Initialize session manager
 const sessionManager = new SessionManager();
@@ -569,8 +570,7 @@ export async function registerSessionHandlers() {
                     childCount: entry.childCount || 0,  // Number of child sessions
                     uncommittedCount,  // Number of uncommitted files
                     hasUnread: entry.hasUnread || false,  // Unread state from metadata
-                    hasPendingQuestion: (entry as any).hasPendingQuestion || false,  // Pending AskUserQuestion state from metadata
-                    hasPendingInteractivePrompt: (entry as any).hasPendingQuestion || false,
+                    hasPendingInteractivePrompt: (entry as any).hasPendingInteractivePrompt || false,
                     // Branch tracking - SEPARATE from hierarchical parentSessionId
                     branchedFromSessionId: entry.branchedFromSessionId,
                     branchPointMessageId: entry.branchPointMessageId,
@@ -1296,6 +1296,28 @@ export async function registerSessionHandlers() {
                 ]
             );
 
+            // Drive the canonical transformer forward immediately so the
+            // associated tool_call event (e.g. developer_git_commit_proposal)
+            // flips from running -> completed before the renderer next reads
+            // the transcript. Without this we depend on the next SDK chunk's
+            // scheduleTranscriptProcessing to pick up the row, which has
+            // race-with-write-coalescing failure modes that leave the widget
+            // stuck on "pending" after a successful commit (session
+            // cb82f2eb-941c-4fb5-b552-adbae567df61 / 68a60f57). Best-effort:
+            // if the service isn't ready, the next chunk catches up.
+            if (TranscriptMigrationRepository.hasService()) {
+                try {
+                    const session = await AISessionsRepository.get(sessionId);
+                    const provider = session?.provider ?? 'claude-code';
+                    await TranscriptMigrationRepository.getService().processNewMessages(
+                        sessionId,
+                        provider,
+                    );
+                } catch (err) {
+                    console.warn('[SessionHandlers] processNewMessages after prompt response failed:', err);
+                }
+            }
+
             // Codex currently may not emit a follow-up item.completed event for
             // long-blocking MCP tools after interactive approval. Persist a
             // synthetic completion event so transcript replay shows committed state.
@@ -1439,6 +1461,14 @@ export async function registerSessionHandlers() {
                 TrayManager.getInstance().onPromptResolved(sessionId);
             }
 
+            // Authoritative clear for the persisted "pending prompt" bit.
+            // Covers all prompt types resolved via this handler so the next
+            // session-list refresh on this or any other device sees the
+            // session as idle. The runtime atom clear paths in
+            // sessionStateListeners are still in place; this is the durable
+            // backstop that survives renderer reloads and reaches mobile.
+            void setSessionPendingPrompt(sessionId, false);
+
             return { success: true, responseContent };
         } catch (error) {
             console.error('[SessionHandlers] Failed to respond to prompt:', error);
@@ -1486,14 +1516,18 @@ export async function registerSessionHandlers() {
     // ============================================================
 
     safeHandle('transcript:list-user-prompts', async (_event, workspacePath: string, limit: number = 2000) => {
+        // Phase 3 of canonical-transcript-deprecation: ai_transcript_events is
+        // going away. The cross-session "list all user prompts" query now reads
+        // ai_agent_messages directly, filtering on the message_kind column
+        // populated by the searchable-text extractor.
         const { database } = await import('../database/PGLiteDatabaseWorker');
         const { rows } = await database.query(`
             SELECT t.id, t.session_id, t.searchable_text, t.created_at,
                    s.title, s.provider, s.parent_session_id
-            FROM ai_transcript_events t
+            FROM ai_agent_messages t
             JOIN ai_sessions s ON t.session_id = s.id
-            WHERE t.event_type = 'user_message'
-              AND t.searchable = TRUE
+            WHERE t.message_kind = 'user'
+              AND t.searchable_text IS NOT NULL
               AND s.workspace_id = $1
             ORDER BY t.created_at DESC
             LIMIT $2

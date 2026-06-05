@@ -444,7 +444,7 @@ export class UsageAnalyticsService {
         workspace_id,
         file_path,
         COUNT(*) as edit_count,
-        MAX(created_at) as last_edited_at,
+        MAX(timestamp) as last_edited_at,
         MAX(size_bytes) as size_bytes
       FROM document_history
       ${whereClause}
@@ -464,7 +464,11 @@ export class UsageAnalyticsService {
   }
 
   /**
-   * Get document edit counts over time
+   * Get document edit counts over time.
+   *
+   * `document_history.timestamp` is a BIGINT/INTEGER of epoch milliseconds on
+   * both backends, so we filter and bucket entirely in JS rather than juggling
+   * PG `DATE_TRUNC` / `to_timestamp` vs SQLite `strftime`.
    */
   async getDocumentEditTimeSeries(
     startDate: number,
@@ -472,51 +476,20 @@ export class UsageAnalyticsService {
     granularity: 'hour' | 'day' | 'week' | 'month' = 'day',
     workspaceId?: string
   ): Promise<{ timestamp: number; editCount: number }[]> {
-    if (this.isSQLiteBackend()) {
-      const whereClause = workspaceId
-        ? `WHERE workspace_id = $3 AND created_at >= to_timestamp($1 / 1000.0) AND created_at <= to_timestamp($2 / 1000.0)`
-        : `WHERE created_at >= to_timestamp($1 / 1000.0) AND created_at <= to_timestamp($2 / 1000.0)`;
-      const params = workspaceId ? [startDate, endDate, workspaceId] : [startDate, endDate];
-      const result = await this.db.query<{ created_at: unknown }>(
-        `SELECT created_at FROM document_history ${whereClause}`,
-        params,
-      );
-      return countsByTimeBucket(
-        result.rows.map((row) => toEpochMs(row.created_at)),
-        granularity,
-      ).map(({ timestamp, count }) => ({
-        timestamp,
-        editCount: count,
-      }));
-    }
-
-    const truncFunc = {
-      hour: 'hour',
-      day: 'day',
-      week: 'week',
-      month: 'month',
-    }[granularity];
-
     const whereClause = workspaceId
-      ? `WHERE workspace_id = $3 AND created_at >= to_timestamp($1 / 1000.0) AND created_at <= to_timestamp($2 / 1000.0)`
-      : `WHERE created_at >= to_timestamp($1 / 1000.0) AND created_at <= to_timestamp($2 / 1000.0)`;
-
+      ? `WHERE workspace_id = $3 AND timestamp >= $1 AND timestamp <= $2`
+      : `WHERE timestamp >= $1 AND timestamp <= $2`;
     const params = workspaceId ? [startDate, endDate, workspaceId] : [startDate, endDate];
-
-    const result = await this.db.query(
-      `SELECT
-        EXTRACT(EPOCH FROM DATE_TRUNC('${truncFunc}', created_at)) * 1000 as timestamp,
-        COUNT(*) as edit_count
-      FROM document_history
-      ${whereClause}
-      GROUP BY DATE_TRUNC('${truncFunc}', created_at)
-      ORDER BY timestamp ASC`,
-      params
+    const result = await this.db.query<{ timestamp: number | string | bigint }>(
+      `SELECT timestamp FROM document_history ${whereClause}`,
+      params,
     );
-
-    return result.rows.map((row: any) => ({
-      timestamp: parseFloat(row.timestamp),
-      editCount: parseInt(row.edit_count) || 0,
+    return countsByTimeBucket(
+      result.rows.map((row) => Number(row.timestamp)),
+      granularity,
+    ).map(({ timestamp, count }) => ({
+      timestamp,
+      editCount: count,
     }));
   }
 
@@ -579,16 +552,39 @@ export class UsageAnalyticsService {
       codexSessions.rows.map((row) => [row.id, row.provider_session_id ?? row.id]),
     );
     const codexSessionIds = codexSessions.rows.map((row) => row.id);
-    const codexMessages = await this.db.query<{
+
+    // Fetch only what the aggregation below actually consumes, filtered in SQL.
+    // The previous version SELECTed `content` for *every* codex message and
+    // filtered in JS, which materialized a multi-GB rowset (full assistant /
+    // tool-output bodies) and crashed the worker while serializing it back to
+    // main. Input rows need only `metadata.promptType` (no content); turn
+    // tokens come solely from `turn.completed` output events, whose `content`
+    // is a small usage summary. `metadata->>'eventType'` runs natively on
+    // SQLite (>= 3.38) and as jsonb extraction on PGLite, so this is portable.
+    const codexInputs = await this.db.query<{
       session_id: string;
       created_at: unknown;
-      direction: string;
-      content: unknown;
       metadata: unknown;
     }>(
-      `SELECT session_id, created_at, direction, content, metadata
+      `SELECT session_id, created_at, metadata
        FROM ai_agent_messages
        WHERE session_id = ANY($1::text[])
+         AND direction = 'input'
+         AND created_at <= to_timestamp($2 / 1000.0)
+       ORDER BY session_id ASC, created_at ASC, id ASC`,
+      [codexSessionIds, endDate],
+    );
+
+    const codexCompletedTurns = await this.db.query<{
+      session_id: string;
+      created_at: unknown;
+      content: unknown;
+    }>(
+      `SELECT session_id, created_at, content
+       FROM ai_agent_messages
+       WHERE session_id = ANY($1::text[])
+         AND direction = 'output'
+         AND metadata->>'eventType' = 'turn.completed'
          AND created_at <= to_timestamp($2 / 1000.0)
        ORDER BY session_id ASC, created_at ASC, id ASC`,
       [codexSessionIds, endDate],
@@ -604,20 +600,19 @@ export class UsageAnalyticsService {
 
     const inputPromptTypeBySession = new Map<string, Array<{ createdAtMs: number; promptType: string | null }>>();
 
-    for (const row of codexMessages.rows) {
+    for (const row of codexInputs.rows) {
       const createdAtMs = toEpochMs(row.created_at);
       if (!Number.isFinite(createdAtMs)) continue;
-      if (row.direction === 'input') {
-        const metadata = parseJsonRecord(row.metadata);
-        const promptType = typeof metadata?.promptType === 'string' ? metadata.promptType : null;
-        const items = inputPromptTypeBySession.get(row.session_id) ?? [];
-        items.push({ createdAtMs, promptType });
-        inputPromptTypeBySession.set(row.session_id, items);
-        continue;
-      }
-      if (row.direction !== 'output') continue;
       const metadata = parseJsonRecord(row.metadata);
-      if (metadata?.eventType !== 'turn.completed') continue;
+      const promptType = typeof metadata?.promptType === 'string' ? metadata.promptType : null;
+      const items = inputPromptTypeBySession.get(row.session_id) ?? [];
+      items.push({ createdAtMs, promptType });
+      inputPromptTypeBySession.set(row.session_id, items);
+    }
+
+    for (const row of codexCompletedTurns.rows) {
+      const createdAtMs = toEpochMs(row.created_at);
+      if (!Number.isFinite(createdAtMs)) continue;
       const usage = readCodexUsage(row.content);
       if (!usage) continue;
       const providerSessionId = providerSessionIdBySession.get(row.session_id) ?? row.session_id;

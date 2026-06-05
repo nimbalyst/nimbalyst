@@ -455,7 +455,11 @@ describe('Codex ACP transcript end-to-end', () => {
       );
       expect(liveBeforeFinalMessage.length).toBeGreaterThan(0);
 
-      const events = await transcriptStore.getSessionEvents(sessionId);
+      // Phase 3 of canonical-transcript-deprecation: canonical events live
+      // in TranscriptRuntime's in-memory cache, not on the persisted
+      // transcriptStore. Fetch via the service so we see what the renderer
+      // would receive.
+      const events = await migrationService.getCanonicalEvents(sessionId, 'openai-codex-acp');
       const view = TranscriptProjector.project(events);
       const assistantMessages = view.messages.filter((m) => m.type === 'assistant_message');
       expect(assistantMessages).toHaveLength(1);

@@ -166,16 +166,16 @@ describe('SQLiteStoreAdapter', () => {
       `INSERT INTO ai_sessions (id, workspace_id, title, provider) VALUES ($s, $w, $t, $p)`,
       [{ s: 's1', w: 'ws1', t: 'T', p: 'claude' }],
     );
-    // Insert searchable messages directly (trigger fires on insert).
+    // Insert searchable messages directly (trigger fires when searchable_text IS NOT NULL).
     await db.query(
-      `INSERT INTO ai_agent_messages (session_id, source, direction, content, searchable)
-       VALUES ($s, 'user', 'input', $c, 1)`,
-      [{ s: 's1', c: 'the migration plan covers PGLite and SQLite' }],
+      `INSERT INTO ai_agent_messages (session_id, source, direction, content, searchable, searchable_text, message_kind)
+       VALUES ($s, 'user', 'input', $c, 1, $st, 'user')`,
+      [{ s: 's1', c: 'the migration plan covers PGLite and SQLite', st: 'the migration plan covers PGLite and SQLite' }],
     );
     await db.query(
-      `INSERT INTO ai_agent_messages (session_id, source, direction, content, searchable)
-       VALUES ($s, 'assistant', 'output', $c, 1)`,
-      [{ s: 's1', c: 'unrelated text about kittens' }],
+      `INSERT INTO ai_agent_messages (session_id, source, direction, content, searchable, searchable_text, message_kind)
+       VALUES ($s, 'assistant', 'output', $c, 1, $st, 'assistant')`,
+      [{ s: 's1', c: 'unrelated text about kittens', st: 'unrelated text about kittens' }],
     );
 
     const adapter = createSQLiteStoreAdapter(db);

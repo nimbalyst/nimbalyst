@@ -49,6 +49,7 @@ export interface AgentModeLayout {
   sessionHistoryLayout: SessionHistoryLayout;
   filesEditedWidth: number;
   todoPanelCollapsed: boolean;
+  taskListPanelCollapsed: boolean;
   teammatePanelCollapsed: boolean;
   agentPanelCollapsed: boolean;
   trackerPanelCollapsed: boolean;
@@ -71,6 +72,7 @@ const DEFAULT_LAYOUT: AgentModeLayout = {
   sessionHistoryLayout: DEFAULT_SESSION_HISTORY_LAYOUT,
   filesEditedWidth: 256,
   todoPanelCollapsed: false,
+  taskListPanelCollapsed: false,
   teammatePanelCollapsed: false,
   agentPanelCollapsed: false,
   trackerPanelCollapsed: false,
@@ -95,6 +97,7 @@ function mergeWithDefaults(persisted: Partial<AgentModeLayout> | undefined): Age
     sessionHistoryLayout,
     filesEditedWidth: persisted?.filesEditedWidth ?? DEFAULT_LAYOUT.filesEditedWidth,
     todoPanelCollapsed: persisted?.todoPanelCollapsed ?? DEFAULT_LAYOUT.todoPanelCollapsed,
+    taskListPanelCollapsed: persisted?.taskListPanelCollapsed ?? DEFAULT_LAYOUT.taskListPanelCollapsed,
     teammatePanelCollapsed: persisted?.teammatePanelCollapsed ?? DEFAULT_LAYOUT.teammatePanelCollapsed,
     agentPanelCollapsed: persisted?.agentPanelCollapsed ?? DEFAULT_LAYOUT.agentPanelCollapsed,
     trackerPanelCollapsed: persisted?.trackerPanelCollapsed ?? DEFAULT_LAYOUT.trackerPanelCollapsed,
@@ -173,6 +176,11 @@ export const todoPanelCollapsedAtom = atom(
   (get) => get(agentModeLayoutAtom).todoPanelCollapsed
 );
 
+/** Whether the task-list panel is collapsed */
+export const taskListPanelCollapsedAtom = atom(
+  (get) => get(agentModeLayoutAtom).taskListPanelCollapsed
+);
+
 /** Whether the teammate panel is collapsed */
 export const teammatePanelCollapsedAtom = atom(
   (get) => get(agentModeLayoutAtom).teammatePanelCollapsed
@@ -218,6 +226,28 @@ export const sessionTasksAtom = atomFamily((sessionId: string) =>
     const session = get(sessionStoreAtom(sessionId));
     const raw = session?.metadata?.currentTasks;
     return Array.isArray(raw) ? raw as TaskInfo[] : [];
+  })
+);
+
+/** One item in the SDK-native task list (TaskCreate/TaskUpdate). Distinct from
+ *  TaskInfo (sub-agent telemetry) — this is the shared, dependency-aware queue. */
+export interface TaskListItem {
+  id: string;
+  subject: string;
+  description?: string;
+  activeForm?: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  owner?: string;
+  blocks?: string[];
+  blockedBy?: string[];
+}
+
+/** Per-session derived atom for the SDK-native task list from session metadata */
+export const sessionTaskListAtom = atomFamily((sessionId: string) =>
+  atom((get) => {
+    const session = get(sessionStoreAtom(sessionId));
+    const raw = session?.metadata?.currentTaskList;
+    return Array.isArray(raw) ? raw as TaskListItem[] : [];
   })
 );
 
@@ -383,6 +413,26 @@ export const toggleTodoPanelCollapsedAtom = atom(
     const workspacePath = get(activeWorkspacePathAtom);
     const current = get(agentModeLayoutAtom);
     const newLayout = { ...current, todoPanelCollapsed: !current.todoPanelCollapsed };
+
+    set(agentModeLayoutAtom, newLayout);
+
+    if (!workspacePath) {
+      console.warn('[agentMode] Cannot persist layout - no active workspace');
+      return;
+    }
+    schedulePersist(workspacePath, newLayout);
+  }
+);
+
+/**
+ * Toggle task-list panel collapsed state.
+ */
+export const toggleTaskListPanelCollapsedAtom = atom(
+  null,
+  (get, set) => {
+    const workspacePath = get(activeWorkspacePathAtom);
+    const current = get(agentModeLayoutAtom);
+    const newLayout = { ...current, taskListPanelCollapsed: !current.taskListPanelCollapsed };
 
     set(agentModeLayoutAtom, newLayout);
 

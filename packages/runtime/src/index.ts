@@ -27,7 +27,6 @@ export * from './storage/repositories/AISessionsRepository';
 export * from './storage/repositories/SessionFilesRepository';
 export { AgentMessagesRepository } from './storage/repositories/AgentMessagesRepository';
 export type { AgentMessagesStore } from './storage/repositories/AgentMessagesRepository';
-export { TranscriptEventRepository } from './storage/repositories/TranscriptEventRepository';
 export { TranscriptMigrationRepository } from './storage/repositories/TranscriptMigrationRepository';
 // AI Chat Integration
 export { AIChatIntegrationPlugin } from './ai/plugins/AIChatIntegrationPlugin';

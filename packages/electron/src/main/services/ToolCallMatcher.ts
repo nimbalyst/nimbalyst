@@ -24,7 +24,8 @@ import { parse as parseShellCommand } from 'shell-quote';
 import { diffLines } from 'diff';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { logger } from '../utils/logger';
-import { TranscriptEventRepository } from '@nimbalyst/runtime/storage/repositories/TranscriptEventRepository';
+import { TranscriptMigrationRepository } from '@nimbalyst/runtime/storage/repositories/TranscriptMigrationRepository';
+import { AISessionsRepository } from '@nimbalyst/runtime';
 import type { TranscriptEvent, ToolCallPayload } from '@nimbalyst/runtime/ai/server/transcript/types';
 
 const gunzip = promisify(zlib.gunzip);
@@ -1279,12 +1280,17 @@ class ToolCallMatcherImpl {
         });
       }
 
-      // 3. Try canonical event for the specific tool call, fall back to raw messages
+      // 3. Try canonical event for the specific tool call, fall back to raw messages.
+      // Phase 3 of canonical-transcript-deprecation: canonical events live in
+      // TranscriptRuntime's in-memory cache instead of a persisted store. The
+      // runtime resolves the per-session cache and rebuilds from raw on miss.
       let canonicalPayload: ToolCallPayload | null = null;
       try {
-        if (TranscriptEventRepository.hasStore() && lookup.toolCallItemId) {
-          const store = TranscriptEventRepository.getStore();
-          const event = await store.findByProviderToolCallId(lookup.toolCallItemId, sessionId);
+        if (TranscriptMigrationRepository.hasService() && lookup.toolCallItemId) {
+          const runtime = TranscriptMigrationRepository.getService();
+          const session = await AISessionsRepository.get(sessionId);
+          const provider = session?.provider ?? 'unknown';
+          const event = await runtime.findToolCallByProviderId(sessionId, lookup.toolCallItemId, provider);
           if (event) {
             canonicalPayload = event.payload as unknown as ToolCallPayload;
           }
@@ -1998,14 +2004,16 @@ class ToolCallMatcherImpl {
       let canonicalPayload: ToolCallPayload | null = null;
       let toolName = 'edit';
       try {
-        if (TranscriptEventRepository.hasStore()) {
-          const store = TranscriptEventRepository.getStore();
+        if (TranscriptMigrationRepository.hasService()) {
+          const runtime = TranscriptMigrationRepository.getService();
+          const session = await AISessionsRepository.get(sessionId);
+          const provider = session?.provider ?? 'unknown';
           const ids = primaryLookupId === fallbackLookupId
             ? [primaryLookupId]
             : [primaryLookupId, fallbackLookupId];
           for (const id of ids) {
             if (!id) continue;
-            const matchingEvent = await store.findByProviderToolCallId(id, sessionId);
+            const matchingEvent = await runtime.findToolCallByProviderId(sessionId, id, provider);
             if (matchingEvent) {
               canonicalPayload = matchingEvent.payload as unknown as ToolCallPayload;
               toolName = canonicalPayload.toolName;

@@ -101,6 +101,7 @@ import {
   handleTrackerListTypes,
   handleTrackerUnlinkSession,
   handleTrackerUpdate,
+  rowToTrackerItem,
 } from '../trackerToolHandlers';
 import { isTrackerSyncActive } from '../../../services/TrackerSyncManager';
 import { getEffectiveTrackerSyncPolicy, shouldSyncTrackerPolicy } from '../../../services/TrackerPolicyService';
@@ -137,6 +138,23 @@ function makeItem(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe('rowToTrackerItem typeTags normalization', () => {
+  it('parses the SQLite JSON-string shape into an array', () => {
+    const item = rowToTrackerItem(makeRow({ type_tags: '["bug","task"]' }));
+    expect(item.typeTags).toEqual(['bug', 'task']);
+  });
+
+  it('passes through the PGLite array shape unchanged', () => {
+    const item = rowToTrackerItem(makeRow({ type_tags: ['bug', 'task'] }));
+    expect(item.typeTags).toEqual(['bug', 'task']);
+  });
+
+  it('falls back to [type] when type_tags is missing or unparseable', () => {
+    expect(rowToTrackerItem(makeRow({ type_tags: null })).typeTags).toEqual(['bug']);
+    expect(rowToTrackerItem(makeRow({ type_tags: 'not json' })).typeTags).toEqual(['bug']);
+  });
+});
 
 describe('handleTrackerGet', () => {
   beforeEach(() => {

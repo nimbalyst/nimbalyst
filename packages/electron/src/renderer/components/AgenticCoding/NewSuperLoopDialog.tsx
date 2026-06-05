@@ -289,7 +289,7 @@ export const NewSuperLoopDialog: React.FC<NewSuperLoopDialogProps> = ({
           <button
             onClick={handleCreate}
             disabled={isCreating || !taskDescription.trim()}
-            className="px-4 py-2 text-sm font-medium text-white bg-nim-primary hover:bg-nim-primary-hover disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors flex items-center gap-2"
+            className="px-4 py-2 text-sm font-medium text-nim-on-primary bg-nim-primary hover:bg-nim-primary-hover disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors flex items-center gap-2"
           >
             {isCreating ? (
               <>

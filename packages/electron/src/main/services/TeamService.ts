@@ -184,7 +184,7 @@ export async function getOrgScopedJwt(orgId: string, accountOrgId?: string): Pro
   // The personal JWT expires after ~5 minutes; reconnecting tracker sync
   // after a WebSocket drop hits this path routinely.
   if (response.status === 401) {
-    logger.main.info(`[TeamService] getOrgScopedJwt: 401 for ${orgId}, refreshing session...`);
+    // logger.main.info(`[TeamService] getOrgScopedJwt: 401 for ${orgId}, refreshing session...`);
     let refreshed = false;
     try {
       if (accountOrgId) {

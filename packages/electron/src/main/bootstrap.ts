@@ -22,9 +22,10 @@
  *   npm run dev -- --user-data-dir=/path/to/dir
  */
 
-import { app, dialog } from 'electron';
+import { app } from 'electron';
 import * as path from 'path';
 import Store from 'electron-store';
+import { createUncaughtExceptionHandler } from './uncaughtException';
 
 // CRITICAL: Strip inherited API keys from process.env before ANY downstream code
 // (SDKs, providers, services) can observe them. See CLAUDE.md, section
@@ -41,54 +42,11 @@ import Store from 'electron-store';
 delete process.env.ANTHROPIC_API_KEY;
 delete process.env.OPENAI_API_KEY;
 
-// Global uncaught exception handler - must be registered early
-// This catches errors that bubble up from async SDK operations
-// Throttling: suppress duplicate errors and cap dialog frequency to prevent dialog floods
-const _recentErrors = new Map<string, number>(); // error key -> timestamp
-const _ERROR_THROTTLE_MS = 5000; // suppress duplicate errors within this window
-const _MAX_DIALOGS_PER_MINUTE = 3;
-let _dialogTimestamps: number[] = [];
-
-process.on('uncaughtException', (error: Error & { code?: string }) => {
-  // Check if this is the known Claude Agent SDK stream error
-  // This happens when the SDK tries to write to a process stdin after it has terminated
-  if (error.code === 'ERR_STREAM_WRITE_AFTER_END' &&
-      error.stack?.includes('claude-agent-sdk')) {
-    // Log the error but don't show a dialog - this is a known SDK issue
-    console.warn('[Bootstrap] Suppressed Claude Agent SDK stream error:', error.message);
-    return;
-  }
-
-  // Always log the error
-  console.error('[Bootstrap] Uncaught exception:', error);
-
-  // Throttle dialogs to prevent flood from rapid-fire errors
-  const now = Date.now();
-  const errorKey = `${error.name}:${error.message}`;
-
-  // Suppress duplicate errors within the throttle window
-  const lastSeen = _recentErrors.get(errorKey);
-  if (lastSeen && (now - lastSeen) < _ERROR_THROTTLE_MS) {
-    console.warn('[Bootstrap] Suppressed duplicate error dialog:', errorKey);
-    return;
-  }
-  _recentErrors.set(errorKey, now);
-
-  // Clean up old entries
-  for (const [key, ts] of _recentErrors) {
-    if ((now - ts) > _ERROR_THROTTLE_MS) _recentErrors.delete(key);
-  }
-
-  // Cap total dialogs per minute
-  _dialogTimestamps = _dialogTimestamps.filter(ts => (now - ts) < 60_000);
-  if (_dialogTimestamps.length >= _MAX_DIALOGS_PER_MINUTE) {
-    console.warn('[Bootstrap] Too many error dialogs, suppressing. Error:', errorKey);
-    return;
-  }
-  _dialogTimestamps.push(now);
-
-  dialog.showErrorBox('Nimbalyst - Uncaught Exception', `${error.name}: ${error.message}\n\n${error.stack || ''}`);
-});
+// Global uncaught exception handler - must be registered early. This catches
+// errors that bubble up from async SDK operations. The throttling and the
+// EPIPE feedback-loop guard (#502) live in ./uncaughtException, extracted so
+// they can be unit tested.
+process.on('uncaughtException', createUncaughtExceptionHandler());
 
 // Parse --user-data-dir from command line args or environment variable
 function getCustomUserDataDir(): string | undefined {

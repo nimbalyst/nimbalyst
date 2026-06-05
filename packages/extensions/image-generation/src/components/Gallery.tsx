@@ -178,7 +178,7 @@ export function Gallery({ messages, imagesBasePath, onEditPrompt, theme }: Galle
           <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             {msg.role === 'user' ? (
               // User message - right aligned
-              <div className="max-w-[80%] px-4 py-3 bg-nim-primary text-white rounded-2xl rounded-br-sm">
+              <div className="max-w-[80%] px-4 py-3 bg-nim-primary text-nim-on-primary rounded-2xl rounded-br-sm">
                 <div className="text-[13px] leading-normal whitespace-pre-wrap">
                   {msg.content}
                 </div>

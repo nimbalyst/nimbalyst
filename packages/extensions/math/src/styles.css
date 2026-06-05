@@ -142,7 +142,7 @@
 .nim-math-editor-button-primary {
   background: var(--nim-primary);
   border-color: var(--nim-primary);
-  color: white;
+  color: var(--nim-on-primary);
 }
 
 .nim-math-editor-button-secondary:hover,

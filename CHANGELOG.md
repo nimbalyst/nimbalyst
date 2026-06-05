@@ -22,7 +22,233 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 <!-- Removed features go here -->
 
-## [0.63.1] - 2026-05-31
+## [0.64.4] - 2026-06-03
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- AI Usage Report no longer crashes the app on the SQLite backend.
+- Terminal scrollback is preserved when it contains a stray NUL byte, instead of discarding all saved history.
+- Claude Code session token totals in the AI Usage Report are no longer inflated.
+- Tracker tool widgets no longer crash on the SQLite backend over a JSON-string `type_tags` column.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.64.3] - 2026-06-03
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Release packaging validators now find the codex binary at its codex-sdk 0.131+ `vendor/<triple>/bin/` path, which broke the release build.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.64.2] - 2026-06-03
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Renderer build no longer breaks on the Anthropic SDK's Node-only agent-toolset (node:crypto/child_process/etc.), which broke the release build.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.64.1] - 2026-06-03
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- pdf-viewer extension build no longer bundles the host runtime (and the Anthropic SDK's Node built-ins), which broke the release build.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.64.0] - 2026-06-03
+
+
+### Added
+- Claude Opus 4.8 is now selectable in the Claude provider (1M context, dateless ID `claude-opus-4-8`) and is the default Claude model for new installs. (#473)
+- Claude Code variants `opus-4-7` and `opus-4-7-1m` pinned to Opus 4.7 so it stays selectable after the canonical `opus` alias was bumped to 4.8. (#473)
+- Extension themes can contribute Monaco editor themes via an optional `monaco` block in `contributions.themes[]`, defining `base`, `rules`, and `colors`. Monaco-backed editors register the theme dynamically and switch to it when the user activates the theme; omitting the block keeps the previous `vs` / `vs-dark` fallback.
+- Claude Code sessions now show a Task List panel in the right sidebar with the agent's SDK-native task queue (TaskCreate/TaskUpdate), including status, owner, and blocked-by dependencies.
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Default Claude model bumped from `claude-opus-4-7` to `claude-opus-4-8`. Existing sessions keep their configured model; only new sessions and "reset to default" pick up 4.8. (#473)
+- Bumped `@openai/codex-sdk` from 0.130.0 to 0.136.0; updated the binary path resolver for the new `vendor/<triple>/bin/codex` and `codex-path/` layout.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Claude Code sessions on Opus 4.8 now actually run on 4.8 (#531) Upgraded `@anthropic-ai/claude-agent-sdk` to 0.3.161 (and `@anthropic-ai/sdk` to 0.100.1 for its peer requirement).
+- Commit proposal diff peeks use the normal default size again instead of collapsing to a tiny bottom-right popover.
+- Quick Open file search no longer lags because hidden tabs stop re-rendering on each keystroke.
+- Fixed an EPIPE feedback loop where the main-process uncaught-exception handler re-entered itself when stderr was broken on Linux, flooding the log until the process died.
+- Meta-agent child sessions now inherit the parent session's provider and model instead of silently falling back to a Claude/Opus default for non-Claude parents.
+- iOS: fast typing into the prompt input no longer jumbles characters; synced drafts are no longer applied while the compose field has keyboard focus.
+- iOS: switching back to a recently-viewed session is now instant — the transcript keeps up to 3 sessions warm and no longer waits on the sync round-trip to reveal already-local messages.
+- iOS: fixed the transcript bundle failing to build (and shrank it ~3.8MB) by stopping a tool widget from importing the runtime barrel, which dragged the Anthropic SDK into the browser bundle.
+- "Commit with AI" now prompts the agent to include relevant, commitable, side-effect files.
+- Localhost `/clip` endpoint now rejects requests from arbitrary web pages, accepting only extension-origin JSON requests.
+
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.63.9] - 2026-06-02
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Meta-agent child sessions now inherit the parent session's provider and model instead of silently falling back to a Claude/Opus default for non-Claude parents.
+- Public builds no longer spam logs with normal-path AI, sync, auth, git, and diff-trace diagnostics.
+- OpenAI Codex settings panel no longer triggers an infinite re-render loop.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.63.8] - 2026-06-02
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+- AI edits to markdown files with inline base64 images no longer trigger multi-minute main-process beachballs.
+- Tool calls no longer get stuck at "running" when multiple AI sessions are open.
+- Workstream parent sessions now rise to the top when a child session becomes active.
+- AskUserQuestion, ExitPlanMode, and GitCommitProposal widgets now render via MCP-prefixed tool names.
+- Workspace search now caches the resolved ripgrep path instead of reprobe-logging on every keystroke.
+- Quick Open no longer stalls while listing prompts, and older prompts now appear in results again.
+- Tracker labels no longer crash the backfill on reconnect or gain a phantom leading `null` on SQLite.
+- New Worktree no longer stays disabled in git repos when the initial probe races mount.
+- Calc Sheets PARSE ERR rows are legible in dark mode.
+- Document-edit usage analytics no longer crash on either database backend.
+- Database backups now clean up stranded temp files and catch up after sleep or startup gaps.
+- Database Browser now shows SQLite backup sizes.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.63.7] - 2026-06-01
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+- ScheduleWakeup no longer logs a spurious "Unrecognized tool" warning each time the agent schedules a wake-up.
+- Commit proposal widget reliably flips from "Pending" to "Changes Committed" after a successful commit.
+- "Waiting for your response" sidebar indicator no longer gets stuck after the prompt is answered; survives renderer reloads and stays in sync with mobile.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.63.6] - 2026-06-01
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+- SQLite migration dry-run no longer fails on row-count mismatch when PGLite is being written to concurrently
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.63.5] - 2026-06-01
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+- Commit proposal widget no longer reverts to "pending" after a successful commit when a later duplicate response carries an error.
+- SQLite migration no longer crashes with `Invalid URL` during the adopt phase in packaged builds.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.63.4] - 2026-06-01
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+- Canonical transcript events kept in-memory per session and rebuilt from raw messages on demand instead of persisted to disk.
+- Agent-message search index now mirrors extractor output, keeping tool noise and metadata chunks out of search results.
+
+### Fixed
+- Multi-minute startup beachball for users with many shared trackers; document-sync key-fingerprint check is now single-flighted and cached, and tracker prewarm is debounced.
+- Marketplace `.nimext` packages now ship the `claude-plugin/` directory so installed extensions can register their Claude skills.
+- Pending-files query no longer throws `json_extract` errors on PGLite installs.
+- Claude Code mid-turn widgets (commit proposal, etc.) now appear in the background-session view as the turn streams, not only after the next session load.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.63.3] - 2026-06-01
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+- Auto-updater no longer pops a giant "Cannot find latest-mac.yml ... HttpError: 404" toast on background polls when a release is mid-publish. Treats the 404 the same as "no update available" until the workflow finishes uploading metadata; manual checks see a friendly "release is being published" message instead of the raw HttpError.
+- Release builds no longer fail on CI when the afterPack worker-bundle ABI check times out spawning the unsigned Electron binary. The path-resolution and `.node`-presence checks remain fatal (those catch the packaging-miss class); only the Electron-as-Node boot probe is now informational.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.63.2] - 2026-06-01
 
 
 ### Added
@@ -37,6 +263,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Empty AI session panels now cycle through 15 additional contextual tips: the four embedded editors (Excalidraw, MockupLM, DataModelLM, spreadsheets), shared session and document links, CLAUDE.md standing instructions, auto-commit mode, document history (Cmd+Y), quick open (Cmd+O), content search (Cmd+Shift+F), mobile pairing, scheduled wakeups, action prompts, and the lightning interrupt button.
 - Session history search supports a virtual `#worktree` tag that filters to all worktree sessions and their children.
 - Shared Documents file tree now has inline search by document name or folder path.
+- Unified Quick Open: one tabbed dialog replaces the four separate Files / Sessions / Prompts / Projects quick-open dialogs, adds a real Trackers tab, a comma-separated file-mask filter (same syntax as the git extension) on Files / In Files, and a type filter on Trackers. ⌘O / ⌘⇧F / ⌘L / ⌘⇧L / ⌘⇧P each open the unified dialog on their tab and also jump between tabs while it's open.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -51,7 +278,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
-- SQLite migration dry-run and full migration no longer crash in packaged builds with "Cannot find module 'electron'"; `SQLiteBackupService` was pulling `electron-log/main` into the worker bundle, where `require('electron')` is not resolvable.
+- Primary buttons pick a readable label color on light/pastel theme accents instead of hardcoded white. (#504)
+- Packaged better-sqlite3 binaries validated during build to catch broken native modules before release.
+- PromptForUserInput widget no longer crashes with "Cannot read properties of undefined" when the agent emits a malformed field. (#494)
 - AI sessions no longer appear to keep running forever on the mobile app after a desktop turn ends; v0.63.0 routed the "isExecuting" signal through a new lightweight wire message the server and iOS did not yet understand, so the running indicator never cleared.
 - Lexical selection-toolbar format dropdowns now render inside the editor root when portaled, so shared dropdown styling and theme backgrounds no longer disappear.
 - AskUserQuestion widget no longer goes blank (header-only "Waiting..." with no options) after switching from Agent mode to Files mode and back when the same session is open in both panels.
@@ -76,8 +305,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Monaco editor now picks the right dark or light base theme for extension themes whose IDs don't include `-dark` (e.g. rose-pine), so the editor matches the rest of the UI.
 - Developer Dashboard no longer crashes when database stats arrive in the SQLite instrumentation shape instead of the legacy per-table counts shape.
 - Extension uninstall now also prunes settings for providers contributed under `aiAgentProviders`, not just `aiProviders`, so the ghost-provider cleanup keeps working with the new contribution point. (follow-up to #446)
-- Session list search and tag-filter UI stay mounted when a tag filter hides every session, so you can clear the filter instead of being stuck in an empty-state view. (#470)
-- "Import Claude Agent Sessions" dialog no longer re-opens on every workspace switch after dismissing it once. (#481)
 
 ### Removed
 <!-- Removed features go here -->

@@ -2109,10 +2109,12 @@ export const refreshSessionListAtom = atom(
           if (s.hasUnread) {
             set(sessionUnreadAtom(s.id), true);
           }
-          // Initialize pending interactive prompt state from database metadata (for sidebar indicator persistence)
-          if (s.hasPendingQuestion || s.hasPendingInteractivePrompt) {
-            set(sessionHasPendingInteractivePromptAtom(s.id), true);
-          }
+          // Rehydrate the pending-interactive-prompt indicator from the
+          // authoritative DB field. Write BOTH directions so a stuck-true
+          // atom (e.g. from a missed resolve event after a renderer reload)
+          // gets corrected on the next session-list refresh. Persisted by
+          // main-process setSessionPendingPrompt on every prompt open/resolve.
+          set(sessionHasPendingInteractivePromptAtom(s.id), !!s.hasPendingInteractivePrompt);
         }
 
         set(sessionRegistryAtom, registry);

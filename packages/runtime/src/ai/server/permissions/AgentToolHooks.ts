@@ -429,13 +429,13 @@ export class AgentToolHooks {
 
           // Different session - clear the old tag and create a new one
           // This prevents edits from multiple sessions accumulating into one diff
-          console.log('[PRE-EDIT CLEAR]', JSON.stringify({
-            file: path.basename(filePath),
-            clearedTagId: existingTag.id,
-            clearedSessionId: existingTag.sessionId,
-            newSessionId: this.sessionId,
-            reason: 'different_session',
-          }));
+          // console.log('[PRE-EDIT CLEAR]', JSON.stringify({
+          //   file: path.basename(filePath),
+          //   clearedTagId: existingTag.id,
+          //   clearedSessionId: existingTag.sessionId,
+          //   newSessionId: this.sessionId,
+          //   reason: 'different_session',
+          // }));
           await this.historyManager.updateTagStatus(filePath, existingTag.id, 'reviewed');
         }
 

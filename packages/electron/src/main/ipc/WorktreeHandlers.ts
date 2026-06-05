@@ -499,13 +499,13 @@ export function registerWorktreeHandlers(): void {
     // Deduplicate: if a request for this path is already in flight, reuse it
     const existing = inFlightStatusRequests.get(worktreePath);
     if (existing) {
-      logger.info('Reusing in-flight worktree:get-status request', { worktreePath });
+      // logger.info('Reusing in-flight worktree:get-status request', { worktreePath });
       return existing;
     }
 
     const requestPromise = (async () => {
       try {
-        logger.info('Getting worktree status', { worktreePath, fetchFirst: options?.fetchFirst });
+        // logger.info('Getting worktree status', { worktreePath, fetchFirst: options?.fetchFirst });
 
         // Look up the worktree to get the stored base branch
         const db = getDatabase();
@@ -514,7 +514,7 @@ export function registerWorktreeHandlers(): void {
           const worktreeStore = createWorktreeStore(db);
           const worktree = await worktreeStore.getByPath(worktreePath);
           baseBranch = worktree?.baseBranch;
-          logger.info('Found worktree base branch for status', { worktreePath, baseBranch: baseBranch || 'not found' });
+          // logger.info('Found worktree base branch for status', { worktreePath, baseBranch: baseBranch || 'not found' });
         }
 
         // Fetch latest remote refs for accurate merge detection
@@ -723,7 +723,7 @@ export function registerWorktreeHandlers(): void {
         throw new Error('worktreePath is required');
       }
 
-      logger.info('Getting worktree by path', { worktreePath });
+      // logger.info('Getting worktree by path', { worktreePath });
 
       const db = getDatabase();
       if (!db) {
@@ -925,7 +925,7 @@ export function registerWorktreeHandlers(): void {
         throw new Error('worktreePath is required');
       }
 
-      logger.info('Getting changed files', { worktreePath });
+      // logger.info('Getting changed files', { worktreePath });
 
       const changedFiles = await gitWorktreeService.getChangedFiles(worktreePath);
 
@@ -997,7 +997,7 @@ export function registerWorktreeHandlers(): void {
         throw new Error('worktreePath is required');
       }
 
-      logger.info('Getting worktree commits', { worktreePath });
+      // logger.info('Getting worktree commits', { worktreePath });
 
       // Look up the worktree to get the stored base branch
       const db = getDatabase();
@@ -1006,7 +1006,7 @@ export function registerWorktreeHandlers(): void {
         const worktreeStore = createWorktreeStore(db);
         const worktree = await worktreeStore.getByPath(worktreePath);
         baseBranch = worktree?.baseBranch;
-        logger.info('Found worktree base branch', { worktreePath, baseBranch: baseBranch || 'not found' });
+        // logger.info('Found worktree base branch', { worktreePath, baseBranch: baseBranch || 'not found' });
       }
 
       const commits = await gitWorktreeService.getWorktreeCommits(worktreePath, baseBranch);
@@ -1093,7 +1093,7 @@ export function registerWorktreeHandlers(): void {
         throw new Error('repoPath is required');
       }
 
-      logger.info('Getting current branch for repo', { repoPath });
+      // logger.info('Getting current branch for repo', { repoPath });
 
       const currentBranch = await gitWorktreeService.getRepoCurrentBranch(repoPath);
 

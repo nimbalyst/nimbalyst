@@ -76,6 +76,20 @@ async function buildWorker() {
       sourcemap: process.env.NODE_ENV !== 'production',
       format: 'cjs',
       loader: { '.node': 'file' },
+      // PGLite's ESM build references its WASM/data files via
+      // `new URL("./pglite.wasm", import.meta.url)`. When esbuild bundles ESM
+      // into CJS it emits `var import_meta = {}`, making `import_meta.url`
+      // undefined and the `new URL(...)` call throw `Invalid URL` the first
+      // time PGLite is constructed in the packaged app. Force resolution to
+      // PGLite's CJS bundle, which uses an internal `__filename`-based polyfill
+      // for `import.meta.url` and resolves `pglite.wasm` / `pglite.data` from
+      // the same directory as the worker bundle (where we copy them below).
+      alias: {
+        '@electric-sql/pglite': path.join(
+          __dirname,
+          '../../../node_modules/@electric-sql/pglite/dist/index.cjs',
+        ),
+      },
       define: {
         'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'production'),
       },

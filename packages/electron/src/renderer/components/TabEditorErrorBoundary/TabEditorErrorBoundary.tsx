@@ -126,7 +126,7 @@ export class TabEditorErrorBoundary extends Component<Props, State> {
                 style={{
                   padding: '8px 16px',
                   backgroundColor: 'var(--nim-primary)',
-                  color: 'white',
+                  color: 'var(--nim-on-primary)',
                   border: 'none',
                   borderRadius: '4px',
                   cursor: 'pointer',

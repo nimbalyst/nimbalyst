@@ -88,7 +88,7 @@
   font-size: 9px;
   font-weight: 700;
   line-height: 1;
-  color: #ffffff;
+  color: var(--nim-on-primary, #ffffff);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -186,7 +186,7 @@
 
 .project-rail-context-menu-item:hover {
   background-color: var(--nim-primary, #3b82f6);
-  color: #ffffff;
+  color: var(--nim-on-primary, #ffffff);
 }
 
 .project-rail-context-menu-divider {

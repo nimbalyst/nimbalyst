@@ -20,10 +20,11 @@ vi.mock('../../utils/logger', () => ({
 }));
 
 const mockGetMultiSessionEvents = vi.fn();
-vi.mock('@nimbalyst/runtime/storage/repositories/TranscriptEventRepository', () => ({
-  TranscriptEventRepository: {
-    hasStore: () => true,
-    getStore: () => ({
+vi.mock('@nimbalyst/runtime/storage/repositories/TranscriptMigrationRepository', () => ({
+  TranscriptMigrationRepository: {
+    hasService: () => false,
+    getService: () => ({
+      findToolCallByProviderId: vi.fn().mockResolvedValue(null),
       getMultiSessionEvents: mockGetMultiSessionEvents,
     }),
   },

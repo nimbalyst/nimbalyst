@@ -60,6 +60,13 @@ public struct SessionDetailView: View {
     @State private var liveSession: Session?
     @State private var sessionCancellable: AnyDatabaseCancellable?
 
+    /// Tracks the last-rendered session id so we can detach observers /
+    /// diagnostic handlers / sync rooms scoped to the *previous* session when
+    /// `session` is swapped in place (iPad split-view sidebar selection
+    /// change). Set in `.onAppear` for the initial render and updated each
+    /// time `.onChange(of: session.id)` fires.
+    @State private var previousSessionId: String?
+
     /// Live message list from GRDB observation.
     @State private var messages: [Message] = []
     @State private var messagesCancellable: AnyDatabaseCancellable?
@@ -81,6 +88,11 @@ public struct SessionDetailView: View {
     /// Epoch ms of last local keystroke -- used to reject stale sync echoes.
     /// Mirrors desktop's sessionDraftLocalModifiedAtAtom pattern.
     @State private var lastLocalEditAt: Int = 0
+    /// Whether the compose TextField currently has keyboard focus. While true,
+    /// we never overwrite `composeText` from sync -- mutating the binding under
+    /// an active TextField reorders characters via IME/autocorrect/dictation
+    /// candidate buffers (the "jumbled while typing fast" bug).
+    @FocusState private var composeFocused: Bool
     /// Error message shown when prompt send fails.
     @State private var sendError: String?
     /// Warning shown when prompt was sent but desktop hasn't picked it up.
@@ -216,7 +228,8 @@ public struct SessionDetailView: View {
                 commands: projectCommands,
                 onSend: sendPrompt,
                 onCancel: cancelSession,
-                onQueue: { text, attachments in sendPrompt(text, attachments) }
+                onQueue: { text, attachments in sendPrompt(text, attachments) },
+                focused: $composeFocused
             )
         }
         .navigationTitle(displaySession.titleDecrypted ?? "Session")
@@ -243,6 +256,12 @@ public struct SessionDetailView: View {
             }
         }
         .onAppear {
+            // First render: remember which session we're bound to so
+            // `.onChange(of: session.id)` can detect an in-place swap (iPad
+            // sidebar selection) versus the first appearance.
+            if previousSessionId == nil {
+                previousSessionId = session.id
+            }
             startObserving()
             startLoadTimeout()
             subscribeToDiagnostics()
@@ -257,39 +276,34 @@ public struct SessionDetailView: View {
             appState.syncManager?.markSessionRead(sessionId: session.id)
             AnalyticsManager.shared.capture("mobile_session_viewed")
         }
-        .onChange(of: liveSession?.draftInput) { newDraft in
-            // Apply synced draft from another device.
-            // Always apply (even if local compose has text) so cross-device sync wins.
-            // The isApplyingRemoteDraft flag prevents feedback loops, and the user's
-            // next local keystroke will immediately override via the debounced push.
-            let draft = newDraft ?? ""
-            guard draft != composeText else { return }
-            // Defense-in-depth: if the local compose already contains the
-            // incoming draft as a prefix, the user is ahead of the remote
-            // (almost always a self-echo arriving after they kept typing).
-            // Don't ever overwrite their input with a shorter prefix.
-            if !draft.isEmpty && composeText.hasPrefix(draft) && composeText.count > draft.count {
-                return
+        .onChange(of: liveSession?.draftInput) { _ in
+            // While the user is actively typing, never overwrite composeText from
+            // sync. Externally mutating the TextField binding while it is focused
+            // reorders characters via IME/autocorrect/dictation candidate buffers
+            // (the "jumbled while typing fast" bug). Pending remote drafts will be
+            // applied when focus is lost (see .onChange(of: composeFocused) below).
+            guard !composeFocused else { return }
+            applyRemoteDraftIfNewer()
+        }
+        .onChange(of: composeFocused) { focused in
+            // When the keyboard is dismissed, reconcile with any draft that
+            // arrived from another device while we were typing.
+            if !focused {
+                applyRemoteDraftIfNewer()
             }
-            // Reject stale drafts: if the remote draftUpdatedAt is older than our
-            // last submit, this is an echo of the pre-submit draft -- ignore it.
-            if let remoteTs = liveSession?.draftUpdatedAt, !draft.isEmpty, remoteTs <= lastSubmitAt {
-                return
-            }
-            // Reject sync echoes older than our local typing.
-            // When the user is actively typing, lastLocalEditAt advances ahead of
-            // any echoed drafts from the server. Only accept remote drafts that are
-            // genuinely newer (e.g., typed on desktop after we stopped typing here).
-            // This mirrors desktop's sessionDraftLocalModifiedAtAtom pattern.
-            if let remoteTs = liveSession?.draftUpdatedAt, lastLocalEditAt > 0, remoteTs <= lastLocalEditAt {
-                return
-            }
-            isApplyingRemoteDraft = true
-            composeText = draft
-            DispatchQueue.main.async { isApplyingRemoteDraft = false }
         }
         .onChange(of: session.id) { _ in
-            resetTranscriptLoadState()
+            // Without `.id(session.id)` on the iPad split-view detail, SwiftUI
+            // reuses this view across sidebar selection changes — so we need
+            // to do the teardown/reinit that a fresh mount would otherwise
+            // have done. `previousSessionId` is set in `.onAppear` for the
+            // initial render, so the first onChange fires here is a real swap.
+            guard let oldId = previousSessionId, oldId != session.id else {
+                previousSessionId = session.id
+                return
+            }
+            swapSession(fromOldId: oldId)
+            previousSessionId = session.id
         }
         .onChange(of: composeText) { newText in
             // Push draft changes back to sync (debounced).
@@ -411,23 +425,51 @@ public struct SessionDetailView: View {
     }
 
     private var shouldWaitForInitialTranscriptMessages: Bool {
-        if !hasObservedInitialMessages { return true }
-        if serverConfirmedNoMessages { return false }
-        if hasExpectedTranscriptMessages {
-            if hasAllExpectedLocalMessages { return false }
-            if !hasCompletedInitialSessionSync { return true }
-            // Sync completed but GRDB hasn't delivered messages yet.
-            // Keep waiting so loadSessionIntoWebView gets real data
-            // instead of rendering the empty "ready to assist" state.
-            return messages.isEmpty
-        }
-        return false
+        // Only block the initial JS load until GRDB delivers its first local
+        // snapshot. Previously this also waited on the session sync round-trip
+        // (hasCompletedInitialSessionSync / hasAllExpectedLocalMessages), which
+        // added a full network RTT to every session switch even when all the
+        // messages were already in the local store — the main cause of the
+        // "switching back isn't instant" lag. The transcript reveal overlay
+        // (isTranscriptReady) still covers any brief empty state, and the
+        // React side keeps the cached transcript mounted across switches.
+        !hasObservedInitialMessages
     }
 
     private var canRevealTranscript: Bool {
         hasObservedInitialMessages
             && !shouldWaitForInitialTranscriptMessages
             && (!messages.isEmpty || serverConfirmedNoMessages || !hasExpectedTranscriptMessages)
+    }
+
+    /// Apply the most recent synced draft to composeText if it represents
+    /// genuinely newer text than what we have locally. Callers MUST ensure the
+    /// TextField is not currently focused before calling this -- mutating the
+    /// binding under an active TextField scrambles the user's input.
+    private func applyRemoteDraftIfNewer() {
+        let draft = liveSession?.draftInput ?? ""
+        guard draft != composeText else { return }
+        // Defense-in-depth: if the local compose already contains the incoming
+        // draft as a prefix, the user is ahead of the remote (almost always a
+        // self-echo arriving after they kept typing). Don't ever overwrite
+        // their input with a shorter prefix.
+        if !draft.isEmpty && composeText.hasPrefix(draft) && composeText.count > draft.count {
+            return
+        }
+        // Reject stale drafts: if the remote draftUpdatedAt is older than our
+        // last submit, this is an echo of the pre-submit draft -- ignore it.
+        if let remoteTs = liveSession?.draftUpdatedAt, !draft.isEmpty, remoteTs <= lastSubmitAt {
+            return
+        }
+        // Reject sync echoes older than our local typing. Only accept remote
+        // drafts that are genuinely newer (e.g., typed on desktop after we
+        // stopped typing here). Mirrors desktop's sessionDraftLocalModifiedAtAtom.
+        if let remoteTs = liveSession?.draftUpdatedAt, lastLocalEditAt > 0, remoteTs <= lastLocalEditAt {
+            return
+        }
+        isApplyingRemoteDraft = true
+        composeText = draft
+        DispatchQueue.main.async { isApplyingRemoteDraft = false }
     }
 
     /// Re-check whether the transcript overlay can be dismissed.
@@ -647,6 +689,70 @@ public struct SessionDetailView: View {
         hasCompletedInitialSessionSync = false
         timeoutWorkItem?.cancel()
         startLoadTimeout()
+    }
+
+    /// Tear down every binding scoped to `oldId` and re-init for the current
+    /// `session`. Only used on iPad in-place session swap; iPhone destroys and
+    /// rebuilds the view on each navigation push so this code path doesn't
+    /// fire there.
+    ///
+    /// By the time this runs, `session` already refers to the new session, so
+    /// callees that read `session.*` automatically use the new values.
+    private func swapSession(fromOldId oldId: String) {
+        // Drop the previous session's GRDB observations. `projectCancellable`
+        // is included even when the new session is in the same project — the
+        // observation re-registers in `startObserving()`, and we'd rather pay
+        // a no-op re-registration than carry a stale capture.
+        sessionCancellable?.cancel()
+        messagesCancellable?.cancel()
+        queuedPromptsCancellable?.cancel()
+        projectCancellable?.cancel()
+
+        // Drop the previous session's sync subscriptions.
+        appState.syncManager?.removeSessionSyncDiagnosticHandler(sessionId: oldId)
+        appState.syncManager?.leaveSessionRoom(expectedSessionId: oldId)
+
+        // Cancel any pending per-session debounces/timers.
+        draftDebounceItem?.cancel()
+        draftDebounceItem = nil
+        deliveryTimeoutItem?.cancel()
+        deliveryTimeoutItem = nil
+        promptRefreshWorkItem?.cancel()
+        promptRefreshWorkItem = nil
+
+        // Clear per-session UI state. liveSession/messages/queuedPrompts will
+        // be re-populated by the new observations; the rest are user-driven.
+        liveSession = nil
+        messages = []
+        queuedPrompts = []
+        promptList = []
+        composeText = ""
+        composeFocused = false
+        isApplyingRemoteDraft = false
+        lastLocalEditAt = 0
+        lastSubmitAt = 0
+        sendError = nil
+        deliveryWarning = nil
+        fileSheetDocument = nil
+        fileNotAvailableToast = nil
+
+        resetTranscriptLoadState()
+
+        // Re-init for the new session.
+        startObserving()
+        startObservingQueuedPrompts()
+        subscribeToDiagnostics()
+        appState.syncManager?.joinSessionRoom(sessionId: session.id)
+        appState.syncManager?.markSessionRead(sessionId: session.id)
+
+        // Seed compose from the new session's draft.
+        if let draft = session.draftInput, !draft.isEmpty {
+            isApplyingRemoteDraft = true
+            composeText = draft
+            DispatchQueue.main.async { isApplyingRemoteDraft = false }
+        }
+
+        AnalyticsManager.shared.capture("mobile_session_viewed")
     }
 
     private func startLoadTimeout() {

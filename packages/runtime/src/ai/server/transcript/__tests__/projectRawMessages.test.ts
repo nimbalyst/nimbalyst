@@ -347,6 +347,101 @@ describe('projectRawMessagesToViewMessages', () => {
     });
   });
 
+  // Regression: session cb82f2eb-941c-4fb5-b552-adbae567df61. The widget for
+  // developer_git_commit_proposal must show "Changes Committed" after the user
+  // resolves the commit prompt, even when a later duplicate response carries
+  // an error (e.g. "No files were staged" after the file was already committed).
+  describe('git_commit_proposal end-to-end projection', () => {
+    const PROPOSAL_ID = 'toolu_01PS9EteLyYXJbVx6JojBWQ6';
+
+    function commitProposalMessages(): RawMessage[] {
+      return [
+        raw({
+          id: 100,
+          source: 'claude-code',
+          direction: 'output',
+          content: JSON.stringify({
+            type: 'nimbalyst_tool_use',
+            id: PROPOSAL_ID,
+            name: 'developer_git_commit_proposal',
+            input: {
+              filesToStage: [
+                { path: 'packages/electron/build/build-worker.js', status: 'modified' },
+              ],
+              commitMessage: 'fix: SQLite migration adopt crash in packaged builds',
+            },
+          }),
+          createdAt: new Date('2026-06-01T20:55:58.643Z'),
+        }),
+      ];
+    }
+
+    function committedResponse(id: number): RawMessage {
+      return raw({
+        id,
+        source: 'nimbalyst',
+        direction: 'output',
+        content: JSON.stringify({
+          type: 'git_commit_proposal_response',
+          proposalId: PROPOSAL_ID,
+          action: 'committed',
+          commitHash: '0b02b2301eecf073c716f8f0da43d458a611c568',
+          commitDate: '2026-06-01T17:00:20-04:00',
+          filesCommitted: ['packages/electron/build/build-worker.js'],
+          commitMessage: 'fix: SQLite migration adopt crash in packaged builds',
+        }),
+        createdAt: new Date('2026-06-01T21:00:21.666Z'),
+      });
+    }
+
+    function errorResponse(id: number): RawMessage {
+      return raw({
+        id,
+        source: 'nimbalyst',
+        direction: 'output',
+        content: JSON.stringify({
+          type: 'git_commit_proposal_response',
+          proposalId: PROPOSAL_ID,
+          action: 'error',
+          error: 'No files were staged. The files may not exist or have no changes.',
+        }),
+        createdAt: new Date('2026-06-01T21:03:49.579Z'),
+      });
+    }
+
+    it('projects a successful commit response onto the tool_call view message', async () => {
+      const messages = [...commitProposalMessages(), committedResponse(101)];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'claude-code');
+      const toolCall = vms.find(m => m.type === 'tool_call');
+
+      expect(toolCall).toBeDefined();
+      expect(toolCall?.toolCall?.toolName).toBe('developer_git_commit_proposal');
+      expect(toolCall?.toolCall?.status).toBe('completed');
+
+      const result = JSON.parse(toolCall!.toolCall!.result as string);
+      expect(result.action).toBe('committed');
+      expect(result.commitHash).toBe('0b02b2301eecf073c716f8f0da43d458a611c568');
+    });
+
+    it('preserves the committed result when a later error response arrives for the same proposal', async () => {
+      const messages = [
+        ...commitProposalMessages(),
+        committedResponse(101),
+        errorResponse(102),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'claude-code');
+      const toolCall = vms.find(m => m.type === 'tool_call');
+
+      expect(toolCall?.toolCall?.status).toBe('completed');
+      const result = JSON.parse(toolCall!.toolCall!.result as string);
+      expect(result.action).toBe('committed');
+      expect(result.commitHash).toBe('0b02b2301eecf073c716f8f0da43d458a611c568');
+      expect(result.error).toBeUndefined();
+    });
+  });
+
   it('rawMessagesToCanonicalEvents assigns sequential ids and sequences', async () => {
     const messages: RawMessage[] = [
       raw({ id: 1, direction: 'input', content: JSON.stringify({ prompt: 'first' }) }),

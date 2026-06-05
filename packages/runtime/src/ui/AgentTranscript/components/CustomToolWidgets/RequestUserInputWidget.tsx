@@ -86,10 +86,46 @@ import type {
 // Argument / result parsing
 // ============================================================
 
+// Defense-in-depth shape check. The MCP handler validates per-type required
+// arrays before forwarding to the renderer, but historical sessions persisted
+// before that check landed (or replayed from another source) can still carry
+// fields where e.g. a `singleSelect` is missing `options` or a `multiSelect`
+// is missing `items`. Drop those silently here so the unguarded `.map`/`.filter`
+// in the renderers below never throws; the user sees the remaining valid fields
+// instead of a "Widget failed to render" error card.
+function isValidField(field: any): field is RequestUserInputField {
+  if (!field || typeof field !== 'object') return false;
+  if (typeof field.id !== 'string' || typeof field.label !== 'string') return false;
+  switch (field.type) {
+    case 'multiSelect':
+      return Array.isArray(field.items) && field.items.length > 0;
+    case 'singleSelect':
+      return Array.isArray(field.options) && field.options.length > 0;
+    case 'reorder':
+      return Array.isArray(field.items) && field.items.length > 0;
+    case 'editText':
+      return typeof field.initialText === 'string';
+    case 'confirm':
+      return true;
+    default:
+      return false;
+  }
+}
+
 function parseArgs(args: any): RequestUserInputArgs | null {
   if (!args || typeof args !== 'object') return null;
   if (!Array.isArray(args.fields) || args.fields.length === 0) return null;
-  return args as RequestUserInputArgs;
+  const validFields = args.fields.filter(isValidField);
+  if (validFields.length === 0) {
+    console.warn('[RequestUserInputWidget] All fields dropped as malformed; skipping render');
+    return null;
+  }
+  if (validFields.length !== args.fields.length) {
+    console.warn(
+      `[RequestUserInputWidget] Dropped ${args.fields.length - validFields.length} malformed field(s)`,
+    );
+  }
+  return { ...args, fields: validFields } as RequestUserInputArgs;
 }
 
 interface ParsedResult {
@@ -379,7 +415,7 @@ function MultiSelectRenderer({
           >
             <span
               className={`w-4 h-4 mt-0.5 shrink-0 border rounded-sm flex items-center justify-center transition-colors ${
-                isSelected ? 'bg-nim-primary border-nim-primary text-white' : 'bg-nim border-nim text-nim-primary'
+                isSelected ? 'bg-nim-primary border-nim-primary text-nim-on-primary' : 'bg-nim border-nim text-nim-primary'
               }`}
             >
               {isSelected && (
@@ -975,7 +1011,7 @@ function ConfirmRenderer({
     >
       <span
         className={`w-4 h-4 mt-0.5 shrink-0 border rounded-sm flex items-center justify-center transition-colors ${
-          value ? 'bg-nim-primary border-nim-primary text-white' : 'bg-nim border-nim text-nim-primary'
+          value ? 'bg-nim-primary border-nim-primary text-nim-on-primary' : 'bg-nim border-nim text-nim-primary'
         }`}
       >
         {value && (
@@ -1275,7 +1311,7 @@ export const RequestUserInputWidget: React.FC<CustomToolWidgetProps> = ({ messag
               data-testid="request-user-input-submit"
               onClick={handleSubmit}
               disabled={!allValid || isSubmitting}
-              className="px-4 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border-none transition-colors duration-150 hover:opacity-90 bg-nim-primary text-white disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-4 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border-none transition-colors duration-150 hover:opacity-90 bg-nim-primary text-nim-on-primary disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSubmitting ? 'Submitting...' : args.submitLabel ?? 'Confirm'}
             </button>

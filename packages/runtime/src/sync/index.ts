@@ -169,6 +169,7 @@ export type {
 export {
   applyLabelDiff,
   mergeLabelMaps,
+  normalizeLegacyLabelValues,
   projectLabelsToValues,
 } from './trackerLabels';
 

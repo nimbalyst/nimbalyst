@@ -43,6 +43,11 @@
   /* Primary (action/brand color) */
   --nim-primary: #3b82f6;
   --nim-primary-hover: #2563eb;
+  /* Foreground for use on top of --nim-primary backgrounds. Themes that
+     contribute a light/pastel --nim-primary should override this with a
+     dark color; the theme system also luminance-derives a fallback when
+     a theme contributes `primary` but not `on-primary`. */
+  --nim-on-primary: #ffffff;
 
   /* Links */
   --nim-link: rgb(33, 111, 219);

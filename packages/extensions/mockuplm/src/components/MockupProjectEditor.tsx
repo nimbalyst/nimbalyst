@@ -514,7 +514,7 @@ export function MockupProjectEditor({ host }: EditorHostProps) {
               padding: '4px 10px',
               fontSize: 12,
               background: 'var(--nim-primary)',
-              color: '#fff',
+              color: 'var(--nim-on-primary)',
               border: '1px solid var(--nim-primary)',
               borderRadius: 4,
               cursor: 'pointer',

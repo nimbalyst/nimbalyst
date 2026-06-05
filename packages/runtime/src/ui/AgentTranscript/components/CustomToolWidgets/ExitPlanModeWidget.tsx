@@ -397,7 +397,7 @@ export const ExitPlanModeWidget: React.FC<CustomToolWidgetProps> = ({
                 </button>
                 <button
                   data-testid="exit-plan-mode-send-feedback"
-                  className="px-3 py-1 rounded-md text-[12px] cursor-pointer border-none transition-colors duration-150 hover:opacity-90 bg-nim-primary text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-3 py-1 rounded-md text-[12px] cursor-pointer border-none transition-colors duration-150 hover:opacity-90 bg-nim-primary text-nim-on-primary disabled:opacity-50 disabled:cursor-not-allowed"
                   onClick={handleSubmitFeedback}
                   disabled={!feedback.trim() || isSubmitting}
                 >

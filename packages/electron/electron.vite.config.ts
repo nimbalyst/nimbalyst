@@ -243,6 +243,51 @@ export default defineConfig({
         include: [],
         protocolImports: false,
       }),
+      // The Anthropic SDK's agent-toolset (server-side file tools, added in
+      // @anthropic-ai/sdk 0.100.x) is dragged into the renderer bundle via the
+      // runtime barrel (ai/models.ts value-imports the SDK for the model
+      // picker). Those modules do NAMED imports of Node built-ins (node:crypto
+      // `randomUUID`, node:child_process `execFile`, etc.), which Vite
+      // externalizes to __vite-browser-external — a module with no named
+      // exports — turning each named import into a hard build error. The
+      // agent-toolset never runs in the renderer, so resolve just its
+      // Node-builtin imports to browser-safe shims (scoped to agent-toolset
+      // importers) so the bundle builds.
+      (() => {
+        const SHIMS: Record<string, string> = {
+          'node:crypto':
+            "export const randomUUID = () => (globalThis.crypto?.randomUUID?.() ?? '00000000-0000-0000-0000-000000000000');\nexport default {};",
+          'node:child_process':
+            "export const execFile = () => { throw new Error('node:child_process is unavailable in the renderer'); };\nexport default {};",
+          'node:util':
+            'export const promisify = (fn) => fn;\nexport default {};',
+          'node:stream':
+            'export class Readable {}\nexport default {};',
+          'node:stream/promises':
+            "export const pipeline = async () => { throw new Error('node:stream/promises is unavailable in the renderer'); };\nexport default {};",
+        };
+        const PREFIX = '\0anthropic-agent-toolset-shim:';
+        return {
+          name: 'anthropic-agent-toolset-node-shims',
+          enforce: 'pre' as const,
+          resolveId(source: string, importer?: string) {
+            if (
+              SHIMS[source] &&
+              importer &&
+              importer.includes('@anthropic-ai/sdk/tools/agent-toolset')
+            ) {
+              return PREFIX + source;
+            }
+            return null;
+          },
+          load(id: string) {
+            if (id.startsWith(PREFIX)) {
+              return SHIMS[id.slice(PREFIX.length)];
+            }
+            return null;
+          },
+        };
+      })(),
       viteNimbalystPlugin(),
       react(),
       optimizeExcalidrawPlugin(),

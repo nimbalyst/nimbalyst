@@ -516,8 +516,12 @@ export function initVoiceModeListeners(): () => void {
             .map(f => `- ${f.path} (${f.status})`)
             .join('\n');
           message += `\n\nHere are the files edited in this session that have uncommitted changes:\n${fileList}`;
-          message += '\n\nCall developer_git_commit_proposal immediately with these files.';
-          message += '\nDo NOT call get_session_edited_files, get_workstream_edited_files, or git diff -- the data is already provided above.';
+          message += '\n\nThis list only covers files edited directly. It may be missing files that changed as a SIDE EFFECT of commands you ran -- ' +
+            'e.g. package-lock.json (or yarn.lock/pnpm-lock.yaml) after npm install, generated/compiled output, or license manifests. ' +
+            'Run git status --porcelain and add any such uncommitted side-effect files that clearly belong with the edits above. ' +
+            'Do NOT add unrelated uncommitted changes -- other concurrent sessions may have their own work in this repo.';
+          message += '\n\nThen call developer_git_commit_proposal with the combined file list.';
+          message += '\nDo NOT call get_session_edited_files or get_workstream_edited_files -- the edited-file data is already provided above.';
         } else if (commitContext.success && commitContext.files.length === 0) {
           message += '\n\nNo session-edited files have uncommitted changes. Check git status to see if there are any other uncommitted changes to commit.';
         } else {

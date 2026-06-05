@@ -17,6 +17,7 @@ import {
   AgentMessageWriteQueue,
   type MessagesLoggedBatchEvent,
 } from '../../storage/repositories/AgentMessageWriteQueue';
+import { extractSearchable } from './transcript/searchableTextExtractor';
 
 /**
  * Interface for providers that support the AskUserQuestion tool
@@ -358,6 +359,14 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
     // Only allow searchable for content under 500KB to avoid tsvector 1MB limit
     const isSearchable = searchable && content.length < 500000;
 
+    const { searchableText, messageKind } = extractSearchable({
+      source,
+      direction,
+      content,
+      metadata: metadata ?? null,
+      hidden,
+    });
+
     try {
       await getSharedAgentMessageQueue().enqueue({
         sessionId,
@@ -369,6 +378,8 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
         createdAt,
         providerMessageId,
         searchable: isSearchable,
+        searchableText,
+        messageKind,
       });
       // Emit event to notify listeners that new message was written to database
       // Include hidden flag so sync handlers can skip hidden messages
@@ -415,6 +426,14 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
     const createdAt = new Date();
     const isSearchable = searchable && content.length < 500000;
 
+    const { searchableText, messageKind } = extractSearchable({
+      source,
+      direction,
+      content,
+      metadata: metadata ?? null,
+      hidden,
+    });
+
     const writePromise = getSharedAgentMessageQueue().enqueue({
       sessionId,
       source,
@@ -425,6 +444,8 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
       createdAt,
       providerMessageId,
       searchable: isSearchable,
+      searchableText,
+      messageKind,
     })
       .catch((error) => {
         // Don't log per-row failures here — the queue's per-row fallback path

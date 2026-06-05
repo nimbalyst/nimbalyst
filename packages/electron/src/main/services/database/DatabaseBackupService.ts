@@ -223,6 +223,12 @@ export class DatabaseBackupService {
   async createBackup(): Promise<{ success: boolean; error?: string }> {
     this.metadata.lastBackupAttempt = new Date().toISOString();
 
+    // Declared outside the try so the catch can clean up a partial temp dir.
+    // Without this, a throw mid-copyDirectory leaves temp-backup-* dirs
+    // accumulating in backupDir forever (cleanupOldCorruptedBackups never
+    // scanned this folder, and the rotation path only deletes on rejection).
+    let tempBackupPath: string | null = null;
+
     try {
       logger.main.info('[Backup Service] Starting backup creation...');
 
@@ -241,7 +247,7 @@ export class DatabaseBackupService {
 
       // Create temporary backup directory
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const tempBackupPath = path.join(this.backupDir, `temp-backup-${timestamp}`);
+      tempBackupPath = path.join(this.backupDir, `temp-backup-${timestamp}`);
 
       // Copy database to temporary location
       logger.main.info('[Backup Service] Copying database to:', tempBackupPath);
@@ -287,6 +293,13 @@ export class DatabaseBackupService {
 
     } catch (error: any) {
       logger.main.error('[Backup Service] Failed to create backup:', error);
+      if (tempBackupPath && fsSync.existsSync(tempBackupPath)) {
+        try {
+          await fs.rm(tempBackupPath, { recursive: true, force: true });
+        } catch (cleanupErr) {
+          logger.main.warn('[Backup Service] Failed to clean up partial temp backup:', cleanupErr);
+        }
+      }
       await this.saveMetadata();
       return { success: false, error: error.message || String(error) };
     }
@@ -466,9 +479,32 @@ export class DatabaseBackupService {
   }
 
   /**
-   * Clean up old corrupted database backups (older than 30 days)
+   * Clean up stranded temp backup dirs in backupDir, plus any historical
+   * timestamped `pglite-db.backup-*` dirs at the userData root (legacy
+   * naming from earlier versions; modern installs don't produce these).
+   *
+   * Temp dirs are unrecoverable garbage the moment createBackup() returns,
+   * so we delete them eagerly. The 30-day cutoff at the userData root is
+   * kept as a safety net for legacy stragglers.
    */
   async cleanupOldCorruptedBackups(): Promise<void> {
+    // Stranded temp-backup-* dirs in the backup folder — created by
+    // createBackup() when verification or rotation throws mid-flight.
+    // No age guard: by the time this runs they're unreferenced garbage.
+    try {
+      const entries = await fs.readdir(this.backupDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (!entry.name.startsWith('temp-backup-')) continue;
+        const fullPath = path.join(this.backupDir, entry.name);
+        logger.main.info('[Backup Service] Removing stranded temp backup:', entry.name);
+        await fs.rm(fullPath, { recursive: true, force: true });
+      }
+    } catch (error) {
+      logger.main.warn('[Backup Service] Failed to clean stranded temp backups:', error);
+    }
+
+    // Legacy timestamped corrupted-backup dirs at the userData root.
     try {
       const userDataPath = app.getPath('userData');
       const entries = await fs.readdir(userDataPath, { withFileTypes: true });
@@ -476,7 +512,6 @@ export class DatabaseBackupService {
 
       for (const entry of entries) {
         if (entry.isDirectory() && entry.name.startsWith('pglite-db.backup-')) {
-          // This is a timestamped corrupted backup
           const fullPath = path.join(userDataPath, entry.name);
           const stats = await fs.stat(fullPath);
 

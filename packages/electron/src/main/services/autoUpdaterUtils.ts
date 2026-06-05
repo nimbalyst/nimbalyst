@@ -64,6 +64,20 @@ export function classifyUpdateError(error: Error): string {
   if (message.includes('command is disabled') || message.includes('cannot be executed')) {
     return 'squirrel_install_disabled';
   }
+  // Release-in-flight 404: the GitHub release workflow pushes the tag before
+  // it uploads `latest-mac.yml` / `latest.yml` / `latest-linux.yml`, so any
+  // client polling during the build window asks for a metadata file that
+  // doesn't exist yet and electron-updater surfaces an HttpError 404. Same
+  // shape applies if a tag gets pushed without a published Release. This is
+  // functionally identical to "no update available" from the user's point of
+  // view and must NOT raise a toast on the hourly background poll. See #56
+  // (network suppression pattern) and the v0.63.2 release-day incident.
+  if (
+    /cannot find latest-(mac|linux)?\.?ya?ml/.test(message) ||
+    /httperror:\s*404/.test(message)
+  ) {
+    return 'release_pending';
+  }
   return 'unknown';
 }
 

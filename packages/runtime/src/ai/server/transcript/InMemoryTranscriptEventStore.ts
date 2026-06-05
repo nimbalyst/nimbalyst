@@ -22,9 +22,20 @@ export class InMemoryTranscriptEventStore implements ITranscriptEventStore {
   private events: TranscriptEvent[] = [];
   private nextId = 1;
   private sequenceBySession = new Map<string, number>();
+  // Optional external id allocator. When RoutingStore (TranscriptRuntime)
+  // holds per-session stores, multiple stores would otherwise mint id=1, 2,
+  // ... in parallel, so cross-store lookups by id (getEventById, mergeEventPayload)
+  // can return the wrong session's event. Sharing a single allocator across
+  // every per-session store makes ids globally unique within the runtime.
+  private idAllocator: (() => number) | null;
+
+  constructor(idAllocator?: () => number) {
+    this.idAllocator = idAllocator ?? null;
+  }
 
   async insertEvent(event: Omit<TranscriptEvent, 'id'>): Promise<TranscriptEvent> {
-    const inserted: TranscriptEvent = { ...event, id: this.nextId++ };
+    const id = this.idAllocator ? this.idAllocator() : this.nextId++;
+    const inserted: TranscriptEvent = { ...event, id };
     this.events.push(inserted);
     const current = this.sequenceBySession.get(event.sessionId) ?? 0;
     if (event.sequence >= current) {

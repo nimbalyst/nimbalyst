@@ -2841,7 +2841,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                 </button>
                 <button
                   onClick={handleReloadFromDisk}
-                  className="py-2 px-4 bg-nim-primary border-none rounded text-white cursor-pointer"
+                  className="py-2 px-4 bg-nim-primary border-none rounded text-nim-on-primary cursor-pointer"
                 >
                   Reload from Disk
                 </button>

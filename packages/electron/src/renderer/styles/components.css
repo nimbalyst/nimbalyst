@@ -101,7 +101,7 @@
   cursor: pointer;
   transition: all 0.2s;
   border: none;
-  color: white;
+  color: var(--nim-on-primary);
   background: var(--nim-primary);
 }
 
@@ -263,7 +263,7 @@
 
 /* Colored badges */
 .nim-badge-primary {
-  color: white;
+  color: var(--nim-on-primary);
   background: var(--nim-primary);
 }
 

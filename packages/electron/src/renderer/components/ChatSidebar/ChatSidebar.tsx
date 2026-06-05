@@ -336,7 +336,7 @@ export const ChatSidebar = forwardRef<ChatSidebarRef, ChatSidebarProps>(({
             </button>
           )}
           <button
-            className="chat-sidebar-new-button flex items-center gap-1 px-3 py-1.5 rounded-md text-[0.8125rem] font-medium bg-nim-primary text-white border-none cursor-pointer transition-opacity duration-150 hover:opacity-90"
+            className="chat-sidebar-new-button flex items-center gap-1 px-3 py-1.5 rounded-md text-[0.8125rem] font-medium bg-nim-primary text-nim-on-primary border-none cursor-pointer transition-opacity duration-150 hover:opacity-90"
             onClick={handleNewSession}
             title="Start new conversation"
           >

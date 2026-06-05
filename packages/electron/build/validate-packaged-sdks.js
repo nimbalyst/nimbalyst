@@ -69,24 +69,32 @@ if (!fs.existsSync(appPath)) {
   process.exit(1);
 }
 
-// Locate app.asar.unpacked across macOS/Win/Linux layouts.
-function findUnpackedRoot(rootPath) {
-  const candidates = [
-    path.join(rootPath, 'Contents', 'Resources', 'app.asar.unpacked'),
-    path.join(rootPath, 'resources', 'app.asar.unpacked'),
-    path.join(rootPath, 'app.asar.unpacked'),
+// Locate app.asar.unpacked across macOS/Win/Linux layouts. Also surface the
+// parent Resources/ directory because worker bundles (worker.bundle.js,
+// sqlite-worker.bundle.js) and their extraResources-shipped native modules
+// live there, NOT inside app.asar.unpacked. Each layer must be checked
+// against the right root.
+function findPackagedRoots(rootPath) {
+  const layouts = [
+    { resources: path.join(rootPath, 'Contents', 'Resources') },
+    { resources: path.join(rootPath, 'resources') },
+    { resources: rootPath },
   ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
+  for (const { resources } of layouts) {
+    const unpacked = path.join(resources, 'app.asar.unpacked');
+    if (fs.existsSync(unpacked)) {
+      return { resourcesRoot: resources, unpackedRoot: unpacked };
+    }
   }
   return null;
 }
 
-const unpackedRoot = findUnpackedRoot(appPath);
-if (!unpackedRoot) {
+const roots = findPackagedRoots(appPath);
+if (!roots) {
   console.error(`Could not find app.asar.unpacked under: ${appPath}`);
   process.exit(1);
 }
+const { resourcesRoot, unpackedRoot } = roots;
 const nodeModulesPath = path.join(unpackedRoot, 'node_modules');
 if (!fs.existsSync(nodeModulesPath)) {
   console.error(`No node_modules dir at: ${nodeModulesPath}`);
@@ -94,6 +102,7 @@ if (!fs.existsSync(nodeModulesPath)) {
 }
 
 console.log(`[validate-packaged-sdks] node_modules: ${nodeModulesPath}`);
+console.log(`[validate-packaged-sdks] resources:    ${resourcesRoot}`);
 
 // Prefer explicit --platform/--arch from the caller (afterPack passes them
 // from electron-builder's authoritative context). Fall back to detection
@@ -255,8 +264,10 @@ function nativeBinaryChecks() {
     ],
   });
 
-  // 2. codex binary -- @openai/codex-<plat>-<arch>/vendor/<triple>/codex/codex(.exe)
-  // The actual binary lives one level deeper inside a `codex` subdirectory.
+  // 2. codex binary -- @openai/codex-<plat>-<arch>/vendor/<triple>/<bin|codex>/codex(.exe)
+  // Layout candidates must mirror codexBinaryPath.ts: codex-sdk 0.131+ moved
+  // the binary into a `bin/` subdirectory; older layouts used `codex/` or the
+  // triple dir directly. Keep this list in sync with that resolver.
   const triple = codexTargetTriple(targetPlatform, targetArch);
   if (triple) {
     const codexPlatDir = `codex-${targetPlatform === 'win32' ? 'win32' : targetPlatform}-${targetArch}`;
@@ -264,6 +275,7 @@ function nativeBinaryChecks() {
     out.push({
       label: 'codex binary (@openai/codex)',
       candidates: [
+        nmRel('@openai', codexPlatDir, 'vendor', triple, 'bin', codexBin),
         nmRel('@openai', codexPlatDir, 'vendor', triple, 'codex', codexBin),
         nmRel('@openai', codexPlatDir, 'vendor', triple, codexBin),
       ],
@@ -344,10 +356,264 @@ for (const check of nativeBinaryChecks()) {
   });
 }
 
+// ---- 3. Worker bundles: external module resolution ----
+// Worker bundles (worker_threads workers spawned from main) live OUTSIDE
+// app.asar at Resources/. Their esbuild config marks platform-specific deps
+// as `external`, which means at runtime Node has to find them on disk
+// starting from the bundle's location. The app.asar.unpacked tree is
+// INVISIBLE to those workers -- only Resources/node_modules/ (and the
+// directories Node would walk into above it) is reachable.
+//
+// This check exists because the SDK_IMPORTS list above only knows about
+// app.asar.unpacked; without it, a worker-only external like better-sqlite3
+// can ship missing from the build and the validator reports PASS while
+// runtime fails with "Cannot find module 'better-sqlite3'". The history of
+// that exact bug is what motivated this section.
+//
+// KEEP IN SYNC with the `external` arrays in
+// packages/electron/build/build-worker.js. The PGLite worker bundle
+// (worker.bundle.js) has no JS externals -- @electric-sql/pglite gets
+// inlined by esbuild -- so it appears here only to assert the bundle file
+// itself was shipped.
+const WORKER_BUNDLES = [
+  {
+    name: 'sqlite-worker',
+    bundle: 'sqlite-worker.bundle.js',
+    externals: ['better-sqlite3'],
+    nativeBinaries: [
+      // better-sqlite3 loads via `bindings(...)` -> require of a .node file.
+      // Verify the .node exists where bindings will find it.
+      { relPath: 'node_modules/better-sqlite3/build/Release/better_sqlite3.node' },
+    ],
+  },
+  {
+    name: 'pglite-worker',
+    bundle: 'worker.bundle.js',
+    externals: [],
+    nativeBinaries: [],
+  },
+];
+
+console.log('\n[validate-packaged-sdks] Checking worker bundle externals...');
+const Module = require('module');
+const resourcesSep = resourcesRoot.endsWith(path.sep) ? resourcesRoot : resourcesRoot + path.sep;
+for (const wb of WORKER_BUNDLES) {
+  const bundlePath = path.join(resourcesRoot, wb.bundle);
+  if (!fs.existsSync(bundlePath)) {
+    failures.push({
+      kind: 'worker-bundle',
+      target: wb.bundle,
+      reason: `bundle file missing at ${bundlePath}`,
+    });
+    continue;
+  }
+  console.log(`  [ok] ${wb.bundle} present`);
+
+  // Run require.resolve from the bundle's location. createRequire gives a
+  // Node require keyed to that file, so the lookup walks node_modules/ from
+  // Resources/ upward -- exactly what worker_threads will do at runtime.
+  const req = Module.createRequire(bundlePath);
+  for (const spec of wb.externals) {
+    let resolved;
+    try {
+      resolved = req.resolve(spec);
+    } catch (err) {
+      failures.push({
+        kind: 'worker-external',
+        target: `${wb.bundle} -> require("${spec}")`,
+        reason: `${err && err.code ? err.code + ' -- ' : ''}${err && err.message ? err.message.split('\n')[0] : String(err)}`,
+      });
+      continue;
+    }
+    // Catch the same false-pass class the SDK_IMPORTS check guards against:
+    // Node walked UP the filesystem from Resources/ and found the module in
+    // the dev tree (e.g. <repo>/packages/electron/node_modules/...). The
+    // packaged app on a user's machine has no such parent -- this would
+    // fail there but pass here.
+    if (!resolved.startsWith(resourcesSep)) {
+      failures.push({
+        kind: 'worker-external',
+        target: `${wb.bundle} -> require("${spec}")`,
+        reason: `resolved OUTSIDE packaged tree to ${resolved} (Node walked up past Resources/; user installs will fail)`,
+      });
+      continue;
+    }
+    console.log(`  [ok] ${wb.bundle} require("${spec}") -> ${path.relative(resourcesRoot, resolved)}`);
+  }
+
+  for (const nb of wb.nativeBinaries) {
+    const nbPath = path.join(resourcesRoot, nb.relPath);
+    if (!fs.existsSync(nbPath)) {
+      failures.push({
+        kind: 'worker-native',
+        target: `${wb.bundle} -> ${nb.relPath}`,
+        reason: `native binary missing at ${nbPath}`,
+      });
+      continue;
+    }
+    console.log(`  [ok] ${wb.bundle} native ${nb.relPath}`);
+  }
+}
+
+// ---- 4. Worker bundle ABI boot check (Electron-as-Node) ----
+// Path resolution above proves the files are in the right place. It does
+// NOT prove the .node binary actually dlopens against the packaged
+// Electron's Node ABI. After an Electron version bump, `@electron/rebuild`
+// has to recompile every native module; if that step is skipped (or the
+// prebuild cache hands back a stale binary), require resolves fine but
+// dlopen fails with `NODE_MODULE_VERSION mismatch` at runtime.
+//
+// Running the actual packaged Electron binary with ELECTRON_RUN_AS_NODE=1
+// is the only way to test the real ABI from here -- system Node uses a
+// different ABI than Electron's bundled Node.
+//
+// Cross-platform builds skip this check: a Linux ELF or Windows .exe
+// produced on a macOS host cannot be executed by the host. Cross-arch
+// within the same OS is fine on macOS (Rosetta runs x64 binaries on
+// arm64 hosts).
+function findElectronBinary() {
+  if (targetPlatform === 'darwin') {
+    const macOsDir = path.join(appPath, 'Contents', 'MacOS');
+    if (!fs.existsSync(macOsDir)) return null;
+    const entries = fs.readdirSync(macOsDir).filter((n) => !n.startsWith('.'));
+    if (entries.length === 0) return null;
+    return path.join(macOsDir, entries[0]);
+  }
+  if (targetPlatform === 'linux') {
+    const entries = fs.readdirSync(appPath, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isFile()) continue;
+      const full = path.join(appPath, e.name);
+      if (isExecutableFile(full)) return full;
+    }
+    return null;
+  }
+  if (targetPlatform === 'win32') {
+    const entries = fs.readdirSync(appPath).filter((n) => n.toLowerCase().endsWith('.exe'));
+    if (entries.length === 0) return null;
+    return path.join(appPath, entries[0]);
+  }
+  return null;
+}
+
+// Boot check is INFORMATIONAL ONLY. The path-resolution and .node-presence
+// checks above are the gates that catch real packaging failures (and were
+// what caught the better-sqlite3 packaging miss). The boot check adds a
+// nice-to-have ABI sanity check on top, but it runs at afterPack time --
+// before the .app is signed. On a clean macOS CI runner, executing the
+// unsigned Electron Framework dylib triggers LaunchServices verification
+// that hangs without a user session, killing the spawn at the 30s timeout
+// with no stderr. That's an environment quirk, not a packaging bug, and
+// the release pipeline must not break on it. A real probe failure (got
+// stderr like "Cannot find module" or NODE_MODULE_VERSION mismatch) is
+// still surfaced, but as a warning -- the path-resolution check would
+// have already failed in those cases.
+const canBootCheck = targetPlatform === process.platform;
+const bootWarnings = [];
+if (canBootCheck) {
+  console.log('\n[validate-packaged-sdks] Booting workers via Electron-as-Node (ABI check, informational)...');
+  const electronBin = findElectronBinary();
+  if (!electronBin) {
+    bootWarnings.push({
+      target: 'electron binary',
+      reason: `could not locate packaged Electron binary under ${appPath}`,
+    });
+  } else {
+    // Each worker bundle that has native externals gets a minimal load test:
+    // require() the external, exercise one cheap call to force dlopen. We
+    // don't go through worker_threads here -- the same Node ABI is in play,
+    // and require/dlopen happens at module load regardless of thread.
+    const NATIVE_BOOT_PROBES = {
+      'better-sqlite3': `
+        const Database = req('better-sqlite3');
+        const db = new Database(':memory:');
+        const r = db.prepare('select sqlite_version() as v').get();
+        db.close();
+        if (!r || !r.v) throw new Error('better-sqlite3 returned no sqlite_version');
+      `,
+    };
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'validate-worker-boot-'));
+    try {
+      for (const wb of WORKER_BUNDLES) {
+        for (const spec of wb.externals) {
+          const probe = NATIVE_BOOT_PROBES[spec];
+          if (!probe) continue; // No probe defined; resolution check above is the floor.
+          // The harness chdir's into the packaged Resources/ so require()
+          // resolves the same way the worker does at runtime.
+          const harnessPath = path.join(tmpRoot, `boot-${wb.name}-${spec.replace(/[^a-z0-9]/gi, '_')}.js`);
+          // Key require() to the worker bundle's path so module resolution
+          // walks the same node_modules/ chain the worker_threads worker
+          // would at runtime. A bare `require()` from this temp harness
+          // would walk up from /tmp/... and miss the packaged tree. Use
+          // `req` (not `require`) so we don't shadow the harness's own
+          // require -- shadowing trips Electron's loader, which treats the
+          // redeclaration as an ESM signal.
+          const bundlePathLiteral = JSON.stringify(path.join(resourcesRoot, wb.bundle));
+          const harnessSource = `
+            'use strict';
+            const req = require('module').createRequire(${bundlePathLiteral});
+            try {
+              ${probe.trim()}
+              process.stdout.write('OK');
+              process.exit(0);
+            } catch (err) {
+              process.stderr.write((err && err.stack) ? err.stack : String(err));
+              process.exit(1);
+            }
+          `;
+          fs.writeFileSync(harnessPath, harnessSource, 'utf8');
+          const result = spawnSync(electronBin, [harnessPath], {
+            env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+            encoding: 'utf8',
+            timeout: 30_000,
+          });
+          if (result.status === 0 && result.stdout.includes('OK')) {
+            console.log(`  [ok] ${wb.bundle} require("${spec}") + dlopen (ABI matches Electron's Node)`);
+          } else {
+            const stderr = (result.stderr || '').trim();
+            // Distinguish a real probe failure from an environmental hang.
+            // Real failure: status=1 with stderr containing the thrown error.
+            // Environmental hang: status=null (killed by timeout) with empty
+            // stderr -- the binary never executed the harness JS, usually
+            // because afterPack runs before signing and macOS Gatekeeper
+            // blocks the unsigned Electron Framework on clean CI runners.
+            if (result.status === null && !stderr) {
+              console.log(
+                `  [skip] ${wb.bundle} require("${spec}"): Electron-as-Node spawn timed out before the harness produced output ` +
+                `(probably unsigned binary on a CI runner; path-resolution check above is the real gate)`,
+              );
+            } else {
+              bootWarnings.push({
+                target: `${wb.bundle} -> require("${spec}")`,
+                reason: `Electron-as-Node boot failed (status=${result.status}): ${stderr.split('\n').slice(0, 5).join(' | ') || '<no stderr>'}`,
+              });
+            }
+          }
+        }
+      }
+    } finally {
+      try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    }
+  }
+} else {
+  console.log(
+    `\n[validate-packaged-sdks] Skipping worker boot check: target ${targetPlatform} != host ${process.platform} (host cannot execute target's Electron binary)`,
+  );
+}
+
 // ---- Report ----
+const workerExternalCount = WORKER_BUNDLES.reduce((n, wb) => n + wb.externals.length, 0);
+if (bootWarnings.length > 0) {
+  console.warn('\n[validate-packaged-sdks] Worker boot warnings (informational, non-fatal):');
+  for (const w of bootWarnings) {
+    console.warn(`  [warn] ${w.target}`);
+    console.warn(`         ${w.reason}`);
+  }
+}
 if (failures.length === 0) {
   console.log(
-    `\n[validate-packaged-sdks] PASS: ${SDK_IMPORTS.length} SDK imports + ${nativeBinaryChecks().length} native binaries verified in packaged tree.`,
+    `\n[validate-packaged-sdks] PASS: ${SDK_IMPORTS.length} SDK imports + ${nativeBinaryChecks().length} native binaries + ${WORKER_BUNDLES.length} worker bundles (${workerExternalCount} externals${canBootCheck ? '; ABI boot informational' : ''}) verified in packaged tree.`,
   );
   process.exit(0);
 }

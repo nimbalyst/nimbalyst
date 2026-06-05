@@ -140,6 +140,53 @@ describe('PGLiteSessionStore JSON-column read normalization', () => {
     expect(session?.lastDocumentState).toEqual({ version: 2 });
   });
 
+  // Regression: a session whose AskUserQuestion / GitCommitProposal /
+  // ExitPlanMode / ToolPermission / PromptForUserInput prompt was open at
+  // the time of a renderer reload could end up with
+  // sessionHasPendingInteractivePromptAtom stuck `true`, because the only
+  // recovery was a runtime resolve event the new renderer never saw. The
+  // fix persists the bit to `metadata.hasPendingPrompt` and surfaces it as
+  // `hasPendingInteractivePrompt` so the renderer rehydrates BOTH true and
+  // false from the DB on session list refresh.
+  it('list() surfaces hasPendingInteractivePrompt from metadata.hasPendingPrompt', async () => {
+    const db = {
+      query: vi.fn(async () => ({
+        rows: [
+          {
+            ...makeRow({
+              id: 'with-pending',
+              metadata: '{"hasPendingPrompt":true}',
+            }),
+            child_count: 0,
+            effective_updated_at: new Date(0),
+          },
+          {
+            ...makeRow({
+              id: 'without-pending',
+              metadata: '{"hasPendingPrompt":false}',
+            }),
+            child_count: 0,
+            effective_updated_at: new Date(0),
+          },
+          {
+            ...makeRow({
+              id: 'missing-field',
+              metadata: '{}',
+            }),
+            child_count: 0,
+            effective_updated_at: new Date(0),
+          },
+        ],
+      })),
+    };
+    const store = createPGLiteSessionStore(db as any);
+    const list = await store.list('/ws');
+    const findById = (id: string) => list.find((s) => s.id === id) as any;
+    expect(findById('with-pending').hasPendingInteractivePrompt).toBe(true);
+    expect(findById('without-pending').hasPendingInteractivePrompt).toBe(false);
+    expect(findById('missing-field').hasPendingInteractivePrompt).toBe(false);
+  });
+
   it('list() returns metadata-derived fields (tags, phase, hasUnread) from JSON-string metadata', async () => {
     const db = {
       query: vi.fn(async () => ({

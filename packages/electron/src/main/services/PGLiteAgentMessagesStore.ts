@@ -41,9 +41,10 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
       try {
         await db.query(
           `INSERT INTO ai_agent_messages (
-            session_id, source, direction, content, metadata, hidden, created_at, provider_message_id, searchable
+            session_id, source, direction, content, metadata, hidden, created_at, provider_message_id, searchable,
+            searchable_text, message_kind
           ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
           )`,
           [
             message.sessionId,
@@ -55,6 +56,8 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
             timestamp,
             message.providerMessageId ?? null,
             message.searchable ?? false,
+            message.searchableText ?? null,
+            message.messageKind ?? null,
           ]
         );
 
@@ -100,7 +103,7 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
           : new Date(message.createdAt);
 
         rowPlaceholders.push(
-          `($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}, $${paramIdx + 6}, $${paramIdx + 7}, $${paramIdx + 8})`
+          `($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}, $${paramIdx + 6}, $${paramIdx + 7}, $${paramIdx + 8}, $${paramIdx + 9}, $${paramIdx + 10})`
         );
         rowValues.push(
           message.sessionId,
@@ -112,8 +115,10 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
           timestamp,
           message.providerMessageId ?? null,
           message.searchable ?? false,
+          message.searchableText ?? null,
+          message.messageKind ?? null,
         );
-        paramIdx += 9;
+        paramIdx += 11;
 
         const prev = latestPerSession.get(message.sessionId);
         if (!prev || timestamp.getTime() > prev.getTime()) {
@@ -126,7 +131,8 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
       try {
         await db.query(
           `INSERT INTO ai_agent_messages (
-            session_id, source, direction, content, metadata, hidden, created_at, provider_message_id, searchable
+            session_id, source, direction, content, metadata, hidden, created_at, provider_message_id, searchable,
+            searchable_text, message_kind
           ) VALUES ${rowPlaceholders.join(', ')}`,
           rowValues
         );

@@ -84,7 +84,7 @@
 .datamodel-toolbar-button-primary {
   background-color: var(--nim-primary);
   border-color: var(--nim-primary);
-  color: white;
+  color: var(--nim-on-primary);
 }
 
 .datamodel-toolbar-button-primary:hover {
@@ -127,7 +127,7 @@
 
 .datamodel-view-mode-button.active {
   background-color: var(--nim-primary);
-  color: white;
+  color: var(--nim-on-primary);
 }
 
 .datamodel-toolbar-stats {
@@ -498,7 +498,7 @@
 .datamodel-edge-label-selected {
   border-color: var(--nim-primary);
   background-color: var(--nim-primary);
-  color: white;
+  color: var(--nim-on-primary);
 }
 
 /* ============================================================================

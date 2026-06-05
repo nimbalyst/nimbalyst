@@ -259,7 +259,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
           return (
             <HelpTooltip key={button.id} testId={testId} placement="right">
               <button
-                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${contentMode === button.contentMode && !activeExtensionPanel ? 'active bg-nim-primary text-white hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${contentMode === button.contentMode && !activeExtensionPanel ? 'active bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
                 onClick={() => {
                   // Clear any active fullscreen extension panel when switching to a content mode
                   onExtensionPanelChange?.(null);
@@ -299,7 +299,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
           return (
             <HelpTooltip key={button.id} testId={testId} placement="right">
               <button
-                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${contentMode === button.contentMode && !activeExtensionPanel ? 'active bg-nim-primary text-white hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${contentMode === button.contentMode && !activeExtensionPanel ? 'active bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
                 onClick={() => {
                   // Clear any active fullscreen extension panel when switching to a content mode
                   onExtensionPanelChange?.(null);
@@ -338,7 +338,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
           return (
             <HelpTooltip key={button.id} testId={testId} placement="right">
               <button
-                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${contentMode === button.contentMode && !activeExtensionPanel ? 'active bg-nim-primary text-white hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${contentMode === button.contentMode && !activeExtensionPanel ? 'active bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
                 onClick={() => {
                   // Clear any active fullscreen extension panel when switching to a content mode
                   onExtensionPanelChange?.(null);
@@ -367,7 +367,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
             return (
               <HelpTooltip key={button.id} testId={testId} placement="right">
                 <button
-                  className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${contentMode === button.contentMode && !activeExtensionPanel ? 'active bg-nim-primary text-white hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+                  className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${contentMode === button.contentMode && !activeExtensionPanel ? 'active bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
                   onClick={() => {
                     // Clear any active fullscreen extension panel when switching to a content mode
                     onExtensionPanelChange?.(null);
@@ -401,7 +401,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
             .map((panel) => (
               <button
                 key={panel.id}
-                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${activeExtensionPanel === panel.id ? 'active bg-nim-primary text-white hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${activeExtensionPanel === panel.id ? 'active bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
                 onClick={() => {
                   const newPanelId = activeExtensionPanel === panel.id ? null : panel.id;
                   onExtensionPanelChange?.(newPanelId);
@@ -455,7 +455,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
             .map((panel) => (
               <button
                 key={panel.id}
-                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${activeExtensionPanel === panel.id ? 'active bg-nim-primary text-white hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${activeExtensionPanel === panel.id ? 'active bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
                 onClick={() => {
                   // Toggle panel: if clicking active panel, deactivate it
                   const newPanelId = activeExtensionPanel === panel.id ? null : panel.id;
@@ -502,7 +502,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
           return (
             <HelpTooltip key={button.id} testId={testId} placement="right">
               <button
-                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${isActive ? 'active bg-nim-primary text-white hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${isActive ? 'active bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
                 onClick={() => handleButtonClick(button)}
                 aria-label={button.label}
                 data-testid={testId}
@@ -518,7 +518,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
           return (
             <HelpTooltip key={panel.id} testId={testId} placement="right">
               <button
-                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${isActive ? 'active bg-nim-primary text-white hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+                className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${isActive ? 'active bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
                 onClick={() => {
                   const newPanelId = isActive ? null : panel.id;
                   onExtensionBottomPanelChange?.(newPanelId);

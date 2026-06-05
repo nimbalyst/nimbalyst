@@ -542,7 +542,7 @@ export const ProjectTrustToast: React.FC<ProjectTrustToastProps> = ({
               Cancel
             </button>
             <button
-              className="project-trust-toast-save text-sm font-medium px-4 py-2 rounded-md cursor-pointer transition-all duration-150 disabled:opacity-70 disabled:cursor-not-allowed hover:brightness-110 bg-nim-primary border-none text-white"
+              className="project-trust-toast-save text-sm font-medium px-4 py-2 rounded-md cursor-pointer transition-all duration-150 disabled:opacity-70 disabled:cursor-not-allowed hover:brightness-110 bg-nim-primary border-none text-nim-on-primary"
               onClick={handleSave}
               disabled={isSubmitting}
             >

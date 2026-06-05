@@ -1268,7 +1268,7 @@ async function doRefreshSession(serverUrl?: string): Promise<boolean> {
     .replace(/\/$/, '');
 
   try {
-    logger.main.info('[StytchAuthService] Refreshing session...');
+    // logger.main.info('[StytchAuthService] Refreshing session...');
 
     let response: Response;
     try {
@@ -1369,7 +1369,7 @@ async function doRefreshSession(serverUrl?: string): Promise<boolean> {
       saveAllAccounts();
     }
 
-    logger.main.info('[StytchAuthService] Session refreshed successfully');
+    // logger.main.info('[StytchAuthService] Session refreshed successfully');
     return true;
   } catch (error) {
     // Re-throw network errors so callers can distinguish them from auth failures
@@ -1558,4 +1558,3 @@ export async function switchStytchEnvironment(_environment: 'development' | 'pro
 
   logger.main.info('[StytchAuthService] Reinitialized with projectId:', config.projectId);
 }
-

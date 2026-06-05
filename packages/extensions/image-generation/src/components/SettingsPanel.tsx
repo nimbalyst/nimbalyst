@@ -145,7 +145,7 @@ export function ImageGenerationSettings({ storage, theme }: SettingsPanelProps) 
         <button
           onClick={handleSave}
           disabled={isSaving || !apiKey.trim()}
-          className={`px-4 py-2 rounded-md border-none font-medium text-sm ${apiKey.trim() ? 'bg-nim-primary text-white cursor-pointer' : 'bg-nim-secondary text-nim-muted cursor-not-allowed'}`}
+          className={`px-4 py-2 rounded-md border-none font-medium text-sm ${apiKey.trim() ? 'bg-nim-primary text-nim-on-primary cursor-pointer' : 'bg-nim-secondary text-nim-muted cursor-not-allowed'}`}
         >
           {isSaving ? 'Saving...' : 'Save'}
         </button>

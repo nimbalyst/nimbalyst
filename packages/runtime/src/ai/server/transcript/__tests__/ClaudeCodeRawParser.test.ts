@@ -715,6 +715,110 @@ describe('ClaudeCodeRawParser', () => {
       });
     });
 
+    // Regression: when the commit proposal widget posts back its result, the
+    // response row lives in ai_agent_messages as { type: 'git_commit_proposal_response' }
+    // with source='nimbalyst'. Without parser support the canonical tool_call
+    // event for developer_git_commit_proposal stays at status='running' /
+    // result=undefined, and the widget renders as "pending" forever even after
+    // a successful commit. See session cb82f2eb-941c-4fb5-b552-adbae567df61.
+    describe('git_commit_proposal_response', () => {
+      it('emits tool_call_completed with structured result for a committed response', async () => {
+        const parser = new ClaudeCodeRawParser();
+        const msg = makeRawMessage({
+          source: 'nimbalyst',
+          content: JSON.stringify({
+            type: 'git_commit_proposal_response',
+            proposalId: 'toolu_proposal_1',
+            action: 'committed',
+            commitHash: '0b02b2301eecf073c716f8f0da43d458a611c568',
+            commitDate: '2026-06-01T17:00:20-04:00',
+            filesCommitted: ['packages/electron/build/build-worker.js'],
+            commitMessage: 'fix: SQLite migration adopt crash in packaged builds',
+            respondedAt: 1780347621666,
+            respondedBy: 'desktop',
+          }),
+        });
+
+        const context = makeContext({
+          hasToolCall: (id) => id === 'toolu_proposal_1',
+        });
+        const descriptors = await parser.parseMessage(msg, context);
+
+        expect(descriptors).toHaveLength(1);
+        const completed = descriptors[0] as any;
+        expect(completed.type).toBe('tool_call_completed');
+        expect(completed.providerToolCallId).toBe('toolu_proposal_1');
+        expect(completed.status).toBe('completed');
+        expect(completed.isError).toBe(false);
+        const parsedResult = JSON.parse(completed.result);
+        expect(parsedResult.action).toBe('committed');
+        expect(parsedResult.commitHash).toBe('0b02b2301eecf073c716f8f0da43d458a611c568');
+        expect(parsedResult.filesCommitted).toEqual(['packages/electron/build/build-worker.js']);
+      });
+
+      it('emits tool_call_completed with status=error for an error response', async () => {
+        const parser = new ClaudeCodeRawParser();
+        const msg = makeRawMessage({
+          source: 'nimbalyst',
+          content: JSON.stringify({
+            type: 'git_commit_proposal_response',
+            proposalId: 'toolu_proposal_2',
+            action: 'error',
+            error: 'No files were staged. The files may not exist or have no changes.',
+            respondedAt: 1780347829579,
+            respondedBy: 'desktop',
+          }),
+        });
+
+        const context = makeContext({
+          hasToolCall: (id) => id === 'toolu_proposal_2',
+        });
+        const descriptors = await parser.parseMessage(msg, context);
+
+        expect(descriptors).toHaveLength(1);
+        const completed = descriptors[0] as any;
+        expect(completed.type).toBe('tool_call_completed');
+        expect(completed.providerToolCallId).toBe('toolu_proposal_2');
+        expect(completed.status).toBe('error');
+        expect(completed.isError).toBe(true);
+      });
+
+      it('does not overwrite an existing committed result with a later error response', async () => {
+        // Mirrors session cb82f2eb where a second error response arrived ~3
+        // minutes after a successful commit (e.g. duplicate click). The committed
+        // outcome must win so the widget keeps showing the commit hash.
+        const parser = new ClaudeCodeRawParser();
+        const msg = makeRawMessage({
+          source: 'nimbalyst',
+          content: JSON.stringify({
+            type: 'git_commit_proposal_response',
+            proposalId: 'toolu_proposal_3',
+            action: 'error',
+            error: 'No files were staged.',
+          }),
+        });
+
+        const existingCommittedEvent = {
+          id: 42,
+          payload: {
+            result: JSON.stringify({
+              action: 'committed',
+              commitHash: 'abc123',
+            }),
+          },
+        } as any;
+
+        const context = makeContext({
+          hasToolCall: (id) => id === 'toolu_proposal_3',
+          findByProviderToolCallId: async (id) =>
+            id === 'toolu_proposal_3' ? existingCommittedEvent : null,
+        });
+        const descriptors = await parser.parseMessage(msg, context);
+
+        expect(descriptors).toHaveLength(0);
+      });
+    });
+
     it('uses args.subagent_type for the subagent agentType', async () => {
       const parser = new ClaudeCodeRawParser();
       const msg = makeRawMessage({

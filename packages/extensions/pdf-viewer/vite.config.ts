@@ -59,6 +59,16 @@ export default defineConfig({
         'react-dom',
         'react/jsx-runtime',
         'react/jsx-dev-runtime',
+        // Host-provided singletons — must NOT be bundled. Bundling
+        // @nimbalyst/runtime drags in @anthropic-ai/sdk, whose agent-toolset
+        // imports Node built-ins (node:crypto/node:path) that break the
+        // browser build. Mirrors the canonical extension externals.
+        'lexical',
+        /^@lexical\//,
+        /^@nimbalyst\/runtime/,
+        '@nimbalyst/editor-context',
+        'yjs',
+        /^y-protocols(\/.*)?$/,
         'pdfjs-dist',
         'virtua',
       ],

@@ -6,6 +6,7 @@ import {
   getTheme,
   hasTheme,
   onThemesChanged,
+  getThemesWithMonacoDefinition,
 } from '../registry';
 
 describe('theme registry: extension contributions', () => {
@@ -100,6 +101,49 @@ describe('theme registry: extension contributions', () => {
     expect(b?.name).toBe('Shared Two');
     expect(a?.colors.primary).toBe('#ff0000');
     expect(b?.colors.primary).toBe('#00ff00');
+  });
+
+  it('carries Monaco theme definition through registration', () => {
+    const unregister = registerThemeContribution(TEST_EXT, {
+      id: 'mono-test',
+      name: 'Mono Test',
+      isDark: true,
+      colors: { bg: '#101020' },
+      monaco: {
+        base: 'vs-dark',
+        rules: [
+          { token: 'comment', foreground: '808080', fontStyle: 'italic' },
+          { token: 'keyword', foreground: 'ff79c6' },
+        ],
+        colors: {
+          'editor.background': '#101020',
+          'editor.foreground': '#eeeeee',
+        },
+      },
+    });
+    cleanups.push(unregister);
+
+    const theme = getTheme(`${TEST_EXT}:mono-test`);
+    expect(theme?.monaco).toBeDefined();
+    expect(theme?.monaco?.base).toBe('vs-dark');
+    expect(theme?.monaco?.rules).toHaveLength(2);
+    expect(theme?.monaco?.colors['editor.background']).toBe('#101020');
+
+    const withMonaco = getThemesWithMonacoDefinition();
+    expect(withMonaco.some(t => t.id === `${TEST_EXT}:mono-test`)).toBe(true);
+  });
+
+  it('omits themes without a Monaco block from getThemesWithMonacoDefinition', () => {
+    const unregister = registerThemeContribution(TEST_EXT, {
+      id: 'no-monaco',
+      name: 'No Monaco',
+      isDark: false,
+      colors: { bg: '#ffffff' },
+    });
+    cleanups.push(unregister);
+
+    const withMonaco = getThemesWithMonacoDefinition();
+    expect(withMonaco.some(t => t.id === `${TEST_EXT}:no-monaco`)).toBe(false);
   });
 
   it('derives table/code colors from extension overrides when not provided', () => {

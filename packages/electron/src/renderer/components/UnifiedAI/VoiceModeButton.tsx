@@ -490,7 +490,7 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
             isVoiceActive && isSleeping
               ? 'bg-[#92400e] text-[#fbbf24] hover:bg-[#78350f]'
               : isVoiceActive
-                ? 'active bg-nim-primary text-white hover:bg-nim-primary-hover'
+                ? 'active bg-nim-primary text-nim-on-primary hover:bg-nim-primary-hover'
                 : error
                   ? 'bg-nim-error text-white'
                   : isDisabled

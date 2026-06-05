@@ -307,6 +307,9 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
       } else if (parsed.type === 'nimbalyst_tool_use') {
         const nimbalystDescriptors = await this.parseNimbalystToolUse(msg, parsed, context);
         descriptors.push(...nimbalystDescriptors);
+      } else if (parsed.type === 'git_commit_proposal_response' && parsed.proposalId) {
+        const responseDescriptors = await this.parseGitCommitProposalResponse(parsed, context);
+        descriptors.push(...responseDescriptors);
       } else if (parsed.type === 'nimbalyst_tool_result') {
         const result = this.parseToolResult({
           tool_use_id: parsed.tool_use_id || parsed.id,
@@ -509,6 +512,52 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
       arguments: args,
       providerToolCallId: parsed.id ?? null,
       createdAt: msg.createdAt,
+    }];
+  }
+
+  // Persisted by SessionHandlers when the user resolves the commit proposal
+  // widget. Without this branch the canonical tool_call event for
+  // developer_git_commit_proposal never receives a completion descriptor, so
+  // the widget keeps rendering "pending" after a successful commit. A later
+  // error response (e.g. duplicate click after the file is already committed)
+  // must not clobber the prior "committed" outcome.
+  private async parseGitCommitProposalResponse(
+    parsed: any,
+    context: ParseContext,
+  ): Promise<CanonicalEventDescriptor[]> {
+    const proposalId: string = parsed.proposalId;
+    const isCommitted = parsed.action === 'committed';
+
+    if (!isCommitted) {
+      const existing = await context.findByProviderToolCallId(proposalId);
+      const existingResult = (existing?.payload as any)?.result;
+      if (typeof existingResult === 'string') {
+        try {
+          const parsedExisting = JSON.parse(existingResult);
+          if (parsedExisting && parsedExisting.action === 'committed') {
+            return [];
+          }
+        } catch {
+          // existing result not JSON -- fall through and overwrite
+        }
+      }
+    }
+
+    const resultPayload = {
+      action: parsed.action,
+      ...(parsed.commitHash ? { commitHash: parsed.commitHash } : {}),
+      ...(parsed.commitDate ? { commitDate: parsed.commitDate } : {}),
+      ...(parsed.commitMessage ? { commitMessage: parsed.commitMessage } : {}),
+      ...(parsed.filesCommitted ? { filesCommitted: parsed.filesCommitted } : {}),
+      ...(parsed.error ? { error: parsed.error } : {}),
+    };
+
+    return [{
+      type: 'tool_call_completed',
+      providerToolCallId: proposalId,
+      status: isCommitted ? 'completed' : 'error',
+      result: JSON.stringify(resultPayload),
+      isError: !isCommitted,
     }];
   }
 

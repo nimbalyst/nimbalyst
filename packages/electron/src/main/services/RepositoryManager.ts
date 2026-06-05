@@ -10,9 +10,9 @@ import type {
 } from '@nimbalyst/runtime';
 import type { WorkspaceRepository } from '../types/workspace';
 import type { AgentMessagesStore } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
-import { AISessionsRepository, SessionFilesRepository, AgentMessagesRepository, TranscriptEventRepository, TranscriptMigrationRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository, SessionFilesRepository, AgentMessagesRepository, TranscriptMigrationRepository } from '@nimbalyst/runtime';
 import { TranscriptMigrationService } from '@nimbalyst/runtime/ai/server/transcript/TranscriptMigrationService';
-import { createRawMessageStoreAdapter, createSessionMetadataStoreAdapter } from './TranscriptMigrationAdapters';
+import { createRawMessageStoreAdapter } from './TranscriptMigrationAdapters';
 import { createPGLiteSessionStore } from './PGLiteSessionStore';
 import { createPGLiteSessionFileStore } from './PGLiteSessionFileStore';
 import { createPGLiteAgentMessagesStore } from './PGLiteAgentMessagesStore';
@@ -21,7 +21,7 @@ import { createPGLiteWorkspaceRepository } from './PGLiteWorkspaceRepository';
 import { createPGLiteDocumentsRepository } from './PGLiteDocumentsRepository';
 import { createPGLiteQueuedPromptsStore, type QueuedPromptsStore } from './PGLiteQueuedPromptsStore';
 import { createPGLiteSessionWakeupsStore, type SessionWakeupsStore } from './PGLiteSessionWakeupsStore';
-import { createTranscriptEventStore } from './TranscriptEventStore';
+import { runAgentMessagesBackfill } from './AgentMessagesBackfill';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { createSQLiteStoreAdapter } from '../database/sqlite/SQLiteStoreAdapter';
 import { logger } from '../utils/logger';
@@ -139,25 +139,11 @@ class RepositoryManager {
         }
       );
 
-      // Create transcript event store and register with runtime
-      const transcriptEventStore = createTranscriptEventStore(
-        dbAdapter,
-        async () => {
-          if (!database.isInitialized()) {
-            await database.initialize();
-          }
-        }
-      );
-      TranscriptEventRepository.setStore(transcriptEventStore);
-
-      // Create and register transcript migration service
+      // Phase 4 of canonical-transcript-deprecation: canonical events live
+      // in TranscriptRuntime's in-memory per-session MRU cache. There is no
+      // persisted store to register, and no metadata adapter is needed.
       const rawMessageStore = createRawMessageStoreAdapter();
-      const sessionMetadataStore = createSessionMetadataStoreAdapter();
-      const migrationService = new TranscriptMigrationService(
-        rawMessageStore,
-        transcriptEventStore,
-        sessionMetadataStore,
-      );
+      const migrationService = new TranscriptMigrationService(rawMessageStore);
       TranscriptMigrationRepository.setService(migrationService);
 
       // Wire up real-time canonical event notification to renderer windows.
@@ -175,6 +161,14 @@ class RepositoryManager {
 
       this.initialized = true;
       logger.main.info('[RepositoryManager] All repositories initialized successfully');
+
+      // Phase 1C/5 of canonical-transcript-deprecation: backfill
+      // searchable_text/message_kind on existing rows and delete transient
+      // claude-code chunks. Idempotent and run off the critical-path so it
+      // doesn't block startup.
+      void runAgentMessagesBackfill(dbAdapter).catch((err) => {
+        logger.main.error('[RepositoryManager] AgentMessages backfill failed:', err);
+      });
 
       // Subscribe to auth state changes to reinitialize sync when user authenticates
       // This handles the case where Stytch is lazy-initialized after repositories are ready
@@ -363,7 +357,6 @@ class RepositoryManager {
     if (this.agentMessagesStore) {
       AgentMessagesRepository.clearStore();
     }
-    TranscriptEventRepository.clearStore();
     TranscriptMigrationRepository.clearService();
     this.sessionStore = null;
     this.sessionFileStore = null;

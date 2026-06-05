@@ -4,6 +4,10 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## Critical Rules (read first)
 
+### Keep Commit Messages and CHANGELOG Entries Short
+
+**One-sentence commit subject. One-sentence CHANGELOG bullet.** Commit bodies may include short bullets for distinct key changes — one line each, no prose paragraphs, no root-cause explanations unless the diff truly can't explain itself. Match the existing voice in `[Unreleased]` and recent `git log --oneline`. If your draft is longer than the surrounding entries, cut it before submitting.
+
 ### Use @floating-ui/react for All Popover/Tooltip/Menu Positioning
 
 See [floating-ui.md](./.claude/rules/floating-ui.md). Never manually calculate `position: fixed` coordinates — always use `@floating-ui/react` with `FloatingPortal`.
@@ -30,7 +34,11 @@ If you are tempted to add `|| process.env.SOME_API_KEY` as a convenience fallbac
 
 ### Database Access Rules
 
-**NEVER directly open or query the PGLite database files using Node.js or command-line tools.** The database at `~/Library/Application Support/@nimbalyst/electron/pglite-db` uses PID-based locking and can only be safely accessed by one process at a time. Opening it from a second process corrupts it.
+**Nimbalyst currently supports BOTH PGLite and better-sqlite3.** The migration is in progress; both backends are active in the codebase and the user's machine may be running either. Never write code that assumes one backend. Anywhere you touch the database — schema, queries, JSON handling, write paths — read [packages/electron/DATABASE.md](./packages/electron/DATABASE.md) for the divergent behaviors first.
+
+The biggest gotcha: **JSONB sub-extraction (`data->'someKey'`) returns a parsed object on PGLite but a JSON string on SQLite.** Either select the whole `data` column and parse it, or defensively parse the sub-extracted value with the standard `typeof x === 'string' ? JSON.parse(x) : x` idiom. A real bug from this divergence corrupted tracker `labelsMap` rows on 2026-06-02 because `applyRemoteItem` trusted the sub-extraction was already an object.
+
+**NEVER directly open or query the database files using Node.js or command-line tools.** PGLite at `~/Library/Application Support/@nimbalyst/electron/pglite-db` uses PID-based locking; better-sqlite3 takes its own exclusive lock. In both cases, opening from a second process risks corruption.
 
 **ALWAYS use the MCP database query tool instead:**
 - Use `mcp__nimbalyst-extension-dev__database_query` for all database queries

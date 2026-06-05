@@ -147,7 +147,7 @@ export function BottomBar({
         <button
           onClick={handleGenerate}
           disabled={!prompt.trim() || isGenerating}
-          className={`px-5 py-2 border-none rounded-md text-[13px] font-semibold flex items-center gap-2 whitespace-nowrap transition-colors duration-150 ${!prompt.trim() || isGenerating ? 'bg-nim-tertiary text-nim-disabled cursor-not-allowed' : 'bg-nim-primary text-white cursor-pointer hover:bg-nim-primary-hover'}`}
+          className={`px-5 py-2 border-none rounded-md text-[13px] font-semibold flex items-center gap-2 whitespace-nowrap transition-colors duration-150 ${!prompt.trim() || isGenerating ? 'bg-nim-tertiary text-nim-disabled cursor-not-allowed' : 'bg-nim-primary text-nim-on-primary cursor-pointer hover:bg-nim-primary-hover'}`}
         >
           {isGenerating ? 'Generating...' : 'Generate'}
         </button>

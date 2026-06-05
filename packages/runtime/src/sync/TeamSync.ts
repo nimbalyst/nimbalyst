@@ -154,7 +154,7 @@ export class TeamSyncProvider {
 
     ws.addEventListener('open', () => {
       if (this.ws !== ws) return;
-      console.log('[TeamSync] WebSocket connected, requesting team state...');
+      // console.log('[TeamSync] WebSocket connected, requesting team state...');
       this.reconnectAttempt = 0;
       this.setStatus('syncing');
       this.send({ type: 'teamSync' });
@@ -333,7 +333,7 @@ export class TeamSyncProvider {
     }
 
     this.setStatus('connected');
-    console.log('[TeamSync] Team state loaded:', server.members.length, 'members,', documents.length, 'documents');
+    // console.log('[TeamSync] Team state loaded:', server.members.length, 'members,', documents.length, 'documents');
 
     this.config.onTeamStateLoaded?.(this.teamState);
     if (documents.length > 0) {

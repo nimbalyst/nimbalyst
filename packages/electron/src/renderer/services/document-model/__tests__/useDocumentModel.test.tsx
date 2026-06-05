@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import React, { useLayoutEffect } from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render } from '@testing-library/react';

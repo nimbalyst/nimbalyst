@@ -392,10 +392,10 @@ test('CSV editor should not steal focus from quick open dialog', async () => {
 
   // Open quick open with Cmd+O
   await page.keyboard.press('Meta+o');
-  await page.waitForSelector('.quick-open-modal', { timeout: 2000 });
+  await page.waitForSelector('.unified-quick-open-modal', { timeout: 2000 });
 
   // The quick open input should have focus
-  const quickOpenInput = page.locator('.quick-open-search');
+  const quickOpenInput = page.locator('.unified-quick-open-search');
   await expect(quickOpenInput).toBeFocused({ timeout: 1000 });
 
   // Type a search query
@@ -406,7 +406,7 @@ test('CSV editor should not steal focus from quick open dialog', async () => {
   expect(inputValue).toBe('document');
 
   // Verify quick open shows results
-  await expect(page.locator('.quick-open-item')).toBeVisible({ timeout: 2000 });
+  await expect(page.locator('.unified-quick-open-item').first()).toBeVisible({ timeout: 2000 });
 
   // Close quick open
   await page.keyboard.press('Escape');
@@ -426,7 +426,7 @@ test('typing in quick open should not appear in CSV cells', async () => {
 
   // Open quick open
   await page.keyboard.press('Meta+o');
-  await page.waitForSelector('.quick-open-modal', { timeout: 2000 });
+  await page.waitForSelector('.unified-quick-open-modal', { timeout: 2000 });
 
   // Type some characters
   await page.keyboard.type('xyz', { delay: 50 });

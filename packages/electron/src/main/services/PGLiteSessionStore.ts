@@ -694,14 +694,18 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           branchPointMessageId: row.branch_point_message_id ? parseInt(row.branch_point_message_id) : undefined,
           branchedAt,
           hasUnread: metadata.metadata?.hasUnread ?? metadata.hasUnread ?? false,
-          // Check if session has a pending AskUserQuestion (for sidebar indicator persistence)
-          hasPendingQuestion: !!(metadata.pendingAskUserQuestion),
+          // Authoritative pending-interactive-prompt bit. Written by
+          // setSessionPendingPrompt() on every prompt open/resolve so the
+          // sidebar indicator survives renderer reloads and reaches mobile.
+          // Replaces the legacy `metadata.pendingAskUserQuestion` flag,
+          // which nothing was writing.
+          hasPendingInteractivePrompt: !!metadata.hasPendingPrompt,
           // Kanban board phase and tags from metadata JSONB
           phase: metadata.phase ?? undefined,
           tags: Array.isArray(metadata.tags) ? metadata.tags : undefined,
           // Linked tracker item IDs from metadata JSONB
           linkedTrackerItemIds: Array.isArray(metadata.linkedTrackerItemIds) ? metadata.linkedTrackerItemIds : undefined,
-        } satisfies SessionMeta & { hasPendingQuestion?: boolean; phase?: string; tags?: string[]; linkedTrackerItemIds?: string[] };
+        } satisfies SessionMeta & { hasPendingInteractivePrompt?: boolean; phase?: string; tags?: string[]; linkedTrackerItemIds?: string[] };
       });
     },
 
@@ -848,10 +852,14 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
 
       const contentQuery = (() => {
         const contentQueryParams: any[] = [searchTerms];
+        // Phase 2 of canonical-transcript-deprecation: search the raw
+        // ai_agent_messages.searchable_text column directly. The legacy
+        // ai_transcript_events index is being retired in Phase 4.
         let contentQuerySql = `SELECT DISTINCT t.session_id,
             MAX(ts_rank_cd(to_tsvector('english', COALESCE(t.searchable_text, '')), plainto_tsquery('english', $1))) as rank
-          FROM ai_transcript_events t
-          WHERE t.searchable = TRUE
+          FROM ai_agent_messages t
+          WHERE t.searchable_text IS NOT NULL
+            AND t.message_kind IN ('user', 'assistant', 'system')
             AND to_tsvector('english', COALESCE(t.searchable_text, '')) @@ plainto_tsquery('english', $1)`;
 
         if (cutoffDate) {
@@ -860,9 +868,9 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         }
 
         if (direction === 'input') {
-          contentQuerySql += ` AND t.event_type = 'user_message'`;
+          contentQuerySql += ` AND t.message_kind = 'user'`;
         } else if (direction === 'output') {
-          contentQuerySql += ` AND t.event_type = 'assistant_message'`;
+          contentQuerySql += ` AND t.message_kind = 'assistant'`;
         }
 
         contentQuerySql += ' GROUP BY t.session_id';

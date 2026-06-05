@@ -235,7 +235,7 @@
   top: -4px;
   right: -4px;
   background: var(--nim-primary);
-  color: white;
+  color: var(--nim-on-primary);
   font-size: 10px;
   font-weight: 600;
   padding: 2px 5px;
@@ -266,7 +266,7 @@
   padding: 12px 16px;
   border: none;
   background: var(--nim-primary);
-  color: white;
+  color: var(--nim-on-primary);
   font-size: 14px;
   font-weight: 500;
   text-align: left;

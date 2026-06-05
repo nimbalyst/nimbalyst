@@ -511,7 +511,7 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
             onClick={handleAllowAlways}
             disabled={isSubmitting}
             title={`Save ${patternDisplayName} to .claude/settings.local.json`}
-            className="px-3 py-1.5 rounded-md text-[11px] font-medium cursor-pointer border-none bg-nim-primary text-white whitespace-nowrap transition-all duration-150 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 rounded-md text-[11px] font-medium cursor-pointer border-none bg-nim-primary text-nim-on-primary whitespace-nowrap transition-all duration-150 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Always
           </button>
@@ -524,7 +524,7 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
                 onClick={handleAllowAllDomains}
                 disabled={isSubmitting || isAllowingAllDomains}
                 title="Allow fetching from any domain without asking"
-                className="px-3 py-1.5 rounded-md text-[11px] font-medium cursor-pointer border-none bg-nim-primary text-white whitespace-nowrap transition-all duration-150 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-3 py-1.5 rounded-md text-[11px] font-medium cursor-pointer border-none bg-nim-primary text-nim-on-primary whitespace-nowrap transition-all duration-150 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isAllowingAllDomains ? 'Saving...' : 'All Domains'}
               </button>

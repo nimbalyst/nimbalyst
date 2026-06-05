@@ -180,6 +180,59 @@ function stripWorkspacePath(filePath: string, workspacePath: string): string {
   return filePath;
 }
 
+// ─── Last-assistant-response aggregation ────────────────────────────
+
+/**
+ * Minimal DB surface for the assistant-response aggregator. Keeps the helper
+ * testable without dragging the full PGLite/SQLite adapter into the test
+ * harness.
+ */
+export interface MessageRowDb {
+  query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+}
+
+/**
+ * Assemble the most recent assistant response for a session.
+ *
+ * Chunked providers (claude-code streaming, codex `agent_message_delta`s)
+ * split one assistant turn across many rows. The naive
+ * `ORDER BY id DESC LIMIT 1` returns the trailing fragment of the final
+ * delta, not the assembled reply. We instead take every assistant row whose
+ * id is greater than the most recent user-row id, in ascending order, and
+ * join their `searchable_text` values.
+ *
+ * Returns null when the session has no assistant content yet. Output is
+ * capped at 2000 chars to match the existing tool-output contract.
+ */
+export async function fetchLastAssistantResponse(
+  db: MessageRowDb,
+  sessionId: string,
+  maxLen: number = 2000,
+): Promise<string | null> {
+  const { rows: lastUserRows } = await db.query<{ id: number }>(
+    `SELECT id FROM ai_agent_messages
+     WHERE session_id = $1 AND message_kind = 'user'
+     ORDER BY id DESC
+     LIMIT 1`,
+    [sessionId]
+  );
+  const lastUserId = lastUserRows.length > 0 ? lastUserRows[0].id : 0;
+  const { rows: assistantRows } = await db.query<{ searchable_text: string | null }>(
+    `SELECT searchable_text FROM ai_agent_messages
+     WHERE session_id = $1 AND message_kind = 'assistant'
+       AND searchable_text IS NOT NULL
+       AND id > $2
+     ORDER BY id ASC`,
+    [sessionId, lastUserId]
+  );
+  const assembled = assistantRows
+    .map((row) => row.searchable_text ?? "")
+    .filter((t) => t.length > 0)
+    .join("\n");
+  if (assembled.length === 0) return null;
+  return assembled.slice(0, maxLen);
+}
+
 // ─── Tool handlers ──────────────────────────────────────────────────
 
 async function handleGetSessionSummary(
@@ -194,27 +247,21 @@ async function handleGetSessionSummary(
     return `Error: Session ${sessionId} not found`;
   }
 
-  // Fetch user prompts and last response from canonical transcript events
+  // Phase 3 of canonical-transcript-deprecation: ai_transcript_events is
+  // going away. The session-context MCP queries now read ai_agent_messages
+  // directly via the message_kind column populated at write time.
   const { getDatabase } = await import("../database/initialize");
   const db = getDatabase();
   const { rows: userRows } = await db.query<any>(
-    `SELECT searchable_text FROM ai_transcript_events
-     WHERE session_id = $1 AND event_type = 'user_message'
-     ORDER BY sequence ASC`,
+    `SELECT searchable_text FROM ai_agent_messages
+     WHERE session_id = $1 AND message_kind = 'user'
+       AND searchable_text IS NOT NULL
+     ORDER BY id ASC`,
     [sessionId]
   );
   const userPrompts = userRows.map((row: any) => row.searchable_text || "").filter((t: string) => t.length > 0);
 
-  const { rows: assistantRows } = await db.query<any>(
-    `SELECT searchable_text FROM ai_transcript_events
-     WHERE session_id = $1 AND event_type = 'assistant_message'
-     ORDER BY sequence DESC
-     LIMIT 1`,
-    [sessionId]
-  );
-  const lastResponse = assistantRows.length > 0
-    ? (assistantRows[0].searchable_text || "").slice(0, 2000)
-    : null;
+  const lastResponse = await fetchLastAssistantResponse(db, sessionId);
 
   let editedFiles: string[] = [];
   try {

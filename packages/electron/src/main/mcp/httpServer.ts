@@ -15,6 +15,7 @@ import { getMostRecentlyFocusedWorkspaceWindow, windowStates, windowFocusOrder }
 import { windows } from "../window/windowState";
 import { workspaceToWindowMap } from "./mcpWorkspaceResolver";
 import { requireMcpAuth } from "./mcpAuth";
+import { getAllowedClipOrigin, hasAllowedClipContentType } from "./clipRequestGuards";
 
 // Extracted modules
 import {
@@ -510,14 +511,22 @@ async function tryCreateServer(port: number): Promise<any> {
 
         // Handle CORS preflight.
         // Issue #146: do not echo `Access-Control-Allow-Origin: *` on /mcp;
-        // bearer token is the sole gate. /clip keeps its CORS-open shape so
-        // the browser-extension web clipper can keep posting clips.
+        // bearer token is the sole gate. /clip is restricted to extension
+        // origins plus JSON requests so arbitrary web pages cannot write into
+        // the active workspace.
         if (req.method === "OPTIONS") {
           if (pathname === "/clip") {
+            const allowedOrigin = getAllowedClipOrigin(req);
+            if (!allowedOrigin) {
+              res.writeHead(403);
+              res.end("Forbidden");
+              return;
+            }
             res.writeHead(200, {
-              "Access-Control-Allow-Origin": "*",
+              "Access-Control-Allow-Origin": allowedOrigin,
               "Access-Control-Allow-Methods": "POST, OPTIONS",
               "Access-Control-Allow-Headers": "Content-Type",
+              Vary: "Origin",
             });
           } else {
             res.writeHead(200, {
@@ -819,7 +828,24 @@ async function tryCreateServer(port: number): Promise<any> {
           }
         } else if (pathname === "/clip" && req.method === "POST") {
           // Handle web clip from browser extension
-          res.setHeader("Access-Control-Allow-Origin", "*");
+          const allowedOrigin = getAllowedClipOrigin(req);
+          if (!allowedOrigin) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Forbidden" }));
+            return;
+          }
+          if (!hasAllowedClipContentType(req)) {
+            res.writeHead(415, {
+              "Access-Control-Allow-Origin": allowedOrigin,
+              "Content-Type": "application/json",
+              Vary: "Origin",
+            });
+            res.end(JSON.stringify({ error: "Content-Type must be application/json" }));
+            return;
+          }
+
+          res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+          res.setHeader("Vary", "Origin");
           const body = await readJsonBody(req) as any;
           if (!body || !body.content) {
             res.writeHead(400);

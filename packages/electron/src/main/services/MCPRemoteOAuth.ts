@@ -640,7 +640,7 @@ async function findAuthorizedTokenFile(baseDir: string, hashes: string[]): Promi
       }
       const tokenPath = path.join(baseDir, file);
       if (await hasUsableTokens(tokenPath)) {
-        safeLog('info', '[MCP] Found OAuth tokens at:', tokenPath);
+        // safeLog('info', '[MCP] Found OAuth tokens at:', tokenPath);
         return tokenPath;
       }
     }
@@ -652,7 +652,7 @@ async function findAuthorizedTokenFile(baseDir: string, hashes: string[]): Promi
     for (const fileName of [`${hash}_tokens.json`, `${hash}.json`]) {
       const tokenPath = path.join(baseDir, fileName);
       if (await hasUsableTokens(tokenPath)) {
-        safeLog('info', '[MCP] Found OAuth tokens at:', tokenPath);
+        // safeLog('info', '[MCP] Found OAuth tokens at:', tokenPath);
         return tokenPath;
       }
     }

@@ -121,7 +121,9 @@ describe('MigrationOrchestrator fixture round-trip', () => {
         metadata JSONB,
         hidden BOOLEAN NOT NULL DEFAULT FALSE,
         provider_message_id TEXT,
-        searchable BOOLEAN NOT NULL DEFAULT FALSE
+        searchable BOOLEAN NOT NULL DEFAULT FALSE,
+        searchable_text TEXT,
+        message_kind TEXT
       );
       CREATE TABLE ai_transcript_events (
         id BIGSERIAL PRIMARY KEY,
@@ -201,14 +203,18 @@ describe('MigrationOrchestrator fixture round-trip', () => {
       ['sess-4', 'ws-B', 'claude', 'Old archived session', true],
     );
 
-    // Messages -- mix of searchable=true and false
+    // Messages -- mix of searchable=true and false. Phase 2 of
+    // canonical-transcript-deprecation: FTS now requires searchable_text,
+    // so we populate it on the rows that should be indexed.
     await db.query(
-      `INSERT INTO ai_agent_messages(session_id, source, direction, content, searchable)
-       VALUES ($1,$2,$3,$4,$5),($6,$7,$8,$9,$10),($11,$12,$13,$14,$15)`,
+      `INSERT INTO ai_agent_messages(session_id, source, direction, content, searchable, searchable_text, message_kind)
+       VALUES ($1,$2,$3,$4,$5,$16,'user'),($6,$7,$8,$9,$10,NULL,'assistant'),($11,$12,$13,$14,$15,$17,'user')`,
       [
         'sess-1', 'user', 'input', 'plan the auth migration sweep', true,
         'sess-1', 'assistant', 'output', 'the rotation cadence should be weekly', false,
         'sess-2', 'user', 'input', 'tracker sync seems stuck on conflict', true,
+        'plan the auth migration sweep',
+        'tracker sync seems stuck on conflict',
       ],
     );
 

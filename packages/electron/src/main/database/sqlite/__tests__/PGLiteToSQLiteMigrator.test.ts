@@ -142,7 +142,9 @@ describe('PGLiteToSQLiteMigrator', () => {
         metadata JSONB,
         hidden BOOLEAN NOT NULL DEFAULT FALSE,
         provider_message_id TEXT,
-        searchable BOOLEAN NOT NULL DEFAULT FALSE
+        searchable BOOLEAN NOT NULL DEFAULT FALSE,
+        searchable_text TEXT,
+        message_kind TEXT
       );
 
       CREATE TABLE ai_tool_call_file_edits (
@@ -527,16 +529,20 @@ describe('PGLiteToSQLiteMigrator', () => {
     expect(JSON.parse(row.type_tags)).toEqual(['alpha', 'beta', 'gamma']);
   });
 
-  it('populates FTS5 mirror for every ai_agent_messages row regardless of searchable flag', async () => {
+  it('populates FTS5 mirror for ai_agent_messages rows with non-NULL searchable_text', async () => {
     await seedPgliteSchema();
     await pglite.query(
       `INSERT INTO ai_sessions(id, provider, title) VALUES ($1, $2, $3)`,
       ['sess-fts', 'claude', 'fts test'],
     );
+    // Phase 2 of canonical-transcript-deprecation: FTS now indexes
+    // searchable_text. Rows whose searchable_text IS NULL are NOT indexed.
     await pglite.query(
-      `INSERT INTO ai_agent_messages(session_id, source, direction, content, searchable)
-       VALUES ($1, $2, $3, $4, $5), ($1, $2, 'output', $6, $7)`,
-      ['sess-fts', 'user', 'input', 'unique-phrase-abc-not-searchable', false, 'unique-phrase-xyz-searchable', true],
+      `INSERT INTO ai_agent_messages(session_id, source, direction, content, searchable, searchable_text, message_kind)
+       VALUES
+         ($1, $2, 'input', $3, false, NULL, 'meta'),
+         ($1, $2, 'output', $4, true, $4, 'assistant')`,
+      ['sess-fts', 'user', 'unique-phrase-abc-not-indexed', 'unique-phrase-xyz-searchable'],
     );
 
     const migrator = new PGLiteToSQLiteMigrator();
@@ -546,16 +552,74 @@ describe('PGLiteToSQLiteMigrator', () => {
     });
 
     const handle = sqlite.getRawHandle()!;
-    // FTS5 treats hyphens as operators; wrap in double quotes for phrase match.
     const abcHits = handle
       .prepare(`SELECT rowid FROM ai_agent_messages_fts WHERE ai_agent_messages_fts MATCH ?`)
-      .all('"unique-phrase-abc-not-searchable"') as { rowid: number }[];
+      .all('"unique-phrase-abc-not-indexed"') as { rowid: number }[];
     const xyzHits = handle
       .prepare(`SELECT rowid FROM ai_agent_messages_fts WHERE ai_agent_messages_fts MATCH ?`)
       .all('"unique-phrase-xyz-searchable"') as { rowid: number }[];
-    // Both should be in FTS5 — the trigger has no WHERE clause.
-    expect(abcHits.length).toBe(1);
+    // The NULL-searchable_text row is not indexed; the populated one is.
+    expect(abcHits.length).toBe(0);
     expect(xyzHits.length).toBe(1);
+  });
+
+  it('recreates FTS triggers on searchable_text so post-migration writes index correctly', async () => {
+    // Regression: a previous version recreated only the INSERT trigger and
+    // referenced the old `content` column. Phase 2 of the
+    // canonical-transcript-deprecation moved the FTS table to
+    // `searchable_text`, so the stale trigger caused subsequent INSERTs to
+    // fail (or worse, silently index against a column that no longer exists
+    // in the FTS shadow). This test inserts AFTER migration and asserts the
+    // new row is searchable.
+    await seedPgliteSchema();
+    await pglite.query(
+      `INSERT INTO ai_sessions(id, provider, title) VALUES ($1, $2, $3)`,
+      ['sess-trig', 'claude', 'trigger test'],
+    );
+
+    const migrator = new PGLiteToSQLiteMigrator();
+    await migrator.migrate({
+      pglite: pglite as unknown as Parameters<PGLiteToSQLiteMigrator['migrate']>[0]['pglite'],
+      sqlite,
+    });
+
+    const handle = sqlite.getRawHandle()!;
+
+    // The three triggers must reference searchable_text (the new column),
+    // not the legacy `content`. Inspect sqlite_master to confirm.
+    const triggers = handle
+      .prepare(
+        `SELECT name, sql FROM sqlite_master
+         WHERE type = 'trigger' AND name IN ('ai_agent_messages_ai', 'ai_agent_messages_ad', 'ai_agent_messages_au')
+         ORDER BY name`,
+      )
+      .all() as { name: string; sql: string }[];
+    expect(triggers.map((t) => t.name)).toEqual([
+      'ai_agent_messages_ad',
+      'ai_agent_messages_ai',
+      'ai_agent_messages_au',
+    ]);
+    for (const t of triggers) {
+      expect(t.sql).toContain('searchable_text');
+      // Negative assertion: the stale trigger inserted into FTS using
+      // `new.content` / `old.content`. None of the new triggers should.
+      expect(t.sql).not.toMatch(/\bnew\.content\b/);
+      expect(t.sql).not.toMatch(/\bold\.content\b/);
+    }
+
+    // Now INSERT a post-migration row and verify it shows up in FTS via the
+    // recreated trigger (not via any kind of bulk rebuild).
+    handle
+      .prepare(
+        `INSERT INTO ai_agent_messages(session_id, source, direction, content, searchable, searchable_text, message_kind)
+         VALUES (?, 'user', 'input', 'raw-content-irrelevant', 1, ?, 'user')`,
+      )
+      .run('sess-trig', 'post-migration-unique-token');
+
+    const hits = handle
+      .prepare(`SELECT rowid FROM ai_agent_messages_fts WHERE ai_agent_messages_fts MATCH ?`)
+      .all('"post-migration-unique-token"') as { rowid: number }[];
+    expect(hits.length).toBe(1);
   });
 
   it('drops transient codex app-server raw notifications during ai_agent_messages migration', async () => {
@@ -565,11 +629,11 @@ describe('PGLiteToSQLiteMigrator', () => {
       ['sess-codex', 'openai-codex', 'codex cleanup test'],
     );
     await pglite.query(
-      `INSERT INTO ai_agent_messages(session_id, source, direction, content, metadata, searchable)
+      `INSERT INTO ai_agent_messages(session_id, source, direction, content, metadata, searchable, searchable_text, message_kind)
        VALUES
-         ($1, $2, $3, $4, $5::jsonb, $6),
-         ($1, $2, $3, $7, $8::jsonb, $6),
-         ($1, $2, $3, $9, $10::jsonb, $6)`,
+         ($1, $2, $3, $4, $5::jsonb, $6, $4, 'assistant'),
+         ($1, $2, $3, $7, $8::jsonb, $6, $7, 'assistant'),
+         ($1, $2, $3, $9, $10::jsonb, $6, $9, 'assistant')`,
       [
         'sess-codex',
         'assistant',

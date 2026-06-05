@@ -894,7 +894,7 @@
 
 .git-changes-commit-btn {
   background: var(--nim-primary);
-  color: #fff;
+  color: var(--nim-on-primary);
   border: none;
   border-radius: 4px;
   padding: 5px 14px;

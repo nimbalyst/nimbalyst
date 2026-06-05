@@ -200,7 +200,7 @@ export function QRPairingModal({ isOpen, onClose, serverUrl, preventSleepMode, o
             <div className="qr-error text-center py-8">
               <p className="text-nim-error mb-4">{error}</p>
               <button
-                className="qr-regenerate-button px-4 py-2 bg-nim-primary text-white rounded-md text-sm font-medium cursor-pointer hover:bg-nim-primary-hover"
+                className="qr-regenerate-button px-4 py-2 bg-nim-primary text-nim-on-primary rounded-md text-sm font-medium cursor-pointer hover:bg-nim-primary-hover"
                 onClick={generateQR}
               >
                 Try Again

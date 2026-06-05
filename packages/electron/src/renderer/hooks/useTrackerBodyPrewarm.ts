@@ -28,10 +28,22 @@ import { useEffect } from 'react';
 import { getBodyDocCache, type BodyDocConfigFactory } from '../services/BodyDocCache';
 import { resolveCollabConfigForUri } from '../utils/collabDocumentOpener';
 
-/** Debounce window before firing prewarm after `itemIds` settles. */
-const PREWARM_DEBOUNCE_MS = 50;
-/** Hard cap on the number of items prewarmed per render -- matches D5. */
-const PREWARM_LIMIT = 50;
+/**
+ * Debounce window before firing prewarm after `itemIds` settles. Tuned
+ * to 2s so the prewarm does NOT pile onto the document-sync:open storm
+ * the restored collab tabs already kick off at app launch -- the 50ms
+ * default was contributing to a multi-minute event-loop block at
+ * startup for users with many trackers (see DocumentSyncHandlers fp
+ * cache notes, user report 2026-06-01).
+ */
+const PREWARM_DEBOUNCE_MS = 2000;
+/**
+ * Hard cap on the number of items prewarmed per render. Dropped from 50
+ * to 10 for the same startup-cost reason: each prewarm opens a proxied
+ * WebSocket and builds a Y.Doc; 50 concurrent at launch was overkill
+ * even with the BodyDocCache's 5-concurrent budget.
+ */
+const PREWARM_LIMIT = 10;
 
 export interface UseTrackerBodyPrewarmOptions {
   /** Workspace owning the items. Required when `enabled`. */

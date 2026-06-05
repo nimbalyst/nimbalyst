@@ -40,8 +40,14 @@ export function resolveCodexBinaryFromModules(): string | undefined {
     const platformPkgJson = codexRequire.resolve(`${platformPkg}/package.json`);
     const vendor = path.join(path.dirname(platformPkgJson), 'vendor');
     const binName = process.platform === 'win32' ? 'codex.exe' : 'codex';
-    const candidate = path.join(vendor, target, 'codex', binName);
-    if (fs.existsSync(candidate)) return candidate;
+    // 0.131+ codex-sdk renamed the binary directory from `codex/` to `bin/`.
+    const candidates = [
+      path.join(vendor, target, 'bin', binName),
+      path.join(vendor, target, 'codex', binName),
+    ];
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
     return undefined;
   } catch {
     return undefined;
@@ -66,10 +72,11 @@ export function resolveCodexBinaryPath(
 
 /**
  * The native Codex launcher expects sibling helper binaries (for example the
- * vendored `rg(.exe)` under `vendor/<triple>/path/`) to be discoverable on
- * PATH. The official `@openai/codex` JS wrapper prepends this directory before
- * spawning the native binary; the app-server transport must mirror that when
- * it launches the native binary directly.
+ * vendored `rg(.exe)` under `vendor/<triple>/path/` -- renamed to
+ * `vendor/<triple>/codex-path/` in 0.131+) to be discoverable on PATH. The
+ * official `@openai/codex` JS wrapper prepends this directory before spawning
+ * the native binary; the app-server transport must mirror that when it
+ * launches the native binary directly.
  */
 export function getCodexVendorPathEntries(
   binaryPath: string,
@@ -78,10 +85,18 @@ export function getCodexVendorPathEntries(
   if (!binaryPath) return [];
 
   const binaryDir = path.dirname(binaryPath);
-  const archRoot = path.basename(binaryDir).toLowerCase() === 'codex'
+  const binaryDirName = path.basename(binaryDir).toLowerCase();
+  // 0.130 layout was `vendor/<triple>/codex/codex`; 0.131+ is `vendor/<triple>/bin/codex`.
+  const archRoot = binaryDirName === 'codex' || binaryDirName === 'bin'
     ? path.dirname(binaryDir)
     : binaryDir;
-  const helperPathDir = path.join(archRoot, 'path');
+  const candidates = [
+    path.join(archRoot, 'codex-path'),
+    path.join(archRoot, 'path'),
+  ];
 
-  return existsSync(helperPathDir) ? [helperPathDir] : [];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return [candidate];
+  }
+  return [];
 }

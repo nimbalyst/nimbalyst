@@ -192,13 +192,6 @@ interface AppStoreSchema {
   // Document history settings
   historyMaxAgeDays?: number; // Max age in days before snapshots are cleaned up (default: 30)
   historyMaxSnapshots?: number; // Max snapshots per file (default: 250)
-  // Internal debug flags. Off by default. Toggled from Settings -> Advanced (developer mode).
-  // Add new flags here as needed; the renderer mirrors these into a Jotai atom on startup
-  // and exposes them as a synchronous predicate via runtime/utils/debugFlags.
-  debugFlags?: {
-    /** Verbose tracing for the diff/AI-edit pipeline (DocumentModel, DiskBackedStore, TabEditor, DiffPlugin). */
-    diffTrace?: boolean;
-  };
   // Preferred interactive terminal shell on Windows. 'auto' uses detection priority.
   preferredTerminalShell?: PreferredTerminalShell;
   // Last known app version (for migrations)
@@ -2191,28 +2184,6 @@ export function isDeveloperFeatureAvailable(tag: DeveloperFeatureTag): boolean {
   }
   const features = getDeveloperFeatures();
   return features[tag] ?? false;
-}
-
-// ============================================================================
-// Debug Flags
-// Internal debug toggles (verbose logging, etc.). Off by default.
-// ============================================================================
-
-export type DebugFlags = NonNullable<AppStoreSchema['debugFlags']>;
-
-const DEFAULT_DEBUG_FLAGS: DebugFlags = {
-  diffTrace: false,
-};
-
-export function getDebugFlags(): DebugFlags {
-  const stored = getAppStore().get('debugFlags');
-  return { ...DEFAULT_DEBUG_FLAGS, ...(stored ?? {}) };
-}
-
-export function setDebugFlags(flags: Partial<DebugFlags>): void {
-  const current = getDebugFlags();
-  const merged = { ...current, ...flags };
-  getAppStore().set('debugFlags', merged);
 }
 
 // ============================================================================

@@ -14,10 +14,7 @@ import { registerTeamDialogs as _registerTeamDialogs } from './teamDialogs';
 export { DIALOG_IDS, type DialogId } from './registry';
 export {
   registerNavigationDialogs,
-  type QuickOpenData,
-  type SessionQuickOpenData,
-  type PromptQuickOpenData,
-  type ProjectQuickOpenData,
+  type UnifiedQuickOpenData,
 } from './navigation';
 export {
   registerSimpleDialogs,

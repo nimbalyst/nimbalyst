@@ -17,16 +17,16 @@
  *     in a single `BEGIN IMMEDIATE / COMMIT` via better-sqlite3's transaction
  *     helper for fsync amortization.
  *   - `PRAGMA foreign_keys = OFF` during copy so we can insert tables in any
- *     order, plus self-referential FKs (`ai_sessions.parent_session_id`,
- *     `ai_transcript_events.parent_event_id`) don't need ordering. We turn
- *     them back on and run `PRAGMA foreign_key_check` at the end.
- *   - FTS5 mirrors (`ai_agent_messages_fts`, `ai_transcript_events_fts`)
- *     populate automatically through the AFTER INSERT triggers; no separate
- *     backfill step needed. The plan called for this to be wider than the
- *     PGLite `searchable=true` partial index — the SQLite trigger has no
- *     WHERE clause, so every copied row is indexed. The ai_agent_messages
- *     copy itself filters transient Codex app-server raw-notification noise
- *     before rows ever reach SQLite or its FTS mirror.
+ *     order, plus self-referential FKs (`ai_sessions.parent_session_id`)
+ *     don't need ordering. We turn them back on and run
+ *     `PRAGMA foreign_key_check` at the end.
+ *   - The `ai_agent_messages_fts` mirror is rebuilt explicitly after the
+ *     ai_agent_messages copy (chunked over the PK range) so the FTS5
+ *     external-content shadow is consistent on first open. Rows whose
+ *     `searchable_text IS NULL` are skipped here and added later by the
+ *     AFTER UPDATE trigger as `AgentMessagesBackfill` populates them.
+ *     The ai_agent_messages copy itself filters transient Codex app-server
+ *     raw-notification noise before rows ever reach SQLite or its FTS mirror.
  *   - Generated columns (`tracker_items.title`, `status`, `kanban_sort_order`)
  *     are skipped at INSERT time; SQLite computes them from `data`.
  *
@@ -135,10 +135,10 @@ export interface MigrateOptions {
  * order roughly follows dependency depth (parents before children) so the
  * progress UI tells a coherent story.
  *
- * `ai_transcript_events` is intentionally absent: it's derived from
- * `ai_agent_messages` by `TranscriptTransformer`. Migrating 100k+ rows of
- * derived data is wasted time — the transformer regenerates on first session
- * open after migration. See docs/TRANSCRIPT_ARCHITECTURE.md.
+ * `ai_transcript_events` is absent because it no longer exists on either
+ * side (Phase 4 of canonical-transcript-deprecation). Canonical events live
+ * in TranscriptRuntime's in-memory cache and are rebuilt from raw
+ * `ai_agent_messages` on first read.
  */
 const COPY_TABLES: readonly string[] = [
   'worktrees',
@@ -252,13 +252,16 @@ export class PGLiteToSQLiteMigrator {
       elapsedMs: performance.now() - t0,
     });
 
-    // Drop the FTS5 mirror trigger on ai_agent_messages before bulk insert. It
-    // fires per-row and on a 1M+ row log is the dominant copy cost. We do a
-    // single FTS5 'rebuild' command after copy, which is dramatically faster
-    // than per-row trigger inserts, and then recreate the trigger so live
-    // app writes index correctly. See schemas/0001_initial.sql for the
-    // original trigger definition.
+    // Drop the FTS5 mirror triggers on ai_agent_messages before bulk insert.
+    // They fire per-row and on a 1M+ row log are the dominant copy cost. We
+    // seed the FTS table explicitly after the copy and then recreate the
+    // triggers so live app writes index correctly. All three triggers
+    // (AI/AD/AU) come from schemas/0004_fts_on_searchable_text.sql — Phase 2
+    // of canonical-transcript-deprecation — and reference `searchable_text`,
+    // not the historical `content` column.
     sqliteHandle.exec('DROP TRIGGER IF EXISTS ai_agent_messages_ai');
+    sqliteHandle.exec('DROP TRIGGER IF EXISTS ai_agent_messages_ad');
+    sqliteHandle.exec('DROP TRIGGER IF EXISTS ai_agent_messages_au');
 
     const manifestPerTable: DryRunManifest['perTable'] = [];
     for (let i = 0; i < pgliteCounts.length; i++) {
@@ -303,35 +306,9 @@ export class PGLiteToSQLiteMigrator {
       log('info', `[migrator] copied ${copied}/${tableExpected} rows from ${name}`);
     }
 
-    // Reset the canonical_* transcript columns on every migrated session.
-    // The migrator deliberately doesn't copy `ai_transcript_events` (it's
-    // derived from `ai_agent_messages`; TranscriptTransformer regenerates on
-    // first session open). But we DID copy the canonical_transform_status /
-    // canonical_last_raw_message_id metadata that lives on `ai_sessions`,
-    // and those columns claim "transformed up to message N" when the actual
-    // events table is empty. On session open the transformer sees
-    // status='complete' + watermark at the tail and falls through to
-    // `resumeTransformation` with no new messages -> writes nothing -> empty
-    // UI. Forcing NULL here puts every migrated session back into the
-    // "never transformed" branch (`transformFromBeginning`), which is
-    // exactly what the comment on COPY_TABLES already promises.
-    const resetInfo = sqliteHandle
-      .prepare(
-        `UPDATE ai_sessions
-           SET canonical_transform_version = NULL,
-               canonical_last_raw_message_id = NULL,
-               canonical_last_transformed_at = NULL,
-               canonical_transform_status = NULL
-         WHERE canonical_transform_status IS NOT NULL
-            OR canonical_transform_version IS NOT NULL
-            OR canonical_last_raw_message_id IS NOT NULL
-            OR canonical_last_transformed_at IS NOT NULL`,
-      )
-      .run();
-    log(
-      'info',
-      `[migrator] reset canonical transcript metadata on ${Number(resetInfo.changes)} migrated sessions`,
-    );
+    // Phase 4 of canonical-transcript-deprecation: ai_transcript_events
+    // doesn't exist on either side anymore, and the watermark columns are
+    // dropped by migration 0005. No reset pass is required here.
 
     // Rebuild ai_agent_messages_fts in chunks. The FTS5 'rebuild' command is
     // a single synchronous statement that, on a 1M+ row content table, blocks
@@ -346,10 +323,14 @@ export class PGLiteToSQLiteMigrator {
         .prepare(`SELECT MIN(id) AS lo, MAX(id) AS hi FROM ai_agent_messages`)
         .get() as { lo: number | null; hi: number | null };
       if (idRange.lo !== null && idRange.hi !== null) {
+        // Phase 2 of canonical-transcript-deprecation: FTS now indexes
+        // `searchable_text`, not raw `content`. Rows whose extractor
+        // backfill is still pending (NULL) are skipped here and picked up
+        // by the AFTER UPDATE trigger when AgentMessagesBackfill runs.
         const insertChunk = sqliteHandle.prepare(
-          `INSERT INTO ai_agent_messages_fts(rowid, content)
-             SELECT id, content FROM ai_agent_messages
-             WHERE id > ? AND id <= ?`,
+          `INSERT INTO ai_agent_messages_fts(rowid, searchable_text)
+             SELECT id, searchable_text FROM ai_agent_messages
+             WHERE id > ? AND id <= ? AND searchable_text IS NOT NULL`,
         );
         let cursor = idRange.lo - 1;
         let ftsCopied = 0;
@@ -376,14 +357,46 @@ export class PGLiteToSQLiteMigrator {
         }
       }
     }
+    // Recreate all three FTS triggers matching schemas/0004_fts_on_searchable_text.sql.
+    // They index `searchable_text` (NOT the legacy `content` column) and skip
+    // rows whose searchable_text is NULL so tool noise stays out of the index.
     sqliteHandle.exec(`
-      CREATE TRIGGER IF NOT EXISTS ai_agent_messages_ai AFTER INSERT ON ai_agent_messages BEGIN
-        INSERT INTO ai_agent_messages_fts(rowid, content) VALUES (new.id, new.content);
+      CREATE TRIGGER IF NOT EXISTS ai_agent_messages_ai AFTER INSERT ON ai_agent_messages
+      WHEN new.searchable_text IS NOT NULL
+      BEGIN
+        INSERT INTO ai_agent_messages_fts(rowid, searchable_text)
+          VALUES (new.id, new.searchable_text);
+      END;
+    `);
+    sqliteHandle.exec(`
+      CREATE TRIGGER IF NOT EXISTS ai_agent_messages_ad AFTER DELETE ON ai_agent_messages
+      WHEN old.searchable_text IS NOT NULL
+      BEGIN
+        INSERT INTO ai_agent_messages_fts(ai_agent_messages_fts, rowid, searchable_text)
+          VALUES('delete', old.id, old.searchable_text);
+      END;
+    `);
+    sqliteHandle.exec(`
+      CREATE TRIGGER IF NOT EXISTS ai_agent_messages_au AFTER UPDATE ON ai_agent_messages
+      BEGIN
+        INSERT INTO ai_agent_messages_fts(ai_agent_messages_fts, rowid, searchable_text)
+          VALUES('delete', old.id, old.searchable_text);
+        INSERT INTO ai_agent_messages_fts(rowid, searchable_text)
+          SELECT new.id, new.searchable_text WHERE new.searchable_text IS NOT NULL;
       END;
     `);
 
     // Verify counts. Emit per-table progress so the UI shows which table is
-    // being counted (SELECT COUNT(*) can be slow on large tables).
+    // being counted (SELECT COUNT(*) can be slow on large tables). The dry-run
+    // runs against a LIVE PGLite — inserts (sync, agent writes) and deletes
+    // (AgentMessagesBackfill cleanup of transient rows) happen during the copy
+    // window. The cursor loop deliberately drains past `expected` (see comment
+    // at copyTable), so the SQLite count can legitimately end up above or
+    // below the count we measured at the start. We log the per-table drift so
+    // the UI/log records it, but we never throw — the dry-run database is
+    // thrown away after the run, and integrity_check + foreign_key_check
+    // (below) plus the spot-check are the real correctness gates.
+    let totalDrift = 0;
     for (let i = 0; i < pgliteCounts.length; i++) {
       const { name, rows: expected } = pgliteCounts[i];
       opts.onProgress?.({
@@ -400,10 +413,16 @@ export class PGLiteToSQLiteMigrator {
       });
       const actual = sqliteHandle.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(name)}`).get() as { c: number };
       if (actual.c !== expected) {
-        throw new Error(
-          `Row-count mismatch on ${name}: source=${expected}, target=${actual.c}`,
+        const drift = actual.c - expected;
+        totalDrift += Math.abs(drift);
+        log(
+          'warn',
+          `[migrator] ${name}: target=${actual.c} drifted ${drift >= 0 ? '+' : ''}${drift} from start-of-run source=${expected} (live writes during dry-run)`,
         );
       }
+    }
+    if (totalDrift > 0) {
+      log('info', `[migrator] total absolute row-count drift across tables: ${totalDrift}`);
     }
 
     // Spot-check captured samples (NOT a fresh read from PGLite — see the

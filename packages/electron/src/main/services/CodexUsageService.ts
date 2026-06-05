@@ -91,7 +91,7 @@ class CodexUsageServiceImpl {
     this.lastActivityTime = Date.now();
 
     if (this.isSleeping) {
-      logger.main.info('[CodexUsageService] Waking up due to activity');
+      // logger.main.info('[CodexUsageService] Waking up due to activity');
       this.isSleeping = false;
       this.startPolling();
       await this.refresh();
@@ -169,7 +169,7 @@ class CodexUsageServiceImpl {
       this.pollTick();
     }, POLL_INTERVAL_MS);
 
-    logger.main.info('[CodexUsageService] Started polling (every 5 minutes)');
+    // logger.main.info('[CodexUsageService] Started polling (every 5 minutes)');
   }
 
   private stopPolling(): void {

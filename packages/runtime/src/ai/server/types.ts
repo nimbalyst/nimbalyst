@@ -610,6 +610,19 @@ export interface CreateAgentMessageInput {
   createdAt?: Date | string;  // Optional timestamp for imported messages (defaults to NOW())
   providerMessageId?: string;  // Provider-assigned message ID (e.g., SDK uuid) for deduplication
   searchable?: boolean;  // Whether to include in FTS index (user prompts and assistant text only)
+  /**
+   * User-visible plaintext extracted from `content` at write time. Populated by
+   * `searchableTextExtractor.extractSearchable`. NULL when the row carries no
+   * user-visible content (metadata, tool noise). Indexed by `ai_agent_messages_fts`
+   * after Phase 2 of the canonical-transcript-deprecation plan.
+   */
+  searchableText?: string | null;
+  /**
+   * Stable provider-agnostic classification: `user` | `assistant` | `tool` | `system` | `meta`.
+   * Used by search call sites that need to filter on message kind without
+   * decoding the provider-shaped `content` payload.
+   */
+  messageKind?: 'user' | 'assistant' | 'tool' | 'system' | 'meta';
 }
 
 // ============================================================================
