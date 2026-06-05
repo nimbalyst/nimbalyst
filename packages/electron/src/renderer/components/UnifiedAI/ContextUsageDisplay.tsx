@@ -1,4 +1,4 @@
-import React, { useId, useMemo, useState, useRef, useCallback } from 'react';
+import React, { useId, useMemo, useState, useRef, useCallback, useEffect } from 'react';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { getHelpContent } from '../../help';
@@ -62,7 +62,7 @@ export function ContextUsageDisplay({
   const [helpExpanded, setHelpExpanded] = useState(false);
   const tooltipId = useId();
   const helpContent = getHelpContent('context-indicator');
-  const hideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   // Calculate percentage used (only meaningful with context window)
   const percentage = hasContextWindow ? Math.round((displayTokens / displayContextWindow) * 100) : 0;
@@ -116,28 +116,48 @@ export function ContextUsageDisplay({
   const enableTooltip = hasTokenData && (formattedCategories.length > 0 || inputTokens > 0 || outputTokens > 0);
   const shouldShowTooltip = tooltipVisible && enableTooltip;
 
-  // Clear any pending hide timeout
-  const clearHideTimeout = useCallback(() => {
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-  }, []);
+  // Click-to-open: the meter is shaped like a button (model/thinking/action
+  // buttons next to it) and sits where the cursor travels often, so a hover
+  // popover lingered and blocked the queued-prompt controls underneath it (#429).
+  const closeTooltip = useCallback(() => setTooltipVisible(false), []);
 
-  // Show tooltip immediately, hide with delay to allow moving mouse to tooltip
-  const handleMouseEnter = useCallback(() => {
-    clearHideTimeout();
+  const toggleTooltip = useCallback(() => {
     if (enableTooltip) {
-      setTooltipVisible(true);
+      setTooltipVisible(visible => !visible);
     }
-  }, [enableTooltip, clearHideTimeout]);
+  }, [enableTooltip]);
 
-  const handleMouseLeave = useCallback(() => {
-    // Delay hiding to allow moving mouse to tooltip
-    hideTimeoutRef.current = setTimeout(() => {
-      setTooltipVisible(false);
-    }, 150);
-  }, []);
+  const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleTooltip();
+    } else if (event.key === 'Escape') {
+      closeTooltip();
+    }
+  }, [toggleTooltip, closeTooltip]);
+
+  // Dismiss on outside click or Escape while the panel is open.
+  useEffect(() => {
+    if (!tooltipVisible) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setTooltipVisible(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setTooltipVisible(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [tooltipVisible]);
 
   const getUsageClass = (): string => {
     if (!hasTokenData) return 'usage-normal';
@@ -176,15 +196,15 @@ export function ContextUsageDisplay({
 
   return (
     <div
-      className={`context-usage-display ${usageClass} relative inline-flex items-center py-0.5 px-2 rounded-md text-[11px] font-medium whitespace-nowrap bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] ml-auto cursor-default gap-1 focus:outline-2 focus:outline-[var(--nim-primary)] focus:outline-offset-2 max-[400px]:hidden ${usageStyles[usageClass as keyof typeof usageStyles]}`}
+      ref={rootRef}
+      className={`context-usage-display ${usageClass} relative inline-flex items-center py-0.5 px-2 rounded-md text-[11px] font-medium whitespace-nowrap bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] ml-auto ${enableTooltip ? 'cursor-pointer' : 'cursor-default'} gap-1 focus:outline-2 focus:outline-[var(--nim-primary)] focus:outline-offset-2 max-[400px]:hidden ${usageStyles[usageClass as keyof typeof usageStyles]}`}
       tabIndex={hasTokenData ? 0 : -1}
       aria-label={label}
       aria-describedby={shouldShowTooltip ? tooltipId : undefined}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
-      onFocus={handleMouseEnter}
-      onBlur={handleMouseLeave}
-      role="group"
+      aria-expanded={enableTooltip ? shouldShowTooltip : undefined}
+      onClick={toggleTooltip}
+      onKeyDown={handleKeyDown}
+      role={enableTooltip ? 'button' : 'group'}
       data-testid="context-indicator"
     >
       <span className={`usage-text ${textStyles[usageClass as keyof typeof textStyles]}`}>{getDisplayText()}</span>
@@ -194,8 +214,6 @@ export function ContextUsageDisplay({
           className="context-usage-tooltip absolute right-0 bottom-[calc(100%+8px)] w-[280px] max-w-[calc(100vw-32px)] p-3 rounded-[10px] bg-[var(--nim-bg)] border border-[var(--nim-border)] shadow-[0_12px_32px_rgba(0,0,0,0.35)] z-10 text-[var(--nim-text)] overflow-hidden box-border"
           id={tooltipId}
           role="tooltip"
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
         >
           <div className="tooltip-header flex justify-between items-center text-xs mb-2 text-[var(--nim-text-muted)]">
             <div className="tooltip-header-left flex items-center gap-1.5">
