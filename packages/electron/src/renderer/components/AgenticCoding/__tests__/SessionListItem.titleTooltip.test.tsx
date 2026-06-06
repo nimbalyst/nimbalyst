@@ -39,18 +39,22 @@ const baseProps = {
 
 afterEach(() => cleanup());
 
-describe('SessionListItem - full name on hover when truncated (#429)', () => {
-  it('sets a title with the full name when the title is truncated', () => {
+describe('SessionListItem - full name on hover (#577, #429)', () => {
+  // The row title carries the full name unconditionally, matching the session
+  // tab (WorkstreamSessionTabs sets title={title}). This covers both JS
+  // truncation past 40 chars and CSS ellipsis clipping a shorter name in a
+  // narrow pane, the gap a >40-char gate would miss.
+  it('exposes the full name in title for a long, JS-truncated name', () => {
     const long = 'A very long session name that runs well past the forty character cutoff';
     const { container } = render(<SessionListItem {...baseProps} title={long} />);
     const titleEl = container.querySelector('.session-list-item-title');
     expect(titleEl?.getAttribute('title')).toBe(long);
   });
 
-  it('does NOT set a title when the name is short enough to fit', () => {
+  it('exposes the full name in title for a short name (could still be CSS-clipped in a narrow pane)', () => {
     const short = 'Short name';
     const { container } = render(<SessionListItem {...baseProps} title={short} />);
     const titleEl = container.querySelector('.session-list-item-title');
-    expect(titleEl?.getAttribute('title')).toBeNull();
+    expect(titleEl?.getAttribute('title')).toBe(short);
   });
 });
