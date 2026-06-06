@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- iOS: create a Meta Agent from the session create menu (alpha-gated to mirror the desktop `meta-agent` feature flag, synced to mobile).
 
 ### Changed
 <!-- Changes to existing functionality go here -->

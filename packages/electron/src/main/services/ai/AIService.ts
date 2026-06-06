@@ -1004,6 +1004,7 @@ export class AIService {
             const resolvedProvider = (request.provider || 'claude-code') as import('@nimbalyst/runtime/ai/server/types').AIProviderType;
             const resolvedModel = request.model || getDefaultAIModel() || 'claude-code:opus-1m';
             const resolvedSessionType = (request.sessionType || 'session') as import('@nimbalyst/runtime/ai/server/types').SessionType;
+            const resolvedAgentRole = (request.agentRole || 'standard') as import('@nimbalyst/runtime/ai/server/types').AgentRole;
             const session = await this.sessionManager.createSession(
               resolvedProvider,        // provider - from mobile or default
               undefined,               // documentContext
@@ -1011,7 +1012,11 @@ export class AIService {
               undefined,               // providerConfig
               resolvedModel,           // model - from mobile or desktop default
               resolvedSessionType,     // sessionType - from mobile request
-              'agent'                  // mode
+              'agent',                 // mode
+              undefined,               // worktreeId
+              undefined,               // worktreePath
+              undefined,               // worktreeProjectPath
+              resolvedAgentRole        // agentRole - from mobile request or 'standard'
             );
 
             // If a parentSessionId was provided, set it on the session

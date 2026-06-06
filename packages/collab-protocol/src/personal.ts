@@ -170,6 +170,8 @@ export interface EncryptedCreateSessionRequest {
   provider?: string;
   /** Model ID selected by mobile (e.g., "claude-code:opus") */
   model?: string;
+  /** Agent role (e.g., "meta-agent", "standard"). Plaintext - no encryption needed. */
+  agentRole?: string;
   timestamp: number;
 }
 

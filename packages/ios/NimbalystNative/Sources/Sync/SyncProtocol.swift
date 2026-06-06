@@ -219,6 +219,8 @@ public struct SyncedSettings: Codable {
     public let voiceMode: SyncedVoiceModeSettings?
     public let availableModels: [SyncedAvailableModel]?
     public let defaultModel: String?
+    /// Whether the desktop "meta-agent" alpha feature is enabled (gates the mobile Meta Agent UI).
+    public let metaAgentEnabled: Bool?
     public let version: Int
 }
 
@@ -277,6 +279,7 @@ struct EncryptedCreateSessionRequest: Codable {
     let parentSessionId: String?
     let provider: String?
     let model: String?
+    let agentRole: String?
     let timestamp: Int
 }
 
