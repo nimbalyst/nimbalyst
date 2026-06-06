@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Calc Sheets now ship a Falcon 9 `.calc.md` demo and custom syntax coloring for headings, comments, variables, units, and formatters.
 
 ### Fixed
+- Session list rows now show the full session name on hover when it's truncated, matching the session tab. (#577)
 - Inline tracker item edits now save back to the markdown file for markers without an explicit id, and due-date edits persist across a re-scan instead of being dropped (#404).
 - PR review now shows an actionable message on a GitHub 404 (repo not found or the active `gh` account lacks access — check `gh auth status` / `gh auth switch`) instead of a raw error, and no longer prints a duplicated `api` in the failure text. (#307)
 - PR review cache tables are now created on the better-sqlite3 backend too (migration registered with the SQLite runner), not only on PGLite. (#307)
