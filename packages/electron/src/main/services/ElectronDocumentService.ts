@@ -731,8 +731,9 @@ export class ElectronDocumentService implements DocumentService {
   }
 
   async getDocumentByPath(path: string): Promise<Document | null> {
+    const normalizedPath = path.replace(/\\/g, '/');
     const documents = await this.listDocuments();
-    return documents.find(doc => doc.path === path) || null;
+    return documents.find(doc => doc.path.replace(/\\/g, '/') === normalizedPath) || null;
   }
 
   watchDocuments(callback: (documents: Document[]) => void): () => void {

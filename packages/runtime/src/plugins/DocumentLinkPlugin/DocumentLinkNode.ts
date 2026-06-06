@@ -16,6 +16,11 @@ import {$createLinkNode} from "@lexical/link";
 
 import {TextMatchTransformer} from "@lexical/markdown";
 import {isEmbeddableUrl} from "../../editor/plugins/EmbedPlugin/embeddableExtensions";
+import {
+    buildImportedDocumentReference,
+    exportDocumentLinkHref,
+    normalizeDocumentLinkHref,
+} from "./documentLinkPaths";
 
 export type SerializedDocumentReferenceNode = Spread<
     {
@@ -196,10 +201,7 @@ export const DocumentReferenceTransformer: TextMatchTransformer = {
             return null;
         }
         const { __name, __path } = node;
-        // Export as standard markdown link with relative path
-        // Prefix with ./ for explicit relative link syntax
-        const relativePath = __path.startsWith('./') ? __path : `./${__path}`;
-        return `[${__name}](${relativePath})`;
+        return `[${__name}](${exportDocumentLinkHref(__path)})`;
     },
     // Match markdown links with local file paths only:
     // - Path must end with a file extension (.\w+)
@@ -213,6 +215,7 @@ export const DocumentReferenceTransformer: TextMatchTransformer = {
     regExp: /(?<!!)\[(?!!\[)([^\]]+)\]\((?!#)(?![^)]*:\/\/)([^)]+\.\w+)\)$/,
     replace: (textNode, match) => {
         const [, name, path] = match;
+        const normalizedHref = normalizeDocumentLinkHref(path);
 
         // Hand-off to the embed pipeline for links to file types an
         // extension has registered as embeddable (e.g. `.excalidraw`,
@@ -223,8 +226,8 @@ export const DocumentReferenceTransformer: TextMatchTransformer = {
         // to embed inside a TextMatchTransformer (which can only produce
         // inline nodes) and the existing `embed=false` opt-out keeps
         // working.
-        if (isEmbeddableUrl(path)) {
-            const linkNode = $createLinkNode(path);
+        if (isEmbeddableUrl(normalizedHref)) {
+            const linkNode = $createLinkNode(normalizedHref);
             const linkTextNode = $createTextNode(name);
             linkTextNode.setFormat(textNode.getFormat());
             linkNode.append(linkTextNode);
@@ -232,13 +235,13 @@ export const DocumentReferenceTransformer: TextMatchTransformer = {
             return linkTextNode;
         }
 
-        // Normalize the path (remove leading ./ if present)
-        const normalizedPath = path.startsWith('./') ? path.slice(2) : path;
-        // Extract filename from path
-        const fileName = normalizedPath.split('/').pop() || name;
-        // Use path as document ID
-        const documentId = normalizedPath;
-        const documentReferenceNode = $createDocumentReferenceNode(documentId, fileName, normalizedPath, undefined);
+        const importedReference = buildImportedDocumentReference(name, normalizedHref);
+        const documentReferenceNode = $createDocumentReferenceNode(
+            importedReference.documentId,
+            importedReference.name,
+            importedReference.path,
+            undefined
+        );
         textNode.replace(documentReferenceNode);
         return documentReferenceNode;
     },
