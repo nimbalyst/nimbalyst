@@ -57,4 +57,14 @@ describe('SessionListItem - full name on hover (#577, #429)', () => {
     const titleEl = container.querySelector('.session-list-item-title');
     expect(titleEl?.getAttribute('title')).toBe(short);
   });
+
+  // The native title is not a keyboard/touch affordance, so the row's
+  // accessible name must carry the full (untruncated) title too, or two
+  // sessions sharing the first 40 chars are indistinguishable to a screen reader.
+  it('uses the full name in the row aria-label, not the truncated form', () => {
+    const long = 'A very long session name that runs well past the forty character cutoff';
+    const { container } = render(<SessionListItem {...baseProps} title={long} />);
+    const row = container.querySelector('[aria-label^="Session: "]');
+    expect(row?.getAttribute('aria-label')).toContain(long);
+  });
 });

@@ -453,7 +453,7 @@ export const SessionListItem = memo<SessionListItemProps>(({
           onClick(e as unknown as React.MouseEvent);
         }
       }}
-      aria-label={`Session: ${truncatedTitle}, ${timestampLabel} ${relativeTime}${isLoaded ? ' (loaded in tab)' : ''}${isArchived ? ' (archived)' : ''}`}
+      aria-label={`Session: ${displayTitle}, ${timestampLabel} ${relativeTime}${isLoaded ? ' (loaded in tab)' : ''}${isArchived ? ' (archived)' : ''}`}
       aria-current={isActive ? 'page' : undefined}
     >
       <div className={`session-list-item-icon shrink-0 mt-0.5 text-[var(--nim-text-muted)] flex items-center relative ${isActive ? '[&]:text-[var(--nim-primary)] [&_svg]:text-[var(--nim-primary)]' : '[&_svg]:text-[var(--nim-text-muted)]'} ${isWorkstream ? 'workstream-icon' : ''} ${isWorktreeSession ? 'worktree-icon' : ''}`}>
