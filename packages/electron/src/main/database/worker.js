@@ -712,12 +712,12 @@ class PGLiteWorker {
           ALTER TABLE ai_sessions ADD COLUMN has_been_named BOOLEAN DEFAULT FALSE;
         END IF;
 
-        -- Add mode column for session behavior (planning vs agent)
+        -- Add mode column for session behavior (planning, agent, or auto)
         IF NOT EXISTS (
           SELECT 1 FROM information_schema.columns
           WHERE table_name = 'ai_sessions' AND column_name = 'mode'
         ) THEN
-          ALTER TABLE ai_sessions ADD COLUMN mode TEXT DEFAULT 'agent' CHECK (mode IN ('planning', 'agent'));
+          ALTER TABLE ai_sessions ADD COLUMN mode TEXT DEFAULT 'agent' CHECK (mode IN ('planning', 'agent', 'auto'));
         END IF;
 
         -- Add is_archived column for session archiving feature

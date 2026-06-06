@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS ai_sessions (
   has_been_named INTEGER NOT NULL DEFAULT 0,
   status TEXT DEFAULT 'idle' CHECK (status IN ('idle', 'running', 'waiting_for_input', 'error')),
   last_activity TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  mode TEXT DEFAULT 'agent' CHECK (mode IN ('planning', 'agent')),
+  mode TEXT DEFAULT 'agent' CHECK (mode IN ('planning', 'agent', 'auto')),
   is_archived INTEGER NOT NULL DEFAULT 0,
   last_document_state TEXT,                       -- JSON
   worktree_id TEXT REFERENCES worktrees(id) ON DELETE SET NULL,

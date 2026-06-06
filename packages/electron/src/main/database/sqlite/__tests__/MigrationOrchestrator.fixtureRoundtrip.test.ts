@@ -202,6 +202,15 @@ describe('MigrationOrchestrator fixture round-trip', () => {
        VALUES ($1, $2, $3, $4, $5)`,
       ['sess-4', 'ws-B', 'claude', 'Old archived session', true],
     );
+    // Regression: `mode='auto'` comes from the "Allow All" permission feature
+    // (sends mode:auto to Claude Code so the classifier gates tools). The SQLite
+    // ai_sessions CHECK once allowed only planning/agent and aborted the entire
+    // migration on this row.
+    await db.query(
+      `INSERT INTO ai_sessions(id, workspace_id, provider, title, mode)
+       VALUES ($1, $2, $3, $4, $5)`,
+      ['sess-5', 'ws-A', 'claude', 'Auto-mode allow-all session', 'auto'],
+    );
 
     // Messages -- mix of searchable=true and false. Phase 2 of
     // canonical-transcript-deprecation: FTS now requires searchable_text,
@@ -277,7 +286,14 @@ describe('MigrationOrchestrator fixture round-trip', () => {
         `SELECT id, title FROM ai_sessions WHERE workspace_id = $1 ORDER BY title`,
         ['ws-A'],
       );
-      expect(sessionRows.map((r) => r.id).sort()).toEqual(['sess-1', 'sess-2', 'sess-3']);
+      expect(sessionRows.map((r) => r.id).sort()).toEqual(['sess-1', 'sess-2', 'sess-3', 'sess-5']);
+
+      // Regression: mode='auto' survives migration (CHECK now allows it).
+      const { rows: autoModeRows } = await adapter.query<{ mode: string }>(
+        `SELECT mode FROM ai_sessions WHERE id = $1`,
+        ['sess-5'],
+      );
+      expect(autoModeRows[0].mode).toBe('auto');
 
       // Worktrees: archived filter works
       const { rows: activeWt } = await adapter.query<{ id: string }>(
