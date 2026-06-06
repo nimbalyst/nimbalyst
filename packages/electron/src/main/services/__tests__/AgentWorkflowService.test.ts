@@ -181,6 +181,42 @@ Inspect the codebase, write the plan, and capture open questions.
     expect(codexSkill).toContain('description: "Create a new plan document for tracking work."');
   });
 
+  it('treats OpenCode as a codex-style workflow consumer', async () => {
+    const commandsDir = path.join(workspacePath, '.claude', 'commands');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(commandsDir, 'design.md'),
+      `---
+description: Create a design plan
+---
+
+Write a plan before implementation.
+`,
+      'utf-8',
+    );
+
+    const service = new AgentWorkflowService(workspacePath, {
+      userHomePath,
+      extensionDirectoriesLoader: async () => [],
+      nativeClaudePluginPathsLoader: async () => [],
+      releaseChannelLoader: () => 'stable',
+    });
+
+    const entries = await service.listEntries({ provider: 'opencode' });
+    expect(entries.some(entry => entry.name === 'design')).toBe(true);
+
+    const exportedSkillPath = path.join(
+      workspacePath,
+      '.agents',
+      'skills',
+      '.nimbalyst-generated',
+      'design',
+      'SKILL.md',
+    );
+    expect(fs.existsSync(exportedSkillPath)).toBe(true);
+    expect(fs.readFileSync(exportedSkillPath, 'utf-8')).toContain('/design');
+  });
+
   it('rewrites Claude command argument placeholders into Codex-friendly guidance', async () => {
     const commandsDir = path.join(workspacePath, '.claude', 'commands');
     fs.mkdirSync(commandsDir, { recursive: true });

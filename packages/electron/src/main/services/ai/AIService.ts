@@ -104,6 +104,7 @@ import { MessageStreamingHandler } from './MessageStreamingHandler';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
+import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 
 const execFileAsync = promisify(execFile);
 
@@ -1280,7 +1281,7 @@ export class AIService {
   }): { commands: string[]; skills: string[] } {
     const providerCandidates = request.provider
       ? [request.provider]
-      : ['claude-code', 'openai-codex'];
+      : ['claude-code', 'openai-codex', 'openai-codex-acp', 'opencode'];
 
     let provider: AIProvider | undefined;
     for (const providerType of providerCandidates) {
@@ -1314,11 +1315,15 @@ export class AIService {
       };
     }
 
-    if (request.provider === 'openai-codex') {
+    if (request.provider === 'openai-codex' || request.provider === 'openai-codex-acp') {
       return {
         commands: OpenAICodexProvider.getKnownSlashCommands(),
         skills: [],
       };
+    }
+
+    if (supportsWorkspaceSlashWorkflowProvider(request.provider)) {
+      return { commands: [], skills: [] };
     }
 
     return { commands: [], skills: [] };

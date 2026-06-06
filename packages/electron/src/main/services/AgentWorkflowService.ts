@@ -12,6 +12,7 @@ import {
   getReleaseChannel,
   type ReleaseChannel,
 } from '../utils/store';
+import { usesCodexStyleAgentWorkflows } from '../../shared/agentWorkflowProviders';
 
 export type AgentWorkflowKind = 'command' | 'skill';
 export type AgentWorkflowInvocation = 'explicit' | 'implicit' | 'both';
@@ -388,7 +389,7 @@ export class AgentWorkflowService {
     const snapshot = await this.getSnapshot();
     const exportSettings = getAgentWorkflowExportSettings();
 
-    if (provider === 'openai-codex' && exportSettings.codexEnabled) {
+    if (usesCodexStyleAgentWorkflows(provider) && exportSettings.codexEnabled) {
       await this.ensureCodexExportsSynced(snapshot);
     }
 
@@ -872,7 +873,12 @@ export class AgentWorkflowService {
     nativeCommands: string[],
     nativeSkills: string[],
   ): AgentWorkflowEntry[] {
-    const commandDescriptions: Record<string, string> = provider === 'openai-codex'
+    const nativeSkillProviderLabel = provider === 'opencode'
+      ? 'OpenCode'
+      : usesCodexStyleAgentWorkflows(provider)
+        ? 'Codex'
+        : 'Claude';
+    const commandDescriptions: Record<string, string> = usesCodexStyleAgentWorkflows(provider)
       ? {
           compact: 'Summarize the current conversation to free context while preserving key points',
           diff: 'Show the current Git diff, including untracked files',
@@ -912,7 +918,7 @@ export class AgentWorkflowService {
       entries.push({
         id: `provider-native:skill:${name}`,
         name,
-        description: `Invoke the ${name} ${provider === 'openai-codex' ? 'Codex' : 'Claude'} skill`,
+        description: `Invoke the ${name} ${nativeSkillProviderLabel} skill`,
         source: 'plugin',
         kind: 'skill',
         sourceType: 'provider-native',
@@ -923,7 +929,7 @@ export class AgentWorkflowService {
   }
 
   private buildDescriptorEntries(descriptors: AgentWorkflowDescriptor[], provider: string): AgentWorkflowEntry[] {
-    const target = provider === 'openai-codex' ? 'codex' : 'claude';
+    const target = usesCodexStyleAgentWorkflows(provider) ? 'codex' : 'claude';
 
     return descriptors
       .filter(descriptor => descriptor.providerTargets.includes(target))
