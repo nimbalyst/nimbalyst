@@ -353,7 +353,7 @@ export function extractBackendModuleIds(backendModules: unknown): Set<string> {
  *
  *   {
  *     id: string,                       // unique within the extension
- *     name: string,                     // shown in settings + chooser
+ *     displayName: string,              // shown in the provider dropdown
  *     backendModuleId: string,          // must match a declared backendModule
  *     models?: Array<{ id, name, ... }> // models the provider advertises
  *     toolFileLinks?: { [toolName]: ... } // optional UI hint table
@@ -427,16 +427,17 @@ export function validateAgentProviders(
       seenProviderIds.add(provider.id);
     }
 
-    // name: non-empty string. Surfaced verbatim in the provider chooser, so
-    // it has to be readable; not currently length-capped because we have no
-    // signal yet on what the UI tolerates.
-    if (typeof provider.name !== 'string' || provider.name.trim().length === 0) {
+    // displayName: non-empty string. Surfaced verbatim in the provider
+    // dropdown, so it has to be readable; not currently length-capped because
+    // we have no signal yet on what the UI tolerates. Matches the
+    // AiAgentProviderContribution type, which names this field `displayName`.
+    if (typeof provider.displayName !== 'string' || provider.displayName.trim().length === 0) {
       issues.push({
         providerId:
           typeof provider.id === 'string' ? provider.id : undefined,
         message:
-          `aiAgentProviders[${providerLabel}].name must be a non-empty string ` +
-          '(shown verbatim in the provider chooser).',
+          `aiAgentProviders[${providerLabel}].displayName must be a non-empty string ` +
+          '(shown verbatim in the provider dropdown).',
       });
     }
 
@@ -463,9 +464,10 @@ export function validateAgentProviders(
       });
     }
 
-    // (c) models, if present, must be an array of { id, name } with a
-    // non-empty provider id. The provider id field is `provider` per the
-    // existing ExtensionAIModel shape in types/extension.ts.
+    // (c) models, if present, must be an array of { id, name }. These are
+    // the only required fields on the AiAgentProviderModel type; the host
+    // derives the provider from the contribution id, so models carry no
+    // per-entry provider field.
     if (provider.models !== undefined) {
       if (!Array.isArray(provider.models)) {
         issues.push({
@@ -518,18 +520,6 @@ export function validateAgentProviders(
                 typeof provider.id === 'string' ? provider.id : undefined,
               message:
                 `aiAgentProviders[${providerLabel}].${modelLabel}.name must be a non-empty string`,
-            });
-          }
-          if (
-            typeof model.provider !== 'string' ||
-            model.provider.trim().length === 0
-          ) {
-            issues.push({
-              providerId:
-                typeof provider.id === 'string' ? provider.id : undefined,
-              message:
-                `aiAgentProviders[${providerLabel}].${modelLabel}.provider must be a non-empty string ` +
-                '(typically the agent-provider id this model is exposed under).',
             });
           }
         }
