@@ -45,6 +45,16 @@ export class ModelIdentifier {
     if (id) ModelIdentifier.EXTENSION_PROVIDERS.add(id);
   }
 
+  /**
+   * Replace the entire set of known extension provider ids. Use this when the
+   * installed/enabled extension set changes (load, re-scan, disable) so the set
+   * tracks reality: ids gone from `ids` stop resolving, which lets a stale
+   * model id whose provider was removed be detected via `tryParse(...) === null`.
+   */
+  static setExtensionProviders(ids: string[]): void {
+    ModelIdentifier.EXTENSION_PROVIDERS = new Set(ids.filter(Boolean));
+  }
+
   static isExtensionProvider(id: string): boolean {
     return ModelIdentifier.EXTENSION_PROVIDERS.has(id);
   }
