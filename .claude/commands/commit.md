@@ -25,8 +25,12 @@ Prepare a git commit following these steps:
 - The body can explain HOW if it's non-obvious, but title = IMPACT
 
 **Issue Linking (for auto-close):**
-- If fixing a Linear issue, include `Fixes NIM-XXX` on its own line after the title
-- For GitHub issues, use `Fixes #XXX` or `Closes ````#XXX`
+- If the commit is intended to resolve a referenced issue or tracker item,
+  include the tracker reference on its own line in the proposed message
+- Prefer that system's canonical closing syntax, such as `Fixes #123`,
+  `Closes ABC-123`, or similar
+- If the correct auto-close syntax is unclear, include a neutral reference
+  line (for example `Refs ABC-123`) rather than omitting the tracker
 
 **Important:**
 - Do NOT add "Co-Authored-By" or any attribution lines

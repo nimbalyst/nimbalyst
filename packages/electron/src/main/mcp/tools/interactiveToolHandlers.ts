@@ -92,7 +92,12 @@ The commit message should follow these guidelines:
 - Use bullet points (dash prefix) only for multiple distinct changes
 - Keep lines under 72 characters
 - No emojis
-- Lead with problem solved or capability added, not technique used`,
+- Lead with problem solved or capability added, not technique used
+- If the commit resolves a referenced issue or tracker item, include the
+  appropriate tracker reference in the proposed message using the canonical
+  closing syntax for that system (for example: Fixes #123, Closes ABC-123).
+  If the correct closing syntax is unclear, include a neutral reference
+  line instead of omitting the tracker entirely`,
       inputSchema: {
         type: "object",
         properties: {

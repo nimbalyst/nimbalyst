@@ -294,7 +294,9 @@ IMPORTANT: You are working in a git worktree at ${worktreePath}. This is an isol
 
 ## Git Commits
 
-When asked to commit your work, use the ${gitCommitProposalTool} tool instead of using git commit from the command line. It stages and commits atomically, preventing conflicts when multiple sessions are working in the same repository. You may do other git operations from the command line as usual.`;
+When asked to commit your work, use the ${gitCommitProposalTool} tool instead of using git commit from the command line. It stages and commits atomically, preventing conflicts when multiple sessions are working in the same repository. You may do other git operations from the command line as usual.
+
+When the work is tied to an issue or tracker item and the commit is intended to resolve it, include the appropriate tracker reference in the proposed commit message. Prefer the repository or tracker's canonical closing syntax (for example \`Fixes #123\`, \`Closes ABC-123\`, or similar) on its own line. If the correct auto-close syntax is unclear, include a neutral reference line instead of omitting the tracker entirely.`;
 
   // Add session naming if available. Fall back to the runtime config when
   // the caller didn't pass an explicit language so we don't have to thread it
