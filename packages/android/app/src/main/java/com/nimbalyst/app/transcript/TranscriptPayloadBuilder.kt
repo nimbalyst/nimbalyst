@@ -1,6 +1,7 @@
 package com.nimbalyst.app.transcript
 
 import com.google.gson.Gson
+import com.google.gson.JsonParser
 import com.nimbalyst.app.data.MessageEntity
 
 object TranscriptPayloadBuilder {
@@ -12,9 +13,10 @@ object TranscriptPayloadBuilder {
         provider: String,
         model: String,
         mode: String,
-        messages: List<MessageEntity>
+        messages: List<MessageEntity>,
+        viewMessagesJson: String? = null
     ): String {
-        val payload = mapOf(
+        val payload = mutableMapOf<String, Any?>(
             "sessionId" to sessionId,
             "messages" to messages.map { message ->
                 mapOf(
@@ -36,6 +38,15 @@ object TranscriptPayloadBuilder {
                 "isExecuting" to false
             )
         )
+
+        // Oversized sessions ship a pre-projected tail; pass it through as a raw
+        // JSON array so the renderer skips raw-message projection.
+        if (!viewMessagesJson.isNullOrBlank()) {
+            runCatching { JsonParser.parseString(viewMessagesJson) }
+                .getOrNull()
+                ?.takeIf { it.isJsonArray }
+                ?.let { payload["viewMessages"] = it }
+        }
 
         return gson.toJson(payload)
     }

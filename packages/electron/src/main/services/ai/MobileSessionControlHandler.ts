@@ -18,6 +18,7 @@ import {
   resolveGitCommitProposalPromptId,
 } from './gitCommitProposalPromptUtils';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
+import { getMobileTranscriptTailJson } from '../../utils/transcriptHelpers';
 
 const log = logger.ai;
 
@@ -30,7 +31,8 @@ export type ControlMessageType =
   | 'question_response'  // Legacy - kept for backwards compatibility
   | 'prompt_response'    // New unified prompt response type
   | 'prompt'
-  | 'archive';
+  | 'archive'
+  | 'load_transcript_history';
 
 // ============================================================
 // Payload Types
@@ -124,7 +126,7 @@ export function initMobileSessionControlHandler(
   }
 
   const cleanup = syncProvider.onSessionControlMessage((message) => {
-    handleControlMessage(message, findWindowByWorkspace, callbacks);
+    handleControlMessage(syncProvider, message, findWindowByWorkspace, callbacks);
   });
 
   // log.info('Mobile session control handler initialized');
@@ -136,6 +138,7 @@ export function initMobileSessionControlHandler(
  * Dispatch a control message to the appropriate handler
  */
 function handleControlMessage(
+  syncProvider: SyncProvider,
   message: SessionControlMessage,
   findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined,
   callbacks: MobileSessionControlCallbacks
@@ -188,8 +191,41 @@ function handleControlMessage(
       break;
     }
 
+    case 'load_transcript_history': {
+      const payload = message.payload as { count?: number } | undefined;
+      void handleLoadTranscriptHistory(syncProvider, message.sessionId, payload?.count);
+      break;
+    }
+
     default:
       log.warn('Unknown control message type:', message.type);
+  }
+}
+
+async function handleLoadTranscriptHistory(
+  syncProvider: SyncProvider,
+  sessionId: string,
+  requestedCount?: number,
+): Promise<void> {
+  try {
+    const count = Number.isFinite(requestedCount)
+      ? Math.max(40, Math.min(12000, Math.floor(requestedCount as number)))
+      : 200;
+    const tailJson = await getMobileTranscriptTailJson(sessionId, count);
+    if (!tailJson) {
+      log.warn('No mobile transcript tail available for history request:', sessionId, 'count:', count);
+      return;
+    }
+
+    syncProvider.pushChange?.(sessionId, {
+      type: 'metadata_updated',
+      metadata: {
+        mobileTranscriptTailJson: tailJson,
+        mobileTranscriptTailUpdatedAt: Date.now(),
+      },
+    });
+  } catch (err) {
+    log.error('Failed to handle load_transcript_history control message:', err);
   }
 }
 

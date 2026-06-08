@@ -22,7 +22,10 @@ import {
   ModelIdentifier,
   shouldBlockStartedSessionProviderSwitch,
   AgentRole,
+  AgentMessage,
 } from './types';
+import { projectRawMessagesToViewMessages } from './transcript/projectRawMessages';
+import type { RawMessage } from './transcript/TranscriptTransformer';
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
 import type { SessionData as ChatSession } from './types';
 import { parseContextUsageMessage } from './utils/contextUsage';
@@ -43,6 +46,48 @@ interface TaskToolInput {
   team_name?: string;
   mode?: string;
   [key: string]: unknown;
+}
+
+const DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT = 5_000;
+const DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT = 350;
+const DESKTOP_TOKEN_USAGE_RAW_MESSAGE_LIMIT = 1_000;
+
+function agentMessageToRawMessage(message: AgentMessage): RawMessage {
+  return {
+    id: Number(message.id ?? 0),
+    sessionId: message.sessionId,
+    source: message.source,
+    direction: message.direction,
+    content: message.content,
+    createdAt: message.createdAt ?? new Date(),
+    metadata: message.metadata,
+    hidden: message.hidden ?? false,
+  };
+}
+
+async function getAgentMessageCount(sessionId: string): Promise<number> {
+  const counts = await AgentMessagesRepository.getMessageCounts([sessionId]);
+  const reportedCount = counts.get(sessionId) ?? 0;
+
+  if (reportedCount > DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT) {
+    return reportedCount;
+  }
+
+  // Some packaged/runtime store combinations can fail to expose an accurate
+  // COUNT path. Probe only enough rows to decide whether the canonical full
+  // transcript path is safe; never read the entire session just to count it.
+  const probe = await AgentMessagesRepository.list(sessionId, {
+    limit: DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT + 1,
+  });
+  return Math.max(reportedCount, probe.length);
+}
+
+async function listTailAgentMessages(
+  sessionId: string,
+  count: number,
+): Promise<AgentMessage[]> {
+  const limit = Math.max(1, count);
+  return AgentMessagesRepository.listTail(sessionId, limit);
 }
 
 function toTimestampMillis(value: unknown): number {
@@ -1052,19 +1097,24 @@ export class SessionManager {
       return null;
     }
 
-    // Load transcript from canonical ai_transcript_events table
-    // These are already TranscriptViewMessage[] -- do NOT pass through
-    // viewMessageFromServerMessage (which expects the old Message format).
-    const uiMessages = await this.loadCanonicalTranscript(sessionId, session.provider);
+    const rawMessageCount = await getAgentMessageCount(sessionId);
+
+    // Huge sessions cannot safely project the whole raw log on desktop open.
+    // Load a bounded raw tail directly so the session stays responsive.
+    const uiMessages = rawMessageCount > DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT
+      ? await this.loadRawTailTranscript(sessionId, session.provider)
+      : await this.loadCanonicalTranscript(sessionId, session.provider);
 
     // Build session data, then overwrite messages with the already-projected ones
     const sessionData = sessionDataFromChatSession(session, workspace);
     sessionData.messages = uiMessages;
 
-    // Fallback: If no tokenUsage in metadata, try parsing from /context responses
-    // This provides backwards compatibility for sessions created before tokenUsage was stored in metadata
+    // Fallback: If no tokenUsage in metadata, try parsing from recent /context
+    // responses only. Scanning every raw row has crashed large sessions.
     if (!sessionData.tokenUsage) {
-      const agentMessages = await AgentMessagesRepository.list(sessionId);
+      const agentMessages = rawMessageCount > DESKTOP_TOKEN_USAGE_RAW_MESSAGE_LIMIT
+        ? await listTailAgentMessages(sessionId, DESKTOP_TOKEN_USAGE_RAW_MESSAGE_LIMIT)
+        : await AgentMessagesRepository.list(sessionId);
       for (let i = agentMessages.length - 1; i >= 0; i--) {
         const msg = agentMessages[i];
         if (msg.direction === 'output' && msg.content?.includes('## Context Usage')) {
@@ -1099,6 +1149,17 @@ export class SessionManager {
     }
 
     return TranscriptMigrationRepository.getService().getViewMessages(sessionId, provider);
+  }
+
+  private async loadRawTailTranscript(
+    sessionId: string,
+    provider: string,
+  ): Promise<TranscriptViewMessage[]> {
+    const rawTail = await listTailAgentMessages(
+      sessionId,
+      DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT,
+    );
+    return projectRawMessagesToViewMessages(rawTail.map(agentMessageToRawMessage), provider);
   }
 
   async getSessions(workspacePath?: string): Promise<SessionData[]> {

@@ -37,6 +37,13 @@ export interface SyncConfig {
   deviceInfo?: DeviceInfo;
 
   /**
+   * Optional callback used by desktop to publish a compact projected transcript
+   * tail for oversized sessions that can no longer sync their full message
+   * history to mobile.
+   */
+  getMobileTranscriptTailJson?: (sessionId: string, count: number) => Promise<string | null>;
+
+  /**
    * Function to get current device info for presence updates.
    * Called periodically (every 30s) to get up-to-date presence info.
    * If provided, takes precedence over static deviceInfo.
@@ -455,6 +462,10 @@ export interface SyncedSessionMetadata {
   tags?: string[];
   /** Unix timestamp ms when this session was last read by any device */
   lastReadAt?: number;
+  /** Compact projected transcript tail for oversized sessions on mobile. */
+  mobileTranscriptTailJson?: string;
+  /** Freshness marker for the mobile transcript tail. */
+  mobileTranscriptTailUpdatedAt?: number;
 }
 
 /**

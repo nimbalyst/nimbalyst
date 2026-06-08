@@ -152,6 +152,10 @@ data class ClientMetadata(
     val tags: List<String>? = null,
     val draftInput: String? = null,
     val draftUpdatedAt: Long? = null,
+    // Compact pre-projected transcript tail the desktop publishes for oversized
+    // sessions whose per-message sync was disabled (message_limit_exceeded).
+    val mobileTranscriptTailJson: String? = null,
+    val mobileTranscriptTailUpdatedAt: Long? = null,
 )
 
 data class ContextInfo(

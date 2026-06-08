@@ -7,8 +7,18 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MessageDao {
-    @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY sequence ASC")
-    fun observeMessagesForSession(sessionId: String): Flow<List<MessageEntity>>
+    @Query(
+        """
+        SELECT * FROM (
+            SELECT * FROM messages
+            WHERE sessionId = :sessionId
+            ORDER BY sequence DESC
+            LIMIT :limit
+        )
+        ORDER BY sequence ASC
+        """
+    )
+    fun observeLatestMessagesForSession(sessionId: String, limit: Int): Flow<List<MessageEntity>>
 
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId")
     suspend fun countForSession(sessionId: String): Int

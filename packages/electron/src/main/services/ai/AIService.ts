@@ -602,6 +602,12 @@ export class AIService {
     const pendingPrompts = await queueStore.listPending(sessionId);
 
     if (pendingPrompts.length === 0) {
+      logger.main.info(`[AIService] ${source}: ending queued session ${sessionId}`);
+      try {
+        getSessionStateManager().endSession(sessionId);
+      } catch (error) {
+        logger.main.warn(`[AIService] ${source}: failed to end queued session ${sessionId}:`, error);
+      }
       return;
     }
 
@@ -2042,21 +2048,39 @@ export class AIService {
         promptCount: 1
       });
 
-      // claude-code-cli (NIM-806): the CLI queue normally drains on the PID
-      // watcher's running->idle transition. But a prompt queued while the CLI is
-      // ALREADY idle (e.g. smart-commit on a session sitting at its prompt) has no
-      // transition to ride, so it would sit forever. If the terminal is live and
-      // the session is idle right now, kick a flush directly. The flush singleton's
-      // in-flight guard + DB claim make this safe against a concurrent transition
-      // flush; if the CLI is mid-turn (running/waiting), we skip and let the next
-      // idle transition drain it.
-      if (queuedSession?.provider === 'claude-code-cli') {
-        const terminalManager = getTerminalSessionManager();
-        const state = getSessionStateManager().getSessionState(sessionId);
-        const workspacePath = queuedSession.workspacePath ?? state?.workspacePath;
-        if (terminalManager.isTerminalActive(sessionId) && state?.status === 'idle' && workspacePath) {
-          void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
+      try {
+        const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+        const session = await AISessionsRepository.get(sessionId);
+        const targetWindow = BrowserWindow.fromWebContents(event.sender) || undefined;
+        const sessionState = getSessionStateManager().getSessionState(sessionId);
+        const status = sessionState?.status ?? 'idle';
+        const workspacePath = session?.workspacePath ?? queuedSession?.workspacePath ?? sessionState?.workspacePath;
+
+        // claude-code-cli (NIM-806): the CLI queue normally drains on the PID
+        // watcher's running->idle transition. But a prompt queued while the CLI is
+        // ALREADY idle (e.g. smart-commit on a session sitting at its prompt) has no
+        // transition to ride, so it would sit forever. If the terminal is live and
+        // the session is idle right now, kick a flush directly. The flush singleton's
+        // in-flight guard + DB claim make this safe against a concurrent transition
+        // flush; if the CLI is mid-turn (running/waiting), we skip and let the next
+        // idle transition drain it.
+        if (queuedSession?.provider === 'claude-code-cli') {
+          const terminalManager = getTerminalSessionManager();
+          if (terminalManager.isTerminalActive(sessionId) && status === 'idle' && workspacePath) {
+            void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
+          }
+        } else if (
+          workspacePath &&
+          targetWindow &&
+          !targetWindow.isDestroyed() &&
+          (status === 'idle' || status === 'error')
+        ) {
+          void this.processQueuedPrompt(sessionId, workspacePath, targetWindow).catch((error) => {
+            logger.main.error('[AIService] createQueuedPrompt: failed to trigger local queue processing:', error);
+          });
         }
+      } catch (error) {
+        logger.main.warn('[AIService] createQueuedPrompt: failed to inspect local queue trigger state:', error);
       }
 
       return {

@@ -49,6 +49,9 @@ class SyncManager(
     private val _connectedDevices = MutableStateFlow<List<DeviceInfo>>(emptyList())
     private val _availableModels = MutableStateFlow<List<SyncedAvailableModel>>(emptyList())
     private val _desktopDefaultModel = MutableStateFlow<String?>(null)
+    // sessionId -> pre-projected transcript tail JSON (oversized sessions whose
+    // per-message sync the server disabled). Rendered in place of synced messages.
+    private val _transcriptTails = MutableStateFlow<Map<String, String>>(emptyMap())
 
     private var activeCredentials: PairingCredentials? = null
     private var crypto: CryptoManager? = null
@@ -60,6 +63,7 @@ class SyncManager(
     val connectedDevices: StateFlow<List<DeviceInfo>> = _connectedDevices.asStateFlow()
     val availableModels: StateFlow<List<SyncedAvailableModel>> = _availableModels.asStateFlow()
     val desktopDefaultModel: StateFlow<String?> = _desktopDefaultModel.asStateFlow()
+    val transcriptTails: StateFlow<Map<String, String>> = _transcriptTails.asStateFlow()
 
     init {
         indexClient.onConnectionStateChanged = { connected ->
@@ -841,6 +845,7 @@ class SyncManager(
         val existing = repository.getSession(entry.sessionId)
         val titleDecrypted = crypto.decryptOrNull(entry.encryptedTitle, entry.titleIv)
         val clientMetadata = decodeClientMetadata(entry.encryptedClientMetadata, entry.clientMetadataIv)
+        captureTranscriptTail(entry.sessionId, clientMetadata)
         val draftInput = clientMetadata?.draftInput?.ifBlank { null }
 
         return ProcessedSessionEntry(
@@ -910,6 +915,7 @@ class SyncManager(
         val existing = repository.getSession(sessionId) ?: return
         val crypto = crypto ?: return
         val clientMetadata = decodeClientMetadata(metadata.encryptedClientMetadata, metadata.clientMetadataIv)
+        captureTranscriptTail(sessionId, clientMetadata)
         val draftInput = clientMetadata?.draftInput?.ifBlank { null }
         val titleDecrypted = if (metadata.title != null) {
             metadata.title
@@ -971,6 +977,18 @@ class SyncManager(
                 promptTextDecrypted = plaintext,
                 source = prompt.source ?: "desktop"
             )
+        }
+    }
+
+    // Cache the desktop-published transcript tail for an oversized session so the
+    // detail screen can render it when per-message sync is unavailable. Only set
+    // (never clear) on absence, since not every index update carries the tail.
+    private fun captureTranscriptTail(sessionId: String, clientMetadata: ClientMetadata?) {
+        val tail = clientMetadata?.mobileTranscriptTailJson
+        if (tail.isNullOrBlank()) return
+        Log.d(TAG, "[transcriptTail] captured for $sessionId (${tail.length} chars)")
+        _transcriptTails.update { current ->
+            if (current[sessionId] == tail) current else current + (sessionId to tail)
         }
     }
 

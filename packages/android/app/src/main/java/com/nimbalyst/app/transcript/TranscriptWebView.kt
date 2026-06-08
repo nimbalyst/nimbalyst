@@ -31,6 +31,7 @@ fun TranscriptWebView(
     model: String,
     mode: String,
     messages: List<MessageEntity>,
+    transcriptTailJson: String? = null,
     onPromptSubmitted: (String) -> Unit = {},
     onInteractiveResponse: (TranscriptBridgeMessage) -> Unit = {},
 ) {
@@ -81,10 +82,11 @@ fun TranscriptWebView(
                     provider = provider,
                     model = model,
                     mode = mode,
-                    messages = messages
+                    messages = messages,
+                    viewMessagesJson = transcriptTailJson
                 )
                 scheduleRetry(retryHandler, pendingRetry, this,
-                    sessionId, sessionTitle, provider, model, mode, messages)
+                    sessionId, sessionTitle, provider, model, mode, messages, transcriptTailJson)
             }
         },
         update = { wv ->
@@ -98,11 +100,12 @@ fun TranscriptWebView(
                 provider = provider,
                 model = model,
                 mode = mode,
-                messages = messages
+                messages = messages,
+                viewMessagesJson = transcriptTailJson
             )
             // Schedule a retry in case React hasn't mounted yet
             scheduleRetry(retryHandler, pendingRetry, wv,
-                sessionId, sessionTitle, provider, model, mode, messages)
+                sessionId, sessionTitle, provider, model, mode, messages, transcriptTailJson)
         }
     )
 }
@@ -116,12 +119,13 @@ private fun scheduleRetry(
     provider: String,
     model: String,
     mode: String,
-    messages: List<MessageEntity>
+    messages: List<MessageEntity>,
+    viewMessagesJson: String?
 ) {
     // Retry at 200ms, 500ms, 1000ms to cover React mount timing
     for (delayMs in listOf(200L, 500L, 1000L)) {
         val retry = Runnable {
-            webView.pushSessionPayload(sessionId, sessionTitle, provider, model, mode, messages)
+            webView.pushSessionPayload(sessionId, sessionTitle, provider, model, mode, messages, viewMessagesJson)
         }
         pendingRetries.add(retry)
         handler.postDelayed(retry, delayMs)
@@ -134,7 +138,8 @@ private fun WebView.pushSessionPayload(
     provider: String,
     model: String,
     mode: String,
-    messages: List<MessageEntity>
+    messages: List<MessageEntity>,
+    viewMessagesJson: String?
 ) {
     val payload = TranscriptPayloadBuilder.buildSessionPayload(
         sessionId = sessionId,
@@ -142,7 +147,8 @@ private fun WebView.pushSessionPayload(
         provider = provider,
         model = model,
         mode = mode,
-        messages = messages
+        messages = messages,
+        viewMessagesJson = viewMessagesJson
     )
     val msgCount = messages.size
     // Log diagnostic info, then attempt to load the session

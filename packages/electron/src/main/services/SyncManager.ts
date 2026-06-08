@@ -32,6 +32,7 @@ import { setSleepPreventionMode, setSyncConnected, shutdownSleepPrevention, type
 import { reconnectAllTrackerSyncs } from './TrackerSyncManager';
 import { BrowserWindow } from 'electron';
 import { timeStartupPhase } from '../utils/startupTiming';
+import { getMobileTranscriptTailJson } from '../utils/transcriptHelpers';
 
 function loadSyncModule() {
   return syncModule;
@@ -522,6 +523,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         return freshJwt;
       },
       encryptionKey,
+      getMobileTranscriptTailJson,
       // Use callback for dynamic presence updates (called every 30s)
       getDeviceInfo: () => getDeviceInfo(stytchUserId),
     });

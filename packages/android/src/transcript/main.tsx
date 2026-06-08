@@ -23,6 +23,13 @@ import './styles.css';
 interface BridgeSessionData {
   sessionId: string;
   messages: BridgeMessage[];
+  /**
+   * Pre-projected transcript tail for oversized sessions whose per-message sync
+   * was disabled by the server (message_limit_exceeded / message_too_large). The
+   * desktop publishes the last N projected view-messages in the encrypted index
+   * metadata; when present we render these directly and skip raw projection.
+   */
+  viewMessages?: TranscriptViewMessage[];
   metadata: {
     title?: string;
     provider?: string;
@@ -204,6 +211,8 @@ class TranscriptErrorBoundary extends React.Component<
 function TranscriptApp() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [rawMessages, setRawMessages] = useState<BridgeMessage[]>([]);
+  // Pre-projected tail messages (oversized sessions); null = project rawMessages.
+  const [providedViewMessages, setProvidedViewMessages] = useState<TranscriptViewMessage[] | null>(null);
   const [metadata, setMetadata] = useState<BridgeMetadataUpdate>({});
   const rawMessagesRef = useRef<BridgeMessage[]>([]);
   const transcriptRef = useRef<{ scrollToMessage: (index: number) => void; scrollToTop: () => void }>(null);
@@ -226,6 +235,7 @@ function TranscriptApp() {
           setSessionId(data.sessionId);
           setRawMessages(data.messages || []);
           rawMessagesRef.current = data.messages || [];
+          setProvidedViewMessages(data.viewMessages ?? null);
           setMetadata(data.metadata || {});
 
           // Set up interactive widget host for this session
@@ -261,6 +271,7 @@ function TranscriptApp() {
         setSessionId(null);
         setRawMessages([]);
         rawMessagesRef.current = [];
+        setProvidedViewMessages(null);
         setMetadata({});
       },
 
@@ -312,6 +323,15 @@ function TranscriptApp() {
       setViewMessages([]);
       return;
     }
+    // Oversized sessions: the desktop already projected the tail; render it
+    // directly. JSON serialization turns Date -> epoch ms, so rehydrate createdAt.
+    if (providedViewMessages) {
+      setViewMessages(providedViewMessages.map((vm) => ({
+        ...vm,
+        createdAt: vm.createdAt instanceof Date ? vm.createdAt : new Date(vm.createdAt as unknown as number),
+      })));
+      return;
+    }
     let cancelled = false;
     const provider = metadata.provider || 'claude-code';
     const rawForTransform: RawMessage[] = rawMessages.map((m, i) => bridgeMessageToRaw(m, i + 1));
@@ -325,7 +345,7 @@ function TranscriptApp() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, rawMessages, metadata.provider]);
+  }, [sessionId, rawMessages, metadata.provider, providedViewMessages]);
 
   const sessionData: SessionData | null = React.useMemo(() => {
     if (!sessionId) return null;

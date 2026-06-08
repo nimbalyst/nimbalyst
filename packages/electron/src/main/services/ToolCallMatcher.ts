@@ -139,6 +139,7 @@ const TIME_CUTOFF_MS = 10_000; // 10 second hard cutoff around tool call
 const MIN_MATCH_SCORE = 30; // Must have at least a filename match
 const WORKSPACE_CLEAR_WINNER_MARGIN = 12;
 const WORKSPACE_MIN_CONFIDENCE_SCORE = 55;
+const MAX_RAW_TOOL_CALL_BACKFILL_MESSAGES = 2_000;
 
 /** Shell wrapper: /bin/zsh -lc 'cmd' or bare bash -lc 'cmd' (Windows inner layer) */
 const SHELL_WRAPPER_REGEX = /^(?:\/(?:bin|usr\/bin)\/)?(?:bash|zsh|sh)\s+-l?c\s+([\s\S]+)$/;
@@ -481,10 +482,18 @@ export async function getRawToolCallWindows(
       paramIdx++;
     }
 
+    const limitParam = paramIdx;
+    params.push(MAX_RAW_TOOL_CALL_BACKFILL_MESSAGES);
+
     const messagesResult = await database.query<AgentMessageRow>(
-      `SELECT id, content, metadata, EXTRACT(EPOCH FROM created_at) * 1000 AS created_at_ms
-       FROM ai_agent_messages
-       WHERE ${conditions.join(' AND ')}
+      `SELECT id, content, metadata, created_at_ms
+       FROM (
+         SELECT id, content, metadata, EXTRACT(EPOCH FROM created_at) * 1000 AS created_at_ms
+         FROM ai_agent_messages
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY id DESC
+         LIMIT $${limitParam}
+       ) recent_messages
        ORDER BY id ASC`,
       params,
     );
@@ -537,11 +546,20 @@ async function getRawToolCallWindowsMultiSession(
       paramIdx++;
     }
 
+    const limitParam = paramIdx;
+    params.push(MAX_RAW_TOOL_CALL_BACKFILL_MESSAGES);
+
     const messagesResult = await database.query<AgentMessageRow & { session_id: string }>(
-      `SELECT session_id, id, content, metadata, EXTRACT(EPOCH FROM created_at) * 1000 AS created_at_ms
-       FROM ai_agent_messages
-       WHERE ${conditions.join(' AND ')}
-       ORDER BY id ASC`,
+      `SELECT session_id, id, content, metadata, created_at_ms
+       FROM (
+         SELECT session_id, id, content, metadata,
+                EXTRACT(EPOCH FROM created_at) * 1000 AS created_at_ms,
+                ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id DESC) AS rn
+         FROM ai_agent_messages
+         WHERE ${conditions.join(' AND ')}
+       ) recent_messages
+       WHERE rn <= $${limitParam}
+       ORDER BY session_id ASC, id ASC`,
       params,
     );
 

@@ -9,12 +9,18 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
@@ -42,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nimbalyst.app.NimbalystApplication
@@ -100,12 +107,28 @@ fun SessionDetailScreen(
         }
     }
 
-    val sessions by app.repository.observeActiveSessions().collectAsState(initial = emptyList())
-    val session = sessions.firstOrNull { it.id == sessionId }
+    val session by app.repository.observeSession(sessionId).collectAsState(initial = null)
     val messages by app.repository.observeMessagesForSession(sessionId)
         .collectAsState(initial = emptyList())
     val queuedPrompts by app.repository.observeQueuedPromptsForSession(sessionId)
         .collectAsState(initial = emptyList())
+    // Desktop-published transcript tail for oversized sessions whose per-message
+    // sync was disabled by the server; rendered in place of the (stale/empty) messages.
+    val transcriptTails by app.syncManager.transcriptTails.collectAsState()
+    val transcriptTail = transcriptTails[sessionId]
+
+    // Sessions with neither synced messages nor a tail (e.g. removed from server
+    // sync / never published) would otherwise render an empty transcript. Show a
+    // clear hint instead, after a short grace period so it never flashes on load.
+    val hasNoContent = messages.isEmpty() && transcriptTail.isNullOrBlank()
+    var showEmptyHint by remember(sessionId) { mutableStateOf(false) }
+    LaunchedEffect(sessionId, hasNoContent) {
+        showEmptyHint = false
+        if (hasNoContent) {
+            delay(2500)
+            showEmptyHint = true
+        }
+    }
 
     LaunchedEffect(sessionId) {
         AnalyticsManager.capture("mobile_session_viewed")
@@ -224,15 +247,16 @@ fun SessionDetailScreen(
         TopAppBar(
             title = {
                 Column {
+                    val currentSession = session
                     Text(
                         text = sessionTitle,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.titleMedium
                     )
-                    if (session != null) {
+                    if (currentSession != null) {
                         Text(
-                            text = "${session.provider ?: "unknown"} -- ${session.mode ?: "agent"}",
+                            text = "${currentSession.provider ?: "unknown"} -- ${currentSession.mode ?: "agent"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -246,17 +270,34 @@ fun SessionDetailScreen(
             }
         )
 
-        TranscriptWebView(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            sessionId = sessionId,
-            sessionTitle = sessionTitle,
-            provider = session?.provider ?: "unknown",
-            model = session?.model ?: "unknown",
-            mode = session?.mode ?: "agent",
-            messages = messages,
-            onPromptSubmitted = { text -> submitPrompt(text, emptyList()) },
+        if (hasNoContent && showEmptyHint) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "This session isn't synced from your desktop.\n\nVery large sessions sync only a recent-history preview — if it's missing, open the session on your desktop to refresh it.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+        } else {
+            TranscriptWebView(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                sessionId = sessionId,
+                sessionTitle = sessionTitle,
+                provider = session?.provider ?: "unknown",
+                model = session?.model ?: "unknown",
+                mode = session?.mode ?: "agent",
+                messages = messages,
+                transcriptTailJson = transcriptTail,
+                onPromptSubmitted = { text -> submitPrompt(text, emptyList()) },
             onInteractiveResponse = { bridgeMessage ->
                 coroutineScope.launch {
                     val promptId = bridgeMessage.promptId
@@ -282,12 +323,15 @@ fun SessionDetailScreen(
                     }
                 }
             }
-        )
+            )
+        }
 
-        // Compose bar
+        // Compose bar. Pad for the navigation bar (edge-to-edge) and the IME so the
+        // Send / Photo / Camera buttons are never hidden behind the system nav bar or keyboard.
         Card(
             modifier = Modifier
                 .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
                 .padding(8.dp)
         ) {
             Column(

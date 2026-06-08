@@ -9,6 +9,8 @@ export interface AgentMessagesStore {
    */
   createMany?(messages: CreateAgentMessageInput[]): Promise<void>;
   list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]>;
+  /** Get the newest messages for one session, returned oldest-to-newest */
+  listTail?(sessionId: string, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]>;
   /** Get message counts for multiple sessions in a single query */
   getMessageCounts?(sessionIds: string[]): Promise<Map<string, number>>;
 }
@@ -59,6 +61,19 @@ export const AgentMessagesRepository = {
 
   async list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]> {
     return await requireStore().list(sessionId, options);
+  },
+
+  async listTail(sessionId: string, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]> {
+    const store = requireStore();
+    if (store.listTail) {
+      return await store.listTail(sessionId, limit, options);
+    }
+
+    const counts = await this.getMessageCounts([sessionId]);
+    const total = counts.get(sessionId) ?? 0;
+    const boundedLimit = Math.max(1, limit);
+    const offset = Math.max(0, total - boundedLimit);
+    return await store.list(sessionId, { limit: boundedLimit, offset, includeHidden: options?.includeHidden });
   },
 
   async getMessageCounts(sessionIds: string[]): Promise<Map<string, number>> {

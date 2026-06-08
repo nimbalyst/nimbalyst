@@ -13,7 +13,8 @@ class NimbalystRepository(
 
     fun observeSession(sessionId: String) = database.sessionDao().observeSession(sessionId)
 
-    fun observeMessagesForSession(sessionId: String) = database.messageDao().observeMessagesForSession(sessionId)
+    fun observeMessagesForSession(sessionId: String) =
+        database.messageDao().observeLatestMessagesForSession(sessionId, MOBILE_SESSION_MESSAGE_LIMIT)
 
     fun observeQueuedPromptsForSession(sessionId: String) =
         database.queuedPromptDao().observeQueuedPromptsForSession(sessionId)
@@ -139,5 +140,6 @@ class NimbalystRepository(
     companion object {
         const val INDEX_SYNC_ROOM_ID = "index"
         const val PROTOTYPE_PROJECT_ID = "/test/android"
+        const val MOBILE_SESSION_MESSAGE_LIMIT = 60
     }
 }
