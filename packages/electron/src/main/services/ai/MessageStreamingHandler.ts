@@ -693,6 +693,51 @@ export class MessageStreamingHandler {
     };
     this.installListener(provider, 'session:metadata-updated', onSessionMetadataUpdated);
 
+    type AgentStatusKind = 'thinking' | 'responding' | 'tool' | 'waiting' | 'queued' | 'complete' | 'error' | 'idle';
+    type AgentStatusPayload = {
+      kind: AgentStatusKind;
+      label: string;
+      detail?: string;
+      toolName?: string;
+    };
+    let lastAgentStatusKey = '';
+    let lastAgentStatusPushedAt = 0;
+    const publishAgentStatus = (
+      status: AgentStatusPayload,
+      options: {
+        sessionId?: string;
+        throttleMs?: number;
+        isExecuting?: boolean;
+        hasPendingPrompt?: boolean;
+        updatedAt?: number;
+      } = {},
+    ) => {
+      const syncProvider = getSyncProvider();
+      if (!syncProvider) return;
+      const targetSessionId = options.sessionId ?? session.id;
+      const now = Date.now();
+      const key = `${targetSessionId}|${status.kind}|${status.label}|${status.detail ?? ''}|${status.toolName ?? ''}`;
+      const throttleMs = options.throttleMs ?? 1000;
+      if (key === lastAgentStatusKey && now - lastAgentStatusPushedAt < throttleMs) return;
+      lastAgentStatusKey = key;
+      lastAgentStatusPushedAt = now;
+
+      const metadata: Record<string, unknown> = {
+        agentStatus: {
+          ...status,
+          updatedAt: now,
+        },
+      };
+      if (options.isExecuting !== undefined) metadata.isExecuting = options.isExecuting;
+      if (options.hasPendingPrompt !== undefined) metadata.hasPendingPrompt = options.hasPendingPrompt;
+      if (options.updatedAt !== undefined) metadata.updatedAt = options.updatedAt;
+
+      syncProvider.pushChange(targetSessionId, {
+        type: 'metadata_updated',
+        metadata: metadata as any,
+      });
+    };
+
     // Helper to persist pending-prompt state to ai_sessions.metadata AND
     // push the change to mobile in one call. See pendingPromptPersistence.ts
     // for why we persist locally: the in-memory atom can desync from reality
@@ -707,6 +752,11 @@ export class MessageStreamingHandler {
       logger.main.info('[AIService] ExitPlanMode confirmation requested:', data.requestId);
       safeSend(event, 'ai:exitPlanModeConfirm', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, true);
+      publishAgentStatus({
+        kind: 'waiting',
+        label: 'Waiting for your response',
+        detail: 'Plan approval',
+      }, { sessionId: data.sessionId, throttleMs: 0, hasPendingPrompt: true });
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
       // Update session status so all windows show the pending indicator
@@ -744,6 +794,11 @@ export class MessageStreamingHandler {
     }) => {
       logger.main.info('[AIService] ExitPlanMode resolved:', data.requestId, 'approved=', data.approved);
       syncPendingPrompt(data.sessionId, false);
+      publishAgentStatus({
+        kind: 'thinking',
+        label: 'Thinking...',
+        detail: 'Continuing after response',
+      }, { sessionId: data.sessionId, throttleMs: 0, isExecuting: true, hasPendingPrompt: false });
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
       getSessionStateManager().updateActivity({
@@ -761,6 +816,11 @@ export class MessageStreamingHandler {
       // logger.main.info('[AIService] AskUserQuestion requested:', data.questionId);
       safeSend(event, 'ai:askUserQuestion', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, true);
+      publishAgentStatus({
+        kind: 'waiting',
+        label: 'Waiting for your response',
+        detail: 'Question',
+      }, { sessionId: data.sessionId, throttleMs: 0, hasPendingPrompt: true });
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
       // Update session status to waiting_for_input so all windows show the pending indicator
@@ -787,6 +847,11 @@ export class MessageStreamingHandler {
       // logger.main.info('[AIService] AskUserQuestion answered:', data.questionId);
       safeSend(event, 'ai:askUserQuestionAnswered', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, false);
+      publishAgentStatus({
+        kind: 'thinking',
+        label: 'Thinking...',
+        detail: 'Continuing after answer',
+      }, { sessionId: data.sessionId, throttleMs: 0, isExecuting: true, hasPendingPrompt: false });
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
       // Update session status back to running so all windows clear the pending indicator
@@ -803,6 +868,11 @@ export class MessageStreamingHandler {
       logger.main.info('[AIService] Tool permission requested:', data.requestId);
       safeSend(event, 'ai:toolPermission', data);
       syncPendingPrompt(data.sessionId, true);
+      publishAgentStatus({
+        kind: 'waiting',
+        label: 'Waiting for your response',
+        detail: 'Tool permission',
+      }, { sessionId: data.sessionId, throttleMs: 0, hasPendingPrompt: true });
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
       // Update session status so all windows show the pending indicator
@@ -833,6 +903,11 @@ export class MessageStreamingHandler {
       logger.main.info('[AIService] Tool permission resolved:', data.requestId);
       safeSend(event, 'ai:toolPermissionResolved', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, false);
+      publishAgentStatus({
+        kind: 'thinking',
+        label: 'Thinking...',
+        detail: 'Continuing after permission',
+      }, { sessionId: data.sessionId, throttleMs: 0, isExecuting: true, hasPendingPrompt: false });
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
       // Update session status back to running so all windows clear the pending indicator
@@ -1015,7 +1090,15 @@ export class MessageStreamingHandler {
     if (syncProvider) {
       syncProvider.pushChange(session.id, {
         type: 'metadata_updated',
-        metadata: { isExecuting: true } as any,
+        metadata: {
+          isExecuting: true,
+          agentStatus: {
+            kind: 'thinking',
+            label: 'Thinking...',
+            detail: 'Waiting for the first response',
+            updatedAt: Date.now(),
+          },
+        } as any,
       });
     }
 
@@ -1193,6 +1276,33 @@ export class MessageStreamingHandler {
         }
       }
 
+      const formatToolStatus = (toolName: string, args?: Record<string, unknown>): { displayName: string; detail?: string } => {
+        if (toolName === 'command_execution') {
+          const command = typeof args?.command === 'string' ? args.command : undefined;
+          return {
+            displayName: 'Bash',
+            detail: command ? command.slice(0, 160) : undefined,
+          };
+        }
+        if (toolName.startsWith('mcp__')) {
+          const parts = toolName.split('__').filter(Boolean);
+          const rawName = parts[parts.length - 1] || toolName;
+          return {
+            displayName: rawName,
+            detail: parts.length > 1 ? parts.slice(0, -1).join('/') : undefined,
+          };
+        }
+        const filePath = typeof args?.file_path === 'string'
+          ? args.file_path
+          : typeof args?.path === 'string'
+            ? args.path
+            : undefined;
+        return {
+          displayName: toolName || 'tool',
+          detail: filePath ? path.basename(filePath) : undefined,
+        };
+      };
+
       for await (const chunk of provider.sendMessage(messageToSend, contextWithSession, session.id, sessionMessages, effectiveWorkspacePath, attachments)) {
         if (!chunk) continue;
         chunkCount++;
@@ -1216,6 +1326,10 @@ export class MessageStreamingHandler {
 
             // Update activity to indicate streaming
             if (textChunks === 1) {
+              publishAgentStatus({
+                kind: 'responding',
+                label: 'Responding...',
+              }, { throttleMs: 0, isExecuting: true });
               await stateManager.updateActivity({
                 sessionId: session.id,
                 isStreaming: true
@@ -1386,6 +1500,23 @@ export class MessageStreamingHandler {
             if (chunk.toolCall) {
               toolCallCount++;
               toolCalls.push(chunk.toolCall);
+              const toolStatus = formatToolStatus(chunk.toolCall.name, chunk.toolCall.arguments);
+              const toolHasResult = chunk.toolCall.result !== undefined && chunk.toolCall.result !== null;
+              publishAgentStatus(
+                toolHasResult
+                  ? {
+                      kind: 'thinking',
+                      label: 'Thinking...',
+                      detail: `Finished ${toolStatus.displayName}`,
+                    }
+                  : {
+                      kind: 'tool',
+                      label: `Using ${toolStatus.displayName}...`,
+                      detail: toolStatus.detail,
+                      toolName: toolStatus.displayName,
+                    },
+                { throttleMs: toolHasResult ? 750 : 250, isExecuting: true },
+              );
               if (lastTextSection.trim()) prevTextSection = lastTextSection.trim();
               lastTextSection = '';  // Reset so notification shows text after last tool call
               console.groupEnd();
@@ -1762,6 +1893,13 @@ export class MessageStreamingHandler {
             break;
 
           case 'stream_edit_start':
+            publishAgentStatus({
+              kind: 'tool',
+              label: 'Editing file...',
+              detail: documentContext?.filePath ? path.basename(documentContext.filePath) : undefined,
+              toolName: 'streamContent',
+            }, { throttleMs: 0, isExecuting: true });
+
             // Create pre-edit tag BEFORE streaming content (for non-agentic providers)
             // This enables diff visualization and persistence across app restarts
             if (documentContext?.filePath && session.provider !== 'claude-code') {
@@ -1789,6 +1927,12 @@ export class MessageStreamingHandler {
             break;
 
           case 'stream_edit_end':
+            publishAgentStatus({
+              kind: chunk.error ? 'error' : 'thinking',
+              label: chunk.error ? 'Edit failed' : 'Thinking...',
+              detail: chunk.error ? String(chunk.error).slice(0, 160) : 'Finished editing',
+            }, { throttleMs: 0, isExecuting: !chunk.error });
+
             // Forward streaming end event to renderer
             safeSend(event, 'ai:streamEditEnd', {
               sessionId: session.id,
@@ -1820,6 +1964,11 @@ export class MessageStreamingHandler {
 
           case 'error':
             hadError = true;  // Mark that an error occurred to skip auto /context
+            publishAgentStatus({
+              kind: 'error',
+              label: 'Agent hit an error',
+              detail: (chunk.error || 'Unknown error').slice(0, 160),
+            }, { throttleMs: 0, isExecuting: false, updatedAt: Date.now() });
             if (isClaudeCode) {
               console.error('[CLAUDE-CODE-SERVICE] ERROR FROM PROVIDER:', chunk.error || 'Unknown error');
               console.error('[CLAUDE-CODE-SERVICE] Error context:', {
@@ -2388,9 +2537,19 @@ export class MessageStreamingHandler {
 
       // Clear executing and pending prompt flags for mobile sync
       if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
+        const doneAt = Date.now();
         syncProvider.pushChange(session.id, {
           type: 'metadata_updated',
-          metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+          metadata: {
+            isExecuting: false,
+            hasPendingPrompt: false,
+            agentStatus: {
+              kind: 'complete',
+              label: 'Done',
+              updatedAt: doneAt,
+            },
+            updatedAt: doneAt,
+          },
         });
       }
 
@@ -2482,9 +2641,20 @@ export class MessageStreamingHandler {
 
         // Clear executing and pending prompt flags for mobile sync on error
         if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
+          const errorAt = Date.now();
           syncProvider.pushChange(session.id, {
             type: 'metadata_updated',
-            metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+            metadata: {
+              isExecuting: false,
+              hasPendingPrompt: false,
+              agentStatus: {
+                kind: 'error',
+                label: 'Agent hit an error',
+                detail: error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160),
+                updatedAt: errorAt,
+              },
+              updatedAt: errorAt,
+            },
           });
 
           // Request mobile push notification for agent error (only when truly away)

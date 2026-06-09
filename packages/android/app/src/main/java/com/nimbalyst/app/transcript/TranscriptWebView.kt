@@ -30,10 +30,16 @@ fun TranscriptWebView(
     provider: String,
     model: String,
     mode: String,
+    isExecuting: Boolean = false,
+    agentStatusKind: String? = null,
+    agentStatusLabel: String? = null,
+    agentStatusDetail: String? = null,
     messages: List<MessageEntity>,
     transcriptTailJson: String? = null,
+    transcriptHistoryPageJson: String? = null,
     onPromptSubmitted: (String) -> Unit = {},
     onInteractiveResponse: (TranscriptBridgeMessage) -> Unit = {},
+    onLoadOlderHistory: (Long?) -> Unit = {},
 ) {
     val context = LocalContext.current
 
@@ -68,6 +74,7 @@ fun TranscriptWebView(
                         when (message.type) {
                             "prompt" -> message.text?.let(onPromptSubmitted)
                             "interactive_response" -> onInteractiveResponse(message)
+                            "load_older_history" -> onLoadOlderHistory(message.beforeRawMessageId)
                         }
                     },
                     "AndroidBridge"
@@ -82,11 +89,16 @@ fun TranscriptWebView(
                     provider = provider,
                     model = model,
                     mode = mode,
+                    isExecuting = isExecuting,
+                    agentStatusKind = agentStatusKind,
+                    agentStatusLabel = agentStatusLabel,
+                    agentStatusDetail = agentStatusDetail,
                     messages = messages,
-                    viewMessagesJson = transcriptTailJson
+                    viewMessagesJson = transcriptTailJson,
+                    historyPageJson = transcriptHistoryPageJson
                 )
                 scheduleRetry(retryHandler, pendingRetry, this,
-                    sessionId, sessionTitle, provider, model, mode, messages, transcriptTailJson)
+                    sessionId, sessionTitle, provider, model, mode, isExecuting, agentStatusKind, agentStatusLabel, agentStatusDetail, messages, transcriptTailJson, transcriptHistoryPageJson)
             }
         },
         update = { wv ->
@@ -100,12 +112,17 @@ fun TranscriptWebView(
                 provider = provider,
                 model = model,
                 mode = mode,
+                isExecuting = isExecuting,
+                agentStatusKind = agentStatusKind,
+                agentStatusLabel = agentStatusLabel,
+                agentStatusDetail = agentStatusDetail,
                 messages = messages,
-                viewMessagesJson = transcriptTailJson
+                viewMessagesJson = transcriptTailJson,
+                historyPageJson = transcriptHistoryPageJson
             )
             // Schedule a retry in case React hasn't mounted yet
             scheduleRetry(retryHandler, pendingRetry, wv,
-                sessionId, sessionTitle, provider, model, mode, messages, transcriptTailJson)
+                sessionId, sessionTitle, provider, model, mode, isExecuting, agentStatusKind, agentStatusLabel, agentStatusDetail, messages, transcriptTailJson, transcriptHistoryPageJson)
         }
     )
 }
@@ -119,13 +136,31 @@ private fun scheduleRetry(
     provider: String,
     model: String,
     mode: String,
+    isExecuting: Boolean,
+    agentStatusKind: String?,
+    agentStatusLabel: String?,
+    agentStatusDetail: String?,
     messages: List<MessageEntity>,
-    viewMessagesJson: String?
+    viewMessagesJson: String?,
+    historyPageJson: String?
 ) {
     // Retry at 200ms, 500ms, 1000ms to cover React mount timing
     for (delayMs in listOf(200L, 500L, 1000L)) {
         val retry = Runnable {
-            webView.pushSessionPayload(sessionId, sessionTitle, provider, model, mode, messages, viewMessagesJson)
+            webView.pushSessionPayload(
+                sessionId,
+                sessionTitle,
+                provider,
+                model,
+                mode,
+                isExecuting,
+                agentStatusKind,
+                agentStatusLabel,
+                agentStatusDetail,
+                messages,
+                viewMessagesJson,
+                historyPageJson
+            )
         }
         pendingRetries.add(retry)
         handler.postDelayed(retry, delayMs)
@@ -138,8 +173,13 @@ private fun WebView.pushSessionPayload(
     provider: String,
     model: String,
     mode: String,
+    isExecuting: Boolean,
+    agentStatusKind: String?,
+    agentStatusLabel: String?,
+    agentStatusDetail: String?,
     messages: List<MessageEntity>,
-    viewMessagesJson: String?
+    viewMessagesJson: String?,
+    historyPageJson: String?
 ) {
     val payload = TranscriptPayloadBuilder.buildSessionPayload(
         sessionId = sessionId,
@@ -147,8 +187,13 @@ private fun WebView.pushSessionPayload(
         provider = provider,
         model = model,
         mode = mode,
+        isExecuting = isExecuting,
+        agentStatusKind = agentStatusKind,
+        agentStatusLabel = agentStatusLabel,
+        agentStatusDetail = agentStatusDetail,
         messages = messages,
-        viewMessagesJson = viewMessagesJson
+        viewMessagesJson = viewMessagesJson,
+        historyPageJson = historyPageJson
     )
     val msgCount = messages.size
     // Log diagnostic info, then attempt to load the session

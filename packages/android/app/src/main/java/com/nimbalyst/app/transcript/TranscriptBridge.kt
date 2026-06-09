@@ -30,6 +30,8 @@ class TranscriptBridge(
                 questionId = json.get("questionId")?.takeIf { !it.isJsonNull }?.asString,
                 proposalId = json.get("proposalId")?.takeIf { !it.isJsonNull }?.asString,
                 feedback = json.get("feedback")?.takeIf { !it.isJsonNull }?.asString,
+                beforeRawMessageId = json.get("beforeRawMessageId")?.takeIf { !it.isJsonNull }?.asLong,
+                count = json.get("count")?.takeIf { !it.isJsonNull }?.asInt,
                 raw = json
             )
         )
@@ -45,5 +47,7 @@ data class TranscriptBridgeMessage(
     val questionId: String? = null,
     val proposalId: String? = null,
     val feedback: String? = null,
+    val beforeRawMessageId: Long? = null,
+    val count: Int? = null,
     val raw: JsonObject,
 )

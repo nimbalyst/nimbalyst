@@ -11,6 +11,8 @@ export interface AgentMessagesStore {
   list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]>;
   /** Get the newest messages for one session, returned oldest-to-newest */
   listTail?(sessionId: string, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]>;
+  /** Get messages before a raw message id, returned oldest-to-newest */
+  listBefore?(sessionId: string, beforeId: number | null | undefined, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]>;
   /** Get message counts for multiple sessions in a single query */
   getMessageCounts?(sessionIds: string[]): Promise<Map<string, number>>;
 }
@@ -74,6 +76,22 @@ export const AgentMessagesRepository = {
     const boundedLimit = Math.max(1, limit);
     const offset = Math.max(0, total - boundedLimit);
     return await store.list(sessionId, { limit: boundedLimit, offset, includeHidden: options?.includeHidden });
+  },
+
+  async listBefore(sessionId: string, beforeId: number | null | undefined, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]> {
+    const store = requireStore();
+    const boundedLimit = Math.max(1, limit);
+    if (store.listBefore) {
+      return await store.listBefore(sessionId, beforeId, boundedLimit, options);
+    }
+    if (beforeId == null) {
+      return await this.listTail(sessionId, boundedLimit, options);
+    }
+
+    const messages = await store.list(sessionId, { limit: 50000, includeHidden: options?.includeHidden });
+    return messages
+      .filter((message) => Number(message.id ?? 0) < beforeId)
+      .slice(-boundedLimit);
   },
 
   async getMessageCounts(sessionIds: string[]): Promise<Map<string, number>> {

@@ -262,6 +262,10 @@ private fun SessionRow(
                         )
                     }
                 }
+                AgentStatusInline(
+                    session = session,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
             Column(
                 horizontalAlignment = Alignment.End
@@ -271,7 +275,7 @@ private fun SessionRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (session.isExecuting) {
+                if (session.isExecuting && session.agentStatusDisplayLabel() != null) {
                     CircularProgressIndicator(
                         modifier = Modifier
                             .padding(top = 4.dp)
@@ -354,14 +358,19 @@ private fun WorkstreamGroup(
                                             .background(MaterialTheme.colorScheme.primary)
                                     )
                                 }
-                                Text(
-                                    text = child.titleDecrypted ?: "Untitled",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                if (child.isExecuting) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = child.titleDecrypted ?: "Untitled",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    AgentStatusInline(
+                                        session = child,
+                                        modifier = Modifier.padding(top = 2.dp)
+                                    )
+                                }
+                                if (child.isExecuting && child.agentStatusDisplayLabel() != null) {
                                     CircularProgressIndicator(
                                         modifier = Modifier
                                             .padding(start = 8.dp)

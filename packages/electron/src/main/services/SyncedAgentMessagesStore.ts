@@ -142,6 +142,34 @@ export function createSyncedAgentMessagesStore(
       return baseStore.list(sessionId, { limit: boundedLimit, offset, includeHidden: options?.includeHidden });
     },
 
+    async listBefore(sessionId: string, beforeId: number | null | undefined, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]> {
+      if (baseStore.listBefore) {
+        return baseStore.listBefore(sessionId, beforeId, limit, options);
+      }
+      if (beforeId == null) {
+        if (baseStore.listTail) {
+          return baseStore.listTail(sessionId, limit, options);
+        }
+
+        let total = 0;
+        if (baseStore.getMessageCounts) {
+          const counts = await baseStore.getMessageCounts([sessionId]);
+          total = counts.get(sessionId) ?? 0;
+        } else {
+          const messages = await baseStore.list(sessionId);
+          total = messages.length;
+        }
+        const boundedLimit = Math.max(1, limit);
+        const offset = Math.max(0, total - boundedLimit);
+        return baseStore.list(sessionId, { limit: boundedLimit, offset, includeHidden: options?.includeHidden });
+      }
+
+      const messages = await baseStore.list(sessionId, { limit: 50000, includeHidden: options?.includeHidden });
+      return messages
+        .filter((message) => Number(message.id ?? 0) < beforeId)
+        .slice(-Math.max(1, limit));
+    },
+
     async getMessageCounts(sessionIds: string[]): Promise<Map<string, number>> {
       if (baseStore.getMessageCounts) {
         return baseStore.getMessageCounts(sessionIds);

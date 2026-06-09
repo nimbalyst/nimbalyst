@@ -148,6 +148,7 @@ data class ServerSessionEntry(
 data class ClientMetadata(
     val currentContext: ContextInfo? = null,
     val hasPendingPrompt: Boolean? = null,
+    val agentStatus: AgentStatus? = null,
     val phase: String? = null,
     val tags: List<String>? = null,
     val draftInput: String? = null,
@@ -156,11 +157,22 @@ data class ClientMetadata(
     // sessions whose per-message sync was disabled (message_limit_exceeded).
     val mobileTranscriptTailJson: String? = null,
     val mobileTranscriptTailUpdatedAt: Long? = null,
+    // Latest cursor-based history page requested by this mobile client.
+    val mobileTranscriptHistoryPageJson: String? = null,
+    val mobileTranscriptHistoryPageUpdatedAt: Long? = null,
 )
 
 data class ContextInfo(
     val tokens: Int,
     val contextWindow: Int,
+)
+
+data class AgentStatus(
+    val kind: String? = null,
+    val label: String? = null,
+    val detail: String? = null,
+    val toolName: String? = null,
+    val updatedAt: Long? = null,
 )
 
 data class IndexBroadcast(

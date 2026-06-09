@@ -52,6 +52,9 @@ class SyncManager(
     // sessionId -> pre-projected transcript tail JSON (oversized sessions whose
     // per-message sync the server disabled). Rendered in place of synced messages.
     private val _transcriptTails = MutableStateFlow<Map<String, String>>(emptyMap())
+    // sessionId -> latest cursor-based projected transcript page requested by
+    // the WebView when the user scrolls upward.
+    private val _transcriptHistoryPages = MutableStateFlow<Map<String, String>>(emptyMap())
 
     private var activeCredentials: PairingCredentials? = null
     private var crypto: CryptoManager? = null
@@ -64,6 +67,7 @@ class SyncManager(
     val availableModels: StateFlow<List<SyncedAvailableModel>> = _availableModels.asStateFlow()
     val desktopDefaultModel: StateFlow<String?> = _desktopDefaultModel.asStateFlow()
     val transcriptTails: StateFlow<Map<String, String>> = _transcriptTails.asStateFlow()
+    val transcriptHistoryPages: StateFlow<Map<String, String>> = _transcriptHistoryPages.asStateFlow()
 
     init {
         indexClient.onConnectionStateChanged = { connected ->
@@ -382,21 +386,8 @@ class SyncManager(
                 throw IllegalStateException("Failed to send prompt update.")
             }
 
-            repository.upsertQueuedPrompt(
-                QueuedPromptEntity(
-                    id = promptId,
-                    sessionId = sessionId,
-                    promptTextEncrypted = encryptedPrompt.encrypted,
-                    iv = encryptedPrompt.iv,
-                    createdAt = now,
-                    sentAt = now,
-                    promptTextDecrypted = promptText,
-                    source = null
-                )
-            )
             repository.upsertSession(
                 session.copy(
-                    hasQueuedPrompts = true,
                     updatedAt = now,
                     lastMessageAt = now
                 )
@@ -430,6 +421,29 @@ class SyncManager(
         } else {
             Result.failure(IllegalStateException("Failed to send session control message."))
         }
+    }
+
+    fun requestTranscriptHistoryPage(
+        sessionId: String,
+        beforeRawMessageId: Long?,
+        count: Int = 240
+    ): Result<String> {
+        val requestId = UUID.randomUUID().toString()
+        val payload = JsonObject().apply {
+            addProperty("requestId", requestId)
+            addProperty("count", count.coerceIn(40, 450))
+            if (beforeRawMessageId == null) {
+                add("beforeRawMessageId", com.google.gson.JsonNull.INSTANCE)
+            } else {
+                addProperty("beforeRawMessageId", beforeRawMessageId)
+            }
+        }
+
+        return sendSessionControlMessage(
+            sessionId = sessionId,
+            messageType = "load_transcript_history",
+            payload = payload
+        ).map { requestId }
     }
 
     fun registerPushToken(token: String): Result<Unit> {
@@ -592,52 +606,6 @@ class SyncManager(
     fun leaveSessionRoom() {
         sessionClient.disconnect()
         _state.update { it.copy(sessionConnected = false, activeSessionId = null) }
-    }
-
-    suspend fun updateDraftInput(sessionId: String, draftInput: String) {
-        val crypto = crypto ?: return
-        if (!indexClient.isConnected) return
-
-        val session = repository.getSession(sessionId) ?: return
-        val now = System.currentTimeMillis()
-        val storeDraft = draftInput.ifBlank { null }
-
-        // Persist locally first
-        repository.updateDraftInput(sessionId, storeDraft, now)
-
-        // Build encrypted client metadata with draft
-        val clientMetadata = ClientMetadata(
-            draftInput = draftInput,  // Send "" explicitly to clear on other devices
-            draftUpdatedAt = now,
-            phase = session.phase,
-            tags = session.tagsJson?.let {
-                try { gson.fromJson(it, Array<String>::class.java).toList() } catch (_: Exception) { null }
-            }
-        )
-        val metaJson = gson.toJson(clientMetadata)
-        val encryptedMeta = crypto.encrypt(metaJson)
-        val encryptedProjectId = crypto.encryptProjectId(session.projectId)
-
-        val update = IndexUpdateMessage(
-            session = IndexUpdateEntry(
-                sessionId = sessionId,
-                encryptedProjectId = encryptedProjectId,
-                projectIdIv = CryptoManager.projectIdIvBase64,
-                encryptedTitle = session.titleEncrypted,
-                titleIv = session.titleIv,
-                provider = session.provider ?: "claude-code",
-                model = session.model,
-                mode = session.mode,
-                messageCount = repository.messageCount(sessionId),
-                lastMessageAt = session.lastMessageAt ?: now,
-                createdAt = session.createdAt,
-                updatedAt = now,
-                encryptedClientMetadata = encryptedMeta.encrypted,
-                clientMetadataIv = encryptedMeta.iv
-            )
-        )
-
-        indexClient.sendRaw(gson.toJson(update))
     }
 
     private suspend fun handleIndexMessage(message: String) {
@@ -845,8 +813,14 @@ class SyncManager(
         val existing = repository.getSession(entry.sessionId)
         val titleDecrypted = crypto.decryptOrNull(entry.encryptedTitle, entry.titleIv)
         val clientMetadata = decodeClientMetadata(entry.encryptedClientMetadata, entry.clientMetadataIv)
+        val agentStatus = clientMetadata?.agentStatus
+        val shouldClearAgentStatus = agentStatus.isTerminalAgentStatus() || entry.isExecuting == false
+        val effectiveIsExecuting = when {
+            agentStatus.isTerminalAgentStatus() -> false
+            else -> entry.isExecuting ?: existing?.isExecuting ?: false
+        }
         captureTranscriptTail(entry.sessionId, clientMetadata)
-        val draftInput = clientMetadata?.draftInput?.ifBlank { null }
+        captureTranscriptHistoryPage(entry.sessionId, clientMetadata)
 
         return ProcessedSessionEntry(
             session = SessionEntity(
@@ -868,7 +842,27 @@ class SyncManager(
                 branchedFromSessionId = entry.branchedFromSessionId ?: existing?.branchedFromSessionId,
                 branchPointMessageId = entry.branchPointMessageId ?: existing?.branchPointMessageId,
                 branchedAt = entry.branchedAt ?: existing?.branchedAt,
-                isExecuting = entry.isExecuting ?: existing?.isExecuting ?: false,
+                isExecuting = effectiveIsExecuting,
+                agentStatusKind = when {
+                    shouldClearAgentStatus -> null
+                    agentStatus != null -> agentStatus.kind
+                    else -> existing?.agentStatusKind
+                },
+                agentStatusLabel = when {
+                    shouldClearAgentStatus -> null
+                    agentStatus != null -> agentStatus.label
+                    else -> existing?.agentStatusLabel
+                },
+                agentStatusDetail = when {
+                    shouldClearAgentStatus -> null
+                    agentStatus != null -> agentStatus.detail
+                    else -> existing?.agentStatusDetail
+                },
+                agentStatusUpdatedAt = when {
+                    shouldClearAgentStatus -> null
+                    agentStatus != null -> agentStatus.updatedAt
+                    else -> existing?.agentStatusUpdatedAt
+                },
                 hasQueuedPrompts = clientMetadata?.hasPendingPrompt
                     ?: entry.hasPendingPrompt
                     ?: when {
@@ -883,8 +877,8 @@ class SyncManager(
                 lastSyncedSeq = existing?.lastSyncedSeq ?: 0,
                 lastReadAt = entry.lastReadAt ?: existing?.lastReadAt,
                 lastMessageAt = entry.lastMessageAt ?: existing?.lastMessageAt,
-                draftInput = draftInput ?: existing?.draftInput,
-                draftUpdatedAt = clientMetadata?.draftUpdatedAt ?: existing?.draftUpdatedAt
+                draftInput = null,
+                draftUpdatedAt = null
             ),
             queuedPrompts = decryptQueuedPrompts(entry.sessionId, entry.encryptedQueuedPrompts),
             clearQueuedPrompts = entry.queuedPromptCount == 0 || entry.encryptedQueuedPrompts?.isEmpty() == true
@@ -915,8 +909,14 @@ class SyncManager(
         val existing = repository.getSession(sessionId) ?: return
         val crypto = crypto ?: return
         val clientMetadata = decodeClientMetadata(metadata.encryptedClientMetadata, metadata.clientMetadataIv)
+        val agentStatus = clientMetadata?.agentStatus
+        val shouldClearAgentStatus = agentStatus.isTerminalAgentStatus() || metadata.isExecuting == false
+        val effectiveIsExecuting = when {
+            agentStatus.isTerminalAgentStatus() -> false
+            else -> metadata.isExecuting ?: existing.isExecuting
+        }
         captureTranscriptTail(sessionId, clientMetadata)
-        val draftInput = clientMetadata?.draftInput?.ifBlank { null }
+        captureTranscriptHistoryPage(sessionId, clientMetadata)
         val titleDecrypted = if (metadata.title != null) {
             metadata.title
         } else {
@@ -935,7 +935,27 @@ class SyncManager(
                 provider = metadata.provider ?: existing.provider,
                 model = metadata.model ?: existing.model,
                 mode = metadata.mode ?: existing.mode,
-                isExecuting = metadata.isExecuting ?: existing.isExecuting,
+                isExecuting = effectiveIsExecuting,
+                agentStatusKind = when {
+                    shouldClearAgentStatus -> null
+                    agentStatus != null -> agentStatus.kind
+                    else -> existing.agentStatusKind
+                },
+                agentStatusLabel = when {
+                    shouldClearAgentStatus -> null
+                    agentStatus != null -> agentStatus.label
+                    else -> existing.agentStatusLabel
+                },
+                agentStatusDetail = when {
+                    shouldClearAgentStatus -> null
+                    agentStatus != null -> agentStatus.detail
+                    else -> existing.agentStatusDetail
+                },
+                agentStatusUpdatedAt = when {
+                    shouldClearAgentStatus -> null
+                    agentStatus != null -> agentStatus.updatedAt
+                    else -> existing.agentStatusUpdatedAt
+                },
                 updatedAt = metadata.updatedAt ?: existing.updatedAt,
                 createdAt = metadata.createdAt ?: existing.createdAt,
                 phase = clientMetadata?.phase ?: existing.phase,
@@ -943,8 +963,8 @@ class SyncManager(
                 hasQueuedPrompts = clientMetadata?.hasPendingPrompt ?: existing.hasQueuedPrompts,
                 contextTokens = clientMetadata?.currentContext?.tokens ?: existing.contextTokens,
                 contextWindow = clientMetadata?.currentContext?.contextWindow ?: existing.contextWindow,
-                draftInput = draftInput ?: existing.draftInput,
-                draftUpdatedAt = clientMetadata?.draftUpdatedAt ?: existing.draftUpdatedAt
+                draftInput = null,
+                draftUpdatedAt = null
             )
         )
     }
@@ -989,6 +1009,15 @@ class SyncManager(
         Log.d(TAG, "[transcriptTail] captured for $sessionId (${tail.length} chars)")
         _transcriptTails.update { current ->
             if (current[sessionId] == tail) current else current + (sessionId to tail)
+        }
+    }
+
+    private fun captureTranscriptHistoryPage(sessionId: String, clientMetadata: ClientMetadata?) {
+        val page = clientMetadata?.mobileTranscriptHistoryPageJson
+        if (page.isNullOrBlank()) return
+        Log.d(TAG, "[transcriptHistoryPage] captured for $sessionId (${page.length} chars)")
+        _transcriptHistoryPages.update { current ->
+            if (current[sessionId] == page) current else current + (sessionId to page)
         }
     }
 
@@ -1145,6 +1174,13 @@ class SyncManager(
 }
 
 private const val JWT_REFRESH_INTERVAL_MS = 4L * 60L * 1000L  // 4 minutes
+
+private fun AgentStatus?.isTerminalAgentStatus(): Boolean {
+    return when (this?.kind?.lowercase()) {
+        "complete", "completed", "done", "idle" -> true
+        else -> false
+    }
+}
 
 private data class JwtClaims(
     val sub: String?,

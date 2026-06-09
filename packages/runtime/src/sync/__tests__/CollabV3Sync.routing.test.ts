@@ -33,6 +33,14 @@ describe('isIndexClientMetadataOnlyUpdate routing predicate', () => {
       ).toBe(false);
     });
 
+    it('routes { agentStatus } through indexUpdate', () => {
+      expect(
+        isIndexClientMetadataOnlyUpdateForTest(
+          m({ agentStatus: { kind: 'thinking', label: 'Thinking...', updatedAt: 123 } }),
+        ),
+      ).toBe(false);
+    });
+
     it('routes { phase } through indexUpdate', () => {
       expect(
         isIndexClientMetadataOnlyUpdateForTest(m({ phase: 'validating' } as Partial<SyncedSessionMetadata>)),
@@ -50,17 +58,17 @@ describe('isIndexClientMetadataOnlyUpdate routing predicate', () => {
         isIndexClientMetadataOnlyUpdateForTest(m({ lastReadAt: 123 } as Partial<SyncedSessionMetadata>)),
       ).toBe(false);
     });
-  });
 
-  describe('stays on patch fast-path (Group A)', () => {
-    it('routes { draftInput, draftUpdatedAt } through the patch path', () => {
+    it('does not route { draftInput, draftUpdatedAt } through the patch path', () => {
       expect(
         isIndexClientMetadataOnlyUpdateForTest(
           m({ draftInput: 'hello', draftUpdatedAt: 123 } as Partial<SyncedSessionMetadata>),
         ),
-      ).toBe(true);
+      ).toBe(false);
     });
+  });
 
+  describe('stays on patch fast-path (Group A)', () => {
     it('routes { hasBeenNamed } through the patch path', () => {
       expect(
         isIndexClientMetadataOnlyUpdateForTest(

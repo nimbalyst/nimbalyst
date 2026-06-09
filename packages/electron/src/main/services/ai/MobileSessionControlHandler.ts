@@ -31,6 +31,8 @@ export type ControlMessageType =
   | 'question_response'  // Legacy - kept for backwards compatibility
   | 'prompt_response'    // New unified prompt response type
   | 'prompt'
+  | 'delete_queued_prompt'
+  | 'send_queued_prompt_now'
   | 'archive'
   | 'load_transcript_history';
 
@@ -47,6 +49,16 @@ interface QuestionResponsePayload {
 interface PromptPayload {
   promptId: string;
   prompt: string;
+}
+
+interface QueuedPromptPayload {
+  promptId?: string;
+}
+
+interface TranscriptHistoryPayload {
+  count?: number;
+  beforeRawMessageId?: number | null;
+  requestId?: string;
 }
 
 /**
@@ -102,6 +114,12 @@ export interface MobileSessionControlCallbacks {
    * desktop reliably picks it up from the queued_prompts DB.
    */
   triggerQueuedPromptProcessing(sessionId: string, workspacePath: string): Promise<boolean>;
+
+  /** Delete a pending queued prompt before it has been claimed for execution. */
+  deleteQueuedPrompt(sessionId: string, promptId: string): Promise<boolean>;
+
+  /** Interrupt the active turn if needed, then trigger pending queue processing. */
+  sendQueuedPromptNow(sessionId: string, promptId?: string): Promise<boolean>;
 
   /**
    * Reset any prompts stuck in 'executing' back to 'pending' for the given
@@ -184,6 +202,22 @@ function handleControlMessage(
       break;
     }
 
+    case 'delete_queued_prompt': {
+      const payload = message.payload as unknown as QueuedPromptPayload | undefined;
+      if (!payload?.promptId) {
+        log.warn('delete_queued_prompt missing promptId:', message.sessionId);
+        break;
+      }
+      void handleDeleteQueuedPrompt(message.sessionId, payload.promptId, callbacks);
+      break;
+    }
+
+    case 'send_queued_prompt_now': {
+      const payload = message.payload as unknown as QueuedPromptPayload | undefined;
+      void handleSendQueuedPromptNow(message.sessionId, payload?.promptId, callbacks);
+      break;
+    }
+
     case 'archive': {
       const payload = message.payload as { isArchived?: boolean } | undefined;
       const isArchived = payload?.isArchived ?? true;
@@ -192,8 +226,8 @@ function handleControlMessage(
     }
 
     case 'load_transcript_history': {
-      const payload = message.payload as { count?: number } | undefined;
-      void handleLoadTranscriptHistory(syncProvider, message.sessionId, payload?.count);
+      const payload = message.payload as TranscriptHistoryPayload | undefined;
+      void handleLoadTranscriptHistory(syncProvider, message.sessionId, payload);
       break;
     }
 
@@ -205,23 +239,30 @@ function handleControlMessage(
 async function handleLoadTranscriptHistory(
   syncProvider: SyncProvider,
   sessionId: string,
-  requestedCount?: number,
+  payload?: TranscriptHistoryPayload,
 ): Promise<void> {
   try {
-    const count = Number.isFinite(requestedCount)
-      ? Math.max(40, Math.min(12000, Math.floor(requestedCount as number)))
-      : 200;
-    const tailJson = await getMobileTranscriptTailJson(sessionId, count);
-    if (!tailJson) {
-      log.warn('No mobile transcript tail available for history request:', sessionId, 'count:', count);
+    const count = Number.isFinite(payload?.count)
+      ? Math.max(40, Math.min(450, Math.floor(payload?.count as number)))
+      : 240;
+    const beforeRawMessageId = typeof payload?.beforeRawMessageId === 'number' && Number.isFinite(payload.beforeRawMessageId)
+      ? Math.max(1, Math.floor(payload.beforeRawMessageId))
+      : null;
+    const pageJson = await getMobileTranscriptHistoryPageJson(sessionId, {
+      count,
+      beforeRawMessageId,
+      requestId: payload?.requestId,
+    });
+    if (!pageJson) {
+      log.warn('No mobile transcript history page available:', sessionId, 'count:', count, 'before:', beforeRawMessageId);
       return;
     }
 
     syncProvider.pushChange?.(sessionId, {
       type: 'metadata_updated',
       metadata: {
-        mobileTranscriptTailJson: tailJson,
-        mobileTranscriptTailUpdatedAt: Date.now(),
+        mobileTranscriptHistoryPageJson: pageJson,
+        mobileTranscriptHistoryPageUpdatedAt: Date.now(),
       },
     });
   } catch (err) {
@@ -247,6 +288,32 @@ async function handlePromptTrigger(
     await callbacks.triggerQueuedPromptProcessing(sessionId, session.workspacePath);
   } catch (err) {
     log.error('Failed to handle mobile prompt control message:', err);
+  }
+}
+
+async function handleDeleteQueuedPrompt(
+  sessionId: string,
+  promptId: string,
+  callbacks: MobileSessionControlCallbacks
+): Promise<void> {
+  try {
+    const deleted = await callbacks.deleteQueuedPrompt(sessionId, promptId);
+    log.info(`Mobile queued prompt delete ${deleted ? 'succeeded' : 'ignored'}:`, sessionId, promptId);
+  } catch (err) {
+    log.error('Failed to delete queued prompt from mobile:', err);
+  }
+}
+
+async function handleSendQueuedPromptNow(
+  sessionId: string,
+  promptId: string | undefined,
+  callbacks: MobileSessionControlCallbacks
+): Promise<void> {
+  try {
+    const sent = await callbacks.sendQueuedPromptNow(sessionId, promptId);
+    log.info(`Mobile queued prompt send-now ${sent ? 'triggered' : 'ignored'}:`, sessionId, promptId);
+  } catch (err) {
+    log.error('Failed to send queued prompt now from mobile:', err);
   }
 }
 

@@ -37,6 +37,10 @@ data class SessionEntity(
     val branchPointMessageId: Int? = null,
     val branchedAt: Long? = null,
     val isExecuting: Boolean = false,
+    val agentStatusKind: String? = null,
+    val agentStatusLabel: String? = null,
+    val agentStatusDetail: String? = null,
+    val agentStatusUpdatedAt: Long? = null,
     val hasQueuedPrompts: Boolean = false,
     val contextTokens: Int? = null,
     val contextWindow: Int? = null,
@@ -48,4 +52,3 @@ data class SessionEntity(
     val draftInput: String? = null,
     val draftUpdatedAt: Long? = null,
 )
-

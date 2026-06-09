@@ -27,7 +27,6 @@ export const SYNC_RELEVANT_FIELDS = {
     'sessionType',
     'parentSessionId',
     'worktreeId',
-    'draftInput',
   ] as const,
 
   /**
@@ -40,8 +39,8 @@ export const SYNC_RELEVANT_FIELDS = {
   /**
    * Subset of `columns` whose changes represent meaningful content activity
    * and so should bump `updatedAt` (driving sort order on iOS). Pins,
-   * archives, drafts, reparents, etc. deliberately do NOT bump this — that
-   * would cause the row to jump to the top of the list on every device.
+   * archives, reparents, etc. deliberately do NOT bump this — that would
+   * cause the row to jump to the top of the list on every device.
    */
   sortRelevantColumns: ['title', 'mode', 'isArchived', 'provider', 'model'] as const,
 } as const;

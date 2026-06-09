@@ -36,6 +36,20 @@ class TranscriptBridgeTest {
     }
 
     @Test
+    fun `parses load older history payload`() {
+        var message: TranscriptBridgeMessage? = null
+        val bridge = TranscriptBridge { message = it }
+
+        bridge.postMessage("""{"type":"load_older_history","beforeRawMessageId":1234,"count":240,"requestId":"req-1"}""")
+
+        assertNotNull(message)
+        assertEquals("load_older_history", message?.type)
+        assertEquals(1234L, message?.beforeRawMessageId)
+        assertEquals(240, message?.count)
+        assertEquals("req-1", message?.requestId)
+    }
+
+    @Test
     fun `ignores invalid payload`() {
         var called = false
         val bridge = TranscriptBridge { called = true }

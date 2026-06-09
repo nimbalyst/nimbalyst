@@ -104,6 +104,8 @@ interface AgentTranscriptPanelProps {
   currentTeammates?: Array<{ agentId: string; status: 'running' | 'completed' | 'errored' | 'idle' }>;
   /** Optional: noun used in waiting text when teammates/workers are still running */
   waitingForNoun?: string;
+  /** Optional: exact text for the bottom transcript activity indicator */
+  waitingTextOverride?: string;
   /** Current session phase for the kanban board */
   currentPhase?: string | null;
   /** Available phase columns for the kanban board picker */
@@ -150,6 +152,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   canEmbedFile,
   currentTeammates,
   waitingForNoun,
+  waitingTextOverride,
   currentPhase,
   phaseColumns,
   onSetPhase,
@@ -386,6 +389,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
           promptAdditions={promptAdditions}
           currentTeammates={currentTeammates ?? sessionData.metadata?.currentTeammates as Array<{ agentId: string; status: 'running' | 'completed' | 'errored' | 'idle' }> | undefined}
           waitingForNoun={waitingForNoun}
+          waitingTextOverride={waitingTextOverride}
           appStartTime={appStartTime}
           renderEmbeddedFile={renderEmbeddedFile}
           canEmbedFile={canEmbedFile}
@@ -528,6 +532,13 @@ export const AgentTranscriptPanel = React.memo(
       logPanelMemoDiff(nextProps.sessionId, 'hasPendingInteractivePrompt', {
         prev: prevProps.hasPendingInteractivePrompt,
         next: nextProps.hasPendingInteractivePrompt,
+      });
+      return false;
+    }
+    if (prevProps.waitingTextOverride !== nextProps.waitingTextOverride) {
+      logPanelMemoDiff(nextProps.sessionId, 'waitingTextOverride', {
+        prev: prevProps.waitingTextOverride,
+        next: nextProps.waitingTextOverride,
       });
       return false;
     }

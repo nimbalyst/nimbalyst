@@ -229,6 +229,7 @@ export class AIService {
       attachments,
       documentContext,
     });
+    await this.publishQueuedPromptState(sessionId);
     return { id: created.id, prompt: created.prompt, createdAt: created.createdAt };
   }
 
@@ -586,6 +587,37 @@ export class AIService {
   private lastSyncProvider: import('@nimbalyst/runtime/sync').SyncProvider | null = null;
   private syncStatusUnsubscribe: (() => void) | null = null;
 
+  private async publishQueuedPromptState(sessionId: string): Promise<void> {
+    const syncProvider = getSyncProvider();
+    if (!syncProvider) return;
+
+    try {
+      const { getQueuedPromptsStore } = await import('../RepositoryManager');
+      const pending = await getQueuedPromptsStore().listPending(sessionId);
+      const metadata: Record<string, unknown> = {
+        queuedPrompts: pending.map((prompt) => ({
+          id: prompt.id,
+          prompt: prompt.prompt,
+          timestamp: prompt.createdAt,
+          attachments: prompt.attachments,
+        })),
+      };
+      if (pending.length > 0) {
+        metadata.agentStatus = {
+          kind: 'queued',
+          label: pending.length === 1 ? '1 prompt queued on desktop' : `${pending.length} prompts queued on desktop`,
+          updatedAt: Date.now(),
+        };
+      }
+      await Promise.resolve(syncProvider.pushChange(sessionId, {
+        type: 'metadata_updated',
+        metadata: metadata as any,
+      }));
+    } catch (error) {
+      logger.main.warn('[AIService] Failed to publish queued prompt state:', error);
+    }
+  }
+
   private async continueQueuedPromptChain(
     sessionId: string,
     workspacePath: string,
@@ -603,6 +635,7 @@ export class AIService {
 
     if (pendingPrompts.length === 0) {
       logger.main.info(`[AIService] ${source}: ending queued session ${sessionId}`);
+      await this.publishQueuedPromptState(sessionId);
       try {
         getSessionStateManager().endSession(sessionId);
       } catch (error) {
@@ -632,6 +665,7 @@ export class AIService {
       logError: (message, error) => logger.main.error(message, error),
       logInfo: (message) => logger.main.info(message),
       onAfterSettled: async () => {
+        await this.publishQueuedPromptState(sessionId);
         try {
           const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
           const childSession = await AISessionsRepository.get(sessionId);
@@ -668,6 +702,7 @@ export class AIService {
           sessionId: claimedSessionId,
           promptId,
         });
+        void this.publishQueuedPromptState(claimedSessionId);
       },
       processingSet: this.sessionsProcessingQueue,
       queueStore,
@@ -769,23 +804,6 @@ export class AIService {
                     });
                   }
 
-                  // Forward draftInput from remote device
-                  if (entry.draftInput !== undefined) {
-                    // logger.main.info('[AIService] Forwarding draftInput to renderer:', { sessionId, draftInput: entry.draftInput });
-                    targetWindow.webContents.send('sessions:sync-draft-input', {
-                      sessionId,
-                      draftInput: entry.draftInput ?? '',
-                      draftUpdatedAt: entry.draftUpdatedAt,
-                    });
-                  }
-                } else {
-                  if (entry.draftInput !== undefined) {
-                    // logger.main.info('[AIService] DEBUG: draftInput present but no targetWindow for projectId:', cachedEntry.projectId);
-                  }
-                }
-              } else {
-                if (entry.draftInput !== undefined) {
-                  // logger.main.info('[AIService] DEBUG: draftInput present but no projectId in cachedEntry for session:', sessionId);
                 }
               }
             }
@@ -803,6 +821,7 @@ export class AIService {
                 const { getQueuedPromptsStore } = await import('../RepositoryManager');
                 const queueStore = getQueuedPromptsStore();
 
+                let acceptedPromptsCount = 0;
                 let newPromptsCount = 0;
                 for (const prompt of entry.queuedPrompts) {
                   // Skip prompts that were created locally (echoed back via Y.js sync)
@@ -811,6 +830,8 @@ export class AIService {
                     // logger.main.info(`[AIService] Prompt ${prompt.id} is a local prompt echoed via sync, skipping`);
                     continue;
                   }
+
+                  acceptedPromptsCount++;
 
                   // Check if prompt already exists
                   const existing = await queueStore.get(prompt.id);
@@ -829,12 +850,16 @@ export class AIService {
                   newPromptsCount++;
                 }
 
-                if (newPromptsCount === 0) {
-                  // logger.main.info('[AIService] No new prompts to process, all already exist');
+                if (acceptedPromptsCount === 0) {
+                  // logger.main.info('[AIService] No mobile prompts to process');
                   return;
                 }
 
-                logger.main.info(`[AIService] Inserted ${newPromptsCount} new prompts into queued_prompts table`);
+                await this.publishQueuedPromptState(sessionId);
+
+                logger.main.info(
+                  `[AIService] Accepted ${acceptedPromptsCount} mobile prompt(s), inserted ${newPromptsCount} new prompt(s) into queued_prompts table`
+                );
 
                 // Load session to get its workspacePath for window routing
                 // Use repository directly since we just need metadata, not full session load
@@ -879,14 +904,20 @@ export class AIService {
                     // logger.main.info('[AIService] Notifying window to process queue for workspace:', session.workspacePath);
                     targetWindow.webContents.send('ai:queuedPromptsReceived', {
                       sessionId,
-                      promptCount: newPromptsCount,
+                      promptCount: newPromptsCount || acceptedPromptsCount,
                       workspacePath: session.workspacePath  // Include for renderer-side filtering
                     });
 
-                    // Directly trigger queue processing from main process
-                    // This ensures mobile messages are processed even when the session isn't open in the UI
-                    // logger.main.info('[AIService] Triggering queue processing for mobile prompt');
-                    this.processQueuedPrompt(sessionId, session.workspacePath, targetWindow);
+                    const sessionState = getSessionStateManager().getSessionState(sessionId);
+                    const status = sessionState?.status ?? 'idle';
+                    if (status === 'idle' || status === 'error') {
+                      // Directly trigger queue processing from main process when idle.
+                      this.processQueuedPrompt(sessionId, session.workspacePath, targetWindow);
+                    } else {
+                      logger.main.info(
+                        `[AIService] Mobile prompt queued for busy session ${sessionId}; waiting for completion or send-now`
+                      );
+                    }
                   } else {
                     logger.main.warn('[AIService] No window found and workspace path does not exist:', session.workspacePath);
                   }
@@ -1091,6 +1122,7 @@ export class AIService {
                 sessionId: session.id,
                 prompt: request.initialPrompt
               });
+              await this.publishQueuedPromptState(session.id);
 
               // logger.main.info('[AIService] Queued initial prompt from mobile:', {
               //   sessionId: session.id,
@@ -1247,6 +1279,46 @@ export class AIService {
       initMobileSessionControlHandler(syncProvider, findWindowByWorkspace, {
         triggerQueuedPromptProcessing: (sessionId, workspacePath) =>
           this.triggerQueuedPromptProcessingForSession(sessionId, workspacePath),
+        deleteQueuedPrompt: async (sessionId, promptId) => {
+          const { getQueuedPromptsStore } = await import('../RepositoryManager');
+          const queueStore = getQueuedPromptsStore();
+          const prompt = await queueStore.get(promptId);
+          if (!prompt || prompt.sessionId !== sessionId || prompt.status !== 'pending') {
+            await this.publishQueuedPromptState(sessionId);
+            return false;
+          }
+          await queueStore.delete(promptId);
+          await this.publishQueuedPromptState(sessionId);
+          return true;
+        },
+        sendQueuedPromptNow: async (sessionId) => {
+          const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+          const session = await AISessionsRepository.get(sessionId);
+          if (!session?.workspacePath) {
+            await this.publishQueuedPromptState(sessionId);
+            return false;
+          }
+
+          const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+          if (provider) {
+            this.sessionsProcessingQueue.delete(sessionId);
+            try {
+              const { getQueuedPromptsStore } = await import('../RepositoryManager');
+              const { completed, rolledBack } = await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
+              if (completed > 0 || rolledBack > 0) {
+                logger.main.info(
+                  `[AIService] mobile send-now: swept session ${sessionId} -- ${completed} delivered marked completed, ${rolledBack} undelivered rolled back`
+                );
+              }
+            } catch (sweepErr) {
+              logger.main.error('[AIService] mobile send-now: sweepExecutingForSession failed:', sweepErr);
+            }
+            await provider.interruptCurrentTurn();
+          }
+
+          await this.publishQueuedPromptState(sessionId);
+          return this.triggerQueuedPromptProcessingForSession(sessionId, session.workspacePath);
+        },
         rollbackExecutingPrompts: async (sessionId) => {
           // Use the delivery-aware sweep so that a mobile-initiated cancel
           // doesn't re-deliver a prompt that already landed in the
@@ -1254,6 +1326,7 @@ export class AIService {
           // back to pending (matches the prior contract).
           const { getQueuedPromptsStore } = await import('../RepositoryManager');
           const { rolledBack } = await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
+          await this.publishQueuedPromptState(sessionId);
           return rolledBack;
         },
       });
@@ -1936,6 +2009,7 @@ export class AIService {
 
       if (claimed) {
         logger.main.info(`[AIService] claimQueuedPrompt: claimed ${promptId} for session ${sessionId}`);
+        await this.publishQueuedPromptState(sessionId);
         // Return in the format expected by the renderer
         return {
           id: claimed.id,
@@ -1957,8 +2031,12 @@ export class AIService {
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
+      const prompt = await queueStore.get(promptId);
       await queueStore.complete(promptId);
       logger.main.info(`[AIService] completeQueuedPrompt: ${promptId}`);
+      if (prompt?.sessionId) {
+        await this.publishQueuedPromptState(prompt.sessionId);
+      }
     });
 
     // Mark a queued prompt as failed
@@ -1969,8 +2047,12 @@ export class AIService {
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
+      const prompt = await queueStore.get(promptId);
       await queueStore.fail(promptId, errorMessage);
       logger.main.info(`[AIService] failQueuedPrompt: ${promptId} - ${errorMessage}`);
+      if (prompt?.sessionId) {
+        await this.publishQueuedPromptState(prompt.sessionId);
+      }
     });
 
     // List pending prompts for a session
@@ -2014,6 +2096,7 @@ export class AIService {
       });
 
       logger.main.info(`[AIService] createQueuedPrompt: created ${promptId} for session ${sessionId}`);
+      await this.publishQueuedPromptState(sessionId);
 
       // Look up the session once (lightweight — no message log) for both the
       // analytics event and the claude-code-cli idle-flush kick below.
@@ -2099,8 +2182,12 @@ export class AIService {
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
+      const prompt = await queueStore.get(promptId);
       await queueStore.delete(promptId);
       logger.main.info(`[AIService] deleteQueuedPrompt: deleted ${promptId}`);
+      if (prompt?.sessionId) {
+        await this.publishQueuedPromptState(prompt.sessionId);
+      }
       return { success: true };
     });
 

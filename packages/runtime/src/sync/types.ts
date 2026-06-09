@@ -168,6 +168,7 @@ export interface SyncProvider {
         sentBy: 'mobile' | 'desktop';
       };
       isExecuting?: boolean;
+      agentStatus?: SyncedAgentStatus | null;
     }>;
     projects: Array<{
       projectId: string;
@@ -195,6 +196,8 @@ export interface SyncProvider {
       sentBy: 'mobile' | 'desktop';
     };
     isExecuting?: boolean;
+    /** Compact live status used by mobile/desktop surfaces while the agent works. */
+    agentStatus?: SyncedAgentStatus | null;
     /** Unix timestamp ms when this session was last read by any device */
     lastReadAt?: number;
     /** Number of prompts queued from mobile, waiting for desktop to process */
@@ -238,6 +241,8 @@ export interface SyncProvider {
       sentBy: 'mobile' | 'desktop';
     };
     isExecuting?: boolean;
+    /** Compact live status used by mobile/desktop surfaces while the agent works. */
+    agentStatus?: SyncedAgentStatus | null;
     /** Decrypted queued prompts */
     queuedPrompts?: Array<{ id: string; prompt: string; timestamp: number }>;
   } | undefined;
@@ -390,6 +395,20 @@ export interface SyncedQueuedPrompt {
   attachments?: EncryptedAttachment[];
 }
 
+/** Compact live status for cross-device session UI. */
+export interface SyncedAgentStatus {
+  /** Coarse state for styling and fallback behavior. */
+  kind: 'thinking' | 'responding' | 'tool' | 'waiting' | 'queued' | 'complete' | 'error' | 'idle' | (string & {});
+  /** Short user-facing label, e.g. "Thinking..." or "Using Bash...". */
+  label: string;
+  /** Optional extra context such as a tool name, prompt type, or target file. */
+  detail?: string;
+  /** Tool name when kind === "tool". */
+  toolName?: string;
+  /** Epoch ms when this status was produced. */
+  updatedAt: number;
+}
+
 /**
  * Encrypted image attachment sent from mobile via queued prompts.
  * Desktop decrypts the data, writes to temp file, and creates a ChatAttachment.
@@ -449,6 +468,8 @@ export interface SyncedSessionMetadata {
   };
   /** Whether the session is currently executing (processing AI request) */
   isExecuting?: boolean;
+  /** Compact live status used by mobile/desktop surfaces while the agent works. */
+  agentStatus?: SyncedAgentStatus | null;
   /** Current context usage (from /context command for Claude Code) */
   currentContext?: {
     tokens: number;         // Current tokens in context window
@@ -466,6 +487,10 @@ export interface SyncedSessionMetadata {
   mobileTranscriptTailJson?: string;
   /** Freshness marker for the mobile transcript tail. */
   mobileTranscriptTailUpdatedAt?: number;
+  /** Latest cursor-based projected history page requested by mobile. */
+  mobileTranscriptHistoryPageJson?: string;
+  /** Freshness marker for the latest mobile history page. */
+  mobileTranscriptHistoryPageUpdatedAt?: number;
 }
 
 /**
@@ -507,6 +532,8 @@ export interface SessionIndexEntry {
   };
   /** Whether the session is currently executing (processing AI request) */
   isExecuting?: boolean;
+  /** Compact live status used by mobile/desktop surfaces while the agent works. */
+  agentStatus?: SyncedAgentStatus | null;
   /** Whether there are pending interactive prompts (permissions or questions) waiting for response */
   hasPendingPrompt?: boolean;
   /** Current context usage (from /context command for Claude Code) */

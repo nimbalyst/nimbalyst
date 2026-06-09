@@ -7,7 +7,14 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface QueuedPromptDao {
-    @Query("SELECT * FROM queued_prompts WHERE sessionId = :sessionId ORDER BY createdAt ASC")
+    @Query(
+        """
+        SELECT * FROM queued_prompts
+        WHERE sessionId = :sessionId
+          AND sentAt IS NULL
+        ORDER BY createdAt ASC
+        """
+    )
     fun observeQueuedPromptsForSession(sessionId: String): Flow<List<QueuedPromptEntity>>
 
     @Query(

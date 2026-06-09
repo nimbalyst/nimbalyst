@@ -38,6 +38,7 @@ import type {
   SessionControlMessage,
   EncryptedAttachment,
   FileIndexData,
+  SyncedAgentStatus,
 } from './types';
 
 // ============================================================================
@@ -117,6 +118,8 @@ interface SessionMetadata {
     sentBy: 'mobile' | 'desktop';
   };
   isExecuting?: boolean;
+  /** Number of prompts queued from mobile, waiting for desktop to process */
+  queuedPromptCount?: number;
   /** Encrypted queued prompts */
   encryptedQueuedPrompts?: EncryptedQueuedPrompt[];
   /** Encrypted client metadata blob (base64) - opaque to server */
@@ -187,9 +190,12 @@ type DecryptedSessionIndexEntry = Omit<SessionIndexEntry, 'title' | 'encryptedTi
   projectId: string;  // Decrypted project ID
   queuedPrompts?: PlaintextQueuedPrompt[];  // Decrypted queued prompts
   currentContext?: { tokens: number; contextWindow: number };  // Decrypted from client metadata
+  agentStatus?: SyncedAgentStatus | null;  // Decrypted from client metadata
   hasBeenNamed?: boolean;  // Decrypted from client metadata
   mobileTranscriptTailJson?: string;  // Decrypted from client metadata
   mobileTranscriptTailUpdatedAt?: number;  // Decrypted from client metadata
+  mobileTranscriptHistoryPageJson?: string;  // Decrypted from client metadata
+  mobileTranscriptHistoryPageUpdatedAt?: number;  // Decrypted from client metadata
 };
 
 /** Encrypted create session request for wire protocol */
@@ -516,13 +522,15 @@ interface ClientMetadata {
   };
   /** Whether there are pending interactive prompts (permissions, questions, plan approvals, git commits) */
   hasPendingPrompt?: boolean;
+  /** Compact live status for cross-device session UI. */
+  agentStatus?: SyncedAgentStatus | null;
   /** Kanban phase: backlog, planning, implementing, validating, complete */
   phase?: string;
   /** Arbitrary tags for categorization */
   tags?: string[];
-  /** Draft input text (unsent message) for cross-device sync */
+  /** Legacy remote draft field. Do not publish new values. */
   draftInput?: string;
-  /** Epoch ms when draftInput was last updated by the sending device */
+  /** Legacy remote draft field. Do not publish new values. */
   draftUpdatedAt?: number;
   /** Marker that the title was AI-chosen; prevents repeated rename attempts. */
   hasBeenNamed?: boolean;
@@ -530,6 +538,10 @@ interface ClientMetadata {
   mobileTranscriptTailJson?: string;
   /** Freshness marker for the mobile transcript tail. */
   mobileTranscriptTailUpdatedAt?: number;
+  /** Latest cursor-based projected history page requested by mobile. */
+  mobileTranscriptHistoryPageJson?: string;
+  /** Freshness marker for the latest mobile history page. */
+  mobileTranscriptHistoryPageUpdatedAt?: number;
 }
 
 /**
@@ -543,19 +555,20 @@ function buildClientMetadataFromRaw(
   const tokenUsage = metadata?.tokenUsage;
   const phase = metadata?.phase as string | undefined;
   const tags = metadata?.tags as string[] | undefined;
-  const draftInput = metadata?.draftInput as string | undefined;
-  const draftUpdatedAt = metadata?.draftUpdatedAt as number | undefined;
   const hasBeenNamed = options.hasBeenNamed;
   const mobileTranscriptTailJson = metadata?.mobileTranscriptTailJson as string | undefined;
   const mobileTranscriptTailUpdatedAt = metadata?.mobileTranscriptTailUpdatedAt as number | undefined;
+  const mobileTranscriptHistoryPageJson = metadata?.mobileTranscriptHistoryPageJson as string | undefined;
+  const mobileTranscriptHistoryPageUpdatedAt = metadata?.mobileTranscriptHistoryPageUpdatedAt as number | undefined;
+  const agentStatus = metadata?.agentStatus as SyncedAgentStatus | null | undefined;
   const hasTokenUsage = tokenUsage?.totalTokens && tokenUsage?.contextWindow;
   const hasPhaseOrTags = phase || (tags && tags.length > 0);
-  // draftInput can be "" (explicit clear) - treat as meaningful
-  const hasDraftField = draftInput !== undefined;
   const hasNamingMarker = hasBeenNamed !== undefined;
   const hasMobileTranscriptTail = mobileTranscriptTailJson !== undefined;
+  const hasMobileTranscriptHistoryPage = mobileTranscriptHistoryPageJson !== undefined;
+  const hasAgentStatus = agentStatus !== undefined;
 
-  if (!hasTokenUsage && !hasPhaseOrTags && !hasDraftField && !hasNamingMarker && !hasMobileTranscriptTail) return undefined;
+  if (!hasTokenUsage && !hasPhaseOrTags && !hasNamingMarker && !hasMobileTranscriptTail && !hasMobileTranscriptHistoryPage && !hasAgentStatus) return undefined;
 
   const result: ClientMetadata = {};
   if (hasTokenUsage) {
@@ -566,11 +579,12 @@ function buildClientMetadataFromRaw(
   }
   if (phase) result.phase = phase;
   if (tags && tags.length > 0) result.tags = tags;
-  if (hasDraftField) result.draftInput = draftInput;
-  if (draftUpdatedAt) result.draftUpdatedAt = draftUpdatedAt;
   if (hasNamingMarker) result.hasBeenNamed = hasBeenNamed;
+  if (hasAgentStatus) result.agentStatus = agentStatus;
   if (hasMobileTranscriptTail) result.mobileTranscriptTailJson = mobileTranscriptTailJson;
   if (mobileTranscriptTailUpdatedAt !== undefined) result.mobileTranscriptTailUpdatedAt = mobileTranscriptTailUpdatedAt;
+  if (hasMobileTranscriptHistoryPage) result.mobileTranscriptHistoryPageJson = mobileTranscriptHistoryPageJson;
+  if (mobileTranscriptHistoryPageUpdatedAt !== undefined) result.mobileTranscriptHistoryPageUpdatedAt = mobileTranscriptHistoryPageUpdatedAt;
   return result;
 }
 
@@ -584,8 +598,6 @@ function buildClientMetadataFromRaw(
 // `indexClientMetadataPatchBroadcast` on the server + iOS will silently
 // break mobile again -- see CollabV3Sync.routing.test.ts.
 const INDEX_CLIENT_METADATA_PATCH_SAFE_KEYS = new Set([
-  'draftInput',
-  'draftUpdatedAt',
   'hasBeenNamed',
   'updatedAt',
 ]);
@@ -603,16 +615,17 @@ export { isIndexClientMetadataOnlyUpdate as isIndexClientMetadataOnlyUpdateForTe
 
 function buildClientMetadataFromCacheEntry(entry: Pick<
   CachedSessionIndex,
-  'currentContext' | 'hasPendingPrompt' | 'phase' | 'tags' | 'draftInput' | 'draftUpdatedAt' | 'hasBeenNamed' | 'mobileTranscriptTailJson' | 'mobileTranscriptTailUpdatedAt'
+  'currentContext' | 'hasPendingPrompt' | 'agentStatus' | 'phase' | 'tags' | 'hasBeenNamed' | 'mobileTranscriptTailJson' | 'mobileTranscriptTailUpdatedAt' | 'mobileTranscriptHistoryPageJson' | 'mobileTranscriptHistoryPageUpdatedAt'
 >): ClientMetadata | undefined {
   if (
     !entry.currentContext &&
     entry.hasPendingPrompt === undefined &&
+    entry.agentStatus === undefined &&
     !entry.phase &&
     !entry.tags &&
-    entry.draftInput === undefined &&
     entry.hasBeenNamed === undefined &&
-    entry.mobileTranscriptTailJson === undefined
+    entry.mobileTranscriptTailJson === undefined &&
+    entry.mobileTranscriptHistoryPageJson === undefined
   ) {
     return undefined;
   }
@@ -620,13 +633,14 @@ function buildClientMetadataFromCacheEntry(entry: Pick<
   return {
     currentContext: entry.currentContext,
     hasPendingPrompt: entry.hasPendingPrompt,
+    agentStatus: entry.agentStatus,
     phase: entry.phase,
     tags: entry.tags,
-    draftInput: entry.draftInput,
-    draftUpdatedAt: entry.draftUpdatedAt,
     hasBeenNamed: entry.hasBeenNamed,
     mobileTranscriptTailJson: entry.mobileTranscriptTailJson,
     mobileTranscriptTailUpdatedAt: entry.mobileTranscriptTailUpdatedAt,
+    mobileTranscriptHistoryPageJson: entry.mobileTranscriptHistoryPageJson,
+    mobileTranscriptHistoryPageUpdatedAt: entry.mobileTranscriptHistoryPageUpdatedAt,
   };
 }
 
@@ -798,6 +812,7 @@ interface CachedSessionIndex {
     sentBy: 'mobile' | 'desktop';
   };
   isExecuting?: boolean;
+  agentStatus?: SyncedAgentStatus | null;
   /** Decrypted queued prompts (stored locally after decryption) */
   queuedPrompts?: PlaintextQueuedPrompt[];
   /** Current context usage (from /context command for Claude Code) */
@@ -823,6 +838,10 @@ interface CachedSessionIndex {
   mobileTranscriptTailJson?: string;
   /** Freshness marker for the mobile transcript tail. */
   mobileTranscriptTailUpdatedAt?: number;
+  /** Latest cursor-based projected history page requested by mobile. */
+  mobileTranscriptHistoryPageJson?: string;
+  /** Freshness marker for the latest mobile history page. */
+  mobileTranscriptHistoryPageUpdatedAt?: number;
 }
 
 // ============================================================================
@@ -1058,6 +1077,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         indexEntry.encryptedTitle = encryptedTitle;
         indexEntry.titleIv = titleIv;
       }
+      await attachQueuedPromptsToIndexEntry(indexEntry, updatedCache.queuedPrompts);
       const clientMeta = buildClientMetadataFromCacheEntry(updatedCache);
       if (clientMeta) {
         const { encryptedClientMetadata, clientMetadataIv } = await encryptClientMetadata(clientMeta, config.encryptionKey);
@@ -1199,6 +1219,26 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // Key: sessionId, Value: partial metadata to merge when session is cached
   const pendingMetadataUpdates = new Map<string, Partial<SyncedSessionMetadata>>();
 
+  async function attachQueuedPromptsToIndexEntry(
+    indexEntry: SessionIndexEntry,
+    queuedPrompts: PlaintextQueuedPrompt[] | undefined
+  ): Promise<void> {
+    if (queuedPrompts === undefined) {
+      return;
+    }
+
+    indexEntry.queuedPromptCount = queuedPrompts.length;
+    if (queuedPrompts.length === 0) {
+      indexEntry.encryptedQueuedPrompts = [];
+      return;
+    }
+    const key = config.encryptionKey;
+    if (!key) {
+      throw new Error('[CollabV3] Cannot send queued prompts: no encryption key available');
+    }
+    indexEntry.encryptedQueuedPrompts = await encryptQueuedPrompts(queuedPrompts, key);
+  }
+
   async function sendIndexUpdate(baseEntry: CachedSessionIndex): Promise<void> {
     if (!indexWs || !config.encryptionKey) {
       console.error('[CollabV3] Cannot send session update: index socket or encryption key missing');
@@ -1233,6 +1273,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       indexEntry.encryptedTitle = encryptedTitle;
       indexEntry.titleIv = titleIv;
     }
+
+    await attachQueuedPromptsToIndexEntry(indexEntry, baseEntry.queuedPrompts);
 
     const clientMeta = buildClientMetadataFromCacheEntry(baseEntry);
     if (clientMeta) {
@@ -1306,13 +1348,13 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       updatedAt: pending.updatedAt ?? cached.updatedAt,
       pendingExecution: 'pendingExecution' in pending ? pending.pendingExecution : cached.pendingExecution,
       isExecuting: 'isExecuting' in pending ? pending.isExecuting : cached.isExecuting,
+      queuedPrompts: 'queuedPrompts' in pending ? pending.queuedPrompts : cached.queuedPrompts,
       currentContext: 'currentContext' in pending ? pending.currentContext : cached.currentContext,
       hasPendingPrompt: 'hasPendingPrompt' in pending ? pending.hasPendingPrompt : cached.hasPendingPrompt,
+      agentStatus: 'agentStatus' in pending ? (pending as any).agentStatus : cached.agentStatus,
       phase: 'phase' in pending ? (pending as any).phase : cached.phase,
       tags: 'tags' in pending ? (pending as any).tags : cached.tags,
       lastReadAt: 'lastReadAt' in pending ? (pending as any).lastReadAt : cached.lastReadAt,
-      draftInput: 'draftInput' in pending ? (pending as any).draftInput : cached.draftInput,
-      draftUpdatedAt: 'draftUpdatedAt' in pending ? (pending as any).draftUpdatedAt : cached.draftUpdatedAt,
       hasBeenNamed: 'hasBeenNamed' in pending ? (pending as any).hasBeenNamed : cached.hasBeenNamed,
     };
 
@@ -1655,10 +1697,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         const clientMeta = await decryptClientMetadata(broadcast.metadata.encryptedClientMetadata, broadcast.metadata.clientMetadataIv, session.encryptionKey);
         metadata.currentContext = clientMeta.currentContext;
         metadata.hasPendingPrompt = clientMeta.hasPendingPrompt;
-        if (clientMeta.draftInput !== undefined) metadata.draftInput = clientMeta.draftInput;
-        if (clientMeta.draftUpdatedAt !== undefined) metadata.draftUpdatedAt = clientMeta.draftUpdatedAt;
+        if ('agentStatus' in clientMeta) metadata.agentStatus = clientMeta.agentStatus;
         if (clientMeta.mobileTranscriptTailJson !== undefined) metadata.mobileTranscriptTailJson = clientMeta.mobileTranscriptTailJson;
         if (clientMeta.mobileTranscriptTailUpdatedAt !== undefined) metadata.mobileTranscriptTailUpdatedAt = clientMeta.mobileTranscriptTailUpdatedAt;
+        if (clientMeta.mobileTranscriptHistoryPageJson !== undefined) metadata.mobileTranscriptHistoryPageJson = clientMeta.mobileTranscriptHistoryPageJson;
+        if (clientMeta.mobileTranscriptHistoryPageUpdatedAt !== undefined) metadata.mobileTranscriptHistoryPageUpdatedAt = clientMeta.mobileTranscriptHistoryPageUpdatedAt;
       } catch (err) {
         console.error('[CollabV3] Failed to decrypt client metadata from broadcast:', err);
       }
@@ -1686,8 +1729,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         console.error('[CollabV3] Failed to decrypt queued prompts:', err);
         // Can't decrypt - don't update queued prompts
       }
+    } else if (broadcast.metadata.queuedPromptCount === 0 || broadcast.metadata.encryptedQueuedPrompts?.length === 0) {
+      metadata.queuedPrompts = [];
     }
-    // If no encryptedQueuedPrompts field, don't update queued prompts
+    // If no encryptedQueuedPrompts field and no zero count, don't update queued prompts
 
     // console.log('[CollabV3] Notifying', session.changeListeners.size, 'change listeners with queuedPrompts:', metadata.queuedPrompts?.length ?? 0);
 
@@ -1908,30 +1953,34 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                       // Non-fatal: queued prompts are transient, just skip
                       console.warn(`[CollabV3] Failed to decrypt queued prompts for session ${entry.sessionId}, skipping`);
                     }
+                  } else if (entry.queuedPromptCount === 0 || entry.encryptedQueuedPrompts?.length === 0) {
+                    queuedPrompts = [];
                   }
 
-                  // Decrypt client metadata (context usage, pending prompt state, phase, tags, draft, etc.)
+                  // Decrypt client metadata (context usage, pending prompt state, phase, tags, etc.)
                   let currentContext: CachedSessionIndex['currentContext'];
+                  let agentStatus: SyncedAgentStatus | null | undefined;
                   let hasPendingPrompt: boolean | undefined;
                   let phase: string | undefined;
                   let tags: string[] | undefined;
-                  let draftInput: string | undefined;
-                  let draftUpdatedAt: number | undefined;
                   let hasBeenNamed: boolean | undefined;
                   let mobileTranscriptTailJson: string | undefined;
                   let mobileTranscriptTailUpdatedAt: number | undefined;
+                  let mobileTranscriptHistoryPageJson: string | undefined;
+                  let mobileTranscriptHistoryPageUpdatedAt: number | undefined;
                   if (entry.encryptedClientMetadata && entry.clientMetadataIv && config.encryptionKey) {
                     try {
                       const clientMeta = await decryptClientMetadata(entry.encryptedClientMetadata, entry.clientMetadataIv, config.encryptionKey);
                       currentContext = clientMeta.currentContext;
+                      agentStatus = clientMeta.agentStatus;
                       hasPendingPrompt = clientMeta.hasPendingPrompt;
                       phase = clientMeta.phase;
                       tags = clientMeta.tags;
-                      draftInput = clientMeta.draftInput || undefined;
-                      draftUpdatedAt = clientMeta.draftUpdatedAt;
                       hasBeenNamed = clientMeta.hasBeenNamed;
                       mobileTranscriptTailJson = clientMeta.mobileTranscriptTailJson;
                       mobileTranscriptTailUpdatedAt = clientMeta.mobileTranscriptTailUpdatedAt;
+                      mobileTranscriptHistoryPageJson = clientMeta.mobileTranscriptHistoryPageJson;
+                      mobileTranscriptHistoryPageUpdatedAt = clientMeta.mobileTranscriptHistoryPageUpdatedAt;
                     } catch (err) {
                       // Non-fatal: metadata is supplementary, just skip
                       console.warn(`[CollabV3] Failed to decrypt client metadata for session ${entry.sessionId}, skipping`);
@@ -1961,10 +2010,13 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                     isExecuting: entry.isExecuting,
                     queuedPromptCount: entry.queuedPromptCount,
                     queuedPrompts,
+                    agentStatus,
                     hasPendingPrompt: hasPendingPrompt ?? entry.hasPendingPrompt,
                     currentContext,
                     mobileTranscriptTailJson,
                     mobileTranscriptTailUpdatedAt,
+                    mobileTranscriptHistoryPageJson,
+                    mobileTranscriptHistoryPageUpdatedAt,
                     lastReadAt: entry.lastReadAt,
                   };
 
@@ -1991,14 +2043,16 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                     pendingExecution: decrypted.pendingExecution,
                     isExecuting: decrypted.isExecuting,
                     queuedPrompts: decrypted.queuedPrompts,
+                    agentStatus: decrypted.agentStatus,
+                    hasPendingPrompt: decrypted.hasPendingPrompt,
                     currentContext: decrypted.currentContext,
                     phase,
                     tags,
-                    draftInput,
-                    draftUpdatedAt,
                     hasBeenNamed,
                     mobileTranscriptTailJson,
                     mobileTranscriptTailUpdatedAt,
+                    mobileTranscriptHistoryPageJson,
+                    mobileTranscriptHistoryPageUpdatedAt,
                     lastReadAt: decrypted.lastReadAt,
                   };
                   sessionIndexCache.set(entry.sessionId, cacheEntry);
@@ -2128,14 +2182,14 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                 if (clientMeta.hasPendingPrompt !== undefined) {
                   decryptedEntry.hasPendingPrompt = clientMeta.hasPendingPrompt;
                 }
+                if ('agentStatus' in clientMeta) decryptedEntry.agentStatus = clientMeta.agentStatus;
                 if (clientMeta.phase) decryptedEntry.phase = clientMeta.phase;
                 if (clientMeta.tags) decryptedEntry.tags = clientMeta.tags;
-                // Allow empty string through so "clear draft" propagates to renderer
-                if (clientMeta.draftInput !== undefined) decryptedEntry.draftInput = clientMeta.draftInput;
-                if (clientMeta.draftUpdatedAt !== undefined) decryptedEntry.draftUpdatedAt = clientMeta.draftUpdatedAt;
                 if (clientMeta.hasBeenNamed !== undefined) decryptedEntry.hasBeenNamed = clientMeta.hasBeenNamed;
                 if (clientMeta.mobileTranscriptTailJson !== undefined) decryptedEntry.mobileTranscriptTailJson = clientMeta.mobileTranscriptTailJson;
                 if (clientMeta.mobileTranscriptTailUpdatedAt !== undefined) decryptedEntry.mobileTranscriptTailUpdatedAt = clientMeta.mobileTranscriptTailUpdatedAt;
+                if (clientMeta.mobileTranscriptHistoryPageJson !== undefined) decryptedEntry.mobileTranscriptHistoryPageJson = clientMeta.mobileTranscriptHistoryPageJson;
+                if (clientMeta.mobileTranscriptHistoryPageUpdatedAt !== undefined) decryptedEntry.mobileTranscriptHistoryPageUpdatedAt = clientMeta.mobileTranscriptHistoryPageUpdatedAt;
               } catch (err) {
                 console.error('[CollabV3] Failed to decrypt client metadata:', err);
               }
@@ -2153,22 +2207,24 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
             // If no encrypted title, keep as 'Untitled'
 
             // Decrypt queued prompts - encrypted prompts are required
-            if (entry.encryptedQueuedPrompts && entry.encryptedQueuedPrompts.length > 0 && config.encryptionKey) {
-              try {
-                console.log('[CollabV3] DEBUG decrypting queued prompts:', entry.encryptedQueuedPrompts.length);
-                decryptedEntry.queuedPrompts = await decryptQueuedPrompts(entry.encryptedQueuedPrompts, config.encryptionKey);
-                console.log('[CollabV3] DEBUG decrypted:', decryptedEntry.queuedPrompts?.length, 'prompts');
-              } catch (err) {
-                console.error('[CollabV3] Failed to decrypt index entry queued prompts:', err);
-              }
-            } else {
+              if (entry.encryptedQueuedPrompts && entry.encryptedQueuedPrompts.length > 0 && config.encryptionKey) {
+                try {
+                  console.log('[CollabV3] DEBUG decrypting queued prompts:', entry.encryptedQueuedPrompts.length);
+                  decryptedEntry.queuedPrompts = await decryptQueuedPrompts(entry.encryptedQueuedPrompts, config.encryptionKey);
+                  console.log('[CollabV3] DEBUG decrypted:', decryptedEntry.queuedPrompts?.length, 'prompts');
+                } catch (err) {
+                  console.error('[CollabV3] Failed to decrypt index entry queued prompts:', err);
+                }
+              } else if (entry.queuedPromptCount === 0 || entry.encryptedQueuedPrompts?.length === 0) {
+                decryptedEntry.queuedPrompts = [];
+              } else {
               // console.log('[CollabV3] DEBUG no encrypted prompts to decrypt:', {
               //   hasEncryptedPrompts: !!entry.encryptedQueuedPrompts,
               //   length: entry.encryptedQueuedPrompts?.length ?? 0,
               //   hasEncryptionKey: !!config.encryptionKey,
               // });
             }
-            // If no encrypted prompts, queuedPrompts stays undefined
+            // If no encrypted prompts and no zero count, queuedPrompts stays undefined
 
             // Cache the decrypted entry
             sessionIndexCache.set(entry.sessionId, decryptedEntry);
@@ -2637,6 +2693,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       const pending = pendingMetadataUpdates.get(session.id);
       const cachedIsExecuting = pending?.isExecuting ?? existingCache?.isExecuting;
       const cachedHasPendingPrompt = pending?.hasPendingPrompt ?? existingCache?.hasPendingPrompt;
+      const cachedAgentStatus = (pending as any)?.agentStatus ?? existingCache?.agentStatus;
       const cachedLastReadAt = pending?.lastReadAt ?? existingCache?.lastReadAt;
 
       const entry: SessionIndexEntry = {
@@ -2677,20 +2734,18 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       const clientMeta: ClientMetadata | undefined =
         rawClientMeta ||
         cachedHasPendingPrompt !== undefined ||
+        cachedAgentStatus !== undefined ||
         pending?.currentContext !== undefined ||
         pending?.phase !== undefined ||
         pending?.tags !== undefined ||
-        pending?.draftInput !== undefined ||
-        pending?.draftUpdatedAt !== undefined ||
         pending?.hasBeenNamed !== undefined
           ? {
               ...rawClientMeta,
               currentContext: pending?.currentContext ?? rawClientMeta?.currentContext,
               hasPendingPrompt: cachedHasPendingPrompt,
+              agentStatus: cachedAgentStatus,
               phase: pending?.phase ?? rawClientMeta?.phase,
               tags: pending?.tags ?? rawClientMeta?.tags,
-              draftInput: pending?.draftInput ?? rawClientMeta?.draftInput,
-              draftUpdatedAt: pending?.draftUpdatedAt ?? rawClientMeta?.draftUpdatedAt,
               hasBeenNamed: pending?.hasBeenNamed ?? rawClientMeta?.hasBeenNamed,
             }
           : undefined;
@@ -2724,11 +2779,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         currentContext: clientMeta?.currentContext,
         isExecuting: cachedIsExecuting,
         hasPendingPrompt: cachedHasPendingPrompt,
+        agentStatus: clientMeta?.agentStatus,
         phase: clientMeta?.phase,
         tags: clientMeta?.tags,
         lastReadAt: cachedLastReadAt,
-        draftInput: clientMeta?.draftInput,
-        draftUpdatedAt: clientMeta?.draftUpdatedAt,
         hasBeenNamed: clientMeta?.hasBeenNamed,
       };
       sessionIndexCache.set(session.id, cacheEntry);
@@ -3045,38 +3099,36 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               if (!config.encryptionKey) {
                 throw new Error('[CollabV3] Cannot send queued prompts: no encryption key available');
               }
+              metadata.queuedPromptCount = change.metadata.queuedPrompts.length;
               metadata.encryptedQueuedPrompts = await encryptQueuedPrompts(change.metadata.queuedPrompts, config.encryptionKey);
             } else {
-              metadata.encryptedQueuedPrompts = undefined;
+              metadata.queuedPromptCount = 0;
+              metadata.encryptedQueuedPrompts = [];
             }
           }
-          // Encrypt client metadata (context usage, pending prompt state, phase, tags, draft, etc.)
-          if ('draftInput' in change.metadata) {
-            // console.log('[CollabV3] metadata_updated has draftInput:', (change.metadata as any).draftInput?.substring(0, 50));
-          }
+          // Encrypt client metadata (context usage, pending prompt state, phase, tags, etc.)
           const hasClientMetaFields = ('currentContext' in change.metadata && change.metadata.currentContext) ||
             ('hasPendingPrompt' in change.metadata) ||
+            ('agentStatus' in change.metadata) ||
             ('phase' in change.metadata) ||
             ('tags' in change.metadata) ||
-            ('draftInput' in change.metadata) ||
             ('hasBeenNamed' in change.metadata) ||
-            ('mobileTranscriptTailJson' in change.metadata);
+            ('mobileTranscriptTailJson' in change.metadata) ||
+            ('mobileTranscriptHistoryPageJson' in change.metadata);
           if (hasClientMetaFields && config.encryptionKey) {
             const cached = sessionIndexCache.get(sessionId);
             const clientMeta: ClientMetadata = {
               currentContext: ('currentContext' in change.metadata ? change.metadata.currentContext : cached?.currentContext) || undefined,
               hasPendingPrompt: 'hasPendingPrompt' in change.metadata ? change.metadata.hasPendingPrompt : cached?.hasPendingPrompt,
+              agentStatus: 'agentStatus' in change.metadata ? (change.metadata as any).agentStatus : cached?.agentStatus,
               phase: 'phase' in change.metadata ? (change.metadata as any).phase : cached?.phase,
               tags: 'tags' in change.metadata ? (change.metadata as any).tags : cached?.tags,
-              draftInput: 'draftInput' in change.metadata ? (change.metadata as any).draftInput : cached?.draftInput,
-              draftUpdatedAt: 'draftUpdatedAt' in change.metadata ? (change.metadata as any).draftUpdatedAt : cached?.draftUpdatedAt,
               hasBeenNamed: 'hasBeenNamed' in change.metadata ? (change.metadata as any).hasBeenNamed : cached?.hasBeenNamed,
               mobileTranscriptTailJson: 'mobileTranscriptTailJson' in change.metadata ? (change.metadata as any).mobileTranscriptTailJson : cached?.mobileTranscriptTailJson,
               mobileTranscriptTailUpdatedAt: 'mobileTranscriptTailUpdatedAt' in change.metadata ? (change.metadata as any).mobileTranscriptTailUpdatedAt : cached?.mobileTranscriptTailUpdatedAt,
+              mobileTranscriptHistoryPageJson: 'mobileTranscriptHistoryPageJson' in change.metadata ? (change.metadata as any).mobileTranscriptHistoryPageJson : cached?.mobileTranscriptHistoryPageJson,
+              mobileTranscriptHistoryPageUpdatedAt: 'mobileTranscriptHistoryPageUpdatedAt' in change.metadata ? (change.metadata as any).mobileTranscriptHistoryPageUpdatedAt : cached?.mobileTranscriptHistoryPageUpdatedAt,
             };
-            if (clientMeta.draftInput !== undefined) {
-              // console.log('[CollabV3] Encrypting clientMeta with draftInput, sending to index');
-            }
             const encrypted = await encryptClientMetadata(clientMeta, config.encryptionKey);
             metadata.encryptedClientMetadata = encrypted.encryptedClientMetadata;
             metadata.clientMetadataIv = encrypted.clientMetadataIv;
@@ -3147,16 +3199,18 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               updatedAt: updatedAt ?? cached.updatedAt,
               pendingExecution: 'pendingExecution' in meta ? meta.pendingExecution : cached.pendingExecution,
               isExecuting: 'isExecuting' in meta ? meta.isExecuting : cached.isExecuting,
+              queuedPrompts: 'queuedPrompts' in meta ? meta.queuedPrompts : cached.queuedPrompts,
               currentContext: 'currentContext' in meta ? meta.currentContext : cached.currentContext,
               hasPendingPrompt: 'hasPendingPrompt' in meta ? meta.hasPendingPrompt : cached.hasPendingPrompt,
+              agentStatus: 'agentStatus' in meta ? (meta as any).agentStatus : cached.agentStatus,
               phase: 'phase' in meta ? (meta as any).phase : cached.phase,
               tags: 'tags' in meta ? (meta as any).tags : cached.tags,
               lastReadAt: 'lastReadAt' in meta ? (meta as any).lastReadAt : cached.lastReadAt,
-              draftInput: 'draftInput' in meta ? (meta as any).draftInput : cached.draftInput,
-              draftUpdatedAt: 'draftUpdatedAt' in meta ? (meta as any).draftUpdatedAt : cached.draftUpdatedAt,
               hasBeenNamed: 'hasBeenNamed' in meta ? (meta as any).hasBeenNamed : cached.hasBeenNamed,
               mobileTranscriptTailJson: 'mobileTranscriptTailJson' in meta ? (meta as any).mobileTranscriptTailJson : cached.mobileTranscriptTailJson,
               mobileTranscriptTailUpdatedAt: 'mobileTranscriptTailUpdatedAt' in meta ? (meta as any).mobileTranscriptTailUpdatedAt : cached.mobileTranscriptTailUpdatedAt,
+              mobileTranscriptHistoryPageJson: 'mobileTranscriptHistoryPageJson' in meta ? (meta as any).mobileTranscriptHistoryPageJson : cached.mobileTranscriptHistoryPageJson,
+              mobileTranscriptHistoryPageUpdatedAt: 'mobileTranscriptHistoryPageUpdatedAt' in meta ? (meta as any).mobileTranscriptHistoryPageUpdatedAt : cached.mobileTranscriptHistoryPageUpdatedAt,
             };
             if (isIndexClientMetadataOnlyUpdate(meta)) {
               await sendIndexClientMetadataPatch(updatedCache);
@@ -3187,16 +3241,18 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               updatedAt: now,
               pendingExecution: meta.pendingExecution,
               isExecuting: meta.isExecuting,
+              queuedPrompts: meta.queuedPrompts,
               currentContext: meta.currentContext,
               hasPendingPrompt: meta.hasPendingPrompt,
+              agentStatus: (meta as any).agentStatus,
               phase: (meta as any).phase,
               tags: (meta as any).tags,
               lastReadAt: (meta as any).lastReadAt,
-              draftInput: (meta as any).draftInput,
-              draftUpdatedAt: (meta as any).draftUpdatedAt,
               hasBeenNamed: (meta as any).hasBeenNamed,
               mobileTranscriptTailJson: (meta as any).mobileTranscriptTailJson,
               mobileTranscriptTailUpdatedAt: (meta as any).mobileTranscriptTailUpdatedAt,
+              mobileTranscriptHistoryPageJson: (meta as any).mobileTranscriptHistoryPageJson,
+              mobileTranscriptHistoryPageUpdatedAt: (meta as any).mobileTranscriptHistoryPageUpdatedAt,
             };
             await sendIndexUpdate(newEntry);
             if (updatedAt !== undefined && isMessageSyncDisabled(sessionId)) {
@@ -3216,22 +3272,25 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               'worktreeId' in meta ||
               'isArchived' in meta ||
               'isPinned' in meta ||
+              'queuedPrompts' in meta ||
               'currentContext' in meta ||
               'hasPendingPrompt' in meta ||
+              'agentStatus' in meta ||
               'phase' in meta ||
               'tags' in meta ||
               'lastReadAt' in meta ||
-              'draftInput' in meta ||
-              'draftUpdatedAt' in meta ||
               'hasBeenNamed' in meta ||
               'mobileTranscriptTailJson' in meta ||
               'mobileTranscriptTailUpdatedAt' in meta ||
+              'mobileTranscriptHistoryPageJson' in meta ||
+              'mobileTranscriptHistoryPageUpdatedAt' in meta ||
               'updatedAt' in meta;
             if (hasPartialUpdate) {
               // console.log('[CollabV3] Queueing partial metadata update for session:', sessionId, { isExecuting: meta.isExecuting, pendingExecution: meta.pendingExecution, title: meta.title });
               const existing = pendingMetadataUpdates.get(sessionId) || {};
               if ('isExecuting' in meta) existing.isExecuting = meta.isExecuting;
               if ('pendingExecution' in meta) existing.pendingExecution = meta.pendingExecution;
+              if ('queuedPrompts' in meta) existing.queuedPrompts = meta.queuedPrompts;
               if (meta.title !== undefined) existing.title = meta.title;
               if ('sessionType' in meta) existing.sessionType = meta.sessionType;
               if ('parentSessionId' in meta) existing.parentSessionId = meta.parentSessionId;
@@ -3240,14 +3299,15 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               if ('isPinned' in meta) existing.isPinned = (meta as any).isPinned;
               if ('currentContext' in meta) existing.currentContext = meta.currentContext;
               if ('hasPendingPrompt' in meta) existing.hasPendingPrompt = meta.hasPendingPrompt;
+              if ('agentStatus' in meta) (existing as any).agentStatus = (meta as any).agentStatus;
               if ('phase' in meta) (existing as any).phase = (meta as any).phase;
               if ('tags' in meta) (existing as any).tags = (meta as any).tags;
               if ('lastReadAt' in meta) (existing as any).lastReadAt = (meta as any).lastReadAt;
-              if ('draftInput' in meta) (existing as any).draftInput = (meta as any).draftInput;
-              if ('draftUpdatedAt' in meta) (existing as any).draftUpdatedAt = (meta as any).draftUpdatedAt;
               if ('hasBeenNamed' in meta) (existing as any).hasBeenNamed = (meta as any).hasBeenNamed;
               if ('mobileTranscriptTailJson' in meta) (existing as any).mobileTranscriptTailJson = (meta as any).mobileTranscriptTailJson;
               if ('mobileTranscriptTailUpdatedAt' in meta) (existing as any).mobileTranscriptTailUpdatedAt = (meta as any).mobileTranscriptTailUpdatedAt;
+              if ('mobileTranscriptHistoryPageJson' in meta) (existing as any).mobileTranscriptHistoryPageJson = (meta as any).mobileTranscriptHistoryPageJson;
+              if ('mobileTranscriptHistoryPageUpdatedAt' in meta) (existing as any).mobileTranscriptHistoryPageUpdatedAt = (meta as any).mobileTranscriptHistoryPageUpdatedAt;
               if ('updatedAt' in meta) existing.updatedAt = meta.updatedAt;
               pendingMetadataUpdates.set(sessionId, existing);
             } else {
