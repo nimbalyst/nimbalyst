@@ -1730,6 +1730,46 @@ function preserveEquivalentValue<T>(current: T | undefined, next: T | undefined)
   return deepEqual(current, next) ? current : next;
 }
 
+const OPTIMISTIC_REPLACEMENT_CLOCK_SKEW_MS = 1000;
+const OPTIMISTIC_REPLACEMENT_WINDOW_MS = 120_000;
+
+function safeMessageTimeMs(value: Date | string | number | unknown): number {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string') {
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function hasPersistedReplacement(
+  optimistic: TranscriptViewMessage,
+  dbMessages: TranscriptViewMessage[],
+): boolean {
+  const optimisticAt = safeMessageTimeMs(optimistic.createdAt);
+  if (optimisticAt <= 0) return false;
+
+  return dbMessages.some((db) => {
+    if (db.type !== optimistic.type || db.text !== optimistic.text) return false;
+
+    const dbAt = safeMessageTimeMs(db.createdAt);
+    if (dbAt <= 0) return false;
+
+    const delta = dbAt - optimisticAt;
+    return delta >= -OPTIMISTIC_REPLACEMENT_CLOCK_SKEW_MS &&
+      delta <= OPTIMISTIC_REPLACEMENT_WINDOW_MS;
+  });
+}
+
+export function shouldPreserveOptimisticMessage(
+  optimistic: TranscriptViewMessage,
+  dbMessages: TranscriptViewMessage[],
+): boolean {
+  if (optimistic.id >= 0) return false;
+  return !hasPersistedReplacement(optimistic, dbMessages);
+}
+
 export function preserveReloadIdentity(current: SessionData, next: SessionData): SessionData {
   const normalizedMessages = preserveEquivalentArrayRef(current.messages, next.messages);
   const currentTeammates = Array.isArray(current.metadata?.currentTeammates)
@@ -1815,27 +1855,14 @@ export const reloadSessionDataAtom = atom(
           const dbMessages = sessionData.messages || [];
           const localMessages = current.messages || [];
 
-          // Collect optimistic messages (negative IDs) that aren't yet in the DB.
-          // These were added locally before the provider persisted them.
-          // Drop any optimistic message whose type+text matches a DB message
-          // with a similar timestamp (within 5s tolerance). The timestamp check
-          // avoids premature eviction when a user sends two identical messages
-          // (e.g. "yes" twice). Use safe getTime() in case createdAt is a string
-          // after IPC serialization rather than a Date object.
-          const safeGetTime = (d: Date | string | unknown): number => {
-            if (d instanceof Date) return d.getTime();
-            if (typeof d === 'string') return new Date(d).getTime();
-            return 0;
-          };
-          const optimisticMessages = localMessages.filter(
-            (m: TranscriptViewMessage) =>
-              m.id < 0 &&
-              !dbMessages.some(
-                (db: TranscriptViewMessage) =>
-                  db.type === m.type &&
-                  db.text === m.text &&
-                  Math.abs(safeGetTime(db.createdAt) - safeGetTime(m.createdAt)) < 5000
-              )
+          // Collect optimistic messages (negative IDs) that are not yet in the DB.
+          // The provider can take more than a few seconds to persist the canonical
+          // input row on very large sessions, so use a forward-looking window rather
+          // than a tight absolute timestamp match. Requiring the DB row to be at or
+          // after the optimistic timestamp still preserves legitimate repeated
+          // prompts like two separate "yes" messages.
+          const optimisticMessages = localMessages.filter((m: TranscriptViewMessage) =>
+            shouldPreserveOptimisticMessage(m, dbMessages)
           );
 
           if (optimisticMessages.length > 0) {
