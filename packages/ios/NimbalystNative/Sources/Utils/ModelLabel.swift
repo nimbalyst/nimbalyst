@@ -105,6 +105,7 @@ public enum ModelLabel {
 
     /// Mirrors `CLAUDE_MODELS[*].shortName` in `modelConstants.ts`.
     private static let claudeApiShortNames: [String: String] = [
+        "claude-fable-5": "Fable 5",
         "claude-opus-4-8": "Opus 4.8",
         "claude-opus-4-7": "Opus 4.7",
         "claude-opus-4-6": "Opus 4.6",

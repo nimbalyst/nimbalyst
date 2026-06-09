@@ -37,6 +37,23 @@ describe('ClaudeProvider.supportsTemperature', () => {
     });
   });
 
+  describe('rejects temperature for Mythos-class models (Fable 5, Mythos 5)', () => {
+    // Fable 5 / Mythos 5 use always-on adaptive thinking and reject
+    // `temperature` / `top_p` / `top_k` with a 400, the same posture as Opus 4.7+.
+    it('returns false for claude-fable-5', () => {
+      expect(ClaudeProvider.supportsTemperature('claude-fable-5')).toBe(false);
+    });
+
+    it('returns false for claude-mythos-5 and claude-mythos-preview', () => {
+      expect(ClaudeProvider.supportsTemperature('claude-mythos-5')).toBe(false);
+      expect(ClaudeProvider.supportsTemperature('claude-mythos-preview')).toBe(false);
+    });
+
+    it('matches case-insensitively and trims', () => {
+      expect(ClaudeProvider.supportsTemperature('  CLAUDE-FABLE-5  ')).toBe(false);
+    });
+  });
+
   describe('accepts temperature for older Opus 4.x', () => {
     it('returns true for Opus 4 (no minor / claude-opus-4-20250514)', () => {
       // The 8-digit date suffix on Opus 4.0 must NOT be parsed as a minor

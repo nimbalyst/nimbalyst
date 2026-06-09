@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Claude Fable 5 (`claude-fable-5`) is available in the Claude model picker.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

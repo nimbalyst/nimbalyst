@@ -12,6 +12,16 @@ export interface ModelDefinition {
 
 export const CLAUDE_MODELS: ModelDefinition[] = [
   {
+    id: 'claude-fable-5',
+    displayName: 'Claude Fable 5 (1M)',
+    shortName: 'Fable 5',
+    maxTokens: 128000,
+    // Fable 5 (Anthropic's Mythos class) ships with a 1M context window
+    // natively and a 128k max output. The API id is dateless and pinned to
+    // this snapshot — see platform.claude.com/docs/en/about-claude/models/overview.
+    contextWindow: 1000000,
+  },
+  {
     id: 'claude-opus-4-8',
     displayName: 'Claude Opus 4.8 (1M)',
     shortName: 'Opus 4.8',

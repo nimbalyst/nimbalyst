@@ -974,9 +974,10 @@ export class ClaudeProvider extends BaseAIProvider {
    * same pattern.
    *
    * Strategy: denylist of known-rejecting prefixes. Today that is
-   * `claude-opus-4-N` for N >= 7. Everything else -- all Sonnet variants
-   * (3.x and 4.x), all Haiku variants, Opus 4 / 4.1 / 4.5 / 4.6, and any
-   * `claude-3-*` Opus model -- still accepts `temperature`.
+   * `claude-opus-4-N` for N >= 7 plus the Mythos-class models
+   * (`claude-fable-*`, `claude-mythos-*`). Everything else -- all Sonnet
+   * variants (3.x and 4.x), all Haiku variants, Opus 4 / 4.1 / 4.5 / 4.6,
+   * and any `claude-3-*` Opus model -- still accepts `temperature`.
    *
    * The denylist is intentionally narrow. The fail-open default preserves
    * user-configured `temperature` for new Claude models; if Anthropic
@@ -1002,6 +1003,14 @@ export class ClaudeProvider extends BaseAIProvider {
     if (opusMinor) {
       const minor = parseInt(opusMinor[1], 10);
       return minor < 7;
+    }
+
+    // Mythos-class models (Claude Fable 5, Claude Mythos 5 / Mythos Preview)
+    // reject sampling parameters the same way Opus 4.7+ does -- adaptive
+    // thinking is always on and `temperature` returns a 400. Prefix-matching
+    // keeps future `claude-fable-N` / `claude-mythos-N` covered.
+    if (id.startsWith('claude-fable-') || id.startsWith('claude-mythos-')) {
+      return false;
     }
 
     return true;
