@@ -275,7 +275,7 @@ private fun SessionRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (session.isExecuting && session.agentStatusDisplayLabel() != null) {
+                if (session.effectiveIsExecuting() && session.agentStatusDisplayLabel() != null) {
                     CircularProgressIndicator(
                         modifier = Modifier
                             .padding(top = 4.dp)
@@ -370,7 +370,7 @@ private fun WorkstreamGroup(
                                         modifier = Modifier.padding(top = 2.dp)
                                     )
                                 }
-                                if (child.isExecuting && child.agentStatusDisplayLabel() != null) {
+                                if (child.effectiveIsExecuting() && child.agentStatusDisplayLabel() != null) {
                                     CircularProgressIndicator(
                                         modifier = Modifier
                                             .padding(start = 8.dp)

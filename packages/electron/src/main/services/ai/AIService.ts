@@ -608,6 +608,20 @@ export class AIService {
           label: pending.length === 1 ? '1 prompt queued on desktop' : `${pending.length} prompts queued on desktop`,
           updatedAt: Date.now(),
         };
+      } else {
+        const sessionState = getSessionStateManager().getSessionState(sessionId);
+        const isActivelyProcessing =
+          this.sessionsProcessingQueue.has(sessionId) ||
+          sessionState?.status === 'running' ||
+          sessionState?.status === 'waiting_for_input';
+        if (!isActivelyProcessing) {
+          metadata.isExecuting = false;
+          metadata.agentStatus = {
+            kind: 'idle',
+            label: 'Idle',
+            updatedAt: Date.now(),
+          };
+        }
       }
       await Promise.resolve(syncProvider.pushChange(sessionId, {
         type: 'metadata_updated',

@@ -613,6 +613,20 @@ function isIndexClientMetadataOnlyUpdate(metadata: Partial<SyncedSessionMetadata
 // `__tests__/CollabV3Sync.routing.test.ts` pins its classification.
 export { isIndexClientMetadataOnlyUpdate as isIndexClientMetadataOnlyUpdateForTest };
 
+const ACTIVE_AGENT_STATUS_KINDS = new Set(['thinking', 'responding', 'tool', 'editing']);
+
+function isActiveAgentStatus(status: SyncedAgentStatus | null | undefined): boolean {
+  return !!status?.kind && ACTIVE_AGENT_STATUS_KINDS.has(status.kind.toLowerCase());
+}
+
+function clearedAgentStatus(updatedAt: number): SyncedAgentStatus {
+  return {
+    kind: 'idle',
+    label: 'Idle',
+    updatedAt,
+  };
+}
+
 function buildClientMetadataFromCacheEntry(entry: Pick<
   CachedSessionIndex,
   'currentContext' | 'hasPendingPrompt' | 'agentStatus' | 'phase' | 'tags' | 'hasBeenNamed' | 'mobileTranscriptTailJson' | 'mobileTranscriptTailUpdatedAt' | 'mobileTranscriptHistoryPageJson' | 'mobileTranscriptHistoryPageUpdatedAt'
@@ -3448,17 +3462,24 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       return sessionIndexCache.get(sessionId);
     },
 
-    /** Clear isExecuting in all cached index entries (for startup cleanup) */
+    /** Clear stale execution/status state in all cached index entries (for startup cleanup). */
     clearAllExecutingState(): void {
+      const now = Date.now();
       for (const [, entry] of sessionIndexCache) {
         if (entry.isExecuting) {
           entry.isExecuting = false;
         }
+        if (isActiveAgentStatus(entry.agentStatus)) {
+          entry.agentStatus = clearedAgentStatus(now);
+        }
       }
-      // Also clear any pending metadata updates that have isExecuting set
+      // Also clear any pending metadata updates that have execution/status set.
       for (const [, pending] of pendingMetadataUpdates) {
         if ('isExecuting' in pending) {
           pending.isExecuting = false;
+        }
+        if (isActiveAgentStatus((pending as any).agentStatus)) {
+          (pending as any).agentStatus = clearedAgentStatus(now);
         }
       }
     },

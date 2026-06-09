@@ -147,8 +147,8 @@ fun SessionDetailScreen(
     }
 
     // Cancel delivery timeout when desktop starts executing
-    LaunchedEffect(session?.isExecuting) {
-        if (session?.isExecuting == true) {
+    LaunchedEffect(session?.isExecuting, session?.agentStatusUpdatedAt) {
+        if (session?.effectiveIsExecuting() == true) {
             deliveryTimeoutJob?.cancel()
             deliveryTimeoutJob = null
             deliveryWarning = null
@@ -181,7 +181,7 @@ fun SessionDetailScreen(
                 deliveryTimeoutJob?.cancel()
                 deliveryTimeoutJob = launch {
                     delay(DELIVERY_TIMEOUT_MS)
-                    if (session?.isExecuting != true) {
+                    if (session?.effectiveIsExecuting() != true) {
                         deliveryWarning = "Your prompt was sent but the desktop hasn't started processing it. Make sure the desktop app is running and connected."
                     }
                 }
@@ -264,10 +264,10 @@ fun SessionDetailScreen(
                 provider = session?.provider ?: "unknown",
                 model = session?.model ?: "unknown",
                 mode = session?.mode ?: "agent",
-                isExecuting = session?.isExecuting == true,
-                agentStatusKind = session?.agentStatusKind,
-                agentStatusLabel = session?.agentStatusLabel,
-                agentStatusDetail = session?.agentStatusDetail,
+                isExecuting = session?.effectiveIsExecuting() == true,
+                agentStatusKind = session?.effectiveAgentStatusKind(),
+                agentStatusLabel = session?.effectiveAgentStatusLabel(),
+                agentStatusDetail = session?.effectiveAgentStatusDetail(),
                 messages = messages,
                 transcriptTailJson = transcriptTail,
                 transcriptHistoryPageJson = transcriptHistoryPage,

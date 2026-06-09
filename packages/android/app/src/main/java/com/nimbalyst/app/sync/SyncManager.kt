@@ -814,10 +814,21 @@ class SyncManager(
         val titleDecrypted = crypto.decryptOrNull(entry.encryptedTitle, entry.titleIv)
         val clientMetadata = decodeClientMetadata(entry.encryptedClientMetadata, entry.clientMetadataIv)
         val agentStatus = clientMetadata?.agentStatus
-        val shouldClearAgentStatus = agentStatus.isTerminalAgentStatus() || entry.isExecuting == false
+        val now = System.currentTimeMillis()
+        val isBareExecutingStale = entry.isExecuting == true &&
+            agentStatus == null &&
+            isStatusTimestampStale(entry.updatedAt, now)
+        val shouldClearAgentStatus = agentStatus.isTerminalAgentStatus() ||
+            agentStatus.isStaleActiveAgentStatus(now) ||
+            isBareExecutingStale ||
+            entry.isExecuting == false ||
+            (agentStatus == null && existing.hasStaleActiveAgentStatus(now))
         val effectiveIsExecuting = when {
             agentStatus.isTerminalAgentStatus() -> false
-            else -> entry.isExecuting ?: existing?.isExecuting ?: false
+            agentStatus.isStaleActiveAgentStatus(now) -> false
+            entry.isExecuting == false -> false
+            entry.isExecuting == true -> !isBareExecutingStale
+            else -> existing?.effectiveIsExecuting(now) ?: false
         }
         captureTranscriptTail(entry.sessionId, clientMetadata)
         captureTranscriptHistoryPage(entry.sessionId, clientMetadata)
@@ -910,10 +921,21 @@ class SyncManager(
         val crypto = crypto ?: return
         val clientMetadata = decodeClientMetadata(metadata.encryptedClientMetadata, metadata.clientMetadataIv)
         val agentStatus = clientMetadata?.agentStatus
-        val shouldClearAgentStatus = agentStatus.isTerminalAgentStatus() || metadata.isExecuting == false
+        val now = System.currentTimeMillis()
+        val isBareExecutingStale = metadata.isExecuting == true &&
+            agentStatus == null &&
+            isStatusTimestampStale(metadata.updatedAt ?: existing.updatedAt, now)
+        val shouldClearAgentStatus = agentStatus.isTerminalAgentStatus() ||
+            agentStatus.isStaleActiveAgentStatus(now) ||
+            isBareExecutingStale ||
+            metadata.isExecuting == false ||
+            (agentStatus == null && existing.hasStaleActiveAgentStatus(now))
         val effectiveIsExecuting = when {
             agentStatus.isTerminalAgentStatus() -> false
-            else -> metadata.isExecuting ?: existing.isExecuting
+            agentStatus.isStaleActiveAgentStatus(now) -> false
+            metadata.isExecuting == false -> false
+            metadata.isExecuting == true -> !isBareExecutingStale
+            else -> existing.effectiveIsExecuting(now)
         }
         captureTranscriptTail(sessionId, clientMetadata)
         captureTranscriptHistoryPage(sessionId, clientMetadata)
@@ -1174,6 +1196,7 @@ class SyncManager(
 }
 
 private const val JWT_REFRESH_INTERVAL_MS = 4L * 60L * 1000L  // 4 minutes
+private const val ACTIVE_AGENT_STATUS_TTL_MS = 5L * 60L * 1000L
 
 private fun AgentStatus?.isTerminalAgentStatus(): Boolean {
     return when (this?.kind?.lowercase()) {
@@ -1181,6 +1204,36 @@ private fun AgentStatus?.isTerminalAgentStatus(): Boolean {
         else -> false
     }
 }
+
+private fun AgentStatus?.isActiveAgentStatus(): Boolean {
+    return when (this?.kind?.lowercase()) {
+        "thinking", "responding", "tool", "editing" -> true
+        else -> false
+    }
+}
+
+private fun AgentStatus?.isStaleActiveAgentStatus(now: Long = System.currentTimeMillis()): Boolean {
+    if (!isActiveAgentStatus()) return false
+    val updatedAt = this?.updatedAt ?: return true
+    return isStatusTimestampStale(updatedAt, now)
+}
+
+private fun SessionEntity?.hasStaleActiveAgentStatus(now: Long = System.currentTimeMillis()): Boolean {
+    val session = this ?: return false
+    val isActiveStatus = when (session.agentStatusKind?.lowercase()) {
+        "thinking", "responding", "tool", "editing" -> true
+        else -> false
+    }
+    if (!isActiveStatus && !session.isExecuting) return false
+    val updatedAt = session.agentStatusUpdatedAt ?: session.updatedAt
+    return isStatusTimestampStale(updatedAt, now)
+}
+
+private fun SessionEntity.effectiveIsExecuting(now: Long = System.currentTimeMillis()): Boolean =
+    isExecuting && !this.hasStaleActiveAgentStatus(now)
+
+private fun isStatusTimestampStale(updatedAt: Long, now: Long): Boolean =
+    updatedAt <= 0 || now - updatedAt > ACTIVE_AGENT_STATUS_TTL_MS
 
 private data class JwtClaims(
     val sub: String?,

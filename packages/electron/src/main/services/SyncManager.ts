@@ -98,6 +98,12 @@ const MIN_INCREMENTAL_SYNC_INTERVAL = 5000; // 5 seconds minimum between syncs
 // re-uploading them is wasteful because they'll just be expired again.
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+const ACTIVE_AGENT_STATUS_KINDS = new Set(['thinking', 'responding', 'tool', 'editing']);
+
+function hasActiveSyncedAgentStatus(session: { agentStatus?: { kind?: string } | null }): boolean {
+  return !!session.agentStatus?.kind && ACTIVE_AGENT_STATUS_KINDS.has(session.agentStatus.kind.toLowerCase());
+}
+
 // Event emitter for sync status changes
 type SyncStatusListener = (status: { connected: boolean; syncing: boolean; error: string | null }) => void;
 const statusListeners = new Set<SyncStatusListener>();
@@ -735,19 +741,19 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
             getMessagesForSync: getSessionMessagesForSyncBatch,
           });
         }
-        // Clear stale isExecuting flags: on startup, no sessions are running yet.
+        // Clear stale execution/status flags: on startup, no sessions are running yet.
         // If the app crashed or the WebSocket disconnected before isExecuting:false
-        // was pushed, the server retains the stale flag permanently.
-        // Clear the local cache and re-sync affected sessions to push isExecuting:false.
-        const staleExecutingSessions = serverIndex.sessions.filter(s => s.isExecuting);
+        // or a terminal agentStatus was pushed, the server retains stale mobile UI state.
+        // Clear the local cache and re-sync affected sessions to push idle state.
+        const staleExecutingSessions = serverIndex.sessions.filter(s => s.isExecuting || hasActiveSyncedAgentStatus(s));
         if (staleExecutingSessions.length > 0) {
-          logger.main.info(`[SyncManager] Clearing stale isExecuting for ${staleExecutingSessions.length} sessions`);
-          // Clear isExecuting in the provider's local cache so syncSessionsToIndex
-          // builds entries with isExecuting:false
+          logger.main.info(`[SyncManager] Clearing stale execution status for ${staleExecutingSessions.length} sessions`);
+          // Clear execution/status in the provider's local cache so syncSessionsToIndex
+          // builds entries with isExecuting:false and agentStatus:idle.
           if (provider.clearAllExecutingState) {
             provider.clearAllExecutingState();
           }
-          // Re-sync these sessions to push the cleared flag to the server
+          // Re-sync these sessions to push the cleared state to the server.
           const staleLocalSessions = staleExecutingSessions
             .map(s => allLocalSessions.find(ls => ls.id === s.sessionId))
             .filter((s): s is NonNullable<typeof s> => s != null);

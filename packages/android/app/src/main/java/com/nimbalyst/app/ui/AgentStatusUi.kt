@@ -17,34 +17,64 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nimbalyst.app.data.SessionEntity
 
-private fun SessionEntity.shouldShowAgentStatus(): Boolean {
-    val kind = agentStatusKind?.lowercase()
-    return hasQueuedPrompts ||
-        kind == "thinking" ||
-        kind == "responding" ||
-        kind == "tool" ||
-        kind == "editing" ||
-        kind == "waiting" ||
-        kind == "queued" ||
-        kind == "error"
+private const val ACTIVE_AGENT_STATUS_TTL_MS = 5L * 60L * 1000L
+
+private fun String?.normalizedAgentStatusKind(): String? = this?.lowercase()?.trim()
+
+private fun String?.isActiveAgentStatusKind(): Boolean = when (normalizedAgentStatusKind()) {
+    "thinking", "responding", "tool", "editing" -> true
+    else -> false
 }
 
-internal fun SessionEntity.agentStatusDisplayLabel(): String? {
-    if (!shouldShowAgentStatus()) return null
-    agentStatusLabel?.takeIf { it.isNotBlank() }?.let { return it }
-    return when (agentStatusKind?.lowercase()) {
+private fun String?.isDisplayableAgentStatusKind(): Boolean = when (normalizedAgentStatusKind()) {
+    "thinking", "responding", "tool", "editing", "waiting", "queued", "error" -> true
+    else -> false
+}
+
+internal fun SessionEntity.hasStaleActiveAgentStatus(now: Long = System.currentTimeMillis()): Boolean {
+    if (!agentStatusKind.isActiveAgentStatusKind() && !isExecuting) return false
+    val statusUpdatedAt = agentStatusUpdatedAt ?: updatedAt
+    return statusUpdatedAt <= 0 || now - statusUpdatedAt > ACTIVE_AGENT_STATUS_TTL_MS
+}
+
+internal fun SessionEntity.effectiveIsExecuting(now: Long = System.currentTimeMillis()): Boolean =
+    isExecuting && !hasStaleActiveAgentStatus(now)
+
+internal fun SessionEntity.effectiveAgentStatusKind(now: Long = System.currentTimeMillis()): String? =
+    agentStatusKind.takeUnless { hasStaleActiveAgentStatus(now) }
+
+internal fun SessionEntity.effectiveAgentStatusLabel(now: Long = System.currentTimeMillis()): String? =
+    agentStatusLabel.takeUnless { hasStaleActiveAgentStatus(now) }
+
+internal fun SessionEntity.effectiveAgentStatusDetail(now: Long = System.currentTimeMillis()): String? =
+    agentStatusDetail.takeUnless { hasStaleActiveAgentStatus(now) }
+
+private fun SessionEntity.shouldShowAgentStatus(now: Long = System.currentTimeMillis()): Boolean {
+    val kind = effectiveAgentStatusKind(now)
+    return hasQueuedPrompts ||
+        kind.isDisplayableAgentStatusKind()
+}
+
+internal fun SessionEntity.agentStatusDisplayLabel(now: Long = System.currentTimeMillis()): String? {
+    if (!shouldShowAgentStatus(now)) return null
+    effectiveAgentStatusLabel(now)?.takeIf { it.isNotBlank() }?.let { return it }
+    if (hasQueuedPrompts && effectiveAgentStatusKind(now).isNullOrBlank()) {
+        return "Prompt queued on desktop"
+    }
+    return when (effectiveAgentStatusKind(now)?.lowercase()) {
         "thinking" -> "Thinking..."
         "responding" -> "Responding..."
-        "tool" -> agentStatusDetail?.takeIf { it.isNotBlank() }?.let { "Using $it..." } ?: "Using tool..."
+        "tool" -> effectiveAgentStatusDetail(now)?.takeIf { it.isNotBlank() }?.let { "Using $it..." } ?: "Using tool..."
+        "editing" -> "Editing..."
         "waiting" -> "Waiting for your response"
         "queued" -> "Prompt queued on desktop"
         "error" -> "Agent hit an error"
-        else -> if (isExecuting) "Working..." else null
+        else -> if (effectiveIsExecuting(now)) "Working..." else null
     }
 }
 
-internal fun SessionEntity.agentStatusDisplayDetail(): String? =
-    agentStatusDetail?.takeIf { it.isNotBlank() && it != agentStatusDisplayLabel() }
+internal fun SessionEntity.agentStatusDisplayDetail(now: Long = System.currentTimeMillis()): String? =
+    effectiveAgentStatusDetail(now)?.takeIf { it.isNotBlank() && it != agentStatusDisplayLabel(now) }
 
 @Composable
 internal fun AgentStatusInline(session: SessionEntity, modifier: Modifier = Modifier) {
@@ -54,7 +84,7 @@ internal fun AgentStatusInline(session: SessionEntity, modifier: Modifier = Modi
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        if (session.isExecuting) {
+        if (session.effectiveIsExecuting()) {
             CircularProgressIndicator(
                 modifier = Modifier
                     .padding(top = 1.dp)
@@ -88,7 +118,7 @@ internal fun AgentStatusBanner(session: SessionEntity, modifier: Modifier = Modi
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            if (session.isExecuting) {
+            if (session.effectiveIsExecuting()) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(18.dp),
                     strokeWidth = 2.dp
