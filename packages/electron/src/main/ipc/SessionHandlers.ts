@@ -522,6 +522,19 @@ export async function registerSessionHandlers() {
         }
     });
 
+    // Get a single session by id (lightweight — does not load the message log).
+    // Used by GitOperationsPanel to read a session's provider (smart-commit
+    // routing) and parentSessionId (post-merge blitz detection).
+    safeHandle('sessions:get', async (event, sessionId: string) => {
+        try {
+            const session = await AISessionsRepository.get(sessionId);
+            return { success: true, session };
+        } catch (error) {
+            console.error('[SessionHandlers] Failed to get session:', error);
+            return { success: false, error: String(error), session: null };
+        }
+    });
+
     // List sessions for workspace
     safeHandle('sessions:list', async (event, workspacePath: string, options?: { includeArchived?: boolean }) => {
         try {

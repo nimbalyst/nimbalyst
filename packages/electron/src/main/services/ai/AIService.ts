@@ -42,6 +42,7 @@ import { ToolExecutor, toolRegistry, BUILT_IN_TOOLS } from './tools';
 import { initMobileSessionControlHandler } from './MobileSessionControlHandler';
 import { SoundNotificationService } from '../SoundNotificationService';
 import { getTerminalSessionManager } from '../TerminalSessionManager';
+import { flushNextClaudeCliQueuedPromptForSession } from './claudeCliQueueFlushSingleton';
 import { notificationService } from '../NotificationService';
 import { TrayManager } from '../../tray/TrayManager';
 import { logger } from '../../utils/logger';
@@ -2008,14 +2009,22 @@ export class AIService {
 
       logger.main.info(`[AIService] createQueuedPrompt: created ${promptId} for session ${sessionId}`);
 
-      // Track ai_message_queued analytics event
+      // Look up the session once (lightweight — no message log) for both the
+      // analytics event and the claude-code-cli idle-flush kick below.
+      let queuedSession: { provider?: string; workspacePath?: string } | null = null;
       try {
         const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-        const session = await AISessionsRepository.get(sessionId);
-        if (session) {
+        queuedSession = await AISessionsRepository.get(sessionId);
+      } catch (lookupError) {
+        logger.main.warn('[AIService] createQueuedPrompt: session lookup failed:', lookupError);
+      }
+
+      // Track ai_message_queued analytics event
+      try {
+        if (queuedSession) {
           const fileExtension = getFileExtensionForAnalytics(documentContext?.filePath);
           AnalyticsService.getInstance().sendEvent('ai_message_queued', {
-            provider: session.provider,
+            provider: queuedSession.provider,
             source: 'local',
             hasDocumentContext: !!documentContext,
             hasAttachments: !!(attachments && attachments.length > 0),
@@ -2032,6 +2041,23 @@ export class AIService {
         sessionId,
         promptCount: 1
       });
+
+      // claude-code-cli (NIM-806): the CLI queue normally drains on the PID
+      // watcher's running->idle transition. But a prompt queued while the CLI is
+      // ALREADY idle (e.g. smart-commit on a session sitting at its prompt) has no
+      // transition to ride, so it would sit forever. If the terminal is live and
+      // the session is idle right now, kick a flush directly. The flush singleton's
+      // in-flight guard + DB claim make this safe against a concurrent transition
+      // flush; if the CLI is mid-turn (running/waiting), we skip and let the next
+      // idle transition drain it.
+      if (queuedSession?.provider === 'claude-code-cli') {
+        const terminalManager = getTerminalSessionManager();
+        const state = getSessionStateManager().getSessionState(sessionId);
+        const workspacePath = queuedSession.workspacePath ?? state?.workspacePath;
+        if (terminalManager.isTerminalActive(sessionId) && state?.status === 'idle' && workspacePath) {
+          void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
+        }
+      }
 
       return {
         id: created.id,

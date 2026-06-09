@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Restarting the app no longer relaunches every Claude Code CLI session at once (which stampeded the subscription rate limit and failed turns) — only the focused window's session resumes; background windows resume when you switch to them.
+- Smart Commit (and any queued prompt) on a Claude Code CLI session now runs immediately instead of sitting queued when the CLI is idle.
 - In Multi-Project mode, a project's tracker list no longer shows another open project's items. (#591)
 - Docs a session just created now sync to mobile immediately, and tapping their transcript link on mobile waits for the doc to sync instead of dead-ending with "not synced to this device".
 - Launching an action in a new session with a different provider's model (e.g. "Implement in Codex" from a Claude session) no longer fails with a model-identifier error.
