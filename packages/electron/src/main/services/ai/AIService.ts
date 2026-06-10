@@ -107,6 +107,7 @@ import { MessageStreamingHandler } from './MessageStreamingHandler';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
+import { DEFAULT_CLAUDE_CODE_ENABLED_MODELS, insertClaudeCodeVariant } from './claudeCodeModelDefaults';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 
 const execFileAsync = promisify(execFile);
@@ -387,24 +388,26 @@ export class AIService {
       'claude-code:opus-4-7',
       'claude-code:opus',
     );
+    // Fable 5 is the flagship, so it sorts ahead of opus in the picker.
+    this.migrateClaudeCodeVariantInsertion(
+      'migrations.claudeCodeFable5Added',
+      'claude-code:fable-5',
+      'claude-code:opus',
+      'before',
+    );
   }
 
   private migrateClaudeCodeVariantInsertion(
     migrationKey: string,
     variantId: string,
-    insertAfterId: string,
+    anchorId: string,
+    position: 'before' | 'after' = 'after',
   ): void {
     if (this.settingsStore!.get(migrationKey)) return;
     const providerSettings = this.settingsStore!.get('providerSettings', {}) as any;
     const claudeCode = providerSettings?.['claude-code'];
     if (claudeCode && Array.isArray(claudeCode.models) && !claudeCode.models.includes(variantId)) {
-      const anchorIndex = claudeCode.models.indexOf(insertAfterId);
-      const insertAt = anchorIndex >= 0 ? anchorIndex + 1 : claudeCode.models.length;
-      claudeCode.models = [
-        ...claudeCode.models.slice(0, insertAt),
-        variantId,
-        ...claudeCode.models.slice(insertAt),
-      ];
+      claudeCode.models = insertClaudeCodeVariant(claudeCode.models, variantId, anchorId, position);
       this.settingsStore!.set('providerSettings', providerSettings);
     }
     this.settingsStore!.set(migrationKey, true);
@@ -434,7 +437,7 @@ export class AIService {
                 enabled: true,
                 testStatus: "idle",
                 installStatus: "not-installed",
-                models: ["claude-code:opus", "claude-code:opus-4-7", "claude-code:opus-4-6", "claude-code:sonnet", "claude-code:haiku"]
+                models: [...DEFAULT_CLAUDE_CODE_ENABLED_MODELS]
               },
               openai: {
                 enabled: false,

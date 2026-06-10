@@ -77,6 +77,17 @@ describe('resolveClaudeCodeModelVariant', () => {
   });
 
   describe('pinned-version variants', () => {
+    it('fable-5 resolves to the full claude-fable-5 SDK model ID', () => {
+      // Claude Fable 5 is pinned to its dateless alias, like the opus-4-N pins.
+      const result = resolveClaudeCodeModelVariant('claude-code:fable-5', DEFAULT_MODEL);
+      expect(result).toBe('claude-fable-5');
+    });
+
+    it('fable-5-1m resolves to claude-fable-5[1m]', () => {
+      const result = resolveClaudeCodeModelVariant('claude-code:fable-5-1m', DEFAULT_MODEL);
+      expect(result).toBe('claude-fable-5[1m]');
+    });
+
     it('opus-4-8 resolves to the canonical opus SDK alias', () => {
       const result = resolveClaudeCodeModelVariant('claude-code:opus-4-8', DEFAULT_MODEL);
       expect(result).toBe('opus');

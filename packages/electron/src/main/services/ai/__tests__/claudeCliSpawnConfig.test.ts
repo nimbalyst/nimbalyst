@@ -113,6 +113,11 @@ describe('buildClaudeCliSpawnConfig', () => {
     expect(cfg.args[cfg.args.indexOf('--model') + 1]).toBe('opus[1m]');
   });
 
+  it('spawns the pinned Fable 5 selection with --model claude-fable-5 (not the bare `fable-5` the CLI rejects)', () => {
+    const cfg = buildClaudeCliSpawnConfig({ ...base, model: 'claude-code-cli:fable-5' });
+    expect(cfg.args[cfg.args.indexOf('--model') + 1]).toBe('claude-fable-5');
+  });
+
   // NIM-806: the genuine CLI ships its own built-in AskUserQuestion that renders
   // in the TUI and never routes through MCP. Disallow it so the model is forced
   // onto our mcp__nimbalyst-mcp__AskUserQuestion equivalent (which renders a
@@ -342,6 +347,14 @@ describe('resolveClaudeCliModelArg', () => {
   it('collapses pinned opus variants to the CLI `opus` alias (non-extended → no [1m])', () => {
     expect(resolveClaudeCliModelArg('claude-code-cli:opus-4-7')).toBe('opus');
     expect(resolveClaudeCliModelArg('claude-code-cli:opus-4-6')).toBe('opus');
+  });
+
+  it('resolves the pinned fable-5 variant to its full claude-fable-5 model id (CLI has no bare `fable` alias)', () => {
+    // Unlike opus pins, `fable-5` has no CLI alias to collapse to, so it must use
+    // the full Anthropic id from CLAUDE_CODE_PINNED_SDK_MODELS. Passing bare
+    // `fable-5` would make `claude --model fable-5` fail at launch.
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable-5')).toBe('claude-fable-5');
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable-5-1m')).toBe('claude-fable-5[1m]');
   });
 
   it('passes a bare variant through (normalized), translating -1m to [1m]', () => {

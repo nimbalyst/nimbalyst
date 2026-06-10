@@ -20,6 +20,14 @@ describe('importedClaudeCodeModel', () => {
     );
   });
 
+  it('maps a fable turn to claude-code:fable-5', () => {
+    // A genuine-CLI session run on claude-fable-5 must import as Fable, not fall
+    // through to the Opus default (the #394 bug class, for the flagship variant).
+    expect(importedClaudeCodeModel([assistant('claude-fable-5')])).toBe(
+      'claude-code:fable-5',
+    );
+  });
+
   it('maps a sonnet turn to claude-code:sonnet', () => {
     expect(importedClaudeCodeModel([assistant('claude-sonnet-4-6')])).toBe(
       'claude-code:sonnet',

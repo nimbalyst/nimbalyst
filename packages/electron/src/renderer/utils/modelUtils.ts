@@ -241,13 +241,13 @@ export function getModelShortName(provider: string, modelId: string): string {
 
 /**
  * Check if a model supports effort level configuration.
- * Supported: Claude Code Opus (4.6+) and Sonnet (4.6+) variants including pinned
- * versions, plus OpenAI Codex models.
+ * Supported: Claude Code Fable 5, Opus (4.6+) and Sonnet (4.6+) variants
+ * including pinned versions, plus OpenAI Codex models.
  */
 export function supportsEffortLevel(modelId?: string): boolean {
   if (!modelId) return false;
   const variant = extractClaudeCodeVariant(modelId);
-  if (variant === 'opus' || variant === 'opus-4-6' || variant === 'sonnet') return true;
+  if (variant === 'fable-5' || variant === 'opus' || variant === 'opus-4-6' || variant === 'sonnet') return true;
   // OpenAI Codex models support reasoning effort (both SDK and ACP transports)
   const parsed = ModelIdentifier.tryParse(modelId);
   if (parsed?.provider === 'openai-codex' || parsed?.provider === 'openai-codex-acp') return true;

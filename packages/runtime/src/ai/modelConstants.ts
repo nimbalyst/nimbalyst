@@ -199,7 +199,7 @@ export const OPENAI_MODELS: ModelDefinition[] = [
  *   the previous-generation Opus selectable after bumping the canonical
  *   `opus` to the next version.
  */
-export type ClaudeCodeVariant = 'opus' | 'sonnet' | 'haiku' | 'opus-4-7' | 'opus-4-6';
+export type ClaudeCodeVariant = 'fable-5' | 'opus' | 'sonnet' | 'haiku' | 'opus-4-7' | 'opus-4-6';
 export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-4-8';
 
 /**
@@ -211,6 +211,7 @@ export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-4-8';
  * duplicate visible picker entry.
  */
 export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInput[] = [
+  'fable-5',
   'opus',
   'opus-4-8',
   'opus-4-7',
@@ -220,6 +221,7 @@ export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInpu
 ] as const;
 
 const CLAUDE_CODE_VARIANT_INPUT_MAP: Readonly<Record<ClaudeCodeVariantInput, ClaudeCodeVariant>> = {
+  'fable-5': 'fable-5',
   opus: 'opus',
   'opus-4-8': 'opus',
   'opus-4-7': 'opus-4-7',
@@ -233,6 +235,7 @@ export function normalizeClaudeCodeVariant(variant: string): ClaudeCodeVariant |
 }
 
 export const CLAUDE_CODE_VARIANT_VERSIONS: Record<ClaudeCodeVariant, string> = {
+  'fable-5': '5',
   opus: '4.8',
   sonnet: '4.6',
   haiku: '4.5',
@@ -241,6 +244,7 @@ export const CLAUDE_CODE_VARIANT_VERSIONS: Record<ClaudeCodeVariant, string> = {
 };
 
 export const CLAUDE_CODE_MODEL_LABELS: Record<ClaudeCodeVariant, string> = {
+  'fable-5': 'Fable',
   opus: 'Opus',
   sonnet: 'Sonnet',
   haiku: 'Haiku',
@@ -254,12 +258,14 @@ export const CLAUDE_CODE_MODEL_LABELS: Record<ClaudeCodeVariant, string> = {
  * string (or missing entry) means "pass the variant name straight through".
  */
 export const CLAUDE_CODE_PINNED_SDK_MODELS: Partial<Record<ClaudeCodeVariant, string>> = {
+  'fable-5': 'claude-fable-5',
   'opus-4-7': 'claude-opus-4-7',
   'opus-4-6': 'claude-opus-4-6',
 };
 
 /** Variants that support a 1M-context extended picker row. */
 export const CLAUDE_CODE_VARIANTS_WITH_1M: readonly ClaudeCodeVariant[] = [
+  'fable-5',
   'opus',
   'sonnet',
   'opus-4-7',
