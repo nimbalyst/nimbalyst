@@ -32,7 +32,7 @@ vi.mock('@nimbalyst/runtime/ai/server/types', () => ({
       return { provider: id.slice(0, colon), model: id.slice(colon + 1) };
     },
   },
-  CLAUDE_CODE_VARIANTS: ['opus', 'sonnet', 'haiku'] as const,
+  CLAUDE_CODE_VARIANTS: ['fable', 'opus', 'sonnet', 'haiku'] as const,
   AI_PROVIDER_TYPES: ['claude', 'claude-code', 'openai', 'openai-codex', 'lmstudio'] as const,
 }));
 

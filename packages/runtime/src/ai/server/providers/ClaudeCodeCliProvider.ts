@@ -82,12 +82,13 @@ export class ClaudeCodeCliProvider extends BaseAgentProvider {
     const models: AIModel[] = [];
 
     for (const variant of CLAUDE_CODE_VARIANTS) {
+      const baseContextWindow = variant === 'fable' ? 1000000 : 200000;
       models.push({
         id: ModelIdentifier.create('claude-code-cli', variant).combined,
-        name: `Claude Code CLI · ${CLAUDE_CODE_MODEL_LABELS[variant]} ${CLAUDE_CODE_VARIANT_VERSIONS[variant]}`,
+        name: `Claude Code CLI · ${CLAUDE_CODE_MODEL_LABELS[variant]} ${CLAUDE_CODE_VARIANT_VERSIONS[variant]}${variant === 'fable' ? ' (1M)' : ''}`,
         provider: 'claude-code-cli' as const,
         maxTokens: 8192,
-        contextWindow: 200000,
+        contextWindow: baseContextWindow,
       });
 
       if ((CLAUDE_CODE_VARIANTS_WITH_1M as readonly string[]).includes(variant)) {

@@ -25,13 +25,14 @@ import type { AssembledUsage } from './claudeCliObservation/claudeApiMessageAsse
 
 type TokenUsage = NonNullable<SessionData['tokenUsage']>;
 
-/** 1M extended-context CLI variants are suffixed `-1m`; everything else is 200k. */
+/** 1M extended-context CLI variants are suffixed `-1m`; Fable 5 is 1M by default. */
 const CLI_DEFAULT_CONTEXT_WINDOW = 200_000;
 const CLI_1M_CONTEXT_WINDOW = 1_000_000;
 
 /** Context window for a CLI model id (`claude-code-cli:opus` / `…-1m`). */
 export function contextWindowForCliModel(model: string | undefined): number {
-  return model && model.toLowerCase().includes('-1m')
+  const normalized = model?.toLowerCase() ?? '';
+  return normalized.includes('-1m') || normalized === 'fable' || normalized.endsWith(':fable') || normalized.includes('claude-fable-5')
     ? CLI_1M_CONTEXT_WINDOW
     : CLI_DEFAULT_CONTEXT_WINDOW;
 }

@@ -16,4 +16,5 @@ export { InMemoryTranscriptEventStore } from './InMemoryTranscriptEventStore';
 export {
   projectRawMessagesToViewMessages,
   rawMessagesToCanonicalEvents,
+  stabilizeRawPageViewMessageIds,
 } from './projectRawMessages';

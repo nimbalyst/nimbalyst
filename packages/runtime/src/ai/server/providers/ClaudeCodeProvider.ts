@@ -3169,13 +3169,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
     // Add models in desired order
     for (const variant of CLAUDE_CODE_VARIANTS) {
-      // Add base model (standard 200K context)
+      const baseContextWindow = variant === 'fable' ? 1000000 : 200000;
+      // Add base model. Fable is 1M by default on supported Claude Code surfaces.
       models.push({
         id: ModelIdentifier.create('claude-code', variant).combined,
-        name: `Claude Agent · ${CLAUDE_CODE_MODEL_LABELS[variant]} ${CLAUDE_CODE_VARIANT_VERSIONS[variant]}`,
+        name: `Claude Agent · ${CLAUDE_CODE_MODEL_LABELS[variant]} ${CLAUDE_CODE_VARIANT_VERSIONS[variant]}${variant === 'fable' ? ' (1M)' : ''}`,
         provider: 'claude-code' as const,
         maxTokens: 8192,
-        contextWindow: 200000
+        contextWindow: baseContextWindow
       });
 
       // Add 1M context variant if the variant supports it.

@@ -18,6 +18,13 @@ describe('contextWindowForCliModel', () => {
     expect(contextWindowForCliModel('claude-code-cli:sonnet')).toBe(200_000);
     expect(contextWindowForCliModel(undefined)).toBe(200_000);
   });
+
+  it('returns 1M for Fable because it is extended-context by default', () => {
+    expect(contextWindowForCliModel('claude-code-cli:fable')).toBe(1_000_000);
+    expect(contextWindowForCliModel('fable')).toBe(1_000_000);
+    expect(contextWindowForCliModel('claude-fable-5')).toBe(1_000_000);
+  });
+
   it('returns 1M for the -1m extended-context variants', () => {
     expect(contextWindowForCliModel('claude-code-cli:opus-1m')).toBe(1_000_000);
     expect(contextWindowForCliModel('claude-code-cli:sonnet-1M')).toBe(1_000_000);

@@ -5,6 +5,10 @@ const DEFAULT_MODEL = 'claude-code:opus-1m';
 
 describe('resolveClaudeCodeModelVariant', () => {
   describe('standard variants (no extended context)', () => {
+    it('resolves fable variant', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:fable', DEFAULT_MODEL)).toBe('fable');
+    });
+
     it('resolves sonnet variant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:sonnet', DEFAULT_MODEL)).toBe('sonnet');
     });
@@ -27,6 +31,11 @@ describe('resolveClaudeCodeModelVariant', () => {
   });
 
   describe('extended context (1M) variants', () => {
+    it('canonicalizes stale fable-1m selections to fable', () => {
+      const result = resolveClaudeCodeModelVariant('claude-code:fable-1m', DEFAULT_MODEL);
+      expect(result).toBe('fable');
+    });
+
     it('sonnet-1m resolves to sonnet[1m] (Sonnet 4.6)', () => {
       const result = resolveClaudeCodeModelVariant('claude-code:sonnet-1m', DEFAULT_MODEL);
       expect(result).toBe('sonnet[1m]');
@@ -50,7 +59,7 @@ describe('resolveClaudeCodeModelVariant', () => {
 
   describe('SDK compatibility', () => {
     it('standard variants are valid SDK model values', () => {
-      const validSdkValues = ['sonnet', 'opus', 'haiku'];
+      const validSdkValues = ['fable', 'sonnet', 'opus', 'haiku'];
       for (const variant of validSdkValues) {
         const result = resolveClaudeCodeModelVariant(`claude-code:${variant}`, DEFAULT_MODEL);
         expect(validSdkValues).toContain(result);
@@ -68,7 +77,7 @@ describe('resolveClaudeCodeModelVariant', () => {
     });
 
     it('standard variants do NOT include [1m] suffix', () => {
-      const variants = ['sonnet', 'opus', 'haiku'];
+      const variants = ['fable', 'sonnet', 'opus', 'haiku'];
       for (const variant of variants) {
         const result = resolveClaudeCodeModelVariant(`claude-code:${variant}`, DEFAULT_MODEL);
         expect(result).not.toContain('[1m]');
@@ -124,6 +133,7 @@ describe('resolveClaudeCodeModelVariant', () => {
     });
 
     it('handles raw variant names without provider prefix', () => {
+      expect(resolveClaudeCodeModelVariant('fable', DEFAULT_MODEL)).toBe('fable');
       expect(resolveClaudeCodeModelVariant('sonnet', DEFAULT_MODEL)).toBe('sonnet');
     });
 

@@ -75,6 +75,7 @@ import { DocumentContextService, type RawDocumentContext, type PreparedDocumentC
 import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
 import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/workspaceDetection';
+import { getDesktopTranscriptHistoryPage } from '../../utils/transcriptHelpers';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import * as fs from 'fs';
@@ -368,44 +369,80 @@ export class AIService {
   }
 
   /**
-   * Append any claude-code variants that were added after this user's
-   * `providerSettings['claude-code'].models` list was first persisted. Without
-   * this, `ai:getModels` filters out newly-introduced variants (e.g. the
-   * `opus-4-6` pinned variant) because they aren't in the saved list and
-   * there's no UI in ClaudeCodePanel to re-enable them.
+   * Append any Claude Code variants that were added after this user's
+   * `providerSettings[*].models` list was first persisted. Without this,
+   * `ai:getModels` filters out newly-introduced variants (e.g. pinned Opus
+   * variants or Fable) because they aren't in the saved list and there's no UI
+   * in ClaudeCodePanel to re-enable them.
    *
    * Each variant gets its own migration key so we can introduce new pinned
    * variants incrementally without re-running prior insertions.
    */
   private migrateClaudeCodeModelList(): void {
-    this.migrateClaudeCodeVariantInsertion(
+    this.migrateClaudeCodeModelInsertion(
       'migrations.claudeCodeOpus46Added',
+      'claude-code',
       'claude-code:opus-4-6',
       'claude-code:opus',
     );
-    this.migrateClaudeCodeVariantInsertion(
+    this.migrateClaudeCodeModelInsertion(
       'migrations.claudeCodeOpus47Added',
+      'claude-code',
       'claude-code:opus-4-7',
       'claude-code:opus',
     );
+    this.migrateClaudeCodeModelInsertion(
+      'migrations.claudeCodeFableCanonicalAdded',
+      'claude-code',
+      'claude-code:fable',
+      'claude-code:opus',
+      ['claude-code:fable-5', 'claude-code:fable-1m'],
+    );
+    this.migrateClaudeCodeModelInsertion(
+      'migrations.claudeCodeCliFableCanonicalAdded',
+      'claude-code-cli',
+      'claude-code-cli:fable',
+      'claude-code-cli:opus',
+      ['claude-code-cli:fable-5', 'claude-code-cli:fable-1m'],
+    );
+    this.migrateClaudeCodeModelInsertion(
+      'migrations.claudeCodeFableOneMillionCanonicalized',
+      'claude-code',
+      'claude-code:fable',
+      'claude-code:opus',
+      ['claude-code:fable-1m', 'claude-code:fable-5'],
+    );
+    this.migrateClaudeCodeModelInsertion(
+      'migrations.claudeCodeCliFableOneMillionCanonicalized',
+      'claude-code-cli',
+      'claude-code-cli:fable',
+      'claude-code-cli:opus',
+      ['claude-code-cli:fable-1m', 'claude-code-cli:fable-5'],
+    );
   }
 
-  private migrateClaudeCodeVariantInsertion(
+  private migrateClaudeCodeModelInsertion(
     migrationKey: string,
-    variantId: string,
+    providerId: 'claude-code' | 'claude-code-cli',
+    modelId: string,
     insertAfterId: string,
+    legacyIds: string[] = [],
   ): void {
     if (this.settingsStore!.get(migrationKey)) return;
     const providerSettings = this.settingsStore!.get('providerSettings', {}) as any;
-    const claudeCode = providerSettings?.['claude-code'];
-    if (claudeCode && Array.isArray(claudeCode.models) && !claudeCode.models.includes(variantId)) {
-      const anchorIndex = claudeCode.models.indexOf(insertAfterId);
-      const insertAt = anchorIndex >= 0 ? anchorIndex + 1 : claudeCode.models.length;
-      claudeCode.models = [
-        ...claudeCode.models.slice(0, insertAt),
-        variantId,
-        ...claudeCode.models.slice(insertAt),
-      ];
+    const providerConfig = providerSettings?.[providerId];
+    if (providerConfig && Array.isArray(providerConfig.models)) {
+      let models = providerConfig.models.filter((id: string) => !legacyIds.includes(id));
+      if (!models.includes(modelId)) {
+        const anchorIndex = models.indexOf(insertAfterId);
+        const insertAt = anchorIndex >= 0 ? anchorIndex + 1 : models.length;
+        models = [
+          ...models.slice(0, insertAt),
+          modelId,
+          ...models.slice(insertAt),
+        ];
+      }
+      providerConfig.models = models;
       this.settingsStore!.set('providerSettings', providerSettings);
     }
     this.settingsStore!.set(migrationKey, true);
@@ -435,7 +472,7 @@ export class AIService {
                 enabled: true,
                 testStatus: "idle",
                 installStatus: "not-installed",
-                models: ["claude-code:opus", "claude-code:opus-4-7", "claude-code:opus-4-6", "claude-code:sonnet", "claude-code:haiku"]
+                models: ["claude-code:fable", "claude-code:opus", "claude-code:opus-4-7", "claude-code:opus-4-6", "claude-code:sonnet", "claude-code:haiku"]
               },
               openai: {
                 enabled: false,
@@ -1943,6 +1980,20 @@ export class AIService {
       }
     });
 
+    safeHandle('ai:loadTranscriptPage', async (
+      _event,
+      sessionId: string,
+      request?: { beforeRawMessageId?: number | null; count?: number },
+    ) => {
+      const page = await getDesktopTranscriptHistoryPage(sessionId, request ?? {});
+      if (!page) return null;
+
+      return {
+        ...page,
+        messages: await enrichTranscriptMessagesWithToolCallDiffs(sessionId, page.messages),
+      };
+    });
+
     // Clear session
     safeHandle('ai:clearSession', async (event, sessionId?: string) => {
       this.sessionManager.clearCurrentSession();
@@ -3382,9 +3433,9 @@ export class AIService {
           if (model.provider === 'claude-code' && provider.models.includes('claude-code')) {
             return true;
           }
-          // For Claude Code: if base model is selected, also include 1M variants
+          // For Claude Code providers: if base model is selected, also include 1M variants
           // e.g., if 'claude-code:sonnet' is selected, also include 'claude-code:sonnet-1m'
-          if (model.provider === 'claude-code' && model.id.includes('-1m')) {
+          if ((model.provider === 'claude-code' || model.provider === 'claude-code-cli') && model.id.includes('-1m')) {
             const baseModelId = model.id.replace(/-1m$/, '');
             if (provider.models.includes(baseModelId)) {
               return true;

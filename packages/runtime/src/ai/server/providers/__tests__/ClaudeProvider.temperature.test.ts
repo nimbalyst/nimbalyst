@@ -7,6 +7,12 @@ import { ClaudeProvider } from '../ClaudeProvider';
 // Connection: Failed" until they switched to Sonnet.
 
 describe('ClaudeProvider.supportsTemperature', () => {
+  describe('rejects temperature for Fable 5', () => {
+    it('omits temperature for Claude Fable 5', () => {
+      expect(ClaudeProvider.supportsTemperature('claude-fable-5')).toBe(false);
+    });
+  });
+
   describe('rejects temperature for Opus 4.7+', () => {
     it('returns false for claude-opus-4-7', () => {
       expect(ClaudeProvider.supportsTemperature('claude-opus-4-7')).toBe(false);

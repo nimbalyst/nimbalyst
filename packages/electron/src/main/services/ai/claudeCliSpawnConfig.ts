@@ -31,6 +31,8 @@ import { normalizeClaudeCodeVariant } from '@nimbalyst/runtime/ai/modelConstants
  * session actually runs at 1M context — the CLI strips `[1m]` before sending the
  * model id, same as the Agent SDK (see `resolveClaudeCodeModelVariant`). Dropping
  * the suffix instead silently downgraded 1M selections to 200k (NIM-809).
+ * Fable 5 is already 1M where available and the CLI accepts the plain `fable`
+ * alias, not `fable[1m]`, so stale fable-1m selections are canonicalized.
  *
  * Returns `undefined` when there's nothing usable (let the CLI default). A bare
  * full model name (no recognizable variant) passes through unchanged since the
@@ -50,6 +52,7 @@ export function resolveClaudeCliModelArg(model: string | undefined): string | un
   if (variant) {
     // Collapse pinned opus variants (opus-4-7 / opus-4-6) to the CLI's `opus` alias.
     const alias = variant.startsWith('opus') ? 'opus' : variant;
+    if (alias === 'fable') return alias;
     return isExtended ? `${alias}[1m]` : alias;
   }
 

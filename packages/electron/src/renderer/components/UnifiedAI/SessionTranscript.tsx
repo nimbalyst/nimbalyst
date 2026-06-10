@@ -17,7 +17,7 @@
 import React, { useCallback, useRef, useImperativeHandle, forwardRef, useEffect, useState, useMemo } from 'react';
 import { useAtom, useSetAtom, useAtomValue } from 'jotai';
 import { store, registerInteractiveWidgetHost, unregisterInteractiveWidgetHost } from '@nimbalyst/runtime/store';
-import type { SessionData, ChatAttachment, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
+import type { SessionData, ChatAttachment, TranscriptViewMessage, TranscriptPageInfo } from '@nimbalyst/runtime/ai/server/types';
 import { AgentTranscriptPanel } from '@nimbalyst/runtime/ui/AgentTranscript/components/AgentTranscriptPanel';
 import { ClaudeCliTerminalStrip } from './ClaudeCliTerminalStrip';
 import type { InteractiveWidgetHost, PermissionScope } from '@nimbalyst/runtime/ui/AgentTranscript/components/CustomToolWidgets/InteractiveWidgetHost';
@@ -174,6 +174,57 @@ function makeOptimisticError(text: string, extra?: Partial<TranscriptViewMessage
     systemMessage: { systemType: 'error' },
     ...extra,
   };
+}
+
+interface DesktopTranscriptHistoryPage {
+  version: 1;
+  sessionId: string;
+  beforeRawMessageId: number | null;
+  rawStartId: number | null;
+  rawEndId: number | null;
+  rawMessageCount: number;
+  projectedMessageCount: number;
+  hasMoreBefore: boolean;
+  messages: TranscriptViewMessage[];
+}
+
+function transcriptMessageFingerprint(message: TranscriptViewMessage): string {
+  const createdAt = message.createdAt instanceof Date
+    ? message.createdAt.getTime()
+    : new Date(message.createdAt as any).getTime();
+  return [
+    Number.isFinite(createdAt) ? createdAt : 0,
+    message.type,
+    message.text ?? '',
+    message.toolCall?.providerToolCallId ?? '',
+    message.toolCall?.toolName ?? '',
+    message.subagentId ?? '',
+  ].join('\u001f');
+}
+
+function mergeOlderTranscriptMessages(
+  olderMessages: TranscriptViewMessage[],
+  currentMessages: TranscriptViewMessage[],
+): TranscriptViewMessage[] {
+  if (olderMessages.length === 0) return currentMessages;
+
+  const currentIds = new Set(
+    currentMessages
+      .map(message => message.id)
+      .filter((id): id is number => Number.isFinite(id))
+  );
+  const currentFingerprints = new Set(currentMessages.map(transcriptMessageFingerprint));
+  const uniqueOlder = olderMessages.filter((message) => {
+    if (Number.isFinite(message.id) && currentIds.has(message.id)) return false;
+    const fingerprint = transcriptMessageFingerprint(message);
+    if (currentFingerprints.has(fingerprint)) return false;
+    currentIds.add(message.id);
+    currentFingerprints.add(fingerprint);
+    return true;
+  });
+
+  if (uniqueOlder.length === 0) return currentMessages;
+  return [...uniqueOlder, ...currentMessages];
 }
 
 function summarizeTeammates(
@@ -467,6 +518,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const loadSessionData = useSetAtom(loadSessionDataAtom);
   const reloadSessionData = useSetAtom(reloadSessionDataAtom);
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
+  const [isLoadingOlderTranscript, setIsLoadingOlderTranscript] = useState(false);
 
   // Child session creation for "start new session" option
   const createChildSession = useSetAtom(createChildSessionAtom);
@@ -526,6 +578,61 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     metadataTeammates,
     currentTodos,
   ]);
+
+  const handleLoadOlderTranscript = useCallback(async () => {
+    if (isLoadingOlderTranscript) return;
+
+    const current = store.get(sessionStoreAtom(sessionId));
+    const pageInfo = current?.transcriptPage;
+    if (!pageInfo?.isPartial || !pageInfo.hasMoreBefore || pageInfo.rawStartId == null) {
+      return;
+    }
+
+    setIsLoadingOlderTranscript(true);
+    try {
+      const page = await window.electronAPI.invoke('ai:loadTranscriptPage', sessionId, {
+        beforeRawMessageId: pageInfo.rawStartId,
+        count: 700,
+      }) as DesktopTranscriptHistoryPage | null;
+
+      const latest = store.get(sessionStoreAtom(sessionId));
+      if (!latest) return;
+
+      const latestPageInfo = latest.transcriptPage ?? pageInfo;
+      if (!page || page.messages.length === 0) {
+        updateSessionStore({
+          sessionId,
+          updates: {
+            transcriptPage: {
+              ...latestPageInfo,
+              hasMoreBefore: false,
+            } satisfies TranscriptPageInfo,
+          },
+        });
+        return;
+      }
+
+      updateSessionStore({
+        sessionId,
+        updates: {
+          messages: mergeOlderTranscriptMessages(page.messages, latest.messages ?? []),
+          transcriptPage: {
+            ...latestPageInfo,
+            isPartial: true,
+            hasMoreBefore: page.hasMoreBefore,
+            rawStartId: page.rawStartId ?? latestPageInfo.rawStartId,
+            rawEndId: latestPageInfo.rawEndId ?? page.rawEndId,
+            rawMessageCount: (latestPageInfo.rawMessageCount ?? 0) + page.rawMessageCount,
+            totalRawMessageCount: latestPageInfo.totalRawMessageCount,
+          } satisfies TranscriptPageInfo,
+        },
+      });
+    } catch (error) {
+      console.error('[SessionTranscript] Failed to load older transcript page:', error);
+    } finally {
+      setIsLoadingOlderTranscript(false);
+    }
+  }, [isLoadingOlderTranscript, sessionId, updateSessionStore]);
 
   // Effort level: read from session metadata, fall back to global default
   const showEffortLevel = useMemo(() => supportsEffortLevel(currentModel), [currentModel]);
@@ -2310,6 +2417,8 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             onGroupByDirectoryChange={setGroupByDirectory}
             onOpenInExternalEditor={hasExternalEditor ? handleOpenInExternalEditor : undefined}
             externalEditorName={externalEditorName}
+            onLoadOlderTranscript={handleLoadOlderTranscript}
+            isLoadingOlderTranscript={isLoadingOlderTranscript}
             onCompact={handleCompact}
             promptAdditions={showPromptAdditions ? promptAdditions : null}
             currentTeammates={transcriptTeammates}

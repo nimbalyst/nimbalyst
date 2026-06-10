@@ -195,6 +195,7 @@ export class ClaudeCliSessionLauncher {
         );
         settingsJson = buildPermissionHookSettingsJson({ command });
         permissionHookEnv.NIMBALYST_PERMISSION_URL = permissionUrl;
+        permissionHookEnv.NIMBALYST_WORKSPACE_PATH = workspacePath;
         if (token) permissionHookEnv.NIMBALYST_PERMISSION_TOKEN = token;
       } catch (err) {
         // Never block the CLI launch over the permission hook; fall back to native.

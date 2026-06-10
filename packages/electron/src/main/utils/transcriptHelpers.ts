@@ -1,5 +1,8 @@
 import { AgentMessagesRepository, AISessionsRepository, TranscriptMigrationRepository } from '@nimbalyst/runtime';
-import { projectRawMessagesToViewMessages } from '@nimbalyst/runtime/ai/server/transcript';
+import {
+  projectRawMessagesToViewMessages,
+  stabilizeRawPageViewMessageIds,
+} from '@nimbalyst/runtime/ai/server/transcript';
 import type { AgentMessage } from '@nimbalyst/runtime/ai/server/types';
 import type { RawMessage } from '@nimbalyst/runtime/ai/server/transcript';
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
@@ -23,11 +26,29 @@ const MOBILE_TRANSCRIPT_TAIL_TEXT_LIMIT = 6000;
 const MOBILE_TRANSCRIPT_TAIL_PROGRESS_LIMIT = 400;
 const MOBILE_TRANSCRIPT_TAIL_MAX_RAW_MESSAGES = 1500;
 const MOBILE_TRANSCRIPT_HISTORY_PAGE_MAX_RAW_MESSAGES = 450;
+const DESKTOP_TRANSCRIPT_HISTORY_PAGE_MAX_RAW_MESSAGES = 700;
 
 export interface MobileTranscriptHistoryPageRequest {
   count?: number;
   beforeRawMessageId?: number | null;
   requestId?: string;
+}
+
+export interface DesktopTranscriptHistoryPageRequest {
+  count?: number;
+  beforeRawMessageId?: number | null;
+}
+
+export interface DesktopTranscriptHistoryPage {
+  version: 1;
+  sessionId: string;
+  beforeRawMessageId: number | null;
+  rawStartId: number | null;
+  rawEndId: number | null;
+  rawMessageCount: number;
+  projectedMessageCount: number;
+  hasMoreBefore: boolean;
+  messages: TranscriptViewMessage[];
 }
 
 function agentMessageToRawMessage(message: AgentMessage): RawMessage {
@@ -54,6 +75,15 @@ async function listRawMessagesBefore(
   count: number,
 ): Promise<AgentMessage[]> {
   const limit = Math.max(1, Math.min(count, MOBILE_TRANSCRIPT_HISTORY_PAGE_MAX_RAW_MESSAGES));
+  return AgentMessagesRepository.listBefore(sessionId, beforeRawMessageId, limit);
+}
+
+async function listDesktopRawMessagesBefore(
+  sessionId: string,
+  beforeRawMessageId: number | null | undefined,
+  count: number,
+): Promise<AgentMessage[]> {
+  const limit = Math.max(1, Math.min(count, DESKTOP_TRANSCRIPT_HISTORY_PAGE_MAX_RAW_MESSAGES));
   return AgentMessagesRepository.listBefore(sessionId, beforeRawMessageId, limit);
 }
 
@@ -159,6 +189,44 @@ export async function getMobileTranscriptHistoryPageJson(
     hasMoreBefore,
     messages,
   });
+}
+
+export async function getDesktopTranscriptHistoryPage(
+  sessionId: string,
+  request: DesktopTranscriptHistoryPageRequest = {},
+): Promise<DesktopTranscriptHistoryPage | null> {
+  const session = await AISessionsRepository.get(sessionId);
+  if (!session) return null;
+
+  const provider = session.provider ?? 'unknown';
+  const beforeRawMessageId = typeof request.beforeRawMessageId === 'number' && Number.isFinite(request.beforeRawMessageId)
+    ? Math.max(1, Math.floor(request.beforeRawMessageId))
+    : null;
+  const rawLimit = Number.isFinite(request.count)
+    ? Math.max(40, Math.min(DESKTOP_TRANSCRIPT_HISTORY_PAGE_MAX_RAW_MESSAGES, Math.floor(request.count as number)))
+    : 500;
+  const rawPage = await listDesktopRawMessagesBefore(sessionId, beforeRawMessageId, rawLimit);
+  const rawStartId = rawPage[0]?.id != null ? Number(rawPage[0].id) : null;
+  const rawEndId = rawPage[rawPage.length - 1]?.id != null ? Number(rawPage[rawPage.length - 1].id) : null;
+  const hasMoreBefore = rawStartId != null
+    ? (await listDesktopRawMessagesBefore(sessionId, rawStartId, 1)).length > 0
+    : false;
+  const projected = rawPage.length > 0
+    ? await projectRawMessagesToViewMessages(rawPage.map(agentMessageToRawMessage), provider)
+    : [];
+  const messages = stabilizeRawPageViewMessageIds(projected, rawStartId);
+
+  return {
+    version: 1,
+    sessionId,
+    beforeRawMessageId,
+    rawStartId,
+    rawEndId,
+    rawMessageCount: rawPage.length,
+    projectedMessageCount: messages.length,
+    hasMoreBefore,
+    messages,
+  };
 }
 
 export async function getMobileTranscriptTailJson(

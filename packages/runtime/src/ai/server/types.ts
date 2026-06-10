@@ -200,7 +200,7 @@ export function shouldBlockStartedSessionProviderSwitch(
  * the canonical `opus` alias to 4.8, so users can still choose previous
  * generations. See CLAUDE_CODE_PINNED_SDK_MODELS in modelConstants.ts.
  */
-export const CLAUDE_CODE_VARIANTS = ['opus', 'opus-4-7', 'opus-4-6', 'sonnet', 'haiku'] as const;
+export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-7', 'opus-4-6', 'sonnet', 'haiku'] as const;
 
 /**
  * Resolves a configured model string to the SDK model value.
@@ -213,6 +213,8 @@ export const CLAUDE_CODE_VARIANTS = ['opus', 'opus-4-7', 'opus-4-6', 'sonnet', '
  *   specific version regardless of what "latest" becomes.
  * - For -1m variants, appends `[1m]` so the SDK adds the 1M-context beta
  *   header; the SDK strips `[1m]` before sending the model ID to the API.
+ * - Fable 5 already runs with 1M context on supported surfaces, so stale
+ *   fable-1m selections are canonicalized back to the plain `fable` alias.
  */
 export function resolveClaudeCodeModelVariant(configuredModel: string | undefined, defaultModel: string): string {
   type ClaudeCodeVariant = typeof CLAUDE_CODE_VARIANTS[number];
@@ -227,6 +229,7 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
     const variant = parsed.baseVariant as ClaudeCodeVariant;
     if ((CLAUDE_CODE_VARIANTS as readonly string[]).includes(variant)) {
       const sdkBase = toSdkBase(variant);
+      if (variant === 'fable') return sdkBase;
       // Append [1m] suffix for extended context so the SDK auto-detects the 1M beta
       return parsed.isExtendedContext ? `${sdkBase}[1m]` : sdkBase;
     }
@@ -241,6 +244,7 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
   const normalizedVariant = withoutContext ? normalizeClaudeCodeVariant(withoutContext) : null;
   if (normalizedVariant) {
     const sdkBase = toSdkBase(normalizedVariant);
+    if (normalizedVariant === 'fable') return sdkBase;
     return isExtended ? `${sdkBase}[1m]` : sdkBase;
   }
 
@@ -283,6 +287,15 @@ export interface TokenUsageCategory {
   percentage: number;
 }
 
+export interface TranscriptPageInfo {
+  isPartial: boolean;
+  hasMoreBefore: boolean;
+  rawStartId: number | null;
+  rawEndId: number | null;
+  rawMessageCount: number;
+  totalRawMessageCount?: number;
+}
+
 export interface SessionData {
   id: string;  // Our session ID
   provider: AIProviderType | string;  // Provider type
@@ -292,6 +305,7 @@ export interface SessionData {
   agentRole?: AgentRole;
   createdBySessionId?: string | null;
   messages: TranscriptViewMessage[];
+  transcriptPage?: TranscriptPageInfo;
   documentContext?: DocumentContext;
   workspacePath?: string;
   title?: string;

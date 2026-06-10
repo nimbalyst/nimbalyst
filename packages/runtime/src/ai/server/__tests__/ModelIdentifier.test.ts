@@ -11,10 +11,10 @@ describe('ModelIdentifier', () => {
     });
 
     it('parses valid claude-code model identifiers', () => {
-      const id = ModelIdentifier.parse('claude-code:opus');
+      const id = ModelIdentifier.parse('claude-code:fable');
       expect(id.provider).toBe('claude-code');
-      expect(id.model).toBe('opus');
-      expect(id.combined).toBe('claude-code:opus');
+      expect(id.model).toBe('fable');
+      expect(id.combined).toBe('claude-code:fable');
     });
 
     it('parses claude-code with 1m suffix', () => {
@@ -95,9 +95,9 @@ describe('ModelIdentifier', () => {
     });
 
     it('creates valid claude-code model identifier with normalization', () => {
-      const id = ModelIdentifier.create('claude-code', 'OPUS');
+      const id = ModelIdentifier.create('claude-code', 'FABLE');
       expect(id.provider).toBe('claude-code');
-      expect(id.model).toBe('opus'); // Normalized to lowercase
+      expect(id.model).toBe('fable'); // Normalized to lowercase
     });
 
     it('creates valid claude-code model identifier with 1m suffix', () => {
@@ -137,6 +137,7 @@ describe('ModelIdentifier', () => {
   describe('baseVariant', () => {
     it('returns base variant for claude-code models', () => {
       expect(ModelIdentifier.parse('claude-code:opus').baseVariant).toBe('opus');
+      expect(ModelIdentifier.parse('claude-code:fable').baseVariant).toBe('fable');
       expect(ModelIdentifier.parse('claude-code:sonnet').baseVariant).toBe('sonnet');
       expect(ModelIdentifier.parse('claude-code:haiku').baseVariant).toBe('haiku');
     });

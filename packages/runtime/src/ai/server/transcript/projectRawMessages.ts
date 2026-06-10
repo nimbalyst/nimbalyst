@@ -89,6 +89,21 @@ export async function rawMessagesToCanonicalEvents(
   return store.getAllEvents();
 }
 
+export function stabilizeRawPageViewMessageIds(
+  messages: TranscriptViewMessage[],
+  rawStartId: number | null | undefined,
+): TranscriptViewMessage[] {
+  if (!Number.isFinite(rawStartId)) return messages;
+
+  const rawBase = Math.max(1, Math.floor(rawStartId as number));
+  const idBase = rawBase * 10_000;
+
+  return messages.map((message, index) => ({
+    ...message,
+    id: idBase + index + 1,
+  }));
+}
+
 /**
  * Parse raw messages and project them to the view model the transcript
  * renderer consumes. Client-side equivalent of desktop's

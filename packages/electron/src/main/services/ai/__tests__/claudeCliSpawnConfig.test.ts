@@ -334,6 +334,8 @@ describe('buildClaudeCliSpawnConfig', () => {
 
 describe('resolveClaudeCliModelArg', () => {
   it('strips the provider prefix and translates -1m to the CLI `[1m]` form (NIM-809)', () => {
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable')).toBe('fable');
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable-1m')).toBe('fable');
     expect(resolveClaudeCliModelArg('claude-code-cli:opus-1m')).toBe('opus[1m]');
     expect(resolveClaudeCliModelArg('claude-code-cli:sonnet')).toBe('sonnet');
     expect(resolveClaudeCliModelArg('claude-code:haiku')).toBe('haiku');
@@ -345,6 +347,7 @@ describe('resolveClaudeCliModelArg', () => {
   });
 
   it('passes a bare variant through (normalized), translating -1m to [1m]', () => {
+    expect(resolveClaudeCliModelArg('FABLE')).toBe('fable');
     expect(resolveClaudeCliModelArg('opus')).toBe('opus');
     expect(resolveClaudeCliModelArg('opus-1m')).toBe('opus[1m]');
     expect(resolveClaudeCliModelArg('SONNET')).toBe('sonnet');

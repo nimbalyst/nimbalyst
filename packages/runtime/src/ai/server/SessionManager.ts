@@ -23,8 +23,12 @@ import {
   shouldBlockStartedSessionProviderSwitch,
   AgentRole,
   AgentMessage,
+  TranscriptPageInfo,
 } from './types';
-import { projectRawMessagesToViewMessages } from './transcript/projectRawMessages';
+import {
+  projectRawMessagesToViewMessages,
+  stabilizeRawPageViewMessageIds,
+} from './transcript/projectRawMessages';
 import type { RawMessage } from './transcript/TranscriptTransformer';
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
 import type { SessionData as ChatSession } from './types';
@@ -94,6 +98,15 @@ async function listTailAgentMessages(
 ): Promise<AgentMessage[]> {
   const limit = Math.max(1, count);
   return AgentMessagesRepository.listTail(sessionId, limit);
+}
+
+async function listAgentMessagesBefore(
+  sessionId: string,
+  beforeRawMessageId: number | null | undefined,
+  count: number,
+): Promise<AgentMessage[]> {
+  const limit = Math.max(1, count);
+  return AgentMessagesRepository.listBefore(sessionId, beforeRawMessageId, limit);
 }
 
 function toTimestampMillis(value: unknown): number {
@@ -1106,14 +1119,26 @@ export class SessionManager {
     const rawMessageCount = await getAgentMessageCount(sessionId);
 
     // Huge sessions cannot safely project the whole raw log on desktop open.
-    // Load a bounded raw tail directly so the session stays responsive.
-    const uiMessages = rawMessageCount > DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT
-      ? await this.loadRawTailTranscript(sessionId, session.provider)
-      : await this.loadCanonicalTranscript(sessionId, session.provider);
+    // Load a bounded raw tail directly, with page metadata so the renderer can
+    // fetch older slices on demand as the user scrolls upward.
+    const transcriptLoad = rawMessageCount > DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT
+      ? await this.loadRawTailTranscriptPage(sessionId, session.provider, rawMessageCount)
+      : {
+        messages: await this.loadCanonicalTranscript(sessionId, session.provider),
+        pageInfo: {
+          isPartial: false,
+          hasMoreBefore: false,
+          rawStartId: null,
+          rawEndId: null,
+          rawMessageCount,
+          totalRawMessageCount: rawMessageCount,
+        } satisfies TranscriptPageInfo,
+      };
 
     // Build session data, then overwrite messages with the already-projected ones
     const sessionData = sessionDataFromChatSession(session, workspace);
-    sessionData.messages = uiMessages;
+    sessionData.messages = transcriptLoad.messages;
+    sessionData.transcriptPage = transcriptLoad.pageInfo;
 
     // Fallback: If no tokenUsage in metadata, try parsing from recent /context
     // responses only. Scanning every raw row has crashed large sessions.
@@ -1157,15 +1182,33 @@ export class SessionManager {
     return TranscriptMigrationRepository.getService().getViewMessages(sessionId, provider);
   }
 
-  private async loadRawTailTranscript(
+  private async loadRawTailTranscriptPage(
     sessionId: string,
     provider: string,
-  ): Promise<TranscriptViewMessage[]> {
+    totalRawMessageCount: number,
+  ): Promise<{ messages: TranscriptViewMessage[]; pageInfo: TranscriptPageInfo }> {
     const rawTail = await listTailAgentMessages(
       sessionId,
       DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT,
     );
-    return projectRawMessagesToViewMessages(rawTail.map(agentMessageToRawMessage), provider);
+    const rawStartId = rawTail[0]?.id != null ? Number(rawTail[0].id) : null;
+    const rawEndId = rawTail[rawTail.length - 1]?.id != null ? Number(rawTail[rawTail.length - 1].id) : null;
+    const hasMoreBefore = rawStartId != null
+      ? (await listAgentMessagesBefore(sessionId, rawStartId, 1)).length > 0
+      : false;
+    const projected = await projectRawMessagesToViewMessages(rawTail.map(agentMessageToRawMessage), provider);
+
+    return {
+      messages: stabilizeRawPageViewMessageIds(projected, rawStartId),
+      pageInfo: {
+        isPartial: true,
+        hasMoreBefore,
+        rawStartId,
+        rawEndId,
+        rawMessageCount: rawTail.length,
+        totalRawMessageCount,
+      },
+    };
   }
 
   async getSessions(workspacePath?: string): Promise<SessionData[]> {

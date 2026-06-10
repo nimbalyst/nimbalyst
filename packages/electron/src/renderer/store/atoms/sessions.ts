@@ -17,7 +17,7 @@
 import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
-import { ModelIdentifier, type ChatAttachment, type SessionData, type TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
+import { ModelIdentifier, type ChatAttachment, type SessionData, type TranscriptPageInfo, type TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
 import type { SessionMeta } from '@nimbalyst/runtime';
 import deepEqual from 'fast-deep-equal';
 import { workstreamStateAtom, setWorkstreamActiveChildAtom } from './workstreamState';
@@ -1770,22 +1770,76 @@ export function shouldPreserveOptimisticMessage(
   return !hasPersistedReplacement(optimistic, dbMessages);
 }
 
+function transcriptHistoryMergeKey(message: TranscriptViewMessage): string {
+  return [
+    safeMessageTimeMs(message.createdAt),
+    message.type,
+    message.text ?? '',
+    message.toolCall?.providerToolCallId ?? '',
+    message.toolCall?.toolName ?? '',
+    message.subagentId ?? '',
+  ].join('\u001f');
+}
+
+function preservePagedTranscriptHistory(current: SessionData, next: SessionData): SessionData {
+  const currentPage = current.transcriptPage;
+  const nextPage = next.transcriptPage;
+  if (!currentPage?.isPartial || !nextPage?.isPartial) return next;
+  if (currentPage.rawStartId == null || nextPage.rawStartId == null) return next;
+  if (currentPage.rawStartId >= nextPage.rawStartId) return next;
+
+  const nextIds = new Set(
+    next.messages
+      .map(message => message.id)
+      .filter((id): id is number => Number.isFinite(id))
+  );
+  const nextKeys = new Set(next.messages.map(transcriptHistoryMergeKey));
+  const preservedOlderMessages = current.messages.filter((message) => {
+    if (Number.isFinite(message.id) && nextIds.has(message.id)) return false;
+    const key = transcriptHistoryMergeKey(message);
+    if (nextKeys.has(key)) return false;
+    nextIds.add(message.id);
+    nextKeys.add(key);
+    return true;
+  });
+
+  if (preservedOlderMessages.length === 0) return next;
+
+  const transcriptPage: TranscriptPageInfo = {
+    ...nextPage,
+    rawStartId: currentPage.rawStartId,
+    hasMoreBefore: currentPage.hasMoreBefore,
+    rawMessageCount: Math.max(nextPage.rawMessageCount, currentPage.rawMessageCount),
+    totalRawMessageCount: Math.max(
+      nextPage.totalRawMessageCount ?? 0,
+      currentPage.totalRawMessageCount ?? 0,
+    ) || nextPage.totalRawMessageCount || currentPage.totalRawMessageCount,
+  };
+
+  return {
+    ...next,
+    messages: [...preservedOlderMessages, ...next.messages],
+    transcriptPage,
+  };
+}
+
 export function preserveReloadIdentity(current: SessionData, next: SessionData): SessionData {
-  const normalizedMessages = preserveEquivalentArrayRef(current.messages, next.messages);
+  const nextWithHistory = preservePagedTranscriptHistory(current, next);
+  const normalizedMessages = preserveEquivalentArrayRef(current.messages, nextWithHistory.messages);
   const currentTeammates = Array.isArray(current.metadata?.currentTeammates)
     ? current.metadata.currentTeammates
     : undefined;
-  const nextTeammates = Array.isArray(next.metadata?.currentTeammates)
-    ? next.metadata.currentTeammates
+  const nextTeammates = Array.isArray(nextWithHistory.metadata?.currentTeammates)
+    ? nextWithHistory.metadata.currentTeammates
     : undefined;
   const currentTodos = Array.isArray(current.metadata?.currentTodos)
     ? current.metadata.currentTodos
     : undefined;
-  const nextTodos = Array.isArray(next.metadata?.currentTodos)
-    ? next.metadata.currentTodos
+  const nextTodos = Array.isArray(nextWithHistory.metadata?.currentTodos)
+    ? nextWithHistory.metadata.currentTodos
     : undefined;
 
-  let metadata = next.metadata;
+  let metadata = nextWithHistory.metadata;
   if (currentTeammates && nextTeammates && deepEqual(currentTeammates, nextTeammates)) {
     metadata = {
       ...(metadata ?? {}),
@@ -1799,13 +1853,13 @@ export function preserveReloadIdentity(current: SessionData, next: SessionData):
     };
   }
 
-  const tokenUsage = preserveEquivalentValue(current.tokenUsage, next.tokenUsage);
+  const tokenUsage = preserveEquivalentValue(current.tokenUsage, nextWithHistory.tokenUsage);
 
   return {
-    ...next,
-    messages: normalizedMessages ?? next.messages,
-    ...(tokenUsage !== next.tokenUsage ? { tokenUsage } : {}),
-    ...(metadata !== next.metadata ? { metadata } : {}),
+    ...nextWithHistory,
+    messages: normalizedMessages ?? nextWithHistory.messages,
+    ...(tokenUsage !== nextWithHistory.tokenUsage ? { tokenUsage } : {}),
+    ...(metadata !== nextWithHistory.metadata ? { metadata } : {}),
   };
 }
 

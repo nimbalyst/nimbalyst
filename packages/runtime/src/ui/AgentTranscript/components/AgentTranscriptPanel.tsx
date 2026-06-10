@@ -84,6 +84,10 @@ interface AgentTranscriptPanelProps {
   onOpenInExternalEditor?: (filePath: string) => void;
   /** Optional: Display name for external editor (e.g., "VS Code") */
   externalEditorName?: string;
+  /** Optional: Load the next older transcript page for partial desktop transcripts */
+  onLoadOlderTranscript?: () => Promise<void>;
+  /** Whether an older transcript page is currently loading */
+  isLoadingOlderTranscript?: boolean;
   /** Optional: Callback to trigger /compact command */
   onCompact?: () => void;
   /** Optional: Prompt additions for debugging (system prompt, user message, and attachments) */
@@ -145,6 +149,8 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   onGroupByDirectoryChange,
   onOpenInExternalEditor,
   externalEditorName,
+  onLoadOlderTranscript,
+  isLoadingOlderTranscript,
   onCompact,
   promptAdditions,
   appStartTime,
@@ -393,6 +399,9 @@ const AgentTranscriptPanelComponent = React.forwardRef<
           appStartTime={appStartTime}
           renderEmbeddedFile={renderEmbeddedFile}
           canEmbedFile={canEmbedFile}
+          transcriptPageInfo={sessionData.transcriptPage}
+          onLoadOlderTranscript={onLoadOlderTranscript}
+          isLoadingOlderTranscript={isLoadingOlderTranscript}
           onSearchBarVisibilityChange={setSearchBarVisible}
         />
 
@@ -559,6 +568,17 @@ export const AgentTranscriptPanel = React.memo(
     }
     if (prevProps.showFloatingActions !== nextProps.showFloatingActions) {
       logPanelMemoDiff(nextProps.sessionId, 'showFloatingActions');
+      return false;
+    }
+    if (prevProps.isLoadingOlderTranscript !== nextProps.isLoadingOlderTranscript) {
+      logPanelMemoDiff(nextProps.sessionId, 'isLoadingOlderTranscript', {
+        prev: prevProps.isLoadingOlderTranscript,
+        next: nextProps.isLoadingOlderTranscript,
+      });
+      return false;
+    }
+    if (prevProps.onLoadOlderTranscript !== nextProps.onLoadOlderTranscript) {
+      logPanelMemoDiff(nextProps.sessionId, 'onLoadOlderTranscript');
       return false;
     }
 

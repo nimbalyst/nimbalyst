@@ -50,7 +50,7 @@
     "marketing:screenshots:grep": "playwright test --config=marketing/playwright.marketing.config.ts --grep"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.161",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.170",
     "@anthropic-ai/sdk": "^0.100.1",
     "@electric-sql/pglite": "0.3.14",
     "@electron-toolkit/utils": "^4.0.0",

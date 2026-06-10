@@ -34,10 +34,10 @@ describe('claude-code-cli provider wiring (Phase 0)', () => {
 
   describe('model identifiers share the Claude variant namespace', () => {
     it('parses claude-code-cli variants', () => {
-      const id = ModelIdentifier.parse('claude-code-cli:opus');
+      const id = ModelIdentifier.parse('claude-code-cli:fable');
       expect(id.provider).toBe('claude-code-cli');
-      expect(id.model).toBe('opus');
-      expect(id.baseVariant).toBe('opus');
+      expect(id.model).toBe('fable');
+      expect(id.baseVariant).toBe('fable');
       expect(id.isExtendedContext).toBe(false);
     });
 
@@ -60,7 +60,7 @@ describe('claude-code-cli provider wiring (Phase 0)', () => {
 
   describe('resolveClaudeCodeModelVariant accepts claude-code-cli', () => {
     it('resolves a plain variant', () => {
-      expect(resolveClaudeCodeModelVariant('claude-code-cli:opus', 'opus')).toBe('opus');
+      expect(resolveClaudeCodeModelVariant('claude-code-cli:fable', 'opus')).toBe('fable');
     });
 
     it('appends the [1m] beta marker for extended context', () => {
