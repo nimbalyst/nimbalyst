@@ -102,15 +102,8 @@ export async function resolveImmediateToolDecision(
     }
 
     if (trustStatus.mode === 'bypass-all') {
-      // In auto mode the SDK classifier is the decision-maker. When the
-      // classifier escalates a tool call to canUseTool (uncertain / risky),
-      // we must NOT short-circuit with bypass-all — that would silently
-      // approve the exact ops the classifier flagged. Fall through to the
-      // normal permission prompt so the user decides.
-      if (deps.getCurrentMode?.() !== 'auto') {
-        return { behavior: 'allow', updatedInput: input };
-      }
-      deps.logSecurity('[canUseTool] Auto mode: classifier escalated tool, skipping bypass-all shortcut:', { toolName });
+      deps.logSecurity('[canUseTool] Bypass-all mode, auto-approving tool:', { toolName });
+      return { behavior: 'allow', updatedInput: input };
     }
 
     if (trustStatus.mode === 'allow-all' && ALLOW_ALL_FILE_EDIT_TOOLS.includes(toolName)) {
