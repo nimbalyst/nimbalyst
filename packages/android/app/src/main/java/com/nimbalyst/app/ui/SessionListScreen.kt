@@ -1,11 +1,13 @@
 package com.nimbalyst.app.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,16 +16,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -31,8 +37,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -44,6 +52,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -74,17 +84,28 @@ fun SessionListScreen(
     var showCreateMenu by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
-    // Group sessions: workstreams first, then standalone by time
-    val groupedSessions = remember(sessions) { groupSessionsByTime(sessions) }
+    val pinnedSessions = remember(sessions) {
+        sessions.filter { it.isPinned }.sortedByDescending { it.updatedAt }
+    }
+    val unpinnedSessions = remember(sessions) { sessions.filterNot { it.isPinned } }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        MaterialTheme.colorScheme.surface,
+                        MaterialTheme.colorScheme.background,
+                        MaterialTheme.colorScheme.background
+                    )
+                )
+            )
             .navigationBarsPadding()
     ) {
         TopAppBar(
             title = { Text(projectName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
             navigationIcon = {
                 IconButton(onClick = { navController.popBackStack() }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -148,30 +169,56 @@ fun SessionListScreen(
                 }
             } else {
                 // Separate workstream parents and their children
-                val workstreamParents = sessions.filter { it.sessionType == "workstream" }
-                val childSessionsByParent = sessions
+                val workstreamParents = unpinnedSessions
+                    .filter { it.sessionType == "workstream" }
+                    .sortedByDescending { it.updatedAt }
+                val childSessionsByParent = unpinnedSessions
                     .filter { !it.parentSessionId.isNullOrBlank() }
                     .groupBy { it.parentSessionId!! }
                 val standaloneIds = buildSet {
                     workstreamParents.forEach { add(it.id) }
-                    sessions.filter { !it.parentSessionId.isNullOrBlank() }.forEach { add(it.id) }
+                    unpinnedSessions.filter { !it.parentSessionId.isNullOrBlank() }.forEach { add(it.id) }
                 }
-                val standaloneSessions = sessions.filter { it.id !in standaloneIds }
+                val standaloneSessions = unpinnedSessions.filter { it.id !in standaloneIds }
 
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    contentPadding = PaddingValues(bottom = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    item(key = "session-hero") {
+                        SessionListHero(
+                            projectName = projectName,
+                            sessionCount = sessions.size,
+                            pinnedCount = pinnedSessions.size
+                        )
+                    }
+
+                    if (pinnedSessions.isNotEmpty()) {
+                        item(key = "header-pinned") {
+                            SectionHeader(
+                                label = "Pinned",
+                                count = pinnedSessions.size,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                        items(pinnedSessions, key = { "pinned-${it.id}" }) { session ->
+                            SessionRow(
+                                session = session,
+                                onClick = { navController.navigate("sessions/${session.id}") }
+                            )
+                        }
+                    }
+
                     // Workstream groups at the top
                     if (workstreamParents.isNotEmpty()) {
                         item(key = "header-workstreams") {
-                            Text(
-                                text = "Workstreams",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                            SectionHeader(
+                                label = "Workstreams",
+                                count = workstreamParents.size,
+                                modifier = Modifier.padding(top = 8.dp)
                             )
                         }
                         items(workstreamParents, key = { "ws-${it.id}" }) { parent ->
@@ -189,11 +236,10 @@ fun SessionListScreen(
                     val timeGrouped = groupSessionsByTime(standaloneSessions)
                     timeGrouped.forEach { (label, groupSessions) ->
                         item(key = "header-$label") {
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                            SectionHeader(
+                                label = label,
+                                count = groupSessions.size,
+                                modifier = Modifier.padding(top = 8.dp)
                             )
                         }
                         items(groupSessions, key = { it.id }) { session ->
@@ -212,63 +258,175 @@ fun SessionListScreen(
 }
 
 @Composable
+private fun SessionListHero(
+    projectName: String,
+    sessionCount: Int,
+    pinnedCount: Int
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val secondary = providerAccentColor("claude-code", null)
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 8.dp),
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f))
+    ) {
+        Box(
+            modifier = Modifier
+                .background(
+                    Brush.linearGradient(
+                        listOf(
+                            primary.copy(alpha = 0.22f),
+                            secondary.copy(alpha = 0.14f),
+                            Color.Transparent
+                        )
+                    )
+                )
+                .padding(20.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = projectName,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MetaChip("${sessionCount} session${if (sessionCount == 1) "" else "s"}")
+                    if (pinnedCount > 0) {
+                        MetaChip("$pinnedCount pinned", highlighted = true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(
+    label: String,
+    count: Int,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Surface(
+            shape = RoundedCornerShape(999.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+        ) {
+            Text(
+                text = count.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+            )
+        }
+    }
+}
+
+@Composable
 private fun SessionRow(
     session: SessionEntity,
     onClick: () -> Unit
 ) {
     val hasUnread = session.lastMessageAt != null &&
         (session.lastReadAt == null || session.lastMessageAt > session.lastReadAt)
+    val accent = providerAccentColor(session.provider, session.model)
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (session.isPinned) 0.58f else 0.38f),
+            contentColor = MaterialTheme.colorScheme.onSurface
+        ),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (session.isPinned) accent.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.14f)
+        )
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (hasUnread) {
-                Box(
-                    modifier = Modifier
-                        .padding(end = 12.dp)
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary)
+            Box(modifier = Modifier.padding(end = 12.dp)) {
+                ProviderLogo(
+                    provider = session.provider,
+                    model = session.model,
+                    size = 44.dp
                 )
+                if (hasUnread) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
+                }
             }
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = session.titleDecrypted ?: "Untitled session",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = if (hasUnread) FontWeight.SemiBold else FontWeight.Normal,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
                 Row(
-                    modifier = Modifier.padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "${session.provider ?: "unknown"} -- ${session.mode ?: "agent"}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = session.titleDecrypted ?: "Untitled session",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = if (hasUnread || session.isPinned) FontWeight.Bold else FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
                     )
-                    session.phase?.let { phase ->
-                        Text(
-                            text = phase,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
+                    if (session.isPinned) {
+                        Icon(
+                            imageVector = Icons.Default.Star,
+                            contentDescription = "Pinned",
+                            modifier = Modifier.size(16.dp),
+                            tint = accent
                         )
+                    }
+                }
+                Row(
+                    modifier = Modifier.padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MetaChip(providerModelLabel(session.provider, session.model), highlighted = session.isPinned)
+                    session.phase?.let { phase ->
+                        MetaChip(phase)
                     }
                 }
                 AgentStatusInline(
                     session = session,
-                    modifier = Modifier.padding(top = 4.dp)
+                    modifier = Modifier.padding(top = 8.dp)
                 )
             }
             Column(
-                horizontalAlignment = Alignment.End
+                horizontalAlignment = Alignment.End,
+                modifier = Modifier.padding(start = 8.dp)
             ) {
                 Text(
                     text = RelativeTimestamp.format(session.updatedAt),
@@ -289,14 +447,47 @@ private fun SessionRow(
 }
 
 @Composable
+private fun MetaChip(
+    text: String,
+    highlighted: Boolean = false
+) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = if (highlighted) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+        } else {
+            MaterialTheme.colorScheme.surface.copy(alpha = 0.42f)
+        }
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+        )
+    }
+}
+
+@Composable
 private fun WorkstreamGroup(
     parent: SessionEntity,
     children: List<SessionEntity>,
     onSessionClick: (String) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val sortedChildren = remember(children) { children.sortedByDescending { it.updatedAt } }
 
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.34f),
+            contentColor = MaterialTheme.colorScheme.onSurface
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.14f))
+    ) {
         Column {
             Row(
                 modifier = Modifier
@@ -305,12 +496,19 @@ private fun WorkstreamGroup(
                     .padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Default.Folder,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                    contentColor = MaterialTheme.colorScheme.primary
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Folder,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .padding(10.dp)
+                            .size(20.dp)
+                    )
+                }
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -319,11 +517,12 @@ private fun WorkstreamGroup(
                     Text(
                         text = parent.titleDecrypted ?: "Untitled workstream",
                         style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "${children.size} sessions",
+                        text = "${sortedChildren.size} session${if (sortedChildren.size == 1) "" else "s"}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -336,52 +535,85 @@ private fun WorkstreamGroup(
 
             AnimatedVisibility(visible = expanded) {
                 Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)) {
-                    children.sortedByDescending { it.updatedAt }.forEach { child ->
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .clickable { onSessionClick(child.id) }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                val childUnread = child.lastMessageAt != null &&
-                                    (child.lastReadAt == null || child.lastMessageAt > child.lastReadAt)
-                                if (childUnread) {
-                                    Box(
-                                        modifier = Modifier
-                                            .padding(end = 8.dp)
-                                            .size(6.dp)
-                                            .clip(CircleShape)
-                                            .background(MaterialTheme.colorScheme.primary)
-                                    )
-                                }
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = child.titleDecrypted ?: "Untitled",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    AgentStatusInline(
-                                        session = child,
-                                        modifier = Modifier.padding(top = 2.dp)
-                                    )
-                                }
-                                if (child.effectiveIsExecuting() && child.agentStatusDisplayLabel() != null) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier
-                                            .padding(start = 8.dp)
-                                            .size(14.dp),
-                                        strokeWidth = 2.dp
-                                    )
-                                }
-                            }
-                        }
+                    sortedChildren.forEach { child ->
+                        ChildSessionRow(
+                            child = child,
+                            onClick = { onSessionClick(child.id) }
+                        )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChildSessionRow(
+    child: SessionEntity,
+    onClick: () -> Unit
+) {
+    val childUnread = child.lastMessageAt != null &&
+        (child.lastReadAt == null || child.lastMessageAt > child.lastReadAt)
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.34f),
+        contentColor = MaterialTheme.colorScheme.onSurface
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(modifier = Modifier.padding(end = 10.dp)) {
+                ProviderLogo(
+                    provider = child.provider,
+                    model = child.model,
+                    size = 32.dp
+                )
+                if (childUnread) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = child.titleDecrypted ?: "Untitled",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (childUnread) FontWeight.Bold else FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = providerModelLabel(child.provider, child.model),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+                AgentStatusInline(
+                    session = child,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+            if (child.effectiveIsExecuting() && child.agentStatusDisplayLabel() != null) {
+                CircularProgressIndicator(
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .size(14.dp),
+                    strokeWidth = 2.dp
+                )
             }
         }
     }

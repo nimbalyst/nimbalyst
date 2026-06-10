@@ -405,6 +405,7 @@ class SyncManager(
         payload: JsonObject? = null
     ): Result<Unit> {
         if (!indexClient.isConnected) {
+            Log.w(TAG, "Cannot send session control message type=$messageType sessionId=$sessionId: index room is not connected")
             return Result.failure(IllegalStateException("Index room is not connected."))
         }
 
@@ -419,6 +420,7 @@ class SyncManager(
         return if (indexClient.sendRaw(gson.toJson(message))) {
             Result.success(Unit)
         } else {
+            Log.w(TAG, "Failed to send session control message type=$messageType sessionId=$sessionId")
             Result.failure(IllegalStateException("Failed to send session control message."))
         }
     }
@@ -517,7 +519,55 @@ class SyncManager(
                             "response" to response
                         )
                     ).getOrThrow()
-                    appendToolResult(sessionId, promptId, gson.toJson(response)).getOrThrow()
+                    appendToolResult(sessionId, promptId, gson.toJson(response))
+                        .onFailure { Log.w(TAG, "appendToolResult failed (non-fatal): ${it.message}") }
+                }
+
+                "askUserQuestionCancel" -> {
+                    val response = JsonObject().apply {
+                        add("answers", JsonObject())
+                        addProperty("cancelled", true)
+                    }
+                    sendSessionControlMessage(
+                        sessionId = sessionId,
+                        messageType = "prompt_response",
+                        payload = jsonObject(
+                            "promptType" to "ask_user_question",
+                            "promptId" to promptId,
+                            "response" to response
+                        )
+                    ).getOrThrow()
+                }
+
+                "requestUserInputSubmit" -> {
+                    val answers = body.getAsJsonObject("answers") ?: JsonObject()
+                    sendSessionControlMessage(
+                        sessionId = sessionId,
+                        messageType = "prompt_response",
+                        payload = jsonObject(
+                            "promptType" to "request_user_input",
+                            "promptId" to promptId,
+                            "response" to jsonObject(
+                                "answers" to answers,
+                                "cancelled" to false
+                            )
+                        )
+                    ).getOrThrow()
+                }
+
+                "requestUserInputCancel" -> {
+                    sendSessionControlMessage(
+                        sessionId = sessionId,
+                        messageType = "prompt_response",
+                        payload = jsonObject(
+                            "promptType" to "request_user_input",
+                            "promptId" to promptId,
+                            "response" to jsonObject(
+                                "answers" to JsonObject(),
+                                "cancelled" to true
+                            )
+                        )
+                    ).getOrThrow()
                 }
 
                 "toolPermissionSubmit" -> {
@@ -531,7 +581,8 @@ class SyncManager(
                             "response" to response
                         )
                     ).getOrThrow()
-                    appendToolResult(sessionId, promptId, gson.toJson(response)).getOrThrow()
+                    appendToolResult(sessionId, promptId, gson.toJson(response))
+                        .onFailure { Log.w(TAG, "appendToolResult failed (non-fatal): ${it.message}") }
                 }
 
                 "exitPlanModeApprove" -> {
@@ -558,6 +609,30 @@ class SyncManager(
                             "promptType" to "exit_plan_mode",
                             "promptId" to promptId,
                             "response" to response
+                        )
+                    ).getOrThrow()
+                }
+
+                "exitPlanModeStartNewSession" -> {
+                    sendSessionControlMessage(
+                        sessionId = sessionId,
+                        messageType = "prompt_response",
+                        payload = jsonObject(
+                            "promptType" to "exit_plan_mode",
+                            "promptId" to promptId,
+                            "response" to jsonObject("approved" to false, "startNewSession" to true)
+                        )
+                    ).getOrThrow()
+                }
+
+                "exitPlanModeCancel" -> {
+                    sendSessionControlMessage(
+                        sessionId = sessionId,
+                        messageType = "prompt_response",
+                        payload = jsonObject(
+                            "promptType" to "exit_plan_mode",
+                            "promptId" to promptId,
+                            "response" to jsonObject("approved" to false)
                         )
                     ).getOrThrow()
                 }
@@ -590,7 +665,8 @@ class SyncManager(
                             "response" to response
                         )
                     ).getOrThrow()
-                    appendToolResult(sessionId, promptId, gson.toJson(response)).getOrThrow()
+                    appendToolResult(sessionId, promptId, gson.toJson(response))
+                        .onFailure { Log.w(TAG, "appendToolResult failed (non-fatal): ${it.message}") }
                 }
 
                 else -> throw IllegalArgumentException("Unsupported interactive action: $action")

@@ -22,6 +22,8 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
   };
 
   return {
+    hasAccurateMessageCounts: true,
+
     async create(message: CreateAgentMessageInput): Promise<void> {
       await ensureReady();
 

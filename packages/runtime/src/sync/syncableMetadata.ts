@@ -15,6 +15,9 @@ export const SYNC_RELEVANT_FIELDS = {
    * Top-level columns on `ai_sessions` that map 1:1 to fields on the
    * SyncedSessionMetadata wire shape. Anything listed here is forwarded
    * when present in the updateMetadata payload (and from create()).
+   *
+   * Do not include draftInput / draftUpdatedAt here. Draft text is intentionally
+   * device-local so typing on desktop cannot overwrite or lag the Android input.
    */
   columns: [
     'title',

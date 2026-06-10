@@ -19,16 +19,21 @@ class TranscriptBridge(
         } ?: return
 
         val type = json.get("type")?.takeIf { !it.isJsonNull }?.asString ?: return
+        val action = json.get("action")?.takeIf { !it.isJsonNull }?.asString
+        val promptId = json.get("promptId")?.takeIf { !it.isJsonNull }?.asString
+        val requestId = json.get("requestId")?.takeIf { !it.isJsonNull }?.asString
+        val questionId = json.get("questionId")?.takeIf { !it.isJsonNull }?.asString
+        val proposalId = json.get("proposalId")?.takeIf { !it.isJsonNull }?.asString
 
         onMessage(
             TranscriptBridgeMessage(
                 type = type,
                 text = json.get("text")?.takeIf { !it.isJsonNull }?.asString,
-                action = json.get("action")?.takeIf { !it.isJsonNull }?.asString,
-                promptId = json.get("promptId")?.takeIf { !it.isJsonNull }?.asString,
-                requestId = json.get("requestId")?.takeIf { !it.isJsonNull }?.asString,
-                questionId = json.get("questionId")?.takeIf { !it.isJsonNull }?.asString,
-                proposalId = json.get("proposalId")?.takeIf { !it.isJsonNull }?.asString,
+                action = action,
+                promptId = promptId,
+                requestId = requestId,
+                questionId = questionId,
+                proposalId = proposalId,
                 feedback = json.get("feedback")?.takeIf { !it.isJsonNull }?.asString,
                 beforeRawMessageId = json.get("beforeRawMessageId")?.takeIf { !it.isJsonNull }?.asLong,
                 count = json.get("count")?.takeIf { !it.isJsonNull }?.asInt,

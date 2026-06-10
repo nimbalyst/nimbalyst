@@ -68,7 +68,28 @@ fun TranscriptWebView(
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                         return request.url?.scheme != "file"
                     }
+
+                    override fun onPageFinished(view: WebView, url: String?) {
+                        super.onPageFinished(view, url)
+                        if (url == TRANSCRIPT_ASSET_URL) {
+                            view.pushSessionPayload(
+                                sessionId = sessionId,
+                                sessionTitle = sessionTitle,
+                                provider = provider,
+                                model = model,
+                                mode = mode,
+                                isExecuting = isExecuting,
+                                agentStatusKind = agentStatusKind,
+                                agentStatusLabel = agentStatusLabel,
+                                agentStatusDetail = agentStatusDetail,
+                                messages = messages,
+                                viewMessagesJson = transcriptTailJson,
+                                historyPageJson = transcriptHistoryPageJson
+                            )
+                        }
+                    }
                 }
+                removeJavascriptInterface("AndroidBridge")
                 addJavascriptInterface(
                     TranscriptBridge { message ->
                         when (message.type) {
@@ -79,10 +100,14 @@ fun TranscriptWebView(
                     },
                     "AndroidBridge"
                 )
-                // Try to push payload immediately. If window.nimbalyst doesn't
-                // exist yet (React still mounting), this is a no-op due to ?. operator.
-                // The update block will retry when messages Flow emits real data.
-                // Also schedule retries in case the Flow doesn't re-emit.
+                // Pooled WebViews load the transcript during warmup, before this
+                // session-scoped bridge exists. Reload so AndroidBridge is injected
+                // into the page that handles interactive widgets.
+                loadUrl(TRANSCRIPT_ASSET_URL)
+
+                // Try to push payload immediately. If React is still mounting, this
+                // is a no-op. onPageFinished, the update block, and retries will
+                // push again.
                 pushSessionPayload(
                     sessionId = sessionId,
                     sessionTitle = sessionTitle,
@@ -126,6 +151,8 @@ fun TranscriptWebView(
         }
     )
 }
+
+private const val TRANSCRIPT_ASSET_URL = "file:///android_asset/transcript-dist/transcript.html"
 
 private fun scheduleRetry(
     handler: Handler,

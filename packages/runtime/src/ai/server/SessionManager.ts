@@ -53,8 +53,10 @@ const DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT = 350;
 const DESKTOP_TOKEN_USAGE_RAW_MESSAGE_LIMIT = 1_000;
 
 function agentMessageToRawMessage(message: AgentMessage): RawMessage {
+  const numericId = Number(message.id);
+
   return {
-    id: Number(message.id ?? 0),
+    id: Number.isFinite(numericId) && numericId > 0 ? numericId : -1,
     sessionId: message.sessionId,
     source: message.source,
     direction: message.direction,
@@ -70,6 +72,10 @@ async function getAgentMessageCount(sessionId: string): Promise<number> {
   const reportedCount = counts.get(sessionId) ?? 0;
 
   if (reportedCount > DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT) {
+    return reportedCount;
+  }
+
+  if (AgentMessagesRepository.hasAccurateMessageCounts()) {
     return reportedCount;
   }
 

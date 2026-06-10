@@ -18,7 +18,10 @@ import {
   resolveGitCommitProposalPromptId,
 } from './gitCommitProposalPromptUtils';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
-import { getMobileTranscriptTailJson } from '../../utils/transcriptHelpers';
+import {
+  getMobileTranscriptHistoryPageJson,
+  getMobileTranscriptTailJson,
+} from '../../utils/transcriptHelpers';
 
 const log = logger.ai;
 

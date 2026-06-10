@@ -39,8 +39,6 @@ abstract class NimbalystDatabase : RoomDatabase() {
                     "nimbalyst-android.db"
                 )
                     .addMigrations(MIGRATION_1_2)
-                    // Only fall back to destructive migration if no migration path exists (pre-release safety net)
-                    .fallbackToDestructiveMigration()
                     .addCallback(object : Callback() {
                         override fun onCreate(db: SupportSQLiteDatabase) {
                             super.onCreate(db)
@@ -139,7 +137,7 @@ abstract class NimbalystDatabase : RoomDatabase() {
             }
         }
 
-        private val MIGRATION_1_2 = object : Migration(1, 2) {
+        internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sessions ADD COLUMN agentStatusKind TEXT")
                 db.execSQL("ALTER TABLE sessions ADD COLUMN agentStatusLabel TEXT")

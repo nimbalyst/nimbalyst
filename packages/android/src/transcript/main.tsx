@@ -147,7 +147,11 @@ function postToNative(message: Record<string, unknown>) {
       return;
     }
 
-    (window as any).webkit?.messageHandlers?.bridge?.postMessage(message);
+    const webkitBridge = (window as any).webkit?.messageHandlers?.bridge;
+    if (webkitBridge?.postMessage) {
+      webkitBridge.postMessage(message);
+      return;
+    }
   } catch (e) {
     console.warn('Failed to post to native:', e);
   }
@@ -285,6 +289,20 @@ function createMobileBridgeHost(sessionId: string): InteractiveWidgetHost {
       postToNative({ type: 'interactive_response', action: 'askUserQuestionSubmit', questionId, answers });
     },
 
+    async requestUserInputSubmit(promptId: string, answers: Record<string, any>) {
+      postToNative({ type: 'interactive_response', action: 'requestUserInputSubmit', promptId, answers });
+    },
+
+    async requestUserInputCancel(promptId: string) {
+      postToNative({
+        type: 'interactive_response',
+        action: 'requestUserInputCancel',
+        promptId,
+        answers: {},
+        cancelled: true,
+      });
+    },
+
     async toolPermissionSubmit(requestId: string, response: any) {
       postToNative({ type: 'interactive_response', action: 'toolPermissionSubmit', requestId, response });
     },
@@ -304,6 +322,18 @@ function createMobileBridgeHost(sessionId: string): InteractiveWidgetHost {
 
     async gitCommitCancel(proposalId: string) {
       postToNative({ type: 'interactive_response', action: 'gitCommitCancel', proposalId });
+    },
+
+    async askUserQuestionCancel(questionId: string) {
+      postToNative({ type: 'interactive_response', action: 'askUserQuestionCancel', questionId });
+    },
+
+    async exitPlanModeStartNewSession(requestId: string, planFilePath: string) {
+      postToNative({ type: 'interactive_response', action: 'exitPlanModeStartNewSession', requestId, planFilePath });
+    },
+
+    async exitPlanModeCancel(requestId: string) {
+      postToNative({ type: 'interactive_response', action: 'exitPlanModeCancel', requestId });
     },
 
     trackEvent() {

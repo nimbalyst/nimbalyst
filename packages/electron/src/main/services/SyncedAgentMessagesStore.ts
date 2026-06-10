@@ -31,7 +31,17 @@ function scheduleIndexSync() {
 export function createSyncedAgentMessagesStore(
   baseStore: AgentMessagesStore
 ): AgentMessagesStore {
+  const warnedFallbacks = new Set<string>();
+  const warnFallbackOnce = (capability: string, detail: string) => {
+    const key = `${capability}:${detail}`;
+    if (warnedFallbacks.has(key)) return;
+    warnedFallbacks.add(key);
+    logger.main.warn(`[SyncedAgentMessagesStore] Base store does not implement ${capability}; ${detail}`);
+  };
+
   return {
+    hasAccurateMessageCounts: baseStore.hasAccurateMessageCounts === true,
+
     async create(message: CreateAgentMessageInput): Promise<void> {
       // message.createdAt MUST be set by the caller (AIProvider)
       // This ensures the same timestamp is used everywhere
@@ -129,6 +139,7 @@ export function createSyncedAgentMessagesStore(
         return baseStore.listTail(sessionId, limit, options);
       }
 
+      warnFallbackOnce('listTail', 'falling back to count-plus-offset pagination');
       let total = 0;
       if (baseStore.getMessageCounts) {
         const counts = await baseStore.getMessageCounts([sessionId]);
@@ -164,6 +175,7 @@ export function createSyncedAgentMessagesStore(
         return baseStore.list(sessionId, { limit: boundedLimit, offset, includeHidden: options?.includeHidden });
       }
 
+      warnFallbackOnce('listBefore', 'falling back to a capped 50000-row in-memory filter');
       const messages = await baseStore.list(sessionId, { limit: 50000, includeHidden: options?.includeHidden });
       return messages
         .filter((message) => Number(message.id ?? 0) < beforeId)
