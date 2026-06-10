@@ -2,6 +2,7 @@ package com.nimbalyst.app.analytics
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.posthog.PostHog
@@ -19,9 +20,11 @@ import java.util.UUID
  * - Email only set if user authenticates via Stytch
  */
 object AnalyticsManager {
+    private const val TAG = "AnalyticsManager"
     private const val POSTHOG_KEY = "phc_s3lQIILexwlGHvxrMBqti355xUgkRocjMXW4LjV0ATw"
     private const val POSTHOG_HOST = "https://us.i.posthog.com"
     private const val PREFS_NAME = "nimbalyst_analytics"
+    private const val FALLBACK_PREFS_NAME = "nimbalyst_analytics_fallback"
     private const val KEY_ANALYTICS_ID = "analytics_id"
     private const val KEY_ANALYTICS_ENABLED = "analytics_enabled"
 
@@ -40,17 +43,7 @@ object AnalyticsManager {
 
         val appContext = context.applicationContext
 
-        // Use EncryptedSharedPreferences for analytics ID (matches iOS Keychain)
-        val masterKey = MasterKey.Builder(appContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        preferences = EncryptedSharedPreferences.create(
-            appContext,
-            PREFS_NAME,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
+        preferences = createAnalyticsPreferences(appContext)
 
         // Load or generate distinct ID
         var distinctId = preferences.getString(KEY_ANALYTICS_ID, null)
@@ -85,6 +78,25 @@ object AnalyticsManager {
         }
 
         initialized = true
+    }
+
+    private fun createAnalyticsPreferences(appContext: Context): SharedPreferences {
+        return runCatching {
+            val masterKey = MasterKey.Builder(appContext)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+
+            EncryptedSharedPreferences.create(
+                appContext,
+                PREFS_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        }.getOrElse { error ->
+            Log.w(TAG, "Encrypted analytics preferences unavailable; using analytics-only fallback.", error)
+            appContext.getSharedPreferences(FALLBACK_PREFS_NAME, Context.MODE_PRIVATE)
+        }
     }
 
     /**

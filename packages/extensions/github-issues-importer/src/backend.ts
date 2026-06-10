@@ -24,7 +24,7 @@ import type {
   ImporterListFilter,
   ImporterListPage,
   TrackerSnapshot,
-} from '@nimbalyst/extension-sdk';
+} from '../../../extension-sdk/src/types/trackerImporter';
 
 const PROVIDER_ID = 'github-issues';
 const URN_SCHEME = 'github';
