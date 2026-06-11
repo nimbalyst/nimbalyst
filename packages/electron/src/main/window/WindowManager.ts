@@ -570,28 +570,48 @@ export function createWindow(
         });
 
         // Handle renderer process crashes
+        const rendererReloadTimes: number[] = [];
         window.webContents.on('render-process-gone', (event, details) => {
-            console.error('[MAIN] Renderer process gone:', details);
-            if (!window.isDestroyed()) {
-                // Reload the window
-                window.reload();
+            console.error('[MAIN] Renderer process gone:', JSON.stringify(details));
+            // 'clean-exit' fires during normal renderer process swaps (reload,
+            // navigation). Calling reload() from inside the event during a swap
+            // can fatally CHECK the main process (int3 trap, 2026-06-10).
+            if (details.reason === 'clean-exit' || window.isDestroyed()) {
+                return;
             }
+            const now = Date.now();
+            while (rendererReloadTimes.length > 0 && now - rendererReloadTimes[0] > 5 * 60_000) {
+                rendererReloadTimes.shift();
+            }
+            if (rendererReloadTimes.length >= 3) {
+                console.error('[MAIN] Renderer crash loop detected; leaving window unloaded');
+                return;
+            }
+            rendererReloadTimes.push(now);
+            setTimeout(() => {
+                if (!window.isDestroyed()) {
+                    window.reload();
+                }
+            }, 1000);
         });
 
         // Handle unresponsive renderer
         window.webContents.on('unresponsive', () => {
             console.warn('[MAIN] Window became unresponsive');
-            const choice = dialog.showMessageBoxSync(window, {
+            // Must stay non-blocking: showMessageBoxSync freezes the main
+            // process (and all sync/sessions) until someone clicks, which on
+            // an unattended machine means forever.
+            dialog.showMessageBox(window, {
                 type: 'warning',
                 buttons: ['Reload', 'Keep Waiting'],
                 defaultId: 0,
                 message: 'The window is not responding',
                 detail: 'Would you like to reload the window?'
-            });
-
-            if (choice === 0 && !window.isDestroyed()) {
-                window.reload();
-            }
+            }).then(({ response }) => {
+                if (response === 0 && !window.isDestroyed()) {
+                    window.reload();
+                }
+            }).catch(() => { /* window closed before answer */ });
         });
 
         // Handle responsive again

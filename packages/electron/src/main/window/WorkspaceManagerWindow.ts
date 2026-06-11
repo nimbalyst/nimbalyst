@@ -145,27 +145,35 @@ export function createWorkspaceManagerWindow() {
 
   // Handle renderer process crashes
   workspaceManagerWindow.webContents.on('render-process-gone', (event, details) => {
-    console.error('[WorkspaceManager] Renderer process gone:', details);
-    if (workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
-      // Reload the window
-      workspaceManagerWindow.reload();
+    console.error('[WorkspaceManager] Renderer process gone:', JSON.stringify(details));
+    // 'clean-exit' fires during normal renderer process swaps; reloading from
+    // inside the event during a swap can fatally CHECK the main process.
+    if (details.reason === 'clean-exit') {
+      return;
     }
+    setTimeout(() => {
+      if (workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
+        workspaceManagerWindow.reload();
+      }
+    }, 1000);
   });
 
   // Handle unresponsive renderer
   workspaceManagerWindow.webContents.on('unresponsive', () => {
     console.warn('[WorkspaceManager] Window became unresponsive');
-    const choice = dialog.showMessageBoxSync(workspaceManagerWindow!, {
+    // Must stay non-blocking: showMessageBoxSync freezes the main process
+    // until someone clicks, which on an unattended machine means forever.
+    dialog.showMessageBox(workspaceManagerWindow!, {
       type: 'warning',
       buttons: ['Reload', 'Keep Waiting'],
       defaultId: 0,
       message: 'Project Manager is not responding',
       detail: 'Would you like to reload the window?'
-    });
-
-    if (choice === 0 && workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
-      workspaceManagerWindow.reload();
-    }
+    }).then(({ response }) => {
+      if (response === 0 && workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
+        workspaceManagerWindow.reload();
+      }
+    }).catch(() => { /* window closed before answer */ });
   });
 
   // Handle responsive again
