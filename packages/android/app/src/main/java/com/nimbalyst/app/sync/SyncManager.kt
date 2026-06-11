@@ -209,6 +209,7 @@ class SyncManager(
         }
 
         val roomId = "org:$orgId:user:$routeUserId:index"
+        SyncForegroundService.start(context)
         indexClient.connect(
             serverUrl = credentials.serverUrl,
             roomId = roomId,
@@ -216,7 +217,10 @@ class SyncManager(
         )
     }
 
-    fun disconnect() {
+    fun disconnect(stopForegroundService: Boolean = true) {
+        if (stopForegroundService) {
+            SyncForegroundService.stop(context)
+        }
         stopJwtRefreshTimer()
         leaveSessionRoom()
         indexClient.disconnect()
@@ -1260,8 +1264,10 @@ class SyncManager(
                 )
             )
 
-            // Reconnect with the fresh JWT
-            disconnect()
+            // Reconnect with the fresh JWT, keeping the foreground service
+            // alive so the refresh cycle never drops the background network
+            // exemption.
+            disconnect(stopForegroundService = false)
             connect()
 
             Log.d(TAG, "JWT refreshed successfully")
