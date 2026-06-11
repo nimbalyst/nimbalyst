@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Claude Fable 5 (`claude-fable-5`) is selectable in the Claude Code agent and subscription-CLI model pickers.
+- Claude Fable 5 (`claude-fable-5`) is selectable in the Claude Code agent and subscription-CLI model pickers. On Pro/Max subscriptions it is included through 2026-06-22; from 2026-06-23, continued use requires prepaid usage credits billed at API rates.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
