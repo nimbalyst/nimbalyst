@@ -1084,7 +1084,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
                 if (errorChunk?.type === 'result') {
                   errorMessage = extractResultChunkErrorMessage(errorChunk);
-                  const { isAuthError, isExpiredSessionError, isServerError } = detectResultChunkErrorFlags(errorMessage);
+                  const { isAuthError, isExpiredSessionError, isServerError, isModelUnavailable } = detectResultChunkErrorFlags(errorMessage);
 
                   if (isExpiredSessionError && sessionId) {
                     this.sessions.expireSession(sessionId);
@@ -1094,12 +1094,15 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                   const isBedrockToolError = isBedrockToolSearchError(errorMessage);
                   if (isServerError) errorMessage += '\n\nClaude may be experiencing issues. Check https://status.anthropic.com for service status.';
                   if (isBedrockToolError) errorMessage = buildBedrockToolErrorGuidance(errorMessage);
+                  // Auth failures already carry their own guidance; only add the
+                  // billing/plan hint when the model itself was rejected.
+                  if (isModelUnavailable && !isAuthError) errorMessage += '\n\nThis model may require prepaid usage credits or may not be available on your current plan. Check your plan in Settings, or pick a different model.';
 
                   const isRateLimitError = /rate limit/i.test(errorMessage);
                   const is1mModel = this.config.model != null && this.config.model.includes('-1m');
                   if (isRateLimitError && is1mModel) errorMessage += '\n\nThis 1M context model may not be available on your plan.';
 
-                  const errorType = isAuthError ? 'authentication_error' : isBedrockToolError ? 'bedrock_tool_error' : isExpiredSessionError ? 'expired_session_error' : 'api_error';
+                  const errorType = isAuthError ? 'authentication_error' : isBedrockToolError ? 'bedrock_tool_error' : isExpiredSessionError ? 'expired_session_error' : isModelUnavailable ? 'model_unavailable_error' : 'api_error';
                   this.logError(sessionId, 'claude-code', new Error(errorMessage), 'result_chunk', errorType, hideMessages);
                   transcriptAdapter?.systemMessage(errorMessage, 'error');
 
@@ -1110,6 +1113,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                     ...(isBedrockToolError && { isBedrockToolError: true }),
                     ...(isExpiredSessionError && { isExpiredSessionError: true }),
                     ...(isServerError && { isServerError: true }),
+                    ...(isModelUnavailable && !isAuthError && { isModelUnavailable: true }),
                   };
 
                   await this.flushPendingWrites();

@@ -25,6 +25,7 @@ export function detectResultChunkErrorFlags(errorMessage: string): {
   isAuthError: boolean;
   isExpiredSessionError: boolean;
   isServerError: boolean;
+  isModelUnavailable: boolean;
 } {
   const lowerError = errorMessage.toLowerCase();
 
@@ -47,10 +48,27 @@ export function detectResultChunkErrorFlags(errorMessage: string): {
     errorMessage.includes('"type":"api_error"')
   );
 
+  // Model rejected for billing/plan reasons rather than auth. Covers a
+  // subscription model that now requires prepaid usage credits (e.g. Fable 5
+  // after its plan-inclusion window), a model not enabled on the current plan,
+  // and the standard low-credit-balance API response.
+  const isModelUnavailable = (
+    lowerError.includes('credit balance') ||
+    lowerError.includes('usage credit') ||
+    lowerError.includes('prepaid') ||
+    lowerError.includes('payment required') ||
+    lowerError.includes('402') ||
+    lowerError.includes('model not found') ||
+    lowerError.includes('not available on your plan') ||
+    lowerError.includes('not available on your subscription') ||
+    lowerError.includes('does not have access to')
+  );
+
   return {
     isAuthError,
     isExpiredSessionError,
     isServerError,
+    isModelUnavailable,
   };
 }
 
