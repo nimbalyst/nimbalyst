@@ -17,6 +17,11 @@ import { initializeTrackerSync } from '../services/TrackerSyncManager';
 import { updateTrackerSchemaWorkspace } from '../services/TrackerSchemaService';
 
 let workspaceManagerWindow: BrowserWindow | null = null;
+let workspaceManagerAppQuitting = false;
+
+app.on('before-quit', () => {
+  workspaceManagerAppQuitting = true;
+});
 
 // Track whether the WorkspaceManager is closing because a project was opened
 // (vs user manually closing it with the close button)
@@ -144,15 +149,36 @@ export function createWorkspaceManagerWindow() {
   });
 
   // Handle renderer process crashes
+  const rendererReloadTimes: number[] = [];
   workspaceManagerWindow.webContents.on('render-process-gone', (event, details) => {
     console.error('[WorkspaceManager] Renderer process gone:', JSON.stringify(details));
-    // 'clean-exit' fires during normal renderer process swaps; reloading from
-    // inside the event during a swap can fatally CHECK the main process.
-    if (details.reason === 'clean-exit') {
+    if (workspaceManagerAppQuitting) {
       return;
     }
+    // Never reload synchronously inside this event: doing so during a
+    // clean-exit swap fatally CHECKs the main process. Spontaneous
+    // clean-exits also strand the window with a disposed frame, so defer
+    // and reload whenever the frame is still dead by then.
     setTimeout(() => {
-      if (workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
+      if (workspaceManagerAppQuitting || !workspaceManagerWindow || workspaceManagerWindow.isDestroyed()) {
+        return;
+      }
+      try {
+        // A live frame means a new renderer already attached (normal
+        // process swap); accessing a disposed one throws.
+        void workspaceManagerWindow.webContents.mainFrame.url;
+        return;
+      } catch {
+        const now = Date.now();
+        while (rendererReloadTimes.length > 0 && now - rendererReloadTimes[0] > 5 * 60_000) {
+          rendererReloadTimes.shift();
+        }
+        if (rendererReloadTimes.length >= 3) {
+          console.error('[WorkspaceManager] Renderer crash loop detected; leaving window unloaded');
+          return;
+        }
+        rendererReloadTimes.push(now);
+        console.error('[WorkspaceManager] Reloading window after renderer loss:', JSON.stringify(details));
         workspaceManagerWindow.reload();
       }
     }, 1000);
