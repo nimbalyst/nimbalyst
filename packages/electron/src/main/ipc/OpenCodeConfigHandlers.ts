@@ -2,6 +2,9 @@ import { safeHandle } from '../utils/ipcRegistry';
 import { OpenCodeConfigService, LMStudioBridgeOptions } from '../services/OpenCodeConfigService';
 import type { OpenCodeFileConfig } from '@nimbalyst/runtime/ai/server';
 import { logger } from '../utils/logger';
+import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
 
 const service = new OpenCodeConfigService();
 
@@ -88,6 +91,29 @@ export function registerOpenCodeConfigHandlers(): void {
       const message = error instanceof Error ? error.message : 'Unknown error';
       logger.ai.error('[OpenCode] Failed to remove LM Studio bridge:', error);
       return { success: false, error: message };
+    }
+  });
+
+  safeHandle('opencode-config:list-agents', async () => {
+    try {
+      // OpenCode uses XDG_CONFIG_HOME (~/.config) on all platforms including Windows
+      const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+      const agentDir = path.join(xdgConfig, 'opencode', 'agent');
+
+      if (!fs.existsSync(agentDir)) {
+        return { success: true, agents: [] };
+      }
+
+      const files = fs.readdirSync(agentDir);
+      const agents = files
+        .filter(f => f.endsWith('.md'))
+        .map(f => path.basename(f, '.md'));
+
+      return { success: true, agents };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.ai.warn('[OpenCode] Failed to list agents:', message);
+      return { success: true, agents: [] };
     }
   });
 }

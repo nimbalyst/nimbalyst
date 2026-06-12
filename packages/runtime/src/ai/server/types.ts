@@ -352,6 +352,7 @@ export interface ProviderConfig {
   effortLevel?: EffortLevel;  // Effort level for Opus 4.6 adaptive reasoning (low/medium/high/max)
   responseFormat?: ProviderResponseFormat;  // Response format constraint (extension chat completions)
   skipLogging?: boolean;  // Skip message logging to DB (extension stateless completions)
+  agent?: string;  // OpenCode agent (role) to activate for this session
 }
 
 /**

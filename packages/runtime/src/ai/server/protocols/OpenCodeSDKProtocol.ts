@@ -385,7 +385,7 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
     const client = await this.getClient(serverManager.baseUrl);
     await this.registerMcpServers(client, options);
     const result = await client.session.create({
-      body: {},
+      body: options.agent ? { agent: options.agent } : {},
       query: { directory: options.workspacePath },
     });
 

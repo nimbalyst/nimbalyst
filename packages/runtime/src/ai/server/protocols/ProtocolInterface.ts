@@ -83,6 +83,9 @@ export interface SessionOptions {
   /** Tools to disallow (blacklist) */
   disallowedTools?: string[];
 
+  /** OpenCode agent (role) to activate for this session */
+  agent?: string;
+
   /** Platform-specific options that don't fit the common schema */
   raw?: Record<string, unknown>;
 }

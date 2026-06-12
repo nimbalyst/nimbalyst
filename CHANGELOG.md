@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-<!-- New features go here -->
+- OpenCode agent (role) picker in the AI input toolbar: when an OpenCode session is active, a dropdown lists available agents (e.g. custom roles defined in `~/.config/opencode/agent/`) and the selected agent is passed to the OpenCode server at session creation. Stored in session metadata; follows the same pattern as the effort-level selector.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

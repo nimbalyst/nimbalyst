@@ -479,6 +479,10 @@ export class MessageStreamingHandler {
         ...((session.metadata as any)?.effortLevel && {
           effortLevel: parseEffortLevel((session.metadata as any).effortLevel),
         }),
+        // Pass OpenCode agent from session metadata
+        ...(session.provider === 'opencode' && (session.metadata as any)?.opencodeAgent && {
+          agent: (session.metadata as any).opencodeAgent,
+        }),
       };
 
       // Add baseUrl for LMStudio

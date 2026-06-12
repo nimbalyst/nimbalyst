@@ -53,6 +53,7 @@ import {
   sessionWorktreePathAtom,
   sessionDocumentContextAtom,
   sessionEffortLevelRawAtom,
+  sessionOpenCodeAgentAtom,
   sessionLoadingAtom,
   sessionModeAtom,
   sessionModelAtom,
@@ -417,6 +418,8 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionWorktreePath = useAtomValue(sessionWorktreePathAtom(sessionId));
   const sessionDocumentContext = useAtomValue(sessionDocumentContextAtom(sessionId));
   const rawEffortLevel = useAtomValue(sessionEffortLevelRawAtom(sessionId));
+  const rawOpenCodeAgent = useAtomValue(sessionOpenCodeAgentAtom(sessionId));
+  const [availableAgents, setAvailableAgents] = useState<string[]>([]);
   const loadSessionData = useSetAtom(loadSessionDataAtom);
   const reloadSessionData = useSetAtom(reloadSessionDataAtom);
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
@@ -1257,6 +1260,21 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       previous_level: previousLevel,
     });
   }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog]);
+
+  const handleAgentChange = useCallback(async (agentName: string) => {
+    await updateSessionMetadataField(sessionId, 'opencodeAgent', agentName || null, null, updateSessionStore);
+  }, [sessionId, updateSessionStore]);
+
+  useEffect(() => {
+    if (provider !== 'opencode' || !window.electronAPI) return;
+    window.electronAPI.invoke('opencode-config:list-agents')
+      .then((result: { success: boolean; agents?: string[] }) => {
+        if (result.success && result.agents) {
+          setAvailableAgents(result.agents);
+        }
+      })
+      .catch(() => { /* agent list unavailable */ });
+  }, [provider]);
 
   const handleCommandSelect = useCallback((command: string) => {
     setDraftInput(command);
@@ -2121,6 +2139,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         effortLevel={effortLevel}
         onEffortLevelChange={handleEffortLevelChange}
         showEffortLevel={showEffortLevel}
+        opencodeAgent={rawOpenCodeAgent}
+        onAgentChange={handleAgentChange}
+        availableAgents={availableAgents}
         tokenUsage={tokenUsage}
         provider={provider}
         onQueue={handleQueue}
