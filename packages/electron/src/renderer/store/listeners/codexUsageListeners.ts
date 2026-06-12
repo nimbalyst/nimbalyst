@@ -46,6 +46,9 @@ export async function recordCodexActivity(): Promise<void> {
 export async function refreshCodexUsage(): Promise<CodexUsageData | null> {
   try {
     const data = await window.electronAPI.invoke('codex-usage:refresh');
+    if (data) {
+      store.set(codexUsageAtom, data);
+    }
     return data;
   } catch (error) {
     console.error('[CodexUsageListeners] Failed to refresh usage:', error);

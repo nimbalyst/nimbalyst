@@ -1340,13 +1340,17 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         inputType: 'user' as const,
       };
 
+      if (provider === 'openai-codex') {
+        void recordCodexActivity();
+      }
+
       await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
 
       // Record activity for usage tracking (wake up polling if sleeping)
       if (provider?.startsWith('claude')) {
         recordClaudeActivity();
       } else if (provider === 'openai-codex') {
-        recordCodexActivity();
+        void recordCodexActivity();
       }
     } catch (error) {
       console.error('[SessionTranscript] Failed to send message:', error);

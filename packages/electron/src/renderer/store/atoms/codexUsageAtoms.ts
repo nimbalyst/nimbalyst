@@ -92,7 +92,9 @@ export const codexUsageAvailableAtom = atom((get) => {
     usage.sevenDay.utilization > 0 ||
     Boolean(usage.fiveHour.resetsAt) ||
     Boolean(usage.sevenDay.resetsAt);
-  const hasCreditsData = Boolean(usage.credits?.hasCredits) || usage.credits?.balance !== null;
+  const hasCreditsData =
+    usage.credits !== undefined &&
+    (Boolean(usage.credits.hasCredits) || usage.credits.balance !== null);
   const hasTokenUsage = (usage.tokenUsage?.totalTokens ?? 0) > 0;
   return hasUsageData || hasCreditsData || hasTokenUsage;
 });

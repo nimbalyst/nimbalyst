@@ -12,7 +12,7 @@
  * indicator still appears with limits unavailable.
  */
 
-import { readdir, readFile, stat } from 'fs/promises';
+import { open, readdir, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -72,13 +72,18 @@ interface CodexUsageSnapshot {
 }
 
 const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions');
-const POLL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const POLL_INTERVAL_MS = 60 * 1000; // Active Codex turns can update limits quickly.
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes before going to sleep
-const MAX_FILES_TO_CHECK = 5; // Check up to N recent session files for rate_limits
+const CACHE_TTL_MS = 60 * 1000;
+const ACTIVITY_REFRESH_DEBOUNCE_MS = 1_000;
+const MAX_FILES_TO_CHECK = 64; // Check recent files by mtime, not path date.
+const MAX_JSONL_TAIL_BYTES = 4 * 1024 * 1024;
 
 class CodexUsageServiceImpl {
   private cachedUsage: CodexUsageData | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
+  private activityRefreshTimer: NodeJS.Timeout | null = null;
+  private refreshInFlight: Promise<CodexUsageData> | null = null;
   private lastActivityTime: number = 0;
   private isPolling: boolean = false;
   private isSleeping: boolean = true;
@@ -94,15 +99,35 @@ class CodexUsageServiceImpl {
       // logger.main.info('[CodexUsageService] Waking up due to activity');
       this.isSleeping = false;
       this.startPolling();
-      await this.refresh();
     }
+
+    this.scheduleActivityRefresh();
   }
 
   getCachedUsage(): CodexUsageData | null {
     return this.cachedUsage;
   }
 
+  async getUsage(maxAgeMs: number = CACHE_TTL_MS): Promise<CodexUsageData> {
+    const cached = this.cachedUsage;
+    if (cached && Date.now() - cached.lastUpdated <= maxAgeMs) {
+      return cached;
+    }
+    return this.refresh();
+  }
+
   async refresh(): Promise<CodexUsageData> {
+    if (this.refreshInFlight) {
+      return this.refreshInFlight;
+    }
+
+    this.refreshInFlight = this.refreshImpl().finally(() => {
+      this.refreshInFlight = null;
+    });
+    return this.refreshInFlight;
+  }
+
+  private async refreshImpl(): Promise<CodexUsageData> {
     try {
       const snapshot = await this.findLatestUsageSnapshot();
       logger.main.debug(
@@ -158,7 +183,20 @@ class CodexUsageServiceImpl {
 
   stop(): void {
     this.stopPolling();
+    if (this.activityRefreshTimer) {
+      clearTimeout(this.activityRefreshTimer);
+      this.activityRefreshTimer = null;
+    }
     logger.main.info('[CodexUsageService] Stopped');
+  }
+
+  private scheduleActivityRefresh(): void {
+    if (this.activityRefreshTimer) return;
+
+    this.activityRefreshTimer = setTimeout(() => {
+      this.activityRefreshTimer = null;
+      void this.refresh();
+    }, ACTIVITY_REFRESH_DEBOUNCE_MS);
   }
 
   private startPolling(): void {
@@ -169,7 +207,7 @@ class CodexUsageServiceImpl {
       this.pollTick();
     }, POLL_INTERVAL_MS);
 
-    // logger.main.info('[CodexUsageService] Started polling (every 5 minutes)');
+    // logger.main.info('[CodexUsageService] Started active polling');
   }
 
   private stopPolling(): void {
@@ -229,58 +267,53 @@ class CodexUsageServiceImpl {
 
   /**
    * Get recent session files sorted by modification time (newest first).
+   *
+   * Codex keeps appending to a rollout file that lives under the date the
+   * session was created. Long-running sessions can therefore update files in
+   * older calendar folders. Walk all session folders and sort by mtime rather
+   * than assuming the newest path date has the newest usage event.
    */
   private async getRecentSessionFiles(): Promise<string[]> {
     const files: Array<{ path: string; mtime: number }> = [];
 
     try {
-      // Walk year/month/day directory structure
-      const years = await this.getSortedSubdirs(CODEX_SESSIONS_DIR);
-      // Check most recent years first (reversed)
-      for (const year of years.reverse().slice(0, 2)) {
-        const yearPath = join(CODEX_SESSIONS_DIR, year);
-        const months = await this.getSortedSubdirs(yearPath);
-        for (const month of months.reverse().slice(0, 2)) {
-          const monthPath = join(yearPath, month);
-          const days = await this.getSortedSubdirs(monthPath);
-          for (const day of days.reverse().slice(0, 3)) {
-            const dayPath = join(monthPath, day);
-            const entries = await readdir(dayPath);
-            const jsonlFiles = entries.filter((f: string) => f.endsWith('.jsonl') && f.startsWith('rollout-'));
-
-            for (const file of jsonlFiles) {
-              const filePath = join(dayPath, file);
-              try {
-                const fileStat = await stat(filePath);
-                files.push({ path: filePath, mtime: fileStat.mtimeMs });
-              } catch {
-                // Skip files we can't stat
-              }
-            }
-          }
-          // If we have enough files, stop searching
-          if (files.length >= MAX_FILES_TO_CHECK) break;
-        }
-        if (files.length >= MAX_FILES_TO_CHECK) break;
-      }
+      await this.collectSessionFiles(CODEX_SESSIONS_DIR, files, 0);
     } catch (error) {
       logger.main.debug('[CodexUsageService] Error walking session directory:', error);
     }
 
     // Sort by modification time, newest first
     files.sort((a, b) => b.mtime - a.mtime);
-    return files.map((f: { path: string; mtime: number }) => f.path);
+    return files.slice(0, MAX_FILES_TO_CHECK).map((f: { path: string; mtime: number }) => f.path);
   }
 
-  private async getSortedSubdirs(dirPath: string): Promise<string[]> {
+  private async collectSessionFiles(
+    dirPath: string,
+    files: Array<{ path: string; mtime: number }>,
+    depth: number,
+  ): Promise<void> {
+    if (depth > 4) return;
+
     try {
       const entries = await readdir(dirPath, { withFileTypes: true });
-      return entries
-        .filter(e => e.isDirectory())
-        .map(e => e.name)
-        .sort();
+      for (const entry of entries) {
+        const entryPath = join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          await this.collectSessionFiles(entryPath, files, depth + 1);
+          continue;
+        }
+        if (!entry.isFile() || !entry.name.startsWith('rollout-') || !entry.name.endsWith('.jsonl')) {
+          continue;
+        }
+        try {
+          const fileStat = await stat(entryPath);
+          files.push({ path: entryPath, mtime: fileStat.mtimeMs });
+        } catch {
+          // Skip files we can't stat.
+        }
+      }
     } catch {
-      return [];
+      // Ignore unreadable directories; other session folders may still work.
     }
   }
 
@@ -293,7 +326,7 @@ class CodexUsageServiceImpl {
     let rateLimits: CodexRateLimits | null = null;
 
     try {
-      const content = await readFile(filePath, 'utf8');
+      const content = await this.readRecentJsonl(filePath);
       const lines = content.split('\n');
 
       // Scan from the end for the latest token_count event and rate limits
@@ -324,6 +357,25 @@ class CodexUsageServiceImpl {
     return { rateLimits, tokenUsage };
   }
 
+  private async readRecentJsonl(filePath: string): Promise<string> {
+    const file = await open(filePath, 'r');
+    try {
+      const fileStat = await file.stat();
+      const length = Math.min(fileStat.size, MAX_JSONL_TAIL_BYTES);
+      const start = Math.max(0, fileStat.size - length);
+      const buffer = Buffer.alloc(length);
+      await file.read(buffer, 0, length, start);
+      let content = buffer.toString('utf8');
+      if (start > 0) {
+        const firstNewline = content.indexOf('\n');
+        content = firstNewline >= 0 ? content.slice(firstNewline + 1) : '';
+      }
+      return content;
+    } finally {
+      await file.close();
+    }
+  }
+
   private getTokenCountPayload(event: Record<string, unknown>): Record<string, unknown> | null {
     if (event.type === 'event_msg') {
       const payload = event.payload as Record<string, unknown> | undefined;
@@ -342,7 +394,7 @@ class CodexUsageServiceImpl {
 
   /**
    * Extract rate_limits from a single JSONL event if it's a token_count event
-   * with non-null primary data. Delegates to the pure `filterRateLimitsByExpiry`
+   * with active limit data. Delegates to the pure `filterRateLimitsByExpiry`
    * helper below so the expiry logic stays unit-testable. See #120.
    */
   private extractRateLimitsFromEvent(event: Record<string, unknown>): CodexRateLimits | null {
@@ -350,7 +402,7 @@ class CodexUsageServiceImpl {
     if (!tokenCountPayload) return null;
 
     const rateLimits = tokenCountPayload.rate_limits as CodexRateLimits | undefined;
-    if (!rateLimits?.primary) return null;
+    if (!rateLimits?.primary && !rateLimits?.secondary) return null;
 
     return filterRateLimitsByExpiry(rateLimits, Date.now() / 1000);
   }
@@ -376,13 +428,13 @@ class CodexUsageServiceImpl {
   private convertRateLimits(rateLimits: CodexRateLimits): CodexUsageData {
     const data: CodexUsageData = {
       fiveHour: {
-        utilization: rateLimits.primary?.used_percent ?? 0,
+        utilization: this.normalizeUtilization(rateLimits.primary?.used_percent),
         resetsAt: rateLimits.primary?.resets_at
           ? new Date(rateLimits.primary.resets_at * 1000).toISOString()
           : null,
       },
       sevenDay: {
-        utilization: rateLimits.secondary?.used_percent ?? 0,
+        utilization: this.normalizeUtilization(rateLimits.secondary?.used_percent),
         resetsAt: rateLimits.secondary?.resets_at
           ? new Date(rateLimits.secondary.resets_at * 1000).toISOString()
           : null,
@@ -399,6 +451,12 @@ class CodexUsageServiceImpl {
     }
 
     return data;
+  }
+
+  private normalizeUtilization(value: unknown): number {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 0;
+    return Math.max(0, Math.min(100, numeric));
   }
 
   private broadcastUpdate(): void {
