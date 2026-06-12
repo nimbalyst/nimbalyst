@@ -78,6 +78,7 @@ import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/wor
 import { getDesktopTranscriptHistoryPage } from '../../utils/transcriptHelpers';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
+import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -293,11 +294,16 @@ export class AIService {
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false]
     );
+    await setSessionPendingPrompt(sessionId, false);
+    TrayManager.getInstance().onPromptResolved(sessionId);
 
     if (promptType === 'permission_request') {
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
       if (!provider) {
-        return { success: false, error: 'Provider not found' };
+        logger.main.warn(
+          `[AIService] Provider not found for permission response; response persisted and prompt cleared. Session: ${sessionId}, promptId: ${promptId}`
+        );
+        return { success: true };
       }
       if (typeof (provider as any).resolveToolPermission !== 'function') {
         return { success: false, error: 'Provider does not support tool permission responses' };
@@ -354,7 +360,13 @@ export class AIService {
 
     const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
     if (!provider) {
-      return { success: false, error: 'Provider not found' };
+      logger.main.warn(
+        `[AIService] Provider not found for ExitPlanMode response; response persisted and prompt cleared. Session: ${sessionId}, promptId: ${promptId}`
+      );
+      if (response.approved) {
+        await AISessionsRepository.updateMetadata(sessionId, { mode: 'agent' });
+      }
+      return { success: true };
     }
 
     if (typeof (provider as any).resolveExitPlanModeConfirmation !== 'function') {
