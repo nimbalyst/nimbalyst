@@ -5,12 +5,12 @@ import type { TranscriptEvent } from '@nimbalyst/runtime/ai/server/transcript/ty
 
 const SESSION_ID = 'test-session';
 
-function makeAssistantEvent(id: number, text: string, sequence = id): TranscriptEvent {
+function makeAssistantEvent(id: number, text: string, sequence = id, createdAt = new Date(0)): TranscriptEvent {
   return {
     id,
     sessionId: SESSION_ID,
     sequence,
-    createdAt: new Date(0),
+    createdAt,
     eventType: 'assistant_message',
     searchableText: text,
     payload: { mode: 'agent' },
@@ -22,12 +22,12 @@ function makeAssistantEvent(id: number, text: string, sequence = id): Transcript
   };
 }
 
-function makeUserEvent(id: number, text: string, sequence = id): TranscriptEvent {
+function makeUserEvent(id: number, text: string, sequence = id, createdAt = new Date(0)): TranscriptEvent {
   return {
     id,
     sessionId: SESSION_ID,
     sequence,
-    createdAt: new Date(0),
+    createdAt,
     eventType: 'user_message',
     searchableText: text,
     payload: { mode: 'agent', inputType: 'user' },
@@ -39,11 +39,16 @@ function makeUserEvent(id: number, text: string, sequence = id): TranscriptEvent
   };
 }
 
-function makeDbMessage(id: number, type: 'user_message' | 'assistant_message', text: string): TranscriptViewMessage {
+function makeDbMessage(
+  id: number,
+  type: 'user_message' | 'assistant_message',
+  text: string,
+  createdAt = new Date(0),
+): TranscriptViewMessage {
   return {
     id,
     sequence: id,
-    createdAt: new Date(0),
+    createdAt,
     type,
     text,
     subagentId: null,
@@ -133,10 +138,12 @@ describe('TranscriptStreamAccumulator', () => {
       }
       const h = createHarness(dbMessages);
 
-      // First chunk seeds the live event (id 600). Tick a frame to publish.
+      // First chunk seeds the live event (id 600), timestamped after the
+      // DB history so the live window opens at the new turn. Tick a frame
+      // to publish.
       const start = performance.now();
       const liveId = 600;
-      const seed = makeAssistantEvent(liveId, '', 600);
+      const seed = makeAssistantEvent(liveId, '', 600, new Date(10_000));
       h.acc.apply(seed);
       h.tickFrame();
       expect(h.emitCount).toBe(1);
@@ -244,16 +251,60 @@ describe('TranscriptStreamAccumulator', () => {
   describe('DB message reconciliation', () => {
     it('drops optimistic (negative-id) DB messages once a real user_message arrives live', () => {
       const dbMessages: TranscriptViewMessage[] = [
-        makeDbMessage(-1, 'user_message', 'optimistic-user'),
-        makeDbMessage(5, 'assistant_message', 'past-reply'),
+        makeDbMessage(-1, 'user_message', 'optimistic-user', new Date(900)),
+        makeDbMessage(5, 'assistant_message', 'past-reply', new Date(500)),
       ];
       const h = createHarness(dbMessages);
 
-      h.acc.apply(makeUserEvent(7, 'real user'));
+      h.acc.apply(makeUserEvent(7, 'real user', 7, new Date(1000)));
       h.tickFrame();
 
       const ids = h.lastEmit?.messages.map((m) => m.id);
       expect(ids).toEqual([5, 7]);
+    });
+
+    it('keeps raw-anchored history before newer live events regardless of id magnitude', () => {
+      // Partial-tail sessions stabilize DB ids into a raw-anchored range far
+      // above live event-sequence ids. The old id-sorted merge interleaved
+      // the two spaces and pushed older history below the live turn.
+      const RAW_BASE = 1_000_000_000_000;
+      const dbMessages: TranscriptViewMessage[] = [
+        makeDbMessage(RAW_BASE + 10_001, 'user_message', 'old-question', new Date(1_000)),
+        makeDbMessage(RAW_BASE + 10_002, 'assistant_message', 'old-answer', new Date(2_000)),
+      ];
+      const h = createHarness(dbMessages);
+
+      h.acc.apply(makeUserEvent(3, 'new question', 3, new Date(5_000)));
+      h.acc.apply(makeAssistantEvent(4, 'new answer', 4, new Date(6_000)));
+      h.tickFrame();
+
+      expect(h.lastEmit?.messages.map((m) => m.text)).toEqual([
+        'old-question',
+        'old-answer',
+        'new question',
+        'new answer',
+      ]);
+    });
+
+    it('drops DB copies of messages already covered by the live window', () => {
+      // A throttled reload mid-turn pulls the current turn's rows into the
+      // DB tail with raw-anchored ids. The live set owns that window; the
+      // DB copies (same raw timestamps) must not duplicate.
+      const RAW_BASE = 1_000_000_000_000;
+      const dbMessages: TranscriptViewMessage[] = [
+        makeDbMessage(RAW_BASE + 10_001, 'assistant_message', 'finished-earlier', new Date(1_000)),
+        makeDbMessage(RAW_BASE + 10_002, 'user_message', 'new question', new Date(5_000)),
+      ];
+      const h = createHarness(dbMessages);
+
+      h.acc.apply(makeUserEvent(3, 'new question', 3, new Date(5_000)));
+      h.tickFrame();
+
+      expect(h.lastEmit?.messages.map((m) => m.text)).toEqual([
+        'finished-earlier',
+        'new question',
+      ]);
+      expect(h.lastEmit?.messages[1].id).toBe(3);
     });
 
     it('lets live events override DB messages with the same id', () => {

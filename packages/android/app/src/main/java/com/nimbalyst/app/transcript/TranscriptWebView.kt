@@ -39,7 +39,7 @@ fun TranscriptWebView(
     transcriptHistoryPageJson: String? = null,
     onPromptSubmitted: (String) -> Unit = {},
     onInteractiveResponse: (TranscriptBridgeMessage) -> Unit = {},
-    onLoadOlderHistory: (Long?) -> Unit = {},
+    onLoadOlderHistory: (Long?, Int?) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
 
@@ -95,7 +95,7 @@ fun TranscriptWebView(
                         when (message.type) {
                             "prompt" -> message.text?.let(onPromptSubmitted)
                             "interactive_response" -> onInteractiveResponse(message)
-                            "load_older_history" -> onLoadOlderHistory(message.beforeRawMessageId)
+                            "load_older_history" -> onLoadOlderHistory(message.beforeRawMessageId, message.count)
                         }
                     },
                     "AndroidBridge"

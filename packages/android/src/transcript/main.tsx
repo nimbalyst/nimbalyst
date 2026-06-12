@@ -17,6 +17,16 @@ import type { InteractiveWidgetHost } from '@nimbalyst/runtime/ui/AgentTranscrip
 import './styles.css';
 
 const BARE_EXECUTING_FALLBACK_MS = 20_000;
+// Raw messages per history page request. Desktop clamps to 450; bigger pages
+// mean fewer round trips when scrolling deep into huge sessions.
+const HISTORY_PAGE_RAW_COUNT = 400;
+// Start fetching the next page well before the user reaches the top so
+// scrolling stays continuous instead of stop-and-go.
+const HISTORY_PREFETCH_PX = 1600;
+// Bound WebView heap on deep scroll-back: past this many retained view
+// messages, the newest (bottom) side is dropped and a "Jump to latest"
+// pill restores the live tail.
+const MAX_RETAINED_VIEW_MESSAGES = 8000;
 
 // ============================================================================
 // Types for Swift <-> JS bridge
@@ -398,6 +408,8 @@ function TranscriptApp() {
   const [historyViewMessages, setHistoryViewMessages] = useState<TranscriptViewMessage[]>([]);
   const [historyCursor, setHistoryCursor] = useState<HistoryCursor>({ rawStartId: null, hasMoreBefore: true });
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [bottomTrimmed, setBottomTrimmed] = useState(false);
+  const bottomTrimmedRef = useRef(false);
   const rawMessagesRef = useRef<BridgeMessage[]>([]);
   const transcriptRef = useRef<{ scrollToMessage: (index: number) => void; scrollToTop: () => void }>(null);
   const sessionDataRef = useRef<SessionData | null>(null);
@@ -441,16 +453,19 @@ function TranscriptApp() {
       type: 'load_older_history',
       requestId,
       beforeRawMessageId,
-      count: 240,
+      count: HISTORY_PAGE_RAW_COUNT,
     });
 
+    // Short lockout: if the request is dropped (e.g. the native side was
+    // mid-reconnect), the next scroll retries quickly instead of leaving a
+    // long dead zone while the user waits at the top.
     window.setTimeout(() => {
       if (loadingHistoryKeyRef.current !== historyKey) return;
       loadingHistoryKeyRef.current = null;
       historyLoadingRef.current = false;
       requestedHistoryBeforeRef.current.delete(historyKey);
       setHistoryLoading(false);
-    }, 15000);
+    }, 6000);
   }, []);
 
   const resetHistoryState = useCallback(() => {
@@ -462,7 +477,19 @@ function TranscriptApp() {
     requestedHistoryBeforeRef.current.clear();
     loadingHistoryKeyRef.current = null;
     lastAppliedHistoryPageKeyRef.current = null;
+    bottomTrimmedRef.current = false;
+    setBottomTrimmed(false);
   }, []);
+
+  const jumpToLatest = useCallback(() => {
+    resetHistoryState();
+    requestAnimationFrame(() => {
+      const scroller = getTranscriptScroller();
+      if (scroller) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+    });
+  }, [resetHistoryState]);
 
   const applyHistoryPage = useCallback((page?: MobileTranscriptHistoryPage | null) => {
     if (!page || page.sessionId !== sessionIdRef.current) return;
@@ -488,7 +515,19 @@ function TranscriptApp() {
       hasMoreBefore: page.hasMoreBefore,
     };
 
-    setHistoryViewMessages((previous) => mergeViewMessages(pageMessages, previous));
+    setHistoryViewMessages((previous) => {
+      const merged = mergeViewMessages(pageMessages, previous);
+      if (merged.length > MAX_RETAINED_VIEW_MESSAGES) {
+        // Deep scroll-back: drop the newest retained messages to bound the
+        // WebView heap. The live tail comes back via "Jump to latest".
+        if (!bottomTrimmedRef.current) {
+          bottomTrimmedRef.current = true;
+          setBottomTrimmed(true);
+        }
+        return merged.slice(0, MAX_RETAINED_VIEW_MESSAGES);
+      }
+      return merged;
+    });
 
     loadingHistoryKeyRef.current = null;
     historyLoadingRef.current = false;
@@ -646,8 +685,10 @@ function TranscriptApp() {
   }, [sessionId, rawMessages, metadata.provider, providedViewMessages]);
 
   const viewMessages = React.useMemo(
-    () => mergeViewMessages(historyViewMessages, baseViewMessages),
-    [historyViewMessages, baseViewMessages],
+    () => (bottomTrimmed
+      ? historyViewMessages
+      : mergeViewMessages(historyViewMessages, baseViewMessages)),
+    [historyViewMessages, baseViewMessages, bottomTrimmed],
   );
 
   const contentActivityKey = React.useMemo(() => {
@@ -685,7 +726,7 @@ function TranscriptApp() {
 
     const handleScroll = () => {
       if (!scroller) return;
-      if (scroller.scrollTop <= 120) {
+      if (scroller.scrollTop <= HISTORY_PREFETCH_PX) {
         requestOlderHistory();
       }
     };
@@ -758,16 +799,23 @@ function TranscriptApp() {
   }
 
   return (
-    <AgentTranscriptPanel
-      ref={transcriptRef}
-      key={sessionId}
-      sessionId={sessionId}
-      sessionData={sessionData}
-      isProcessing={bottomAgentStatusActive}
-      waitingTextOverride={bottomAgentStatusLabel}
-      hideSidebar={true}
-      onCompact={handleCompact}
-    />
+    <>
+      <AgentTranscriptPanel
+        ref={transcriptRef}
+        key={sessionId}
+        sessionId={sessionId}
+        sessionData={sessionData}
+        isProcessing={bottomAgentStatusActive}
+        waitingTextOverride={bottomAgentStatusLabel}
+        hideSidebar={true}
+        onCompact={handleCompact}
+      />
+      {bottomTrimmed && (
+        <button type="button" className="jump-to-latest" onClick={jumpToLatest}>
+          Jump to latest ↓
+        </button>
+      )}
+    </>
   );
 }
 

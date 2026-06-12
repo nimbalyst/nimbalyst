@@ -1006,7 +1006,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   }
 
   function isFatalMessageSyncErrorCode(code?: string): boolean {
-    return code === 'message_limit_exceeded' || code === 'message_too_large';
+    // storage_limit_exceeded: the session room hit the server's hard byte cap.
+    // Retrying appends can never succeed; switch to tail-via-index mode like
+    // the message-count/size caps so mobile keeps getting transcript updates.
+    return code === 'message_limit_exceeded' || code === 'message_too_large' || code === 'storage_limit_exceeded';
   }
 
   function isMessageSyncDisabled(sessionId: string): boolean {
@@ -3231,7 +3234,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
             } else {
               await sendIndexUpdate(updatedCache);
             }
-            if (updatedAt !== undefined && isMessageSyncDisabled(sessionId)) {
+            // Tail-mode sessions: also republish on the idle transition, not
+            // just message-driven updates. The idle push itself carries no
+            // updatedAt, so without this the phone shows "finished" while its
+            // tail still ends mid-turn until the debounced index sync runs.
+            const wentIdle = 'isExecuting' in meta && meta.isExecuting === false;
+            if ((updatedAt !== undefined || wentIdle) && isMessageSyncDisabled(sessionId)) {
               await publishMobileTranscriptTail(sessionId, updatedAt);
             }
           } else if (meta.title && meta.provider) {

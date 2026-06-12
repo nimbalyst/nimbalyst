@@ -224,6 +224,7 @@ data class SyncedSettings(
     val openaiApiKey: String? = null,
     val availableModels: List<SyncedAvailableModel>? = null,
     val defaultModel: String? = null,
+    val usage: SyncedUsageSnapshot? = null,
     val version: Int,
 )
 
@@ -231,6 +232,31 @@ data class SyncedAvailableModel(
     val id: String,
     val name: String,
     val provider: String,
+)
+
+/** One rate-limit window of a provider plan (utilization is 0-100). */
+data class SyncedUsageWindow(
+    val utilization: Double = 0.0,
+    val resetsAt: String? = null,
+)
+
+data class SyncedUsageCredits(
+    val hasCredits: Boolean = false,
+    val unlimited: Boolean = false,
+    val balance: Double? = null,
+)
+
+data class SyncedProviderUsage(
+    val fiveHour: SyncedUsageWindow? = null,
+    val sevenDay: SyncedUsageWindow? = null,
+    val sevenDayOpus: SyncedUsageWindow? = null,
+    val credits: SyncedUsageCredits? = null,
+    val lastUpdated: Long? = null,
+)
+
+data class SyncedUsageSnapshot(
+    val claude: SyncedProviderUsage? = null,
+    val codex: SyncedProviderUsage? = null,
 )
 
 data class DevicesListMessage(

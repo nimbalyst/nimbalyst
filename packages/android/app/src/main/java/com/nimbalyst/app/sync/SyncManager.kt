@@ -11,6 +11,7 @@ import com.nimbalyst.app.data.NimbalystRepository
 import com.nimbalyst.app.data.ProjectEntity
 import com.nimbalyst.app.data.QueuedPromptEntity
 import com.nimbalyst.app.data.SessionEntity
+import com.nimbalyst.app.data.TranscriptPageEntity
 import com.nimbalyst.app.notifications.NotificationManager
 import com.nimbalyst.app.pairing.PairingCredentials
 import com.nimbalyst.app.pairing.PairingStore
@@ -49,6 +50,8 @@ class SyncManager(
     private val _connectedDevices = MutableStateFlow<List<DeviceInfo>>(emptyList())
     private val _availableModels = MutableStateFlow<List<SyncedAvailableModel>>(emptyList())
     private val _desktopDefaultModel = MutableStateFlow<String?>(null)
+    // Claude/Codex plan-usage snapshot pushed from the desktop usage trackers.
+    private val _planUsage = MutableStateFlow<SyncedUsageSnapshot?>(null)
     // sessionId -> pre-projected transcript tail JSON (oversized sessions whose
     // per-message sync the server disabled). Rendered in place of synced messages.
     private val _transcriptTails = MutableStateFlow<Map<String, String>>(emptyMap())
@@ -66,6 +69,7 @@ class SyncManager(
     val connectedDevices: StateFlow<List<DeviceInfo>> = _connectedDevices.asStateFlow()
     val availableModels: StateFlow<List<SyncedAvailableModel>> = _availableModels.asStateFlow()
     val desktopDefaultModel: StateFlow<String?> = _desktopDefaultModel.asStateFlow()
+    val planUsage: StateFlow<SyncedUsageSnapshot?> = _planUsage.asStateFlow()
     val transcriptTails: StateFlow<Map<String, String>> = _transcriptTails.asStateFlow()
     val transcriptHistoryPages: StateFlow<Map<String, String>> = _transcriptHistoryPages.asStateFlow()
 
@@ -785,6 +789,10 @@ class SyncManager(
 
         _availableModels.value = settings.availableModels.orEmpty()
         _desktopDefaultModel.value = settings.defaultModel
+        settings.usage?.let { usage ->
+            Log.d(TAG, "[planUsage] captured (claude=${usage.claude != null}, codex=${usage.codex != null})")
+            _planUsage.value = usage
+        }
         _state.update { it.copy(lastError = null) }
     }
 
@@ -1120,6 +1128,38 @@ class SyncManager(
         Log.d(TAG, "[transcriptHistoryPage] captured for $sessionId (${page.length} chars)")
         _transcriptHistoryPages.update { current ->
             if (current[sessionId] == page) current else current + (sessionId to page)
+        }
+        persistTranscriptHistoryPage(sessionId, page)
+    }
+
+    // Pages requested with a concrete cursor are immutable (raw rows below a
+    // fixed raw id never change), so cache them locally: scrolling back through
+    // already-fetched ranges or reopening the session then skips the desktop
+    // round trip. The null-cursor "latest" page overlaps the moving tail and is
+    // not cached.
+    private fun persistTranscriptHistoryPage(sessionId: String, pageJson: String) {
+        val parsed = runCatching { gson.fromJson(pageJson, JsonObject::class.java) }.getOrNull() ?: return
+        if (parsed.get("sessionId")?.takeIf { !it.isJsonNull }?.asString != sessionId) return
+        val cursor = parsed.get("beforeRawMessageId")?.takeIf { !it.isJsonNull }?.asLong ?: return
+        val rawStartId = parsed.get("rawStartId")?.takeIf { !it.isJsonNull }?.asLong
+        val rawEndId = parsed.get("rawEndId")?.takeIf { !it.isJsonNull }?.asLong
+        val hasMoreBefore = parsed.get("hasMoreBefore")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
+        scope.launch {
+            runCatching {
+                repository.saveTranscriptPage(
+                    TranscriptPageEntity(
+                        sessionId = sessionId,
+                        cursorKey = cursor,
+                        rawStartId = rawStartId,
+                        rawEndId = rawEndId,
+                        hasMoreBefore = hasMoreBefore,
+                        pageJson = pageJson,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            }.onFailure { error ->
+                Log.w(TAG, "Failed to cache transcript page for $sessionId: ${error.message}")
+            }
         }
     }
 

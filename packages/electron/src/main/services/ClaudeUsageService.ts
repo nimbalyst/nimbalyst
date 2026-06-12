@@ -403,7 +403,28 @@ class ClaudeUsageServiceImpl {
         window.webContents.send('claude-usage:update', this.cachedUsage);
       }
     }
+    if (this.cachedUsage) {
+      for (const listener of claudeUsageUpdateListeners) {
+        try {
+          listener(this.cachedUsage);
+        } catch {
+          // Listener errors must not break the window broadcast path.
+        }
+      }
+    }
   }
+
+  getCached(): ClaudeUsageData | null {
+    return this.cachedUsage;
+  }
+}
+
+// Out-of-window subscribers (e.g. mobile settings sync) that want refreshed
+// usage without an IPC round trip.
+const claudeUsageUpdateListeners = new Set<(usage: ClaudeUsageData) => void>();
+export function onClaudeUsageUpdate(listener: (usage: ClaudeUsageData) => void): () => void {
+  claudeUsageUpdateListeners.add(listener);
+  return () => claudeUsageUpdateListeners.delete(listener);
 }
 
 // Singleton instance

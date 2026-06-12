@@ -113,6 +113,16 @@ fun SessionDetailScreen(
     val transcriptTail = transcriptTails[sessionId]
     val transcriptHistoryPages by app.syncManager.transcriptHistoryPages.collectAsState()
     val transcriptHistoryPage = transcriptHistoryPages[sessionId]
+    // Latest page to push into the WebView, fed from both the sync flow and
+    // the local page cache. The nonce forces a recomposition (and so a WebView
+    // re-push) even when the same cached page is served twice, e.g. after the
+    // transcript resets to the tail and the user scrolls back up.
+    var latestHistoryPage by remember(sessionId) { mutableStateOf<Pair<Long, String>?>(null) }
+    LaunchedEffect(sessionId, transcriptHistoryPage) {
+        if (!transcriptHistoryPage.isNullOrBlank()) {
+            latestHistoryPage = System.nanoTime() to transcriptHistoryPage
+        }
+    }
 
     // Sessions with neither synced messages nor projected transcript content
     // would otherwise render an empty transcript. Show a clear hint instead,
@@ -268,9 +278,12 @@ fun SessionDetailScreen(
                 agentStatusKind = session?.effectiveAgentStatusKind(),
                 agentStatusLabel = session?.effectiveAgentStatusLabel(),
                 agentStatusDetail = session?.effectiveAgentStatusDetail(),
-                messages = messages,
+                // Oversized sessions render the projected tail; their (stale)
+                // synced raw messages are ignored by the renderer, so skip
+                // serializing them into every WebView push.
+                messages = if (transcriptTail.isNullOrBlank()) messages else emptyList(),
                 transcriptTailJson = transcriptTail,
-                transcriptHistoryPageJson = transcriptHistoryPage,
+                transcriptHistoryPageJson = latestHistoryPage?.second,
                 onPromptSubmitted = { text -> submitPrompt(text, emptyList()) },
                 onInteractiveResponse = { bridgeMessage ->
                     coroutineScope.launch {
@@ -297,14 +310,24 @@ fun SessionDetailScreen(
                         }
                     }
                 },
-                onLoadOlderHistory = { beforeRawMessageId ->
+                onLoadOlderHistory = { beforeRawMessageId, count ->
                     coroutineScope.launch {
-                        app.syncManager.requestTranscriptHistoryPage(
-                            sessionId = sessionId,
-                            beforeRawMessageId = beforeRawMessageId,
-                            count = 240
-                        ).onFailure { error ->
-                            promptStatus = error.message ?: "Failed to request older history."
+                        // Concrete-cursor pages are immutable; serve from the
+                        // local cache when available and skip the desktop
+                        // round trip entirely.
+                        val cached = beforeRawMessageId?.let {
+                            app.repository.getCachedTranscriptPage(sessionId, it)
+                        }
+                        if (cached != null) {
+                            latestHistoryPage = System.nanoTime() to cached.pageJson
+                        } else {
+                            app.syncManager.requestTranscriptHistoryPage(
+                                sessionId = sessionId,
+                                beforeRawMessageId = beforeRawMessageId,
+                                count = count ?: 400
+                            ).onFailure { error ->
+                                promptStatus = error.message ?: "Failed to request older history."
+                            }
                         }
                     }
                 }

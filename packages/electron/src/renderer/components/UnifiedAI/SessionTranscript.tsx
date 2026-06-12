@@ -32,6 +32,7 @@ import { useDialog } from '../../contexts/DialogContext';
 import { FileGutter } from '../AIChat/FileGutter';
 import { recordClaudeActivity } from '../../store/listeners/claudeUsageListeners';
 import { recordCodexActivity } from '../../store/listeners/codexUsageListeners';
+import { transcriptMessageFingerprint } from '../../store/transcriptMessageFingerprint';
 import { PendingReviewBanner } from '../AIChat/PendingReviewBanner';
 import { WakeupBanner } from '../AIChat/WakeupBanner';
 import type { AIMode } from './ModeTag';
@@ -186,20 +187,6 @@ interface DesktopTranscriptHistoryPage {
   projectedMessageCount: number;
   hasMoreBefore: boolean;
   messages: TranscriptViewMessage[];
-}
-
-function transcriptMessageFingerprint(message: TranscriptViewMessage): string {
-  const createdAt = message.createdAt instanceof Date
-    ? message.createdAt.getTime()
-    : new Date(message.createdAt as any).getTime();
-  return [
-    Number.isFinite(createdAt) ? createdAt : 0,
-    message.type,
-    message.text ?? '',
-    message.toolCall?.providerToolCallId ?? '',
-    message.toolCall?.toolName ?? '',
-    message.subagentId ?? '',
-  ].join('\u001f');
 }
 
 function mergeOlderTranscriptMessages(

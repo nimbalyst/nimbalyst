@@ -125,6 +125,19 @@ class NimbalystRepository(
         database.sessionDao().updateDraftInput(sessionId, draftInput, draftUpdatedAt)
     }
 
+    suspend fun getCachedTranscriptPage(sessionId: String, cursorKey: Long): TranscriptPageEntity? =
+        database.transcriptPageDao().getPage(sessionId, cursorKey)
+
+    suspend fun saveTranscriptPage(page: TranscriptPageEntity) {
+        database.withTransaction {
+            database.transcriptPageDao().upsert(page)
+            val count = database.transcriptPageDao().countForSession(page.sessionId)
+            if (count > TRANSCRIPT_PAGE_CACHE_LIMIT) {
+                database.transcriptPageDao().deleteOldest(page.sessionId, count - TRANSCRIPT_PAGE_CACHE_LIMIT)
+            }
+        }
+    }
+
     suspend fun messageCount(sessionId: String): Int =
         database.messageDao().countForSession(sessionId)
 
@@ -141,5 +154,8 @@ class NimbalystRepository(
         const val INDEX_SYNC_ROOM_ID = "index"
         const val PROTOTYPE_PROJECT_ID = "/test/android"
         const val MOBILE_SESSION_MESSAGE_LIMIT = 60
+        // ~600 pages x ~400 raw messages covers very deep scrollback while
+        // bounding per-session cache growth (pages are a few hundred KB each).
+        const val TRANSCRIPT_PAGE_CACHE_LIMIT = 600
     }
 }

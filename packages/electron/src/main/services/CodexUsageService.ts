@@ -466,7 +466,28 @@ class CodexUsageServiceImpl {
         window.webContents.send('codex-usage:update', this.cachedUsage);
       }
     }
+    if (this.cachedUsage) {
+      for (const listener of codexUsageUpdateListeners) {
+        try {
+          listener(this.cachedUsage);
+        } catch {
+          // Listener errors must not break the window broadcast path.
+        }
+      }
+    }
   }
+
+  getCached(): CodexUsageData | null {
+    return this.cachedUsage;
+  }
+}
+
+// Out-of-window subscribers (e.g. mobile settings sync) that want refreshed
+// usage without an IPC round trip.
+const codexUsageUpdateListeners = new Set<(usage: CodexUsageData) => void>();
+export function onCodexUsageUpdate(listener: (usage: CodexUsageData) => void): () => void {
+  codexUsageUpdateListeners.add(listener);
+  return () => codexUsageUpdateListeners.delete(listener);
 }
 
 // Singleton instance

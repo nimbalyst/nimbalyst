@@ -688,8 +688,32 @@ export interface SyncedSettings {
   availableModels?: SyncedAvailableModel[];
   /** Desktop's default model ID (e.g., "claude-code:opus") */
   defaultModel?: string;
+  /** Plan-usage snapshots from the desktop usage trackers, for mobile display */
+  usage?: SyncedUsageSnapshot;
   /** Version for handling future upgrades */
   version: number;
+}
+
+/** One rate-limit window of a provider plan (utilization is 0-100). */
+export interface SyncedUsageWindow {
+  utilization: number;
+  /** ISO timestamp when the window resets, if known */
+  resetsAt: string | null;
+}
+
+export interface SyncedUsageSnapshot {
+  claude?: {
+    fiveHour: SyncedUsageWindow;
+    sevenDay: SyncedUsageWindow;
+    sevenDayOpus?: SyncedUsageWindow;
+    lastUpdated: number;
+  };
+  codex?: {
+    fiveHour: SyncedUsageWindow;
+    sevenDay: SyncedUsageWindow;
+    credits?: { hasCredits: boolean; unlimited: boolean; balance: number | null };
+    lastUpdated: number;
+  };
 }
 
 /**

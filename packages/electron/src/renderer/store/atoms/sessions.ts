@@ -19,6 +19,11 @@ import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
 import { ModelIdentifier, type ChatAttachment, type SessionData, type TranscriptPageInfo, type TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
 import type { SessionMeta } from '@nimbalyst/runtime';
+import {
+  isRawAnchoredViewMessageId,
+  stabilizedRawPageViewMessageIdBase,
+} from '@nimbalyst/runtime/ai/server/transcript';
+import { transcriptMessageFingerprint } from '../transcriptMessageFingerprint';
 import deepEqual from 'fast-deep-equal';
 import { workstreamStateAtom, setWorkstreamActiveChildAtom } from './workstreamState';
 import { aiInputHistoryAtom } from './aiInputUndo';
@@ -1927,6 +1932,37 @@ export const reloadSessionDataAtom = atom(
             sessionData.messages = [...dbMessages, ...optimisticMessages];
           } else {
             sessionData.messages = dbMessages;
+          }
+
+          // Partial-tail sessions: the fresh load returns only the latest
+          // raw tail. Preserve already-loaded older history (scroll-back
+          // pages and rows that slid out of the tail window), otherwise
+          // every throttled reload during streaming discards it and yanks
+          // the scroll anchor. Raw-anchored ids identify page/tail
+          // messages; live-projected messages never qualify.
+          const freshPage = sessionData.transcriptPage;
+          if (freshPage?.isPartial && typeof freshPage.rawStartId === 'number') {
+            const freshIdBase = stabilizedRawPageViewMessageIdBase(freshPage.rawStartId);
+            const freshFingerprints = new Set(dbMessages.map(transcriptMessageFingerprint));
+            const olderMessages = localMessages.filter((m: TranscriptViewMessage) =>
+              isRawAnchoredViewMessageId(m.id) &&
+              m.id < freshIdBase &&
+              !freshFingerprints.has(transcriptMessageFingerprint(m))
+            );
+            if (olderMessages.length > 0) {
+              sessionData.messages = [...olderMessages, ...sessionData.messages];
+              const currentPage = current.transcriptPage;
+              const oldestRawStartId = currentPage?.rawStartId != null
+                ? Math.min(currentPage.rawStartId, freshPage.rawStartId)
+                : freshPage.rawStartId;
+              sessionData.transcriptPage = {
+                ...freshPage,
+                rawStartId: oldestRawStartId,
+                hasMoreBefore: oldestRawStartId < freshPage.rawStartId
+                  ? (currentPage?.hasMoreBefore ?? freshPage.hasMoreBefore)
+                  : freshPage.hasMoreBefore,
+              };
+            }
           }
 
           // Preserve read state

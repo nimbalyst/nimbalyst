@@ -33,6 +33,8 @@ import { reconnectAllTrackerSyncs } from './TrackerSyncManager';
 import { BrowserWindow } from 'electron';
 import { timeStartupPhase } from '../utils/startupTiming';
 import { getMobileTranscriptTailJson } from '../utils/transcriptHelpers';
+import { claudeUsageService, onClaudeUsageUpdate } from './ClaudeUsageService';
+import { codexUsageService, onCodexUsageUpdate } from './CodexUsageService';
 
 function loadSyncModule() {
   return syncModule;
@@ -772,6 +774,9 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
       }
     }, 2000); // Wait for index connection
 
+    // Push refreshed plan-usage to mobile whenever the usage trackers update.
+    registerUsageSettingsSync();
+
     // Sync current OpenAI API key to mobile (in case mobile connects after key was set)
     setTimeout(async () => {
       try {
@@ -1226,6 +1231,52 @@ async function getAvailableModelsForMobile(): Promise<{ models: Array<{ id: stri
  *
  * @param openaiApiKey The OpenAI API key to sync
  */
+function buildUsageSnapshotForMobile(): import('@nimbalyst/runtime/sync').SyncedUsageSnapshot | undefined {
+  const claude = claudeUsageService.getCached();
+  const codex = codexUsageService.getCached();
+  if (!claude && !codex) return undefined;
+  return {
+    claude: claude ? {
+      fiveHour: claude.fiveHour,
+      sevenDay: claude.sevenDay,
+      sevenDayOpus: claude.sevenDayOpus,
+      lastUpdated: claude.lastUpdated,
+    } : undefined,
+    codex: codex ? {
+      fiveHour: codex.fiveHour,
+      sevenDay: codex.sevenDay,
+      credits: codex.credits,
+      lastUpdated: codex.lastUpdated,
+    } : undefined,
+  };
+}
+
+// Usage refreshes are frequent during active turns; coalesce pushes so mobile
+// gets at most one settings broadcast per window.
+let usageSyncTimer: NodeJS.Timeout | null = null;
+function scheduleUsageSettingsSync(): void {
+  if (usageSyncTimer) return;
+  usageSyncTimer = setTimeout(async () => {
+    usageSyncTimer = null;
+    try {
+      const Store = (await import('electron-store')).default;
+      const aiStore = new Store({ name: 'ai-settings' });
+      const apiKeys = aiStore.get('apiKeys', {}) as Record<string, string>;
+      await syncSettingsToMobile(apiKeys['openai']);
+    } catch (error) {
+      logger.main.warn('[SyncManager] Failed to sync usage to mobile:', error);
+    }
+  }, 10_000);
+}
+
+let usageListenersRegistered = false;
+export function registerUsageSettingsSync(): void {
+  if (usageListenersRegistered) return;
+  usageListenersRegistered = true;
+  onClaudeUsageUpdate(() => scheduleUsageSettingsSync());
+  onCodexUsageUpdate(() => scheduleUsageSettingsSync());
+}
+
 export async function syncSettingsToMobile(openaiApiKey?: string): Promise<void> {
   const provider = state.provider;
   if (!provider) {
@@ -1258,6 +1309,7 @@ export async function syncSettingsToMobile(openaiApiKey?: string): Promise<void>
       } : undefined,
       availableModels,
       defaultModel,
+      usage: buildUsageSnapshotForMobile(),
       version: settingsVersion,
     });
     // logger.main.info('[SyncManager] Settings synced successfully');

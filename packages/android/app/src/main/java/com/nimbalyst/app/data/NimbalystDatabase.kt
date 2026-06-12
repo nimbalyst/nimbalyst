@@ -16,8 +16,9 @@ import org.json.JSONObject
         MessageEntity::class,
         QueuedPromptEntity::class,
         SyncStateEntity::class,
+        TranscriptPageEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 abstract class NimbalystDatabase : RoomDatabase() {
@@ -26,6 +27,7 @@ abstract class NimbalystDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun queuedPromptDao(): QueuedPromptDao
     abstract fun syncStateDao(): SyncStateDao
+    abstract fun transcriptPageDao(): TranscriptPageDao
 
     companion object {
         @Volatile
@@ -38,7 +40,7 @@ abstract class NimbalystDatabase : RoomDatabase() {
                     NimbalystDatabase::class.java,
                     "nimbalyst-android.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .addCallback(object : Callback() {
                         override fun onCreate(db: SupportSQLiteDatabase) {
                             super.onCreate(db)
@@ -143,6 +145,25 @@ abstract class NimbalystDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE sessions ADD COLUMN agentStatusLabel TEXT")
                 db.execSQL("ALTER TABLE sessions ADD COLUMN agentStatusDetail TEXT")
                 db.execSQL("ALTER TABLE sessions ADD COLUMN agentStatusUpdatedAt INTEGER")
+            }
+        }
+
+        internal val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS transcript_pages (
+                        sessionId TEXT NOT NULL,
+                        cursorKey INTEGER NOT NULL,
+                        rawStartId INTEGER,
+                        rawEndId INTEGER,
+                        hasMoreBefore INTEGER NOT NULL,
+                        pageJson TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(sessionId, cursorKey)
+                    )
+                    """.trimIndent()
+                )
             }
         }
 

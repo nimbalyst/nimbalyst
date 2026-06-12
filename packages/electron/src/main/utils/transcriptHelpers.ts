@@ -173,8 +173,14 @@ export async function getMobileTranscriptHistoryPageJson(
   const hasMoreBefore = rawStartId != null
     ? (await listRawMessagesBefore(sessionId, rawStartId, 1)).length > 0
     : false;
+  // Stabilize ids: each page projects in isolation with ids starting at 1, so
+  // unanchored ids collide across pages and the mobile renderer's
+  // (type, id)-keyed dedupe silently drops messages when several pages merge.
   const messages = rawPage.length > 0
-    ? await projectRawMessagesToViewMessages(rawPage.map(agentMessageToRawMessage), provider)
+    ? stabilizeRawPageViewMessageIds(
+        await projectRawMessagesToViewMessages(rawPage.map(agentMessageToRawMessage), provider),
+        rawStartId,
+      )
     : [];
 
   return serializeMobileTranscriptHistoryPage({

@@ -21,6 +21,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -44,6 +45,8 @@ import androidx.compose.ui.unit.dp
 import com.nimbalyst.app.NimbalystApplication
 import com.nimbalyst.app.analytics.AnalyticsManager
 import com.nimbalyst.app.pairing.QRPairingData
+import com.nimbalyst.app.sync.SyncedProviderUsage
+import com.nimbalyst.app.sync.SyncedUsageWindow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -59,6 +62,7 @@ fun SettingsScreen(
     val pairingState by app.pairingStore.state.collectAsState()
     val syncState by app.syncManager.state.collectAsState()
     val connectedDevices by app.syncManager.connectedDevices.collectAsState()
+    val planUsage by app.syncManager.planUsage.collectAsState()
     val coroutineScope = rememberCoroutineScope()
 
     // Dev section: tap version label 7 times to reveal
@@ -149,6 +153,27 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
+                }
+            }
+        }
+
+        // Plan usage section (synced from the desktop usage trackers)
+        planUsage?.let { usage ->
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Plan Usage",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    usage.claude?.let { ProviderUsageBlock(name = "Claude", usage = it) }
+                    usage.codex?.let { ProviderUsageBlock(name = "Codex", usage = it) }
                 }
             }
         }
@@ -338,5 +363,90 @@ fun SettingsScreen(
         }
 
         Spacer(modifier = Modifier.height(32.dp))
+    }
+}
+
+@Composable
+private fun ProviderUsageBlock(name: String, usage: SyncedProviderUsage) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = name,
+            style = MaterialTheme.typography.titleSmall
+        )
+        usage.fiveHour?.let { UsageWindowRow(label = "5-hour", window = it) }
+        usage.sevenDay?.let { UsageWindowRow(label = "7-day", window = it) }
+        usage.sevenDayOpus?.let { UsageWindowRow(label = "7-day Opus", window = it) }
+        usage.credits?.let { credits ->
+            val label = when {
+                credits.unlimited -> "Credits: unlimited"
+                credits.balance != null -> "Credits: %.2f".format(credits.balance)
+                credits.hasCredits -> "Credits available"
+                else -> null
+            }
+            label?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        usage.lastUpdated?.let { ts ->
+            Text(
+                text = "Updated ${formatAgo(ts)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun UsageWindowRow(label: String, window: SyncedUsageWindow) {
+    val fraction = (window.utilization / 100.0).coerceIn(0.0, 1.0).toFloat()
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "$label — ${window.utilization.toInt()}%",
+                style = MaterialTheme.typography.bodySmall
+            )
+            val resetsText = window.resetsAt?.let { formatResetsIn(it) }.orEmpty()
+            if (resetsText.isNotBlank()) {
+                Text(
+                    text = resetsText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        LinearProgressIndicator(
+            progress = { fraction },
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+private fun formatResetsIn(resetsAtIso: String): String {
+    return try {
+        val resetMs = java.time.Instant.parse(resetsAtIso).toEpochMilli()
+        val deltaMin = ((resetMs - System.currentTimeMillis()) / 60_000L).coerceAtLeast(0)
+        val hours = deltaMin / 60
+        val minutes = deltaMin % 60
+        if (hours > 0) "resets in ${hours}h ${minutes}m" else "resets in ${minutes}m"
+    } catch (_: Exception) {
+        ""
+    }
+}
+
+private fun formatAgo(timestampMs: Long): String {
+    val deltaMin = ((System.currentTimeMillis() - timestampMs) / 60_000L).coerceAtLeast(0)
+    return when {
+        deltaMin < 1 -> "just now"
+        deltaMin < 60 -> "${deltaMin}m ago"
+        else -> "${deltaMin / 60}h ago"
     }
 }
