@@ -2195,7 +2195,12 @@ export const refreshSessionListAtom = atom(
           // atom (e.g. from a missed resolve event after a renderer reload)
           // gets corrected on the next session-list refresh. Persisted by
           // main-process setSessionPendingPrompt on every prompt open/resolve.
-          set(sessionHasPendingInteractivePromptAtom(s.id), !!s.hasPendingInteractivePrompt);
+          const hasPendingInteractivePrompt = !!s.hasPendingInteractivePrompt;
+          set(sessionHasPendingInteractivePromptAtom(s.id), hasPendingInteractivePrompt);
+          if (!hasPendingInteractivePrompt) {
+            set(sessionPendingPromptsAtom(s.id), []);
+            set(sessionPendingPromptAtom(s.id), false);
+          }
         }
 
         set(sessionRegistryAtom, registry);

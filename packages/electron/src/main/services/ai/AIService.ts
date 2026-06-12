@@ -243,6 +243,28 @@ export class AIService {
     return this.processQueuedPrompt(sessionId, workspacePath, targetWindow);
   }
 
+  private notifyInteractivePromptResolved(
+    sessionId: string,
+    promptId: string,
+    promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request',
+    response: any,
+  ): void {
+    const windows = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed());
+    for (const win of windows) {
+      if (promptType === 'permission_request') {
+        win.webContents.send('ai:toolPermissionResolved', { sessionId, requestId: promptId });
+      } else if (promptType === 'ask_user_question_request') {
+        win.webContents.send('ai:askUserQuestionAnswered', { sessionId, questionId: promptId });
+      } else {
+        win.webContents.send('ai:exitPlanModeResolved', {
+          sessionId,
+          requestId: promptId,
+          approved: !!response?.approved,
+        });
+      }
+    }
+  }
+
   public async respondToInteractivePrompt(params: {
     sessionId: string;
     promptId: string;
@@ -296,6 +318,7 @@ export class AIService {
     );
     await setSessionPendingPrompt(sessionId, false);
     TrayManager.getInstance().onPromptResolved(sessionId);
+    this.notifyInteractivePromptResolved(sessionId, promptId, promptType, response);
 
     if (promptType === 'permission_request') {
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);

@@ -17,6 +17,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { store } from '@nimbalyst/runtime/store';
 import {
   sessionHasPendingInteractivePromptAtom,
+  sessionPendingPromptAtom,
   sessionProcessingAtom,
   sessionPendingPromptsAtom,
   sessionRegistryAtom,
@@ -227,11 +228,13 @@ describe('direct prompt events: AskUserQuestion', () => {
     const sid = uniqueSessionId('auq-answer');
     const qid = 'q-1';
     handlers.get('ai:askUserQuestion')!({ sessionId: sid, questionId: qid, questions: [] });
+    store.set(sessionPendingPromptAtom(sid), true);
     expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(true);
 
     handlers.get('ai:askUserQuestionAnswered')!({ sessionId: sid, questionId: qid });
 
     expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(false);
+    expect(store.get(sessionPendingPromptAtom(sid))).toBe(false);
     expect(store.get(sessionPendingPromptsAtom(sid))).toHaveLength(0);
   });
 });
@@ -276,10 +279,12 @@ describe('direct prompt events: ToolPermission', () => {
     const sid = uniqueSessionId('tp-resolve');
     const rid = 'tp-1';
     handlers.get('ai:toolPermission')!({ sessionId: sid, requestId: rid });
+    store.set(sessionPendingPromptAtom(sid), true);
 
     handlers.get('ai:toolPermissionResolved')!({ sessionId: sid, requestId: rid });
 
     expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(false);
+    expect(store.get(sessionPendingPromptAtom(sid))).toBe(false);
     expect(store.get(sessionPendingPromptsAtom(sid))).toHaveLength(0);
   });
 });

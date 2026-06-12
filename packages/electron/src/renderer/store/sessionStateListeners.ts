@@ -34,6 +34,7 @@ import {
   sessionLastActivityAtom,
   sessionLastReadAtom,
   sessionHasPendingInteractivePromptAtom,
+  sessionPendingPromptAtom,
   sessionPendingPromptsAtom,
   sessionRegistryAtom,
   sessionStoreAtom,
@@ -720,6 +721,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+    store.set(sessionPendingPromptAtom(sessionId), false);
     // Remove the resolved prompt from the array
     if (data.questionId) {
       const current = store.get(sessionPendingPromptsAtom(sessionId));
@@ -757,6 +759,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, approved } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+    store.set(sessionPendingPromptAtom(sessionId), false);
     if (data.requestId) {
       const current = store.get(sessionPendingPromptsAtom(sessionId));
       store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== data.requestId));
@@ -801,6 +804,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, requestId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+    store.set(sessionPendingPromptAtom(sessionId), false);
     const current = store.get(sessionPendingPromptsAtom(sessionId));
     store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== requestId));
   };
@@ -845,6 +849,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, proposalId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+    store.set(sessionPendingPromptAtom(sessionId), false);
     const current = store.get(sessionPendingPromptsAtom(sessionId));
     store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== proposalId));
   };
@@ -879,6 +884,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, promptId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+    store.set(sessionPendingPromptAtom(sessionId), false);
     const current = store.get(sessionPendingPromptsAtom(sessionId));
     store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== promptId));
   };
