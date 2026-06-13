@@ -79,15 +79,12 @@ async function getAgentMessageCount(sessionId: string): Promise<number> {
     return reportedCount;
   }
 
-  if (AgentMessagesRepository.hasAccurateMessageCounts()) {
-    return reportedCount;
-  }
-
   // Some packaged/runtime store combinations can fail to expose an accurate
   // COUNT path. Probe only enough rows to decide whether the canonical full
   // transcript path is safe; never read the entire session just to count it.
   const probe = await AgentMessagesRepository.list(sessionId, {
     limit: DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT + 1,
+    includeHidden: true,
   });
   return Math.max(reportedCount, probe.length);
 }
@@ -1121,7 +1118,7 @@ export class SessionManager {
     // Huge sessions cannot safely project the whole raw log on desktop open.
     // Load a bounded raw tail directly, with page metadata so the renderer can
     // fetch older slices on demand as the user scrolls upward.
-    const transcriptLoad = rawMessageCount > DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT
+    const transcriptLoad = rawMessageCount > 0
       ? await this.loadRawTailTranscriptPage(sessionId, session.provider, rawMessageCount)
       : {
         messages: await this.loadCanonicalTranscript(sessionId, session.provider),
