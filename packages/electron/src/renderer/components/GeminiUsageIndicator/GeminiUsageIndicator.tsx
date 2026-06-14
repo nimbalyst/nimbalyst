@@ -62,13 +62,15 @@ export const GeminiUsageIndicator: React.FC<GeminiUsageIndicatorProps> = ({ clas
   const effectiveSessionColor = limitsAvailable ? sessionColor : 'muted';
   const strokeColor = colorClasses[effectiveSessionColor] || colorClasses.muted;
 
-  const tooltipContent = usage?.error
-    ? `Gemini usage unavailable: ${usage.error}`
-    : usage
-      ? limitsAvailable
-        ? `Gemini: ${Math.round(utilization)}% (resets ${formatResetTime(usage.fiveHour.resetsAt)})`
-        : 'Gemini usage (limits unavailable)'
-      : 'Gemini usage unavailable';
+  const tooltipContent = usage?.notStarted
+    ? usage.error || 'Gemini usage will appear after your first request'
+    : usage?.error
+      ? `Gemini usage unavailable: ${usage.error}`
+      : usage
+        ? limitsAvailable
+          ? `Gemini: ${Math.round(utilization)}% (resets ${formatResetTime(usage.fiveHour.resetsAt)})`
+          : 'Gemini usage (limits unavailable)'
+        : 'Gemini usage unavailable';
 
   return (
     <div className={`relative ${className || ''}`}>

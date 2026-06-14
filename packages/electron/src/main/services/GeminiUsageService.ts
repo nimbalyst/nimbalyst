@@ -27,6 +27,11 @@ import { windowStates, resolveActiveWorkspacePath } from '../window/windowState'
 const GEMINI_EXTENSION_ID = 'gemini-antigravity';
 const GEMINI_BACKEND_MODULE_ID = 'antigravity-server';
 
+// Friendly chip/popover text for the normal pre-first-request state, where
+// the backend module has not started yet. Shown instead of the raw host
+// "[PrivilegedExtensionHost] module not running" string.
+const GEMINI_NOT_STARTED_MESSAGE = 'Gemini usage will appear after your first request.';
+
 export interface GeminiUsageData {
   fiveHour: {
     utilization: number; // 0-100 percentage
@@ -49,6 +54,8 @@ export interface GeminiUsageData {
   available?: boolean;
   lastUpdated: number; // Unix timestamp
   error?: string;
+  /** True when the backend module has not started yet (benign idle state, not an error). */
+  notStarted?: boolean;
 }
 
 /**
@@ -82,7 +89,7 @@ interface AntigravityUsageSnapshot {
 
 type GeminiUsageSnapshotResult =
   | { available: true; snapshot: AntigravityUsageSnapshot }
-  | { available: false; error: string };
+  | { available: false; error: string; notStarted?: boolean };
 
 const POLL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes before going to sleep
@@ -119,6 +126,7 @@ class GeminiUsageServiceImpl {
       if (!result || result.available === false) {
         const muted = this.makeUnavailable(
           result?.error ?? 'Gemini usage data unavailable',
+          result?.notStarted ?? false,
         );
         this.cachedUsage = muted;
         this.broadcastUpdate();
@@ -202,7 +210,7 @@ class GeminiUsageServiceImpl {
   private async fetchSnapshot(): Promise<GeminiUsageSnapshotResult> {
     const workspacePath = this.resolveActiveWorkspace();
     if (!workspacePath) {
-      return { available: false, error: 'No open workspace' };
+      return { available: false, notStarted: true, error: 'Open a workspace to see Gemini usage.' };
     }
 
     try {
@@ -219,15 +227,20 @@ class GeminiUsageServiceImpl {
       }
       return result;
     } catch (error) {
-      // Module not running, unknown method, or any RPC error -> muted chip.
-      return {
-        available: false,
-        error: error instanceof Error ? error.message : 'Gemini server not started yet',
-      };
+      // The backend module starts on first use, so "module not running" and
+      // similar pre-start states are the normal idle case, not an error. Map
+      // them to a friendly notStarted state so the chip never surfaces the raw
+      // "[PrivilegedExtensionHost] module not running" host string. Genuine RPC
+      // errors still surface as an error.
+      const raw = error instanceof Error ? error.message : '';
+      const idle = raw === '' || /module not running|not started|server not started/i.test(raw);
+      return idle
+        ? { available: false, notStarted: true, error: GEMINI_NOT_STARTED_MESSAGE }
+        : { available: false, error: raw };
     }
   }
 
-  private makeUnavailable(error: string): GeminiUsageData {
+  private makeUnavailable(error: string, notStarted = false): GeminiUsageData {
     return {
       fiveHour: { utilization: 0, resetsAt: null },
       sevenDay: { utilization: 0, resetsAt: null },
@@ -235,6 +248,7 @@ class GeminiUsageServiceImpl {
       available: false,
       lastUpdated: Date.now(),
       error,
+      notStarted,
     };
   }
 

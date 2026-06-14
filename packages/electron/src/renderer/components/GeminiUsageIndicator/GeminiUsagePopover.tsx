@@ -177,7 +177,11 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
 
         {/* Content */}
         <div className="px-4 py-3">
-          {usage.error ? (
+          {usage.notStarted ? (
+            <div className="text-[13px] text-nim-muted">
+              {usage.error || 'Gemini usage will appear after your first request.'}
+            </div>
+          ) : usage.error ? (
             <div className="text-[13px] text-nim-error">{usage.error}</div>
           ) : (
             <>

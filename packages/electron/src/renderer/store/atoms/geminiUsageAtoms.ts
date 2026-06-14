@@ -34,6 +34,8 @@ export interface GeminiUsageData {
   available?: boolean;
   lastUpdated: number; // Unix timestamp
   error?: string;
+  /** True when the backend module has not started yet (benign idle state, not an error). */
+  notStarted?: boolean;
 }
 
 export const geminiUsageAtom = atom<GeminiUsageData | null>(null);
