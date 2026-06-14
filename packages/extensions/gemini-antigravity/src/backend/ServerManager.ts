@@ -259,22 +259,54 @@ export class AntigravityServerManager {
   /**
    * Send a one-shot prompt to a model identified by its stable KEY (preferred)
    * or enum. Returns the model's text response.
+   *
+   * Retries the GetModelResponse RPC ONCE on a transport TIMEOUT only. A timeout
+   * usually means the language server is wedged (heartbeat still answers, but
+   * GetModelResponse hangs); before the second attempt we drop this.endpoint and
+   * re-run ensureRunning() so a stuck server is re-discovered or respawned. We do
+   * NOT retry an AntigravityVersionGateError (permanent: wrong --override_ide_version,
+   * a respawn re-creates the same gate) or an HTTP 4xx (client/auth error). Worst
+   * case latency is ~2x timeoutMs plus one backoff and one respawn cycle.
    */
   async getModelResponse(prompt: string, modelKeyOrEnum: string,
     timeoutMs = 120_000): Promise<string> {
-    const ep = await this.ensureRunning();
-    const enumName = modelKeyOrEnum.startsWith('MODEL_')
-      ? modelKeyOrEnum
-      : await this.resolveModelEnum(modelKeyOrEnum, ep);
-    const res = await this.rpc<{ response?: string }>(
-      'GetModelResponse', { prompt, model: enumName }, ep, timeoutMs);
-    const text = res.response ?? '';
-    if (typeof text === 'string' && text.includes('no longer supported')) {
-      throw new AntigravityVersionGateError(
-        `Antigravity backend rejected the build (version gate). Server must run with ` +
-        `--override_ide_version ${this.overrideIdeVersion}. Got: ${text}`);
+    const MAX_ATTEMPTS = 2;
+    const RETRY_BACKOFF_MS = 1_000;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (attempt > 1) {
+        // Force re-discovery/respawn: skip ensureRunning()'s healthy-endpoint
+        // fast-path so an alive-but-wedged server is replaced.
+        this.endpoint = null;
+        await delay(RETRY_BACKOFF_MS);
+      }
+      const ep = await this.ensureRunning();
+      const enumName = modelKeyOrEnum.startsWith('MODEL_')
+        ? modelKeyOrEnum
+        : await this.resolveModelEnum(modelKeyOrEnum, ep);
+      try {
+        const res = await this.rpc<{ response?: string }>(
+          'GetModelResponse', { prompt, model: enumName }, ep, timeoutMs);
+        const text = res.response ?? '';
+        if (typeof text === 'string' && text.includes('no longer supported')) {
+          throw new AntigravityVersionGateError(
+            `Antigravity backend rejected the build (version gate). Server must run with ` +
+            `--override_ide_version ${this.overrideIdeVersion}. Got: ${text}`);
+        }
+        return text;
+      } catch (err) {
+        lastErr = err;
+        // Permanent failures: never retry.
+        if (err instanceof AntigravityVersionGateError) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        const isTimeout = msg.includes('timed out');
+        const isHttp4xx = /HTTP 4\d\d/.test(msg);
+        if (!isTimeout || isHttp4xx || attempt >= MAX_ATTEMPTS) throw err;
+        // else: timeout on the first attempt -- loop, respawn, try once more.
+      }
     }
-    return text;
+    // Unreachable: the loop either returns or throws on every path.
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
   /** Full model catalog as {key -> info}. */
