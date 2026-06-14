@@ -518,7 +518,7 @@ export class MetaAgentService {
     // ever created by this parent (regardless of status, non-archived) bounds
     // that runaway. A normal 3-child spawn is unaffected. Mirrors the
     // created_by_session_id query in getSpawnedSessions.
-    const TOTAL_SPAWN_CAP = 15;
+    const TOTAL_SPAWN_CAP = 6;
     const { rows: totalRows } = await databaseWorker.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM ai_sessions
        WHERE workspace_id = $1
