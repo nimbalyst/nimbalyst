@@ -46,7 +46,7 @@
         "enablement": {
           "default": "disabled",
           "promptOn": "firstUse",
-          "purpose": "Runs Google's Gemini 3.5 Flash via the local Antigravity language server: spawns and manages the server, calls Gemini through Antigravity's hosted endpoint, and reads workspace files (read-only: read, list, search) so the agent can investigate the codebase."
+          "purpose": "Runs Google's Gemini 3.5 Flash via the local Antigravity language server, and gives the agent workspace tools to read, list, and search files, write files, and run shell commands (git, build, test) in the workspace so it can investigate and modify the codebase."
         }
       }
     ],

@@ -31,13 +31,14 @@ type AnyProtocolEvent = {
 function makeCtx() {
   const logRaw = vi.fn(async () => {});
   const toolExecutor = vi.fn(async () => 'ok');
+  const devToolExecutor = vi.fn(async () => 'dev-tool ok');
   const ctx = {
     extensionId: 'gemini-antigravity',
     extensionPath: os.tmpdir(), // resolveServerConfig probes for an optional config file here
-    services: { logRaw, toolExecutor },
+    services: { logRaw, toolExecutor, devToolExecutor },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   };
-  return { ctx, logRaw, toolExecutor };
+  return { ctx, logRaw, toolExecutor, devToolExecutor };
 }
 
 describe('gemini-antigravity backend sendMessage', () => {
@@ -154,5 +155,72 @@ describe('gemini-antigravity backend sendMessage', () => {
 
     // Two model rounds (tool round + text round) -> still no spawn.
     expect(getModelResponse).toHaveBeenCalledTimes(2);
+  });
+
+  it('actually executes a run_command tool call in the workspace and returns its output', async () => {
+    // run_command is handled locally in the backend (real child_process), NOT
+    // via a host service - so this asserts genuine execution end-to-end through
+    // the real tool loop. echo is a no-quote cross-platform marker (cmd + sh).
+    const cmd = 'echo GEMINI_OK_5';
+    getModelResponse
+      .mockResolvedValueOnce(
+        JSON.stringify({ tool_call: { name: 'run_command', arguments: { command: cmd } } }),
+      )
+      .mockResolvedValueOnce('done');
+
+    const { ctx } = makeCtx();
+    const { methods } = await activate(ctx as never);
+    await methods.createSession({
+      sessionId: 'rc1',
+      model: 'gemini-3-flash-agent',
+      workspacePath: os.tmpdir(),
+      tools: [{ type: 'function', function: { name: 'run_command' } }],
+      systemPrompt: 'sys',
+    });
+
+    const events: AnyProtocolEvent[] = [];
+    for await (const ev of methods.sendMessage({ sessionId: 'rc1', message: 'run it' })) {
+      events.push(ev as AnyProtocolEvent);
+    }
+
+    const toolEvent = events.find(
+      (e) => e.type === 'tool_call' && e.toolCall?.name === 'run_command' && e.toolCall?.result !== undefined,
+    );
+    expect(toolEvent).toBeDefined();
+    // Real child process ran in the workspace and its stdout was captured.
+    expect(String(toolEvent?.toolCall?.result)).toContain('GEMINI_OK_5');
+    expect(String(toolEvent?.toolCall?.result)).toContain('exit code: 0');
+  });
+
+  it('routes a write_file tool call to the workspace-files devToolExecutor channel, not toolExecutor', async () => {
+    getModelResponse
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          tool_call: { name: 'write_file', arguments: { path: 'note.md', content: 'hello' } },
+        }),
+      )
+      .mockResolvedValueOnce('saved');
+
+    const { ctx, devToolExecutor, toolExecutor } = makeCtx();
+    const { methods } = await activate(ctx as never);
+    await methods.createSession({
+      sessionId: 'wf1',
+      model: 'gemini-3-flash-agent',
+      workspacePath: os.tmpdir(),
+      tools: [{ type: 'function', function: { name: 'write_file' } }],
+      systemPrompt: 'sys',
+    });
+
+    const events: AnyProtocolEvent[] = [];
+    for await (const ev of methods.sendMessage({ sessionId: 'wf1', message: 'write it' })) {
+      events.push(ev as AnyProtocolEvent);
+    }
+
+    // write_file is in DEV_AGENT_TOOL_NAMES -> routed to the workspace-files
+    // gated devToolExecutor, never the db-write toolExecutor channel.
+    expect(devToolExecutor).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'write_file', args: { path: 'note.md', content: 'hello' } }),
+    );
+    expect(toolExecutor).not.toHaveBeenCalled();
   });
 });

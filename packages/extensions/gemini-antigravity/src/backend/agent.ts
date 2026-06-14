@@ -26,6 +26,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { AntigravityServerManager } from './ServerManager';
 import { AntigravityUsageMeter } from './UsageMeter';
 import { AntigravityToolLoopProtocol } from './ToolLoopProtocol';
@@ -55,7 +57,7 @@ const DEFAULT_MODEL_KEY = 'gemini-3-flash-agent';
  * orchestration tools, so this routing is unambiguous per session. Keep in sync
  * with the host's DEV_AGENT_TOOL_NAMES (devAgentTools.ts).
  */
-const DEV_AGENT_TOOL_NAMES = new Set<string>(['read_file', 'list_files', 'search_files']);
+const DEV_AGENT_TOOL_NAMES = new Set<string>(['read_file', 'list_files', 'search_files', 'write_file']);
 
 /**
  * Strip a provider prefix like "antigravity-gemini-agent:gemini-3-flash-agent"
@@ -133,6 +135,65 @@ function resolveServerConfig(ctx: BackendActivateContext): {
   return out;
 }
 
+const execAsync = promisify(exec);
+
+// run_command tuning. The Gemini agent runs shell commands locally in this
+// backend, which already holds native-code privilege (it spawns the Antigravity
+// language server). cwd is pinned to the session workspace and the call is
+// bounded by a hard timeout and output caps.
+const RUN_COMMAND_TIMEOUT_MS = 120_000;
+const RUN_COMMAND_MAX_BUFFER = 4 * 1024 * 1024;
+const RUN_COMMAND_MAX_OUTPUT = 48_000;
+
+function clampCommandOutput(text: string): string {
+  return text.length <= RUN_COMMAND_MAX_OUTPUT
+    ? text
+    : `${text.slice(0, RUN_COMMAND_MAX_OUTPUT)}\n\n[output truncated at ${RUN_COMMAND_MAX_OUTPUT} characters]`;
+}
+
+/**
+ * Execute a shell command in the workspace and return stdout/stderr/exit code
+ * as text for the model. Runs in THIS backend process (not via the host broker):
+ * the module already has native-code consent, cwd is the session workspace, and
+ * the call is bounded by a timeout and output caps.
+ */
+async function runCommand(
+  workspacePath: string | undefined,
+  args: Record<string, unknown>,
+): Promise<string> {
+  const command = typeof args.command === 'string' ? args.command.trim() : '';
+  if (!command) return 'Error: run_command requires a non-empty "command" string.';
+  if (!workspacePath) return 'Error: run_command needs an open workspace; none is bound to this session.';
+  try {
+    const { stdout, stderr } = await execAsync(command, {
+      cwd: workspacePath,
+      timeout: RUN_COMMAND_TIMEOUT_MS,
+      maxBuffer: RUN_COMMAND_MAX_BUFFER,
+      windowsHide: true,
+    });
+    const body =
+      [stdout ? `stdout:\n${stdout}` : '', stderr ? `stderr:\n${stderr}` : '']
+        .filter(Boolean)
+        .join('\n\n') || '(no output)';
+    return clampCommandOutput(`$ ${command}\nexit code: 0\n\n${body}`);
+  } catch (err: unknown) {
+    const e = err as {
+      code?: number; killed?: boolean; signal?: string;
+      stdout?: string; stderr?: string; message?: string;
+    };
+    if (e.killed && e.signal === 'SIGTERM') {
+      return clampCommandOutput(`$ ${command}\n[command timed out after ${RUN_COMMAND_TIMEOUT_MS / 1000}s]`);
+    }
+    const parts = [
+      `$ ${command}`,
+      `exit code: ${typeof e.code === 'number' ? e.code : 'unknown'}`,
+      e.stdout ? `stdout:\n${e.stdout}` : '',
+      e.stderr ? `stderr:\n${e.stderr}` : (e.message ? `error: ${e.message}` : ''),
+    ].filter(Boolean);
+    return clampCommandOutput(parts.join('\n\n'));
+  }
+}
+
 /**
  * Build a session-scoped tool executor that uses the host's private channel
  * (Q7). The session ID and workspace path are captured at session-create time
@@ -144,8 +205,13 @@ function makeSessionExecutor(
   session: SessionState,
 ): (name: string, args: Record<string, unknown>) => Promise<unknown> {
   return async (name, args) => {
-    // Read-only dev tools go through the workspace-files-gated channel; the
-    // host pins the jail to its bound workspace, so no path is sent.
+    // run_command executes locally in this backend (native-code privilege is
+    // already granted at module start); cwd is the session's workspace.
+    if (name === 'run_command') {
+      return runCommand(session.workspacePath, args);
+    }
+    // Read/write dev tools go through the workspace-files-gated host channel;
+    // the host pins the jail to its bound workspace, so no path is sent.
     if (DEV_AGENT_TOOL_NAMES.has(name)) {
       return ctx.services.devToolExecutor({ name, args });
     }

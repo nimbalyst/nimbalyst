@@ -4,7 +4,8 @@
  * A standard (non-meta-agent) extension session is given these tools so the
  * model can investigate the workspace - read files, list directories, grep -
  * through the same simulated JSON tool-call loop the meta-agent path uses. The
- * tools are READ-ONLY (Phase 1); write/edit and shell are deliberately absent.
+ * read tools and write_file are gated on the minimal workspace-files permission;
+ * shell execution is a separate tool gated on its own permission.
  *
  * Mirrors metaAgentServer.ts: the same OpenAI-shaped tool list is exposed to the
  * extension backend (which renders tools as JSON in its system prompt), and
@@ -19,8 +20,8 @@
  * by ElectronFileSystemService's SafePathValidator, and reads are size-capped.
  */
 
-import { realpath } from 'fs/promises';
-import { resolve as resolvePath, sep as pathSep } from 'path';
+import { realpath, writeFile, mkdir } from 'fs/promises';
+import { resolve as resolvePath, sep as pathSep, dirname } from 'path';
 import type { MetaAgentOpenAITool } from './metaAgentServer';
 import { getFileSystemService } from '../window/serviceRegistry';
 import { ElectronFileSystemService } from '../services/ElectronFileSystemService';
@@ -35,6 +36,7 @@ export const DEV_AGENT_TOOL_NAMES = new Set<string>([
   'read_file',
   'list_files',
   'search_files',
+  'write_file',
 ]);
 
 const DEV_AGENT_TOOL_DEFS: Array<{
@@ -84,6 +86,31 @@ const DEV_AGENT_TOOL_DEFS: Array<{
         max_results: { type: 'number', description: 'Maximum matches to return (default 50).' },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'write_file',
+    description:
+      'Create or overwrite a UTF-8 text file in the workspace. Writes the FULL file content (not a patch) - pass the complete intended contents. Parent directories are created automatically. When modifying an existing file, read_file it first, then write the complete updated contents.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Workspace-relative file path to write, e.g. "src/index.ts".' },
+        content: { type: 'string', description: 'The complete UTF-8 text content to write to the file.' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'run_command',
+    description:
+      'Run a shell command in the workspace root and return its stdout, stderr, and exit code. Use this for git, build, and test commands the file tools do not cover, e.g. "git clone <url>", "npm test", "git status". Runs non-interactively with a time limit; output is truncated if very large.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'The shell command to run, e.g. "git status" or "git clone https://github.com/owner/repo".' },
+      },
+      required: ['command'],
     },
   },
 ];
@@ -161,6 +188,61 @@ async function assertInsideWorkspace(
     : `Error: "${relPath}" resolves outside the workspace (symlink escape blocked).`;
 }
 
+// Cap a single write so a runaway model can't fill the disk.
+const MAX_WRITE_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Containment check for WRITES. assertInsideWorkspace realpaths the target and
+ * so requires it to exist; a file being created does not. This variant verifies
+ * the RESOLVED path is inside the workspace without requiring existence, and
+ * realpaths the nearest existing ancestor to block symlink-escape via an
+ * existing symlinked parent. Returns the absolute path to write, or an error.
+ */
+async function resolveWritePath(
+  workspaceRoot: string,
+  relPath: string
+): Promise<{ absPath: string } | { error: string }> {
+  let realRoot: string;
+  try {
+    realRoot = await realpath(workspaceRoot);
+  } catch {
+    realRoot = resolvePath(workspaceRoot);
+  }
+  const target = resolvePath(realRoot, relPath);
+  if (target !== realRoot && !target.startsWith(realRoot + pathSep)) {
+    return { error: `Error: "${relPath}" resolves outside the workspace; refusing to write.` };
+  }
+  // If the target itself already exists, resolve it (following symlinks) and
+  // require the real path to stay inside the workspace. writeFile follows
+  // symlinks, so without this an existing symlink whose link file is inside the
+  // workspace but points outside would let the write escape the jail - the read
+  // guard assertInsideWorkspace realpaths the target for exactly this reason.
+  try {
+    const realTarget = await realpath(target);
+    if (realTarget !== realRoot && !realTarget.startsWith(realRoot + pathSep)) {
+      return { error: `Error: "${relPath}" resolves outside the workspace (symlink escape blocked).` };
+    }
+  } catch {
+    // Target does not exist yet; the ancestor chain is validated below.
+  }
+  // Walk up to the nearest existing ancestor; its real path must stay inside.
+  let ancestor = dirname(target);
+  for (let i = 0; i < 64; i++) {
+    try {
+      const realAncestor = await realpath(ancestor);
+      if (realAncestor !== realRoot && !realAncestor.startsWith(realRoot + pathSep)) {
+        return { error: `Error: "${relPath}" resolves outside the workspace (symlink escape blocked).` };
+      }
+      break;
+    } catch {
+      const parent = dirname(ancestor);
+      if (parent === ancestor) break;
+      ancestor = parent;
+    }
+  }
+  return { absPath: target };
+}
+
 /**
  * Dispatch a read-only dev tool and return formatted text for the model.
  *
@@ -236,7 +318,27 @@ export async function dispatchDevAgentTool(
       const body = results.map((r) => `${r.file}:${r.line}: ${r.content}`).join('\n');
       return clamp(`${results.length} match(es) for "${query}":\n${body}`);
     }
+    case 'write_file': {
+      const filePath = asString(args.path);
+      if (!filePath) return 'Error: write_file requires a "path" argument.';
+      const content = typeof args.content === 'string' ? args.content : undefined;
+      if (content === undefined) return 'Error: write_file requires a string "content" argument.';
+      const byteLen = Buffer.byteLength(content, 'utf8');
+      if (byteLen > MAX_WRITE_BYTES) {
+        return `Error: content is ${byteLen} bytes, over the ${MAX_WRITE_BYTES}-byte write cap.`;
+      }
+      const resolved = await resolveWritePath(workspaceRoot, filePath);
+      if ('error' in resolved) return resolved.error;
+      try {
+        await mkdir(dirname(resolved.absPath), { recursive: true });
+        await writeFile(resolved.absPath, content, 'utf8');
+      } catch (err) {
+        return `Error writing ${filePath}: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      const lineCount = content.split('\n').length;
+      return `Wrote ${filePath} (${byteLen} bytes, ${lineCount} line(s)).`;
+    }
     default:
-      return `Error: "${name}" is not a known read-only dev tool. Available: ${[...DEV_AGENT_TOOL_NAMES].join(', ')}.`;
+      return `Error: "${name}" is not a known dev tool. Available: ${[...DEV_AGENT_TOOL_NAMES].join(', ')}.`;
   }
 }
