@@ -78,6 +78,118 @@ interface SettingsViewProps {
   onMarketplaceInstallRequestHandled?: (token: number) => void;
 }
 
+type ExtAgentItem = {
+  id: string;
+  extensionId: string;
+  name: string;
+  status: string;
+  models?: Array<{ id: string; name: string }>;
+};
+
+/**
+ * Renders an extension-contributed agent provider's own settings panel (e.g. the
+ * Gemini AntigravityAgentSettings component), wired with the same provider props
+ * the built-in panels use plus the backend-module grant flow:
+ *   backendModuleEnabled  <- ext-permissions:is-module-enabled (grant state)
+ *   onEnableBackendModule -> ext-permissions:grant-module (the native-code consent)
+ * Falls back to a static notice when the extension's component is unavailable.
+ */
+const ExtensionAgentSettingsPanel: React.FC<{
+  extEntry: ExtAgentItem;
+  commonProps: Record<string, unknown>;
+  workspacePath?: string;
+  scope: 'user' | 'project';
+  onOpenInstalledExtensions: () => void;
+}> = ({ extEntry, commonProps, workspacePath, scope, onOpenInstalledExtensions }) => {
+  const loadedExt = getExtensionLoader().getExtension(extEntry.extensionId);
+  const contributions = (loadedExt?.manifest?.contributions ?? {}) as Record<string, unknown>;
+  const aiProviders = contributions.aiAgentProviders as
+    | Array<{ id: string; backendModuleId?: string; settingsPanelComponent?: string }>
+    | undefined;
+  const providerContribution = aiProviders?.find((pr) => pr.id === extEntry.id);
+  const moduleId = providerContribution?.backendModuleId;
+  const componentName = providerContribution?.settingsPanelComponent;
+  const backendModules = contributions.backendModules as
+    | Array<{ id: string; permissions?: string[] }>
+    | undefined;
+  const declaredPermissions = (backendModules?.find((m) => m.id === moduleId)?.permissions ?? []) as string[];
+  const settingsPanelExports = (loadedExt?.module as { settingsPanel?: Record<string, React.ComponentType<Record<string, unknown>>> } | undefined)?.settingsPanel;
+  const ExtPanel = componentName ? settingsPanelExports?.[componentName] : undefined;
+
+  const perms = (window.electronAPI as {
+    permissions?: {
+      isModuleEnabled: (a: { extensionId: string; moduleId: string; declaredPermissions: string[]; workspacePath?: string }) => Promise<boolean>;
+      grantModule: (a: { extensionId: string; moduleId: string; permissions: string[]; scope: 'workspace' | 'global'; workspacePath?: string }) => Promise<unknown>;
+      onStateChanged?: (cb: (h: { extensionId: string; moduleId: string }) => void) => () => void;
+    };
+  } | undefined)?.permissions;
+
+  const [granted, setGranted] = useState(false);
+  const permsKey = declaredPermissions.join(',');
+
+  const refreshGrant = useCallback(async () => {
+    if (!perms || !moduleId) return;
+    try {
+      const ok = await perms.isModuleEnabled({ extensionId: extEntry.extensionId, moduleId, declaredPermissions, workspacePath });
+      setGranted(Boolean(ok));
+    } catch {
+      /* leave as not-granted so the pre-consent banner stays visible */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [perms, moduleId, extEntry.extensionId, workspacePath, permsKey]);
+
+  useEffect(() => { void refreshGrant(); }, [refreshGrant]);
+  useEffect(() => {
+    if (!perms?.onStateChanged) return;
+    return perms.onStateChanged((h) => {
+      if (h.extensionId === extEntry.extensionId && h.moduleId === moduleId) void refreshGrant();
+    });
+  }, [perms, extEntry.extensionId, moduleId, refreshGrant]);
+
+  if (!ExtPanel) {
+    return (
+      <div className="settings-extension-provider-panel">
+        <h2 className="text-lg font-semibold text-[var(--nim-text)] mb-2">{extEntry.name || extEntry.id}</h2>
+        <p className="text-sm text-[var(--nim-text-muted)] mb-4 max-w-[60ch]">
+          This agent provider comes from an installed extension. Choose its models from the model
+          selector in the chat input. To configure or manage the extension, open Installed Extensions.
+        </p>
+        <button
+          type="button"
+          className="px-3 py-1.5 rounded text-xs bg-[var(--nim-bg-secondary)] text-[var(--nim-text)] border border-[var(--nim-border)] hover:bg-[var(--nim-bg-hover)]"
+          onClick={onOpenInstalledExtensions}
+        >
+          Open Installed Extensions
+        </button>
+      </div>
+    );
+  }
+
+  const cfg = (commonProps.config as Record<string, unknown> | undefined) ?? {};
+  const extModels = (extEntry.models ?? []).map((m) => ({ id: m.id, name: m.name, provider: extEntry.id }));
+  return (
+    <ExtPanel
+      {...commonProps}
+      config={{ ...cfg, backendModuleEnabled: granted }}
+      availableModels={extModels}
+      onEnableBackendModule={async () => {
+        if (!perms || !moduleId) return;
+        try {
+          await perms.grantModule({
+            extensionId: extEntry.extensionId,
+            moduleId,
+            permissions: declaredPermissions,
+            scope: scope === 'project' ? 'workspace' : 'global',
+            workspacePath,
+          });
+        } finally {
+          await refreshGrant();
+        }
+      }}
+    />
+  );
+};
+
 export function SettingsView({
   workspacePath,
   workspaceName,
@@ -706,32 +818,15 @@ export function SettingsView({
         // component is unavailable.
         const extEntry = extAgentProviders.find((pr) => pr.id === providerId);
         if (extEntry) {
-          const loadedExt = getExtensionLoader().getExtension(extEntry.extensionId);
-          const providerContribution = (
-            loadedExt?.manifest?.contributions?.aiAgentProviders as
-              | Array<{ id: string; settingsPanelComponent?: string }>
-              | undefined
-          )?.find((pr) => pr.id === providerId);
-          const componentName = providerContribution?.settingsPanelComponent;
-          const settingsPanelExports = (loadedExt?.module as { settingsPanel?: Record<string, React.ComponentType<Record<string, unknown>>> } | undefined)?.settingsPanel;
-          const ExtPanel = componentName ? settingsPanelExports?.[componentName] : undefined;
-          if (ExtPanel) {
-            const extModels = (extEntry.models ?? []).map((m) => ({ id: m.id, name: m.name, provider: providerId }));
-            return (
-              <ExtPanel
-                {...commonProps}
-                config={{ ...commonProps.config, backendModuleEnabled: extEntry.status === 'active' }}
-                availableModels={extModels}
-                onEnableBackendModule={async () => {
-                  try {
-                    await window.electronAPI?.aiTestConnection?.(providerId, workspacePath ?? undefined);
-                  } finally {
-                    refreshExtAgentProviders();
-                  }
-                }}
-              />
-            );
-          }
+          return (
+            <ExtensionAgentSettingsPanel
+              extEntry={extEntry}
+              commonProps={commonProps as unknown as Record<string, unknown>}
+              workspacePath={workspacePath ?? undefined}
+              scope={scope}
+              onOpenInstalledExtensions={() => setSelectedCategory('installed-extensions')}
+            />
+          );
         }
         const label = providerId
           .replace(/-agent$/, '')
