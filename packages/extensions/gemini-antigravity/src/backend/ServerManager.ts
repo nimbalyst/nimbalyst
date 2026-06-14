@@ -27,6 +27,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { randomUUID } from 'crypto';
+import { acquireSpawnLock, releaseSpawnLock } from './spawnLock';
 
 const SERVICE = 'exa.language_server_pb.LanguageServerService';
 
@@ -70,6 +71,15 @@ export class AntigravityVersionGateError extends Error {
 
 export class AntigravityServerManager {
   private static instance: AntigravityServerManager | null = null;
+
+  // Cross-process lock so sibling backend module processes (one per workspace/
+  // worktree) share ONE language server instead of each spawning their own and
+  // contending on --app_data_dir + the ~/.gemini OAuth (which hangs
+  // GetModelResponse). See spawnLock.ts.
+  private static readonly SPAWN_LOCK_PATH =
+    path.join(os.tmpdir(), 'nimbalyst-antigravity-spawn.lock');
+  // How long a waiting process polls for a sibling's server before giving up.
+  private static readonly SPAWN_WAIT_MS = 75_000;
 
   private endpoint: AntigravityEndpoint | null = null;
   private child: ChildProcess | null = null;
@@ -160,7 +170,7 @@ export class AntigravityServerManager {
         return attached;
       }
 
-      const spawned = await this.spawnStandalone();
+      const spawned = await this.spawnStandaloneSerialized();
       this.endpoint = spawned;
       return spawned;
     })();
@@ -428,6 +438,57 @@ export class AntigravityServerManager {
     throw new Error(
       `Antigravity server exited early on all candidate ports. Tried: ${tried}`,
     );
+  }
+
+
+  /**
+   * Spawn the standalone server under a cross-process lock so that, when
+   * several backend module processes start together (the meta-agent spawns each
+   * child session in its own worktree, and each workspace gets its own backend
+   * module process), exactly ONE of them spawns the language server and the
+   * rest discover and attach to it. Without this, two processes both miss
+   * discovery during the spawn window and each launch a server; the pair share
+   * --app_data_dir and the ~/.gemini OAuth and contend until GetModelResponse
+   * times out.
+   */
+  private async spawnStandaloneSerialized(): Promise<AntigravityEndpoint> {
+    const lockPath = AntigravityServerManager.SPAWN_LOCK_PATH;
+    let holding = await acquireSpawnLock(lockPath);
+    if (!holding) {
+      // A live sibling is spawning. Wait for its server, then attach.
+      const sibling = await this.waitForHub(AntigravityServerManager.SPAWN_WAIT_MS);
+      if (sibling) return sibling;
+      // Sibling stalled past the wait window: steal the lock and spawn
+      // ourselves rather than deadlock this session.
+      await releaseSpawnLock(lockPath);
+      holding = await acquireSpawnLock(lockPath);
+      if (!holding) {
+        const late = await this.waitForHub(AntigravityServerManager.SPAWN_WAIT_MS);
+        if (late) return late;
+        // Last resort: spawn without the lock so the user is never stuck.
+        return this.spawnStandalone();
+      }
+    }
+    try {
+      // A sibling may have finished spawning between our discovery miss and
+      // taking the lock -- re-check before spawning a duplicate.
+      const late = await this.discoverRunningHub();
+      if (late) return late;
+      return await this.spawnStandalone();
+    } finally {
+      await releaseSpawnLock(lockPath);
+    }
+  }
+
+  /** Poll for a running hub (IDE or a sibling backend's server) until timeout. */
+  private async waitForHub(timeoutMs: number): Promise<AntigravityEndpoint | null> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const ep = await this.discoverRunningHub();
+      if (ep) return ep;
+      await delay(1_000);
+    }
+    return null;
   }
 
   // ---- helpers -----------------------------------------------------------
