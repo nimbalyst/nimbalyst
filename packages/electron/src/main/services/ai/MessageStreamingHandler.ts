@@ -1309,9 +1309,19 @@ export class MessageStreamingHandler {
       // is unaffected. 'codex' tool-reference style renders plain tool names,
       // matching how the extension's tool loop presents tools in its JSON
       // envelope (no `mcp__` SDK prefix).
+      // Workflow preset for the meta-agent persona. Read from session metadata
+      // (validated) with a 'default' fallback, mirroring how effortLevel is read
+      // above. Behavior is byte-identical until something writes
+      // metadata.workflowPreset (e.g. via update_session_meta); the 'research'
+      // and 'implement-review-test' presets become selectable once it does.
+      const rawWorkflowPreset = (session.metadata as Record<string, unknown> | undefined)?.workflowPreset;
+      const extensionWorkflowPreset =
+        rawWorkflowPreset === 'research' || rawWorkflowPreset === 'implement-review-test'
+          ? rawWorkflowPreset
+          : 'default';
       const extensionAgentSystemPrompt =
         isMetaAgentExtensionSession
-          ? buildMetaAgentSystemPrompt('codex', 'default', {
+          ? buildMetaAgentSystemPrompt('codex', extensionWorkflowPreset, {
               provider: session.provider,
               model: session.model ?? undefined,
               modelDisplayName: resolveExtensionModelDisplayName(session.provider, session.model),
@@ -1986,6 +1996,26 @@ export class MessageStreamingHandler {
               isServerError,
               isCodexAuthRequired: chunk.isCodexAuthRequired || false,
             });
+
+            // An in-band 'error' chunk from an extension agent (the gemini
+            // backend's only failure-settle path) does NOT throw, so the outer
+            // catch never runs and the session would never move off 'running'.
+            // Without a terminal transition no session:error fires, a spawned
+            // child stays 'running' forever and a meta-agent waits on it
+            // indefinitely while it holds a spawn-cap slot. Settle it here,
+            // mirroring the outer catch. Scoped to extension agents; built-in
+            // providers throw or settle via their SDK terminal handling.
+            if (isExtensionAgentSession && session?.id) {
+              try {
+                await stateManager.updateActivity({ sessionId: session.id, status: 'error' });
+                if (!this.svc.sessionsProcessingQueue.has(session.id)) {
+                  await stateManager.endSession(session.id);
+                  await this.svc.hooklessWatcher.stopForSession(session.id);
+                }
+              } catch (settleErr) {
+                logger.main.error('[AIService] Failed to settle extension-agent error chunk:', settleErr);
+              }
+            }
             break;
 
           case 'complete':

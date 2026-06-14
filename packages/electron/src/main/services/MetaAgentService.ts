@@ -920,7 +920,7 @@ export class MetaAgentService {
         createdAt: toMillis(row.created_at)!,
         updatedAt: toMillis(row.updated_at)!,
         worktreeId: row.worktree_id || null,
-      });
+      }, false);
       sessions.push({
         sessionId: data.sessionId,
         title: data.title,
@@ -994,7 +994,7 @@ export class MetaAgentService {
       const metaStatusRow = await this.getSessionStatusRow(metaSession.id, metaSession.workspacePath);
       const metaStatus = (metaStatusRow?.status || 'idle') as SessionStatusValue;
 
-      const result = await this.buildSessionResultData(sessionId, session.workspacePath);
+      const result = await this.buildSessionResultData(sessionId, session.workspacePath, undefined, false);
 
       // NIM-6: real dedup gate. Drop notifications whose semantic content is
       // identical to the last one delivered for this child. The previous code
@@ -1102,7 +1102,10 @@ export class MetaAgentService {
   private async buildSessionResultData(
     sessionId: string,
     workspaceId: string,
-    prefetchedSession?: { title: string; provider: string; model: string | null; status: string; lastActivity: number | null; createdAt: number; updatedAt: number; worktreeId: string | null }
+    prefetchedSession?: { title: string; provider: string; model: string | null; status: string; lastActivity: number | null; createdAt: number; updatedAt: number; worktreeId: string | null },
+    // Skip the heavier full-turn extract when the caller only needs preview
+    // fields (the list and notification paths discard fullResponse).
+    includeFullResponse: boolean = true
   ): Promise<SessionResultData> {
     let sessionTitle: string;
     let sessionProvider: string;
@@ -1161,7 +1164,7 @@ export class MetaAgentService {
       originalPrompt: userPrompts[0] || null,
       userPrompts,
       lastResponse: this.extractLastAgentResponse(messages),
-      fullResponse: this.extractLastAgentResponse(messages, 50000),
+      fullResponse: includeFullResponse ? this.extractLastAgentTurn(messages, 50000) : null,
       recentMessages,
       editedFiles,
       pendingPrompt,
@@ -1386,9 +1389,49 @@ export class MetaAgentService {
     return null;
   }
 
+  /**
+   * The child's full final turn: every output message since the last input
+   * (user) message, joined. extractLastAgentResponse returns only the single
+   * last output message, which decapitates a child whose substance spans
+   * several output messages (tool narration then a final answer). Capped, with
+   * an explicit marker when truncated so the reader knows content was dropped.
+   */
+  private extractLastAgentTurn(
+    messages: Array<{ direction: string; content: string; metadata?: Record<string, unknown> | null }>,
+    maxLength: number = 50000
+  ): string | null {
+    let lastInputIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].direction === 'input') {
+        lastInputIndex = index;
+        break;
+      }
+    }
+    const parts: string[] = [];
+    for (let index = lastInputIndex + 1; index < messages.length; index += 1) {
+      const message = messages[index];
+      if (message.direction !== 'output') continue;
+      const text = extractMessageText(message.content, message.metadata);
+      if (text) parts.push(text);
+    }
+    if (parts.length === 0) {
+      // No output after the last input (single-message or empty turn): fall
+      // back to the last output message anywhere.
+      return this.extractLastAgentResponse(messages, maxLength);
+    }
+    const sep = String.fromCharCode(10) + String.fromCharCode(10);
+    const joined = parts.join(sep);
+    return joined.length > maxLength
+      ? joined.slice(0, maxLength) + sep + '[truncated: turn exceeded ' + maxLength + ' characters]'
+      : joined;
+  }
+
   private extractRecentMessages(
     messages: Array<{ direction: string; content: string; metadata?: Record<string, unknown> | null }>,
-    limit: number
+    limit: number,
+    // Cap each message so a verbose child cannot inline an unbounded block
+    // into the auto-injected [Child Session Update] notification.
+    maxPerMessage: number = 2000
   ): Array<{ direction: 'input' | 'output'; text: string }> {
     const collected: Array<{ direction: 'input' | 'output'; text: string }> = [];
     for (let index = messages.length - 1; index >= 0 && collected.length < limit; index -= 1) {
@@ -1399,7 +1442,7 @@ export class MetaAgentService {
       }
       collected.push({
         direction: message.direction === 'input' ? 'input' : 'output',
-        text,
+        text: text.length > maxPerMessage ? `${text.slice(0, maxPerMessage)}...` : text,
       });
     }
     return collected.reverse();

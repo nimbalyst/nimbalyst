@@ -115,4 +115,23 @@ describe('MetaAgentService buildSessionResultData full child response (FIX A)', 
     expect(data.lastResponse).toBe(shortReport);
     expect(data.fullResponse).toBe(shortReport);
   });
+
+  it('captures the full final turn (all output messages since the last input), not just the last message', async () => {
+    vi.mocked(AgentMessagesRepository.list).mockResolvedValue([
+      { direction: 'input', content: 'do the research', metadata: null },
+      { direction: 'output', content: 'PART_ONE_narration reading fileA.ts:10', metadata: null },
+      { direction: 'output', content: 'PART_TWO_final the answer is X', metadata: null },
+    ] as never);
+
+    const service = MetaAgentService.getInstance();
+    const data = await (service as any).buildSessionResultData('child-3', '/ws', PREFETCHED);
+
+    // fullResponse concatenates the whole turn - both output messages present.
+    expect(data.fullResponse).toContain('PART_ONE_narration');
+    expect(data.fullResponse).toContain('PART_TWO_final');
+    // lastResponse preview is only the single last message (decapitated) -
+    // which is exactly why fullResponse is needed for synthesis.
+    expect(data.lastResponse).toContain('PART_TWO_final');
+    expect(data.lastResponse).not.toContain('PART_ONE_narration');
+  });
 });
