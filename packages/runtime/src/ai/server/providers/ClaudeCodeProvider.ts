@@ -49,7 +49,7 @@ import { TranscriptMigrationRepository } from '../../../storage/repositories/Tra
 import { TeammateManager, type TeammateToLeadMessage } from './TeammateManager';
 import path from 'path';
 import os from 'os';
-import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt } from '../../prompt';
+import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
 
 import { SessionManager } from '../SessionManager';
 import { parseBashForFileOps, hasShellChainingOperators, splitOnShellOperators } from '../permissions/BashCommandAnalyzer';
@@ -596,7 +596,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       const enableAgentTeams = settingsEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1';
       const agentRole = await this.getAgentRole(sessionId);
       const isMetaAgent = agentRole === 'meta-agent';
-      const systemPrompt = this.buildSystemPrompt(documentContext, enableAgentTeams, isMetaAgent);
+      const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(sessionId) : 'default';
+      const systemPrompt = this.buildSystemPrompt(documentContext, enableAgentTeams, isMetaAgent, workflowPreset);
 
       // Note: Attachments (images/documents) are NOT added to the message text.
       // They're sent as separate content blocks via the API's multimodal format.
@@ -3162,10 +3163,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   }
 
 
-  protected buildSystemPrompt(documentContext?: DocumentContext, enableAgentTeams?: boolean, isMetaAgent: boolean = false): string {
+  protected buildSystemPrompt(documentContext?: DocumentContext, enableAgentTeams?: boolean, isMetaAgent: boolean = false, workflowPreset: MetaAgentWorkflowPreset = 'default'): string {
     if (isMetaAgent) {
-      // TODO: Get workflowPreset from session metadata or documentContext
-      return buildMetaAgentSystemPrompt('claude', 'default', {
+      return buildMetaAgentSystemPrompt('claude', workflowPreset, {
         provider: 'claude-code',
         model: this.config.model ?? undefined,
       });

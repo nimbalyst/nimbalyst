@@ -35,7 +35,7 @@ export const SYNC_RELEVANT_FIELDS = {
    * Stored locally as `payload.metadata.<key>` but flattened into the top
    * level of SyncedSessionMetadata when pushed.
    */
-  metadataKeys: ['phase', 'tags'] as const,
+  metadataKeys: ['phase', 'tags', 'workflowPreset'] as const,
 
   /**
    * Subset of `columns` whose changes represent meaningful content activity
