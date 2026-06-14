@@ -327,4 +327,18 @@ describe('MetaAgentService total spawn cap', () => {
 
     expect(AISessionsRepository.create).not.toHaveBeenCalled();
   });
+
+  it('never pairs an explicit claude-code provider with the inherited gemini model (consistency guard)', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(GEMINI_PARENT as any);
+    // A Gemini meta-agent explicitly picks claude-code but passes NO model.
+    // The child must NOT be persisted as claude-code + the inherited gemini
+    // model (which routes to Claude Code, is rejected, and dies with no output).
+    await (service as any).createChildSessionInternal('parent-gemini-session', '/workspace/path', { provider: 'claude-code' });
+    const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
+    expect(created.provider).toBe('claude-code');
+    expect(String(created.model)).not.toContain('antigravity-gemini-agent');
+    expect(String(created.model).startsWith('claude-code:')).toBe(true);
+  });
 });

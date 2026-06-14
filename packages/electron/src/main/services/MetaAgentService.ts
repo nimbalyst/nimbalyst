@@ -441,8 +441,18 @@ export class MetaAgentService {
       parsed?.provider ||
       parentProvider ||
       'claude-code') as AIProviderType;
+    // Provider and model MUST agree. Otherwise a child is persisted with, e.g.,
+    // provider=claude-code + an antigravity-gemini model, gets routed to the
+    // Claude Code provider, is rejected ("requires a claude-code:* identifier"),
+    // and dies with no output. Only reuse the parent model when it actually
+    // belongs to the resolved provider; otherwise use that provider default.
+    const parentModelProvider = parentModel
+      ? (ModelIdentifier.tryParse(parentModel)?.provider ?? parentProvider)
+      : null;
     const normalizedModel =
-      explicitModel || parentModel || ModelIdentifier.getDefaultModelId(provider);
+      explicitModel
+      || (parentModel && parentModelProvider === provider ? parentModel : null)
+      || ModelIdentifier.getDefaultModelId(provider);
 
     const callerProvidedTitle = !!args.title?.trim();
     const title = (args.title || this.deriveTitleFromPrompt(args.prompt) || 'Meta Task').trim();

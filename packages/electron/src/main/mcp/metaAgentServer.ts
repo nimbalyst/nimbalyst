@@ -162,8 +162,8 @@ const META_AGENT_TOOL_DEFS: Array<{
         },
         provider: {
           type: "string",
-          enum: ["claude-code", "openai-codex"],
-          description: "Provider to use for the child session.",
+          description:
+            "Optional. OMIT to inherit the calling session provider and model (recommended: a Gemini meta-agent then spawns Gemini children). Set this only to deliberately run the child on a different provider, and if you set it, also pass a matching model (e.g. provider claude-code with model claude-code:opus). Do NOT set claude-code with a non-claude-code model.",
         },
         model: {
           type: "string",

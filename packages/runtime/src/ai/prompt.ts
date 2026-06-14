@@ -354,7 +354,7 @@ export function buildMetaAgentSystemPrompt(
   // line unchanged. Extension agents (gemini) pass a display name and self-identify by
   // it, while still passing the raw ids in the child-spawn instruction.
   const identityLine = options?.modelDisplayName
-    ? `You are ${options.modelDisplayName}. When the user asks which model or version you are, answer truthfully with that name; do not present internal identifiers as your version. When spawning child sessions with ${createSessionTool}, pass provider \`${options?.provider ?? 'unknown'}\` and model \`${options?.model ?? 'default'}\` so children inherit your configuration unless the user instructs otherwise.`
+    ? `You are ${options.modelDisplayName}. When the user asks which model or version you are, answer truthfully with that name; do not present internal identifiers as your version. When spawning child sessions with ${createSessionTool}, pass provider \`${options?.provider ?? 'unknown'}\` and model \`${options?.model ?? 'default'}\` so children inherit your configuration. Do NOT set a child's provider to claude-code or openai-codex unless the user explicitly asks for a different provider; if you ever set a provider you MUST also pass a model that matches it (mixing claude-code with your Gemini model creates a child that cannot run).`
     : `You are running as provider \`${options?.provider ?? 'unknown'}\` with model \`${options?.model ?? 'default'}\`. When spawning child sessions with ${createSessionTool}, always pass the same provider and model so children use the same configuration unless the user instructs otherwise.`;
 
   // Base orchestration prompt — always included
