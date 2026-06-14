@@ -366,7 +366,7 @@ export function buildMetaAgentSystemPrompt(
 - ${createSessionTool}: Spawn a child coding session (optionally in a worktree)
 - ${listSpawnedSessionsTool}: List all sessions you created with status summaries
 - ${getSessionStatusTool}: Check if a child session is running, idle, waiting, or errored
-- ${getSessionResultTool}: Read a session's prompts, responses, edited files, and pending prompts
+- ${getSessionResultTool}: Read a session's prompts, its full final response, recent messages, edited files, and pending prompts
 - ${sendPromptTool}: Send follow-up instructions to a child session
 - ${respondToPromptTool}: Answer a child session's interactive prompt (permissions, questions, plan approval)
 - ${updateSessionMetaTool}: Name and tag your own session
@@ -386,7 +386,7 @@ Instructions in the project's CLAUDE.md files and the user's prompt always take 
 2. End your turn after spawning. You will be notified automatically when child sessions complete, error, or need input. Never poll or loop on ${getSessionStatusTool}.
 3. Prefer parallel work. When tasks touch different files or concerns, spawn multiple child sessions simultaneously.
 4. Use worktrees for isolation. Each parallel implementation task should get its own worktree unless the work is intentionally on the same branch.
-5. Keep child prompts self-contained. Include concrete requirements, file paths if known, constraints, and whether to use a fresh or existing worktree. A child session has no knowledge of other child sessions.
+5. Keep child prompts self-contained AND deliverable-specified. Every child prompt must state: the exact artifact the child must produce (a file written via write_file, a list of call sites as file:line, a passing test, a concrete written answer), the acceptance criterion you will check on completion, known file paths and constraints, and whether to use a fresh or existing worktree. Never spawn a child with an open-ended verb alone ("investigate X", "look into Y", "explore Z"); always pair it with the deliverable that ends the task ("investigate X and return the root cause as file:line plus a one-line fix"). A child session has no knowledge of other child sessions or of the user's original request beyond what you put in its prompt, so restate the relevant context.
 6. Name child sessions yourself. Always pass a descriptive \`title\` when calling ${createSessionTool}. Use a consistent scheme: "{chunk/area}: {role}" (e.g., "Auth module: implement", "Auth module: review", "Auth module: test"). Do NOT let child sessions name themselves via ${updateSessionMetaTool}.
 7. Handle interactive prompts immediately. When a child blocks (you will receive a notification with "ACTION REQUIRED"), you MUST respond using ${respondToPromptTool}. The notification includes the exact arguments to use. Guidelines:
    - **Permission requests**: Always approve with \`{ "decision": "allow", "scope": "session" }\`. You already authorized the child's task by spawning it.
@@ -442,10 +442,10 @@ If any step surfaces issues, repeat the loop until resolved.
 
 ## Workflow
 
-1. Analyze the research question. Identify what needs to be investigated.
+1. Analyze the research question. Identify what needs to be investigated, and give each child a concrete deliverable (the specific finding it must return, and in what form).
 2. Spawn child sessions to explore different areas of the codebase or gather information.
-3. Synthesize findings from all child sessions into a coherent summary.
-4. Present findings to the user with concrete recommendations.`;
+3. Before synthesizing, call ${getSessionResultTool} for EACH completed child and read its full final response. Do not rely on the [Child Session Update] notification, whose preview is truncated.
+4. Write a thorough report that preserves each child's concrete detail (file:line references, citations, specifics). Do not over-compress into a one-paragraph summary when the children produced substance. Close with concrete recommendations.`;
   } else {
     // 'default' workflow
     prompt += `
@@ -455,8 +455,8 @@ If any step surfaces issues, repeat the loop until resolved.
 1. Analyze the request. Break it into independent tasks.
 2. Present the plan to the user (when non-trivial).
 3. Spawn child sessions with focused prompts. End your turn.
-4. When notified of child completion/error, inspect results. Send follow-ups or spawn new sessions as needed. End your turn again.
-5. After all work is done, summarize results, remaining risks, and next steps.`;
+4. When notified of child completion/error, call ${getSessionResultTool} for the child and read its full final response (the notification preview is truncated). Send follow-ups or spawn new sessions as needed. End your turn again.
+5. After all work is done, write the final answer yourself by drawing on each child's full result. Preserve the concrete detail the children produced (findings, file:line references, recommendations) instead of compressing it into a thin summary. End with remaining risks and next steps.`;
   }
 
   return prompt;

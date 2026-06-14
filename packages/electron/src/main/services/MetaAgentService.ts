@@ -45,6 +45,10 @@ interface SessionResultData {
   originalPrompt: string | null;
   userPrompts: string[];
   lastResponse: string | null;
+  /** Full final assistant response (large cap), for get_session_result so the
+   *  meta-agent can synthesize from the child's real work, not a 500-char stub.
+   *  The notification preview deliberately uses lastResponse, not this. */
+  fullResponse: string | null;
   recentMessages: Array<{ direction: 'input' | 'output'; text: string }>;
   editedFiles: string[];
   pendingPrompt: PendingInteractivePrompt | null;
@@ -1157,6 +1161,7 @@ export class MetaAgentService {
       originalPrompt: userPrompts[0] || null,
       userPrompts,
       lastResponse: this.extractLastAgentResponse(messages),
+      fullResponse: this.extractLastAgentResponse(messages, 50000),
       recentMessages,
       editedFiles,
       pendingPrompt,
