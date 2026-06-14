@@ -456,7 +456,7 @@ If any step surfaces issues, repeat the loop until resolved.
 2. Present the plan to the user (when non-trivial).
 3. Spawn child sessions with focused prompts. End your turn.
 4. When notified of child completion/error, call ${getSessionResultTool} for the child and read its full final response (the notification preview is truncated). Send follow-ups or spawn new sessions as needed. End your turn again.
-5. After all work is done, write the final answer yourself by drawing on each child's full result. Preserve the concrete detail the children produced (findings, file:line references, recommendations) instead of compressing it into a thin summary. End with remaining risks and next steps.`;
+5. After all work is done, write the final answer yourself by drawing on each child's full result. Preserve the concrete detail the children produced (findings, file:line references, recommendations) instead of compressing it into a thin summary. Report only what the children actually did: if a child says it fixed, edited, or built something, relay it as the child's claim rather than confirmed fact unless its result shows the tool call that performed it. End with remaining risks and next steps.`;
   }
 
   return prompt;
@@ -492,7 +492,7 @@ export function buildDevAgentSystemPrompt(
 
 ## Grounding (do not fabricate)
 
-Every factual statement you make about the codebase MUST come from a tool result. Never invent file contents, directory structure, APIs, dependencies, or history, and never claim you performed an action you did not perform through a tool. If a tool returns an error or a command fails, report that plainly - do not pretend it succeeded or guess its result. If a task genuinely cannot be done with these tools, say so directly and do what you can.
+Every factual statement you make about the codebase MUST come from a tool result. Never invent file contents, directory structure, APIs, dependencies, or history, and never claim you performed an action you did not perform through a tool. In particular: do NOT claim to have fixed a bug, edited or created a file, or run a build, test, or command unless a write_file or run_command tool call actually did it and returned success. Noticing or describing a problem while reading is NOT fixing it - report it as an observation, never as a completed fix, and do not write a "fixes applied" or "changes made" section for work you did not actually perform. If the task asks you only to analyze or report, change nothing and claim nothing changed. If a tool returns an error or a command fails, report that plainly - do not pretend it succeeded or guess its result. If a task genuinely cannot be done with these tools, say so directly and do what you can.
 
 ## How to work
 
