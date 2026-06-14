@@ -8,7 +8,9 @@
  * Call initSoundListeners() once at app startup.
  */
 
+import { store } from '@nimbalyst/runtime/store';
 import { getSoundPlayer } from '../../services/SoundPlayer';
+import { notificationSettingsAtom } from '../atoms/appSettings';
 
 let initialized = false;
 
@@ -33,6 +35,13 @@ export function initSoundListeners(): () => void {
     });
   });
   if (typeof u2 === 'function') cleanups.push(u2);
+
+  // Keep the custom-sound name in sync when another window changes it.
+  const u3 = window.electronAPI?.on?.('completion-sound:custom-changed', (payload: { fileName: string | null }) => {
+    const fileName = payload?.fileName ?? null;
+    store.set(notificationSettingsAtom, (prev) => ({ ...prev, completionSoundCustomName: fileName }));
+  });
+  if (typeof u3 === 'function') cleanups.push(u3);
 
   return () => {
     initialized = false;

@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron';
-import { isCompletionSoundEnabled, getCompletionSoundType, CompletionSoundType } from '../utils/store';
+import { existsSync } from 'fs';
+import { isCompletionSoundEnabled, getCompletionSoundType, getCompletionSoundCustomPath, CompletionSoundType } from '../utils/store';
 import { findWindowByWorkspace } from '../window/WindowManager';
 
 export class SoundNotificationService {
@@ -24,6 +25,15 @@ export class SoundNotificationService {
     if (soundType === 'none') {
       // console.log('[SoundNotification] Sound type is "none", skipping playback');
       return;
+    }
+
+    // 'custom' selected but no playable file configured: play nothing, matching
+    // the disabled Test button. Avoids silently surprising the user with chime.
+    if (soundType === 'custom') {
+      const customPath = getCompletionSoundCustomPath();
+      if (!customPath || !existsSync(customPath)) {
+        return;
+      }
     }
 
     // console.log(`[SoundNotification] Playing completion sound: ${soundType} for workspace:`, workspacePath);

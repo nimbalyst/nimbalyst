@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-<!-- New features go here -->
+- Custom completion sounds — pick your own audio file (MP3, WAV, OGG, M4A, AAC, FLAC) to play when an agent finishes a turn.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

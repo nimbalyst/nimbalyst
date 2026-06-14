@@ -42,9 +42,70 @@ export class SoundPlayer {
         // console.log('[SoundPlayer] Playing alert');
         await this.playAlert();
         break;
+      case 'custom':
+        await this.playCustom();
+        break;
       case 'none':
         // Do nothing
         break;
+    }
+  }
+
+  /**
+   * Fetch the custom sound bytes from the main process and decode them.
+   * Returns the decoded AudioBuffer, or null when no file is set / decoding
+   * fails (e.g. corrupt audio). Callers decide what to do with null.
+   */
+  private async loadCustomAudioBuffer(): Promise<AudioBuffer | null> {
+    if (!this.audioContext) return null;
+    const api = (typeof window !== 'undefined' ? (window as any).electronAPI : undefined);
+    const data: Uint8Array | null = api?.invoke
+      ? await api.invoke('completion-sound:get-custom-data')
+      : null;
+    if (!data || data.byteLength === 0) {
+      return null;
+    }
+    // Copy into a fresh ArrayBuffer (decodeAudioData detaches its input).
+    const arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+    return this.audioContext.decodeAudioData(arrayBuffer as ArrayBuffer);
+  }
+
+  /**
+   * Play a user-supplied custom sound. The bytes are fetched from the main
+   * process (which owns the file in userData) and decoded via the Web Audio
+   * API. Plays nothing if no file is set or decoding fails — by design,
+   * 'custom' never substitutes a built-in sound (that would surprise the user).
+   */
+  private async playCustom(): Promise<void> {
+    if (!this.audioContext) return;
+
+    try {
+      const audioBuffer = await this.loadCustomAudioBuffer();
+      if (!audioBuffer) return;
+
+      const source = this.audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      const gainNode = this.audioContext.createGain();
+      gainNode.gain.value = 0.6;
+      source.connect(gainNode);
+      gainNode.connect(this.audioContext.destination);
+      source.start();
+    } catch (err) {
+      console.error('[SoundPlayer] Failed to play custom sound:', err);
+    }
+  }
+
+  /**
+   * Validate that the currently-configured custom sound can actually be
+   * decoded as audio. Used at selection time to reject corrupt/unsupported
+   * files that slipped past the extension + magic-byte checks.
+   */
+  public async validateCustomSound(): Promise<boolean> {
+    try {
+      const audioBuffer = await this.loadCustomAudioBuffer();
+      return audioBuffer !== null;
+    } catch {
+      return false;
     }
   }
 

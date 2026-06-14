@@ -205,11 +205,13 @@ export async function initVoiceModeSettings(): Promise<VoiceModeSettings> {
 // PHASE 2: Notification Settings
 // ============================================================================
 
-export type CompletionSoundType = 'chime' | 'bell' | 'pop' | 'none';
+export type CompletionSoundType = 'chime' | 'bell' | 'pop' | 'custom' | 'none';
 
 export interface NotificationSettings {
   completionSoundEnabled: boolean;
   completionSoundType: CompletionSoundType;
+  /** Basename of the user-supplied custom sound file (display only), or null. */
+  completionSoundCustomName: string | null;
   osNotificationsEnabled: boolean;
   /** Show OS notifications even when app is focused, unless viewing that session */
   notifyWhenFocused: boolean;
@@ -223,6 +225,7 @@ export interface NotificationSettings {
 const defaultNotificationSettings: NotificationSettings = {
   completionSoundEnabled: false,
   completionSoundType: 'chime',
+  completionSoundCustomName: null,
   osNotificationsEnabled: false,
   notifyWhenFocused: false,
   sessionBlockedNotificationsEnabled: true,
@@ -323,17 +326,29 @@ export async function initNotificationSettings(): Promise<NotificationSettings> 
   }
 
   try {
-    const [soundEnabled, soundType, osNotifEnabled, notifyFocused, blockedEnabled] = await Promise.all([
+    const [soundEnabled, soundType, customSound, osNotifEnabled, notifyFocused, blockedEnabled] = await Promise.all([
       window.electronAPI.invoke('completion-sound:is-enabled'),
       window.electronAPI.invoke('completion-sound:get-type'),
+      window.electronAPI.invoke('completion-sound:get-custom'),
       window.electronAPI.invoke('notifications:get-enabled'),
       window.electronAPI.invoke('notifications:get-notify-when-focused'),
       window.electronAPI.invoke('notifications:get-blocked-enabled'),
     ]);
 
+    const customName: string | null = customSound?.fileName ?? null;
+    let resolvedType: CompletionSoundType = soundType ?? 'chime';
+    // Reconcile a stuck 'custom' type whose backing file is gone (deleted
+    // out-of-band, or never chosen) back to a built-in sound, and persist it so
+    // the store does not stay diverged. Renderer is the single writer of type.
+    if (resolvedType === 'custom' && !customName) {
+      resolvedType = 'chime';
+      window.electronAPI.invoke('completion-sound:set-type', 'chime').catch(() => {});
+    }
+
     return {
       completionSoundEnabled: soundEnabled ?? false,
-      completionSoundType: soundType ?? 'chime',
+      completionSoundType: resolvedType,
+      completionSoundCustomName: customName,
       osNotificationsEnabled: osNotifEnabled ?? false,
       notifyWhenFocused: notifyFocused ?? false,
       sessionBlockedNotificationsEnabled: blockedEnabled ?? true,

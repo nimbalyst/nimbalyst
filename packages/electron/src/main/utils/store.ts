@@ -16,7 +16,7 @@ import { normalizeCodexProviderConfig, omitModelsField } from '@nimbalyst/runtim
 export type AppTheme = 'dark' | 'light' | 'system' | 'auto' | 'crystal-dark' | string;
 export type { SessionState, SessionWindow } from '../types';
 
-export type CompletionSoundType = 'chime' | 'bell' | 'pop' | 'alert' | 'none';
+export type CompletionSoundType = 'chime' | 'bell' | 'pop' | 'alert' | 'custom' | 'none';
 export type ReleaseChannel = 'stable' | 'alpha';
 export type PreferredTerminalShell = 'auto' | 'pwsh' | 'powershell' | 'git-bash' | 'wsl' | 'cmd';
 export type WorkspaceFileTreeFilter = 'all' | 'markdown' | 'known' | 'git-uncommitted' | 'git-worktree' | 'ai-read' | 'ai-written';
@@ -64,6 +64,9 @@ interface AppStoreSchema {
   // Sound notifications
   completionSoundEnabled?: boolean;
   completionSoundType?: CompletionSoundType;
+  // Absolute path (inside userData/custom-sounds) of the user-supplied
+  // completion sound file, used when completionSoundType === 'custom'.
+  completionSoundCustomPath?: string;
   // OS notifications
   osNotificationsEnabled?: boolean;
   // Release channel
@@ -1322,6 +1325,18 @@ export function getCompletionSoundType(): CompletionSoundType {
 
 export function setCompletionSoundType(soundType: CompletionSoundType): void {
   getAppStore().set('completionSoundType', soundType);
+}
+
+export function getCompletionSoundCustomPath(): string | undefined {
+  return getAppStore().get('completionSoundCustomPath');
+}
+
+export function setCompletionSoundCustomPath(soundPath: string | undefined): void {
+  if (soundPath) {
+    getAppStore().set('completionSoundCustomPath', soundPath);
+  } else {
+    getAppStore().delete('completionSoundCustomPath');
+  }
 }
 
 // OS Notifications Settings

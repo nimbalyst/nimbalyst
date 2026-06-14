@@ -1,4 +1,4 @@
-import { BrowserWindow, safeStorage, session } from 'electron';
+import { BrowserWindow, safeStorage, session, dialog } from 'electron';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -9,6 +9,7 @@ import {
     getTheme, getThemeSync, getResolvedThemeSync,
     isCompletionSoundEnabled, setCompletionSoundEnabled,
     getCompletionSoundType, setCompletionSoundType, CompletionSoundType,
+    getCompletionSoundCustomPath, setCompletionSoundCustomPath,
     getReleaseChannel, setReleaseChannel, ReleaseChannel,
     getRecentItems,
     getDefaultAIModel, setDefaultAIModel,
@@ -290,6 +291,154 @@ export function registerSettingsHandlers() {
     safeHandle('completion-sound:test', (_event, soundType: CompletionSoundType) => {
         const soundService = SoundNotificationService.getInstance();
         soundService.testSound(soundType);
+    });
+
+    // Custom completion sound file management. The chosen file is copied into
+    // userData/custom-sounds so playback survives the original being moved or
+    // deleted. Only one custom sound is kept at a time. The renderer owns the
+    // completionSoundType value (single writer) to avoid racing the debounced
+    // `completion-sound:set-type` persist; these handlers only manage the file.
+    const MAX_CUSTOM_SOUND_BYTES = 10 * 1024 * 1024;
+    const customSoundDir = () => path.join(app.getPath('userData'), 'custom-sounds');
+
+    // Cheap content sniff so a renamed non-audio file (e.g. notes.txt -> x.mp3)
+    // is rejected before we commit it. Truncated/corrupt-but-headered audio is
+    // caught later by the renderer's decodeAudioData validation.
+    const looksLikeAudio = (filePath: string): boolean => {
+        let fd: number | undefined;
+        try {
+            const buf = Buffer.alloc(16);
+            fd = fs.openSync(filePath, 'r');
+            const read = fs.readSync(fd, buf, 0, 16, 0);
+            if (read < 4) return false;
+            const tag = (start: number, len: number) => buf.toString('latin1', start, start + len);
+            if (tag(0, 4) === 'RIFF') return true;          // WAV
+            if (tag(0, 4) === 'OggS') return true;          // OGG
+            if (tag(0, 4) === 'fLaC') return true;          // FLAC
+            if (tag(0, 3) === 'ID3') return true;           // MP3 with ID3 tag
+            if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true; // MP3 frame sync
+            if (tag(4, 4) === 'ftyp') return true;          // MP4 / M4A / AAC container
+            return false;
+        } catch {
+            return false;
+        } finally {
+            if (fd !== undefined) {
+                try { fs.closeSync(fd); } catch { /* ignore */ }
+            }
+        }
+    };
+
+    // Notify every window so a custom-sound change made in one window does not
+    // leave another window's settings panel showing stale state.
+    const broadcastCustomChanged = (fileName: string | null) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+            if (!win.isDestroyed()) {
+                win.webContents.send('completion-sound:custom-changed', { fileName });
+            }
+        }
+    };
+
+    safeHandle('completion-sound:get-custom', () => {
+        const stored = getCompletionSoundCustomPath();
+        if (!stored) {
+            return null;
+        }
+        if (!fs.existsSync(stored)) {
+            // The app-owned copy vanished (out-of-band delete / migration).
+            // Drop the dangling path; the renderer reconciles a stuck 'custom'
+            // type back to a built-in sound at init.
+            setCompletionSoundCustomPath(undefined);
+            return null;
+        }
+        return { path: stored, fileName: path.basename(stored) };
+    });
+
+    safeHandle('completion-sound:choose-custom', async (event) => {
+        const window = BrowserWindow.fromWebContents(event.sender);
+        const dialogOptions: Electron.OpenDialogOptions = {
+            title: 'Choose Completion Sound',
+            buttonLabel: 'Use Sound',
+            properties: ['openFile'],
+            filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'] }],
+        };
+        const result = window
+            ? await dialog.showOpenDialog(window, dialogOptions)
+            : await dialog.showOpenDialog(dialogOptions);
+        if (result.canceled || result.filePaths.length === 0) {
+            return null;
+        }
+
+        const sourcePath = result.filePaths[0];
+
+        // Reject oversized files: the bytes are read into memory and cloned over
+        // IPC on every completion, so a huge file means churn / OOM risk.
+        let size: number;
+        try {
+            size = fs.statSync(sourcePath).size;
+        } catch {
+            return { error: 'unreadable' };
+        }
+        if (size > MAX_CUSTOM_SOUND_BYTES) {
+            return { error: 'too-large', maxBytes: MAX_CUSTOM_SOUND_BYTES };
+        }
+        if (!looksLikeAudio(sourcePath)) {
+            return { error: 'invalid' };
+        }
+
+        const destDir = customSoundDir();
+        const fileName = path.basename(sourcePath);
+        // Stage the copy OUTSIDE destDir first, so the existing custom sound is
+        // never destroyed before the new one is safely written (and so the user
+        // can re-select the current file without it deleting itself).
+        const stagingPath = path.join(app.getPath('userData'), `custom-sound.staging${path.extname(sourcePath)}`);
+        try {
+            fs.copyFileSync(sourcePath, stagingPath);
+        } catch (error) {
+            logger.store.warn('[SettingsHandlers] Failed to copy custom sound:', error);
+            try { fs.rmSync(stagingPath, { force: true }); } catch { /* ignore */ }
+            return { error: 'copy-failed' };
+        }
+
+        // The new file is staged; now it is safe to replace the directory.
+        try { fs.rmSync(destDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        fs.mkdirSync(destDir, { recursive: true });
+        const destPath = path.join(destDir, fileName);
+        try {
+            fs.renameSync(stagingPath, destPath);
+        } catch {
+            // Cross-device or rename failure: fall back to copy + cleanup.
+            fs.copyFileSync(stagingPath, destPath);
+            try { fs.rmSync(stagingPath, { force: true }); } catch { /* ignore */ }
+        }
+
+        setCompletionSoundCustomPath(destPath);
+        broadcastCustomChanged(fileName);
+        return { path: destPath, fileName };
+    });
+
+    safeHandle('completion-sound:clear-custom', () => {
+        try {
+            fs.rmSync(customSoundDir(), { recursive: true, force: true });
+        } catch {
+            // Best effort.
+        }
+        setCompletionSoundCustomPath(undefined);
+        broadcastCustomChanged(null);
+    });
+
+    // Returns the raw bytes of the custom sound file so the renderer can decode
+    // and play it via the Web Audio API. Returns null when no file is set.
+    safeHandle('completion-sound:get-custom-data', () => {
+        const stored = getCompletionSoundCustomPath();
+        if (!stored || !fs.existsSync(stored)) {
+            return null;
+        }
+        try {
+            return fs.readFileSync(stored);
+        } catch (error) {
+            logger.store.warn('[SettingsHandlers] Failed to read custom sound file:', error);
+            return null;
+        }
     });
 
     // Release channel settings
