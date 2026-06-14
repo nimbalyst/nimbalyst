@@ -74,6 +74,9 @@ export class AntigravityToolLoopProtocol {
   private readonly server: AntigravityServerManager;
   private history: ProtocolMessage[] = [];
   private aborted = false;
+  // Compact record of the tool calls already made THIS turn, surfaced back to
+  // the model each render so it can see what it has done and stop re-fetching.
+  private toolCallLedger: Array<{ name: string; summary: string }> = [];
 
   constructor(opts: {
     modelKey: string;
@@ -157,6 +160,7 @@ export class AntigravityToolLoopProtocol {
   > {
     this.aborted = false;
     this.history.push({ role: 'user', content: userMessage });
+    this.toolCallLedger = [];
 
     // Hardening (a): allowlist of legitimate tool names for THIS turn.
     const toolAllowlist = new Set(tools.map((t) => t.function.name));
@@ -252,11 +256,45 @@ export class AntigravityToolLoopProtocol {
       // Hardening (d): sanitize the result before persisting into history.
       const safeResultText = this.sanitizeToolResult(resultText);
       this.history.push({ role: 'tool', content: safeResultText, toolName: toolCall.name });
+      const ledgerArg = (() => {
+        const a = (toolCall.arguments ?? {}) as Record<string, unknown>;
+        const v = a.path ?? a.query ?? a.pattern ?? a.command ?? a.glob ?? '';
+        const str = typeof v === 'string' ? v : JSON.stringify(v);
+        return str.length > 80 ? str.slice(0, 80) + '...' : str;
+      })();
+      this.toolCallLedger.push({ name: toolCall.name, summary: ledgerArg });
       // Yield the ORIGINAL resultText to the host -- the renderer/UI shows the
       // tool's actual return value, not the sanitized prompt-encoded form.
       yield { type: 'tool_result', name: toolCall.name, result: resultText };
     }
 
+    // Reached the tool-call cap. Rather than abandon the turn with an empty
+    // stub, make ONE final no-tools call so the user still gets a best-effort
+    // answer synthesized from everything gathered. Any tool_call the model still
+    // emits is stripped. If this call fails (e.g. times out), fall back to the stub.
+    if (!this.aborted) {
+      try {
+        const finalPrompt =
+          this.renderPrompt(fullSystemPrompt) +
+          '\n\n[SYSTEM: You have reached the tool-call limit. Do NOT request any more tools. ' +
+          'Write your complete final answer now, using everything gathered above.]';
+        const finalResp = await this.server.getModelResponse(
+          finalPrompt,
+          this.modelKey,
+          timeoutMs,
+        );
+        const finalText = this.stripToolCallJson(finalResp).trim();
+        if (!this.aborted && finalText) {
+          this.history.push({ role: 'assistant', content: finalText });
+          yield { type: 'text', content: finalText };
+          yield { type: 'complete' };
+          return;
+        }
+      } catch {
+        // fall through to the stub below
+      }
+    }
+    if (this.aborted) return;
     yield { type: 'text', content: '[Agent reached tool-call iteration limit]' };
     yield { type: 'complete' };
   }
@@ -403,6 +441,16 @@ export class AntigravityToolLoopProtocol {
         // Content is already wrapped in <tool-output> tags by sanitizeToolResult.
         parts.push(`Tool result (${msg.toolName ?? 'unknown'}): ${msg.content}`);
       }
+      parts.push('');
+    }
+
+    if (this.toolCallLedger.length > 0) {
+      const inspected = this.toolCallLedger.map((c) => `- ${c.name} ${c.summary}`).join('\n');
+      parts.push(
+        `[Progress: ${this.toolCallLedger.length}/${this.maxIterations} tool calls used this turn. ` +
+          `You have ALREADY run the calls below and their results appear above - do not repeat any ` +
+          `of them unless a write_file or run_command has changed the result since:\n${inspected}]`,
+      );
       parts.push('');
     }
 
