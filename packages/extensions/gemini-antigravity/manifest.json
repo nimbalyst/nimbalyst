@@ -45,7 +45,7 @@
         "enablement": {
           "default": "disabled",
           "promptOn": "firstUse",
-          "purpose": "Run Google's Gemini 3.5 Flash through the Antigravity language server. Spawns the local language server, manages its lifecycle, and talks to Google's Gemini API via Antigravity's hosted endpoint. Reads files in the current workspace so the agent can investigate the codebase (read-only: read, list, and search files)."
+          "purpose": "Runs Google's Gemini 3.5 Flash via the local Antigravity language server: spawns and manages the server, calls Gemini through Antigravity's hosted endpoint, and reads workspace files (read-only: read, list, search) so the agent can investigate the codebase."
         }
       }
     ],
@@ -58,7 +58,7 @@
         },
         "overrideIdeVersion": {
           "type": "string",
-          "default": "2.0.6",
+          "default": "2.1.4",
           "description": "Version string passed to the Antigravity language server via --override_ide_version. The server enforces a version gate and rejects builds that report an unsupported value. Bump this when Antigravity ships a new required version so the extension can update without a Nimbalyst release."
         }
       }

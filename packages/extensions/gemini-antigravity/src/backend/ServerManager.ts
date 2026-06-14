@@ -33,7 +33,7 @@ const SERVICE = 'exa.language_server_pb.LanguageServerService';
 // Fallback defaults if the host doesn't supply config (e.g. dev harness, tests).
 // Keep these in sync with the canonical runtime values. The host SHOULD always
 // inject a value via configure(), so divergence here is not load-bearing.
-const DEFAULT_OVERRIDE_IDE_VERSION = '2.0.6';
+const DEFAULT_OVERRIDE_IDE_VERSION = '2.1.4';
 const DEFAULT_SPAWN_PORT_CANDIDATES: readonly number[] = [
   51717, 8765, 13456, 21345, 31987, 41234,
 ];
