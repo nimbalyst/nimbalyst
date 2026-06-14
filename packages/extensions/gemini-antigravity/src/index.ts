@@ -17,6 +17,20 @@
 // (src/backend/agent.ts -> dist/agent.js). The renderer-side surface is now
 // just the settings panel + the activate hook.
 import { AntigravityAgentSettings } from './components/AntigravityAgentSettings';
+// The manifest is the single source of truth for the model id list, so the
+// detection default cannot drift from what the host advertises.
+import manifest from '../manifest.json';
+
+interface ManifestAgentProvider { id: string; models?: Array<{ id: string }> }
+const MANIFEST_AGENT_PROVIDERS: ManifestAgentProvider[] =
+  (manifest as { contributions?: { aiAgentProviders?: ManifestAgentProvider[] } })
+    .contributions?.aiAgentProviders ?? [];
+
+/** All model ids declared for a contributed provider (manifest order). */
+function declaredModelIds(providerId: string): string[] {
+  const provider = MANIFEST_AGENT_PROVIDERS.find((p) => p.id === providerId);
+  return (provider?.models ?? []).map((m) => m.id);
+}
 
 /** Provider IDs we contribute (must match manifest aiAgentProviders[].id). */
 const CONTRIBUTED_PROVIDER_IDS = [
@@ -25,6 +39,7 @@ const CONTRIBUTED_PROVIDER_IDS = [
 
 interface PersistedProviderSettings {
   enabled?: boolean;
+  models?: string[];
   [key: string]: unknown;
 }
 
@@ -90,7 +105,16 @@ async function runActivationEnable(): Promise<void> {
       continue;
     }
     // Preserve any other fields the user/host may have set (e.g. defaultModel).
-    slicesToWrite[providerId] = { ...(existing ?? {}), enabled: true };
+    const slice: PersistedProviderSettings = { ...(existing ?? {}), enabled: true };
+    // Default-select every model the first time the provider is detected, so
+    // all model checkboxes are ticked without the user opening Settings (parity
+    // with Claude). Only when models has never been set - a user who has
+    // customised the selection, including clearing it, is left untouched.
+    if (existing?.models === undefined) {
+      const ids = declaredModelIds(providerId);
+      if (ids.length > 0) slice.models = ids;
+    }
+    slicesToWrite[providerId] = slice;
   }
 
   if (Object.keys(slicesToWrite).length === 0) {

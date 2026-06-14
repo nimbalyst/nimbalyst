@@ -69,6 +69,33 @@ export interface AntigravityAgentSettingsProps {
   onEnableBackendModule?: () => Promise<void>;
 }
 
+/**
+ * iOS-style slider switch, markup-identical to the host SettingsToggle so the
+ * Gemini provider's enable control matches the built-in providers (Claude etc.).
+ */
+function ToggleSwitch({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+}): React.ReactElement {
+  return (
+    <label className={`relative inline-block w-11 h-6 shrink-0 ${disabled ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        disabled={disabled}
+        className="hidden peer"
+      />
+      <span className="absolute cursor-pointer inset-0 rounded-full transition-all bg-[var(--nim-bg-tertiary)] before:absolute before:content-[''] before:h-5 before:w-5 before:left-0.5 before:bottom-0.5 before:rounded-full before:transition-all before:bg-white before:shadow-sm peer-checked:bg-[var(--nim-primary)] peer-checked:before:translate-x-5" />
+    </label>
+  );
+}
+
 export function AntigravityAgentSettings({
   config,
   availableModels,
@@ -285,17 +312,11 @@ export function AntigravityAgentSettings({
           )}
         </div>
 
-        <div className="provider-panel-section py-3 mb-4 border-b border-[var(--nim-border)] flex items-center justify-between">
-          <label htmlFor="agy-agent-enable" className="text-sm font-medium text-[var(--nim-text)]">
+        <div className="provider-enable provider-panel-section flex items-center justify-between gap-4 py-4 mb-4 border-b border-[var(--nim-border)]">
+          <span className="provider-enable-label text-sm font-medium text-[var(--nim-text)]">
             Enable Gemini 3.5 Flash (Agent)
-          </label>
-          <input
-            id="agy-agent-enable"
-            type="checkbox"
-            checked={config.enabled || false}
-            onChange={(e) => onToggle(e.target.checked)}
-            className="cursor-pointer"
-          />
+          </span>
+          <ToggleSwitch checked={config.enabled || false} onChange={onToggle} />
         </div>
 
         {config.enabled && (
