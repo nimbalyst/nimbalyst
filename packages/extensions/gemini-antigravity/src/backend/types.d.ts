@@ -173,22 +173,37 @@ declare global {
     [key: string]: unknown;
   }
 
+  interface BackendModuleLogger {
+    debug?(...args: unknown[]): void;
+    info?(...args: unknown[]): void;
+    warn?(...args: unknown[]): void;
+    error?(...args: unknown[]): void;
+  }
+
+  /**
+   * The host's backend bootstrap calls activate({ runtimeContext, services }):
+   * identity/config/logger arrive under `runtimeContext`, while `services` is
+   * top-level. The flat fields are kept (optional) for forward/backward
+   * compatibility; agent.ts reads `ctx.runtimeContext?.X ?? ctx.X`.
+   */
   interface BackendActivateContext {
+    /** Canonical host context: identity, paths, config, logger. */
+    runtimeContext?: {
+      extensionId?: string;
+      extensionPath?: string;
+      config?: BackendExtensionConfig;
+      logger?: BackendModuleLogger;
+    };
     /** Stable extension identifier (e.g. "gemini-antigravity"). */
-    extensionId: string;
+    extensionId?: string;
     /** Absolute path to the extension's installation directory. */
-    extensionPath: string;
+    extensionPath?: string;
     /** Host-provided services (raw audit log + private tool executor). */
     services: BackendServices;
     /** Configuration handed in by the host (manifest + user settings merged). */
     config?: BackendExtensionConfig;
     /** Optional shared logger from the host. Falls back to console if absent. */
-    logger?: {
-      debug?(...args: unknown[]): void;
-      info?(...args: unknown[]): void;
-      warn?(...args: unknown[]): void;
-      error?(...args: unknown[]): void;
-    };
+    logger?: BackendModuleLogger;
   }
 
   // -------------------------------------------------------------------------

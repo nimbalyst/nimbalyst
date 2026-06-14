@@ -84,8 +84,9 @@ function resolveServerConfig(ctx: BackendActivateContext): {
 } {
   const out: { overrideIdeVersion?: string; spawnPortCandidates?: number[] } = {};
 
-  // 1. ctx.config
-  const cfg = ctx.config ?? {};
+  // 1. ctx.config (host delivers identity/config under runtimeContext; fall
+  //    back to the flat shape for forward/backward compatibility)
+  const cfg = ctx.runtimeContext?.config ?? ctx.config ?? {};
   if (typeof cfg.overrideIdeVersion === 'string' && cfg.overrideIdeVersion.length > 0) {
     out.overrideIdeVersion = cfg.overrideIdeVersion;
   }
@@ -97,7 +98,8 @@ function resolveServerConfig(ctx: BackendActivateContext): {
   // 2. config file in extension dir, if either field is still unset
   if (!out.overrideIdeVersion || !out.spawnPortCandidates) {
     try {
-      const configPath = path.join(ctx.extensionPath, 'antigravity-backend-config.json');
+      const extensionPath = ctx.runtimeContext?.extensionPath ?? ctx.extensionPath ?? '';
+      const configPath = path.join(extensionPath, 'antigravity-backend-config.json');
       if (fs.existsSync(configPath)) {
         const raw = fs.readFileSync(configPath, 'utf8');
         const parsed = JSON.parse(raw) as {
@@ -121,7 +123,7 @@ function resolveServerConfig(ctx: BackendActivateContext): {
         }
       }
     } catch (err) {
-      ctx.logger?.warn?.(
+      (ctx.runtimeContext?.logger ?? ctx.logger)?.warn?.(
         '[antigravity-backend] failed to read antigravity-backend-config.json:',
         err instanceof Error ? err.message : err,
       );
@@ -161,7 +163,8 @@ function makeSessionExecutor(
 // -------------------------------------------------------------------------
 
 async function activate(ctx: BackendActivateContext): Promise<{ methods: BackendModuleApi }> {
-  const log = ctx.logger ?? console;
+  const log = ctx.runtimeContext?.logger ?? ctx.logger ?? console;
+  const extensionId = ctx.runtimeContext?.extensionId ?? ctx.extensionId;
 
   // Apply host-provided config to the shared ServerManager. We don't ensureRunning()
   // here -- spawn is deferred until the first sendMessage, so opening the settings
@@ -170,7 +173,7 @@ async function activate(ctx: BackendActivateContext): Promise<{ methods: Backend
   AntigravityServerManager.shared().configure(serverConfig);
 
   log.info?.(
-    `[antigravity-backend] activated extensionId=${ctx.extensionId} ` +
+    `[antigravity-backend] activated extensionId=${extensionId} ` +
     `overrideIdeVersion=${serverConfig.overrideIdeVersion ?? '(default)'} ` +
     `ports=${serverConfig.spawnPortCandidates ? serverConfig.spawnPortCandidates.join(',') : '(default)'}`,
   );
