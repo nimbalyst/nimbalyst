@@ -88,6 +88,7 @@ import {
   type ModuleHandle,
 } from './PrivilegedExtensionHost';
 import { geminiUsageService } from '../services/GeminiUsageService';
+import { toBackendHistory } from './extensionAgentHistory';
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -405,6 +406,10 @@ const bridge: ExtensionAgentBridge = {
           message: args.message,
           documentContext: args.documentContext,
           messages: args.messages,
+          // Correctly-keyed prior conversation so the backend re-seeds its
+          // tool loop each turn (it reads history, not messages). Without
+          // this the extension agent is amnesiac across turns.
+          history: toBackendHistory(args.messages),
           attachments: args.attachments,
           workspacePath,
           tools: args.tools,

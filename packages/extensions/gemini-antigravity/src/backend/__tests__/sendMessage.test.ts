@@ -261,4 +261,39 @@ describe('gemini-antigravity backend sendMessage', () => {
     expect(last.type).toBe('complete');
     expect(last.content).toBe('done');
   });
+
+  it('seeds prior-turn history so a later turn sees earlier context in the model prompt', async () => {
+    // Single model response ends the turn; we only assert the rendered prompt
+    // carries the seeded prior conversation. This is the cross-turn-memory
+    // round trip the host history-wiring fix enables (backend was amnesiac when
+    // the host sent prior turns under the ignored messages key instead of history).
+    getModelResponse.mockResolvedValueOnce('final answer');
+
+    const { ctx } = makeCtx();
+    const { methods } = await activate(ctx as never);
+    await methods.createSession({
+      sessionId: 'hist1',
+      model: 'gemini-3-flash-agent',
+      workspacePath: os.tmpdir(),
+      systemPrompt: 'sys',
+    });
+
+    const events: AnyProtocolEvent[] = [];
+    for await (const ev of methods.sendMessage({
+      sessionId: 'hist1',
+      message: 'what did we decide?',
+      history: [
+        { role: 'user', content: 'EARLIER_USER_MARKER' },
+        { role: 'assistant', content: 'EARLIER_ASSISTANT_MARKER' },
+      ],
+    })) {
+      events.push(ev as AnyProtocolEvent);
+    }
+
+    expect(getModelResponse).toHaveBeenCalledTimes(1);
+    const prompt = String(getModelResponse.mock.calls[0][0]);
+    expect(prompt).toContain('EARLIER_USER_MARKER');
+    expect(prompt).toContain('EARLIER_ASSISTANT_MARKER');
+    expect(prompt).toContain('what did we decide?');
+  });
 });
