@@ -20,6 +20,7 @@ type CreateSessionArgs = {
   prompt?: string;
   useWorktree?: boolean;
   worktreeId?: string;
+  toolScope?: string;
 };
 
 type SpawnSessionArgs = {
@@ -151,7 +152,7 @@ const META_AGENT_TOOL_DEFS: Array<{
   {
     name: "create_session",
     description:
-      "Spawn a new child session for a focused task. Can optionally create a dedicated worktree or attach the session to an existing worktree, then seed it with an initial prompt.",
+      "Spawn a new child session for a focused task. Can optionally create a dedicated worktree or attach the session to an existing worktree, then seed it with an initial prompt. Pass toolScope to control the child's capabilities: use \"read\" or \"write\" for analyze/research tasks so the child cannot run builds or claim to have run them; \"full\" (default) grants run_command.",
     inputSchema: {
       type: "object",
       properties: {
@@ -180,6 +181,12 @@ const META_AGENT_TOOL_DEFS: Array<{
           type: "string",
           description:
             "Optional existing worktree ID to attach this child session to. Do not combine with useWorktree.",
+        },
+        toolScope: {
+          type: "string",
+          enum: ["read", "write", "full"],
+          description:
+            "Capability scope for the child. \"read\" = read_file/list_files/search_files only (pure investigation). \"write\" = those plus write_file but NO run_command, so the child can save a file deliverable (e.g. a report) yet cannot build/test/run anything. \"full\" (default) = all tools including run_command. Use read or write for analyze/research tasks so the child physically cannot run a build, and reserve full for tasks that must build/test.",
         },
       },
     },

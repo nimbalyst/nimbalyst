@@ -79,7 +79,7 @@ import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { getMetaAgentOpenAITools } from '../../mcp/metaAgentServer';
-import { getDevAgentOpenAITools } from '../../mcp/devAgentTools';
+import { getDevAgentOpenAITools, resolveDevToolScope } from '../../mcp/devAgentTools';
 import { MetaAgentService } from '../MetaAgentService';
 import {
   shouldShowCommunityPopup,
@@ -1294,7 +1294,9 @@ export class MessageStreamingHandler {
         effectiveWorkspacePath
           ? getMetaAgentOpenAITools()
           : isStandardExtensionSession && session.id && effectiveWorkspacePath
-            ? getDevAgentOpenAITools()
+            ? getDevAgentOpenAITools(
+                resolveDevToolScope((session.metadata as Record<string, unknown> | undefined)?.toolScope),
+              )
             : undefined;
 
       // Meta-agent persona for extension-agent providers (e.g. gemini-antigravity).

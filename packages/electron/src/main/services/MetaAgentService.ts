@@ -56,6 +56,9 @@ interface SessionResultData {
   createdAt: number;
   updatedAt: number;
   worktreeId?: string | null;
+  /** Capability scope the child was granted (read|write|full). The objective
+   *  record of what the child COULD do; null/full means all tools. */
+  toolScope?: string | null;
 }
 
 interface CreateChildSessionArgs {
@@ -65,6 +68,7 @@ interface CreateChildSessionArgs {
   prompt?: string;
   useWorktree?: boolean;
   worktreeId?: string;
+  toolScope?: string;
 }
 
 function normalizeStoredChildModelIdentifier(
@@ -559,6 +563,15 @@ export class MetaAgentService {
       // not clobber it via updateTitleIfNotNamed.
       hasBeenNamed: callerProvidedTitle,
     } as any);
+
+    // Read-only tool segregation: persist a restricted capability scope so the
+    // child is granted only the matching dev tools at turn time (an analyze
+    // child physically cannot run_command, so it cannot build or claim to).
+    const childToolScope =
+      args.toolScope === 'read' || args.toolScope === 'write' ? args.toolScope : undefined;
+    if (childToolScope) {
+      await AISessionsRepository.updateMetadata(sessionId, { metadata: { toolScope: childToolScope } });
+    }
 
     const initialPrompt = args.prompt?.trim();
     const shouldBypassExecution = this.shouldBypassChildAgentExecutionForTests();
@@ -1058,6 +1071,12 @@ export class MetaAgentService {
         lines.push(`- ${filePath}`);
       }
     }
+    if (result.toolScope === 'read' || result.toolScope === 'write') {
+      const denied = result.toolScope === 'read' ? 'write_file or run_command' : 'run_command';
+      lines.push(
+        `Tool scope: ${result.toolScope} (this child had NO ${denied}). Any claim it ran, built, or tested anything is false; "Files modified" above is the complete list of files it changed.`,
+      );
+    }
     if (result.pendingPrompt) {
       lines.push('');
       lines.push(`ACTION REQUIRED: This session is blocked on an interactive prompt.`);
@@ -1115,6 +1134,7 @@ export class MetaAgentService {
     let sessionCreatedAt: number;
     let sessionUpdatedAt: number;
     let sessionWorktreeId: string | null;
+    let sessionToolScope: string | null = null;
 
     if (prefetchedSession) {
       sessionTitle = prefetchedSession.title;
@@ -1139,6 +1159,8 @@ export class MetaAgentService {
       sessionCreatedAt = session.createdAt;
       sessionUpdatedAt = session.updatedAt;
       sessionWorktreeId = session.worktreeId || null;
+      sessionToolScope =
+        ((session.metadata as Record<string, unknown> | undefined)?.toolScope as string | undefined) ?? null;
     }
 
     const messages = await AgentMessagesRepository.list(sessionId, { limit: 500 });
@@ -1172,6 +1194,7 @@ export class MetaAgentService {
       createdAt: sessionCreatedAt,
       updatedAt: sessionUpdatedAt,
       worktreeId: sessionWorktreeId,
+      toolScope: sessionToolScope,
     };
   }
 

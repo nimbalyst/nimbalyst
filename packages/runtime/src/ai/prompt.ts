@@ -394,6 +394,8 @@ Instructions in the project's CLAUDE.md files and the user's prompt always take 
    - **Questions (ask_user_question)**: Answer if you have sufficient context from the original task or the user's prompt. If the question requires information only the user has, escalate to the user.
 8. Never push to remote unless the user explicitly authorizes it.
 9. Git coordination goes to children. If rebases, merges, or conflict resolution are needed, instruct the relevant child session.
+10. Trust the record, not the prose. A child's edited-files list and tool scope (shown in its update and in get_session_result) are the objective record of what it actually did and could do. If a child claims it ran, built, tested, fixed, or created something but its tool scope was read or write (so it had no run_command), or claims it edited a file that is not in its edited-files list, that claim is FALSE: report it as the child's unverified claim, never as completed work.
+11. Match tool scope to the task when spawning. Pass toolScope "read" to investigation, research, and analysis children (or "write" if they must save a file deliverable such as a report); only pass toolScope "full" (which includes run_command) to a child whose task genuinely requires building, testing, or running commands. A read or write child cannot run a build, so it cannot fabricate having built anything.
 
 ## Child Session Notifications
 

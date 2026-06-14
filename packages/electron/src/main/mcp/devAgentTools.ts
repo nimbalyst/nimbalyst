@@ -120,8 +120,31 @@ const DEV_AGENT_TOOL_DEFS: Array<{
  * extension backend renders these as JSON in its tool-loop system prompt. Same
  * shape as getMetaAgentOpenAITools so the two share the MetaAgentOpenAITool type.
  */
-export function getDevAgentOpenAITools(): MetaAgentOpenAITool[] {
-  return DEV_AGENT_TOOL_DEFS.map((t) => ({
+/**
+ * Tool capability scope for a child agent session (read-only segregation).
+ * - 'read'  : read_file, list_files, search_files (pure investigation)
+ * - 'write' : the read tools plus write_file (can produce a file deliverable)
+ *             but NOT run_command, so it cannot build/test/run anything
+ * - 'full'  : every tool including run_command (default; back-compat)
+ * An analyze/research child given 'read' or 'write' physically cannot run a
+ * build, so it cannot truthfully (or falsely) claim to have rebuilt anything.
+ */
+export type DevToolScope = 'read' | 'write' | 'full';
+
+const DEV_AGENT_READ_TOOLS = new Set<string>(['read_file', 'list_files', 'search_files']);
+
+/** Validate an untrusted scope value, falling back to 'full' (back-compat). */
+export function resolveDevToolScope(raw: unknown): DevToolScope {
+  return raw === 'read' || raw === 'write' || raw === 'full' ? raw : 'full';
+}
+
+export function getDevAgentOpenAITools(scope: DevToolScope = 'full'): MetaAgentOpenAITool[] {
+  return DEV_AGENT_TOOL_DEFS.filter((t) => {
+    if (scope === 'full') return true;
+    if (DEV_AGENT_READ_TOOLS.has(t.name)) return true;
+    // 'write' adds write_file but still withholds run_command; 'read' withholds both.
+    return scope === 'write' && t.name === 'write_file';
+  }).map((t) => ({
     type: 'function',
     function: {
       name: t.name,

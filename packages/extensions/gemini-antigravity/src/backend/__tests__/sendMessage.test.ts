@@ -296,4 +296,37 @@ describe('gemini-antigravity backend sendMessage', () => {
     expect(prompt).toContain('EARLIER_ASSISTANT_MARKER');
     expect(prompt).toContain('what did we decide?');
   });
+
+  it('refuses a tool the host did not grant (hard read-only segregation gate)', async () => {
+    // Session granted ONLY read_file. If the model emits run_command anyway,
+    // the tool loop must refuse it (not execute), so a restricted analyze child
+    // physically cannot run a build even if Flash hallucinates the tool.
+    getModelResponse
+      .mockResolvedValueOnce(
+        JSON.stringify({ tool_call: { name: 'run_command', arguments: { command: 'echo SHOULD_NOT_RUN' } } }),
+      )
+      .mockResolvedValueOnce('done');
+
+    const { ctx } = makeCtx();
+    const { methods } = await activate(ctx as never);
+    await methods.createSession({
+      sessionId: 'gate1',
+      model: 'gemini-3-flash-agent',
+      workspacePath: os.tmpdir(),
+      tools: [{ type: 'function', function: { name: 'read_file' } }],
+      systemPrompt: 'sys',
+    });
+
+    const events: AnyProtocolEvent[] = [];
+    for await (const ev of methods.sendMessage({ sessionId: 'gate1', message: 'try to run' })) {
+      events.push(ev as AnyProtocolEvent);
+    }
+
+    const toolEvent = events.find(
+      (e) => e.type === 'tool_call' && e.toolCall?.name === 'run_command' && e.toolCall?.result !== undefined,
+    );
+    expect(toolEvent).toBeDefined();
+    expect(String(toolEvent?.toolCall?.result)).toMatch(/not available in this session/i);
+    expect(String(toolEvent?.toolCall?.result)).not.toContain('SHOULD_NOT_RUN');
+  });
 });
