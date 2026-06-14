@@ -405,7 +405,6 @@ const bridge: ExtensionAgentBridge = {
           sessionId: args.sessionId,
           message: args.message,
           documentContext: args.documentContext,
-          messages: args.messages,
           // Correctly-keyed prior conversation so the backend re-seeds its
           // tool loop each turn (it reads history, not messages). Without
           // this the extension agent is amnesiac across turns.
