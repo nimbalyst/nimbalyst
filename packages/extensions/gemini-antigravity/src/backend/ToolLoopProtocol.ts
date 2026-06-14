@@ -57,6 +57,10 @@ export interface ProtocolMessage {
 const TOOL_OUTPUT_OPEN = '<tool-output>';
 const TOOL_OUTPUT_CLOSE = '</tool-output>';
 
+// Max times per turn we re-prompt a model that described a tool call in prose
+// instead of emitting the JSON envelope, before accepting its text as final.
+const MAX_SOFT_MISSES = 2;
+
 export class AntigravityToolLoopProtocol {
   private modelKey: string;
   private readonly maxIterations: number;
@@ -152,6 +156,12 @@ export class AntigravityToolLoopProtocol {
 
     const fullSystemPrompt = this.buildInstructedSystemPrompt(systemPrompt, tools);
 
+    // Count "soft misses": responses that describe a tool call in prose instead
+    // of emitting the JSON envelope. We nudge a capped number of times rather
+    // than ending the turn, so a multi-step task is not abandoned after one step
+    // when a weaker model narrates its next action.
+    let softMisses = 0;
+
     for (let iteration = 0; iteration < this.maxIterations; iteration++) {
       if (this.aborted) return;
 
@@ -163,6 +173,23 @@ export class AntigravityToolLoopProtocol {
       const toolCall = this.parseToolCall(response);
       if (!toolCall) {
         const text = this.stripToolCallJson(response).trim();
+        // Recovery: a weaker model sometimes DESCRIBES its next tool call in
+        // prose ("Now I'll read X") instead of emitting the JSON envelope, which
+        // would end the turn here with the task unfinished. If the text names an
+        // available tool and reads like an intent to act, nudge it to emit the
+        // envelope and continue, capped to avoid an endless nudge loop.
+        if (softMisses < MAX_SOFT_MISSES && this.looksLikeUnemittedToolIntent(text, toolAllowlist)) {
+          softMisses++;
+          this.history.push({ role: 'assistant', content: text });
+          this.history.push({
+            role: 'tool',
+            content: this.sanitizeToolResult(
+              '[No tool ran: you described a tool call but did not emit it. To actually run it, your ENTIRE next response must be only the {"tool_call":{"name":"...","arguments":{...}}} JSON and nothing else. If the whole task is genuinely finished, give your final answer as plain text.]',
+            ),
+            toolName: 'system',
+          });
+          continue;
+        }
         this.history.push({ role: 'assistant', content: text });
         yield { type: 'text', content: text };
         yield { type: 'complete' };
@@ -225,6 +252,23 @@ export class AntigravityToolLoopProtocol {
 
     yield { type: 'text', content: '[Agent reached tool-call iteration limit]' };
     yield { type: 'complete' };
+  }
+
+  /**
+   * Heuristic: did the model DESCRIBE a tool call without emitting the JSON
+   * envelope? True when the text names one of this turn's available tools and
+   * reads like an intent to act next, rather than a finished answer. Used to
+   * nudge (not end) the turn so multi-step work is not abandoned mid-task.
+   */
+  private looksLikeUnemittedToolIntent(text: string, allowlist: Set<string>): boolean {
+    if (!text) return false;
+    const lower = text.toLowerCase();
+    let mentionsTool = false;
+    for (const name of allowlist) {
+      if (name && lower.includes(name.toLowerCase())) { mentionsTool = true; break; }
+    }
+    if (!mentionsTool) return false;
+    return /\b(i'?ll|i will|i'?m going to|going to|let'?s|let me|let us|now i|next[,]?|i need to|i should|i can now)\b/.test(lower);
   }
 
   // ---- Prompt construction ------------------------------------------------

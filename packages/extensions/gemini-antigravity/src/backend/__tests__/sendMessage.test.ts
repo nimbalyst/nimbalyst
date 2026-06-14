@@ -223,4 +223,42 @@ describe('gemini-antigravity backend sendMessage', () => {
     );
     expect(toolExecutor).not.toHaveBeenCalled();
   });
+
+  it('nudges and recovers when the model narrates a tool call instead of emitting it', async () => {
+    // 1st round: prose intent, NO envelope (the stall failure mode). 2nd round:
+    // real tool call. 3rd: final text. Without the nudge the loop would end
+    // after round 1 and the tool would never run.
+    getModelResponse
+      .mockResolvedValueOnce("Now I'll read the file. Let's use read_file on package.json.")
+      .mockResolvedValueOnce(
+        JSON.stringify({ tool_call: { name: 'read_file', arguments: { path: 'package.json' } } }),
+      )
+      .mockResolvedValueOnce('done');
+
+    const { ctx, devToolExecutor } = makeCtx();
+    devToolExecutor.mockResolvedValue('file contents here');
+    const { methods } = await activate(ctx as never);
+    await methods.createSession({
+      sessionId: 'nudge1',
+      model: 'gemini-3-flash-agent',
+      workspacePath: os.tmpdir(),
+      tools: [{ type: 'function', function: { name: 'read_file' } }],
+      systemPrompt: 'sys',
+    });
+
+    const events: AnyProtocolEvent[] = [];
+    for await (const ev of methods.sendMessage({ sessionId: 'nudge1', message: 'read it' })) {
+      events.push(ev as AnyProtocolEvent);
+    }
+
+    // The nudge recovered: read_file actually ran rather than being abandoned
+    // after the prose, and the loop took three model rounds.
+    expect(devToolExecutor).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'read_file', args: { path: 'package.json' } }),
+    );
+    expect(getModelResponse).toHaveBeenCalledTimes(3);
+    const last = events[events.length - 1];
+    expect(last.type).toBe('complete');
+    expect(last.content).toBe('done');
+  });
 });
