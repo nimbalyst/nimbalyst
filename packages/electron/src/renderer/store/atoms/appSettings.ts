@@ -1399,11 +1399,17 @@ export async function initAIProviderSettings(): Promise<AIProviderSettings> {
   const providers = { ...defaultProviders };
   const apiKeys = { ...defaultApiKeys };
 
-  // Merge loaded provider settings
+  // Merge loaded provider settings. Built-in providers are seeded from
+  // defaultProviders; extension-contributed agent providers (e.g.
+  // antigravity-gemini-agent) are not, so without the else branch their
+  // persisted enabled/models state would be silently dropped at hydration and
+  // their settings panel would always render as disabled.
   if (settings?.providerSettings) {
     Object.entries(settings.providerSettings).forEach(([key, value]: [string, any]) => {
       if (providers[key]) {
         providers[key] = { ...providers[key], ...value };
+      } else {
+        providers[key] = { enabled: false, testStatus: 'idle', ...value };
       }
     });
   }

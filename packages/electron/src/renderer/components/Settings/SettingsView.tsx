@@ -116,13 +116,20 @@ const ExtensionAgentSettingsPanel: React.FC<{
   const settingsPanelExports = (loadedExt?.module as { settingsPanel?: Record<string, React.ComponentType<Record<string, unknown>>> } | undefined)?.settingsPanel;
   const ExtPanel = componentName ? settingsPanelExports?.[componentName] : undefined;
 
+  // The permissions bridge lives at electronAPI.extensions.permissions (not
+  // electronAPI.permissions). The existing Privileged Capabilities UI uses the
+  // same path; reading the wrong one leaves perms undefined, which silently
+  // disables both the grant check and the Enable-provider button.
   const perms = (window.electronAPI as {
-    permissions?: {
-      isModuleEnabled: (a: { extensionId: string; moduleId: string; declaredPermissions: string[]; workspacePath?: string }) => Promise<boolean>;
-      grantModule: (a: { extensionId: string; moduleId: string; permissions: string[]; scope: 'workspace' | 'global'; workspacePath?: string }) => Promise<unknown>;
-      onStateChanged?: (cb: (h: { extensionId: string; moduleId: string }) => void) => () => void;
+    extensions?: {
+      permissions?: {
+        listEnabledModules?: (workspacePath?: string) => Promise<Array<{ extensionId: string; moduleId: string }>>;
+        isModuleEnabled?: (a: { extensionId: string; moduleId: string; declaredPermissions: string[]; workspacePath?: string }) => Promise<boolean>;
+        grantModule: (a: { extensionId: string; moduleId: string; permissions: string[]; scope: 'workspace' | 'global'; workspacePath?: string }) => Promise<unknown>;
+        onStateChanged?: (cb: (h: { extensionId: string; moduleId: string }) => void) => () => void;
+      };
     };
-  } | undefined)?.permissions;
+  } | undefined)?.extensions?.permissions;
 
   const [granted, setGranted] = useState(false);
   const permsKey = declaredPermissions.join(',');
@@ -130,10 +137,23 @@ const ExtensionAgentSettingsPanel: React.FC<{
   const refreshGrant = useCallback(async () => {
     if (!perms || !moduleId) return;
     try {
-      const ok = await perms.isModuleEnabled({ extensionId: extEntry.extensionId, moduleId, declaredPermissions, workspacePath });
-      setGranted(Boolean(ok));
-    } catch {
-      /* leave as not-granted so the pre-consent banner stays visible */
+      // Robust host-truth: listEnabledModules returns every module that has
+      // any grant row (real permission OR the module-enabled sentinel), so it
+      // does not depend on the renderer passing an exact declaredPermissions
+      // set that matches what was granted.
+      let ok = false;
+      if (typeof perms.listEnabledModules === 'function') {
+        const mods = await perms.listEnabledModules(workspacePath);
+        ok = Array.isArray(mods) && mods.some(
+          (m) => m.extensionId === extEntry.extensionId && m.moduleId === moduleId
+        );
+      }
+      if (!ok && typeof perms.isModuleEnabled === 'function') {
+        ok = Boolean(await perms.isModuleEnabled({ extensionId: extEntry.extensionId, moduleId, declaredPermissions, workspacePath }));
+      }
+      setGranted(ok);
+    } catch (err) {
+      console.error('[ext-agent-settings] grant check failed', err);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [perms, moduleId, extEntry.extensionId, workspacePath, permsKey]);
@@ -173,7 +193,13 @@ const ExtensionAgentSettingsPanel: React.FC<{
       config={{ ...cfg, backendModuleEnabled: granted }}
       availableModels={extModels}
       onEnableBackendModule={async () => {
-        if (!perms || !moduleId) return;
+        if (!perms || !moduleId) {
+          throw new Error(
+            !perms
+              ? 'Permissions bridge unavailable in this host.'
+              : 'Backend module id missing from the extension manifest.'
+          );
+        }
         try {
           await perms.grantModule({
             extensionId: extEntry.extensionId,
@@ -182,6 +208,9 @@ const ExtensionAgentSettingsPanel: React.FC<{
             scope: scope === 'project' ? 'workspace' : 'global',
             workspacePath,
           });
+        } catch (err) {
+          console.error('[ext-agent-settings] grantModule failed', err);
+          throw err;
         } finally {
           await refreshGrant();
         }
@@ -411,6 +440,33 @@ export function SettingsView({
       }
     } catch (error) {
       console.error('Failed to fetch initial models:', error);
+    }
+
+    // Re-hydrate extension-contributed agent providers from persisted settings.
+    // The provider atom is seeded once at app startup, which can predate an
+    // extension's enable-on-activate write (e.g. Gemini enabling itself + its
+    // models on first detection). Re-reading here, additively, makes the panel
+    // reflect that write without a restart. Built-in providers are already in
+    // the atom, so this only fills in keys the atom is missing - it never
+    // clobbers an in-flight edit.
+    try {
+      const persisted = await window.electronAPI.aiGetSettings();
+      const providerSettings = (persisted?.providerSettings ?? {}) as Record<string, ProviderConfig>;
+      if (Object.keys(providerSettings).length > 0) {
+        setProviders((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          for (const [key, value] of Object.entries(providerSettings)) {
+            if (!(key in next)) {
+              next[key] = { testStatus: 'idle', ...value, enabled: value.enabled ?? false };
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }
+    } catch (error) {
+      console.error('Failed to re-hydrate extension provider settings:', error);
     }
   };
 
