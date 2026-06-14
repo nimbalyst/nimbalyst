@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
+import { getExtensionLoader } from '@nimbalyst/runtime';
 import { store } from '@nimbalyst/runtime/store';
 import { SettingsSidebar, type SettingsCategory } from './SettingsSidebar';
 import { pushNavigationEntryAtom, isRestoringNavigationAtom } from '../../store';
@@ -90,6 +91,22 @@ export function SettingsView({
   const developerMode = useAtomValue(developerModeAtom);
 
   const [selectedCategory, setSelectedCategory] = useState<SettingsCategory | string>(initialCategory || 'claude-code');
+  // Extension-contributed agent providers (id, owning extension, live status,
+  // static model list) so the provider settings page can render the extension's
+  // own panel component (e.g. Gemini Antigravity) wired like a built-in panel.
+  const [extAgentProviders, setExtAgentProviders] = useState<
+    Array<{ id: string; extensionId: string; name: string; status: string; models?: Array<{ id: string; name: string }> }>
+  >([]);
+  const refreshExtAgentProviders = useCallback(() => {
+    const invoke = window.electronAPI?.invoke;
+    if (!invoke) return;
+    invoke('agent-providers:list')
+      .then((res: { success?: boolean; data?: Array<{ id: string; extensionId: string; name: string; status: string; models?: Array<{ id: string; name: string }> }> }) => {
+        if (res?.success && Array.isArray(res.data)) setExtAgentProviders(res.data);
+      })
+      .catch(() => { /* registry unavailable; static fallback panel is used */ });
+  }, []);
+  useEffect(() => { refreshExtAgentProviders(); }, [refreshExtAgentProviders]);
   const [scope, setScope] = useState<SettingsScope>(initialScope || 'user');
 
   // AI Provider settings - using Jotai atoms (Phase 5b)
@@ -221,11 +238,14 @@ export function SettingsView({
   // When scope changes, ensure selected category is valid for that scope
   useEffect(() => {
     const validCategories = scope === 'project' ? projectCategories : userCategories;
-    if (!validCategories.includes(selectedCategory as SettingsCategory)) {
+    // Extension-contributed agent providers (e.g. antigravity-gemini-agent) are
+    // valid selectable categories too; don't bounce the user off them.
+    const isExtensionProvider = extAgentProviders.some((pr) => pr.id === selectedCategory);
+    if (!isExtensionProvider && !validCategories.includes(selectedCategory as SettingsCategory)) {
       // Default to first valid category for the scope
       setSelectedCategory(scope === 'project' ? 'agent-permissions' : 'claude-code');
     }
-  }, [scope, selectedCategory, developerMode]);
+  }, [scope, selectedCategory, developerMode, extAgentProviders]);
 
   useEffect(() => {
     if (!developerMode && selectedCategory === 'github') {
@@ -680,6 +700,39 @@ export function SettingsView({
         // was selected. Its models are usable from the chat model picker; its
         // configuration lives in the extension, reachable from Installed Extensions.
         const providerId = String(selectedCategory);
+        // Render the extension's own provider settings panel (declared via
+        // aiAgentProviders[].settingsPanelComponent), wired with the same props the
+        // built-in panels receive. Falls back to the static notice below when the
+        // component is unavailable.
+        const extEntry = extAgentProviders.find((pr) => pr.id === providerId);
+        if (extEntry) {
+          const loadedExt = getExtensionLoader().getExtension(extEntry.extensionId);
+          const providerContribution = (
+            loadedExt?.manifest?.contributions?.aiAgentProviders as
+              | Array<{ id: string; settingsPanelComponent?: string }>
+              | undefined
+          )?.find((pr) => pr.id === providerId);
+          const componentName = providerContribution?.settingsPanelComponent;
+          const settingsPanelExports = (loadedExt?.module as { settingsPanel?: Record<string, React.ComponentType<Record<string, unknown>>> } | undefined)?.settingsPanel;
+          const ExtPanel = componentName ? settingsPanelExports?.[componentName] : undefined;
+          if (ExtPanel) {
+            const extModels = (extEntry.models ?? []).map((m) => ({ id: m.id, name: m.name, provider: providerId }));
+            return (
+              <ExtPanel
+                {...commonProps}
+                config={{ ...commonProps.config, backendModuleEnabled: extEntry.status === 'active' }}
+                availableModels={extModels}
+                onEnableBackendModule={async () => {
+                  try {
+                    await window.electronAPI?.aiTestConnection?.(providerId, workspacePath ?? undefined);
+                  } finally {
+                    refreshExtAgentProviders();
+                  }
+                }}
+              />
+            );
+          }
+        }
         const label = providerId
           .replace(/-agent$/, '')
           .replace(/[-_]+/g, ' ')
