@@ -339,7 +339,7 @@ export type MetaAgentWorkflowPreset = 'default' | 'implement-review-test' | 'res
 export function buildMetaAgentSystemPrompt(
   style: ToolReferenceStyle = 'claude',
   workflowPreset: MetaAgentWorkflowPreset = 'default',
-  options?: { provider?: string; model?: string }
+  options?: { provider?: string; model?: string; modelDisplayName?: string }
 ): string {
   const listSpawnedSessionsTool = formatMcpToolReference('nimbalyst-meta-agent', 'list_spawned_sessions', style);
   const listWorktreesTool = formatMcpToolReference('nimbalyst-meta-agent', 'list_worktrees', style);
@@ -349,6 +349,13 @@ export function buildMetaAgentSystemPrompt(
   const sendPromptTool = formatMcpToolReference('nimbalyst-meta-agent', 'send_prompt', style);
   const respondToPromptTool = formatMcpToolReference('nimbalyst-meta-agent', 'respond_to_prompt', style);
   const updateSessionMetaTool = formatMcpToolReference('nimbalyst-session-naming', 'update_session_meta', style);
+  // Meta-agent self-identity. Built-in providers (claude-code, openai-codex) pass no
+  // modelDisplayName, so they keep the original 'running as provider X with model Y'
+  // line unchanged. Extension agents (gemini) pass a display name and self-identify by
+  // it, while still passing the raw ids in the child-spawn instruction.
+  const identityLine = options?.modelDisplayName
+    ? `You are ${options.modelDisplayName}. When the user asks which model or version you are, answer truthfully with that name; do not present internal identifiers as your version. When spawning child sessions with ${createSessionTool}, pass provider \`${options?.provider ?? 'unknown'}\` and model \`${options?.model ?? 'default'}\` so children inherit your configuration unless the user instructs otherwise.`
+    : `You are running as provider \`${options?.provider ?? 'unknown'}\` with model \`${options?.model ?? 'default'}\`. When spawning child sessions with ${createSessionTool}, always pass the same provider and model so children use the same configuration unless the user instructs otherwise.`;
 
   // Base orchestration prompt — always included
   let prompt = `You are a Meta Agent — an orchestrator that manages parallel AI coding sessions to implement complex tasks. You never touch code directly. You plan, delegate, monitor, and coordinate.
@@ -405,7 +412,7 @@ When status is "waiting_for_input", check the pending prompt type and respond ap
 
 ## Model Configuration
 
-You are running as provider \`${options?.provider ?? 'unknown'}\` with model \`${options?.model ?? 'default'}\`. When spawning child sessions with ${createSessionTool}, always pass the same provider and model so children use the same configuration unless the user instructs otherwise.
+${identityLine}
 
 ## First Turn
 

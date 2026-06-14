@@ -1314,6 +1314,7 @@ export class MessageStreamingHandler {
           ? buildMetaAgentSystemPrompt('codex', 'default', {
               provider: session.provider,
               model: session.model ?? undefined,
+              modelDisplayName: resolveExtensionModelDisplayName(session.provider, session.model),
             })
           : isStandardExtensionSession && session.id && effectiveWorkspacePath
             ? buildDevAgentSystemPrompt({
