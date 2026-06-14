@@ -61,6 +61,13 @@ const TOOL_OUTPUT_CLOSE = '</tool-output>';
 // instead of emitting the JSON envelope, before accepting its text as final.
 const MAX_SOFT_MISSES = 2;
 
+// Per-tool-result hard cap on characters fed back into the prompt. The text
+// protocol re-renders the ENTIRE history into one prompt every turn, so an
+// uncapped directory listing or file read accumulates until GetModelResponse
+// chokes or hangs on an oversized single-shot prompt. Keep head + tail; the
+// model can re-read a specific range if it needs more of a truncated result.
+const TOOL_RESULT_MAX_CHARS = 24_000;
+
 export class AntigravityToolLoopProtocol {
   private modelKey: string;
   private readonly maxIterations: number;
@@ -524,12 +531,25 @@ export class AntigravityToolLoopProtocol {
    */
   private sanitizeToolResult(text: string): string {
     if (typeof text !== 'string') return TOOL_OUTPUT_OPEN + TOOL_OUTPUT_CLOSE;
+    // Cap oversized results before anything else: the whole history is re-sent
+    // every turn, so one huge listing or file read would grow the prompt until
+    // the model server hangs on it. Keep the head (most relevant) plus a tail.
+    let capped = text;
+    if (capped.length > TOOL_RESULT_MAX_CHARS) {
+      const headLen = TOOL_RESULT_MAX_CHARS - 4_000;
+      const tailLen = 3_000;
+      capped =
+        capped.slice(0, headLen) +
+        `\n\n[... tool output truncated: ${text.length} chars total; showing first ` +
+        `${headLen} and last ${tailLen}. Re-read a specific range if you need more. ...]\n\n` +
+        capped.slice(-tailLen);
+    }
     // Neutralize tool_call token by inserting a zero-width-ish marker between
     // the underscore and "call". The model still reads it as plain text; the
     // parser's `response.includes('tool_call')` short-circuit no longer fires
     // on the embedded form. We use ascii-only since the prompt is rendered as
     // utf-8 plain text.
-    const neutralized = text.replace(/tool_call/g, 'tool_<<escaped>>_call');
+    const neutralized = capped.replace(/tool_call/g, 'tool_<<escaped>>_call');
     // Also strip pre-existing wrapping tags so we don't double-wrap on resume.
     const stripped = neutralized
       .replace(new RegExp(TOOL_OUTPUT_OPEN, 'g'), '')

@@ -216,6 +216,15 @@ export class AntigravityServerManager {
     timeoutMs = 120_000): Promise<T> {
     const payload = Buffer.from(JSON.stringify(body));
     return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      let hardTimer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (err: Error | null, value?: T): void => {
+        if (settled) return;
+        settled = true;
+        if (hardTimer) clearTimeout(hardTimer);
+        if (err) reject(err);
+        else resolve(value as T);
+      };
       const req = https.request(
         {
           host: '127.0.0.1',
@@ -237,20 +246,31 @@ export class AntigravityServerManager {
           res.on('end', () => {
             const text = Buffer.concat(chunks).toString('utf8');
             if ((res.statusCode ?? 0) >= 400) {
-              reject(new Error(
+              finish(new Error(
                 `Antigravity ${method} HTTP ${res.statusCode}: ${text.slice(0, 300)}`));
               return;
             }
             try {
-              resolve(JSON.parse(text) as T);
+              finish(null, JSON.parse(text) as T);
             } catch {
-              reject(new Error(`Antigravity ${method} bad JSON: ${text.slice(0, 200)}`));
+              finish(new Error(`Antigravity ${method} bad JSON: ${text.slice(0, 200)}`));
             }
           });
+          res.on('error', (e) =>
+            finish(e instanceof Error ? e : new Error(String(e))));
         },
       );
+      // Hard wall-clock cap. The `timeout` option / 'timeout' event below only
+      // fire on socket INACTIVITY, which a server that accepts the POST and then
+      // holds the connection open during a slow or wedged inference never trips.
+      // Without this an in-flight GetModelResponse can hang indefinitely and the
+      // agent turn stays on "Thinking..." forever. This timer fires on elapsed
+      // wall-clock regardless of socket activity.
+      hardTimer = setTimeout(() => {
+        req.destroy(new Error(`Antigravity ${method} timed out`));
+      }, timeoutMs);
       req.on('timeout', () => req.destroy(new Error(`Antigravity ${method} timed out`)));
-      req.on('error', reject);
+      req.on('error', (e) => finish(e instanceof Error ? e : new Error(String(e))));
       req.write(payload);
       req.end();
     });
@@ -273,14 +293,22 @@ export class AntigravityServerManager {
     const MAX_ATTEMPTS = 2;
     const RETRY_BACKOFF_MS = 1_000;
     let lastErr: unknown;
+    let failedPort: number | null = null;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       if (attempt > 1) {
         // Force re-discovery/respawn: skip ensureRunning()'s healthy-endpoint
-        // fast-path so an alive-but-wedged server is replaced.
+        // fast-path so a crashed server is respawned and an alive one re-found.
         this.endpoint = null;
         await delay(RETRY_BACKOFF_MS);
       }
       const ep = await this.ensureRunning();
+      // A retry only helps if discovery handed back a DIFFERENT server (the old
+      // one crashed and was respawned). If the same alive server comes back, the
+      // wedge was this request -- not the process -- so re-issuing the identical
+      // call just burns another full timeout. Fail fast on the same endpoint.
+      if (attempt > 1 && failedPort !== null && ep.httpsPort === failedPort) {
+        throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+      }
       const enumName = modelKeyOrEnum.startsWith('MODEL_')
         ? modelKeyOrEnum
         : await this.resolveModelEnum(modelKeyOrEnum, ep);
@@ -302,7 +330,9 @@ export class AntigravityServerManager {
         const isTimeout = msg.includes('timed out');
         const isHttp4xx = /HTTP 4\d\d/.test(msg);
         if (!isTimeout || isHttp4xx || attempt >= MAX_ATTEMPTS) throw err;
-        // else: timeout on the first attempt -- loop, respawn, try once more.
+        // Timeout on a live server: remember its port so the retry only proceeds
+        // if a genuinely new endpoint (respawned process) comes back.
+        failedPort = ep.httpsPort;
       }
     }
     // Unreachable: the loop either returns or throws on every path.

@@ -329,4 +329,43 @@ describe('gemini-antigravity backend sendMessage', () => {
     expect(String(toolEvent?.toolCall?.result)).toMatch(/not available in this session/i);
     expect(String(toolEvent?.toolCall?.result)).not.toContain('SHOULD_NOT_RUN');
   });
+
+  it('caps an oversized tool result in the model prompt but surfaces the full result to the host', async () => {
+    // 1st round: request the tool. 2nd round: plain text -> complete. The huge
+    // tool output must be truncated in the prompt fed to round 2; an uncapped
+    // history grows the single-shot prompt until GetModelResponse hangs.
+    const HUGE = 'X'.repeat(50_000);
+    getModelResponse
+      .mockResolvedValueOnce('{"tool_call":{"name":"echo","arguments":{"x":1}}}')
+      .mockResolvedValueOnce('done');
+
+    const { ctx, toolExecutor } = makeCtx();
+    toolExecutor.mockResolvedValue(HUGE);
+
+    const { methods } = await activate(ctx as never);
+    await methods.createSession({
+      sessionId: 'cap1',
+      model: 'gemini-3-flash-agent',
+      tools: [{ type: 'function', function: { name: 'echo' } }],
+      systemPrompt: 'sys',
+    });
+
+    const events: AnyProtocolEvent[] = [];
+    for await (const ev of methods.sendMessage({ sessionId: 'cap1', message: 'use the tool' })) {
+      events.push(ev as AnyProtocolEvent);
+    }
+
+    // The host (UI) receives the FULL, uncapped tool result.
+    const toolEvent = events.find(
+      (e) => e.type === 'tool_call' && e.toolCall?.name === 'echo' && e.toolCall?.result !== undefined,
+    );
+    expect(String(toolEvent?.toolCall?.result).length).toBe(50_000);
+
+    // The 2nd model prompt carries the tool result in history; it must be
+    // truncated -- contain the marker and NOT the full 50K run.
+    expect(getModelResponse).toHaveBeenCalledTimes(2);
+    const secondPrompt = String(getModelResponse.mock.calls[1][0]);
+    expect(secondPrompt).toContain('tool output truncated');
+    expect(secondPrompt).not.toContain('X'.repeat(30_000));
+  });
 });
