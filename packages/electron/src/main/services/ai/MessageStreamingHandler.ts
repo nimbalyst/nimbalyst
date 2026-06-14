@@ -2005,13 +2005,22 @@ export class MessageStreamingHandler {
             // indefinitely while it holds a spawn-cap slot. Settle it here,
             // mirroring the outer catch. Scoped to extension agents; built-in
             // providers throw or settle via their SDK terminal handling.
-            if (isExtensionAgentSession && session?.id) {
+            // Only DIRECT (non-queued) extension-agent sessions need settling
+            // here. A queued meta-agent child is already settled by the
+            // queued-prompt chain (onChainSettled -> endSession); adding our own
+            // terminal transition on top would emit a second, contradictory
+            // notification to the parent. A direct gemini chat that errors
+            // in-band has no other settle path (its only failure signal is this
+            // non-throwing error chunk), so without this it stays 'running'.
+            if (
+              isExtensionAgentSession
+              && session?.id
+              && !this.svc.sessionsProcessingQueue.has(session.id)
+            ) {
               try {
                 await stateManager.updateActivity({ sessionId: session.id, status: 'error' });
-                if (!this.svc.sessionsProcessingQueue.has(session.id)) {
-                  await stateManager.endSession(session.id);
-                  await this.svc.hooklessWatcher.stopForSession(session.id);
-                }
+                await stateManager.endSession(session.id);
+                await this.svc.hooklessWatcher.stopForSession(session.id);
               } catch (settleErr) {
                 logger.main.error('[AIService] Failed to settle extension-agent error chunk:', settleErr);
               }

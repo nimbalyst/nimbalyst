@@ -1414,9 +1414,9 @@ export class MetaAgentService {
       const text = extractMessageText(message.content, message.metadata);
       if (text) parts.push(text);
     }
-    if (parts.length === 0) {
-      // No output after the last input (single-message or empty turn): fall
-      // back to the last output message anywhere.
+    if (lastInputIndex === -1 || parts.length === 0) {
+      // No input row to anchor the turn (or no output after it): use the single
+      // last output message rather than concatenating output across turns.
       return this.extractLastAgentResponse(messages, maxLength);
     }
     const sep = String.fromCharCode(10) + String.fromCharCode(10);
