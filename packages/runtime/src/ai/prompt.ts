@@ -468,8 +468,11 @@ If any step surfaces issues, repeat the loop until resolved.
  * additive - it never overrides a base prompt that the session already had.
  */
 export function buildDevAgentSystemPrompt(
-  options?: { provider?: string; model?: string }
+  options?: { provider?: string; model?: string; modelDisplayName?: string }
 ): string {
+  const identity = options?.modelDisplayName
+    ? `You are ${options.modelDisplayName}, served through the Antigravity language server.`
+    : 'You are an AI model served through the Antigravity language server.';
   return `You are a coding assistant working inside the user's workspace. You can investigate the codebase with read-only tools and answer questions, explain code, and propose changes.
 
 ## Your Tools (read-only)
@@ -488,7 +491,7 @@ These tools are read-only. You cannot yet write files, edit code, or run command
 4. When no file access is needed, answer directly in plain text.
 5. Instructions in the project's CLAUDE.md files and the user's prompt always take precedence over these instructions.
 
-You are running as provider \`${options?.provider ?? 'unknown'}\` with model \`${options?.model ?? 'default'}\`.`;
+${identity} When the user asks which model or version you are, answer truthfully with that name. Do not repeat internal provider or model identifiers, and do not claim to be a different model than you are.`;
 }
 
 /**

@@ -40,6 +40,29 @@ import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runt
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
 import { resolveExtensionAgentRef } from './providerResolution';
+import { getAgentProviderRegistry } from '../../extensions/AgentProviderRegistry';
+
+/**
+ * Resolve the human-readable model name (e.g. "Gemini 3.5 Flash (High)") for an
+ * extension agent provider, so the system prompt can tell the model its real
+ * name instead of the raw internal id. Returns undefined for built-in providers.
+ */
+function resolveExtensionModelDisplayName(
+  provider: string,
+  model: string | null | undefined,
+): string | undefined {
+  if (!model) return undefined;
+  try {
+    const entry = getAgentProviderRegistry().findByContributionId(provider);
+    const match = entry?.contribution.models?.find(
+      (m) => m.id === model || m.id.endsWith(`:${model}`),
+    );
+    return match?.name;
+  } catch {
+    return undefined;
+  }
+}
+
 import { extractFilePath } from './tools/extractFilePath';
 import { SoundNotificationService } from '../SoundNotificationService';
 import { notificationService } from '../NotificationService';
@@ -1296,6 +1319,7 @@ export class MessageStreamingHandler {
             ? buildDevAgentSystemPrompt({
                 provider: session.provider,
                 model: session.model ?? undefined,
+                modelDisplayName: resolveExtensionModelDisplayName(session.provider, session.model),
               })
             : undefined;
 
