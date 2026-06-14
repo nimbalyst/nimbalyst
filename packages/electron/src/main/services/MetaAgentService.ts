@@ -290,8 +290,13 @@ export class MetaAgentService {
     const resolved = await this.resolveOrCreateWorkstream(parent, workspaceId);
     const workstreamId = resolved.workstreamId;
 
-    const inheritedWorktreeId =
-      !args.useWorktree && parent.worktreeId ? parent.worktreeId : undefined;
+    // Meta-agent children ALWAYS run in the parent's working directory (the
+    // shared workspace), never a fresh isolated worktree. The parent synthesizes
+    // by reading each child's written deliverable; a child that writes into its
+    // own worktree leaves the parent unable to find the file. So we ignore the
+    // requested useWorktree and inherit the parent's worktree (the main checkout
+    // for a top-level meta-agent).
+    const inheritedWorktreeId = parent.worktreeId ?? undefined;
 
     // Explicit model wins; otherwise inherit caller's model (e.g. keep "opus"
     // on "opus") rather than dropping to the global default.
@@ -303,7 +308,7 @@ export class MetaAgentService {
     const childResult = await this.createChildSessionInternal(parentSessionId, workspaceId, {
       title: args.title,
       prompt: args.autoSubmit ? args.prompt : undefined,
-      useWorktree: !!args.useWorktree,
+      useWorktree: false,
       worktreeId: inheritedWorktreeId,
       model: effectiveModel,
       parentSessionIdOverride: workstreamId,

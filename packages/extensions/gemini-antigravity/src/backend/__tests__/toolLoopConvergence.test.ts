@@ -84,4 +84,59 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     expect(text?.content).toBe('[Agent reached tool-call iteration limit]');
     expect(events[events.length - 1].type).toBe('complete');
   });
+
+  it('stores only the compact tool-call envelope in history, not hallucinated thinking text', async () => {
+    // The model wraps a real tool call in 40KB of hallucinated transcript. The
+    // loop must persist ONLY the compact canonical envelope, or that 40KB lands
+    // in history and explodes the re-rendered prompt every subsequent turn.
+    const HALLUCINATION = 'X'.repeat(40_000);
+    const prompts: string[] = [];
+    let call = 0;
+    const { proto } = makeProto(async (p) => {
+      prompts.push(p);
+      call++;
+      return call === 1
+        ? `${HALLUCINATION}\n{"tool_call":{"name":"list_files","arguments":{"path":"src"}}}\n${HALLUCINATION}`
+        : 'done';
+    }, 40);
+
+    await drain(proto.run('go', 'sys', LIST_TOOL, async () => 'a-listing'));
+
+    const second = prompts[1];
+    expect(second).not.toContain('X'.repeat(1000)); // hallucination not persisted
+    expect(second).toContain('"tool_call":{"name":"list_files"'); // canonical form is
+  });
+
+  it('bounds total prompt size by omitting the oldest tool outputs over budget', async () => {
+    const BIG = 'Y'.repeat(20_000); // each result ~20KB, under the 24KB per-result cap
+    const prompts: string[] = [];
+    let call = 0;
+    const { proto } = makeProto(async (p) => {
+      prompts.push(p);
+      call++;
+      return call <= 3
+        ? `{"tool_call":{"name":"list_files","arguments":{"path":"p${call}"}}}`
+        : 'final';
+    }, 40);
+
+    await drain(proto.run('go', 'sys', LIST_TOOL, async () => BIG));
+
+    // By the final render, three 20KB results (60KB) exceed the 28KB budget, so
+    // the oldest are omitted rather than growing the prompt unbounded.
+    const last = prompts[prompts.length - 1];
+    expect(last).toContain('earlier output omitted to keep context small');
+  });
+
+  it('strips fabricated transcript continuation and special tokens from the final answer', async () => {
+    const { proto } = makeProto(
+      async () =>
+        'Here is the real answer.<|im_end|>\nUser: a fabricated next question\nAssistant: fabricated reply',
+      40,
+    );
+
+    const events = await drain(proto.run('go', 'sys', LIST_TOOL, async () => 'x'));
+
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toBe('Here is the real answer.');
+  });
 });

@@ -175,12 +175,12 @@ const META_AGENT_TOOL_DEFS: Array<{
         },
         useWorktree: {
           type: "boolean",
-          description: "Whether to create the child session inside a fresh git worktree.",
+          description:
+            "Ignored. Child sessions always run in the SHARED workspace so you (the parent) can read the files they write and synthesize them. A fresh worktree would isolate the child's deliverable where you cannot reach it. Tell the child to save deliverables to the workspace root.",
         },
         worktreeId: {
           type: "string",
-          description:
-            "Optional existing worktree ID to attach this child session to. Do not combine with useWorktree.",
+          description: "Ignored. Children run in the shared workspace (see useWorktree).",
         },
         toolScope: {
           type: "string",

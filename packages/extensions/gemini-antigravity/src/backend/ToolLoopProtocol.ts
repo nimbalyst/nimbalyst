@@ -183,7 +183,7 @@ export class AntigravityToolLoopProtocol {
 
       const toolCall = this.parseToolCall(response);
       if (!toolCall) {
-        const text = this.stripToolCallJson(response).trim();
+        const text = this.sanitizeFinalText(this.stripToolCallJson(response));
         // Recovery: a weaker model sometimes DESCRIBES its next tool call in
         // prose ("Now I'll read X") instead of emitting the JSON envelope, which
         // would end the turn here with the task unfinished. If the text names an
@@ -232,10 +232,19 @@ export class AntigravityToolLoopProtocol {
         continue;
       }
 
-      const thinkingText = this.stripToolCallJson(response).trim();
-      const assistantEntry = thinkingText
-        ? `${thinkingText}\n[Tool call: ${toolCall.name}]`
-        : `[Tool call: ${toolCall.name}]`;
+      // Store ONLY a compact, size-capped canonical envelope -- NOT the model's
+      // surrounding text. A degenerate or over-context response carries tens of
+      // KB of hallucinated transcript as "thinking"; persisting that explodes the
+      // re-rendered prompt every turn. The canonical form also shows the model
+      // the exact format it must emit. Cap the args so a write_file payload (full
+      // file content) cannot bloat history either.
+      let assistantEntry = JSON.stringify({
+        tool_call: { name: toolCall.name, arguments: toolCall.arguments },
+      });
+      if (assistantEntry.length > 1500) {
+        assistantEntry =
+          assistantEntry.slice(0, 1500) + '...(arguments truncated in history)}}';
+      }
       this.history.push({ role: 'assistant', content: assistantEntry });
 
       yield { type: 'tool_call', name: toolCall.name, args: toolCall.arguments };
@@ -274,16 +283,25 @@ export class AntigravityToolLoopProtocol {
     // emits is stripped. If this call fails (e.g. times out), fall back to the stub.
     if (!this.aborted) {
       try {
-        const finalPrompt =
-          this.renderPrompt(fullSystemPrompt) +
-          '\n\n[SYSTEM: You have reached the tool-call limit. Do NOT request any more tools. ' +
-          'Write your complete final answer now, using everything gathered above.]';
+        // Push the finalize instruction as a system/tool turn so renderPrompt's
+        // trailing "Assistant:" cue stays LAST. Appending it AFTER the rendered
+        // prompt (i.e. after "Assistant:") malforms the turn structure and can
+        // make a weak model emit degenerate output.
+        this.history.push({
+          role: 'tool',
+          toolName: 'system',
+          content: this.sanitizeToolResult(
+            '[You have reached the tool-call limit. Do NOT request any more tools. ' +
+              'Write your complete final answer now, using everything gathered above.]',
+          ),
+        });
+        const finalPrompt = this.renderPrompt(fullSystemPrompt);
         const finalResp = await this.server.getModelResponse(
           finalPrompt,
           this.modelKey,
           timeoutMs,
         );
-        const finalText = this.stripToolCallJson(finalResp).trim();
+        const finalText = this.sanitizeFinalText(this.stripToolCallJson(finalResp));
         if (!this.aborted && finalText) {
           this.history.push({ role: 'assistant', content: finalText });
           yield { type: 'text', content: finalText };
@@ -432,14 +450,36 @@ export class AntigravityToolLoopProtocol {
   private renderPrompt(systemPrompt: string): string {
     const parts: string[] = [systemPrompt, ''];
 
-    for (const msg of this.history) {
+    // Total-history budget: keep the NEWEST tool outputs in full and omit older
+    // ones once over budget, so the re-rendered single-shot prompt cannot grow
+    // unbounded across turns and push the model into degenerate output.
+    const TOOL_OUTPUT_BUDGET = 28_000;
+    const keepToolIdx = new Set<number>();
+    let toolBudgetUsed = 0;
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      if (this.history[i].role !== 'tool') continue;
+      const len = this.history[i].content.length;
+      if (toolBudgetUsed + len <= TOOL_OUTPUT_BUDGET) {
+        keepToolIdx.add(i);
+        toolBudgetUsed += len;
+      }
+    }
+
+    for (let i = 0; i < this.history.length; i++) {
+      const msg = this.history[i];
       if (msg.role === 'user') {
         parts.push(`User: ${msg.content}`);
       } else if (msg.role === 'assistant') {
         parts.push(`Assistant: ${msg.content}`);
       } else if (msg.role === 'tool') {
-        // Content is already wrapped in <tool-output> tags by sanitizeToolResult.
-        parts.push(`Tool result (${msg.toolName ?? 'unknown'}): ${msg.content}`);
+        if (keepToolIdx.has(i)) {
+          // Content is already wrapped in <tool-output> tags by sanitizeToolResult.
+          parts.push(`Tool result (${msg.toolName ?? 'unknown'}): ${msg.content}`);
+        } else {
+          parts.push(
+            `Tool result (${msg.toolName ?? 'unknown'}): [earlier output omitted to keep context small]`,
+          );
+        }
       }
       parts.push('');
     }
@@ -532,6 +572,33 @@ export class AntigravityToolLoopProtocol {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Clean a model's FINAL plain-text answer before it is shown or persisted. An
+   * over-context or degenerate response autocompletes the transcript (fabricated
+   * future "User:" / "Tool result:" turns) and leaks chat-template tokens. Strip
+   * those tokens and cut at the first transcript-continuation marker so a
+   * hallucinated continuation can never reach the user as the final answer.
+   */
+  private sanitizeFinalText(text: string): string {
+    let t = text.replace(/<\|im_(start|end)\|>|<\|endoftext\|>/g, '');
+    const markers = [
+      '\nUser:',
+      '\nAssistant:',
+      '\nTool result (',
+      '\nInput to tool:',
+      '\nOutput from ',
+    ];
+    let cut = t.length;
+    for (const m of markers) {
+      const idx = t.indexOf(m);
+      if (idx >= 0 && idx < cut) cut = idx;
+    }
+    t = t.slice(0, cut);
+    // Drop leading stray braces/brackets a degenerate response sometimes emits.
+    t = t.replace(/^[\s}\]]+/, '');
+    return t.trim();
   }
 
   /**
