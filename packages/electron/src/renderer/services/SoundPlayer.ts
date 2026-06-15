@@ -1,5 +1,15 @@
 import type { CompletionSoundType } from '../../main/utils/store';
 
+/**
+ * Loudness multiplier applied to the authored peak gains of the built-in
+ * synthesized sounds. The originals (~0.15-0.2) were authored very
+ * conservatively, so even at 100% volume (unity master gain) they were barely
+ * audible. 3x raises them to a clearly-audible level while staying well under
+ * the 1.0 clipping ceiling (worst-case summed peak — the bell's 4 harmonics —
+ * stays ~0.6). The volume slider still attenuates from this louder baseline.
+ */
+const SYNTH_GAIN_BOOST = 3;
+
 export class SoundPlayer {
   private audioContext: AudioContext | null = null;
   /**
@@ -104,7 +114,9 @@ export class SoundPlayer {
       const source = this.audioContext.createBufferSource();
       source.buffer = audioBuffer;
       const gainNode = this.audioContext.createGain();
-      gainNode.gain.value = 0.6;
+      // Play the user's file at its native level; the volume slider (master
+      // gain) provides attenuation, so no extra reduction is applied here.
+      gainNode.gain.value = 1.0;
       source.connect(gainNode);
       // Route through masterGain (not destination directly) so the completion
       // sound volume slider scales the custom sound like every built-in sound.
@@ -152,9 +164,10 @@ export class SoundPlayer {
       oscillator.type = 'sine';
       oscillator.frequency.setValueAtTime(freq, now + start);
 
+      const peak = 0.2 * SYNTH_GAIN_BOOST;
       gainNode.gain.setValueAtTime(0, now + start);
-      gainNode.gain.linearRampToValueAtTime(0.2, now + start + 0.02);
-      gainNode.gain.setValueAtTime(0.2, now + start + duration - 0.02);
+      gainNode.gain.linearRampToValueAtTime(peak, now + start + 0.02);
+      gainNode.gain.setValueAtTime(peak, now + start + duration - 0.02);
       gainNode.gain.linearRampToValueAtTime(0, now + start + duration);
 
       oscillator.connect(gainNode);
@@ -183,7 +196,7 @@ export class SoundPlayer {
       oscillator.frequency.setValueAtTime(freq, now);
 
       gainNode.gain.setValueAtTime(0, now);
-      gainNode.gain.linearRampToValueAtTime(0.15, now + 0.01);
+      gainNode.gain.linearRampToValueAtTime(0.15 * SYNTH_GAIN_BOOST, now + 0.01);
       gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
 
       oscillator.connect(gainNode);
@@ -212,7 +225,7 @@ export class SoundPlayer {
       oscillator.type = 'sine';
       oscillator.frequency.setValueAtTime(fundamental * ratio, now);
 
-      const volume = 0.1 / (index + 1);
+      const volume = (0.1 * SYNTH_GAIN_BOOST) / (index + 1);
       gainNode.gain.setValueAtTime(0, now);
       gainNode.gain.linearRampToValueAtTime(volume, now + 0.01);
       gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
@@ -239,7 +252,7 @@ export class SoundPlayer {
     oscillator.frequency.setValueAtTime(400, now);
     oscillator.frequency.exponentialRampToValueAtTime(100, now + 0.1);
 
-    gainNode.gain.setValueAtTime(0.2, now);
+    gainNode.gain.setValueAtTime(0.2 * SYNTH_GAIN_BOOST, now);
     gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
 
     oscillator.connect(gainNode);
