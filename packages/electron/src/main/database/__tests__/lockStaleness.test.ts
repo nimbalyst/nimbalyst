@@ -54,6 +54,37 @@ describe('decideLockIsRunning (issue #272)', () => {
     });
   });
 
+  describe('PID reuse onto our own process', () => {
+    it('is STALE when the lock PID equals this process PID, without calling kill', () => {
+      const killFn = vi.fn(); // would say "alive" if reached
+      const result = decideLockIsRunning({
+        lockPid: 4242,
+        lockTimestamp: new Date(NOW - 5_000).toISOString(),
+        killFn,
+        now: NOW,
+        selfPid: 4242,
+      });
+      expect(result.decision).toBe('stale');
+      expect(result.isRunning).toBe(false);
+      // The guard short-circuits before the liveness probe (kill(0) on our own
+      // PID always succeeds and would wrongly report 'running').
+      expect(killFn).not.toHaveBeenCalled();
+    });
+
+    it('does not affect the alive path when the lock PID differs from ours', () => {
+      const killFn = vi.fn(); // does not throw
+      const result = decideLockIsRunning({
+        lockPid: 4242,
+        lockTimestamp: new Date(NOW - 5_000).toISOString(),
+        killFn,
+        now: NOW,
+        selfPid: 9999,
+      });
+      expect(result.isRunning).toBe(true);
+      expect(killFn).toHaveBeenCalledWith(4242, 0);
+    });
+  });
+
   describe('EPERM + stale timestamp (the #272 case)', () => {
     it('treats EPERM as STALE when lock is older than the grace window', () => {
       // AnisminC's exact scenario: lock acquired 21:09Z, relaunch 00:56Z,

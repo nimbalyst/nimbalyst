@@ -51,12 +51,26 @@ function identityMatchesApp(identity, signatures) {
   return signatures.some((sig) => lower.includes(String(sig).toLowerCase()));
 }
 
-function decideLockIsRunning({ lockPid, lockTimestamp, killFn, now = Date.now(), staleGraceMs = DEFAULT_STALE_LOCK_GRACE_MS, processIdentityFn, appProcessSignatures = ['electron', 'nimbalyst'] }) {
+function decideLockIsRunning({ lockPid, lockTimestamp, killFn, now = Date.now(), staleGraceMs = DEFAULT_STALE_LOCK_GRACE_MS, processIdentityFn, appProcessSignatures = ['electron', 'nimbalyst'], selfPid = (typeof process !== 'undefined' && process && Number.isInteger(process.pid) ? process.pid : undefined) }) {
   const parsedLockTime =
     lockTimestamp && lockTimestamp !== 'unknown'
       ? new Date(lockTimestamp).getTime()
       : NaN;
   const lockAgeMs = Number.isFinite(parsedLockTime) ? now - parsedLockTime : Number.POSITIVE_INFINITY;
+
+  // PID reuse onto ourselves. We have not acquired the lock yet this run, so a
+  // lock file whose PID equals our own brand-new process means the OS recycled
+  // the dead holder's PID to us. kill(0) on our own PID always succeeds and
+  // would otherwise wrongly report 'running', blocking our own boot. Stale.
+  if (Number.isInteger(selfPid) && lockPid === selfPid) {
+    return {
+      decision: 'stale',
+      isRunning: false,
+      reason: `lock PID ${lockPid} equals this process's own PID; the dead holder's PID was reused for us`,
+      lockPid,
+      lockAgeMs,
+    };
+  }
 
   try {
     killFn(lockPid, 0);
