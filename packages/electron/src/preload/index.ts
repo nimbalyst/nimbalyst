@@ -450,8 +450,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Session state tracking operations
   sessionState: {
-    getActiveSessionIds: () =>
-      ipcRenderer.invoke('ai-session-state:get-active'),
+    getTrackedSessionIds: () =>
+      ipcRenderer.invoke('ai-session-state:get-tracked'),
+    getRunningSessionIds: () =>
+      ipcRenderer.invoke('ai-session-state:get-running'),
     getSessionState: (sessionId: string) =>
       ipcRenderer.invoke('ai-session-state:get-state', sessionId),
     isSessionActive: (sessionId: string) =>

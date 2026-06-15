@@ -21,6 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 <!-- Removed features go here -->
 
+## [0.65.3] - 2026-06-15
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- MCP servers disabled in Settings no longer load in Claude Code CLI sessions (they were leaking in and eating context).
+- Claude Code CLI sessions no longer get stuck showing a "Processing…" spinner after their turn finishes.
+- Namespaced extension slash commands (e.g. /feedback:bug-report) now resolve in Claude Code CLI sessions instead of failing.
+- Generated extension-workflow plugins now load in Claude Code CLI sessions, with broader CLI version support for plugin loading.
+
+### Removed
+<!-- Removed features go here -->
+
 ## [0.65.2] - 2026-06-12
 
 

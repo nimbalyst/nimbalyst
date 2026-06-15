@@ -1658,16 +1658,10 @@ function createExtensionDevMcpServer(
             "@nimbalyst/runtime/ai/server/SessionStateManager"
           );
           const stateManager = getSessionStateManager();
-          const activeSessionIds = stateManager.getActiveSessionIds();
-
-          // Filter to only agent sessions that are running or streaming
-          const agentSessionIds: string[] = [];
-          for (const sessionId of activeSessionIds) {
-            const state = stateManager.getSessionState(sessionId);
-            if (state && (state.status === "running" || state.isStreaming)) {
-              agentSessionIds.push(sessionId);
-            }
-          }
+          // Only sessions whose turn is actually in progress need to be resumed
+          // after restart (NIM-846: getTrackedSessionIds would also return idle
+          // claude-code-cli sessions retained in the map between turns).
+          const agentSessionIds = stateManager.getRunningSessionIds();
 
           // Resume only the session the FOCUSED window is viewing, not every
           // running session across every window. Auto-resuming all of them

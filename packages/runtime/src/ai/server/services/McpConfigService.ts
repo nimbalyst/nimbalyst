@@ -53,9 +53,6 @@ export interface McpConfigServiceDeps {
   /** Loader for user and workspace MCP server configs */
   mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, any>>) | null;
 
-  /** Loader for extension plugins (not used for MCP config, but passed for completeness) */
-  extensionPluginsLoader: ((workspacePath?: string) => Promise<Array<{ type: 'local'; path: string }>>) | null;
-
   /** Loader for Claude settings environment variables */
   claudeSettingsEnvLoader: (() => Promise<Record<string, string>>) | null;
 

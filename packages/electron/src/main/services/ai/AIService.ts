@@ -113,7 +113,7 @@ import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
-import { ensureClaudeCliSession } from './claudeCliLauncherSingleton';
+import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 
 const execFileAsync = promisify(execFile);
@@ -3308,10 +3308,18 @@ export class AIService {
           provider: resolvedProvider,
         });
 
+        // NIM-845: for a genuine claude-code-cli session, hide extension-plugin
+        // (namespaced) commands when the resolved `claude` is too old to accept
+        // `--plugin-dir` — those plugins can't load, so the commands would never
+        // resolve. The SDK `claude-code` path always loads them in-process.
+        const excludePluginCommands =
+          resolvedProvider === 'claude-code-cli' && !claudeCliSessionSupportsPlugins();
+
         const workflows = await getAgentWorkflowService(request.workspacePath).listEntries({
           provider: resolvedProvider,
           nativeCommands: nativeCatalog.commands,
           nativeSkills: nativeCatalog.skills,
+          excludePluginCommands,
         });
 
         return { success: true, workflows };

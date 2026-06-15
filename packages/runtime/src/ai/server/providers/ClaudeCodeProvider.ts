@@ -308,7 +308,6 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       settingsAgentToolsDisabledLoader: ClaudeCodeDeps.settingsAgentToolsDisabledLoader,
       mcpAuthToken: ClaudeCodeDeps.mcpAuthToken,
       mcpConfigLoader: ClaudeCodeDeps.mcpConfigLoader,
-      extensionPluginsLoader: ClaudeCodeDeps.extensionPluginsLoader,
       claudeSettingsEnvLoader: ClaudeCodeDeps.claudeSettingsEnvLoader,
       shellEnvironmentLoader: ClaudeCodeDeps.shellEnvironmentLoader,
     });

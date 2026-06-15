@@ -313,7 +313,8 @@ interface ElectronAPI {
 
   // Session state tracking operations
   sessionState: {
-    getActiveSessionIds: () => Promise<{ success: boolean; sessionIds: string[]; error?: string }>;
+    getTrackedSessionIds: () => Promise<{ success: boolean; sessionIds: string[]; error?: string }>;
+    getRunningSessionIds: () => Promise<{ success: boolean; sessionIds: string[]; error?: string }>;
     getSessionState: (sessionId: string) => Promise<any>;
     isSessionActive: (sessionId: string) => Promise<boolean>;
     subscribe: (workspacePath?: string | string[]) => Promise<void>;

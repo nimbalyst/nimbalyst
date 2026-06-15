@@ -226,6 +226,80 @@ describe('ClaudeCliSessionLauncher', () => {
     expect(cfg.args).toContain('--settings');
   });
 
+  // NIM-845: extension Claude-plugins (namespaced slash commands) load via
+  // `--plugin-dir <dir>`. The launcher resolves the dirs from the injected loader
+  // and passes them through — but ONLY when the resolved CLI supports the flag
+  // (cliSupportsPluginDir). On an old CLI the flag would be rejected as unknown
+  // and crash the launch, so they're omitted (silent skip, namespaced commands
+  // simply won't resolve, as before the fix).
+  function makePluginHarness(opts: {
+    loadPluginDirs?: ClaudeCliSessionLauncherDeps['loadPluginDirs'];
+    cliSupportsPluginDir?: ClaudeCliSessionLauncherDeps['cliSupportsPluginDir'];
+  }) {
+    const createClaudeCliTerminal = vi.fn(async (..._args: CreateClaudeCliTerminalArgs): Promise<void> => {});
+    const launcher = new ClaudeCliSessionLauncher({
+      getMcpServersConfig: vi.fn(async (_opts: { sessionId: string; workspacePath: string }) => ({
+        'nimbalyst-mcp': { type: 'sse', url: 'http://127.0.0.1:5123/mcp' },
+      })),
+      resolveClaudeExecutable: () => '/usr/local/bin/claude',
+      getEnhancedPath: () => '/opt/bin:/usr/bin',
+      terminalManager: { createClaudeCliTerminal },
+      baseEnv: {},
+      tempDir: '/tmp/claude-cli-test',
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async () => undefined),
+      loadPluginDirs: opts.loadPluginDirs,
+      cliSupportsPluginDir: opts.cliSupportsPluginDir,
+    });
+    return { launcher, createClaudeCliTerminal };
+  }
+
+  it('passes loader-returned plugin dirs as --plugin-dir when the CLI supports the flag', async () => {
+    const loadPluginDirs = vi.fn(async () => ['/ext/a/plugin', '/ext/b/plugin']);
+    const cliSupportsPluginDir = vi.fn(() => true);
+    const { launcher, createClaudeCliTerminal } = makePluginHarness({ loadPluginDirs, cliSupportsPluginDir });
+    await launcher.launch(baseInput);
+
+    expect(loadPluginDirs).toHaveBeenCalledWith('/work');
+    expect(cliSupportsPluginDir).toHaveBeenCalledWith('/usr/local/bin/claude');
+    const args = createClaudeCliTerminal.mock.calls[0][1].spawnConfig.args;
+    const i = args.indexOf('--plugin-dir');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe('/ext/a/plugin');
+    expect(args.filter((a) => a === '--plugin-dir')).toHaveLength(2);
+  });
+
+  it('omits --plugin-dir (and does NOT load dirs) when the resolved CLI lacks support', async () => {
+    const loadPluginDirs = vi.fn(async () => ['/ext/a/plugin']);
+    const cliSupportsPluginDir = vi.fn(() => false);
+    const { launcher, createClaudeCliTerminal } = makePluginHarness({ loadPluginDirs, cliSupportsPluginDir });
+    await launcher.launch(baseInput);
+
+    expect(cliSupportsPluginDir).toHaveBeenCalledWith('/usr/local/bin/claude');
+    // No point loading dirs we can't pass — the loader must not run.
+    expect(loadPluginDirs).not.toHaveBeenCalled();
+    expect(createClaudeCliTerminal.mock.calls[0][1].spawnConfig.args).not.toContain('--plugin-dir');
+  });
+
+  it('still launches when the plugin-dir loader throws (best-effort; namespaced commands just stay unresolved)', async () => {
+    const loadPluginDirs = vi.fn(async () => {
+      throw new Error('plugin scan boom');
+    });
+    const { launcher, createClaudeCliTerminal } = makePluginHarness({
+      loadPluginDirs,
+      cliSupportsPluginDir: () => true,
+    });
+    await launcher.launch(baseInput);
+    expect(createClaudeCliTerminal).toHaveBeenCalledTimes(1);
+    expect(createClaudeCliTerminal.mock.calls[0][1].spawnConfig.args).not.toContain('--plugin-dir');
+  });
+
+  it('omits --plugin-dir when no loader is wired (default deps)', async () => {
+    const { launcher, createClaudeCliTerminal } = makeHarness();
+    await launcher.launch(baseInput);
+    expect(createClaudeCliTerminal.mock.calls[0][1].spawnConfig.args).not.toContain('--plugin-dir');
+  });
+
   it('never lets ANTHROPIC_API_KEY cross into the CLI env (CLAUDE.md implicit-key rule)', async () => {
     const { launcher, createClaudeCliTerminal } = makeHarness();
     await launcher.launch(baseInput);

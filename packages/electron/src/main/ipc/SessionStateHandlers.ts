@@ -69,13 +69,27 @@ export async function registerSessionStateHandlers() {
   // Subscribe to state changes and sync to mobile
   setupSyncSubscription(stateManager);
 
-  // Get active session IDs
-  safeHandle('ai-session-state:get-active', async (_event) => {
+  // Get tracked session IDs (bare map membership; may include idle sessions).
+  // NOT a "running" signal — see getTrackedSessionIds / NIM-846. Most callers
+  // want ai-session-state:get-running instead.
+  safeHandle('ai-session-state:get-tracked', async (_event) => {
     try {
-      const activeIds = stateManager.getActiveSessionIds();
-      return { success: true, sessionIds: activeIds };
+      const trackedIds = stateManager.getTrackedSessionIds();
+      return { success: true, sessionIds: trackedIds };
     } catch (error) {
-      console.error('[SessionStateHandlers] Error getting active sessions:', error);
+      console.error('[SessionStateHandlers] Error getting tracked sessions:', error);
+      return { success: false, error: String(error), sessionIds: [] };
+    }
+  });
+
+  // Get session IDs whose turn is actually in progress (running / streaming).
+  // This is the canonical "is it running?" query (NIM-846).
+  safeHandle('ai-session-state:get-running', async (_event) => {
+    try {
+      const sessionIds = stateManager.getRunningSessionIds();
+      return { success: true, sessionIds };
+    } catch (error) {
+      console.error('[SessionStateHandlers] Error getting running sessions:', error);
       return { success: false, error: String(error), sessionIds: [] };
     }
   });
@@ -323,16 +337,7 @@ function setupSyncSubscription(stateManager: ReturnType<typeof getSessionStateMa
  * Used by the quit handler to show a confirmation dialog.
  */
 export function hasActiveStreamingSessions(): boolean {
-  const stateManager = getSessionStateManager();
-  const activeIds = stateManager.getActiveSessionIds();
-
-  for (const sessionId of activeIds) {
-    const state = stateManager.getSessionState(sessionId);
-    if (state && (state.status === 'running' || state.isStreaming)) {
-      return true;
-    }
-  }
-  return false;
+  return getSessionStateManager().getRunningSessionIds().length > 0;
 }
 
 /**

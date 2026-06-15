@@ -67,7 +67,8 @@ function makeApi() {
     sessionState: {
       subscribe: vi.fn().mockResolvedValue({ success: true }),
       unsubscribe: vi.fn().mockResolvedValue({ success: true }),
-      getActiveSessionIds: vi.fn().mockResolvedValue({ success: true, sessionIds: [] }),
+      getTrackedSessionIds: vi.fn().mockResolvedValue({ success: true, sessionIds: [] }),
+      getRunningSessionIds: vi.fn().mockResolvedValue({ success: true, sessionIds: [] }),
       // The listener uses sessionState.onStateChange as the dedicated channel
       // for lifecycle events (session:started/streaming/waiting/completed/error/interrupted).
       // Capture the handler under the same key the rest of the test code uses.
@@ -458,8 +459,8 @@ describe('processing reconcile on terminal events', () => {
     vi.useFakeTimers();
     try {
       // A session whose processing atom is stuck true while the backend no longer
-      // reports it active (getActiveSessionIds mock returns []). This stands in for
-      // a meta-agent child whose terminal clear was missed, pinning the header.
+      // reports it running (getRunningSessionIds mock returns []). This stands in
+      // for a meta-agent child whose terminal clear was missed, pinning the header.
       const stuck = uniqueSessionId('stuck');
       seedRegistry([{ id: stuck }]);
       store.set(sessionProcessingAtom(stuck), true);

@@ -13,7 +13,6 @@ describe('McpConfigService', () => {
       superLoopProgressServerPort: null,
       sessionContextServerPort: null,
       mcpConfigLoader: null,
-      extensionPluginsLoader: null,
       claudeSettingsEnvLoader: null,
       shellEnvironmentLoader: null,
     };

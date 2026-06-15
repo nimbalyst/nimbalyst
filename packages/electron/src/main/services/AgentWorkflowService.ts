@@ -74,6 +74,15 @@ export interface AgentWorkflowQueryOptions {
   provider?: string | null;
   nativeCommands?: string[];
   nativeSkills?: string[];
+  /**
+   * Drop extension Claude-plugin commands (`source: 'plugin'`) from the result
+   * (NIM-845). Set by the picker for a `claude-code-cli` session whose resolved
+   * `claude` is too old to accept `--plugin-dir` (< 2.1.142): those plugins can't
+   * load, so their namespaced commands (`/feedback:bug-report`, …) would never
+   * resolve — offering them is a silent dead-end. When the CLI supports the flag
+   * (or for the SDK `claude-code` path), leave this unset so plugin commands show.
+   */
+  excludePluginCommands?: boolean;
 }
 
 export interface AgentWorkflowServiceOptions {
@@ -405,6 +414,11 @@ export class AgentWorkflowService {
     const seenNames = new Set<string>();
     return providerEntries.filter(entry => {
       if (!entry.name || seenNames.has(entry.name)) {
+        return false;
+      }
+      // NIM-845: on a claude-code-cli whose CLI can't load plugins, drop plugin
+      // commands so the picker doesn't offer commands that will never resolve.
+      if (options.excludePluginCommands && entry.source === 'plugin') {
         return false;
       }
       seenNames.add(entry.name);

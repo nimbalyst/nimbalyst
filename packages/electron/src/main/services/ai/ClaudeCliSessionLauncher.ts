@@ -90,6 +90,24 @@ export interface ClaudeCliSessionLauncherDeps {
    * `ask` / `null` (untrusted) keep the hook + native gate. Omit to keep the gate.
    */
   getPermissionMode?: (workspacePath: string) => 'ask' | 'allow-all' | 'bypass-all' | null;
+  /**
+   * Load the extension Claude-plugin directories for this workspace (NIM-845).
+   * In production this is `getClaudePluginPaths(wp)` mapped to `.path` — the same
+   * single source of truth the SDK path uses. Each returned dir is a bare plugin
+   * directory passed to the CLI via `--plugin-dir`, which is what makes namespaced
+   * slash commands resolve. Omit → no extension plugins (namespaced commands won't
+   * resolve, as before NIM-845).
+   */
+  loadPluginDirs?: (workspacePath: string) => Promise<string[]>;
+  /**
+   * Report whether the resolved `claude` executable accepts `--plugin-dir`
+   * (NIM-845). In production this is the cached `--version` probe
+   * (`resolveClaudeCliSupportsPluginDir`). Old CLIs (< 2.1.142) reject the flag as
+   * an unknown option and the launch would crash, so when this returns false we
+   * skip loading/passing plugin dirs entirely. Omitted → assume supported (the
+   * loader is the only gate); paired with `loadPluginDirs` in production.
+   */
+  cliSupportsPluginDir?: (executable: string) => boolean;
 }
 
 export interface LaunchClaudeCliSessionInput {
@@ -223,9 +241,39 @@ export class ClaudeCliSessionLauncher {
           }
         : undefined;
 
+    // 2.6. Resolve the `claude` executable once (reused for the plugin-support
+    // probe and the spawn config below).
+    const claudeExecutable = this.deps.resolveClaudeExecutable();
+
+    // NIM-845: load extension Claude-plugin directories so namespaced slash
+    // commands (`/feedback:bug-report`, …) resolve in this CLI session. Gate on
+    // `--plugin-dir` support FIRST — on an old CLI (< 2.1.142) the flag is an
+    // unknown option and would crash the launch, so we skip loading entirely and
+    // log once (silent to the user; commands stay unresolved as before the fix).
+    let pluginDirs: string[] | undefined;
+    if (this.deps.loadPluginDirs) {
+      const supportsPluginDir = this.deps.cliSupportsPluginDir?.(claudeExecutable) ?? true;
+      if (supportsPluginDir) {
+        try {
+          pluginDirs = (await this.deps.loadPluginDirs(workspacePath)).filter(
+            (dir) => typeof dir === 'string' && dir.trim().length > 0,
+          );
+        } catch (err) {
+          // Best-effort: never block the launch over plugin discovery.
+          console.warn('[ClaudeCliSessionLauncher] failed to load plugin dirs; launching without extension plugins:', err);
+          pluginDirs = undefined;
+        }
+      } else {
+        console.log(
+          `[ClaudeCliSessionLauncher] resolved claude (${claudeExecutable}) lacks --plugin-dir support; ` +
+            'skipping extension plugins (namespaced slash commands will not resolve)',
+        );
+      }
+    }
+
     // 3. Build the spawn config (resolves exec, sets enhanced PATH, strips API key).
     const spawnConfig = buildClaudeCliSpawnConfig({
-      claudeExecutable: this.deps.resolveClaudeExecutable(),
+      claudeExecutable,
       cwd,
       mcpConfigPath,
       model: input.model,
@@ -238,6 +286,7 @@ export class ClaudeCliSessionLauncher {
       settingsJson,
       dangerouslySkipPermissions,
       additionalDirectories: input.additionalDirectories,
+      pluginDirs,
     });
 
     // 4. Spawn the genuine interactive CLI in the terminal strip. Tear the proxy

@@ -382,7 +382,6 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       settingsAgentToolsDisabledLoader: OpenAICodexProvider.settingsAgentToolsDisabledLoader,
       mcpAuthToken: OpenAICodexProvider.mcpAuthToken,
       mcpConfigLoader: OpenAICodexProvider.mcpConfigLoader,
-      extensionPluginsLoader: null,
       claudeSettingsEnvLoader: OpenAICodexProvider.claudeSettingsEnvLoader,
       shellEnvironmentLoader: OpenAICodexProvider.shellEnvironmentLoader,
     });

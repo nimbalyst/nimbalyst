@@ -150,7 +150,6 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
       settingsAgentToolsDisabledLoader: OpenAICodexACPProvider.settingsAgentToolsDisabledLoader,
       mcpAuthToken: OpenAICodexACPProvider.mcpAuthToken,
       mcpConfigLoader: OpenAICodexACPProvider.mcpConfigLoader,
-      extensionPluginsLoader: null,
       claudeSettingsEnvLoader: OpenAICodexACPProvider.claudeSettingsEnvLoader,
       shellEnvironmentLoader: OpenAICodexACPProvider.shellEnvironmentLoader,
     });
