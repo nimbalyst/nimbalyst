@@ -2547,26 +2547,25 @@ app.on('before-quit', async (event) => {
             cancelId: 1
         });
 
-        if (response.response === 0) {
-            // User clicked "Quit Anyway" - proceed with quit
-            console.log('[QUIT] User confirmed quit with active AI session');
-            analytics.sendEvent('quit_confirmation_result', {
-                result: 'quit_anyway'
-            });
-            // Set isAppQuitting before calling app.quit() to prevent re-showing dialog
-            isAppQuitting = true;
-            app.quit();
-        } else {
-            // User cancelled
+        if (response.response !== 0) {
+            // User cancelled - stay running.
             console.log('[QUIT] User cancelled quit due to active AI session');
             analytics.sendEvent('quit_confirmation_result', {
                 result: 'cancelled'
             });
             return;
         }
-        // If user confirmed quit, app.quit() was called above and before-quit will fire again
-        // with isAppQuitting=true, so we return here to avoid duplicate cleanup
-        return;
+
+        // User clicked "Quit Anyway". Fall through to the graceful cleanup block
+        // below (event.preventDefault was already called above) so the database
+        // is checkpointed, closed, and its lock released. The old code called
+        // app.quit() and returned here, which skipped cleanup on BOTH passes (the
+        // second before-quit short-circuits on isAppQuitting), leaking
+        // nimbalyst-db.pid and forcing the next launch onto stale-lock detection.
+        console.log('[QUIT] User confirmed quit with active AI session');
+        analytics.sendEvent('quit_confirmation_result', {
+            result: 'quit_anyway'
+        });
     }
 
     // Prevent default to do async cleanup
