@@ -68,6 +68,13 @@ const MAX_SOFT_MISSES = 2;
 // model can re-read a specific range if it needs more of a truncated result.
 const TOOL_RESULT_MAX_CHARS = 24_000;
 
+// Read-only tools whose identical repeat calls (same args, no mutation since)
+// are short-circuited instead of re-executed, to break weak-model re-read loops.
+const DEDUP_READONLY_TOOLS = new Set(['read_file', 'list_files', 'search_files']);
+// After this many duplicate read-only calls in one turn the model is clearly
+// stuck looping; stop and force a final synthesis instead of burning the budget.
+const MAX_DUPLICATE_READS = 4;
+
 export class AntigravityToolLoopProtocol {
   private modelKey: string;
   private readonly maxIterations: number;
@@ -77,6 +84,11 @@ export class AntigravityToolLoopProtocol {
   // Compact record of the tool calls already made THIS turn, surfaced back to
   // the model each render so it can see what it has done and stop re-fetching.
   private toolCallLedger: Array<{ name: string; summary: string }> = [];
+  // Read-only calls already executed this turn, keyed by name+args+mutationEpoch,
+  // so a weak model that ignores the "do not re-read" instruction is HARD-stopped
+  // from looping. A write_file/run_command bumps the epoch to re-allow reads.
+  private seenReadKeys = new Set<string>();
+  private mutationEpoch = 0;
 
   constructor(opts: {
     modelKey: string;
@@ -161,6 +173,8 @@ export class AntigravityToolLoopProtocol {
     this.aborted = false;
     this.history.push({ role: 'user', content: userMessage });
     this.toolCallLedger = [];
+    this.seenReadKeys.clear();
+    this.mutationEpoch = 0;
 
     // Hardening (a): allowlist of legitimate tool names for THIS turn.
     const toolAllowlist = new Set(tools.map((t) => t.function.name));
@@ -172,6 +186,7 @@ export class AntigravityToolLoopProtocol {
     // than ending the turn, so a multi-step task is not abandoned after one step
     // when a weaker model narrates its next action.
     let softMisses = 0;
+    let dupHits = 0;
 
     for (let iteration = 0; iteration < this.maxIterations; iteration++) {
       if (this.aborted) return;
@@ -249,6 +264,42 @@ export class AntigravityToolLoopProtocol {
 
       yield { type: 'tool_call', name: toolCall.name, args: toolCall.arguments };
 
+      const ledgerArg = (() => {
+        const a = (toolCall.arguments ?? {}) as Record<string, unknown>;
+        const v = a.path ?? a.query ?? a.pattern ?? a.command ?? a.glob ?? '';
+        const str = typeof v === 'string' ? v : JSON.stringify(v);
+        return str.length > 80 ? str.slice(0, 80) + '...' : str;
+      })();
+
+      // HARD dedup of repeated read-only calls. A weak model often ignores the
+      // "do not re-read" instruction and loops on the same file/listing for
+      // minutes until a turn times out. If this exact read-only call already ran
+      // this turn with no mutation since, skip the host round-trip and feed back a
+      // firm note instead of the identical content. After too many duplicates the
+      // model is stuck -- break to the final-synthesis path below.
+      if (DEDUP_READONLY_TOOLS.has(toolCall.name)) {
+        const dupKey = `${toolCall.name}:${this.stableArgs(toolCall.arguments)}:${this.mutationEpoch}`;
+        if (this.seenReadKeys.has(dupKey)) {
+          const note = JSON.stringify({
+            note:
+              `Duplicate ${toolCall.name} skipped: you already ran this exact call earlier ` +
+              `this turn and nothing has changed since. Its result is above. Do NOT repeat it -- ` +
+              `use that result, inspect something different, or write your final answer now.`,
+          });
+          this.history.push({
+            role: 'tool',
+            content: this.sanitizeToolResult(note),
+            toolName: toolCall.name,
+          });
+          this.toolCallLedger.push({ name: toolCall.name, summary: `${ledgerArg} (duplicate)` });
+          yield { type: 'tool_result', name: toolCall.name, result: note };
+          dupHits++;
+          if (dupHits >= MAX_DUPLICATE_READS) break;
+          continue;
+        }
+        this.seenReadKeys.add(dupKey);
+      }
+
       let resultText: string;
       try {
         const rawResult = await executeToolCall(toolCall.name, toolCall.arguments);
@@ -262,15 +313,15 @@ export class AntigravityToolLoopProtocol {
 
       if (this.aborted) return;
 
+      // A write/command may change files, listings, and search results, so every
+      // earlier read is no longer authoritative: bump the epoch to re-allow reads.
+      if (toolCall.name === 'write_file' || toolCall.name === 'run_command') {
+        this.mutationEpoch++;
+      }
+
       // Hardening (d): sanitize the result before persisting into history.
       const safeResultText = this.sanitizeToolResult(resultText);
       this.history.push({ role: 'tool', content: safeResultText, toolName: toolCall.name });
-      const ledgerArg = (() => {
-        const a = (toolCall.arguments ?? {}) as Record<string, unknown>;
-        const v = a.path ?? a.query ?? a.pattern ?? a.command ?? a.glob ?? '';
-        const str = typeof v === 'string' ? v : JSON.stringify(v);
-        return str.length > 80 ? str.slice(0, 80) + '...' : str;
-      })();
       this.toolCallLedger.push({ name: toolCall.name, summary: ledgerArg });
       // Yield the ORIGINAL resultText to the host -- the renderer/UI shows the
       // tool's actual return value, not the sanitized prompt-encoded form.
@@ -571,6 +622,19 @@ export class AntigravityToolLoopProtocol {
       return { name: tc.name, arguments: args };
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Stable, key-sorted serialization of tool arguments for dedup keys, so the
+   * same call with keys in a different order still matches.
+   */
+  private stableArgs(args: Record<string, unknown> | undefined): string {
+    if (!args || typeof args !== 'object') return '{}';
+    try {
+      return JSON.stringify(args, Object.keys(args).sort());
+    } catch {
+      return String(args);
     }
   }
 

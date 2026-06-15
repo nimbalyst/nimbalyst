@@ -139,4 +139,39 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
     expect(text?.content).toBe('Here is the real answer.');
   });
+
+  it('dedups identical read-only calls and force-synthesizes when stuck looping', async () => {
+    const READ_TOOL = [{ type: 'function' as const, function: { name: 'read_file' } }];
+    const { proto } = makeProto(async (p) => {
+      if (/final answer now/i.test(p)) return 'SYNTHESIZED from gathered context.';
+      return '{"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}}';
+    }, 40);
+    const exec = vi.fn(async () => 'file contents');
+
+    const events = await drain(proto.run('go', 'sys', READ_TOOL, exec));
+
+    expect(exec).toHaveBeenCalledTimes(1);
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toBe('SYNTHESIZED from gathered context.');
+  });
+
+  it('re-allows a read after a write_file mutates state (epoch bump)', async () => {
+    const RW_TOOLS = [
+      { type: 'function' as const, function: { name: 'read_file' } },
+      { type: 'function' as const, function: { name: 'write_file' } },
+    ];
+    let n = 0;
+    const { proto } = makeProto(async () => {
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}}';
+      if (n === 2) return '{"tool_call":{"name":"write_file","arguments":{"path":"a.md","content":"x"}}}';
+      if (n === 3) return '{"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}}';
+      return 'done';
+    }, 40);
+    const exec = vi.fn(async () => 'ok');
+
+    await drain(proto.run('go', 'sys', RW_TOOLS, exec));
+
+    expect(exec).toHaveBeenCalledTimes(3);
+  });
 });

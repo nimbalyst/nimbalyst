@@ -25,7 +25,7 @@
       "permissions": [],
       "minimumAppVersion": "1.0.0",
       "downloadUrl": "bundled:gemini-antigravity.nimext",
-      "checksum": "28f9bdbd6e34017811994317153d136ef1dc8221e777d4d226052c3e01aa788a",
+      "checksum": "caa265fbcb118b69d3e2437ce100a9828832b90d5ea7effc0c51449b0b10c376",
       "repositoryUrl": "",
       "changelog": "Phase 5 reshape to aiAgentProviders + backendModules.",
       "tagline": "Google Gemini 3.5 Flash via the Antigravity language server",
