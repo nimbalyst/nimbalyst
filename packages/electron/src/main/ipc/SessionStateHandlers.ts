@@ -38,7 +38,16 @@ async function getCanonicalWorkspacePathForSession(sessionId: string): Promise<s
       [sessionId]
     );
     const workspacePath = rows[0]?.workspace_id ?? null;
-    sessionWorkspaceCache.set(sessionId, workspacePath);
+    // Only cache a RESOLVED (non-null) path. A null here usually means the
+    // session row was not committed yet when the first event fired (common for
+    // meta-agent child sessions created mid-run). Caching null would PERMANENTLY
+    // drop every later event for this session, because the workspace filter
+    // never matches null -- which pinned child spinners on "Thinking..." forever
+    // and left the meta-agent's aggregate stuck. Leaving null uncached lets the
+    // next event re-resolve once the row is committed.
+    if (workspacePath !== null) {
+      sessionWorkspaceCache.set(sessionId, workspacePath);
+    }
     return workspacePath;
   } catch (error) {
     console.error('[SessionStateHandlers] Failed to resolve canonical workspace path:', error);
@@ -146,6 +155,19 @@ export async function registerSessionStateHandlers() {
               }
             }
             if (!matched) {
+              // Dropped here = the renderer never sees this event. For a TERMINAL
+              // event that leaves the session's spinner stuck on "Thinking...".
+              if (
+                stateEvent.type === 'session:completed' ||
+                stateEvent.type === 'session:error' ||
+                stateEvent.type === 'session:interrupted'
+              ) {
+                console.warn(
+                  `[SessionStateHandlers] dropped terminal ${stateEvent.type} for session ` +
+                  `${stateEvent.sessionId} (sessionWorkspacePath=${sessionWorkspacePath ?? 'null'}, ` +
+                  `eventWorkspacePath=${stateEvent.workspacePath ?? 'null'})`,
+                );
+              }
               return;
             }
           }

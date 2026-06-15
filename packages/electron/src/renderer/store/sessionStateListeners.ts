@@ -976,24 +976,49 @@ export function initSessionStateListeners(): () => void {
     }
   };
 
+  // Handle for the self-healing processing-state reconcile interval (below).
+  let processingReconcileInterval: ReturnType<typeof setInterval> | undefined;
+
   // First, subscribe to the session state manager (IPC call to register this window).
   // Workspace can change during app lifetime; this is updated via updateSessionStateListenerWorkspace().
   activeWorkspacePathSnapshot = store.get(sessionListWorkspaceAtom) || null;
   reconcileSessionStateSubscription();
 
-  // Fetch currently active sessions and restore their processing state
-  // This handles the case where the renderer refreshes while sessions are running
-  window.electronAPI.sessionState.getActiveSessionIds?.()
-    .then((result: { success: boolean; sessionIds: string[] }) => {
-      if (result.success && result.sessionIds.length > 0) {
-        for (const sessionId of result.sessionIds) {
-          store.set(sessionProcessingAtom(sessionId), true);
+  // Reconcile processing state against the backend's authoritative in-memory
+  // active-session set. This RESTORES spinners after a renderer refresh AND,
+  // critically, CLEARS stuck spinners: if a session is marked processing in the
+  // UI but is NOT in the active set, its terminal session:completed was dropped
+  // (e.g. the null-workspace routing drop fixed in SessionStateHandlers) and the
+  // "Thinking..." indicator would otherwise pin until the user clicks it. Runs
+  // once now and on a long interval as a self-healing backstop. A genuinely
+  // running session is always in the active set (startSession adds it before
+  // emitting session:started), so the clear can never cut a live turn.
+  const reconcileProcessingState = async () => {
+    try {
+      const result = await window.electronAPI.sessionState.getActiveSessionIds?.();
+      if (!result?.success) return;
+      const activeSet = new Set(result.sessionIds);
+      for (const sessionId of activeSet) {
+        store.set(sessionProcessingAtom(sessionId), true);
+      }
+      let healed = 0;
+      for (const [sessionId] of store.get(sessionRegistryAtom)) {
+        if (!activeSet.has(sessionId) && store.get(sessionProcessingAtom(sessionId))) {
+          store.set(sessionProcessingAtom(sessionId), false);
+          healed++;
         }
       }
-    })
-    .catch((error: any) => {
-      console.error('[sessionStateListeners] Error fetching active sessions:', error);
-    });
+      if (healed > 0) {
+        console.debug(
+          `[sessionStateListeners] reconcile: healed ${healed} stuck processing session(s)`,
+        );
+      }
+    } catch (error) {
+      console.error('[sessionStateListeners] reconcileProcessingState failed:', error);
+    }
+  };
+  void reconcileProcessingState();
+  processingReconcileInterval = setInterval(() => void reconcileProcessingState(), 15000);
 
   // Then, listen for state change events
   window.electronAPI.sessionState.onStateChange(handleStateChange);
@@ -1071,6 +1096,11 @@ export function initSessionStateListeners(): () => void {
     readStateSyncTimers.clear();
 
     blitzAnalysisTriggered.clear();
+
+    if (processingReconcileInterval) {
+      clearInterval(processingReconcileInterval);
+      processingReconcileInterval = undefined;
+    }
 
     window.electronAPI.sessionState?.removeStateChangeListener?.(handleStateChange);
     window.electronAPI.sessionState?.unsubscribe?.();
