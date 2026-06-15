@@ -823,7 +823,12 @@ export class AntigravityToolLoopProtocol {
    * trimmed - an acceptable trade for catching ungrounded fabrication.
    */
   private async verifyFinalAnswer(draft: string, timeoutMs: number): Promise<string> {
-    const SOURCE_BUDGET = 24_000;
+    // Grounding window over the newest gathered tool outputs. Kept generous so a
+    // value the answer cites (a flag's allowed choices, a version, a filename) is
+    // likely present in the source the verifier checks against; a value outside
+    // the window cannot be corrected. gemini-3-flash handles this prompt size and
+    // the call is bounded by the per-turn timeout + retry.
+    const SOURCE_BUDGET = 48_000;
     const sources: string[] = [];
     let used = 0;
     for (let i = this.history.length - 1; i >= 0; i--) {
@@ -838,8 +843,11 @@ export class AntigravityToolLoopProtocol {
       'You are checking a DRAFT ANSWER for factual grounding against the SOURCE',
       'MATERIAL below (the raw tool outputs gathered while answering). Rewrite the',
       'draft so every concrete factual claim (names, flags, file paths, dependencies,',
-      'values) is supported by the SOURCE MATERIAL. Correct any claim that contradicts',
-      'the source and remove any concrete claim the source does not support. Do NOT',
+      'values) is supported by the SOURCE MATERIAL. When the draft lists the allowed',
+      'values of an option (for example a flag\'s choices), the set must match the',
+      'source exactly - correct any added, missing, or renamed value. Correct any',
+      'claim that contradicts the source and remove any concrete claim the source',
+      'does not support. Do NOT',
       'invent new facts. Preserve the structure and wording otherwise. Output ONLY the',
       'corrected answer text, with no preamble.',
       '',
