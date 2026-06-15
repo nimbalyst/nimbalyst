@@ -70,6 +70,28 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     expect(events[events.length - 1].type).toBe('complete');
   });
 
+  it('force-synthesis instructs grounding and permits abstention, not a forced confident guess', async () => {
+    // A weak model forced to "write your complete final answer now" fabricates a
+    // confident answer when it lacks grounding. The finalize prompt must instead
+    // require using only what was gathered and allow saying what is undetermined.
+    const prompts: string[] = [];
+    let call = 0;
+    const { proto } = makeProto(async (p) => {
+      prompts.push(p);
+      call++;
+      return call <= 2
+        ? '{"tool_call":{"name":"list_files","arguments":{"path":"."}}}'
+        : 'grounded answer';
+    }, 2);
+
+    await drain(proto.run('task', 'sys', LIST_TOOL, async () => 'x'));
+
+    const finalPrompt = prompts[prompts.length - 1];
+    expect(finalPrompt).toContain('ONLY the information actually gathered');
+    expect(finalPrompt).toContain('remains undetermined');
+    expect(finalPrompt).not.toContain('Write your complete final answer now');
+  });
+
   it('falls back to the limit stub if the finalization call fails', async () => {
     let call = 0;
     const { proto } = makeProto(async () => {

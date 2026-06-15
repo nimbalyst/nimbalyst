@@ -368,7 +368,10 @@ export class AntigravityToolLoopProtocol {
           toolName: 'system',
           content: this.sanitizeToolResult(
             '[You have reached the tool-call limit. Do NOT request any more tools. ' +
-              'Write your complete final answer now, using everything gathered above.]',
+              'Write your final answer now using ONLY the information actually gathered above. ' +
+              'Do not invent file contents, command output, or facts you did not retrieve. ' +
+              'If what you gathered is insufficient to fully answer, say plainly what you found ' +
+              'and what remains undetermined rather than guessing.]',
           ),
         });
         const finalPrompt = this.renderPrompt(fullSystemPrompt);
