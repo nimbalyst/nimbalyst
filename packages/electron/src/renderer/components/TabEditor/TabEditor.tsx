@@ -221,17 +221,29 @@ export const TabEditor: React.FC<TabEditorProps> = ({
   const [monacoDiffChangeCount, setMonacoDiffChangeCount] = useState(0); // Number of changes in Monaco diff mode
   const [showTreeView, setShowTreeView] = useState(false); // Debug tree view for Lexical (dev mode only)
 
-  // Track editor type usage when file is opened
+  // Track editor type usage when a file is opened.
+  //
+  // The emission is deferred until the resolved editor type settles. At startup
+  // a file can mount in its fallback editor (Monaco/Lexical) before the
+  // extension that owns its compound type (e.g. `.mockup.html`, `.calc.md`)
+  // finishes registering. Emitting immediately would misreport it as `.html` /
+  // `.md`, and the one-shot guard would lock that in. We instead wait a short
+  // grace period and re-arm whenever the custom-editor registry changes
+  // (registryVersion), so we emit exactly once with the final editor type.
   const hasTrackedOpenRef = useRef<string | null>(null);
   useEffect(() => {
-    // Only track once per file path when it becomes active
-    if (isActive && isEditorReady && hasTrackedOpenRef.current !== filePath) {
+    if (!isActive || !isEditorReady) return;
+    if (hasTrackedOpenRef.current === filePath) return;
+
+    const timer = setTimeout(() => {
+      if (hasTrackedOpenRef.current === filePath) return;
       hasTrackedOpenRef.current = filePath;
 
-      // Determine file extension and editor category for tracking.
-      // For custom editors, prefer the registered key (e.g., '.reddit.watch.json',
-      // '.mockup.html') so analytics reflects the compound extension the editor
-      // was matched on, not just the file's final segment.
+      // Resolve the editor type from the live registry at emit time so a
+      // late-registering extension editor is reported correctly. For custom
+      // editors, prefer the registered key (e.g. '.reddit.watch.json',
+      // '.mockup.html') so analytics reflect the compound extension matched on,
+      // not just the file's final segment.
       const customMatch = customEditorRegistry.findMatchForFile(filePath);
       let fileExtension: string;
       if (customMatch) {
@@ -241,25 +253,25 @@ export const TabEditor: React.FC<TabEditorProps> = ({
         fileExtension = lastDot >= 0 ? filePath.substring(lastDot).toLowerCase() : '';
       }
 
-      let editorCategory = 'monaco'; // default for code files
+      const resolvedType = getFileType(filePath, () => customMatch != null);
+      let editorCategory: string;
       let hasMermaid = false;
       let hasDataModel = false;
-
-      if (isMarkdown) {
+      if (resolvedType === 'custom') {
+        // Use the registered editor name (e.g. "Mockup Editor", "PDF Viewer").
+        editorCategory = customMatch?.registration.name || 'custom';
+      } else if (resolvedType === 'markdown') {
         editorCategory = 'markdown';
-        // Check if markdown contains Mermaid diagrams
         if (initialContent.includes('```mermaid') || initialContent.includes('~~~mermaid')) {
           hasMermaid = true;
         }
-        // Check if markdown contains DataModel references
         if (initialContent.includes('```datamodel') || initialContent.includes('datamodel:')) {
           hasDataModel = true;
         }
-      } else if (isImage) {
+      } else if (resolvedType === 'image') {
         editorCategory = 'image';
-      } else if (isCustom) {
-        // Use the registered editor name (e.g., "Spreadsheet Editor", "PDF Viewer")
-        editorCategory = customMatch?.registration.name || 'custom';
+      } else {
+        editorCategory = 'monaco';
       }
 
       posthog?.capture('editor_type_opened', {
@@ -268,8 +280,10 @@ export const TabEditor: React.FC<TabEditorProps> = ({
         hasMermaid,
         hasDataModel,
       });
-    }
-  }, [isActive, isEditorReady, filePath, isMarkdown, isImage, isCustom, posthog, initialContent]);
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [isActive, isEditorReady, filePath, registryVersion, posthog, initialContent]);
 
   // Track current file path to abort operations when switching files
   const currentFilePathRef = useRef(filePath);
