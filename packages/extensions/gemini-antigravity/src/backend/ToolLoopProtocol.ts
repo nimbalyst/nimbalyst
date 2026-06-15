@@ -338,9 +338,10 @@ export class AntigravityToolLoopProtocol {
 
       if (this.aborted) return;
 
-      // A write/command may change files, listings, and search results, so every
-      // earlier read is no longer authoritative: bump the epoch to re-allow reads.
-      if (toolCall.name === 'write_file' || toolCall.name === 'run_command') {
+      // Any non-readonly tool (write, command, spawning a child that writes,
+      // etc.) may change files, listings, and search results, so every earlier
+      // read is no longer authoritative: bump the epoch to re-allow reads.
+      if (!DEDUP_READONLY_TOOLS.has(toolCall.name)) {
         this.mutationEpoch++;
       }
 
@@ -599,7 +600,7 @@ export class AntigravityToolLoopProtocol {
     while (openBrace >= 0 && stripped[openBrace] !== '{') {
       openBrace--;
     }
-    if (openBrace < 0) return null;
+    if (openBrace < 0) return this.parseToolCall(stripped.slice(keyIdx + 1));
 
     // String-aware scan.
     let depth = 0;
@@ -634,13 +635,13 @@ export class AntigravityToolLoopProtocol {
         }
       }
     }
-    if (!found || depth !== 0) return null;
+    if (!found || depth !== 0) return this.parseToolCall(stripped.slice(keyIdx + 1));
 
     const candidate = stripped.slice(openBrace, closeIdx + 1);
     try {
       const parsed = JSON.parse(candidate) as { tool_call?: { name?: unknown; arguments?: unknown } };
       const tc = parsed.tool_call;
-      if (!tc || typeof tc.name !== 'string') return null;
+      if (!tc || typeof tc.name !== 'string') return this.parseToolCall(stripped.slice(keyIdx + 1));
 
       const args: Record<string, unknown> =
         typeof tc.arguments === 'object' && tc.arguments !== null
@@ -649,7 +650,9 @@ export class AntigravityToolLoopProtocol {
 
       return { name: tc.name, arguments: args };
     } catch {
-      return null;
+      // Candidate did not parse: try the next "tool_call": occurrence
+      // so a prose example before the real call cannot drop the deliverable.
+      return this.parseToolCall(stripped.slice(keyIdx + 1));
     }
   }
 

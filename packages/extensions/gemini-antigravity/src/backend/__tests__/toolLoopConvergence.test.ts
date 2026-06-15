@@ -221,4 +221,42 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
 
     expect(exec).toHaveBeenCalledTimes(3);
   });
+
+  it('re-allows a read after a non-write mutating tool (epoch bumps for any non-readonly tool)', async () => {
+    // A weak model spawns a child that writes a deliverable, then re-reads it.
+    // create_session is not write_file/run_command but still mutates state, so
+    // the post-spawn re-read must not be deduped away as a stale repeat.
+    const TOOLS = [
+      { type: 'function' as const, function: { name: 'read_file' } },
+      { type: 'function' as const, function: { name: 'create_session' } },
+    ];
+    let n = 0;
+    const { proto } = makeProto(async () => {
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}}';
+      if (n === 2) return '{"tool_call":{"name":"create_session","arguments":{"task":"write a.md"}}}';
+      if (n === 3) return '{"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}}';
+      return 'done';
+    }, 40);
+    const exec = vi.fn(async () => 'ok');
+
+    await drain(proto.run('go', 'sys', TOOLS, exec));
+
+    expect(exec).toHaveBeenCalledTimes(3);
+  });
+
+  it('parseToolCall skips a malformed prose example and returns the real call after it', async () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    // The model echoes the format placeholder (invalid JSON: `...`) before the
+    // real call. The first candidate must not drop the deliverable.
+    const response =
+      'Here is the format: {"tool_call":{"name":"example","arguments":{...}}}\n' +
+      'Now the real call:\n' +
+      '{"tool_call":{"name":"read_file","arguments":{"path":"deliverable.md"}}}';
+    const parsed = (proto as unknown as {
+      parseToolCall: (r: string) => { name: string; arguments: Record<string, unknown> } | null;
+    }).parseToolCall(response);
+    expect(parsed?.name).toBe('read_file');
+    expect(parsed?.arguments.path).toBe('deliverable.md');
+  });
 });
