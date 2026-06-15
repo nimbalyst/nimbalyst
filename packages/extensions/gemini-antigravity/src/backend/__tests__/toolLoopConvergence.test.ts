@@ -149,28 +149,44 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     expect(last).toContain('earlier output omitted to keep context small');
   });
 
-  it('bounds assistant tool-call envelopes so a long write-heavy turn cannot grow the prompt unbounded', async () => {
-    // Each write_file envelope is capped at 1500 in history. Over many turns
-    // these accumulate; without an assistant budget they grow the re-rendered
-    // prompt every turn and eventually time out GetModelResponse.
-    const BIG = 'Z'.repeat(2000); // forces the stored envelope to the 1500 cap
+  it('evicts assistant tool-call envelopes PAIRED with their tool result (no dangling turn)', async () => {
+    // When the tool budget drops an old result, its originating Assistant
+    // tool_call envelope must drop with it. Budgeting the two independently left
+    // kept results with no matching call, which makes a weak model re-issue work.
+    const BIG = 'Y'.repeat(20_000); // each result ~20KB; only the newest fits 28KB
     const prompts: string[] = [];
     let call = 0;
     const WRITE_TOOL = [{ type: 'function' as const, function: { name: 'write_file' } }];
     const { proto } = makeProto(async (p) => {
       prompts.push(p);
       call++;
-      return call <= 12
-        ? `{"tool_call":{"name":"write_file","arguments":{"path":"f${call}.md","content":"${BIG}"}}}`
+      return call <= 6
+        ? `{"tool_call":{"name":"write_file","arguments":{"path":"f${call}.md","content":"x"}}}`
         : 'final';
     }, 40);
 
-    await drain(proto.run('go', 'sys', WRITE_TOOL, async () => 'ok'));
+    await drain(proto.run('go', 'sys', WRITE_TOOL, async () => BIG));
 
-    // 12 envelopes x 1500 = 18KB exceeds the 12KB assistant budget, so the
-    // oldest envelopes are omitted in the final render.
     const last = prompts[prompts.length - 1];
-    expect(last).toContain('[earlier tool call omitted');
+    const omittedCalls = (last.match(/Assistant: \[earlier tool call omitted/g) ?? []).length;
+    const omittedResults = (last.match(/earlier output omitted to keep context small/g) ?? []).length;
+    // Every omitted result drops its call and vice versa: counts must match and
+    // some must have been dropped (6 x 20KB results exceed the 28KB budget).
+    expect(omittedResults).toBeGreaterThan(0);
+    expect(omittedCalls).toBe(omittedResults);
+  });
+
+  it('parseToolCall handles a response packed with failing tool_call tokens without a stack overflow', async () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    // Thousands of malformed `"tool_call":` tokens (the iterative scan must not
+    // recurse per-occurrence), then one valid call at the very end.
+    const noise = '{"tool_call": broken} '.repeat(5000);
+    const response = `${noise}\n{"tool_call":{"name":"read_file","arguments":{"path":"real.md"}}}`;
+    const parsed = (proto as unknown as {
+      parseToolCall: (r: string) => { name: string; arguments: Record<string, unknown> } | null;
+    }).parseToolCall(response);
+    expect(parsed?.name).toBe('read_file');
+    expect(parsed?.arguments.path).toBe('real.md');
   });
 
   it('strips fabricated transcript continuation and special tokens from the final answer', async () => {

@@ -166,7 +166,10 @@ export class AntigravityToolLoopProtocol {
     systemPrompt: string,
     tools: OpenAITool[],
     executeToolCall: (name: string, args: Record<string, unknown>) => Promise<unknown>,
-    timeoutMs = 120_000
+    // Generation workload: a full agentic turn over a re-rendered single-shot
+    // prompt. 120s killed legitimately slow/queued model turns mid-flight; the
+    // cross-agent policy is 180s+ for generation (Q&A stays short elsewhere).
+    timeoutMs = 180_000
   ): AsyncGenerator<
     | { type: 'text'; content: string }
     | { type: 'tool_call'; name: string; args: Record<string, unknown> }
@@ -545,20 +548,20 @@ export class AntigravityToolLoopProtocol {
       }
     }
 
-    // Same growth guard for assistant tool-call envelopes. They are compact per
-    // turn, but a long turn of write_file calls (each capped at 1500) accumulates
-    // unbounded and grows the re-rendered prompt every iteration. Keep the newest
-    // within budget; the progress ledger below still lists every earlier call.
-    const ASSISTANT_BUDGET = 12_000;
+    // Keep each assistant tool-call envelope PAIRED with its tool result. The
+    // tool budget above decides which results survive; an envelope must travel
+    // with its result. Budgeting the two independently let a kept result lose
+    // its originating call (a dangling "Tool result" with no "Assistant:" call),
+    // which makes a weak model re-issue work it cannot see it already did. So an
+    // envelope is kept iff its paired following tool result is kept, or it has no
+    // result yet (the call just made, or one that errored before producing one).
     const keepAssistantIdx = new Set<number>();
-    let assistantBudgetUsed = 0;
-    for (let i = this.history.length - 1; i >= 0; i--) {
+    for (let i = 0; i < this.history.length; i++) {
       if (this.history[i].role !== 'assistant') continue;
-      const len = this.history[i].content.length;
-      if (assistantBudgetUsed + len <= ASSISTANT_BUDGET) {
-        keepAssistantIdx.add(i);
-        assistantBudgetUsed += len;
-      }
+      const next = this.history[i + 1];
+      const pairedToolKept = next?.role === 'tool' && keepToolIdx.has(i + 1);
+      const hasNoResult = !next || next.role !== 'tool';
+      if (pairedToolKept || hasNoResult) keepAssistantIdx.add(i);
     }
 
     for (let i = 0; i < this.history.length; i++) {
@@ -613,16 +616,33 @@ export class AntigravityToolLoopProtocol {
     if (!response.includes('tool_call')) return null;
 
     const stripped = response.replace(/```json\s*/g, '').replace(/```\s*/g, '');
-    const keyIdx = stripped.search(/"tool_call"\s*:/);
-    if (keyIdx === -1) return null;
+    // Iterate every "tool_call": occurrence (NOT recursion - a hostile response
+    // packed with thousands of such tokens would blow the call stack). Return the
+    // first that yields a valid envelope, so a prose example before the real call
+    // cannot drop the deliverable. The global regex advances past each match, so
+    // the scan always terminates.
+    const keyRe = /"tool_call"\s*:/g;
+    let m: RegExpExecArray | null;
+    while ((m = keyRe.exec(stripped)) !== null) {
+      const parsed = this.extractToolCallAt(stripped, m.index);
+      if (parsed) return parsed;
+    }
+    return null;
+  }
 
+  /**
+   * Brace-match and parse a single tool_call envelope whose `"tool_call":` key is
+   * at keyIdx. String-aware (hardening b): ignores braces inside string literals
+   * with proper escape handling. Returns null on any failure so the caller can
+   * try the next occurrence.
+   */
+  private extractToolCallAt(stripped: string, keyIdx: number): ToolCallRequest | null {
     let openBrace = keyIdx - 1;
     while (openBrace >= 0 && stripped[openBrace] !== '{') {
       openBrace--;
     }
-    if (openBrace < 0) return this.parseToolCall(stripped.slice(keyIdx + 1));
+    if (openBrace < 0) return null;
 
-    // String-aware scan.
     let depth = 0;
     let closeIdx = openBrace;
     let inString = false;
@@ -655,24 +675,22 @@ export class AntigravityToolLoopProtocol {
         }
       }
     }
-    if (!found || depth !== 0) return this.parseToolCall(stripped.slice(keyIdx + 1));
+    if (!found || depth !== 0) return null;
 
     const candidate = stripped.slice(openBrace, closeIdx + 1);
     try {
       const parsed = JSON.parse(candidate) as { tool_call?: { name?: unknown; arguments?: unknown } };
       const tc = parsed.tool_call;
-      if (!tc || typeof tc.name !== 'string') return this.parseToolCall(stripped.slice(keyIdx + 1));
+      if (!tc || typeof tc.name !== 'string') return null;
 
       const args: Record<string, unknown> =
         typeof tc.arguments === 'object' && tc.arguments !== null
-          ? tc.arguments as Record<string, unknown>
+          ? (tc.arguments as Record<string, unknown>)
           : {};
 
       return { name: tc.name, arguments: args };
     } catch {
-      // Candidate did not parse: try the next "tool_call": occurrence
-      // so a prose example before the real call cannot drop the deliverable.
-      return this.parseToolCall(stripped.slice(keyIdx + 1));
+      return null;
     }
   }
 
