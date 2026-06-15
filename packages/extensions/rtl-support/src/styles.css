@@ -1,0 +1,112 @@
+/**
+ * RTL Support — استایل‌های راست‌به‌چپ.
+ *
+ * کلاس‌ها:
+ *  - .nim-rtl-block.nim-rtl-rtl : بلاک متنی RTL (p, li, h1-h6, blockquote)
+ *  - .nim-rtl-block.nim-rtl-ltr : بلاک متنی LTR
+ *  - .nim-rtl-cell.nim-rtl-rtl   : سلول جدول RTL
+ *  - .nim-rtl-table.nim-rtl-rtl  : جدول RTL (mirror)
+ */
+
+/* ============================================================
+   بلاک‌های متنی — جهت‌گیری اصلی
+   ============================================================ */
+
+.nim-rtl-block.nim-rtl-rtl {
+  direction: rtl;
+  text-align: right;
+  unicode-bidi: plaintext;
+}
+
+.nim-rtl-block.nim-rtl-ltr {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: plaintext;
+}
+
+/* ============================================================
+   محافظت از بلاک‌های کد — همیشه LTR
+   ============================================================ */
+
+.nim-rtl-block.nim-rtl-rtl pre,
+.nim-rtl-block.nim-rtl-rtl code,
+.nim-rtl-block.nim-rtl-rtl kbd,
+.nim-rtl-block.nim-rtl-rtl samp {
+  direction: ltr !important;
+  text-align: left !important;
+  unicode-bidi: isolate;
+}
+
+/* inline code داخل متن RTL */
+.nim-rtl-block.nim-rtl-rtl :not(pre) > code {
+  unicode-bidi: isolate;
+  direction: ltr;
+  display: inline-block;
+}
+
+/* ============================================================
+   bidi-isolation برای المان‌های مخلوط
+   ============================================================ */
+
+.nim-rtl-block.nim-rtl-rtl a,
+.nim-rtl-block.nim-rtl-rtl [dir="ltr"] {
+  unicode-bidi: isolate;
+}
+
+/* ============================================================
+   Markdown elements — mirror کردن
+   ============================================================ */
+
+/* لیست‌ها */
+.nim-rtl-block.nim-rtl-rtl ul,
+.nim-rtl-block.nim-rtl-rtl ol {
+  padding-right: 1.5em;
+  padding-left: 0;
+}
+
+/* blockquote */
+.nim-rtl-block.nim-rtl-rtl blockquote {
+  border-right: 4px solid var(--nim-border, currentColor);
+  border-left: none;
+  padding-right: 1em;
+  padding-left: 0;
+  margin-right: 0;
+  margin-left: 0;
+}
+
+/* ============================================================
+   جداول — mirror در RTL
+   ============================================================ */
+
+.nim-rtl-table.nim-rtl-rtl {
+  direction: rtl;
+}
+
+.nim-rtl-table.nim-rtl-rtl th,
+.nim-rtl-table.nim-rtl-rtl td {
+  text-align: right;
+}
+
+/* ============================================================
+   سلول‌های جدول
+   ============================================================ */
+
+.nim-rtl-cell.nim-rtl-rtl {
+  direction: rtl;
+  text-align: right;
+}
+
+.nim-rtl-cell.nim-rtl-ltr {
+  direction: ltr;
+  text-align: left;
+}
+
+/* ============================================================
+   بلاک‌های LTR داخل پیام RTL (per-block isolation)
+   ============================================================ */
+
+.nim-rtl-block.nim-rtl-ltr {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: isolate;
+}
