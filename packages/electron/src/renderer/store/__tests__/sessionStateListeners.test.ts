@@ -452,3 +452,29 @@ describe('contract: per-message events must not bump turn activity', () => {
     expect(turnsForWs?.get(parentId)).toBeUndefined();
   });
 });
+
+describe('processing reconcile on terminal events', () => {
+  it('heals a stuck processing session promptly when any session reaches a terminal state', async () => {
+    vi.useFakeTimers();
+    try {
+      // A session whose processing atom is stuck true while the backend no longer
+      // reports it active (getActiveSessionIds mock returns []). This stands in for
+      // a meta-agent child whose terminal clear was missed, pinning the header.
+      const stuck = uniqueSessionId('stuck');
+      seedRegistry([{ id: stuck }]);
+      store.set(sessionProcessingAtom(stuck), true);
+
+      // A DIFFERENT session completing must trigger the debounced reconcile, which
+      // re-derives processing atoms against the authoritative active set.
+      const other = uniqueSessionId('other');
+      const handler = handlers.get('ai-session-state:event')!;
+      handler({ type: 'session:completed', sessionId: other, workspacePath: WS });
+
+      expect(store.get(sessionProcessingAtom(stuck))).toBe(true); // not yet (debounced)
+      await vi.advanceTimersByTimeAsync(700);
+      expect(store.get(sessionProcessingAtom(stuck))).toBe(false); // healed by reconcile
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

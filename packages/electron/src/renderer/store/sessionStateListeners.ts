@@ -195,6 +195,11 @@ export function initSessionStateListeners(): () => void {
     return () => {};
   }
 
+  // Debounced trigger for the processing-state reconcile (assigned once the
+  // reconcile function is defined below). Fired on terminal session events so a
+  // stuck spinner clears within ~1s instead of waiting for the slow interval.
+  let scheduleProcessingReconcile: (() => void) | undefined;
+
   // Wire reconciliation against multi-project rail state so subscriptions
   // include every warm project, not just the visible one.
   ensureMultiProjectSubscribers();
@@ -289,6 +294,13 @@ export function initSessionStateListeners(): () => void {
       // after the session ended in the no-workspacePath race documented
       // above. Per @ghinkle's review on the closed #293.
       store.set(clearSessionStreamingAtom, { sessionId });
+      // A session reached a terminal state, so it left the backend's active set.
+      // Re-derive the processing atoms against that authoritative set now (debounced
+      // ~600ms) instead of waiting up to 15s for the interval. A meta-agent header
+      // reflects child processing too (sessionOrChildProcessingAtom), so when a
+      // child finishes this clears the parent's spinner within ~1s rather than
+      // leaving it stuck until the user clicks the child.
+      scheduleProcessingReconcile?.();
     }
 
     if (!ownedWorkspacePath) {
@@ -1020,6 +1032,15 @@ export function initSessionStateListeners(): () => void {
   void reconcileProcessingState();
   processingReconcileInterval = setInterval(() => void reconcileProcessingState(), 15000);
 
+  // Wire the debounced terminal-event trigger now that reconcileProcessingState
+  // exists. Coalesces a burst of completions (e.g. several children finishing)
+  // into one re-sync.
+  let reconcileDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+  scheduleProcessingReconcile = () => {
+    if (reconcileDebounceTimer) clearTimeout(reconcileDebounceTimer);
+    reconcileDebounceTimer = setTimeout(() => void reconcileProcessingState(), 600);
+  };
+
   // Then, listen for state change events
   window.electronAPI.sessionState.onStateChange(handleStateChange);
 
@@ -1100,6 +1121,10 @@ export function initSessionStateListeners(): () => void {
     if (processingReconcileInterval) {
       clearInterval(processingReconcileInterval);
       processingReconcileInterval = undefined;
+    }
+    if (reconcileDebounceTimer) {
+      clearTimeout(reconcileDebounceTimer);
+      reconcileDebounceTimer = undefined;
     }
 
     window.electronAPI.sessionState?.removeStateChangeListener?.(handleStateChange);
