@@ -149,6 +149,30 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     expect(last).toContain('earlier output omitted to keep context small');
   });
 
+  it('bounds assistant tool-call envelopes so a long write-heavy turn cannot grow the prompt unbounded', async () => {
+    // Each write_file envelope is capped at 1500 in history. Over many turns
+    // these accumulate; without an assistant budget they grow the re-rendered
+    // prompt every turn and eventually time out GetModelResponse.
+    const BIG = 'Z'.repeat(2000); // forces the stored envelope to the 1500 cap
+    const prompts: string[] = [];
+    let call = 0;
+    const WRITE_TOOL = [{ type: 'function' as const, function: { name: 'write_file' } }];
+    const { proto } = makeProto(async (p) => {
+      prompts.push(p);
+      call++;
+      return call <= 12
+        ? `{"tool_call":{"name":"write_file","arguments":{"path":"f${call}.md","content":"${BIG}"}}}`
+        : 'final';
+    }, 40);
+
+    await drain(proto.run('go', 'sys', WRITE_TOOL, async () => 'ok'));
+
+    // 12 envelopes x 1500 = 18KB exceeds the 12KB assistant budget, so the
+    // oldest envelopes are omitted in the final render.
+    const last = prompts[prompts.length - 1];
+    expect(last).toContain('[earlier tool call omitted');
+  });
+
   it('strips fabricated transcript continuation and special tokens from the final answer', async () => {
     const { proto } = makeProto(
       async () =>

@@ -545,12 +545,32 @@ export class AntigravityToolLoopProtocol {
       }
     }
 
+    // Same growth guard for assistant tool-call envelopes. They are compact per
+    // turn, but a long turn of write_file calls (each capped at 1500) accumulates
+    // unbounded and grows the re-rendered prompt every iteration. Keep the newest
+    // within budget; the progress ledger below still lists every earlier call.
+    const ASSISTANT_BUDGET = 12_000;
+    const keepAssistantIdx = new Set<number>();
+    let assistantBudgetUsed = 0;
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      if (this.history[i].role !== 'assistant') continue;
+      const len = this.history[i].content.length;
+      if (assistantBudgetUsed + len <= ASSISTANT_BUDGET) {
+        keepAssistantIdx.add(i);
+        assistantBudgetUsed += len;
+      }
+    }
+
     for (let i = 0; i < this.history.length; i++) {
       const msg = this.history[i];
       if (msg.role === 'user') {
         parts.push(`User: ${msg.content}`);
       } else if (msg.role === 'assistant') {
-        parts.push(`Assistant: ${msg.content}`);
+        if (keepAssistantIdx.has(i)) {
+          parts.push(`Assistant: ${msg.content}`);
+        } else {
+          parts.push('Assistant: [earlier tool call omitted - see progress ledger below]');
+        }
       } else if (msg.role === 'tool') {
         if (keepToolIdx.has(i)) {
           // Content is already wrapped in <tool-output> tags by sanitizeToolResult.

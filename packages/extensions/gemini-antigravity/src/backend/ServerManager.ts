@@ -218,6 +218,17 @@ export class AntigravityServerManager {
     return new Promise<T>((resolve, reject) => {
       let settled = false;
       let hardTimer: ReturnType<typeof setTimeout> | undefined;
+      // Self-diagnosing timeout: include elapsed wall-clock, the endpoint port,
+      // and the prompt size so a timeout in main.log distinguishes a runaway
+      // prompt (large KB) from a slow/wedged server (small KB, full elapsed).
+      const startedAt = Date.now();
+      const promptLen =
+        body && typeof body === 'object' && typeof (body as { prompt?: unknown }).prompt === 'string'
+          ? (body as { prompt: string }).prompt.length
+          : payload.length;
+      const timeoutMessage = (): string =>
+        `Antigravity ${method} timed out after ${Math.round((Date.now() - startedAt) / 1000)}s ` +
+        `(port ${ep.httpsPort}, prompt ${Math.round(promptLen / 1000)}KB, limit ${Math.round(timeoutMs / 1000)}s)`;
       const finish = (err: Error | null, value?: T): void => {
         if (settled) return;
         settled = true;
@@ -267,9 +278,9 @@ export class AntigravityServerManager {
       // agent turn stays on "Thinking..." forever. This timer fires on elapsed
       // wall-clock regardless of socket activity.
       hardTimer = setTimeout(() => {
-        req.destroy(new Error(`Antigravity ${method} timed out`));
+        req.destroy(new Error(timeoutMessage()));
       }, timeoutMs);
-      req.on('timeout', () => req.destroy(new Error(`Antigravity ${method} timed out`)));
+      req.on('timeout', () => req.destroy(new Error(timeoutMessage())));
       req.on('error', (e) => finish(e instanceof Error ? e : new Error(String(e))));
       req.write(payload);
       req.end();
