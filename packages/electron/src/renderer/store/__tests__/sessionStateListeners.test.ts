@@ -20,6 +20,7 @@ import {
   sessionProcessingAtom,
   sessionPendingPromptsAtom,
   sessionRegistryAtom,
+  sessionChildrenAtom,
   sessionLastActivityAtom,
   type SessionMeta,
 } from '../atoms/sessions';
@@ -474,6 +475,29 @@ describe('processing reconcile on terminal events', () => {
       expect(store.get(sessionProcessingAtom(stuck))).toBe(true); // not yet (debounced)
       await vi.advanceTimersByTimeAsync(700);
       expect(store.get(sessionProcessingAtom(stuck))).toBe(false); // healed by reconcile
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconcile heals a stuck child that is in sessionChildrenAtom but NOT the registry', async () => {
+    vi.useFakeTimers();
+    try {
+      // The meta header (sessionOrChildProcessingAtom) reads children from
+      // sessionChildrenAtom too. A meta-agent child can sit there while not being
+      // a registry key (child-added patches it; archived children drop from the
+      // list). The reconcile must still heal it, or the header stays stuck.
+      const meta = uniqueSessionId('meta');
+      const child = uniqueSessionId('child');
+      seedRegistry([{ id: meta, sessionType: 'meta-agent' as SessionMeta['sessionType'] }]);
+      store.set(sessionChildrenAtom(meta), [child]); // child known only via children atom
+      store.set(sessionProcessingAtom(child), true); // stuck
+
+      const handler = handlers.get('ai-session-state:event')!;
+      handler({ type: 'session:completed', sessionId: meta, workspacePath: WS });
+      await vi.advanceTimersByTimeAsync(700);
+
+      expect(store.get(sessionProcessingAtom(child))).toBe(false); // healed via children union
     } finally {
       vi.useRealTimers();
     }

@@ -36,6 +36,7 @@ import {
   sessionHasPendingInteractivePromptAtom,
   sessionPendingPromptsAtom,
   sessionRegistryAtom,
+  sessionChildrenAtom,
   sessionStoreAtom,
   sessionDraftInputAtom,
   sessionLastSubmitAtAtom,
@@ -1020,8 +1021,23 @@ export function initSessionStateListeners(): () => void {
       for (const sessionId of running) {
         store.set(sessionProcessingAtom(sessionId), true);
       }
+      // Heal strays across the SAME superset the meta-agent header aggregates
+      // over (sessionOrChildProcessingAtom = self OR any child). The header reads
+      // children from sessionChildrenAtom too, and a meta-agent child can sit in
+      // sessionChildrenAtom while NOT being a sessionRegistryAtom key (child-added
+      // patches the former; archived / worktree-archived children are dropped from
+      // sessions:list). Iterating the registry alone left such a child's stuck
+      // processing atom unhealed, pinning the header until the user clicked the
+      // child. Union the registry keys with every parent's loaded children.
+      const candidates = new Set<string>(store.get(sessionRegistryAtom).keys());
+      for (const parentId of store.get(sessionRegistryAtom).keys()) {
+        const children = store.get(sessionChildrenAtom(parentId));
+        if (Array.isArray(children)) {
+          for (const childId of children) candidates.add(childId);
+        }
+      }
       let healed = 0;
-      for (const sessionId of store.get(sessionRegistryAtom).keys()) {
+      for (const sessionId of candidates) {
         if (!running.has(sessionId) && store.get(sessionProcessingAtom(sessionId))) {
           store.set(sessionProcessingAtom(sessionId), false);
           healed++;

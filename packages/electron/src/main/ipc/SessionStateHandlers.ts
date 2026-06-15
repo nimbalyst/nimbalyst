@@ -168,21 +168,25 @@ export async function registerSessionStateHandlers() {
                 break;
               }
             }
+            const isTerminal =
+              stateEvent.type === 'session:completed' ||
+              stateEvent.type === 'session:error' ||
+              stateEvent.type === 'session:interrupted';
             if (!matched) {
-              // Dropped here = the renderer never sees this event. For a TERMINAL
-              // event that leaves the session's spinner stuck on "Thinking...".
-              if (
-                stateEvent.type === 'session:completed' ||
-                stateEvent.type === 'session:error' ||
-                stateEvent.type === 'session:interrupted'
-              ) {
-                console.warn(
-                  `[SessionStateHandlers] dropped terminal ${stateEvent.type} for session ` +
-                  `${stateEvent.sessionId} (sessionWorkspacePath=${sessionWorkspacePath ?? 'null'}, ` +
-                  `eventWorkspacePath=${stateEvent.workspacePath ?? 'null'})`,
-                );
-              }
-              return;
+              // A workspace-filter miss on a NON-terminal event is dropped as
+              // before (those drive workspace-scoped state and need a real path).
+              // But a TERMINAL event is forwarded anyway: the renderer's terminal
+              // clear is keyed only by sessionId (workspace-agnostic), so
+              // over-delivering it is harmless, while dropping it pins the
+              // session's spinner (and a parent meta-agent header) on "Thinking..."
+              // - common for a worktree-resident meta-agent child whose canonical
+              // workspace_id has not committed or does not match this window.
+              if (!isTerminal) return;
+              console.warn(
+                `[SessionStateHandlers] forwarding unmatched terminal ${stateEvent.type} for session ` +
+                `${stateEvent.sessionId} (sessionWorkspacePath=${sessionWorkspacePath ?? 'null'}, ` +
+                `eventWorkspacePath=${stateEvent.workspacePath ?? 'null'}) to avoid a stuck spinner`,
+              );
             }
           }
 
