@@ -349,4 +349,89 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
     expect(text?.content).toContain('DRAFT answer that should survive');
   });
+
+  it('rejects a hallucinated write claim and forces the real write_file call', async () => {
+    const WRITE = [{ type: 'function' as const, function: { name: 'write_file' } }];
+    let n = 0;
+    const { proto } = makeProto(async () => {
+      n++;
+      // 1st: claims success (fabricated byte count) WITHOUT emitting write_file.
+      if (n === 1) return 'I have successfully written research_report.md (2419 bytes) to the workspace root.';
+      // 2nd (after the nudge): emits the real write_file envelope.
+      if (n === 2) return '{"tool_call":{"name":"write_file","arguments":{"path":"research_report.md","content":"# Report"}}}';
+      return 'Done.';
+    }, 40);
+    const exec = vi.fn(async () => 'written');
+
+    const events = await drain(proto.run('write the report', 'sys', WRITE, exec));
+
+    expect(exec).toHaveBeenCalledTimes(1); // the real write actually happened
+    expect(events.some((e) => e.type === 'tool_call' && e.name === 'write_file')).toBe(true);
+    expect(events[events.length - 1].type).toBe('complete');
+  });
+
+  it('does not nudge a write claim that is backed by a real write_file call', async () => {
+    const WRITE = [{ type: 'function' as const, function: { name: 'write_file' } }];
+    let n = 0;
+    const { proto, spy } = makeProto(async () => {
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"write_file","arguments":{"path":"r.md","content":"x"}}}';
+      return 'I have successfully written the file r.md.';
+    }, 40);
+    const exec = vi.fn(async () => 'ok');
+
+    const events = await drain(proto.run('go', 'sys', WRITE, exec));
+
+    expect(exec).toHaveBeenCalledTimes(1);
+    // 2 model turns only (write + final), no extra nudge round.
+    expect(spy).toHaveBeenCalledTimes(2);
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toContain('successfully written');
+  });
+
+  it('does not nudge a final answer that only describes a repo (no first-person write claim)', async () => {
+    const WRITE = [{ type: 'function' as const, function: { name: 'write_file' } }];
+    const { proto, spy } = makeProto(
+      async () =>
+        'The repository produces structured reports and stores results in a SQLite database. It is suitable for research agents.',
+      40,
+    );
+
+    const events = await drain(proto.run('describe it', 'sys', WRITE, async () => 'x'));
+
+    expect(spy).toHaveBeenCalledTimes(1); // accepted directly, no nudge loop
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toContain('produces structured reports');
+  });
+
+  it('catches a passive "has been written" hallucinated claim', async () => {
+    const WRITE = [{ type: 'function' as const, function: { name: 'write_file' } }];
+    let n = 0;
+    const { proto } = makeProto(async () => {
+      n++;
+      if (n === 1) return 'The report research_report.md has been written to the workspace successfully.';
+      if (n === 2) return '{"tool_call":{"name":"write_file","arguments":{"path":"research_report.md","content":"# R"}}}';
+      return 'Done.';
+    }, 40);
+    const exec = vi.fn(async () => 'ok');
+
+    await drain(proto.run('write it', 'sys', WRITE, exec));
+
+    expect(exec).toHaveBeenCalledTimes(1); // forced the real write
+  });
+
+  it('does not trip on a first-person summary that mentions a URL but claims no file write', async () => {
+    const WRITE = [{ type: 'function' as const, function: { name: 'write_file' } }];
+    const { proto, spy } = makeProto(
+      async () =>
+        'I have written this analysis based on my research. The repository at github.com/mvanhorn/last30days-skill is suitable as a research skill.',
+      40,
+    );
+
+    const events = await drain(proto.run('analyze', 'sys', WRITE, async () => 'x'));
+
+    expect(spy).toHaveBeenCalledTimes(1); // no false nudge despite "I have written" + a URL
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toContain('based on my research');
+  });
 });

@@ -63,6 +63,10 @@ const MAX_SOFT_MISSES = 2;
 // Max times per turn we re-prompt a model whose tool_call JSON failed to
 // parse (usually unescaped multi-line content in write_file) before giving up.
 const MAX_JSON_RETRIES = 2;
+// Max times per turn we re-prompt a model that CLAIMED to have written a file but
+// never emitted write_file (editedFiles empty), before accepting its text. A weak
+// model can report a fabricated "saved (NNNN bytes)" success without acting.
+const MAX_WRITE_CLAIM_NUDGES = 3;
 
 // Per-tool-result hard cap on characters fed back into the prompt. The text
 // protocol re-renders the ENTIRE history into one prompt every turn, so an
@@ -196,6 +200,7 @@ export class AntigravityToolLoopProtocol {
     let softMisses = 0;
     let dupHits = 0;
     let jsonRetries = 0;
+    let writeClaimNudges = 0;
 
     for (let iteration = 0; iteration < this.maxIterations; iteration++) {
       if (this.aborted) return;
@@ -241,6 +246,29 @@ export class AntigravityToolLoopProtocol {
             role: 'tool',
             content: this.sanitizeToolResult(
               '[No tool ran: you described a tool call but did not emit it. To actually run it, your ENTIRE next response must be only the {"tool_call":{"name":"...","arguments":{...}}} JSON and nothing else. If the whole task is genuinely finished, give your final answer as plain text.]',
+            ),
+            toolName: 'system',
+          });
+          continue;
+        }
+        // Hallucinated-completion guard: the model claims it wrote/saved a file
+        // (sometimes with a fabricated byte count) but never emitted write_file
+        // this turn, so nothing was saved. Do NOT accept the false success; nudge
+        // it to emit the real envelope, capped to avoid an endless loop.
+        if (
+          writeClaimNudges < MAX_WRITE_CLAIM_NUDGES &&
+          this.claimsUnbackedFileWrite(text, toolAllowlist)
+        ) {
+          writeClaimNudges++;
+          this.history.push({ role: 'assistant', content: text });
+          this.history.push({
+            role: 'tool',
+            content: this.sanitizeToolResult(
+              '[No file was written. You claimed to have written or saved a file, but you did ' +
+                'NOT emit a write_file tool_call this turn, so nothing was saved (editedFiles is ' +
+                'empty). Do NOT claim success. Your ENTIRE next response must be ONLY the JSON ' +
+                '{"tool_call":{"name":"write_file","arguments":{"path":"...","content":"..."}}} ' +
+                'with the full file content, and nothing else.]',
             ),
             toolName: 'system',
           });
@@ -427,6 +455,44 @@ export class AntigravityToolLoopProtocol {
     }
     if (!mentionsTool) return false;
     return /\b(i'?ll|i will|i'?m going to|going to|let'?s|let me|let us|now i|next[,]?|i need to|i should|i can now)\b/.test(lower);
+  }
+
+  /**
+   * True when the final text CLAIMS a completed file write but no write_file ran
+   * this turn. A weak model often reports "I have successfully written/saved
+   * <file>" - sometimes with a fabricated "(NNNN bytes)" - without ever emitting
+   * the write_file envelope, so editedFiles stays empty and nothing is saved.
+   * Detecting this lets the loop force the real call instead of accepting a
+   * hallucinated success.
+   *
+   * Precision (per adversarial review): require BOTH (1) a first-person or
+   * passive completion clause AND (2) a file-like object within a short window
+   * of that clause - a filename with a letter extension (not a TLD), the word
+   * "file", or an explicit "to the workspace" target. The window keeps a later
+   * sentence (e.g. a github.com URL) or generic "I have written this analysis"
+   * from tripping it. The literal "File Created:" success line is unambiguous on
+   * its own. Bare "X now exists" and third-person "the script wrote Y" are NOT
+   * matched - they are descriptive, not self-claims.
+   */
+  private claimsUnbackedFileWrite(text: string, allowlist: Set<string>): boolean {
+    if (!text || !allowlist.has('write_file')) return false;
+    if (this.toolCallLedger.some((c) => c.name === 'write_file')) return false;
+    const t = text.toLowerCase();
+    if (/\bfile created\s*:/.test(t)) return true;
+    const claim =
+      /\b(?:i\s+(?:have\s+|'ve\s+)?(?:successfully\s+)?(?:written|created|saved|wrote)|(?:has|have)\s+been\s+(?:successfully\s+)?(?:written|created|saved))\b/.exec(
+        t,
+      );
+    if (!claim) return false;
+    const window = t.slice(claim.index, claim.index + 70);
+    const filenameNearby = /\b[\w-]+\.(?!com\b|org\b|net\b|gov\b)[a-z]{2,6}\b/.test(
+      window,
+    );
+    return (
+      filenameNearby ||
+      /\bfile\b/.test(window) ||
+      /\bto\s+(?:the\s+)?workspace(?:\s+root)?\b/.test(window)
+    );
   }
 
   // ---- Prompt construction ------------------------------------------------
