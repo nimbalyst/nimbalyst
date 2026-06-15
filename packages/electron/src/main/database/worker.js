@@ -209,6 +209,33 @@ class PGLiteWorker {
           // against, and the closed PR #316 review thread for the
           // 'ambiguous' branch that asks the user instead of guessing.
           const { decideLockIsRunning } = require('./lockStaleness');
+          // Identify the PID holder so a reused PID (the original Nimbalyst died
+          // and the OS handed its PID to another process) is detected as stale
+          // instead of falsely "running". Returns the image name or null; null
+          // makes decideLockIsRunning fail closed (stay 'running').
+          const processIdentityFn = (pid) => {
+            if (!Number.isInteger(pid) || pid <= 0) return null;
+            try {
+              const cp = require('child_process');
+              if (process.platform === 'win32') {
+                const out = cp
+                  .execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+                    timeout: 4000,
+                    windowsHide: true,
+                  })
+                  .toString();
+                const m = out.match(/^"([^"]+)"/m);
+                return m ? m[1] : null;
+              }
+              const out = cp
+                .execSync(`ps -p ${pid} -o comm=`, { timeout: 4000 })
+                .toString()
+                .trim();
+              return out || null;
+            } catch {
+              return null;
+            }
+          };
           let livenessDecision = 'stale';
           let livenessReason = '';
           if (isStaleFromReboot) {
@@ -219,6 +246,7 @@ class PGLiteWorker {
               lockPid,
               lockTimestamp,
               killFn: process.kill.bind(process),
+              processIdentityFn,
             });
             livenessDecision = result.decision;
             livenessReason = result.reason;

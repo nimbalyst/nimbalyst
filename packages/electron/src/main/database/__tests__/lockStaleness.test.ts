@@ -151,6 +151,52 @@ describe('decideLockIsRunning (issue #272)', () => {
     });
   });
 
+  describe('kill(0) success with PID-reuse identity check', () => {
+    const base = {
+      lockPid: 19400,
+      lockTimestamp: '2026-06-14T23:14:58.851Z',
+      now: NOW,
+      killFn: () => undefined, // kill(0) succeeds (no throw)
+    };
+
+    it("returns 'stale' when the live PID is a non-Nimbalyst process (reused PID)", () => {
+      const result = decideLockIsRunning({ ...base, processIdentityFn: () => 'node.exe' });
+      expect(result.decision).toBe('stale');
+      expect(result.isRunning).toBe(false);
+      expect(result.reason).toContain('reused');
+    });
+
+    it("returns 'running' when the live PID is our app (electron.exe)", () => {
+      const result = decideLockIsRunning({ ...base, processIdentityFn: () => 'electron.exe' });
+      expect(result.decision).toBe('running');
+    });
+
+    it("returns 'running' when the live PID is the packaged app (Nimbalyst.exe)", () => {
+      const result = decideLockIsRunning({ ...base, processIdentityFn: () => 'Nimbalyst.exe' });
+      expect(result.decision).toBe('running');
+    });
+
+    it("fails closed to 'running' when identity is unknown (null)", () => {
+      const result = decideLockIsRunning({ ...base, processIdentityFn: () => null });
+      expect(result.decision).toBe('running');
+    });
+
+    it("fails closed to 'running' when the identity lookup throws", () => {
+      const result = decideLockIsRunning({
+        ...base,
+        processIdentityFn: () => {
+          throw new Error('tasklist failed');
+        },
+      });
+      expect(result.decision).toBe('running');
+    });
+
+    it("stays 'running' when no processIdentityFn is provided (backward compatible)", () => {
+      const result = decideLockIsRunning({ ...base });
+      expect(result.decision).toBe('running');
+    });
+  });
+
   describe('constants', () => {
     it('exports the default grace window so callers can reference it', () => {
       expect(DEFAULT_STALE_LOCK_GRACE_MS).toBe(60_000);
