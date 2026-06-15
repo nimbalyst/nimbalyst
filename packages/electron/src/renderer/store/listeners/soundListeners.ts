@@ -22,8 +22,10 @@ export function initSoundListeners(): () => void {
 
   const cleanups: Array<() => void> = [];
 
-  const u1 = window.electronAPI?.on?.('play-completion-sound', (soundType: string) => {
-    getSoundPlayer().playSound(soundType as any).catch((err: unknown) => {
+  const u1 = window.electronAPI?.on?.('play-completion-sound', (soundType: string, volumePercent?: number) => {
+    // volumePercent is 0-100 from the main process; convert to a 0-1 gain multiplier.
+    const volume = typeof volumePercent === 'number' ? volumePercent / 100 : 1;
+    getSoundPlayer().playSound(soundType as any, volume).catch((err: unknown) => {
       console.error('Failed to play completion sound:', err);
     });
   });

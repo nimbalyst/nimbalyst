@@ -36,7 +36,7 @@ export function NotificationsPanel() {
   const [notificationHelp, setNotificationHelp] = useState<string | null>(null);
   const [customSoundError, setCustomSoundError] = useState<string | null>(null);
 
-  const { completionSoundEnabled, completionSoundType, completionSoundCustomName, osNotificationsEnabled, notifyWhenFocused } = settings;
+  const { completionSoundEnabled, completionSoundType, completionSoundCustomName, completionSoundVolume, osNotificationsEnabled, notifyWhenFocused } = settings;
 
   // play-completion-sound is handled by store/listeners/soundListeners.ts.
 
@@ -45,7 +45,9 @@ export function NotificationsPanel() {
 
     setIsTestPlaying(true);
     try {
-      await window.electronAPI.invoke('completion-sound:test', completionSoundType);
+      // Pass the live volume so the test reflects the current slider position
+      // immediately, without waiting for the debounced persist to land.
+      await window.electronAPI.invoke('completion-sound:test', completionSoundType, completionSoundVolume);
     } catch (error) {
       console.error('Failed to test sound:', error);
     } finally {
@@ -183,6 +185,28 @@ export function NotificationsPanel() {
                 )}
               </div>
             )}
+
+            <div className="setting-text flex flex-col gap-0.5 mt-4">
+              <div className="flex items-center justify-between">
+                <span className="setting-name text-sm font-medium text-[var(--nim-text)]">Volume</span>
+                <span className="setting-value text-xs font-medium tabular-nums text-[var(--nim-text-muted)]">
+                  {completionSoundVolume}%
+                </span>
+              </div>
+              <span className="setting-description text-xs leading-relaxed text-[var(--nim-text-muted)]">
+                Playback volume as a percentage of your system volume.
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={completionSoundVolume}
+              onChange={(e) => updateSettings({ completionSoundVolume: Number(e.target.value) })}
+              aria-label="Completion sound volume"
+              className="w-full mt-2 cursor-pointer accent-[var(--nim-primary)]"
+            />
 
             <button
               onClick={handleTestSound}

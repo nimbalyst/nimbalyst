@@ -67,6 +67,8 @@ interface AppStoreSchema {
   // Absolute path (inside userData/custom-sounds) of the user-supplied
   // completion sound file, used when completionSoundType === 'custom'.
   completionSoundCustomPath?: string;
+  // Completion sound volume as a percentage of system volume (0-100).
+  completionSoundVolume?: number;
   // OS notifications
   osNotificationsEnabled?: boolean;
   // Release channel
@@ -1337,6 +1339,24 @@ export function setCompletionSoundCustomPath(soundPath: string | undefined): voi
   } else {
     getAppStore().delete('completionSoundCustomPath');
   }
+}
+
+/**
+ * Completion sound volume as a percentage of system volume (0-100).
+ * Defaults to 100 (full volume) so existing users hear no change.
+ */
+export function getCompletionSoundVolume(): number {
+  return clampVolumePercent(getAppStore().get('completionSoundVolume', 100));
+}
+
+export function setCompletionSoundVolume(volumePercent: number): void {
+  getAppStore().set('completionSoundVolume', clampVolumePercent(volumePercent));
+}
+
+/** Clamp an arbitrary input to a valid 0-100 integer percentage. */
+function clampVolumePercent(value: unknown): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? value : 100;
+  return Math.min(100, Math.max(0, Math.round(n)));
 }
 
 // OS Notifications Settings

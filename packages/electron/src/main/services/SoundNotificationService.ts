@@ -1,6 +1,6 @@
 import { BrowserWindow } from 'electron';
 import { existsSync } from 'fs';
-import { isCompletionSoundEnabled, getCompletionSoundType, getCompletionSoundCustomPath, CompletionSoundType } from '../utils/store';
+import { isCompletionSoundEnabled, getCompletionSoundType, getCompletionSoundCustomPath, getCompletionSoundVolume, CompletionSoundType } from '../utils/store';
 import { findWindowByWorkspace } from '../window/WindowManager';
 
 export class SoundNotificationService {
@@ -51,8 +51,9 @@ export class SoundNotificationService {
       return;
     }
 
-    // Send sound playback request to renderer
-    targetWindow.webContents.send('play-completion-sound', soundType);
+    // Send sound playback request to renderer, including the volume (0-100)
+    // so the renderer scales playback gain accordingly.
+    targetWindow.webContents.send('play-completion-sound', soundType, getCompletionSoundVolume());
   }
 
   /**
@@ -86,8 +87,8 @@ export class SoundNotificationService {
     targetWindow.webContents.send('play-permission-sound');
   }
 
-  public testSound(soundType: CompletionSoundType, windowId?: number): void {
-    console.log(`[SoundNotification] Testing sound: ${soundType}`);
+  public testSound(soundType: CompletionSoundType, volumePercent: number, windowId?: number): void {
+    console.log(`[SoundNotification] Testing sound: ${soundType} at volume: ${volumePercent}%`);
 
     let targetWindow: BrowserWindow | null = null;
     if (windowId) {
@@ -108,6 +109,6 @@ export class SoundNotificationService {
       return;
     }
 
-    targetWindow.webContents.send('play-completion-sound', soundType);
+    targetWindow.webContents.send('play-completion-sound', soundType, volumePercent);
   }
 }

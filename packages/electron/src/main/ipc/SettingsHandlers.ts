@@ -10,6 +10,7 @@ import {
     isCompletionSoundEnabled, setCompletionSoundEnabled,
     getCompletionSoundType, setCompletionSoundType, CompletionSoundType,
     getCompletionSoundCustomPath, setCompletionSoundCustomPath,
+    getCompletionSoundVolume, setCompletionSoundVolume,
     getReleaseChannel, setReleaseChannel, ReleaseChannel,
     getRecentItems,
     getDefaultAIModel, setDefaultAIModel,
@@ -288,9 +289,20 @@ export function registerSettingsHandlers() {
         setCompletionSoundType(soundType);
     });
 
-    safeHandle('completion-sound:test', (_event, soundType: CompletionSoundType) => {
+    safeHandle('completion-sound:get-volume', () => {
+        return getCompletionSoundVolume();
+    });
+
+    safeHandle('completion-sound:set-volume', (_event, volumePercent: number) => {
+        setCompletionSoundVolume(volumePercent);
+    });
+
+    safeHandle('completion-sound:test', (_event, soundType: CompletionSoundType, volumePercent?: number) => {
         const soundService = SoundNotificationService.getInstance();
-        soundService.testSound(soundType);
+        // Prefer the volume passed from the renderer (reflects the live slider
+        // position before the debounced persist lands); fall back to the stored value.
+        const volume = typeof volumePercent === 'number' ? volumePercent : getCompletionSoundVolume();
+        soundService.testSound(soundType, volume);
     });
 
     // Custom completion sound file management. The chosen file is copied into

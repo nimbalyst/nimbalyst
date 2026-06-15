@@ -212,6 +212,8 @@ export interface NotificationSettings {
   completionSoundType: CompletionSoundType;
   /** Basename of the user-supplied custom sound file (display only), or null. */
   completionSoundCustomName: string | null;
+  /** Completion sound volume as a percentage of system volume (0-100). */
+  completionSoundVolume: number;
   osNotificationsEnabled: boolean;
   /** Show OS notifications even when app is focused, unless viewing that session */
   notifyWhenFocused: boolean;
@@ -226,6 +228,7 @@ const defaultNotificationSettings: NotificationSettings = {
   completionSoundEnabled: false,
   completionSoundType: 'chime',
   completionSoundCustomName: null,
+  completionSoundVolume: 100,
   osNotificationsEnabled: false,
   notifyWhenFocused: false,
   sessionBlockedNotificationsEnabled: true,
@@ -256,6 +259,7 @@ function scheduleNotificationPersist(settings: NotificationSettings): void {
     if (typeof window !== 'undefined' && window.electronAPI) {
       await window.electronAPI.invoke('completion-sound:set-enabled', settings.completionSoundEnabled);
       await window.electronAPI.invoke('completion-sound:set-type', settings.completionSoundType);
+      await window.electronAPI.invoke('completion-sound:set-volume', settings.completionSoundVolume);
       await window.electronAPI.invoke('notifications:set-enabled', settings.osNotificationsEnabled);
       await window.electronAPI.invoke('notifications:set-notify-when-focused', settings.notifyWhenFocused);
       await window.electronAPI.invoke('notifications:set-blocked-enabled', settings.sessionBlockedNotificationsEnabled);
@@ -277,6 +281,13 @@ export const completionSoundEnabledAtom = atom(
  */
 export const completionSoundTypeAtom = atom(
   (get) => get(notificationSettingsAtom).completionSoundType
+);
+
+/**
+ * Completion sound volume (0-100, as a percentage of system volume).
+ */
+export const completionSoundVolumeAtom = atom(
+  (get) => get(notificationSettingsAtom).completionSoundVolume
 );
 
 /**
@@ -326,10 +337,11 @@ export async function initNotificationSettings(): Promise<NotificationSettings> 
   }
 
   try {
-    const [soundEnabled, soundType, customSound, osNotifEnabled, notifyFocused, blockedEnabled] = await Promise.all([
+    const [soundEnabled, soundType, customSound, soundVolume, osNotifEnabled, notifyFocused, blockedEnabled] = await Promise.all([
       window.electronAPI.invoke('completion-sound:is-enabled'),
       window.electronAPI.invoke('completion-sound:get-type'),
       window.electronAPI.invoke('completion-sound:get-custom'),
+      window.electronAPI.invoke('completion-sound:get-volume'),
       window.electronAPI.invoke('notifications:get-enabled'),
       window.electronAPI.invoke('notifications:get-notify-when-focused'),
       window.electronAPI.invoke('notifications:get-blocked-enabled'),
@@ -349,6 +361,7 @@ export async function initNotificationSettings(): Promise<NotificationSettings> 
       completionSoundEnabled: soundEnabled ?? false,
       completionSoundType: resolvedType,
       completionSoundCustomName: customName,
+      completionSoundVolume: soundVolume ?? 100,
       osNotificationsEnabled: osNotifEnabled ?? false,
       notifyWhenFocused: notifyFocused ?? false,
       sessionBlockedNotificationsEnabled: blockedEnabled ?? true,

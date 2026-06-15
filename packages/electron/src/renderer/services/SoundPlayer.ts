@@ -2,17 +2,30 @@ import type { CompletionSoundType } from '../../main/utils/store';
 
 export class SoundPlayer {
   private audioContext: AudioContext | null = null;
+  /**
+   * Master gain node that every sound routes through. Its gain acts as a
+   * volume multiplier (0-1) applied uniformly to all sounds, so the per-tone
+   * envelopes in the individual play methods stay unchanged.
+   */
+  private masterGain: GainNode | null = null;
 
   constructor() {
     if (typeof window !== 'undefined') {
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      this.masterGain = this.audioContext.createGain();
+      this.masterGain.connect(this.audioContext.destination);
     }
   }
 
-  public async playSound(soundType: CompletionSoundType): Promise<void> {
+  /**
+   * @param soundType which synthesized sound to play.
+   * @param volume    volume multiplier in the range 0-1 (a fraction of system
+   *                  volume). Defaults to 1 (full volume). Clamped to [0, 1].
+   */
+  public async playSound(soundType: CompletionSoundType, volume = 1): Promise<void> {
     // console.log('[SoundPlayer] playSound called with type:', soundType);
 
-    if (!this.audioContext) {
+    if (!this.audioContext || !this.masterGain) {
       console.warn('[SoundPlayer] AudioContext not available');
       return;
     }
@@ -24,6 +37,11 @@ export class SoundPlayer {
       // console.log('[SoundPlayer] Resuming suspended AudioContext');
       await this.audioContext.resume();
     }
+
+    // Apply the volume at the start of every call so playback is stateless per
+    // call: a quiet completion sound never leaks its gain into a later sound.
+    const clamped = Math.min(1, Math.max(0, Number.isFinite(volume) ? volume : 1));
+    this.masterGain.gain.setValueAtTime(clamped, this.audioContext.currentTime);
 
     switch (soundType) {
       case 'chime':
@@ -77,7 +95,7 @@ export class SoundPlayer {
    * 'custom' never substitutes a built-in sound (that would surprise the user).
    */
   private async playCustom(): Promise<void> {
-    if (!this.audioContext) return;
+    if (!this.audioContext || !this.masterGain) return;
 
     try {
       const audioBuffer = await this.loadCustomAudioBuffer();
@@ -88,7 +106,9 @@ export class SoundPlayer {
       const gainNode = this.audioContext.createGain();
       gainNode.gain.value = 0.6;
       source.connect(gainNode);
-      gainNode.connect(this.audioContext.destination);
+      // Route through masterGain (not destination directly) so the completion
+      // sound volume slider scales the custom sound like every built-in sound.
+      gainNode.connect(this.masterGain);
       source.start();
     } catch (err) {
       console.error('[SoundPlayer] Failed to play custom sound:', err);
@@ -138,7 +158,7 @@ export class SoundPlayer {
       gainNode.gain.linearRampToValueAtTime(0, now + start + duration);
 
       oscillator.connect(gainNode);
-      gainNode.connect(ctx.destination);
+      gainNode.connect(this.masterGain!);
 
       oscillator.start(now + start);
       oscillator.stop(now + start + duration);
@@ -167,7 +187,7 @@ export class SoundPlayer {
       gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
 
       oscillator.connect(gainNode);
-      gainNode.connect(ctx.destination);
+      gainNode.connect(this.masterGain!);
 
       oscillator.start(now + index * 0.1);
       oscillator.stop(now + duration + index * 0.1);
@@ -198,7 +218,7 @@ export class SoundPlayer {
       gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
 
       oscillator.connect(gainNode);
-      gainNode.connect(ctx.destination);
+      gainNode.connect(this.masterGain!);
 
       oscillator.start(now);
       oscillator.stop(now + duration);
@@ -223,7 +243,7 @@ export class SoundPlayer {
     gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
 
     oscillator.connect(gainNode);
-    gainNode.connect(ctx.destination);
+    gainNode.connect(this.masterGain!);
 
     oscillator.start(now);
     oscillator.stop(now + 0.1);
@@ -234,6 +254,7 @@ export class SoundPlayer {
       this.audioContext.close();
       this.audioContext = null;
     }
+    this.masterGain = null;
   }
 }
 
