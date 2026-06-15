@@ -435,3 +435,209 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     expect(text?.content).toContain('based on my research');
   });
 });
+
+
+describe('AntigravityToolLoopProtocol sentinel write directive', () => {
+  const WRITE = [
+    { type: 'function' as const, function: { name: 'read_file' } },
+    { type: 'function' as const, function: { name: 'write_file' } },
+  ];
+
+  function parse(proto: AntigravityToolLoopProtocol, r: string) {
+    return (
+      proto as unknown as {
+        parseToolCall: (r: string) => { name: string; arguments: Record<string, unknown> } | null;
+      }
+    ).parseToolCall(r);
+  }
+
+  it('parses a sentinel directive into write_file with verbatim content (fences and braces preserved)', () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    const content = '# Report\n\n```json\n{ "a": 1, "b": { "c": 2 } }\n```\nLine with "quotes" and { braces }.';
+    const response =
+      'I will write the file now.\n' +
+      '<<<WRITE_FILE: research_report_last30days.md>>>\n' +
+      content +
+      '\n<<<END_WRITE_FILE>>>';
+    const parsed = parse(proto, response);
+    expect(parsed?.name).toBe('write_file');
+    expect(parsed?.arguments.path).toBe('research_report_last30days.md');
+    expect(parsed?.arguments.content).toBe(content + '\n');
+  });
+
+  it('returns null for an unterminated write directive (missing END marker)', () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    expect(parse(proto, '<<<WRITE_FILE: a.md>>>\nsome content with no closing marker')).toBeNull();
+  });
+
+  it('rejects a write directive whose path contains angle brackets (template placeholder)', () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    expect(parse(proto, '<<<WRITE_FILE: <path>>>>\ncontent\n<<<END_WRITE_FILE>>>')).toBeNull();
+  });
+
+  it('still parses a JSON write_file envelope (backward compatible)', () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    const parsed = parse(proto, '{"tool_call":{"name":"write_file","arguments":{"path":"a.md","content":"x"}}}');
+    expect(parsed?.name).toBe('write_file');
+    expect(parsed?.arguments.content).toBe('x');
+  });
+
+  it('run() executes the write when the model emits a sentinel directive', async () => {
+    let n = 0;
+    const { proto } = makeProto(async () => {
+      n++;
+      if (n === 1)
+        return '<<<WRITE_FILE: research_report_last30days.md>>>\n# Report\nbody { with braces }\n<<<END_WRITE_FILE>>>';
+      return 'Done. The report is written.';
+    }, 40);
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const exec = vi.fn(async (name: string, args: Record<string, unknown>) => {
+      calls.push({ name, args });
+      return 'written';
+    });
+
+    const events = await drain(proto.run('write the report', 'sys', WRITE, exec));
+
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(calls[0].name).toBe('write_file');
+    expect(calls[0].args.path).toBe('research_report_last30days.md');
+    expect(String(calls[0].args.content)).toContain('body { with braces }');
+    expect(events.some((e) => e.type === 'tool_call' && e.name === 'write_file')).toBe(true);
+    expect(events[events.length - 1].type).toBe('complete');
+  });
+
+  it('nudges an incomplete (unterminated) write directive to re-emit it whole', async () => {
+    let n = 0;
+    const prompts: string[] = [];
+    const { proto } = makeProto(async (p) => {
+      prompts.push(p);
+      n++;
+      if (n === 1) return '<<<WRITE_FILE: a.md>>>\npartial content, model got cut off';
+      if (n === 2) return '<<<WRITE_FILE: a.md>>>\nfull content\n<<<END_WRITE_FILE>>>';
+      return 'Done.';
+    }, 40);
+    const exec = vi.fn(async () => 'written');
+
+    await drain(proto.run('write a.md', 'sys', WRITE, exec));
+
+    expect(prompts[1]).toContain('END_WRITE_FILE');
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('teaches the write directive and uses a non-write tool for the JSON example', () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    const sys = (
+      proto as unknown as {
+        buildInstructedSystemPrompt: (s: string, t: typeof WRITE) => string;
+      }
+    ).buildInstructedSystemPrompt('base', WRITE);
+    expect(sys).toContain('<<<WRITE_FILE:');
+    expect(sys).toContain('Writing files (REQUIRED format');
+    expect(sys).toContain('"name":"read_file"');
+    expect(sys).not.toContain('{"tool_call":{"name":"write_file"');
+  });
+
+  it('strips a stray write-directive sentinel from the final answer', () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    const out = (
+      proto as unknown as { sanitizeFinalText: (t: string) => string }
+    ).sanitizeFinalText(
+      'Here is the result. <<<WRITE_FILE: leaked.md>>> oops <<<END_WRITE_FILE>>> and more text.',
+    );
+    expect(out).not.toContain('WRITE_FILE');
+    expect(out).toContain('Here is the result.');
+    expect(out).toContain('and more text.');
+  });
+});
+
+
+describe('AntigravityToolLoopProtocol sentinel write directive refinements', () => {
+  const WRITE = [
+    { type: 'function' as const, function: { name: 'read_file' } },
+    { type: 'function' as const, function: { name: 'write_file' } },
+  ];
+
+  function parse(proto: AntigravityToolLoopProtocol, r: string) {
+    return (
+      proto as unknown as {
+        parseToolCall: (r: string) => { name: string; arguments: Record<string, unknown> } | null;
+      }
+    ).parseToolCall(r);
+  }
+
+  it('parses a same-line directive (no newline after the path marker)', () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    const parsed = parse(proto, '<<<WRITE_FILE: a.md>>>hello world<<<END_WRITE_FILE>>>');
+    expect(parsed?.name).toBe('write_file');
+    expect(parsed?.arguments.path).toBe('a.md');
+    expect(parsed?.arguments.content).toBe('hello world\n');
+  });
+
+  it('normalizes a body without a trailing newline to end with exactly one', () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    const parsed = parse(proto, '<<<WRITE_FILE: a.md>>>\nno trailing newline<<<END_WRITE_FILE>>>');
+    expect(parsed?.arguments.content).toBe('no trailing newline\n');
+  });
+
+  it('does not add a second trailing newline when the body already ends in one', () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    // A blank line before the close marker yields a body ending in '\n'.
+    const parsed = parse(proto, '<<<WRITE_FILE: a.md>>>\nbody\n\n<<<END_WRITE_FILE>>>');
+    expect(parsed?.arguments.content).toBe('body\n');
+  });
+
+  it('nudges a malformed directive (angle-bracket path) to re-emit, then writes', async () => {
+    let n = 0;
+    const prompts: string[] = [];
+    const { proto } = makeProto(async (p) => {
+      prompts.push(p);
+      n++;
+      if (n === 1) return '<<<WRITE_FILE: <path>>>>\ncontent\n<<<END_WRITE_FILE>>>';
+      if (n === 2) return '<<<WRITE_FILE: real.md>>>\ncontent\n<<<END_WRITE_FILE>>>';
+      return 'Done.';
+    }, 40);
+    const exec = vi.fn(async () => 'written');
+
+    await drain(proto.run('write it', 'sys', WRITE, exec));
+
+    expect(prompts[1]).toContain('did not parse');
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('the trailing reminder steers writes to the directive when write_file is present', () => {
+    const { proto } = makeProto(async () => 'noop', 40);
+    const sys = (
+      proto as unknown as {
+        buildInstructedSystemPrompt: (s: string, t: typeof WRITE) => string;
+      }
+    ).buildInstructedSystemPrompt('base', WRITE);
+    expect(sys).toContain('To WRITE A FILE, do NOT use the JSON envelope');
+    // And a read-only meta-style toolset gets no such clause.
+    const sysNoWrite = (
+      proto as unknown as {
+        buildInstructedSystemPrompt: (s: string, t: { type: 'function'; function: { name: string } }[]) => string;
+      }
+    ).buildInstructedSystemPrompt('base', [{ type: 'function', function: { name: 'read_file' } }]);
+    expect(sysNoWrite).not.toContain('To WRITE A FILE');
+  });
+
+  it('redirects a doomed write_file JSON to the sentinel directive on retry', async () => {
+    let n = 0;
+    const prompts: string[] = [];
+    const { proto } = makeProto(async (p) => {
+      prompts.push(p);
+      n++;
+      // Malformed JSON (unescaped newline in content) that names write_file.
+      if (n === 1) return '{"tool_call":{"name":"write_file","arguments":{"path":"a.md","content":"line1\nline2}}}';
+      if (n === 2) return '<<<WRITE_FILE: a.md>>>\nline1\nline2\n<<<END_WRITE_FILE>>>';
+      return 'Done.';
+    }, 40);
+    const exec = vi.fn(async () => 'written');
+
+    await drain(proto.run('write it', 'sys', WRITE, exec));
+
+    // The retry nudge points at the sentinel, not at re-escaping JSON.
+    expect(prompts[1]).toContain('WRITE_FILE');
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+});

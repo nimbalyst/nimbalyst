@@ -82,6 +82,23 @@ const DEDUP_READONLY_TOOLS = new Set(['read_file', 'list_files', 'search_files']
 // stuck looping; stop and force a final synthesis instead of burning the budget.
 const MAX_DUPLICATE_READS = 4;
 
+// Sentinel-delimited write directive. write_file's `content` argument is a whole
+// file body (markdown, code, JSON) dense with quotes, braces, and newlines. A weak
+// model reliably FAILS to escape all of that into a JSON string value: it either
+// emits malformed JSON or skips the call and narrates "I saved the file" in prose
+// (nothing is written, editedFiles stays empty). This sentinel form lets the model
+// emit the path on one line and the RAW content between markers - no JSON, no
+// escaping - and the content may contain ``` fences and { } braces freely. It is
+// parsed into a normal write_file tool call, so the host write path is unchanged.
+const WRITE_FILE_OPEN = '<<<WRITE_FILE:';
+const WRITE_FILE_CLOSE = '<<<END_WRITE_FILE>>>';
+// Open-line path: no newlines, no angle brackets (so a literal "<path>" placeholder
+// cannot match). Content is captured verbatim and width-bounded; a single newline
+// before the close marker is consumed. The negated class excludes '>' so the lazy
+// path quantifier cannot backtrack across the '>>>' terminator (no ReDoS).
+const WRITE_FILE_DIRECTIVE_RE =
+  /<<<WRITE_FILE:[ \t]*([^\r\n<>]+?)>>>[ \t]*\r?\n?([\s\S]{0,2000000}?)\r?\n?<<<END_WRITE_FILE>>>/;
+
 export class AntigravityToolLoopProtocol {
   private modelKey: string;
   private readonly maxIterations: number;
@@ -213,6 +230,31 @@ export class AntigravityToolLoopProtocol {
       const toolCall = this.parseToolCall(response);
       if (!toolCall) {
         const text = this.sanitizeFinalText(this.stripToolCallJson(response));
+        // A write directive is present but did not parse into a write_file call
+        // (unterminated, missing the newline after the path, or a placeholder /
+        // angle-bracket path). It would otherwise fall through, be scrubbed from the
+        // final text, and write nothing - a silent miss. Nudge to re-emit it, capped.
+        if (
+          writeClaimNudges < MAX_WRITE_CLAIM_NUDGES &&
+          response.includes(WRITE_FILE_OPEN)
+        ) {
+          writeClaimNudges++;
+          this.history.push({ role: 'assistant', content: '[Malformed write directive]' });
+          this.history.push({
+            role: 'tool',
+            toolName: 'system',
+            content: this.sanitizeToolResult(
+              '[Your write directive did not parse, so nothing was written. Re-emit it in ' +
+                'EXACTLY this shape, each marker on its own line, with a real relative path ' +
+                'and nothing else:\n' +
+                WRITE_FILE_OPEN +
+                ' relative/path.ext>>>\n<the complete file content, verbatim>\n' +
+                WRITE_FILE_CLOSE +
+                ']',
+            ),
+          });
+          continue;
+        }
         // The model TRIED to emit a tool_call but the JSON did not parse --
         // almost always an unescaped newline, quote, or backslash inside a
         // string value (very common when write_file carries multi-line content).
@@ -221,14 +263,26 @@ export class AntigravityToolLoopProtocol {
         if (jsonRetries < MAX_JSON_RETRIES && /"tool_call"\s*:/.test(response)) {
           jsonRetries++;
           this.history.push({ role: 'assistant', content: '[Unparseable tool_call JSON]' });
+          // A doomed write_file JSON is the exact failure the sentinel avoids -
+          // redirect there instead of telling the model to re-escape and fail again.
+          const isWriteFileJson = /write_file/.test(response);
           this.history.push({
             role: 'tool',
             content: this.sanitizeToolResult(
-              '[Your tool_call JSON did not parse. This is almost always an unescaped ' +
-                'newline, double-quote, or backslash inside a string value (common when ' +
-                'writing multi-line file content with write_file). Re-emit your ENTIRE next ' +
-                'response as ONE valid JSON object {"tool_call":{"name":"...","arguments":{...}}} ' +
-                'with every string value properly JSON-escaped, and nothing else.]',
+              isWriteFileJson
+                ? '[Your write_file JSON did not parse - escaping a whole file body into a ' +
+                    'JSON string is error-prone. Do NOT retry the JSON. Write the file with ' +
+                    'the directive instead (no JSON, no escaping), each marker on its own ' +
+                    'line:\n' +
+                    WRITE_FILE_OPEN +
+                    ' relative/path.ext>>>\n<the complete file content, verbatim>\n' +
+                    WRITE_FILE_CLOSE +
+                    ']'
+                : '[Your tool_call JSON did not parse. This is almost always an unescaped ' +
+                    'newline, double-quote, or backslash inside a string value. Re-emit your ' +
+                    'ENTIRE next response as ONE valid JSON object ' +
+                    '{"tool_call":{"name":"...","arguments":{...}}} with every string value ' +
+                    'properly JSON-escaped, and nothing else.]',
             ),
             toolName: 'system',
           });
@@ -264,11 +318,15 @@ export class AntigravityToolLoopProtocol {
           this.history.push({
             role: 'tool',
             content: this.sanitizeToolResult(
-              '[No file was written. You claimed to have written or saved a file, but you did ' +
-                'NOT emit a write_file tool_call this turn, so nothing was saved (editedFiles is ' +
-                'empty). Do NOT claim success. Your ENTIRE next response must be ONLY the JSON ' +
-                '{"tool_call":{"name":"write_file","arguments":{"path":"...","content":"..."}}} ' +
-                'with the full file content, and nothing else.]',
+              '[No file was written. You claimed to have saved a file, but nothing was saved ' +
+                '(editedFiles is empty) - writing it in prose does not save anything. To ' +
+                'actually write the file, your ENTIRE next response must be ONLY a write ' +
+                'directive and nothing else:\n' +
+                WRITE_FILE_OPEN +
+                ' relative/path.ext>>>\n' +
+                '<the complete file content, verbatim - no JSON, no escaping, no fences>\n' +
+                WRITE_FILE_CLOSE +
+                '\nUse the real path and the full content.]',
             ),
             toolName: 'system',
           });
@@ -512,7 +570,12 @@ export class AntigravityToolLoopProtocol {
     // weaker model has an unambiguous template to copy. The envelope shape is
     // byte-identical to what extractToolCall/parseToolCall accepts -- do not
     // change the key order or structure here without updating the parser.
-    const exampleEnvelope = this.buildExampleEnvelope(toolSchemas[0]);
+    // Use a NON-write tool for the worked JSON example so the model never learns
+    // to write files via the JSON envelope (a full file body cannot be reliably
+    // JSON-escaped). File writes use the sentinel directive taught below.
+    const exampleSchema = toolSchemas.find((t) => t.name !== 'write_file') ?? toolSchemas[0];
+    const exampleEnvelope = this.buildExampleEnvelope(exampleSchema);
+    const hasWriteFile = toolSchemas.some((t) => t.name === 'write_file');
 
     const toolBlock = [
       '## Available Tools',
@@ -532,7 +595,7 @@ export class AntigravityToolLoopProtocol {
       '',
       '### Example',
       '',
-      'To call the tool "' + (toolSchemas[0]?.name ?? '<tool_name>') + '", respond with',
+      'To call the tool "' + (exampleSchema?.name ?? '<tool_name>') + '", respond with',
       'exactly this and nothing else:',
       '',
       exampleEnvelope,
@@ -543,6 +606,32 @@ export class AntigravityToolLoopProtocol {
       'give your final answer, and no tool is needed, respond with plain text only',
       '(no JSON tool_call block).',
       '',
+      ...(hasWriteFile
+        ? [
+            '### Writing files (REQUIRED format for write_file)',
+            '',
+            'Do NOT use the JSON envelope above to write a file. To create or',
+            'overwrite a file, emit a write directive in EXACTLY this form, with',
+            'nothing else in the response:',
+            '',
+            '<<<WRITE_FILE: relative/path/to/file.ext>>>',
+            '...the complete raw file content, exactly as it should appear on disk...',
+            '<<<END_WRITE_FILE>>>',
+            '',
+            '- Put the real relative path right after "WRITE_FILE:" (no quotes, no <>).',
+            '- Everything between the markers is written verbatim: do NOT escape it, do',
+            '  NOT wrap it in JSON, do NOT add code fences around it. It may itself',
+            '  contain ``` fences, quotes, and { } braces.',
+            '- Emitting this directive IS the save. Saying "I have written the file" or',
+            '  "the file has been created" in prose saves NOTHING - the file stays empty.',
+            '- Only after you receive the write confirmation may you report it as done.',
+            '- Write ONE file per response. To write several files, send several',
+            '  responses, one directive each.',
+            '- Do not put the literal text <<<END_WRITE_FILE>>> inside the file body; it',
+            '  ends the directive.',
+            '',
+          ]
+        : []),
       '### Tool Definitions',
       '```json',
       JSON.stringify(toolSchemas, null, 2),
@@ -556,7 +645,12 @@ export class AntigravityToolLoopProtocol {
     const trailingReminder =
       'Reminder: to take an action a tool provides, output only the ' +
       '{"tool_call":{...}} JSON envelope and nothing else; if no tool is needed, ' +
-      'answer in plain text.';
+      'answer in plain text.' +
+      (hasWriteFile
+        ? ' To WRITE A FILE, do NOT use the JSON envelope - emit the ' +
+          '<<<WRITE_FILE: path>>> directive (content verbatim) ending with ' +
+          '<<<END_WRITE_FILE>>>.'
+        : '');
 
     return `${toolBlock}\n\n${baseSystemPrompt}\n\n${trailingReminder}`;
   }
@@ -691,6 +785,13 @@ export class AntigravityToolLoopProtocol {
    * proper escape handling.
    */
   parseToolCall(response: string): ToolCallRequest | null {
+    // A sentinel-delimited write directive takes precedence. It carries a whole
+    // file body the model cannot reliably JSON-escape, so it is the supported way
+    // for a weak model to write a non-trivial file. Scanned on the RAW response so
+    // ``` fences inside the file content are preserved (not stripped below).
+    const writeDirective = this.parseWriteFileDirective(response);
+    if (writeDirective) return writeDirective;
+
     if (!response.includes('tool_call')) return null;
 
     const stripped = response.replace(/```json\s*/g, '').replace(/```\s*/g, '');
@@ -706,6 +807,28 @@ export class AntigravityToolLoopProtocol {
       if (parsed) return parsed;
     }
     return null;
+  }
+
+  /**
+   * Parse a sentinel-delimited write directive
+   * (<<<WRITE_FILE: path>>> ... <<<END_WRITE_FILE>>>) into a write_file tool call.
+   * Returns null when no COMPLETE directive is present; the run loop separately
+   * nudges an unterminated one. The path must be non-empty with no angle brackets;
+   * the content is taken verbatim (no unescaping).
+   */
+  private parseWriteFileDirective(response: string): ToolCallRequest | null {
+    if (!response.includes(WRITE_FILE_OPEN)) return null;
+    const m = WRITE_FILE_DIRECTIVE_RE.exec(response);
+    if (!m) return null;
+    const path = m[1].trim();
+    if (!path || path.includes('<') || path.includes('>')) return null;
+    // The close marker sits on its own line, so the newline immediately before it
+    // is the delimiter, not file content. Guarantee a non-empty body ends in a
+    // single trailing newline (POSIX convention; editors and formatters expect it)
+    // so the boundary is deterministic instead of silently dropping the final \n.
+    let content = m[2];
+    if (content.length > 0 && !content.endsWith('\n')) content += '\n';
+    return { name: 'write_file', arguments: { path, content } };
   }
 
   /**
@@ -794,6 +917,11 @@ export class AntigravityToolLoopProtocol {
    */
   private sanitizeFinalText(text: string): string {
     let t = text.replace(/<\|im_(start|end)\|>|<\|endoftext\|>/g, '');
+    // Remove any write-directive sentinels so a stray or unterminated directive
+    // (one parseToolCall did not consume) never leaks into the visible answer.
+    t = t.replace(/<<<WRITE_FILE:[\s\S]{0,2000000}?<<<END_WRITE_FILE>>>/g, '');
+    t = t.replace(/<<<WRITE_FILE:[^\r\n>]*>>>/g, '');
+    t = t.replace(/<<<END_WRITE_FILE>>>/g, '');
     const markers = [
       '\nUser:',
       '\nAssistant:',
