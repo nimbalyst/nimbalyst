@@ -155,6 +155,31 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     expect(text?.content).toBe('SYNTHESIZED from gathered context.');
   });
 
+  it('retries a malformed tool_call JSON instead of dropping the deliverable', async () => {
+    const WRITE_TOOL = [{ type: 'function' as const, function: { name: 'write_file' } }];
+    let call = 0;
+    const { proto, spy } = makeProto(async () => {
+      call++;
+      // 1st: invalid JSON (literal newline inside the content string value).
+      if (call === 1)
+        return ('{"tool_call":{"name":"write_file","arguments":{"path":"r.md","content":"line1' +
+          String.fromCharCode(10) +
+          'line2"}}}');
+      // 2nd: valid JSON after the retry nudge.
+      if (call === 2)
+        return '{"tool_call":{"name":"write_file","arguments":{"path":"r.md","content":"ok"}}}';
+      return 'done';
+    }, 40);
+    const exec = vi.fn(async () => 'written');
+
+    const events = await drain(proto.run('write a report', 'sys', WRITE_TOOL, exec));
+
+    // The malformed call is retried (not dropped); the valid call then executes.
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(events[events.length - 1].type).toBe('complete');
+  });
+
   it('re-allows a read after a write_file mutates state (epoch bump)', async () => {
     const RW_TOOLS = [
       { type: 'function' as const, function: { name: 'read_file' } },

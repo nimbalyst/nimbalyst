@@ -60,6 +60,9 @@ const TOOL_OUTPUT_CLOSE = '</tool-output>';
 // Max times per turn we re-prompt a model that described a tool call in prose
 // instead of emitting the JSON envelope, before accepting its text as final.
 const MAX_SOFT_MISSES = 2;
+// Max times per turn we re-prompt a model whose tool_call JSON failed to
+// parse (usually unescaped multi-line content in write_file) before giving up.
+const MAX_JSON_RETRIES = 2;
 
 // Per-tool-result hard cap on characters fed back into the prompt. The text
 // protocol re-renders the ENTIRE history into one prompt every turn, so an
@@ -187,6 +190,7 @@ export class AntigravityToolLoopProtocol {
     // when a weaker model narrates its next action.
     let softMisses = 0;
     let dupHits = 0;
+    let jsonRetries = 0;
 
     for (let iteration = 0; iteration < this.maxIterations; iteration++) {
       if (this.aborted) return;
@@ -199,6 +203,27 @@ export class AntigravityToolLoopProtocol {
       const toolCall = this.parseToolCall(response);
       if (!toolCall) {
         const text = this.sanitizeFinalText(this.stripToolCallJson(response));
+        // The model TRIED to emit a tool_call but the JSON did not parse --
+        // almost always an unescaped newline, quote, or backslash inside a
+        // string value (very common when write_file carries multi-line content).
+        // Do NOT drop the turn (and the deliverable); nudge it to re-emit valid
+        // JSON, capped so a model that cannot recover still terminates.
+        if (jsonRetries < MAX_JSON_RETRIES && /"tool_call"\s*:/.test(response)) {
+          jsonRetries++;
+          this.history.push({ role: 'assistant', content: '[Unparseable tool_call JSON]' });
+          this.history.push({
+            role: 'tool',
+            content: this.sanitizeToolResult(
+              '[Your tool_call JSON did not parse. This is almost always an unescaped ' +
+                'newline, double-quote, or backslash inside a string value (common when ' +
+                'writing multi-line file content with write_file). Re-emit your ENTIRE next ' +
+                'response as ONE valid JSON object {"tool_call":{"name":"...","arguments":{...}}} ' +
+                'with every string value properly JSON-escaped, and nothing else.]',
+            ),
+            toolName: 'system',
+          });
+          continue;
+        }
         // Recovery: a weaker model sometimes DESCRIBES its next tool call in
         // prose ("Now I'll read X") instead of emitting the JSON envelope, which
         // would end the turn here with the task unfinished. If the text names an
@@ -719,8 +744,9 @@ export class AntigravityToolLoopProtocol {
       const tailLen = 3_000;
       capped =
         capped.slice(0, headLen) +
-        `\n\n[... tool output truncated: ${text.length} chars total; showing first ` +
-        `${headLen} and last ${tailLen}. Re-read a specific range if you need more. ...]\n\n` +
+        `\n\n[SYSTEM: OUTPUT TRUNCATED -- you have NOT seen the whole result ` +
+        `(${text.length} chars total; showing first ${headLen} and last ${tailLen}). Do NOT ` +
+        `assume the omitted middle; re-read a specific line range if you need it.]\n\n` +
         capped.slice(-tailLen);
     }
     // Neutralize tool_call token by inserting a zero-width-ish marker between

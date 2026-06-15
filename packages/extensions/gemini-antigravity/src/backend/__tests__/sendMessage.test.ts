@@ -365,7 +365,7 @@ describe('gemini-antigravity backend sendMessage', () => {
     // truncated -- contain the marker and NOT the full 50K run.
     expect(getModelResponse).toHaveBeenCalledTimes(2);
     const secondPrompt = String(getModelResponse.mock.calls[1][0]);
-    expect(secondPrompt).toContain('tool output truncated');
+    expect(secondPrompt).toContain('OUTPUT TRUNCATED');
     expect(secondPrompt).not.toContain('X'.repeat(30_000));
   });
 });
