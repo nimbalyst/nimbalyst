@@ -291,11 +291,14 @@ export class AntigravityServerManager {
    * Send a one-shot prompt to a model identified by its stable KEY (preferred)
    * or enum. Returns the model's text response.
    *
-   * Retries the GetModelResponse RPC ONCE on a transport TIMEOUT only. A timeout
-   * usually means the language server is wedged (heartbeat still answers, but
-   * GetModelResponse hangs); before the second attempt we drop this.endpoint and
-   * re-run ensureRunning() so a stuck server is re-discovered or respawned. We do
-   * NOT retry an AntigravityVersionGateError (permanent: wrong --override_ide_version,
+   * Retries the GetModelResponse RPC ONCE on a transport TIMEOUT only. The
+   * observed timeout cause is an intermittent RUNAWAY generation: the model
+   * emits its answer then keeps generating a hallucinated tail past the limit
+   * (GetModelResponse is buffered, so a runaway is only visible as the whole
+   * call exceeding the timeout - it cannot be stopped client-side). A fresh
+   * generation usually does not run away, so we re-issue the call, dropping
+   * this.endpoint first so a genuinely crashed server is respawned. We do NOT
+   * retry an AntigravityVersionGateError (permanent: wrong --override_ide_version,
    * a respawn re-creates the same gate) or an HTTP 4xx (client/auth error). Worst
    * case latency is ~2x timeoutMs plus one backoff and one respawn cycle.
    */
@@ -304,22 +307,17 @@ export class AntigravityServerManager {
     const MAX_ATTEMPTS = 2;
     const RETRY_BACKOFF_MS = 1_000;
     let lastErr: unknown;
-    let failedPort: number | null = null;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       if (attempt > 1) {
-        // Force re-discovery/respawn: skip ensureRunning()'s healthy-endpoint
-        // fast-path so a crashed server is respawned and an alive one re-found.
+        // Re-discover before the retry: a crashed server is respawned, an alive
+        // one re-found. We DO retry against the same alive endpoint -- the common
+        // timeout cause is an intermittent runaway generation, and a fresh
+        // generation usually does not run away. A truly wedged server is rare and
+        // costs one extra timeout; recovering the common case is worth it.
         this.endpoint = null;
         await delay(RETRY_BACKOFF_MS);
       }
       const ep = await this.ensureRunning();
-      // A retry only helps if discovery handed back a DIFFERENT server (the old
-      // one crashed and was respawned). If the same alive server comes back, the
-      // wedge was this request -- not the process -- so re-issuing the identical
-      // call just burns another full timeout. Fail fast on the same endpoint.
-      if (attempt > 1 && failedPort !== null && ep.httpsPort === failedPort) {
-        throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
-      }
       const enumName = modelKeyOrEnum.startsWith('MODEL_')
         ? modelKeyOrEnum
         : await this.resolveModelEnum(modelKeyOrEnum, ep);
@@ -341,9 +339,7 @@ export class AntigravityServerManager {
         const isTimeout = msg.includes('timed out');
         const isHttp4xx = /HTTP 4\d\d/.test(msg);
         if (!isTimeout || isHttp4xx || attempt >= MAX_ATTEMPTS) throw err;
-        // Timeout on a live server: remember its port so the retry only proceeds
-        // if a genuinely new endpoint (respawned process) comes back.
-        failedPort = ep.httpsPort;
+        // Timeout (likely an intermittent runaway): fall through and retry.
       }
     }
     // Unreachable: the loop either returns or throws on every path.

@@ -299,4 +299,54 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     expect(parsed?.name).toBe('read_file');
     expect(parsed?.arguments.path).toBe('deliverable.md');
   });
+
+  it('runs a grounding verification pass over a final answer when tools were used', async () => {
+    const READ = [{ type: 'function' as const, function: { name: 'read_file' } }];
+    let n = 0;
+    const { proto } = makeProto(async (p) => {
+      // The verification re-prompt is identifiable by its SOURCE MATERIAL block.
+      if (/SOURCE MATERIAL/.test(p)) return 'GROUNDED corrected answer.';
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}}';
+      return 'DRAFT answer with an ungrounded claim about the file. '.repeat(6);
+    }, 40);
+
+    const events = await drain(proto.run('analyze a.md', 'sys', READ, async () => 'real file contents'));
+
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toBe('GROUNDED corrected answer.');
+  });
+
+  it('skips the verification pass on a no-tool chat turn', async () => {
+    let verifyCalls = 0;
+    const { proto } = makeProto(async (p) => {
+      if (/SOURCE MATERIAL/.test(p)) {
+        verifyCalls++;
+        return 'x';
+      }
+      return 'A plain chat answer needing no tools, long enough to clear the length threshold so the skip is due to the no-tool gate, not brevity.';
+    }, 40);
+
+    const events = await drain(proto.run('hi', 'sys', LIST_TOOL, async () => 'x'));
+
+    expect(verifyCalls).toBe(0);
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toContain('plain chat answer');
+  });
+
+  it('keeps the draft answer if the verification pass fails', async () => {
+    const READ = [{ type: 'function' as const, function: { name: 'read_file' } }];
+    let n = 0;
+    const { proto } = makeProto(async (p) => {
+      if (/SOURCE MATERIAL/.test(p)) throw new Error('Antigravity GetModelResponse timed out after 90s');
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}}';
+      return 'DRAFT answer that should survive because verification failed. '.repeat(5);
+    }, 40);
+
+    const events = await drain(proto.run('go', 'sys', READ, async () => 'contents'));
+
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toContain('DRAFT answer that should survive');
+  });
 });

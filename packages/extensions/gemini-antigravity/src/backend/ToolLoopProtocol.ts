@@ -166,10 +166,12 @@ export class AntigravityToolLoopProtocol {
     systemPrompt: string,
     tools: OpenAITool[],
     executeToolCall: (name: string, args: Record<string, unknown>) => Promise<unknown>,
-    // Generation workload: a full agentic turn over a re-rendered single-shot
-    // prompt. 120s killed legitimately slow/queued model turns mid-flight; the
-    // cross-agent policy is 180s+ for generation (Q&A stays short elsewhere).
-    timeoutMs = 180_000
+    // A legitimate turn finishes well under this even when verbose (a 21-46KB
+    // response measured at 27-36s). The long timeouts were an intermittent
+    // runaway generation, not a slow-but-valid turn, so a tight-but-generous cap
+    // cuts a runaway sooner; getModelResponse then retries once (a fresh
+    // generation usually does not run away), keeping ~2x90s worst case.
+    timeoutMs = 90_000
   ): AsyncGenerator<
     | { type: 'text'; content: string }
     | { type: 'tool_call'; name: string; args: Record<string, unknown> }
@@ -244,8 +246,18 @@ export class AntigravityToolLoopProtocol {
           });
           continue;
         }
-        this.history.push({ role: 'assistant', content: text });
-        yield { type: 'text', content: text };
+        // Grounding pass. A weak model confidently states concrete facts the
+        // tools never returned (it confabulated CLI flags and dependencies even
+        // after reading the source). When this turn actually gathered tool output,
+        // re-check the answer against it before shipping. Skipped for no-tool
+        // (chat) turns and trivial answers; the draft is kept on any failure.
+        const finalText =
+          this.toolCallLedger.length > 0 && text.trim().length > 200
+            ? await this.verifyFinalAnswer(text, timeoutMs)
+            : text;
+        if (this.aborted) return;
+        this.history.push({ role: 'assistant', content: finalText });
+        yield { type: 'text', content: finalText };
         yield { type: 'complete' };
         return;
       }
@@ -732,6 +744,54 @@ export class AntigravityToolLoopProtocol {
     // Drop leading stray braces/brackets a degenerate response sometimes emits.
     t = t.replace(/^[\s}\]]+/, '');
     return t.trim();
+  }
+
+  /**
+   * Grounding pass over a final answer. A weak model confidently states concrete
+   * facts the tools never returned (it confabulated CLI flags and dependencies
+   * even after reading the source file). Re-prompt it with the draft plus the
+   * tool outputs gathered this turn, instructing it to correct or drop any claim
+   * those outputs do not support. One extra no-tools call; the draft is kept on
+   * empty output or any failure. Only the newest tool outputs (within budget) are
+   * used as the source, so a claim grounded in an evicted older output may be
+   * trimmed - an acceptable trade for catching ungrounded fabrication.
+   */
+  private async verifyFinalAnswer(draft: string, timeoutMs: number): Promise<string> {
+    const SOURCE_BUDGET = 24_000;
+    const sources: string[] = [];
+    let used = 0;
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      const m = this.history[i];
+      if (m.role !== 'tool' || m.toolName === 'system') continue;
+      if (used + m.content.length > SOURCE_BUDGET) continue;
+      sources.unshift('Tool result (' + (m.toolName ?? 'unknown') + '): ' + m.content);
+      used += m.content.length;
+    }
+    if (sources.length === 0) return draft;
+    const verifyPrompt = [
+      'You are checking a DRAFT ANSWER for factual grounding against the SOURCE',
+      'MATERIAL below (the raw tool outputs gathered while answering). Rewrite the',
+      'draft so every concrete factual claim (names, flags, file paths, dependencies,',
+      'values) is supported by the SOURCE MATERIAL. Correct any claim that contradicts',
+      'the source and remove any concrete claim the source does not support. Do NOT',
+      'invent new facts. Preserve the structure and wording otherwise. Output ONLY the',
+      'corrected answer text, with no preamble.',
+      '',
+      '=== SOURCE MATERIAL ===',
+      sources.join('\n\n'),
+      '=== DRAFT ANSWER ===',
+      draft,
+      '=== END ===',
+      'Corrected answer:',
+    ].join('\n');
+    try {
+      const resp = await this.server.getModelResponse(verifyPrompt, this.modelKey, timeoutMs);
+      if (this.aborted) return draft;
+      const verified = this.sanitizeFinalText(this.stripToolCallJson(resp));
+      return verified.trim().length > 0 ? verified : draft;
+    } catch {
+      return draft;
+    }
   }
 
   /**
