@@ -53,6 +53,48 @@ describe('GitCommitService', () => {
     expect(result.error).toContain('HOOK_DETAIL: lint failed');
   });
 
+  it('runs hooks with the injected subprocess env so PATH-dependent hooks resolve', async () => {
+    await git(['init', '-q'], tmpRoot);
+    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
+    await git(['config', 'user.name', 'Test User'], tmpRoot);
+
+    // A binary that lives ONLY in a directory absent from the test process PATH,
+    // standing in for an nvm-managed `yarn` that husky hooks invoke.
+    const fakeBinDir = path.join(tmpRoot, 'fakebin');
+    await fs.mkdir(fakeBinDir, { recursive: true });
+    await fs.writeFile(
+      path.join(fakeBinDir, 'nimbalyst_hook_marker'),
+      '#!/bin/sh\nexit 0\n',
+      { mode: 0o755 }
+    );
+
+    const hooksDir = path.join(tmpRoot, '.git', 'hooks');
+    await fs.mkdir(hooksDir, { recursive: true });
+    await fs.writeFile(
+      path.join(hooksDir, 'pre-commit'),
+      '#!/bin/sh\nnimbalyst_hook_marker\n',
+      { mode: 0o755 }
+    );
+
+    await fs.writeFile(path.join(tmpRoot, 'a.txt'), 'hello\n', 'utf8');
+
+    const result = await executeGitCommit(tmpRoot, 'commit with hook', ['a.txt'], {
+      logContext: '[test:git-commit]',
+      env: {
+        ...process.env,
+        // simple-git's .env() scans the supplied environment and blocks these
+        // unless its unsafe flags are enabled; they are ubiquitous in real
+        // shells, so a working fix must tolerate them.
+        GIT_EDITOR: 'vim',
+        GIT_PAGER: 'less',
+        PATH: `${fakeBinDir}:${process.env.PATH ?? ''}`,
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.commitHash).toBeTruthy();
+  });
+
   it('retries past a briefly-held .git/index.lock and commits successfully', async () => {
     await git(['init', '-q'], tmpRoot);
     await git(['config', 'user.email', 'test@example.com'], tmpRoot);

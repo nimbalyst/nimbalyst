@@ -8,6 +8,7 @@ import { notificationService } from "../../services/NotificationService";
 import { TrayManager } from "../../tray/TrayManager";
 import { findWindowIdForWorkspacePath } from "../mcpWorkspaceResolver";
 import { setSessionPendingPrompt } from "../../services/ai/pendingPromptPersistence";
+import { getGitSubprocessEnv } from "../../services/gitEnv";
 import {
   resolveRequestUserInputPromptTargets,
   resolveToolUseIdFromMcpRequest,
@@ -880,7 +881,7 @@ export async function handleGitCommitProposal(
         workspacePath,
         commitMessage,
         filePaths,
-        { logContext: "[git:auto-commit]" }
+        { logContext: "[git:auto-commit]", env: getGitSubprocessEnv() }
       );
     } catch (error) {
       console.error("[MCP Server] Auto-commit failed:", error);

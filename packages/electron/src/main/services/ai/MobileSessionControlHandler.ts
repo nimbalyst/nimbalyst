@@ -18,6 +18,7 @@ import {
   resolveGitCommitProposalPromptId,
 } from './gitCommitProposalPromptUtils';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
+import { getGitSubprocessEnv } from '../gitEnv';
 
 const log = logger.ai;
 
@@ -747,7 +748,7 @@ async function handleGitCommitResponse(
       workspacePath,
       response.message,
       response.files,
-      { logContext: '[GitCommit mobile]' }
+      { logContext: '[GitCommit mobile]', env: getGitSubprocessEnv() }
     );
     await emitProposalResponse(
       createGitCommitProposalResponse(commitResult, response.files, response.message)
