@@ -111,6 +111,17 @@ export const ProjectPermissionsPanel: React.FC<ProjectPermissionsPanelProps> = (
     }
   };
 
+  const handleAllowAllUsesClassifierChange = async (enabled: boolean) => {
+    try {
+      await window.electronAPI.invoke('permissions:setAllowAllUsesClassifier', workspacePath, enabled);
+      await loadPermissions();
+      posthog?.capture('permission_setting_changed', { action: 'toggle_allow_all_classifier', enabled });
+    } catch (err) {
+      console.error('Failed to set Allow All classifier option:', err);
+      setError(err instanceof Error ? err.message : 'Failed to update classifier option');
+    }
+  };
+
   const handleRemovePattern = async (pattern: string, type: 'allowed' | 'denied') => {
     try {
       await window.electronAPI.invoke('permissions:removePattern', workspacePath, pattern);
@@ -409,6 +420,21 @@ export const ProjectPermissionsPanel: React.FC<ProjectPermissionsPanelProps> = (
                 </div>
               </div>
             </label>
+
+            {permissions.permissionMode === 'bypass-all' && (
+              <label className="permissions-allow-all-classifier flex items-start gap-2 mt-1 ml-9 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={permissions.allowAllUsesClassifier}
+                  onChange={(e) => handleAllowAllUsesClassifierChange(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span className="text-xs text-[var(--nim-text-muted)]">
+                  Run an AI safety classifier on risky operations (Claude Code). When on, deploys and
+                  other destructive commands prompt for confirmation instead of running silently.
+                </span>
+              </label>
+            )}
           </div>
         </div>
       )}

@@ -19,6 +19,8 @@ import { useAtom, useSetAtom, useAtomValue } from 'jotai';
 import { store, registerInteractiveWidgetHost, unregisterInteractiveWidgetHost } from '@nimbalyst/runtime/store';
 import type { SessionData, ChatAttachment, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
 import { AgentTranscriptPanel } from '@nimbalyst/runtime/ui/AgentTranscript/components/AgentTranscriptPanel';
+import { ClaudeCliTerminalStrip } from './ClaudeCliTerminalStrip';
+import { ClaudeCliNotInstalledNotice } from './ClaudeCliNotInstalledNotice';
 import type { InteractiveWidgetHost, PermissionScope } from '@nimbalyst/runtime/ui/AgentTranscript/components/CustomToolWidgets/InteractiveWidgetHost';
 import type { TodoItem } from '@nimbalyst/runtime/ui/AgentTranscript/types';
 import { isToolLikeMessage } from '@nimbalyst/runtime/ui/AgentTranscript/utils/messageTypeHelpers';
@@ -41,6 +43,7 @@ import { activeTipIdAtom } from '../../tips/atoms';
 import { supportsWorkspaceSlashCommands } from '../Typeahead/slashCommandAutocomplete';
 import type { TextSelection } from './TextSelectionIndicator';
 import { type SerializableDocumentContext } from '../../hooks/useDocumentContext';
+import { isClaudeCliTerminalSession } from './claudeCliInputRouting';
 import { diffTreeGroupByDirectoryAtom, setDiffTreeGroupByDirectoryAtom } from '../../store/atoms/projectState';
 import {
   sessionDraftInputAtom,
@@ -88,6 +91,16 @@ import {
 import { streamCompletionSignalAtom } from '../../store/atoms/sessionTranscript';
 import { convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitAtAtom, sessionDraftLocalModifiedAtAtom, nextOptimisticId } from '../../store/atoms/sessions';
 import { clearAIInputHistoryAtom } from '../../store/atoms/aiInputUndo';
+import {
+  cliTerminalExpandedAtom,
+  cliTerminalFocusNonceAtom,
+  cliTerminalUserCollapsedAtom,
+  toggleCliTerminalDrawerAtom,
+  cliTerminalHeightAtom,
+  DEFAULT_CLI_TERMINAL_HEIGHT,
+  MIN_CLI_TERMINAL_HEIGHT,
+  MAX_CLI_TERMINAL_HEIGHT,
+} from '../../store/atoms/terminals';
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
 import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom } from '../../store/atoms/appSettings';
@@ -631,6 +644,125 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // Track if we're currently queueing a message (prevents double-submission)
   const [isQueueing, setIsQueueing] = useState(false);
 
+  // claude-code-cli (NIM-806, Phase 3): the rich transcript is primary; the
+  // genuine TUI lives in a collapsible "raw terminal" drawer. Default EXPANDED so
+  // the strip's IntersectionObserver fires and the CLI actually spawns; once
+  // launched, TerminalPanel latches, so collapsing afterward is safe.
+  // State is a per-session atom (NIM-810) so the central reveal listener can
+  // auto-expand + focus the drawer when the CLI opens a native picker (/model …).
+  const [cliTerminalExpanded, setCliTerminalExpanded] = useAtom(cliTerminalExpandedAtom(sessionId));
+  const cliTerminalFocusNonce = useAtomValue(cliTerminalFocusNonceAtom(sessionId));
+  const setCliTerminalUserCollapsed = useSetAtom(cliTerminalUserCollapsedAtom(sessionId));
+  const toggleCliTerminalDrawer = useSetAtom(toggleCliTerminalDrawerAtom);
+
+  // NIM-812: the raw-terminal drawer is vertically resizable; its height +
+  // collapsed state persist per-session in session metadata
+  // (cliRawTerminalHeight / cliRawTerminalCollapsed).
+  const [cliTerminalHeight, setCliTerminalHeight] = useAtom(cliTerminalHeightAtom(sessionId));
+  // Observed by ClaudeCliTerminalStrip so the CLI still spawns while collapsed
+  // (the body is display:none when collapsed and would never intersect).
+  const cliTerminalDrawerRef = useRef<HTMLDivElement>(null);
+  const [cliTerminalResizing, setCliTerminalResizing] = useState(false);
+  // NIM-852: whether the genuine `claude` CLI is installed. null until checked.
+  // When false we render an install notice instead of spawning the terminal strip.
+  const [claudeCliInstalled, setClaudeCliInstalled] = useState<boolean | null>(null);
+  const cliResizeStartY = useRef(0);
+  const cliResizeStartHeight = useRef(0);
+  // Hydrate height + collapsed from session metadata once per session, before the
+  // user interacts, so we don't clobber a fresh drag/toggle.
+  const cliTerminalHydratedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (cliTerminalHydratedRef.current === sessionId) return;
+    const meta = store.get(sessionStoreAtom(sessionId))?.metadata as
+      | Record<string, unknown>
+      | undefined;
+    if (!meta) return; // session data not loaded yet; retry on next render
+    cliTerminalHydratedRef.current = sessionId;
+    const savedHeight = meta.cliRawTerminalHeight;
+    if (typeof savedHeight === 'number' && Number.isFinite(savedHeight)) {
+      setCliTerminalHeight(
+        Math.min(Math.max(savedHeight, MIN_CLI_TERMINAL_HEIGHT), MAX_CLI_TERMINAL_HEIGHT)
+      );
+    }
+    const savedCollapsed = meta.cliRawTerminalCollapsed;
+    if (typeof savedCollapsed === 'boolean') {
+      setCliTerminalExpanded(!savedCollapsed);
+      // A persisted collapse was a user decision — keep it sticky against
+      // output-sourced auto-reveals (NIM-820).
+      setCliTerminalUserCollapsed(savedCollapsed);
+    }
+  }, [sessionId, hasSessionData, setCliTerminalHeight, setCliTerminalExpanded, setCliTerminalUserCollapsed]);
+
+  const handleCliTerminalResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setCliTerminalResizing(true);
+    cliResizeStartY.current = e.clientY;
+    cliResizeStartHeight.current = cliTerminalHeight;
+  }, [cliTerminalHeight]);
+
+  useEffect(() => {
+    if (!cliTerminalResizing) return undefined;
+    const handleMouseMove = (e: MouseEvent) => {
+      // The drawer sits below the transcript, so dragging the top handle UP grows it.
+      const deltaY = cliResizeStartY.current - e.clientY;
+      const next = Math.min(
+        Math.max(cliResizeStartHeight.current + deltaY, MIN_CLI_TERMINAL_HEIGHT),
+        MAX_CLI_TERMINAL_HEIGHT
+      );
+      setCliTerminalHeight(next);
+    };
+    const handleMouseUp = () => {
+      setCliTerminalResizing(false);
+      void updateSessionMetadataField(
+        sessionId,
+        'cliRawTerminalHeight',
+        store.get(cliTerminalHeightAtom(sessionId)),
+        null,
+        updateSessionStore
+      );
+    };
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [cliTerminalResizing, sessionId, setCliTerminalHeight, updateSessionStore]);
+
+  const handleToggleCliTerminal = useCallback(() => {
+    // Shared toggle (NIM-820): flips the drawer, marks/clears the sticky
+    // user-collapsed flag, clears auto-reveal, and persists the metadata —
+    // same action the keyboard shortcut dispatches.
+    toggleCliTerminalDrawer(sessionId);
+    // Keep the in-memory session store's metadata in sync so a remount's
+    // hydration doesn't restore a stale collapsed state.
+    const isNowCollapsed = !store.get(cliTerminalExpandedAtom(sessionId));
+    const currentSessionData = store.get(sessionStoreAtom(sessionId));
+    if (currentSessionData) {
+      updateSessionStore({
+        sessionId,
+        updates: {
+          metadata: {
+            ...((currentSessionData.metadata as Record<string, unknown>) || {}),
+            cliRawTerminalCollapsed: isNowCollapsed,
+          },
+        },
+      });
+    }
+  }, [sessionId, toggleCliTerminalDrawer, updateSessionStore]);
+
+  // claude-code-cli (NIM-806): a brand-new, empty CLI session DEFERS spawning the
+  // genuine `claude` CLI until the user commits by sending the first prompt — so an
+  // empty session still shows the model/provider picker and the user can switch
+  // provider before any billed process spawns. We track the committed session by id
+  // (not a bare boolean) so the flag can't leak across sessions if this component
+  // instance is reused for a different sessionId.
+  const [startedCliSessionId, setStartedCliSessionId] = useState<string | null>(null);
+
   // Diff tree grouping state
   const [groupByDirectory] = useAtom(diffTreeGroupByDirectoryAtom);
   const setDiffTreeGroupByDirectory = useSetAtom(setDiffTreeGroupByDirectoryAtom);
@@ -797,6 +929,46 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const isLoading = isProcessing;
   const sessionHasMessages = messages.length > 0;
 
+  // claude-code-cli (NIM-806): "committed" = the user has started this CLI session.
+  // True once it has any transcript message (a turn has run / a prompt was logged)
+  // or the user just sent the first prompt this render-cycle. Until committed, we
+  // keep the model/provider picker visible and do NOT mount the terminal strip, so
+  // an empty new CLI session can switch provider without eagerly spawning the
+  // genuine `claude` process. Mirrors the backend's own "started session" gate
+  // (shouldBlockStartedSessionProviderSwitch keys off messages.length > 0).
+  const cliSessionCommitted = sessionHasMessages || startedCliSessionId === sessionId;
+
+  // NIM-852: for a claude-code-cli session, detect whether the genuine `claude`
+  // CLI is installed. Re-check when the session commits (a fresh install between
+  // mount and first prompt is then reflected). When not installed we show an
+  // install notice and skip mounting the terminal strip (which would otherwise
+  // spawn a bare `claude` → cryptic `command not found`).
+  useEffect(() => {
+    if (provider !== 'claude-code-cli') {
+      setClaudeCliInstalled(null);
+      return;
+    }
+    // Guard: an older preload (e.g. before an app restart picks up the new IPC)
+    // won't expose this function. Assume installed so we never block a working CLI.
+    const check = window.electronAPI.terminal.isClaudeCliInstalled;
+    if (typeof check !== 'function') {
+      setClaudeCliInstalled(true);
+      return;
+    }
+    let cancelled = false;
+    void check()
+      .then((installed) => {
+        if (!cancelled) setClaudeCliInstalled(installed);
+      })
+      .catch(() => {
+        // On a detection failure, assume installed so we don't block a working CLI.
+        if (!cancelled) setClaudeCliInstalled(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, cliSessionCommitted]);
+
   // ============================================================
   // Confirmation dialogs (ExitPlanMode, AskUserQuestion, ToolPermission)
   // All prompts are DB-backed and derived from sessionPendingPromptsAtom
@@ -839,15 +1011,23 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     prevIsLoadingRef.current = isLoading;
   }, [isLoading, sessionId]);
 
-  // Trigger queue processing when queuedPrompts change and AI is idle
+  // Trigger queue processing when queuedPrompts change and AI is idle.
+  // claude-code-cli is excluded: its queue is flushed to the PTY by the
+  // main-process PID-idle flusher (claudeCliQueueFlush), not the SDK send loop
+  // (ai:triggerQueueProcessing → ai:sendMessage, which throws for the CLI).
   useEffect(() => {
-    if (queuedPrompts.length > 0 && !isLoading && workspacePath) {
+    if (
+      queuedPrompts.length > 0 &&
+      !isLoading &&
+      workspacePath &&
+      !isClaudeCliTerminalSession(provider)
+    ) {
       window.electronAPI.invoke('ai:triggerQueueProcessing', sessionId, workspacePath)
         .catch(error => {
           console.error('[SessionTranscript] Failed to trigger queue processing:', error);
         });
     }
-  }, [queuedPrompts.length, isLoading, sessionId, workspacePath]);
+  }, [queuedPrompts.length, isLoading, sessionId, workspacePath, provider]);
 
   // ============================================================
   // Expose ref methods
@@ -931,6 +1111,63 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     // these atoms in SessionTranscript (see SessionAIInput).
     const currentDraftInput = store.get(sessionDraftInputAtom(sessionId)) ?? '';
     if (!currentDraftInput.trim() || !sessionData) return;
+
+    // claude-code-cli (subscription, NIM-806): the genuine `claude` CLI runs in
+    // the terminal strip and is driven by its PTY, not the Agent SDK loop. The
+    // main-process `claude-cli:submit-prompt` IPC composes the PTY line (prompt +
+    // inline attachment paths), writes it to the terminal, and logs the clean
+    // typed prompt (+ attachment chips) as the transcript user row. We bypass the
+    // SDK send path (ai:sendMessage throws for this provider) and the
+    // /plan//implement//clear interception (the CLI owns its own slash commands).
+    if (isClaudeCliTerminalSession(provider)) {
+      const cliMessage = currentDraftInput.trim();
+      // Commit the session on first send: mounting the terminal strip (gated on
+      // cliSessionCommitted) is what spawns the genuine CLI. We DEFER that spawn
+      // until now so an empty new session still shows the model/provider picker.
+      if (startedCliSessionId !== sessionId) {
+        setStartedCliSessionId(sessionId);
+      }
+      // Route through the Nimbalyst queue when the CLI isn't ready for a direct
+      // PTY write — before its first turn has run (the strip is still spawning) or
+      // while a turn is in flight. The main-process PID-idle flusher drains the
+      // queue to the PTY once the CLI is idle (same store + UI as the SDK path;
+      // handleQueue reads attachments imperatively). Only a committed, idle session
+      // that already has a prior turn writes keystrokes directly.
+      if (!sessionHasMessages || isLoading) {
+        handleQueue(cliMessage);
+        return;
+      }
+      const attachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+      setDraftInput('');
+      setDraftAttachments([]);
+      clearAIInputHistory(sessionId);
+      resetHistory(sessionId);
+      try {
+        if (workspacePath) {
+          // NIM-818: capture the active-doc/selection context at send time —
+          // the composer appends a compact context block to the PTY line so
+          // the CLI knows what "this doc" / "this selection" refers to.
+          // (The queued path already carries it via ai:createQueuedPrompt.)
+          let documentContext: unknown;
+          try {
+            documentContext = serializeDocumentContext(await getEffectiveDocumentContext());
+          } catch (contextError) {
+            console.warn('[SessionTranscript] Failed to capture document context for CLI submit:', contextError);
+          }
+          await window.electronAPI.terminal.submitClaudeCliPrompt({
+            sessionId,
+            workspacePath,
+            prompt: cliMessage,
+            attachments,
+            documentContext,
+          });
+        }
+        recordClaudeActivity();
+      } catch (error) {
+        console.error('[SessionTranscript] Failed to submit claude-cli prompt:', error);
+      }
+      return;
+    }
 
     if (isLoading) {
       handleQueue(currentDraftInput.trim());
@@ -1071,7 +1308,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       });
       setIsProcessing(false);
     }
-  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, mode, onClearSession, onClearAgentSession, clearAIInputHistory]);
+  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity]);
 
   // Launch a sibling session from a `launch: new-session` action prompt.
   // Builds the originating-session mention prefix here (in the renderer) so the
@@ -1123,13 +1360,24 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   const handleCancel = useCallback(async () => {
     try {
+      if (isClaudeCliTerminalSession(provider)) {
+        // Escalating stop (NIM-814): Ctrl-C → Ctrl-C → SIGINT in the main
+        // process. Fire-and-forget — escalation can take a few seconds and the
+        // button must stay responsive to repeat presses.
+        void window.electronAPI.terminal.interruptClaudeCli(sessionId).catch((err) => {
+          console.error('[SessionTranscript] Failed to interrupt Claude CLI:', err);
+        });
+        recordClaudeActivity();
+        return;
+      }
+
       await window.electronAPI.invoke('ai:cancelRequest', sessionId);
       // Note: session:interrupted event will also set this to false via sessionStateListeners
       setIsProcessing(false);
     } catch (error) {
       console.error('[SessionTranscript] Failed to cancel request:', error);
     }
-  }, [sessionId, setIsProcessing]);
+  }, [provider, sessionId, setIsProcessing, recordClaudeActivity]);
 
   const handleFileClick = useCallback((filePath: string) => {
     const baseDir = sessionWorktreePath ?? workspacePath;
@@ -1273,13 +1521,21 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     // Save as the default model for new sessions
     setAgentModeSettings({ defaultModel: modelId });
     try {
+      // claude-code-cli (NIM-806): a RUNNING CLI session retunes via the
+      // genuine CLI's `/model` slash command typed into its PTY (main-process
+      // IPC) — no respawn. Must happen before the metadata update so a failed
+      // PTY switch rolls everything back. The picker is disabled while a turn
+      // is running (readOnlyModel below), so this only fires on idle sessions.
+      if (isClaudeCliTerminalSession(provider) && cliSessionCommitted) {
+        await window.electronAPI.terminal.setClaudeCliModel(sessionId, modelId);
+      }
       await window.electronAPI.invoke('sessions:update-metadata', sessionId, { model: modelId });
     } catch (error) {
       console.error('[SessionTranscript] Failed to update model:', error);
       setCurrentModel(previousModel);
       setAgentModeSettings({ defaultModel: previousModel });
     }
-  }, [currentModel, sessionId, setCurrentModel, setAgentModeSettings]);
+  }, [currentModel, sessionId, setCurrentModel, setAgentModeSettings, provider, cliSessionCommitted]);
 
   const handleEffortLevelChange = useCallback(async (level: EffortLevel) => {
     const previousLevel = effortLevel;
@@ -1806,7 +2062,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     if (messages.length > 0) return null;
     return (
       <div className="rich-transcript-empty-extras w-full max-w-[640px] flex flex-col items-center gap-6">
-        <InlineTipDisplay />
+        <InlineTipDisplay
+          onInsertPrompt={provider === 'claude-code' ? handleCommandSelect : undefined}
+        />
         {provider === 'claude-code' && (
           <SlashCommandSuggestions
             provider={provider}
@@ -2075,9 +2333,35 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', minHeight: 0 }}
       data-session-id={sessionId}
     >
-      {/* Main transcript area - hidden when collapsed */}
+      {/* NIM-852: install notice at the top of the transcript when the genuine
+          `claude` CLI isn't installed. Shown in every layout (outside the
+          collapse gate); the raw-terminal drawer below is replaced with the
+          panel variant. */}
+      {provider === 'claude-code-cli' && claudeCliInstalled === false && (
+        <ClaudeCliNotInstalledNotice variant="banner" />
+      )}
+
+      {/* Main transcript area - hidden when collapsed.
+          claude-code-cli (NIM-806, Phase 3 / B3): the rich transcript renders
+          HERE too — proxy-observed assistant turns + user prompts flow into
+          `sessionMessagesAtom` and durable-prompt widgets render inline (the
+          synthetic interactive-prompt rows project the same way the SDK path's
+          tool_use blocks do). The genuine TUI sits in the collapsible drawer
+          below. */}
       {!collapseTranscript && (
-        <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
+        <div
+          style={{
+            flex: 1,
+            overflow: 'hidden',
+            // NIM-824: when the CLI drawer is expanded below, keep a usable
+            // transcript floor — the drawer's fixed-height band used to
+            // flex-starve the transcript to ~0px in small Split-mode layouts.
+            minHeight:
+              provider === 'claude-code-cli' && cliSessionCommitted && cliTerminalExpanded
+                ? 120
+                : 0,
+          }}
+        >
           <AgentTranscriptPanel
             ref={transcriptPanelRef}
             sessionId={sessionId}
@@ -2128,6 +2412,119 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         </div>
       )}
 
+      {/* claude-code-cli (NIM-806, Phase 3): collapsible "raw terminal" drawer
+          hosting the genuine interactive TUI. It stays mounted whether expanded
+          or collapsed (so the PTY survives a collapse) — only its height toggles.
+          Default expanded so the strip's IntersectionObserver fires and the CLI
+          spawns; TerminalPanel latches, so collapsing afterward keeps it alive.
+          The input box still routes keystrokes to this PTY.
+          Gated on cliSessionCommitted: a brand-new empty CLI session defers the
+          spawn (and keeps the model picker visible) until the user sends the
+          first prompt, so they can still switch provider beforehand.
+          NOT gated on collapseTranscript (NIM-824): Files layout mode collapses
+          the transcript but must keep the terminal reachable — previously the
+          whole drawer unmounted and there was no way to get to the TUI. */}
+      {provider === 'claude-code-cli' && cliSessionCommitted && claudeCliInstalled === false && (
+        // NIM-852: not installed — render the panel notice in place of the drawer
+        // so the terminal strip never mounts (no spawn / `command not found`).
+        <div
+          className="claude-cli-terminal-drawer claude-cli-terminal-drawer--not-installed"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            flex: '0 0 auto',
+            minHeight: 120,
+            borderTop: '1px solid var(--nim-border)',
+          }}
+        >
+          <ClaudeCliNotInstalledNotice variant="panel" />
+        </div>
+      )}
+      {provider === 'claude-code-cli' && cliSessionCommitted && claudeCliInstalled !== false && (
+        <div
+          ref={cliTerminalDrawerRef}
+          className="claude-cli-terminal-drawer"
+          style={{
+            position: 'relative',
+            display: 'flex',
+            flexDirection: 'column',
+            borderTop: '1px solid var(--nim-border)',
+            // Expanded: resizable, persisted px height — but shrinkable and
+            // capped (NIM-824) so a small session area can't be fully consumed
+            // by the drawer (it flex-starved the transcript to ~0px in Split
+            // mode). Collapsed: just the header bar.
+            flex: cliTerminalExpanded ? `0 1 ${cliTerminalHeight}px` : '0 0 auto',
+            maxHeight: cliTerminalExpanded ? `min(${cliTerminalHeight}px, 70%)` : undefined,
+            minHeight: 0,
+            overflow: 'hidden',
+          }}
+        >
+          {/* Vertical resize handle (NIM-812). Sits on the top border; drag up to
+              grow. Only interactive while expanded. */}
+          {cliTerminalExpanded && (
+            <div
+              className="claude-cli-terminal-drawer-resize-handle"
+              onMouseDown={handleCliTerminalResizeMouseDown}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                height: 4,
+                cursor: 'ns-resize',
+                zIndex: 10,
+                background: cliTerminalResizing ? 'var(--nim-primary)' : 'transparent',
+              }}
+            />
+          )}
+          <button
+            type="button"
+            className="claude-cli-terminal-drawer-toggle"
+            onClick={handleToggleCliTerminal}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 8px',
+              background: 'var(--nim-bg-secondary)',
+              border: 'none',
+              borderBottom: cliTerminalExpanded ? '1px solid var(--nim-border)' : 'none',
+              color: 'var(--nim-text-muted)',
+              fontSize: 11,
+              cursor: 'pointer',
+              textAlign: 'left',
+              flex: '0 0 auto',
+            }}
+            title={cliTerminalExpanded ? 'Collapse raw terminal' : 'Expand raw terminal'}
+          >
+            <span style={{ transform: cliTerminalExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.1s' }}>
+              ▶
+            </span>
+            <span>Raw terminal</span>
+          </button>
+          {/* Keep the strip mounted always (PTY lifecycle); hide only its body when
+              collapsed. The strip observes the always-on-screen drawer root
+              (cliTerminalDrawerRef), so the CLI still spawns while collapsed. */}
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: 'hidden',
+              display: cliTerminalExpanded ? 'flex' : 'none',
+              flexDirection: 'column',
+            }}
+          >
+            <ClaudeCliTerminalStrip
+              sessionId={sessionId}
+              workspacePath={workspacePath}
+              model={currentModel ?? undefined}
+              focusNonce={cliTerminalFocusNonce}
+              observeRef={cliTerminalDrawerRef}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Wakeup + pending review banners - only in chat mode, hidden when collapsed */}
       {mode === 'chat' && !collapseTranscript && (
         <>
@@ -2152,7 +2549,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         queue={queuedPrompts}
         onCancel={handleCancelQueuedPrompt}
         onEdit={handleEditQueuedPrompt}
-        onSendNow={isLoading ? handleSendNowQueuedPrompt : undefined}
+        onSendNow={isLoading && !isClaudeCliTerminalSession(provider) ? handleSendNowQueuedPrompt : undefined}
       />
 
       {/* Note: All interactive prompts (ToolPermission, ExitPlanMode, AskUserQuestion) use inline widgets in transcript */}
@@ -2182,12 +2579,24 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         mode={aiMode as AIMode}
         onModeChange={handleAIModeChange}
         currentModel={currentModel}
+        // claude-code-cli (NIM-806): the genuine CLI supports `/model <alias>`
+        // as a direct setter, so the picker now RETUNES a committed CLI session
+        // (handleModelChange routes through `claude-cli:set-model` → PTY).
+        // Switching is idle-only: while a turn is running the picker goes
+        // read-only — injecting `/model` mid-turn would rely on the TUI's
+        // queued-input behavior, which is unverified under programmatic writes.
+        // Provider switching for a committed session stays blocked via
+        // sessionHasMessages. The effort selector is still hidden outright (the
+        // CLI has no effort flag). ModeTag is already gated to `claude-code` in
+        // AIInput.
         onModelChange={handleModelChange}
+        readOnlyModel={isClaudeCliTerminalSession(provider) && cliSessionCommitted && isLoading}
+        readOnlyModelTitle="Wait for the current turn to finish before switching models"
         sessionHasMessages={sessionHasMessages}
         currentProvider={provider ?? null}
         effortLevel={effortLevel}
         onEffortLevelChange={handleEffortLevelChange}
-        showEffortLevel={showEffortLevel}
+        showEffortLevel={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showEffortLevel}
         tokenUsage={tokenUsage}
         provider={provider}
         onQueue={handleQueue}

@@ -26,7 +26,7 @@ export interface AttachmentValidation {
  * Convert workspace path to a safe directory name
  * e.g., /Users/ghinkle/sources/datamodellm -> -Users-ghinkle-sources-datamodellm
  */
-function workspacePathToDir(workspacePath: string): string {
+export function workspacePathToDir(workspacePath: string): string {
   return workspacePath.replace(/[\/\\:]/g, '-');
 }
 

@@ -432,10 +432,15 @@ async function backfillSharedLocalItems(workspacePath: string): Promise<void> {
     return;
   }
 
+  // Candidates: never-synced items (`sync_id IS NULL`) plus items left
+  // `sync_status='pending'` by an offline mutation -- including the `nim` CLI
+  // writing directly to SQLite while the app was closed. Re-pushing an
+  // already-synced item is idempotent: `applyRemoteItem` flips it back to
+  // 'synced' on ack, so it falls out of this set on the next launch.
   const candidates = await db.query(
     `SELECT * FROM tracker_items
      WHERE workspace = $1
-       AND sync_id IS NULL
+       AND (sync_id IS NULL OR sync_status = 'pending')
        AND deleted_at IS NULL
      ORDER BY created ASC`,
     [workspacePath],
@@ -802,7 +807,7 @@ export function registerTrackerSyncHandlers(): void {
  * so device-local fields (e.g. `linkedSessions`) that survive this
  * conversion get stripped before they cross the wire.
  */
-function trackerItemToPayload(item: TrackerItem): TrackerItemPayload {
+export function trackerItemToPayload(item: TrackerItem): TrackerItemPayload {
   const record = trackerItemToRecord(item);
   // Labels CRDT (D3): ship the add-wins map. Legacy items written before
   // the CRDT shipped only have `labels: string[]`; for those we reconcile
@@ -838,6 +843,12 @@ function trackerItemToPayload(item: TrackerItem): TrackerItemPayload {
       documentId: record.system.documentId,
       createdAt: record.system.createdAt,
       updatedAt: record.system.updatedAt,
+      // Structured origin (external-source imports) must travel with the
+      // payload so imported items keep their provenance through the optimistic
+      // local apply and across the sync wire to teammates. Without this the
+      // first upsert rewrites `data` from the payload and drops `data.origin`,
+      // emptying the URN index.
+      origin: record.system.origin,
     },
   };
 }

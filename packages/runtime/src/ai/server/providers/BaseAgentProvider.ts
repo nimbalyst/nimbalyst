@@ -15,6 +15,7 @@
 import { BaseAIProvider } from '../AIProvider';
 import { ProviderCapabilities } from '../types';
 import { AISessionsRepository } from '../../../storage/repositories/AISessionsRepository';
+import type { MetaAgentWorkflowPreset } from '../../prompt';
 import {
   ProviderPermissionMixin,
   PermissionDecision,
@@ -287,6 +288,22 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
       return session?.agentRole === 'meta-agent' ? 'meta-agent' : 'standard';
     } catch {
       return 'standard';
+    }
+  }
+
+  protected async getWorkflowPreset(sessionId?: string): Promise<MetaAgentWorkflowPreset> {
+    if (!sessionId) {
+      return 'default';
+    }
+    try {
+      const session = await AISessionsRepository.get(sessionId);
+      const preset = (session?.metadata as Record<string, unknown> | undefined)?.workflowPreset;
+      if (preset === 'implement-review-test' || preset === 'research' || preset === 'default') {
+        return preset;
+      }
+      return 'default';
+    } catch {
+      return 'default';
     }
   }
 

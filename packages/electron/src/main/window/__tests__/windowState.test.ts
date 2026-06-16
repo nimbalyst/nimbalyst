@@ -3,6 +3,7 @@ import {
   windowStates,
   resolveActiveWorkspacePath,
   resolveActiveWorkspacePathForWindowId,
+  resolveDocumentServicePath,
   windowReferencesWorkspace,
   anyWindowReferencesWorkspace,
 } from '../windowState';
@@ -71,6 +72,40 @@ describe('windowState helpers', () => {
         activeWorkspacePath: '/ws/project3',
       }));
       expect(resolveActiveWorkspacePathForWindowId(1)).toBe('/ws/project3');
+    });
+  });
+
+  describe('resolveDocumentServicePath', () => {
+    it('returns null for an undefined state', () => {
+      expect(resolveDocumentServicePath(undefined)).toBeNull();
+    });
+
+    it('returns null for a non-workspace mode window', () => {
+      const state = makeState({ mode: 'document', workspacePath: '/ws/a' });
+      expect(resolveDocumentServicePath(state)).toBeNull();
+    });
+
+    it('serves the primary path when no rail project is active', () => {
+      const state = makeState({ workspacePath: '/ws/a' });
+      expect(resolveDocumentServicePath(state)).toBe('/ws/a');
+    });
+
+    it('allows agentic-coding windows', () => {
+      const state = makeState({ mode: 'agentic-coding', workspacePath: '/ws/a' });
+      expect(resolveDocumentServicePath(state)).toBe('/ws/a');
+    });
+
+    // Regression for issue #591: in Multi-Project mode the rail switches the
+    // visible project via activeWorkspacePath while workspacePath stays pinned
+    // to the startup project. The document-service resolver must serve the
+    // ACTIVE project, otherwise tracker-items-list queries the wrong project's
+    // tracker_items and leaks another project's items into the visible list.
+    it('serves the active rail project, not the startup primary (issue #591)', () => {
+      const state = makeState({
+        workspacePath: '/ws/projectA',
+        activeWorkspacePath: '/ws/projectB',
+      });
+      expect(resolveDocumentServicePath(state)).toBe('/ws/projectB');
     });
   });
 

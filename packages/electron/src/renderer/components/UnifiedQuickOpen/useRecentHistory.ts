@@ -40,6 +40,17 @@ export function useRecentHistory(storageKey: string): {
     };
   }, [storageKey]);
 
+  // Clear any pending debounced persist on unmount so the timer can't fire
+  // after the component (or, in tests, the environment) is torn down.
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, []);
+
   const schedulePersist = useCallback(
     (next: string[]) => {
       if (timerRef.current) clearTimeout(timerRef.current);

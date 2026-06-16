@@ -15,20 +15,32 @@ interface RealtimeEvent {
   [key: string]: unknown;
 }
 
+/** GA Realtime API audio format object (replaces the beta flat "pcm16" string). */
+interface AudioFormat {
+  type: string;
+  rate?: number;
+}
+
+/** GA Realtime API session shape (audio config nested under audio.{input,output}). */
 interface SessionConfig {
-  modalities: string[];
+  type: 'realtime';
+  output_modalities: string[];
   instructions: string;
-  voice: string;
-  input_audio_format: string;
-  output_audio_format: string;
-  input_audio_transcription?: {
-    model: string;
-  };
-  turn_detection?: {
-    type: string;
-    threshold?: number;
-    prefix_padding_ms?: number;
-    silence_duration_ms?: number;
+  audio: {
+    input: {
+      format: AudioFormat;
+      transcription?: { model: string };
+      turn_detection?: {
+        type: string;
+        threshold?: number;
+        prefix_padding_ms?: number;
+        silence_duration_ms?: number;
+      };
+    };
+    output: {
+      voice: string;
+      format: AudioFormat;
+    };
   };
   tools?: Array<{
     type: string;
@@ -276,10 +288,12 @@ export class RealtimeAPIClient {
 
       console.log('[RealtimeAPIClient] Connecting to OpenAI Realtime API', { url });
 
+      // Do NOT send the 'OpenAI-Beta: realtime=v1' header: it selects the retired
+      // Beta API shape, which the server now rejects with
+      // code=4000 reason=beta_api_shape_disabled. Omitting it selects the GA shape.
       this.ws = new WebSocket(url, {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
-          'OpenAI-Beta': 'realtime=v1',
         },
       });
 
@@ -314,8 +328,8 @@ export class RealtimeAPIClient {
    * Handle events from OpenAI Realtime API
    */
   private handleServerEvent(event: RealtimeEvent): void {
-    // Update activity timestamp for most events
-    if (!event.type.startsWith('response.audio.delta')) {
+    // Update activity timestamp for most events (skip the high-frequency audio deltas)
+    if (event.type !== 'response.output_audio.delta' && event.type !== 'response.audio.delta') {
       this.updateActivity();
     }
 
@@ -326,7 +340,7 @@ export class RealtimeAPIClient {
         break;
 
       case 'session.updated':
-        console.log(`[RealtimeAPIClient] session.updated: voice=${(event as any).session?.voice || 'unknown'}`);
+        console.log(`[RealtimeAPIClient] session.updated: voice=${(event as any).session?.audio?.output?.voice || 'unknown'}`);
         break;
 
       case 'response.created':
@@ -357,6 +371,8 @@ export class RealtimeAPIClient {
         this.isOutputtingAudio = false;
         break;
 
+      // GA event is response.output_audio.delta; the beta name is kept for safety.
+      case 'response.output_audio.delta':
       case 'response.audio.delta':
         // Received audio chunk from OpenAI
         this.isOutputtingAudio = true;
@@ -367,13 +383,19 @@ export class RealtimeAPIClient {
         }
         break;
 
+      case 'response.output_audio.done':
       case 'response.audio.done':
         this.isOutputtingAudio = false;
         break;
 
+      // With GA output_modalities=['audio'], the assistant's words arrive as the audio
+      // transcript rather than response.output_text.delta. Route both to onText so the
+      // on-screen assistant transcript keeps updating.
+      case 'response.output_audio_transcript.delta':
+      case 'response.output_text.delta':
       case 'response.text.delta':
         const textDelta = (event as any).delta as string;
-        if (this.onTextCallback) {
+        if (textDelta && this.onTextCallback) {
           this.onTextCallback(textDelta);
         }
         break;
@@ -508,16 +530,24 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
           silence_duration_ms: this.turnDetection.silenceDuration ?? 500,
         };
 
+    // GA Realtime API session shape: audio config is nested under audio.{input,output}
+    // with format as an object ({type,rate}), not the flat beta fields. PCM16 @ 24kHz
+    // matches what the renderer audio pipeline produces/consumes.
     const config: SessionConfig = {
-      modalities: ['text', 'audio'],
+      type: 'realtime',
+      output_modalities: ['audio'],
       instructions,
-      voice: this.voice,
-      input_audio_format: 'pcm16',
-      output_audio_format: 'pcm16',
-      input_audio_transcription: {
-        model: 'whisper-1',
+      audio: {
+        input: {
+          format: { type: 'audio/pcm', rate: 24000 },
+          transcription: { model: 'whisper-1' },
+          ...(turnDetectionConfig ? { turn_detection: turnDetectionConfig } : {}),
+        },
+        output: {
+          voice: this.voice,
+          format: { type: 'audio/pcm', rate: 24000 },
+        },
       },
-      turn_detection: turnDetectionConfig,
       tools: [
         {
           type: 'function',
@@ -665,7 +695,7 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       session: config,
     };
 
-    console.log(`[RealtimeAPIClient] session.update: voice=${config.voice}`);
+    console.log(`[RealtimeAPIClient] session.update: voice=${config.audio.output.voice}`);
     this.ws.send(JSON.stringify(event));
   }
 
@@ -1106,11 +1136,14 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       return;
     }
 
+    // GA response shape: output_modalities + nested audio.output.voice (was modalities + voice).
     const event = {
       type: 'response.create',
       response: {
-        modalities: ['text', 'audio'],
-        voice: this.voice,
+        output_modalities: ['audio'],
+        audio: {
+          output: { voice: this.voice },
+        },
       },
     };
 

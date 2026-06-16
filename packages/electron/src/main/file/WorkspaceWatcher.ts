@@ -263,6 +263,28 @@ export async function startProjectFileSync(workspacePath: string): Promise<void>
 }
 
 /**
+ * Push a newly created/saved markdown document to project sync immediately,
+ * bypassing the file watcher. Called when the app itself writes a document
+ * (e.g. the createDocument AI tool) so a new design doc syncs to mobile right
+ * away rather than waiting on a best-effort OS watcher event.
+ *
+ * No-op if the workspace isn't an active doc-sync subscriber, so the gating
+ * (alpha channel + per-project opt-in) established in startProjectFileSync
+ * still holds.
+ */
+export function pushNewDocumentToSync(filePath: string, workspacePath: string): void {
+  if (!filePath.endsWith('.md')) return;
+  if (!projectSyncSubscriptions.has(workspacePath)) return;
+
+  const projectId = hashProjectId(workspacePath);
+  getProjectFileSyncService()
+    .pushLocalFileNow(filePath, workspacePath, projectId)
+    .catch(err => {
+      logger.main.error('[ProjectFileSync] pushNewDocumentToSync failed:', err);
+    });
+}
+
+/**
  * Stop project file sync for a workspace.
  */
 function stopProjectFileSync(workspacePath: string): void {

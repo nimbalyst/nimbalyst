@@ -9,3 +9,4 @@ export * from './panel.js';
 export * from './permissions.js';
 export * from './theme.js';
 export * from './collab.js';
+export * from './trackerImporter.js';

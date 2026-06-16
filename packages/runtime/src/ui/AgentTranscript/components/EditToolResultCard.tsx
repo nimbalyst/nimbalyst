@@ -80,8 +80,21 @@ export const EditToolResultCard: React.FC<EditToolResultCardProps> = ({
 
   const instruction = truncateInstruction(getInstructionText(toolMessage));
   const allNewFiles = edits.every(isNewFileEdit);
-  const statusLabel = toolMessage.isError ? 'Failed' : allNewFiles ? 'Created' : 'Applied';
-  const statusClass = toolMessage.isError ? 'error' : 'success';
+  // NIM-806: the Created/Applied badge is an OUTCOME — it must not render from
+  // the tool_use arguments alone. For the genuine claude-code-cli the proxy
+  // emits the Write/Edit tool_use at message_stop, BEFORE the user approves the
+  // permission prompt and before the file is actually written; the real
+  // tool_result only arrives in the next request body. Gate the success label on
+  // an observed tool_result so a gated edit shows "Pending" (not a premature
+  // "Created"). isError still wins (an errored/denied edit reads "Failed").
+  const rawResult = toolMessage.toolCall?.result;
+  const hasResult = rawResult !== undefined && rawResult !== null && rawResult !== '';
+  const statusLabel = toolMessage.isError
+    ? 'Failed'
+    : !hasResult
+      ? 'Pending'
+      : allNewFiles ? 'Created' : 'Applied';
+  const statusClass = toolMessage.isError ? 'error' : !hasResult ? 'pending' : 'success';
   const editCountLabel = allNewFiles
     ? `${edits[0].content.split('\n').length} lines`
     : edits.length === 1 ? '1 edit' : `${edits.length} edits`;
@@ -143,7 +156,7 @@ export const EditToolResultCard: React.FC<EditToolResultCardProps> = ({
             <MaterialSymbol icon="open_in_new" size={14} />
           </button>
         )}
-        <span className={`rich-transcript-edit-card__status rich-transcript-edit-card__status--${statusClass} text-[0.7rem] font-semibold py-0.5 px-2 rounded-full uppercase tracking-[0.02em] ${statusClass === 'success' ? 'text-nim-success' : 'text-nim-error'}`}>
+        <span className={`rich-transcript-edit-card__status rich-transcript-edit-card__status--${statusClass} text-[0.7rem] font-semibold py-0.5 px-2 rounded-full uppercase tracking-[0.02em] ${statusClass === 'success' ? 'text-nim-success' : statusClass === 'pending' ? 'text-nim-muted' : 'text-nim-error'}`}>
           {statusLabel}
         </span>
       </div>

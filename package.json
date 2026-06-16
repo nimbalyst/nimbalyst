@@ -71,6 +71,7 @@
   "workspaces": [
     "packages/electron",
     "packages/runtime",
+    "packages/cli",
     "packages/core",
     "packages/collab-protocol",
     "packages/collab-adapters",

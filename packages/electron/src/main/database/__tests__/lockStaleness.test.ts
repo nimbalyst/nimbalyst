@@ -54,6 +54,37 @@ describe('decideLockIsRunning (issue #272)', () => {
     });
   });
 
+  describe('PID reuse onto our own process', () => {
+    it('is STALE when the lock PID equals this process PID, without calling kill', () => {
+      const killFn = vi.fn(); // would say "alive" if reached
+      const result = decideLockIsRunning({
+        lockPid: 4242,
+        lockTimestamp: new Date(NOW - 5_000).toISOString(),
+        killFn,
+        now: NOW,
+        selfPid: 4242,
+      });
+      expect(result.decision).toBe('stale');
+      expect(result.isRunning).toBe(false);
+      // The guard short-circuits before the liveness probe (kill(0) on our own
+      // PID always succeeds and would wrongly report 'running').
+      expect(killFn).not.toHaveBeenCalled();
+    });
+
+    it('does not affect the alive path when the lock PID differs from ours', () => {
+      const killFn = vi.fn(); // does not throw
+      const result = decideLockIsRunning({
+        lockPid: 4242,
+        lockTimestamp: new Date(NOW - 5_000).toISOString(),
+        killFn,
+        now: NOW,
+        selfPid: 9999,
+      });
+      expect(result.isRunning).toBe(true);
+      expect(killFn).toHaveBeenCalledWith(4242, 0);
+    });
+  });
+
   describe('EPERM + stale timestamp (the #272 case)', () => {
     it('treats EPERM as STALE when lock is older than the grace window', () => {
       // AnisminC's exact scenario: lock acquired 21:09Z, relaunch 00:56Z,
@@ -148,6 +179,52 @@ describe('decideLockIsRunning (issue #272)', () => {
       });
       expect(result.isRunning).toBe(true);
       expect(result.reason).toContain('unrecognised');
+    });
+  });
+
+  describe('kill(0) success with PID-reuse identity check', () => {
+    const base = {
+      lockPid: 19400,
+      lockTimestamp: '2026-06-14T23:14:58.851Z',
+      now: NOW,
+      killFn: () => undefined, // kill(0) succeeds (no throw)
+    };
+
+    it("returns 'stale' when the live PID is a non-Nimbalyst process (reused PID)", () => {
+      const result = decideLockIsRunning({ ...base, processIdentityFn: () => 'node.exe' });
+      expect(result.decision).toBe('stale');
+      expect(result.isRunning).toBe(false);
+      expect(result.reason).toContain('reused');
+    });
+
+    it("returns 'running' when the live PID is our app (electron.exe)", () => {
+      const result = decideLockIsRunning({ ...base, processIdentityFn: () => 'electron.exe' });
+      expect(result.decision).toBe('running');
+    });
+
+    it("returns 'running' when the live PID is the packaged app (Nimbalyst.exe)", () => {
+      const result = decideLockIsRunning({ ...base, processIdentityFn: () => 'Nimbalyst.exe' });
+      expect(result.decision).toBe('running');
+    });
+
+    it("fails closed to 'running' when identity is unknown (null)", () => {
+      const result = decideLockIsRunning({ ...base, processIdentityFn: () => null });
+      expect(result.decision).toBe('running');
+    });
+
+    it("fails closed to 'running' when the identity lookup throws", () => {
+      const result = decideLockIsRunning({
+        ...base,
+        processIdentityFn: () => {
+          throw new Error('tasklist failed');
+        },
+      });
+      expect(result.decision).toBe('running');
+    });
+
+    it("stays 'running' when no processIdentityFn is provided (backward compatible)", () => {
+      const result = decideLockIsRunning({ ...base });
+      expect(result.decision).toBe('running');
     });
   });
 

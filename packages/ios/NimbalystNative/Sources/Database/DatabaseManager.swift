@@ -522,6 +522,15 @@ public final class DatabaseManager: @unchecked Sendable {
         }
     }
 
+    public func document(forProject projectId: String, relativePath: String) throws -> SyncedDocument? {
+        try writer.read { db in
+            try SyncedDocument
+                .filter(SyncedDocument.Columns.projectId == projectId)
+                .filter(SyncedDocument.Columns.relativePath == relativePath)
+                .fetchOne(db)
+        }
+    }
+
     public func upsertDocument(_ document: SyncedDocument) throws {
         try writer.write { db in
             try document.save(db)

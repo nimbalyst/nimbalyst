@@ -86,6 +86,21 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'worktree_pr_linkage',
       sqlFile: path.join(schemaDir, '0009_worktree_pr_linkage.sql'),
     },
+    {
+      version: 10,
+      name: 'tracker_origin_urn',
+      sqlFile: path.join(schemaDir, '0010_tracker_origin_urn.sql'),
+    },
+    {
+      version: 11,
+      name: 'project_file_sync_baseline',
+      sqlFile: path.join(schemaDir, '0011_project_file_sync_baseline.sql'),
+    },
+    {
+      version: 12,
+      name: 'tracker_type_defs',
+      sqlFile: path.join(schemaDir, '0012_tracker_type_defs.sql'),
+    },
   ];
 }
 

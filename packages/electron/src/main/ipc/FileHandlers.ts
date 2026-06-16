@@ -15,6 +15,7 @@ import { isPathInWorkspace, getRelativeWorkspacePath } from '../utils/workspaceD
 import { SessionFileWatcher } from '../file/SessionFileWatcher';
 import { addGitignoreBypass, removeGitignoreBypass } from '../file/WorkspaceEventBus';
 import { pushFileToIndex } from '../services/DocSyncService';
+import { pushNewDocumentToSync } from '../file/WorkspaceWatcher';
 
 // Helper function to get file type from extension
 function getFileType(filePath: string): string {
@@ -448,6 +449,15 @@ export function registerFileHandlers() {
             // Add to recent files
             if (state.workspacePath) {
                 addWorkspaceRecentFile(state.workspacePath, absolutePath);
+            }
+
+            // Sync the new .md doc to mobile immediately (index + content) rather
+            // than waiting on the file watcher to notice the create. save-file
+            // already pushes to the index; createDocument did neither, so a new
+            // design doc wasn't readable on mobile until a watcher event or restart.
+            if (absolutePath.endsWith('.md') && state.workspacePath) {
+                pushFileToIndex(absolutePath, state.workspacePath).catch(() => {});
+                pushNewDocumentToSync(absolutePath, state.workspacePath);
             }
 
             return {

@@ -651,7 +651,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
  * `applyRemoteItem` so we can reuse `trackerRecordToItem` for the
  * field-to-column projection.
  */
-function payloadToRecord(
+export function payloadToRecord(
   envelope: EncryptedTrackerItemEnvelope,
   payload: TrackerItemPayload,
   workspacePath: string,
@@ -697,6 +697,10 @@ function payloadToRecord(
       linkedCommitSha: payload.system?.linkedCommitSha,
       linkedCommits: payload.system?.linkedCommits,
       documentId: payload.system?.documentId,
+      // Carry external-source provenance back into the record so
+      // recordToDbParams persists `data.origin` (and the URN index). Dropping
+      // it here is what made imported items lose their origin on first apply.
+      origin: payload.system?.origin,
       comments: payload.comments,
     },
     fields: payload.fields,
@@ -716,7 +720,7 @@ function pgliteRowToPayload(row: PGLiteTrackerItemRow): TrackerItemPayload {
   const systemKeys = new Set([
     'authorIdentity', 'lastModifiedBy', 'createdByAgent',
     'linkedSessions', 'linkedCommitSha', 'linkedCommits', 'documentId',
-    'activity', 'comments', 'created', 'updated',
+    'activity', 'comments', 'created', 'updated', 'origin',
   ]);
   const fields: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(data)) {
@@ -756,6 +760,7 @@ function pgliteRowToPayload(row: PGLiteTrackerItemRow): TrackerItemPayload {
           : row.updated instanceof Date
             ? row.updated.toISOString()
             : undefined,
+      origin: data.origin as TrackerItemPayload['system']['origin'],
     },
   };
 }

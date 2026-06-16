@@ -12,6 +12,26 @@ import {
   resolveRequestUserInputPromptTargets,
   resolveToolUseIdFromMcpRequest,
 } from "./codexToolCallResolver";
+import {
+  isClaudeCliSession,
+  persistInteractivePromptToolUse,
+  persistInteractivePromptToolResult,
+} from "./interactivePromptTranscript";
+import { applyInteractivePromptSettleTurnState } from "./interactivePromptSettleState";
+import { markToolResultPersisted } from "../../services/ai/claudeCliToolResultSeen";
+import {
+  resolveClaudeCliToolPermission,
+  normalizeToolPermissionAnswer,
+  parseToolPermissionResponseRecord,
+  type ToolPermissionAnswer,
+} from "../../services/ai/claudeCliToolPermission";
+import {
+  isPatternApproved,
+  markPatternApproved,
+} from "../../services/ai/claudeCliPermissionCache";
+import { broadcastMessageLogged } from "../../services/ai/claudeCliUserPromptLog";
+import { ClaudeSettingsManager } from "../../services/ClaudeSettingsManager";
+import { getPermissionService } from "../../services/PermissionService";
 
 export function getInteractiveToolSchemas(sessionId: string | undefined) {
   if (!sessionId) return [];
@@ -257,6 +277,42 @@ export async function handleAskUserQuestion(
     });
   }
 
+  // NIM-806: we deliberately do NOT persist a synthetic nimbalyst_tool_use row
+  // here. The proxy observation bridge already persists the CLI's whole assistant
+  // turn (source 'claude-code') INCLUDING this AskUserQuestion tool_use block, so
+  // ClaudeCodeRawParser renders the answerable widget from it (keyed by the same
+  // claudecode/toolUseId == questionId, so the answer still reaches our response
+  // channel). Writing a second synthetic row caused an ordering inversion — it
+  // lands at tool-call time, ~26ms BEFORE the proxy turn's explanatory text
+  // (persisted at message_stop) — so the widget rendered ABOVE the text that
+  // motivates it, plus a duplicate question card. The settle still writes the
+  // synthetic tool_result (below) to flip the widget to answered. `isCliSession`
+  // is still needed by the settle path (CLI defers turn-state to the PID watcher).
+  const isCliSession = await isClaudeCliSession(sessionId);
+
+  // NIM-850: drive the pending-interactive-prompt flag from the explicit prompt
+  // lifecycle (mirrors PromptForUserInput's ai:requestUserInput and the SDK path),
+  // NOT from the coarse pid-`waiting` status. The renderer's session:waiting
+  // handler no longer sets the flag for claude-code-cli, because that pid signal
+  // also fires for routine tool/MCP waits and — with no symmetric clear — left
+  // "Thinking…" suppressed for the rest of the turn. Broadcasting ai:askUserQuestion
+  // here sets the flag (and feeds voice mode) exactly while the question is pending;
+  // the settle below broadcasts ai:askUserQuestionAnswered to clear it. Sent to all
+  // windows (the renderer handler keys by sessionId); handleAskUserQuestion only
+  // runs for the MCP-routed CLI path, so SDK sessions are unaffected.
+  if (isCliSession && sessionId) {
+    void setSessionPendingPrompt(sessionId, true);
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) {
+        w.webContents.send("ai:askUserQuestion", {
+          sessionId,
+          questionId,
+          questions: normalizedQuestions,
+        });
+      }
+    }
+  }
+
   return new Promise((resolve) => {
     let settled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -271,12 +327,14 @@ export async function handleAskUserQuestion(
 
       console.log(`[MCP Server] AskUserQuestion settled via ${source}: questionId=${questionId}, cancelled=${result?.cancelled}`);
 
-      // Update session status back to running
+      // Restore the running indicator as the turn resumes. CLI sessions defer to
+      // the PID-state watcher (NIM-806 Defect A — forcing 'running' here would
+      // race the watcher's turn-ending 'idle' and stick the indicator on).
       if (sessionId) {
-        getSessionStateManager().updateActivity({
+        void applyInteractivePromptSettleTurnState({
           sessionId,
-          status: 'running',
-          isStreaming: true,
+          isCliSession,
+          stateManager: getSessionStateManager(),
         }).catch(() => {});
       }
 
@@ -293,6 +351,38 @@ export async function handleAskUserQuestion(
           ? result.answers
           : {};
       const respondedBy = result?.respondedBy || "desktop";
+
+      // NIM-806: mirror the start write — the external CLI never emits a
+      // tool_result block, so persist a synthetic one to flip the widget out of
+      // its pending state (ClaudeCliPromptSurface drops answered prompts).
+      if (isCliSession && sessionId) {
+        void persistInteractivePromptToolResult({
+          sessionId,
+          toolUseId: questionId,
+          result: {
+            answers: cancelled ? {} : answers,
+            cancelled,
+            respondedBy,
+            respondedAt: Date.now(),
+          },
+          isError: cancelled,
+        });
+
+        // NIM-850: clear the pending-interactive-prompt flag the moment the prompt
+        // settles (answered or cancelled). For claude-code-cli the renderer otherwise
+        // never clears it mid-turn — session:streaming intentionally doesn't, and
+        // there was no resolved broadcast — so "Thinking…" stayed suppressed until
+        // the turn ended. Mirrors PromptForUserInput's ai:requestUserInputResolved.
+        void setSessionPendingPrompt(sessionId, false);
+        for (const w of BrowserWindow.getAllWindows()) {
+          if (!w.isDestroyed()) {
+            w.webContents.send("ai:askUserQuestionAnswered", {
+              sessionId,
+              questionId,
+            });
+          }
+        }
+      }
 
       if (cancelled) {
         resolve({
@@ -389,6 +479,185 @@ export async function handleAskUserQuestion(
       }, POLL_INTERVAL);
     }
   });
+}
+
+/** IPC channel the renderer's ToolPermission answer is routed onto (per request). */
+export function getToolPermissionResponseChannel(
+  sessionId: string | undefined,
+  requestId: string,
+): string {
+  return `tool-permission-response:${sessionId || "unknown"}:${requestId}`;
+}
+
+/**
+ * Block until the ToolPermission widget answer arrives over IPC (desktop fast
+ * path). A long max-wait fails CLOSED (deny) so a forgotten prompt can't wedge
+ * the CLI forever. Mobile responses arrive by sync and are persisted as
+ * permission_response rows, so poll the DB as the durable fallback.
+ */
+function waitForToolPermissionAnswer(
+  sessionId: string,
+  requestId: string,
+): Promise<ToolPermissionAnswer> {
+  const channel = getToolPermissionResponseChannel(sessionId, requestId);
+  console.log(
+    `[MCP Server] ToolPermission waiting for response: requestId=${requestId}, sessionId=${sessionId}`,
+  );
+  return new Promise<ToolPermissionAnswer>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    const settle = (answer: ToolPermissionAnswer, source: string) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (pollTimer) clearInterval(pollTimer);
+      ipcMain.removeListener(channel, onResponse);
+      console.log(
+        `[MCP Server] ToolPermission settled via ${source}: requestId=${requestId}, decision=${answer.decision}`,
+      );
+      resolve(answer);
+    };
+
+    const onResponse = (_event: unknown, payload: any) => {
+      settle(normalizeToolPermissionAnswer(payload), "ipc");
+    };
+
+    ipcMain.once(channel, onResponse);
+
+    const POLL_INTERVAL = 1000;
+    pollTimer = setInterval(async () => {
+      if (settled) return;
+      try {
+        const messages = await AgentMessagesRepository.list(sessionId, { limit: 50 });
+        for (const msg of messages) {
+          const answer = parseToolPermissionResponseRecord(msg.content, requestId);
+          if (answer) {
+            settle(answer, "db-poll");
+            return;
+          }
+        }
+      } catch {
+        // Database fallback is best-effort; the timeout still fail-closes.
+      }
+    }, POLL_INTERVAL);
+
+    const MAX_WAIT = 10 * 60 * 1000;
+    timer = setTimeout(() => {
+      console.warn(
+        `[MCP Server] ToolPermission timed out (deny): requestId=${requestId}`,
+      );
+      settle({ decision: "deny", scope: "once", cancelled: true }, "timeout");
+    }, MAX_WAIT);
+  });
+}
+
+/**
+ * NIM-806 Phase 4 (Direction A): render a Nimbalyst ToolPermission widget for a
+ * genuine claude-code-cli tool that needs approval, and return the decision.
+ *
+ * The CLI reaches this via its `PreToolUse` permission hook → Nimbalyst's local
+ * `/permission` endpoint (httpServer) → here. (We originally targeted
+ * `--permission-prompt-tool`, but that flag is silently ignored by the
+ * interactive CLI; the PreToolUse hook is the mechanism that works interactively.)
+ *
+ * We render the real ToolPermission widget inline (synthetic
+ * `nimbalyst_tool_use`/`tool_result` rows — the external CLI never writes to
+ * ai_agent_messages) and return `{behavior:'allow'|'deny'}` in the MCP-result
+ * shape; the endpoint maps that to the hook's permissionDecision. All Electron/IPC
+ * I/O is supplied here; the decision logic lives in the pure, unit-tested
+ * `resolveClaudeCliToolPermission`.
+ */
+export async function handleToolPermission(
+  args: any,
+  sessionId: string | undefined,
+  workspacePath: string | undefined,
+  _request: any,
+): Promise<McpToolResult> {
+  if (!sessionId) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ behavior: "deny", message: "No session for permission request" }),
+        },
+      ],
+      isError: false,
+    };
+  }
+
+  const isCliSession = await isClaudeCliSession(sessionId);
+
+  let sessionTitle = "AI Session";
+  try {
+    const session = await AISessionsRepository.get(sessionId);
+    if (session?.title) sessionTitle = session.title;
+  } catch {
+    // default title
+  }
+
+  return resolveClaudeCliToolPermission(
+    { args, sessionId, workspacePath },
+    {
+      isPatternApproved,
+      markPatternApproved,
+      // Workspace mode (allow-all / bypass-all) auto-approves without a widget,
+      // mirroring the SDK path — the hook bypasses the CLI's own mode handling.
+      getPermissionMode: (wp) => (wp ? getPermissionService().getPermissionMode(wp) : null),
+      // Honor patterns saved via "Always" (and explicit denies) across sessions.
+      getAllowDenyLists: async (wp) => {
+        if (!wp) return { allow: [], deny: [] };
+        try {
+          const eff = await ClaudeSettingsManager.getInstance().getEffectiveSettings(wp);
+          return { allow: eff.permissions.allow ?? [], deny: eff.permissions.deny ?? [] };
+        } catch {
+          return { allow: [], deny: [] };
+        }
+      },
+      makeRequestId: () =>
+        `tool-perm-${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      persistToolUse: async ({ sessionId: sid, toolUseId, input }) => {
+        await persistInteractivePromptToolUse({
+          sessionId: sid,
+          toolUseId,
+          toolName: "ToolPermission",
+          input,
+        });
+        // The permission-prompt call is the CLI's own mechanism — it is NOT in
+        // the model's streamed tool_use, so the proxy never broadcasts a reload
+        // for it. Broadcast ourselves so the widget renders promptly.
+        broadcastMessageLogged(sid, workspacePath ?? "");
+      },
+      persistToolResult: async ({ sessionId: sid, toolUseId, result, isError }) => {
+        await persistInteractivePromptToolResult({ sessionId: sid, toolUseId, result, isError });
+        broadcastMessageLogged(sid, workspacePath ?? "");
+      },
+      waitForAnswer: ({ sessionId: sid, requestId }) => waitForToolPermissionAnswer(sid, requestId),
+      setWaitingStatus: (sid) => {
+        getSessionStateManager()
+          .updateActivity({ sessionId: sid, status: "waiting_for_input" })
+          .catch((err) => {
+            console.error("[MCP Server] Failed to set waiting_for_input for tool permission:", err);
+          });
+      },
+      applySettle: (sid) => {
+        void applyInteractivePromptSettleTurnState({
+          sessionId: sid,
+          isCliSession,
+          stateManager: getSessionStateManager(),
+        }).catch(() => {});
+      },
+      savePattern: async (wp, pattern) => {
+        await ClaudeSettingsManager.getInstance().addAllowedTool(wp, pattern);
+      },
+      notifyBlocked: ({ sessionId: sid, workspacePath: wp }) => {
+        notificationService.showBlockedNotification(sid, sessionTitle, "permission", wp ?? "");
+        TrayManager.getInstance().onPromptCreated(sid);
+      },
+      log: (m) => console.log(`[MCP Server] ${m}`),
+    },
+  );
 }
 
 export async function handleGitCommitProposal(
@@ -671,9 +940,15 @@ export async function handleGitCommitProposal(
     // Persist resolved state + push to mobile
     void setSessionPendingPrompt(targetSessionId, false);
 
-    console.log(
-      `[MCP Server] Auto-commit completed: ${commitResult.commitHash || "no changes"}`
-    );
+    if (commitResult.success) {
+      console.log(
+        `[MCP Server] Auto-commit completed: ${commitResult.commitHash}`
+      );
+    } else {
+      console.warn(
+        `[MCP Server] Auto-commit did not commit: ${commitResult.error || "unknown error"}`
+      );
+    }
 
     if (response.action === "committed" && response.commitHash) {
       // Link commit to tracker items via session (fire-and-forget)
@@ -1174,6 +1449,16 @@ export async function handleRequestUserInput(
     void setSessionPendingPrompt(sessionId, true);
   }
 
+  // NIM-806: do NOT persist a synthetic nimbalyst_tool_use here (same reasoning
+  // as handleAskUserQuestion). The proxy observation bridge already persists the
+  // CLI's assistant turn containing this PromptForUserInput tool_use block (full
+  // name mcp__nimbalyst-mcp__PromptForUserInput, which CustomToolWidgets maps to
+  // RequestUserInputWidget), keyed by the same promptId. A second synthetic row
+  // landed ~before the proxy turn's text → widget rendered above its motivating
+  // text + a duplicate card. Settle still writes the synthetic tool_result.
+  // `isCliSession` is still needed by the settle path.
+  const isCliSession = sessionId ? await isClaudeCliSession(sessionId) : false;
+
   // Notify renderer so the widget can pick up the prompt data immediately
   // (used for voice forwarding -- the widget itself reads from the tool call).
   try {
@@ -1228,10 +1513,12 @@ export async function handleRequestUserInput(
       );
 
       if (sessionId) {
-        getSessionStateManager().updateActivity({
+        // Restore the running indicator; CLI sessions defer to the PID watcher
+        // (NIM-806 Defect A).
+        void applyInteractivePromptSettleTurnState({
           sessionId,
-          status: "running",
-          isStreaming: true,
+          isCliSession,
+          stateManager: getSessionStateManager(),
         }).catch(() => {});
         TrayManager.getInstance().onPromptResolved(sessionId);
         // Persist resolved state + push to mobile.
@@ -1275,6 +1562,9 @@ export async function handleRequestUserInput(
       // the input mode again on remount. The SDK's later real tool_result is
       // an idempotent re-update on the same row, so duplicates are harmless.
       if (sessionId) {
+        // Mark before the write so the CLI proxy's continuation-body scrape skips
+        // this same tool_use_id (NIM-806 Defect B).
+        markToolResultPersisted(sessionId, promptId);
         try {
           await AgentMessagesRepository.create({
             sessionId,

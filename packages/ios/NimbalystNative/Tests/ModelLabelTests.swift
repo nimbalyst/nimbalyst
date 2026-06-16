@@ -43,6 +43,23 @@ final class ModelLabelTests: XCTestCase {
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "mystery-model"), "Claude Agent")
     }
 
+    // MARK: - Claude Code CLI (subscription)
+
+    func testClaudeCodeCliVariantsMatchAgent() {
+        // The subscription CLI shares the variant set with the SDK provider, so
+        // the model badge resolves the same way (must NOT collapse to Sonnet).
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus"), "Opus 4.8")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus-1m"), "Opus 4.8")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:sonnet-1m"), "Sonnet 4.6")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus-4-6"), "Opus 4.6")
+    }
+
+    func testClaudeCodeCliUnknownModelFallsBackToCliLabel() {
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: nil), "Claude Code CLI")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: ""), "Claude Code CLI")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "mystery-model"), "Claude Code CLI")
+    }
+
     // MARK: - Claude API
 
     func testClaudeApiKnownModels() {

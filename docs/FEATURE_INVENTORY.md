@@ -68,6 +68,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Collapsible columns
 - Configurable columns
 - Auto-exit kanban when navigating to a session
+- Agent-assisted cleanup (`/session-cleanup` slash command in the Planning extension) — audits sessions, proposes phase corrections and "mark complete" candidates for approval, and flags old sessions to archive
 
 ## Agent Mode
 
@@ -224,6 +225,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Item detail panel
 - E2E encrypted sync across team members
 - Inline `#type` items in markdown (TrackerPlugin)
+- External-source importers: import GitHub issues (extension-provided) into the tracker as native bug, task, or feature items with a back-link to the source, a "from GitHub" chip, re-snapshot ("pull latest from source") with conservative merge, and a Source filter; agent tools `tracker_importer_list` / `tracker_importer_search` / `tracker_import` / `tracker_resnapshot` / `tracker_get_by_urn`
 
 ## Shared Links
 
@@ -252,6 +254,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Lexical node and transformer contribution
 - Claude slash command contribution
 - Settings panel contribution
+- Tracker importer contribution (`trackerImporters`) — external-source importers backed by a backend module
 - Extension hot reload
 - Extension developer kit with scaffolding
 - Extension marketplace (alpha)
@@ -265,6 +268,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Developer Tools
 - Excalidraw
 - Extension Dev Kit
+- GitHub Issues Importer
 - Image Generation
 - iOS Dev Tools
 - MockupLM
@@ -295,6 +299,10 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Command running indicator per tab
 - Worktree-specific terminal sessions
 - Context menu (clear, rename)
+- Claude Code CLI sessions: raw-terminal drawer auto-reveals and focuses when the genuine CLI opens a native picker (`/model`, `/config`, `/login`, …)
+- Claude Code CLI sessions: raw-terminal drawer is vertically resizable and remembers its height and collapsed state per session
+- Claude Code CLI sessions: mid-session model switching from the model picker (drives the CLI's `/model` command; idle turns only)
+- Claude Fable 5 selectable across all Claude providers (chat, Claude Agent, Claude Code CLI)
 
 ## Settings
 

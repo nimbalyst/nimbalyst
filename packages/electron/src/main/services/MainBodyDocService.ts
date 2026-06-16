@@ -27,7 +27,7 @@ import {
   type DocumentSyncConfig,
   type DocumentSyncStatus,
 } from '@nimbalyst/runtime/sync';
-import { EditorNodes, getEditorTransformers, $convertFromEnhancedMarkdownString } from '@nimbalyst/runtime/editor';
+import { HeadlessBodyNodes, getEditorTransformers, $convertFromEnhancedMarkdownString } from '@nimbalyst/runtime/editor';
 import { $getRoot } from 'lexical';
 import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
@@ -145,7 +145,10 @@ async function acquireEntry(
   // disconnect" shape.
   const headless = new HeadlessLexicalYDoc({
     doc: ydoc,
-    nodes: EditorNodes,
+    // Full markdown-producible node set (list/link/image/...), not the minimal
+    // EditorNodes -- otherwise list-bearing bodies throw "Node list is not
+    // registered" and never seed (NIM imported-body bug).
+    nodes: HeadlessBodyNodes,
     provider: makeHeadlessProviderShim(provider),
   });
 

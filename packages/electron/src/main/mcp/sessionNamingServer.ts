@@ -321,6 +321,12 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
                 description:
                   'The current phase of work. Controls which kanban column the session appears in. Use "planning" for exploration/design, "implementing" for coding, "validating" for testing/review. IMPORTANT: Never set "complete" without explicit user approval -- use "validating" when work is finished. Only the user decides when work is complete.',
               },
+              workflowPreset: {
+                type: "string",
+                enum: ["default", "implement-review-test", "research"],
+                description:
+                  'The meta-agent workflow mode for this session. "default" is the standard autonomous loop. "implement-review-test" runs an autonomous implement/review/test loop in one worktree. "research" decomposes a research question across child sessions and synthesizes findings. Takes effect on the next turn (the persona is rebuilt each turn).',
+              },
             },
           },
         },
@@ -365,14 +371,32 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
       const addTags = Array.isArray(args?.add) ? args.add as string[] : typeof args?.add === 'string' ? [args.add] : undefined;
       const removeTags = Array.isArray(args?.remove) ? args.remove as string[] : typeof args?.remove === 'string' ? [args.remove] : undefined;
       const phase = args?.phase as string | undefined;
-
-      // Require at least one parameter
-      if (!sessionName && !addTags?.length && !removeTags?.length && !phase) {
+      const rawWorkflowPreset = args?.workflowPreset;
+      const workflowPreset =
+        rawWorkflowPreset === 'default' ||
+        rawWorkflowPreset === 'implement-review-test' ||
+        rawWorkflowPreset === 'research'
+          ? (rawWorkflowPreset as string)
+          : undefined;
+      if (rawWorkflowPreset !== undefined && workflowPreset === undefined) {
         return {
           content: [
             {
               type: "text",
-              text: 'Error: At least one of "name", "add", "remove", or "phase" must be provided.',
+              text: 'Error: "workflowPreset" must be one of "default", "implement-review-test", "research".',
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Require at least one parameter
+      if (!sessionName && !addTags?.length && !removeTags?.length && !phase && !workflowPreset) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: 'Error: At least one of "name", "add", "remove", "phase", or "workflowPreset" must be provided.',
             },
           ],
           isError: true,
@@ -461,6 +485,7 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
 
           const metadataUpdate: Record<string, unknown> = { tags: newTags };
           if (phase) metadataUpdate.phase = phase;
+          if (workflowPreset) metadataUpdate.workflowPreset = workflowPreset;
 
           await updateSessionMetadataFn(aiSessionId, metadataUpdate);
 
@@ -479,8 +504,8 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
             isError: true,
           };
         }
-      } else if (phase) {
-        // Phase-only update (no tag changes)
+      } else if (phase || workflowPreset) {
+        // Metadata-only update (no tag changes): phase and/or workflowPreset
         if (!updateSessionMetadataFn) {
           return {
             content: [
@@ -494,15 +519,19 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
         }
 
         try {
-          await updateSessionMetadataFn(aiSessionId, { phase });
-          notes.push(`Set phase: ${phase}`);
+          const metadataUpdate: Record<string, unknown> = {};
+          if (phase) metadataUpdate.phase = phase;
+          if (workflowPreset) metadataUpdate.workflowPreset = workflowPreset;
+          await updateSessionMetadataFn(aiSessionId, metadataUpdate);
+          if (phase) notes.push(`Set phase: ${phase}`);
+          if (workflowPreset) notes.push(`Set workflow preset: ${workflowPreset}`);
         } catch (error) {
-          console.error("[Session Naming MCP] Failed to update phase:", error);
+          console.error("[Session Naming MCP] Failed to update session metadata:", error);
           return {
             content: [
               {
                 type: "text",
-                text: `Error updating phase: ${error instanceof Error ? error.message : "Unknown error"}`,
+                text: `Error updating session metadata: ${error instanceof Error ? error.message : "Unknown error"}`,
               },
             ],
             isError: true,

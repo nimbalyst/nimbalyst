@@ -19,6 +19,8 @@ import {
   ModelRegistry,
   isAgentProvider,
   onAgentMessageBatch,
+  buildMetaAgentSystemPrompt,
+  buildDevAgentSystemPrompt,
   type AIProvider,
   type SessionManager,
 } from '@nimbalyst/runtime/ai/server';
@@ -37,6 +39,30 @@ import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
+import { resolveExtensionAgentRef } from './providerResolution';
+import { getAgentProviderRegistry } from '../../extensions/AgentProviderRegistry';
+
+/**
+ * Resolve the human-readable model name (e.g. "Gemini 3.5 Flash (High)") for an
+ * extension agent provider, so the system prompt can tell the model its real
+ * name instead of the raw internal id. Returns undefined for built-in providers.
+ */
+function resolveExtensionModelDisplayName(
+  provider: string,
+  model: string | null | undefined,
+): string | undefined {
+  if (!model) return undefined;
+  try {
+    const entry = getAgentProviderRegistry().findByContributionId(provider);
+    const match = entry?.contribution.models?.find(
+      (m) => m.id === model || m.id.endsWith(`:${model}`),
+    );
+    return match?.name;
+  } catch {
+    return undefined;
+  }
+}
+
 import { extractFilePath } from './tools/extractFilePath';
 import { SoundNotificationService } from '../SoundNotificationService';
 import { notificationService } from '../NotificationService';
@@ -52,6 +78,9 @@ import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
+import { getMetaAgentOpenAITools } from '../../mcp/metaAgentServer';
+import { getDevAgentOpenAITools, resolveDevToolScope } from '../../mcp/devAgentTools';
+import { MetaAgentService } from '../MetaAgentService';
 import {
   shouldShowCommunityPopup,
   markCommunityPopupShown,
@@ -354,7 +383,7 @@ export class MessageStreamingHandler {
     // This is passed through documentContext to avoid changing sendMessage signature
     let permissionsPath = session.worktreeProjectPath || effectiveWorkspacePath;
     if (isAgentProvider(session.provider)) {
-      await this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath, event);
+      await this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath);
     }
 
     // Comprehensive logging of what we're sending to Claude
@@ -432,39 +461,57 @@ export class MessageStreamingHandler {
       let requiresApiKey = true;
       const effectiveWorkspacePath = session.workspacePath || workspacePath;
       apiKey = this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
-      switch (session.provider) {
-        case 'claude':
-          errorMessage = 'Anthropic API key not configured';
-          break;
-        case 'claude-code':
-          // Claude Code: API key is optional and uses OAuth login when not configured.
-          requiresApiKey = false;
-          break;
-        case 'openai':
-          errorMessage = 'OpenAI API key not configured';
-          break;
-        case 'openai-codex':
-          // Codex SDK uses its own auth (codex auth login), API key is optional
-          requiresApiKey = false;
-          break;
-        case 'openai-codex-acp':
-          // Codex ACP uses the codex-acp binary's own auth, API key is optional
-          requiresApiKey = false;
-          break;
-        case 'opencode':
-          // OpenCode uses its own config, API key is optional
-          requiresApiKey = false;
-          break;
-        case 'copilot-cli':
-          // Copilot uses its own CLI auth, no API key needed
-          requiresApiKey = false;
-          break;
-        case 'lmstudio':
-          // LMStudio doesn't need an API key, just the base URL
-          apiKey = 'not-required'; // Dummy value since LMStudio doesn't need a key
-          break;
-        default:
-          throw new Error(`Unknown provider: ${session.provider}`);
+
+      // Resolve the extension-agent ref (null for built-in providers). The
+      // built-in switch below is the legacy path; the registry lookup is the
+      // shim that lets aiAgentProviders contributions ride the same streaming
+      // hot path until `session.provider` is widened to a discriminated union
+      // (flagged in the seed PR).
+      const extensionAgentRef = resolveExtensionAgentRef(session.provider);
+
+      if (extensionAgentRef) {
+        // Extension-agent providers defer auth to their own backend module
+        // (e.g. Antigravity rides ~/.gemini OAuth). No host-side apiKey check.
+        requiresApiKey = false;
+      } else {
+        switch (session.provider) {
+          case 'claude':
+            errorMessage = 'Anthropic API key not configured';
+            break;
+          case 'claude-code':
+            // Claude Code: API key is optional and uses OAuth login when not configured.
+            requiresApiKey = false;
+            break;
+          case 'claude-code-cli':
+            // Genuine `claude` CLI: uses its own login/subscription, no API key.
+            requiresApiKey = false;
+            break;
+          case 'openai':
+            errorMessage = 'OpenAI API key not configured';
+            break;
+          case 'openai-codex':
+            // Codex SDK uses its own auth (codex auth login), API key is optional
+            requiresApiKey = false;
+            break;
+          case 'openai-codex-acp':
+            // Codex ACP uses the codex-acp binary's own auth, API key is optional
+            requiresApiKey = false;
+            break;
+          case 'opencode':
+            // OpenCode uses its own config, API key is optional
+            requiresApiKey = false;
+            break;
+          case 'copilot-cli':
+            // Copilot uses its own CLI auth, no API key needed
+            requiresApiKey = false;
+            break;
+          case 'lmstudio':
+            // LMStudio doesn't need an API key, just the base URL
+            apiKey = 'not-required'; // Dummy value since LMStudio doesn't need a key
+            break;
+          default:
+            throw new Error(`Unknown provider: ${session.provider}`);
+        }
       }
 
       if (!apiKey && requiresApiKey) {
@@ -474,7 +521,30 @@ export class MessageStreamingHandler {
       // Create the provider
       if (isProviderClaudeCode) {
       }
-      provider = ProviderFactory.createProvider(session.provider, session.id);
+      if (extensionAgentRef) {
+        // Route to the extension-agent factory branch. createExtensionAgentProvider
+        // is a thin wrapper that defers lazy-spawn of the backend module to the
+        // first `initialize` call routed through the AgentBridge. Cache key is
+        // namespaced to avoid collision with built-in providers.
+        provider =
+          ProviderFactory.getExtensionAgentProvider({
+            extensionId: extensionAgentRef.extensionId,
+            contributionId: extensionAgentRef.contributionId,
+            sessionId: session.id,
+          }) ??
+          ProviderFactory.createExtensionAgentProvider({
+            extensionId: extensionAgentRef.extensionId,
+            contributionId: extensionAgentRef.contributionId,
+            sessionId: session.id,
+            model: session.model,
+          });
+      } else {
+        // The inner switch above is exhaustive over AIProviderType + throws on
+        // default, so by this point session.provider is statically narrowable
+        // to AIProviderType. The cast makes the narrowing explicit since the
+        // exhaustiveness sits inside a conditional block.
+        provider = ProviderFactory.createProvider(session.provider as AIProviderType, session.id);
+      }
 
       if (isProviderClaudeCode) {
       }
@@ -1175,7 +1245,7 @@ export class MessageStreamingHandler {
         && effectiveWorkspacePath
       ) {
         try {
-          await this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath, event);
+          await this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath);
         } catch (watcherError) {
           logger.main.error('[AIService] Failed to start Codex file cache:', watcherError);
         }
@@ -1189,7 +1259,84 @@ export class MessageStreamingHandler {
         }
       }
 
-      for await (const chunk of provider.sendMessage(messageToSend, contextWithSession, session.id, sessionMessages, effectiveWorkspacePath, attachments)) {
+      // Meta-agent tools for extension-agent providers (e.g. gemini-antigravity).
+      // Built-in providers (claude-code, openai-codex) discover these same tools
+      // over the SSE MCP server instead, so we ONLY thread JSON tool defs for the
+      // extension-agent branch. Gated on the meta-agent server being up plus a
+      // session + workspace, mirroring McpConfigService parity for built-ins.
+      // `undefined` for built-in providers, so their sendMessage call shape is
+      // unchanged.
+      // resolveExtensionAgentRef is recomputed here (the earlier binding from
+      // the provider-creation block is out of scope); it's a cheap pure lookup.
+      const isExtensionAgentSession = !!resolveExtensionAgentRef(session.provider);
+      // Only a meta-agent extension session may receive spawn tools. A standard
+      // child session (created agentRole='standard' by MetaAgentService) must
+      // NOT get spawn tools, otherwise it can spawn grandchildren and trigger
+      // exponential recursion. This mirrors claude-code/openai-codex, where only
+      // a button-created meta-agent gets the spawn tools over the SSE MCP server
+      // and its standard children cannot spawn. Gate tools and persona on the
+      // SAME condition so they stay in lockstep.
+      const isMetaAgentExtensionSession =
+        isExtensionAgentSession && session.agentRole === 'meta-agent';
+      // A standard (non-meta-agent) extension session gets the read-only dev
+      // toolset (read_file / list_files / search_files) so the model can
+      // investigate the workspace through the SAME simulated tool loop. This
+      // mirrors built-in providers: a standard session has file tools, only a
+      // meta-agent session has orchestration tools. The dev tools dispatch over
+      // the broker's `devToolExecutor` (gated workspace-files), not the
+      // meta-agent SSE MCP server, so they need no MetaAgentService port.
+      const isStandardExtensionSession =
+        isExtensionAgentSession && session.agentRole !== 'meta-agent';
+      const extensionAgentTools =
+        isMetaAgentExtensionSession &&
+        MetaAgentService.getInstance().getPort() !== null &&
+        session.id &&
+        effectiveWorkspacePath
+          ? getMetaAgentOpenAITools()
+          : isStandardExtensionSession && session.id && effectiveWorkspacePath
+            ? getDevAgentOpenAITools(
+                resolveDevToolScope((session.metadata as Record<string, unknown> | undefined)?.toolScope),
+              )
+            : undefined;
+
+      // Meta-agent persona for extension-agent providers (e.g. gemini-antigravity).
+      // Built-in providers (claude-code, openai-codex) build this same persona
+      // internally over their SDK system prompt; extension agents have no
+      // equivalent, so without this they receive ONLY tool schemas and reply as
+      // a generic chat assistant ("how would you like to proceed?") instead of
+      // proactively setting session meta, surveying worktrees/sessions, and
+      // spawning child sessions. We reuse the SAME buildMetaAgentSystemPrompt
+      // source the built-in providers use (no duplicated persona text), and gate
+      // it strictly on agentRole === 'meta-agent' so a normal gemini chat session
+      // is unaffected. 'codex' tool-reference style renders plain tool names,
+      // matching how the extension's tool loop presents tools in its JSON
+      // envelope (no `mcp__` SDK prefix).
+      // Workflow preset for the meta-agent persona. Read from session metadata
+      // (validated) with a 'default' fallback, mirroring how effortLevel is read
+      // above. Behavior is byte-identical until something writes
+      // metadata.workflowPreset (e.g. via update_session_meta); the 'research'
+      // and 'implement-review-test' presets become selectable once it does.
+      const rawWorkflowPreset = (session.metadata as Record<string, unknown> | undefined)?.workflowPreset;
+      const extensionWorkflowPreset =
+        rawWorkflowPreset === 'research' || rawWorkflowPreset === 'implement-review-test'
+          ? rawWorkflowPreset
+          : 'default';
+      const extensionAgentSystemPrompt =
+        isMetaAgentExtensionSession
+          ? buildMetaAgentSystemPrompt('codex', extensionWorkflowPreset, {
+              provider: session.provider,
+              model: session.model ?? undefined,
+              modelDisplayName: resolveExtensionModelDisplayName(session.provider, session.model),
+            })
+          : isStandardExtensionSession && session.id && effectiveWorkspacePath
+            ? buildDevAgentSystemPrompt({
+                provider: session.provider,
+                model: session.model ?? undefined,
+                modelDisplayName: resolveExtensionModelDisplayName(session.provider, session.model),
+              })
+            : undefined;
+
+      for await (const chunk of provider.sendMessage(messageToSend, contextWithSession, session.id, sessionMessages, effectiveWorkspacePath, attachments, extensionAgentTools, extensionAgentSystemPrompt)) {
         if (!chunk) continue;
         chunkCount++;
 
@@ -1851,6 +1998,35 @@ export class MessageStreamingHandler {
               isServerError,
               isCodexAuthRequired: chunk.isCodexAuthRequired || false,
             });
+
+            // An in-band 'error' chunk from an extension agent (the gemini
+            // backend's only failure-settle path) does NOT throw, so the outer
+            // catch never runs and the session would never move off 'running'.
+            // Without a terminal transition no session:error fires, a spawned
+            // child stays 'running' forever and a meta-agent waits on it
+            // indefinitely while it holds a spawn-cap slot. Settle it here,
+            // mirroring the outer catch. Scoped to extension agents; built-in
+            // providers throw or settle via their SDK terminal handling.
+            // Only DIRECT (non-queued) extension-agent sessions need settling
+            // here. A queued meta-agent child is already settled by the
+            // queued-prompt chain (onChainSettled -> endSession); adding our own
+            // terminal transition on top would emit a second, contradictory
+            // notification to the parent. A direct gemini chat that errors
+            // in-band has no other settle path (its only failure signal is this
+            // non-throwing error chunk), so without this it stays 'running'.
+            if (
+              isExtensionAgentSession
+              && session?.id
+              && !this.svc.sessionsProcessingQueue.has(session.id)
+            ) {
+              try {
+                await stateManager.updateActivity({ sessionId: session.id, status: 'error' });
+                await stateManager.endSession(session.id);
+                await this.svc.hooklessWatcher.stopForSession(session.id);
+              } catch (settleErr) {
+                logger.main.error('[AIService] Failed to settle extension-agent error chunk:', settleErr);
+              }
+            }
             break;
 
           case 'complete':

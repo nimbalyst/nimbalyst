@@ -268,6 +268,9 @@ const TabContentComponent: React.FC<TabContentProps> = ({
       store.set(editorDirtyAtom(editorKey), isDirty);
       // Also notify the legacy subscription system (for backwards compat with save-on-close)
       notifyDirtyStateChange(tab.id, isDirty);
+      // Let the main process know so personal docs sync won't overwrite an
+      // editor's unsaved buffer with a remote copy (NIM-853, Layer 4).
+      window.electronAPI?.send?.('editor:dirty-changed', { filePath: tab.filePath, isDirty });
     };
 
     // Always pass isActive={true} since visibility is controlled by the wrapper element's display style

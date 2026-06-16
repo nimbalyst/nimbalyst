@@ -31,6 +31,14 @@ export class ModelRegistry {
     //   return cached;
     // }
 
+    // Extension-contributed agent providers supply their models via the
+    // AgentProviderRegistry (surfaced in AIService.ai:getModels), not this
+    // built-in registry. Short-circuit so the exhaustive switch below does not
+    // log a spurious "Unhandled provider" error for them.
+    if (ModelIdentifier.isExtensionProvider(provider)) {
+      return [];
+    }
+
     // Fetch fresh models
     let models: AIModel[] = [];
 
@@ -47,6 +55,10 @@ export class ModelRegistry {
           const { ClaudeCodeProvider } = await import('./providers/ClaudeCodeProvider');
           models = await ClaudeCodeProvider.getModels();
           // console.log('[ModelRegistry] Claude Code models retrieved:', models.map(m => ({ id: m.id, name: m.name })));
+          break;
+        case 'claude-code-cli':
+          const { ClaudeCodeCliProvider } = await import('./providers/ClaudeCodeCliProvider');
+          models = await ClaudeCodeCliProvider.getModels();
           break;
         case 'openai':
           const { OpenAIProvider } = await import('./providers/OpenAIProvider');
@@ -106,6 +118,7 @@ export class ModelRegistry {
 
     if (shouldFetch('claude')) promises.push(this.getModelsForProvider('claude', apiKeys['anthropic']));
     if (shouldFetch('claude-code')) promises.push(this.getModelsForProvider('claude-code'));
+    if (shouldFetch('claude-code-cli')) promises.push(this.getModelsForProvider('claude-code-cli'));
     if (shouldFetch('openai')) promises.push(this.getModelsForProvider('openai', apiKeys['openai']));
     if (shouldFetch('openai-codex')) promises.push(this.getModelsForProvider('openai-codex', apiKeys['openai']));
     if (shouldFetch('openai-codex-acp')) promises.push(this.getModelsForProvider('openai-codex-acp', apiKeys['openai']));
@@ -128,6 +141,11 @@ export class ModelRegistry {
    * Get the default model for a provider
    */
   static async getDefaultModel(provider: AIProviderType): Promise<string> {
+    if (ModelIdentifier.isExtensionProvider(provider)) {
+      // Extension providers have no built-in default; the picker uses the
+      // provider's own model list from ai:getModels.
+      return '';
+    }
     switch (provider) {
       case 'claude':
         const { ClaudeProvider } = await import('./providers/ClaudeProvider');
@@ -138,6 +156,9 @@ export class ModelRegistry {
       case 'claude-code':
         const { ClaudeCodeProvider } = await import('./providers/ClaudeCodeProvider');
         return ClaudeCodeProvider.getDefaultModel();
+      case 'claude-code-cli':
+        const { ClaudeCodeCliProvider } = await import('./providers/ClaudeCodeCliProvider');
+        return ClaudeCodeCliProvider.getDefaultModel();
       case 'openai-codex':
         const { OpenAICodexProvider } = await import('./providers/OpenAICodexProvider');
         return OpenAICodexProvider.getDefaultModel();

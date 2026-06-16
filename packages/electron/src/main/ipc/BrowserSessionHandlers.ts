@@ -24,7 +24,7 @@
  */
 
 import { BrowserWindow } from 'electron';
-import { relative, isAbsolute, resolve, sep, join } from 'path';
+import { relative, isAbsolute, resolve, join } from 'path';
 import { mkdir, writeFile } from 'fs/promises';
 import {
   BrowserSessionService,
@@ -34,6 +34,8 @@ import {
 import {
   encodeNimPreviewUrl,
   getNimPreviewWorkspaceRoots,
+  previewPathsEqual,
+  previewPathInsideRoot,
 } from '../protocols/nimPreviewProtocol';
 import { logger } from '../utils/logger';
 import { safeHandle } from '../utils/ipcRegistry';
@@ -237,13 +239,17 @@ export function registerBrowserSessionHandlers(): void {
       let matchedRoot: string | null = null;
       if (payload.workspacePath) {
         const candidate = resolve(payload.workspacePath);
-        if (roots.includes(candidate) && (resolvedFile === candidate || resolvedFile.startsWith(candidate + sep))) {
-          matchedRoot = candidate;
+        // Match against the registered root (not the caller's spelling) so the
+        // encoded root always equals an allowlisted entry, even when drive
+        // letter or path casing differs on Windows (issue #612).
+        const registered = roots.find((r) => previewPathsEqual(r, candidate));
+        if (registered && previewPathInsideRoot(registered, resolvedFile)) {
+          matchedRoot = registered;
         }
       }
       if (!matchedRoot) {
         for (const root of roots) {
-          if (resolvedFile === root || resolvedFile.startsWith(root + sep)) {
+          if (previewPathInsideRoot(root, resolvedFile)) {
             matchedRoot = root;
             break;
           }

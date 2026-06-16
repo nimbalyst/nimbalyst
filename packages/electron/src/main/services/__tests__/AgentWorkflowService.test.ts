@@ -316,6 +316,48 @@ Use this when the user needs a helper workflow.
     expect(codexEntries.some(entry => entry.name === 'legacy-tools-helper')).toBe(true);
   });
 
+  // NIM-845: a claude-code-cli session whose resolved `claude` is too old to
+  // accept `--plugin-dir` can't load extension Claude-plugins, so their namespaced
+  // commands (`legacy-tools:inspect`) won't resolve. The picker must not offer
+  // them — `excludePluginCommands` drops every `source: 'plugin'` entry while
+  // keeping built-in / project / user commands. A CLI that DOES support the flag
+  // (excludePluginCommands omitted/false) still sees them.
+  it('hides plugin (namespaced) commands when excludePluginCommands is set (unsupported CLI), keeps them otherwise', async () => {
+    const pluginRoot = path.join(workspacePath, 'legacy-plugin');
+    fs.mkdirSync(path.join(pluginRoot, '.claude-plugin'), { recursive: true });
+    fs.mkdirSync(path.join(pluginRoot, 'commands'), { recursive: true });
+
+    fs.writeFileSync(
+      path.join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'legacy-tools', version: '0.1.0', author: { name: 'Nimbalyst' } }, null, 2),
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(pluginRoot, 'commands', 'inspect.md'),
+      `---\ndescription: Inspect the current change\n---\n\nRead the diff.\n`,
+      'utf-8',
+    );
+
+    const service = new AgentWorkflowService(workspacePath, {
+      userHomePath,
+      extensionDirectoriesLoader: async () => [],
+      nativeClaudePluginPathsLoader: async () => [{ type: 'local', path: pluginRoot }],
+      releaseChannelLoader: () => 'stable',
+    });
+
+    // Supported CLI (flag omitted): the namespaced plugin command is offered.
+    const supported = await service.listEntries({ provider: 'claude-code-cli' });
+    expect(supported.some(entry => entry.name === 'legacy-tools:inspect')).toBe(true);
+
+    // Unsupported CLI: plugin-sourced commands are filtered out entirely.
+    const unsupported = await service.listEntries({
+      provider: 'claude-code-cli',
+      excludePluginCommands: true,
+    });
+    expect(unsupported.some(entry => entry.name === 'legacy-tools:inspect')).toBe(false);
+    expect(unsupported.every(entry => entry.source !== 'plugin')).toBe(true);
+  });
+
   it('deduplicates concurrent Codex export syncs', async () => {
     const extensionPath = path.join(extensionsDir, 'repair-tools');
     const workflowsPath = path.join(extensionPath, 'agent-workflows');

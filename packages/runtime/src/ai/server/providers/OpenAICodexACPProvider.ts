@@ -18,7 +18,7 @@
 import path from 'path';
 import { BaseAgentProvider } from './BaseAgentProvider';
 import { buildUserMessageAddition } from './documentContextUtils';
-import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt } from '../../prompt';
+import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
 import { DEFAULT_MODELS } from '../../modelConstants';
 import { AIToolCall, AIToolResult } from '../../types';
 import {
@@ -150,7 +150,6 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
       settingsAgentToolsDisabledLoader: OpenAICodexACPProvider.settingsAgentToolsDisabledLoader,
       mcpAuthToken: OpenAICodexACPProvider.mcpAuthToken,
       mcpConfigLoader: OpenAICodexACPProvider.mcpConfigLoader,
-      extensionPluginsLoader: null,
       claudeSettingsEnvLoader: OpenAICodexACPProvider.claudeSettingsEnvLoader,
       shellEnvironmentLoader: OpenAICodexACPProvider.shellEnvironmentLoader,
     });
@@ -319,7 +318,8 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
 
     const agentRole = await this.getAgentRole(sessionId);
     const isMetaAgent = agentRole === 'meta-agent';
-    const systemPrompt = this.buildSystemPrompt(documentContext, isMetaAgent);
+    const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(sessionId) : 'default';
+    const systemPrompt = this.buildSystemPrompt(documentContext, isMetaAgent, workflowPreset);
     const { userMessageAddition, messageWithContext } = buildUserMessageAddition(message, documentContext);
     const unsupportedAttachmentHints = attachments?.filter(
       (attachment) => attachment.type !== 'image' && attachment.type !== 'document'
@@ -537,9 +537,9 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
     super.destroy();
   }
 
-  protected buildSystemPrompt(documentContext?: DocumentContext, isMetaAgent: boolean = false): string {
+  protected buildSystemPrompt(documentContext?: DocumentContext, isMetaAgent: boolean = false, workflowPreset: MetaAgentWorkflowPreset = 'default'): string {
     if (isMetaAgent) {
-      return buildMetaAgentSystemPrompt('codex', 'default', {
+      return buildMetaAgentSystemPrompt('codex', workflowPreset, {
         provider: 'openai-codex-acp',
         model: this.config?.model ?? undefined,
       });

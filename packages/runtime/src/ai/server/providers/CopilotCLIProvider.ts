@@ -140,7 +140,6 @@ export class CopilotCLIProvider extends BaseAgentProvider {
       settingsAgentToolsDisabledLoader: CopilotCLIProvider.settingsAgentToolsDisabledLoader,
       mcpAuthToken: CopilotCLIProvider.mcpAuthToken,
       mcpConfigLoader: CopilotCLIProvider.mcpConfigLoader,
-      extensionPluginsLoader: null,
       claudeSettingsEnvLoader: null,
       shellEnvironmentLoader: CopilotCLIProvider.shellEnvironmentLoader,
     });

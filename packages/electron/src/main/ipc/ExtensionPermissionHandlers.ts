@@ -39,7 +39,13 @@ import {
   type ModuleHandle,
 } from '../extensions/PrivilegedExtensionHost';
 import { getPermissionUsageTracker } from '../extensions/permissionUsageTracker';
-import { windowStates, resolveActiveWorkspacePath } from '../window/windowState';
+import { windowStates } from '../window/windowState';
+import {
+  selectPromptTargetWindowIds,
+  canWindowResolvePrompt,
+  windowBindsWorkspace,
+  type WindowForTargeting,
+} from '../extensions/permissionPromptTargeting';
 
 interface PendingPrompt {
   request: PermissionPromptRequest;
@@ -53,32 +59,30 @@ interface PendingPrompt {
 const pending = new Map<string, PendingPrompt>();
 
 /**
- * The workspace this window is currently bound to. Used to scope prompt
- * broadcasts and validate prompt resolutions. A window with no workspace
- * (welcome/document-only) is treated as not-matching any workspace path.
+ * Snapshot the live windows in the shape the pure targeting logic needs
+ * (id + persisted WindowState + OS focus).
  */
-function windowWorkspacePath(windowId: number): string | null {
-  return resolveActiveWorkspacePath(windowStates.get(windowId));
-}
-
-/**
- * Send `payload` to every window whose active workspace matches `workspacePath`.
- * Returns the recipient window IDs so the caller can later validate that a
- * resolve message came from one of them.
- */
-function sendToWorkspaceWindows(
-  channel: string,
-  workspacePath: string,
-  payload: unknown
-): number[] {
-  const ids: number[] = [];
+function collectWindowsForTargeting(): WindowForTargeting[] {
+  const focusedId = BrowserWindow.getFocusedWindow()?.id ?? null;
+  const out: WindowForTargeting[] = [];
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
-    if (windowWorkspacePath(win.id) !== workspacePath) continue;
-    win.webContents.send(channel, payload);
-    ids.push(win.id);
+    out.push({
+      id: win.id,
+      state: windowStates.get(win.id),
+      focused: win.id === focusedId,
+    });
   }
-  return ids;
+  return out;
+}
+
+/** Send `payload` to a specific set of window ids (skipping destroyed ones). */
+function sendToWindowIds(channel: string, ids: number[], payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    if (!ids.includes(win.id)) continue;
+    win.webContents.send(channel, payload);
+  }
 }
 
 function broadcastStateChange(handle: ModuleHandle): void {
@@ -244,27 +248,24 @@ export function registerExtensionPermissionHandlers(): void {
   // Prompt bridge
   // -------------------------------------------------------------------
 
-  // The host resolver: when raised, send the prompt only to windows whose
-  // active workspace matches the request's workspacePath, and wait for one
-  // of them to respond. This is what stops workspace B from silently
-  // approving a privileged grant for workspace A.
-  //
-  // If no matching window is open when the prompt is raised, we keep the
-  // request pending: a window bound to that workspace may open later and
-  // backfill via `ext-permission-prompt:list-pending`. Modules stuck in
-  // `awaiting-consent` are acceptable because the user can re-trigger by
-  // re-opening the action that needed the capability.
+  // The host resolver: when raised, deliver the prompt to every window that
+  // binds the request's workspace (primary, active rail, or warm additional
+  // rail path), falling back to the focused window so a native-code consent is
+  // never silently dropped. The delivered-to window ids are recorded so only a
+  // window that actually received the modal may resolve it -- that, not a
+  // re-derived active-path match, is what stops workspace B from approving
+  // workspace A's grant.
   setPermissionPromptResolver(async (request) => {
     return new Promise<PermissionPromptResolution>((resolve) => {
-      const targetWindowIds = sendToWorkspaceWindows(
-        'ext-permission-prompt:raise',
-        request.workspacePath,
-        request
+      const targetWindowIds = selectPromptTargetWindowIds(
+        collectWindowsForTargeting(),
+        request.workspacePath
       );
+      sendToWindowIds('ext-permission-prompt:raise', targetWindowIds, request);
       pending.set(request.id, { request, resolve, targetWindowIds });
       if (targetWindowIds.length === 0) {
         logger.main.info(
-          `[ExtensionPermissionHandlers] No window currently bound to workspace ${request.workspacePath} for prompt ${request.id}; awaiting a matching window`
+          `[ExtensionPermissionHandlers] No open window for prompt ${request.id} (workspace ${request.workspacePath}); awaiting a window to backfill via list-pending`
         );
       }
     });
@@ -279,11 +280,12 @@ export function registerExtensionPermissionHandlers(): void {
       // Already resolved by another window or never raised. Safe to ignore.
       return;
     }
-    // Sender validation: only a window whose active workspace matches the
-    // prompt's workspacePath may resolve it. This prevents a multi-window
-    // setup where workspace B's renderer fires a resolve for workspace A's
-    // prompt (the prompt request was carrying workspace A's workspacePath
-    // all along; we must not trust the sender's claim of who they are).
+    // Sender validation: a window may resolve a prompt only if it was actually
+    // delivered the modal, or it binds the prompt's workspace (the late-window
+    // backfill case, where the prompt was raised before any binding window
+    // existed). This prevents a multi-window setup where workspace B's renderer
+    // resolves workspace A's prompt -- B's window neither received A's modal nor
+    // binds A.
     const senderWindowId = event.sender ? BrowserWindow.fromWebContents(event.sender)?.id ?? null : null;
     if (senderWindowId === null) {
       logger.main.warn(
@@ -291,21 +293,22 @@ export function registerExtensionPermissionHandlers(): void {
       );
       return;
     }
-    if (windowWorkspacePath(senderWindowId) !== entry.request.workspacePath) {
+    const authorized =
+      canWindowResolvePrompt(entry.targetWindowIds, senderWindowId) ||
+      windowBindsWorkspace(windowStates.get(senderWindowId), entry.request.workspacePath);
+    if (!authorized) {
       logger.main.warn(
-        `[ExtensionPermissionHandlers] Dropping prompt resolve ${args.promptId} from window ${senderWindowId}: workspace mismatch`
+        `[ExtensionPermissionHandlers] Dropping prompt resolve ${args.promptId} from window ${senderWindowId}: not a delivered-to or workspace-binding window`
       );
       return;
     }
     pending.delete(args.promptId);
     entry.resolve(args.resolution);
-    // Notify the windows the prompt was targeted at so they can close their
-    // modal. Workspace-scoped: other-workspace windows never saw it.
-    sendToWorkspaceWindows(
-      'ext-permission-prompt:resolved',
-      entry.request.workspacePath,
-      { promptId: args.promptId }
-    );
+    // Notify the windows the prompt was delivered to so they can close their
+    // modal. Other windows never saw it.
+    sendToWindowIds('ext-permission-prompt:resolved', entry.targetWindowIds, {
+      promptId: args.promptId,
+    });
   });
 
   // Renderer asks: "are there any prompts still pending for me?" - used on
@@ -316,10 +319,17 @@ export function registerExtensionPermissionHandlers(): void {
   safeHandle('ext-permission-prompt:list-pending', (event) => {
     const senderWindowId = event.sender ? BrowserWindow.fromWebContents(event.sender)?.id ?? null : null;
     if (senderWindowId === null) return [];
-    const callerWorkspace = windowWorkspacePath(senderWindowId);
-    if (!callerWorkspace) return [];
+    const senderState = windowStates.get(senderWindowId);
+    // A window sees a pending prompt if it was delivered the modal, or it binds
+    // the prompt's workspace (so a window that opens after the prompt was raised
+    // can backfill and render it). Scoped so a window bound only to workspace B
+    // cannot enumerate workspace A's pending prompts.
     return Array.from(pending.values())
-      .filter((p) => p.request.workspacePath === callerWorkspace)
+      .filter(
+        (p) =>
+          p.targetWindowIds.includes(senderWindowId) ||
+          windowBindsWorkspace(senderState, p.request.workspacePath)
+      )
       .map((p) => p.request);
   });
 

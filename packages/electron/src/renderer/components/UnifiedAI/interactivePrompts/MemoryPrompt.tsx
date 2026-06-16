@@ -203,10 +203,14 @@ export function useMemoryMode(workspacePath?: string) {
 
 /**
  * Check if input should activate memory mode
- * Memory mode activates when the first character is '#' (for Claude Code provider only)
+ * Memory mode activates when the first character is '#' (Claude Code providers
+ * only). The widget writes CLAUDE.md directly, so it works identically for the
+ * SDK and the terminal CLI (NIM-819).
  */
+const MEMORY_MODE_PROVIDERS = new Set(['claude-code', 'claude-code-cli']);
+
 export function shouldActivateMemoryMode(value: string, provider?: string): boolean {
-  return provider === 'claude-code' && value.trimStart().startsWith('#');
+  return !!provider && MEMORY_MODE_PROVIDERS.has(provider) && value.trimStart().startsWith('#');
 }
 
 /**

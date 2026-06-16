@@ -18,6 +18,7 @@ interface AgentModelPickerProps {
 
 const providerLabels: Record<string, string> = {
   'claude-code': 'Claude Agent',
+  'claude-code-cli': 'Claude Code CLI',
   'openai-codex': 'OpenAI Codex',
   'openai-codex-acp': 'OpenAI Codex (ACP)',
 };

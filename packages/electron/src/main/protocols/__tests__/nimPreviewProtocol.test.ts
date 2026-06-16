@@ -3,6 +3,8 @@ import { sep } from 'path';
 import {
   encodeNimPreviewUrl,
   validateNimPreviewPath,
+  previewPathsEqual,
+  previewPathInsideRoot,
   NIM_PREVIEW_SCHEME,
   NIM_PREVIEW_HOST,
 } from '../nimPreviewProtocol';
@@ -12,11 +14,18 @@ const OTHER = `${sep}tmp${sep}preview-other`;
 
 describe('nimPreviewProtocol', () => {
   describe('encodeNimPreviewUrl', () => {
-    it('produces a parseable nim-preview URL with base64url-encoded root', () => {
+    const hexRoot = Buffer.from(ROOT, 'utf8').toString('hex');
+
+    // Issue #612: the URL must NOT carry the root in the username (Electron's
+    // protocol.handle strips credentials and partitioned sessions refuse
+    // credentialed navigations) and must NOT be base64url (URL hosts are
+    // lowercased by the canonicalizer). Lowercase hex in the host means the
+    // page origin itself carries the root.
+    it('produces a credential-free URL with the lowercase-hex root as host', () => {
       const url = encodeNimPreviewUrl(ROOT, 'site/index.html');
-      expect(url).toMatch(
-        new RegExp(`^${NIM_PREVIEW_SCHEME}://[A-Za-z0-9_-]+@${NIM_PREVIEW_HOST}/site/index\\.html$`),
-      );
+      expect(url).toBe(`${NIM_PREVIEW_SCHEME}://${hexRoot}/site/index.html`);
+      expect(url).not.toContain('@');
+      expect(hexRoot).toMatch(/^[0-9a-f]+$/);
     });
 
     it('URL-encodes each relative-path segment so spaces survive', () => {
@@ -34,10 +43,17 @@ describe('nimPreviewProtocol', () => {
       expect(url.endsWith('/site/index.html')).toBe(true);
     });
 
+    it('preserves the workspace root for page-relative asset URLs', () => {
+      const base = encodeNimPreviewUrl(ROOT, 'site/index.html');
+      expect(new URL('app.js', base).href).toBe(
+        `${NIM_PREVIEW_SCHEME}://${hexRoot}/site/app.js`,
+      );
+    });
+
     it('preserves the workspace root for root-relative asset URLs', () => {
       const base = encodeNimPreviewUrl(ROOT, 'site/index.html');
-      expect(new URL('/app.js', base).href).toMatch(
-        new RegExp(`^${NIM_PREVIEW_SCHEME}://[A-Za-z0-9_-]+@${NIM_PREVIEW_HOST}/app\\.js$`),
+      expect(new URL('/app.js', base).href).toBe(
+        `${NIM_PREVIEW_SCHEME}://${hexRoot}/app.js`,
       );
     });
   });
@@ -111,6 +127,34 @@ describe('nimPreviewProtocol', () => {
       // /tmp/preview-root-evil must NOT match the /tmp/preview-root allowlist.
       const result = validateNimPreviewPath(`${ROOT}-evil`, 'index.html', roots);
       expect(result).toBeNull();
+    });
+  });
+
+  // Issue #612: Windows compares paths case-insensitively (drive-letter and
+  // directory casing vary between path sources), so the comparison helpers
+  // take a caseInsensitive flag that defaults to process.platform === 'win32'.
+  // The flag is passed explicitly here so the win32 semantics are exercised
+  // on any host platform.
+  describe('case-insensitive path comparison (win32 semantics)', () => {
+    it('previewPathsEqual matches differing drive/directory casing when case-insensitive', () => {
+      expect(previewPathsEqual(`${sep}Tmp${sep}Root`, `${sep}tmp${sep}root`, true)).toBe(true);
+      expect(previewPathsEqual(`${sep}Tmp${sep}Root`, `${sep}tmp${sep}root`, false)).toBe(false);
+    });
+
+    it('previewPathInsideRoot matches a file under a differently-cased root when case-insensitive', () => {
+      const root = `${sep}Tmp${sep}Preview-Root`;
+      const file = `${sep}tmp${sep}preview-root${sep}site${sep}index.html`;
+      expect(previewPathInsideRoot(root, file, true)).toBe(true);
+      expect(previewPathInsideRoot(root, file, false)).toBe(false);
+    });
+
+    it('previewPathInsideRoot treats the root itself as inside', () => {
+      expect(previewPathInsideRoot(ROOT, ROOT, true)).toBe(true);
+      expect(previewPathInsideRoot(ROOT, ROOT, false)).toBe(true);
+    });
+
+    it('previewPathInsideRoot still rejects sibling substring prefixes case-insensitively', () => {
+      expect(previewPathInsideRoot(ROOT, `${ROOT}-EVIL${sep}index.html`, true)).toBe(false);
     });
   });
 });

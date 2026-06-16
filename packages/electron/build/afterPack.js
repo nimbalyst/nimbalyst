@@ -84,6 +84,28 @@ exports.default = async function(context) {
     }
   }
 
+  // Ensure node-pty's `spawn-helper` is executable in the packaged tree.
+  // node-pty ships via extraResources to resources/node-pty; the macOS/Linux
+  // PTY path execs prebuilds/<platform-arch>/spawn-helper, and the copy into
+  // the app bundle can drop the execute bit -> runtime `posix_spawnp failed`
+  // and the genuine `claude` CLI terminal never starts. chmod it back here.
+  // (Windows uses conpty/winpty and has no spawn-helper.)
+  if (platformName === 'darwin' || platformName === 'linux') {
+    const prebuildsDir = path.join(resourcesDir, 'node-pty/prebuilds');
+    let fixedCount = 0;
+    if (fs.existsSync(prebuildsDir)) {
+      for (const entry of fs.readdirSync(prebuildsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const helper = path.join(prebuildsDir, entry.name, 'spawn-helper');
+        if (fs.existsSync(helper)) {
+          fs.chmodSync(helper, 0o755);
+          fixedCount++;
+        }
+      }
+    }
+    console.log(`AfterPack: ensured execute bit on ${fixedCount} node-pty spawn-helper binary(ies)`);
+  }
+
   // Validate the packaged tree by exercising real ESM `import()` against
   // app.asar.unpacked/node_modules and verifying every native binary is
   // present + executable. Fails the build on any miss -- this is the gate

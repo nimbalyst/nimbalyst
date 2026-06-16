@@ -21,7 +21,7 @@ import {
   CLAUDE_CODE_MODEL_LABELS,
   type ClaudeCodeVariant,
 } from '@nimbalyst/runtime/ai/modelConstants';
-import { CLAUDE_CODE_VARIANTS, ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
+import { CLAUDE_CODE_VARIANTS, ModelIdentifier, isClaudeCodeFamily } from '@nimbalyst/runtime/ai/server/types';
 
 export { type EffortLevel, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL, parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
 
@@ -41,7 +41,9 @@ export function extractClaudeCodeVariant(modelId?: string): ClaudeCodeVariant | 
 
   // Try parsing with ModelIdentifier
   const parsed = ModelIdentifier.tryParse(modelId);
-  if (parsed && parsed.provider === 'claude-code') {
+  if (parsed && isClaudeCodeFamily(parsed.provider)) {
+    // Covers both `claude-code` (SDK) and `claude-code-cli` (subscription CLI):
+    // they share the variant set, so neither must collapse to the sonnet fallback.
     // baseVariant strips suffixes like -1m. Membership is checked against the
     // shared CLAUDE_CODE_VARIANTS array so pinned variants (opus-4-6, ...)
     // aren't silently dropped and fall back to sonnet in the picker label.
@@ -63,12 +65,22 @@ function formatVariantLabel(variant: ClaudeCodeVariant): string {
   return CLAUDE_CODE_MODEL_LABELS[variant] ?? variant.charAt(0).toUpperCase() + variant.slice(1);
 }
 
+/**
+ * Family prefix shown before the variant in the long label. The SDK provider
+ * stays "Claude Agent"; the genuine subscription CLI gets its own name so the
+ * two providers are distinguishable in the picker.
+ */
+function getClaudeCodeFamilyPrefix(modelId?: string): string {
+  const parsed = modelId ? ModelIdentifier.tryParse(modelId) : null;
+  return parsed?.provider === 'claude-code-cli' ? 'Claude Code CLI' : 'Claude Agent';
+}
+
 export function getClaudeCodeModelLabel(modelId?: string): string {
   const variant = extractClaudeCodeVariant(modelId) ?? 'sonnet';
   const parsed = modelId ? ModelIdentifier.tryParse(modelId) : null;
   const version = CLAUDE_CODE_VARIANT_VERSIONS[variant];
   const suffix = parsed?.isExtendedContext ? ' (1M)' : '';
-  return `Claude Agent · ${formatVariantLabel(variant)} ${version}${suffix}`;
+  return `${getClaudeCodeFamilyPrefix(modelId)} · ${formatVariantLabel(variant)} ${version}${suffix}`;
 }
 
 export function getClaudeCodeModelShortLabel(modelId?: string): string {
@@ -88,12 +100,12 @@ export function parseModelInfo(modelId?: string): ModelInfo | null {
   // Try parsing with ModelIdentifier
   const parsed = ModelIdentifier.tryParse(modelId);
   if (parsed) {
-    // Special case for Claude Code
-    if (parsed.provider === 'claude-code') {
+    // Special case for Claude Code family (SDK + subscription CLI)
+    if (isClaudeCodeFamily(parsed.provider)) {
       const modelName = getClaudeCodeModelShortLabel(modelId);
       return {
-        providerId: 'claude-code',
-        providerName: 'Claude Agent',
+        providerId: parsed.provider,
+        providerName: getProviderDisplayName(parsed.provider),
         modelName,
         shortModelName: modelName
       };
@@ -147,6 +159,7 @@ export function getProviderDisplayName(provider: string): string {
   switch (provider) {
     case 'claude': return 'Claude';
     case 'claude-code': return 'Claude Agent';
+    case 'claude-code-cli': return 'Claude Code CLI';
     case 'openai': return 'OpenAI';
     case 'lmstudio': return 'LMStudio';
     case 'copilot-cli': return 'GitHub Copilot';
@@ -161,6 +174,7 @@ export function getProviderLabel(provider: string): string {
   switch (provider) {
     case 'claude': return 'Chat';
     case 'claude-code': return 'CODE';
+    case 'claude-code-cli': return 'CLI';
     case 'openai': return 'GPT';
     case 'lmstudio': return 'LOCAL';
     default: return provider.toUpperCase();

@@ -38,11 +38,42 @@ interface Question {
 // Helper Functions
 // ============================================================
 
+// Defense-in-depth shape check. The MCP handler normalizes question shape before
+// forwarding (interactiveToolHandlers.ts handleAskUserQuestion), but a tool call
+// persisted in the transcript can still carry a malformed shape -- e.g. the model
+// called AskUserQuestion with PromptForUserInput-style fields (editText, confirm)
+// that have no `options` array. Drop questions that can't render as a multiple-
+// choice question so the unguarded `question.options.map(...)` in the render
+// branches below never throws "Cannot read properties of undefined (reading 'map')".
+// Mirrors the isValidField/parseArgs hardening in RequestUserInputWidget.
 function parseQuestions(args: any): Question[] {
   if (!args?.questions || !Array.isArray(args.questions)) {
     return [];
   }
-  return args.questions;
+  const valid: Question[] = [];
+  for (const q of args.questions) {
+    if (!q || typeof q !== 'object') continue;
+    if (typeof q.question !== 'string' || typeof q.header !== 'string') continue;
+    if (!Array.isArray(q.options) || q.options.length === 0) continue;
+    // Each rendered option reads `.label`/`.description`; drop entries that aren't
+    // objects with a string label so the option map can't throw either.
+    const options: QuestionOption[] = q.options
+      .filter((o: any) => o && typeof o === 'object' && typeof o.label === 'string')
+      .map((o: any) => ({ label: o.label, description: typeof o.description === 'string' ? o.description : '' }));
+    if (options.length === 0) continue;
+    valid.push({
+      question: q.question,
+      header: q.header,
+      options,
+      multiSelect: q.multiSelect === true,
+    });
+  }
+  if (valid.length !== args.questions.length) {
+    console.warn(
+      `[AskUserQuestionWidget] Dropped ${args.questions.length - valid.length} malformed question(s)`,
+    );
+  }
+  return valid;
 }
 
 function parseAnswers(args: any, result: any): Record<string, string> {

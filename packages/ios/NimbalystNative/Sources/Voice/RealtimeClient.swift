@@ -73,11 +73,13 @@ final class RealtimeClient {
             return
         }
 
-        // Use subprotocol auth (same as Capacitor) - more reliable than header auth
+        // Use subprotocol auth - more reliable than header auth.
+        // Do NOT include the "openai-beta.realtime-v1" subprotocol: it selects the
+        // retired Beta API shape, which the server now rejects with
+        // code=4000 reason=beta_api_shape_disabled. Omitting it selects the GA shape.
         let protocols = [
             "realtime",
             "openai-insecure-api-key.\(apiKey)",
-            "openai-beta.realtime-v1",
         ]
 
         let wsTask = session.webSocketTask(with: url, protocols: protocols)
@@ -170,13 +172,15 @@ final class RealtimeClient {
             safeInstructions = String(safeInstructions.prefix(Self.kMaxInstructionsLength))
         }
 
-        var sessionConfig: [String: Any] = [
-            "modalities": ["text", "audio"],
-            "instructions": safeInstructions,
-            "voice": voice,
-            "input_audio_format": "pcm16",
-            "output_audio_format": "pcm16",
-            "input_audio_transcription": [
+        // GA Realtime API session shape. Audio config is nested under audio.{input,output}
+        // with format as an object ({type,rate}), not the flat beta fields. The audio
+        // pipeline uses 24kHz PCM16 in both directions (see AudioPipeline.kApiSampleRate).
+        let inputConfig: [String: Any] = [
+            "format": [
+                "type": "audio/pcm",
+                "rate": 24000,
+            ] as [String: Any],
+            "transcription": [
                 "model": "whisper-1"
             ],
             "turn_detection": [
@@ -184,6 +188,22 @@ final class RealtimeClient {
                 "threshold": vadThreshold,
                 "prefix_padding_ms": 300,
                 "silence_duration_ms": silenceDurationMs,
+            ] as [String: Any],
+        ]
+
+        var sessionConfig: [String: Any] = [
+            "type": "realtime",
+            "output_modalities": ["audio"],
+            "instructions": safeInstructions,
+            "audio": [
+                "input": inputConfig,
+                "output": [
+                    "voice": voice,
+                    "format": [
+                        "type": "audio/pcm",
+                        "rate": 24000,
+                    ] as [String: Any],
+                ] as [String: Any],
             ] as [String: Any],
         ]
 
@@ -248,7 +268,9 @@ final class RealtimeClient {
 
         case "session.updated":
             if let session = json["session"] as? [String: Any] {
-                let voice = session["voice"] as? String ?? "none"
+                // GA nests voice under audio.output.voice (was top-level in beta).
+                let audioOutput = (session["audio"] as? [String: Any])?["output"] as? [String: Any]
+                let voice = audioOutput?["voice"] as? String ?? session["voice"] as? String ?? "none"
                 let tools = session["tools"] as? [[String: Any]] ?? []
                 logger.info("Session updated: voice=\(voice), tools=\(tools.count)")
             }
@@ -267,17 +289,18 @@ final class RealtimeClient {
             handleResponseDone(json)
             onResponseDone?()
 
-        case "response.audio.delta":
+        // GA event is response.output_audio.delta; the beta name is kept for safety.
+        case "response.output_audio.delta", "response.audio.delta":
             audioResponseChunks += 1
             if let delta = json["delta"] as? String {
                 onAudioDelta?(delta)
             }
 
-        case "response.audio.done":
+        case "response.output_audio.done", "response.audio.done":
             audioResponseChunks = 0
             onAudioDone?()
 
-        case "response.text.delta":
+        case "response.output_text.delta", "response.text.delta":
             if let delta = json["delta"] as? String {
                 textDeltaCount += 1
                 onTextDelta?(delta)
@@ -309,7 +332,8 @@ final class RealtimeClient {
                 onError?(errorType, message)
             }
 
-        case "response.audio_transcript.delta", "response.audio_transcript.done":
+        case "response.output_audio_transcript.delta", "response.output_audio_transcript.done",
+             "response.audio_transcript.delta", "response.audio_transcript.done":
             // Audio transcript events - informational
             break
 
@@ -322,7 +346,7 @@ final class RealtimeClient {
 
         case "response.output_item.added", "response.output_item.done",
              "response.content_part.added", "response.content_part.done",
-             "response.text.done":
+             "response.output_text.done", "response.text.done":
             break
 
         default:

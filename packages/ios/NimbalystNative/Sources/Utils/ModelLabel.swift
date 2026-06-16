@@ -16,7 +16,9 @@ public enum ModelLabel {
 
         switch prov {
         case "claude-code":
-            return claudeCodeLabel(id)
+            return claudeCodeLabel(id, providerFallback: "Claude Agent")
+        case "claude-code-cli":
+            return claudeCodeLabel(id, providerFallback: "Claude Code CLI")
         case "claude":
             return claudeApiLabel(id)
         case "openai":
@@ -41,12 +43,12 @@ public enum ModelLabel {
         "opus-4-6": "4.6",
     ]
 
-    private static func claudeCodeLabel(_ modelId: String?) -> String? {
+    private static func claudeCodeLabel(_ modelId: String?, providerFallback: String = "Claude Agent") -> String? {
         // No model field: we still know the provider, so show the provider
         // label rather than hiding the badge. Mirrors the Codex fallback.
-        guard let raw = modelId, !raw.isEmpty else { return "Claude Agent" }
+        guard let raw = modelId, !raw.isEmpty else { return providerFallback }
 
-        // Strip "claude-code:" (or similar) prefix.
+        // Strip "claude-code:" / "claude-code-cli:" (or similar) prefix.
         let bare = raw.split(separator: ":", maxSplits: 1).last.map(String.init) ?? raw
 
         // Family from substring — handles both canonical variants ("opus",
@@ -55,7 +57,7 @@ public enum ModelLabel {
         if bare.contains("opus") { family = "Opus" }
         else if bare.contains("sonnet") { family = "Sonnet" }
         else if bare.contains("haiku") { family = "Haiku" }
-        else { return "Claude Agent" }
+        else { return providerFallback }
 
         // Prefer an explicit version embedded in the ID (raw SDK IDs like
         // "claude-opus-4-7" or pinned variants like "opus-4-6").

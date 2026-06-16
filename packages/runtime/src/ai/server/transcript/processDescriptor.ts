@@ -233,5 +233,8 @@ export function selectRawParser(
   if (provider === 'opencode') {
     return 'opencode';
   }
+  // `claude-code` and `claude-code-cli` (genuine CLI on subscription) both drive
+  // the same Claude agent and emit the same raw message shape, so both
+  // deliberately reuse ClaudeCodeRawParser via this default branch.
   return 'claude-code';
 }

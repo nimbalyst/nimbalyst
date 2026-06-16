@@ -248,6 +248,9 @@ export function TabsProvider({
     // Stop watching file (skip virtual and collaborative documents)
     if (window.electronAPI && !tab.filePath.startsWith('virtual://') && !isCollabUri(tab.filePath)) {
       window.electronAPI.invoke('stop-watching-file', tab.filePath).catch(() => {});
+      // Closing drops any unsaved buffer, so clear the dirty flag in main; this
+      // lets personal docs sync flush a deferred remote write (NIM-853, Layer 4).
+      window.electronAPI.send?.('editor:dirty-changed', { filePath: tab.filePath, isDirty: false });
     }
 
     // Update active tab if needed

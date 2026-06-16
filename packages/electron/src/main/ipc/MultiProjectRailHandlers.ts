@@ -27,7 +27,7 @@ import {
     documentServices,
 } from '../window/WindowManager';
 import { startWorkspaceWatcher, stopWorkspaceWatcher } from '../file/WorkspaceWatcher.ts';
-import { anyWindowReferencesWorkspace } from '../window/windowState';
+import { anyWindowReferencesWorkspace, resolveDocumentServicePath } from '../window/windowState';
 import { ElectronDocumentService, setupDocumentServiceHandlers } from '../services/ElectronDocumentService';
 import { ElectronFileSystemService } from '../services/ElectronFileSystemService';
 import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
@@ -55,7 +55,7 @@ function resolveDocumentServiceForEvent(event: Electron.IpcMainInvokeEvent | Ele
     const windowId = getWindowId(browserWindow);
     if (windowId === null) return null;
     const state = windowStates.get(windowId);
-    const path = state?.activeWorkspacePath ?? state?.workspacePath ?? null;
+    const path = resolveDocumentServicePath(state);
     if (!path) return null;
     return documentServices.get(path) ?? null;
 }

@@ -8,6 +8,11 @@ import { promisify } from 'util';
 import { safeHandle } from '../../utils/ipcRegistry';
 import Store from 'electron-store';
 import {
+  isExtensionAgentProvider,
+  resolveExtensionAgentRef,
+} from './providerResolution';
+import { getAgentProviderRegistry } from '../../extensions/AgentProviderRegistry';
+import {
   SessionManager,
   ProviderFactory,
   ModelRegistry,
@@ -18,6 +23,7 @@ import {
   ClaudeCodeProvider,
   OpenAICodexProvider,
 } from '@nimbalyst/runtime/ai/server';
+import { CLAUDE_CODE_SAFE_FALLBACK_MODEL } from '@nimbalyst/runtime/ai/modelConstants';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
@@ -41,9 +47,12 @@ import {
 import { ToolExecutor, toolRegistry, BUILT_IN_TOOLS } from './tools';
 import { initMobileSessionControlHandler } from './MobileSessionControlHandler';
 import { SoundNotificationService } from '../SoundNotificationService';
+import { getTerminalSessionManager } from '../TerminalSessionManager';
+import { flushNextClaudeCliQueuedPromptForSession } from './claudeCliQueueFlushSingleton';
 import { notificationService } from '../NotificationService';
 import { TrayManager } from '../../tray/TrayManager';
 import { logger } from '../../utils/logger';
+import { getSettingsService } from '../SettingsService';
 import { windowStates, findWindowByWorkspace, getWindowId, createWindow } from '../../window/WindowManager';
 import { resolveActiveWorkspacePathForWindowId } from '../../window/windowState';
 import { sessionFileTracker } from '../SessionFileTracker';
@@ -74,6 +83,7 @@ import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../S
 import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
 import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/workspaceDetection';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
+import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -104,6 +114,8 @@ import { MessageStreamingHandler } from './MessageStreamingHandler';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
+import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
+import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 
 const execFileAsync = promisify(execFile);
@@ -498,6 +510,15 @@ export class AIService {
     // NEVER fall back to process.env — users must explicitly set keys in settings.
     // Implicit env-var usage caused a user to burn $100+ on their personal Anthropic
     // account because Nimbalyst silently picked up ANTHROPIC_API_KEY from a .env file.
+
+    // Extension-agent providers (aiAgentProviders contributions) defer auth to
+    // the extension itself (e.g. Antigravity rides ~/.gemini OAuth). The host
+    // does not manage their API key. See providerResolution.ts for the shim
+    // until session.provider is widened to a discriminated union.
+    if (isExtensionAgentProvider(provider)) {
+      return 'not-required';
+    }
+
     switch (provider) {
       case 'claude':
         return globalApiKeys['anthropic'];
@@ -537,10 +558,11 @@ export class AIService {
     if (fullModel) {
       config.model = fullModel;
     } else {
-      const defaultModel = await ModelRegistry.getDefaultModel('claude-code');
-      if (defaultModel) {
-        config.model = defaultModel;
-      }
+      // Billing safety (#631 / NIM-848): a session with no resolved model must
+      // fall back to a STANDARD 200k model, never the 1M user-facing default
+      // (ModelRegistry.getDefaultModel('claude-code') is `opus-1m`). Sending the
+      // paid 1M beta for an empty/lost model silently bills the user.
+      config.model = CLAUDE_CODE_SAFE_FALLBACK_MODEL;
     }
 
     return config;
@@ -614,8 +636,32 @@ export class AIService {
     targetWindow: Electron.BrowserWindow | null,
     source: string,
   ): Promise<boolean> {
+    // NIM-834: claude-code-cli sessions have no in-process turn driver — the SDK
+    // dispatch below would call the provider's Phase 1 sendMessage stub and mark
+    // the prompt failed (broke meta-agent spawns, restart continuations, and
+    // scheduled wakeups for CLI sessions). Route them onto the CLI's PTY
+    // queue-drain rails instead: launch the genuine CLI if needed and let the
+    // PID watcher's idle flush deliver the prompt.
+    let dispatchSession: { provider?: string; model?: string | null; worktreeId?: string | null } | null = null;
+    try {
+      const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+      dispatchSession = await AISessionsRepository.get(sessionId);
+    } catch (lookupError) {
+      logger.main.warn(`[AIService] ${source}: provider lookup failed before queued dispatch:`, lookupError);
+    }
+    if (dispatchSession?.provider === 'claude-code-cli') {
+      return this.dispatchQueuedPromptToClaudeCliSession(sessionId, workspacePath, dispatchSession, source);
+    }
+
     const { getQueuedPromptsStore } = await import('../RepositoryManager');
     const queueStore = getQueuedPromptsStore();
+
+    // Captures whether the just-settled child chain ended in 'error' so the
+    // meta-agent wakeup (onAfterSettled) can skip re-driving the parent for a
+    // dead child. endSession (in onChainSettled, which runs before onAfterSettled)
+    // evicts the child from the state manager, so its terminal status must be
+    // read in onChainSettled before that happens.
+    let settledChildErrored = false;
 
     return tryClaimAndDispatchNextQueuedPrompt({
       continueQueuedPromptChain: (nextSessionId, nextWorkspacePath, nextTargetWindow, nextSource) =>
@@ -627,6 +673,23 @@ export class AIService {
           const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
           const childSession = await AISessionsRepository.get(sessionId);
           if (!childSession?.createdBySessionId) return;
+
+          // Honor fire-and-forget. spawn_session sets metadata.notifyParent=false
+          // on the child for /launch-new-session-style hand-offs where the parent
+          // does not want to be re-driven when the child settles. Without this
+          // guard, every child settle wakes the parent unconditionally, which
+          // re-drives the meta-agent in a loop. Matches the guard in
+          // MetaAgentService.handleChildSessionEvent.
+          const childMetadata = (childSession.metadata as Record<string, unknown> | undefined) ?? undefined;
+          if (childMetadata && childMetadata.notifyParent === false) return;
+
+          // Do not re-drive the parent when the child chain just settled in
+          // 'error'. A failed child (e.g. an antigravity 429) has no result to
+          // deliver, and waking the parent on every such settle is the meta-agent
+          // spin loop. Native children settle 'completed', so this is a no-op for
+          // them. settledChildErrored is captured in onChainSettled before
+          // endSession evicts the child's in-memory state.
+          if (settledChildErrored) return;
 
           const metaSession = await AISessionsRepository.get(childSession.createdBySessionId);
           if (!metaSession?.workspacePath) return;
@@ -650,6 +713,11 @@ export class AIService {
         // sendMessage was running. Now that the chain has fully drained, mark
         // the session idle and stop its file watcher.
         const stateManager = getSessionStateManager();
+        // Capture the child's terminal status BEFORE endSession evicts it from
+        // the state manager, so onAfterSettled can avoid waking the parent for a
+        // child that just failed. getSessionState reads the in-memory map, which
+        // endSession clears on the next line.
+        settledChildErrored = stateManager.getSessionState(settledSessionId)?.status === 'error';
         logger.main.info(`[AIService] ${settledSource}: chain settled for session ${settledSessionId}, ending session`);
         await stateManager.endSession(settledSessionId);
         this.hooklessWatcher.scheduleStop(settledSessionId, 500);
@@ -673,6 +741,46 @@ export class AIService {
       targetWindow,
       workspacePath,
     });
+  }
+
+  /**
+   * NIM-834: deliver queued prompts to a claude-code-cli session via the CLI
+   * rails (launch + PID-watcher idle flush) instead of the SDK dispatcher.
+   * Worktree-linked sessions spawn the CLI in the worktree so edits land where
+   * the session's view points.
+   */
+  private async dispatchQueuedPromptToClaudeCliSession(
+    sessionId: string,
+    workspacePath: string,
+    session: { model?: string | null; worktreeId?: string | null },
+    source: string,
+  ): Promise<boolean> {
+    let cwd: string | undefined;
+    if (session.worktreeId) {
+      try {
+        const { createWorktreeStore } = await import('../WorktreeStore');
+        const { getDatabase } = await import('../../database/initialize');
+        const db = getDatabase();
+        const worktree = db ? await createWorktreeStore(db).get(session.worktreeId) : null;
+        cwd = worktree?.path ?? undefined;
+      } catch (worktreeError) {
+        logger.main.warn(`[AIService] ${source}: worktree lookup failed for CLI queued dispatch:`, worktreeError);
+      }
+    }
+
+    const terminalManager = getTerminalSessionManager();
+    return dispatchQueuedPromptToClaudeCli(
+      {
+        isTerminalActive: (id) => terminalManager.isTerminalActive(id),
+        ensureSession: (input) => ensureClaudeCliSession(input),
+        getLiveTurnState: (id) => terminalManager.getClaudeCliLiveTurnState(id),
+        getSnapshotStatus: (id) => getSessionStateManager().getSessionState(id)?.status ?? null,
+        flushNext: (id, ws) => flushNextClaudeCliQueuedPromptForSession(id, ws),
+        logInfo: (message) => logger.main.info(`[AIService] ${source}: ${message}`),
+        logWarn: (message) => logger.main.warn(`[AIService] ${source}: ${message}`),
+      },
+      { sessionId, workspacePath, model: session.model, cwd },
+    );
   }
 
   /**
@@ -1567,36 +1675,43 @@ export class AIService {
       // Get API key using project-aware helper (considers project overrides)
       let apiKey = this.getApiKeyForProvider(provider, workspacePath);
 
-      // Validate API key requirement based on provider
-      switch (provider) {
-        case 'claude':
-          if (!apiKey) {
-            throw new Error('Anthropic API key not configured');
-          }
-          break;
-        case 'claude-code':
-          // Claude Code: API key is optional, uses SSO login if not provided
-          // No error if missing - will use SSO login
-          break;
-        case 'openai':
-          if (!apiKey) {
-            throw new Error('OpenAI API key not configured');
-          }
-          break;
-        case 'openai-codex':
-          // Codex SDK uses its own auth (codex auth login), API key is optional
-          break;
-        case 'opencode':
-          // OpenCode uses its own config, API key is optional
-          break;
-        case 'copilot-cli':
-          // Copilot uses its own CLI auth (copilot auth login), no API key needed
-          break;
-        case 'lmstudio':
-          // LMStudio doesn't need an API key, just the base URL
-          break;
-        default:
-          throw new Error(`Unknown provider: ${provider}`);
+      // Validate API key requirement based on provider.
+      // Extension-agent providers defer auth to the extension itself, so they
+      // skip this switch entirely (no apiKey requirement on the host side).
+      if (!isExtensionAgentProvider(provider)) {
+        switch (provider) {
+          case 'claude':
+            if (!apiKey) {
+              throw new Error('Anthropic API key not configured');
+            }
+            break;
+          case 'claude-code':
+            // Claude Code: API key is optional, uses SSO login if not provided
+            // No error if missing - will use SSO login
+            break;
+          case 'claude-code-cli':
+            // Genuine `claude` CLI: uses its own login/subscription, no API key.
+            break;
+          case 'openai':
+            if (!apiKey) {
+              throw new Error('OpenAI API key not configured');
+            }
+            break;
+          case 'openai-codex':
+            // Codex SDK uses its own auth (codex auth login), API key is optional
+            break;
+          case 'opencode':
+            // OpenCode uses its own config, API key is optional
+            break;
+          case 'copilot-cli':
+            // Copilot uses its own CLI auth (copilot auth login), no API key needed
+            break;
+          case 'lmstudio':
+            // LMStudio doesn't need an API key, just the base URL
+            break;
+          default:
+            throw new Error(`Unknown provider: ${provider}`);
+        }
       }
 
       // Get model details if specified
@@ -1678,8 +1793,19 @@ export class AIService {
         });
       }
 
-      // Create and initialize provider
-      const providerInstance = ProviderFactory.createProvider(provider, session.id);
+      // Create and initialize provider. Extension-contributed agent providers
+      // are not in the built-in AIProviderType switch, so route them to the
+      // extension-agent factory (mirrors MessageStreamingHandler's lazy path).
+      // Calling createProvider for them would throw "Unknown provider".
+      const eagerExtAgentRef = resolveExtensionAgentRef(provider);
+      const providerInstance = eagerExtAgentRef
+        ? ProviderFactory.createExtensionAgentProvider({
+            extensionId: eagerExtAgentRef.extensionId,
+            contributionId: eagerExtAgentRef.contributionId,
+            sessionId: session.id,
+            model: session.model,
+          })
+        : ProviderFactory.createProvider(provider, session.id);
 
       // Build config based on provider type
       const initConfig: any = {
@@ -2008,14 +2134,22 @@ export class AIService {
 
       logger.main.info(`[AIService] createQueuedPrompt: created ${promptId} for session ${sessionId}`);
 
-      // Track ai_message_queued analytics event
+      // Look up the session once (lightweight — no message log) for both the
+      // analytics event and the claude-code-cli idle-flush kick below.
+      let queuedSession: { provider?: string; workspacePath?: string } | null = null;
       try {
         const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-        const session = await AISessionsRepository.get(sessionId);
-        if (session) {
+        queuedSession = await AISessionsRepository.get(sessionId);
+      } catch (lookupError) {
+        logger.main.warn('[AIService] createQueuedPrompt: session lookup failed:', lookupError);
+      }
+
+      // Track ai_message_queued analytics event
+      try {
+        if (queuedSession) {
           const fileExtension = getFileExtensionForAnalytics(documentContext?.filePath);
           AnalyticsService.getInstance().sendEvent('ai_message_queued', {
-            provider: session.provider,
+            provider: queuedSession.provider,
             source: 'local',
             hasDocumentContext: !!documentContext,
             hasAttachments: !!(attachments && attachments.length > 0),
@@ -2032,6 +2166,38 @@ export class AIService {
         sessionId,
         promptCount: 1
       });
+
+      // claude-code-cli (NIM-806): the CLI queue normally drains on the PID
+      // watcher's running->idle transition. But a prompt queued while the CLI is
+      // ALREADY idle (e.g. smart-commit on a session sitting at its prompt) has no
+      // transition to ride, so it would sit forever. If the terminal is live and
+      // the session is idle right now, kick a flush directly. The flush singleton's
+      // in-flight guard + DB claim make this safe against a concurrent transition
+      // flush; if the CLI is mid-turn (running/waiting), we skip and let the next
+      // idle transition drain it.
+      //
+      // NIM-821: idleness is decided from the LIVE PID file, not just
+      // SessionStateManager's snapshot — the snapshot is updated asynchronously
+      // from the PID watcher, and a prompt queued inside that gap (PID already
+      // idle, state still 'running') skipped the kick with no future idle
+      // transition ever coming. Either signal saying idle kicks the flush; the
+      // claim is race-safe, so erring toward flushing is fine.
+      if (queuedSession?.provider === 'claude-code-cli') {
+        const terminalManager = getTerminalSessionManager();
+        const state = getSessionStateManager().getSessionState(sessionId);
+        const workspacePath = queuedSession.workspacePath ?? state?.workspacePath;
+        if (terminalManager.isTerminalActive(sessionId) && workspacePath) {
+          if (state?.status === 'idle') {
+            void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
+          } else {
+            void terminalManager.getClaudeCliLiveTurnState(sessionId).then((live) => {
+              if (live === 'idle') {
+                void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
+              }
+            }).catch(() => {});
+          }
+        }
+      }
 
       return {
         id: created.id,
@@ -2188,13 +2354,19 @@ export class AIService {
         return { success: false, error: 'Session not found' };
       }
 
+      // External/agentless providers (e.g. claude-code-cli) have NO in-process
+      // provider instance holding the pending question — the MCP server handler is
+      // blocked on the IPC response channel instead (see interactiveToolHandlers
+      // handleAskUserQuestion). So a missing provider is NOT fatal: skip the
+      // provider-level resolve and fall through to the MCP-channel emit / DB
+      // fallback / auto-resume below. (Previously this returned early, so a CLI
+      // session's answered widget never reached the waiting MCP handler — NIM-806.)
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, resolvedSessionId);
       if (!provider) {
-        logger.main.warn(`[AIService] Provider not found for AskUserQuestion: ${resolvedSessionId}`);
-        return { success: false, error: 'Provider not found' };
+        logger.main.info(`[AIService] No in-process provider for AskUserQuestion (${session.provider}); routing via MCP/IPC channel: ${resolvedSessionId}`);
       }
 
-      const providerResolved = isAskUserQuestionProvider(provider)
+      const providerResolved = provider && isAskUserQuestionProvider(provider)
         ? provider.resolveAskUserQuestion(questionId, answers, resolvedSessionId, 'desktop')
         : false;
 
@@ -2313,13 +2485,14 @@ export class AIService {
         return { success: false, error: 'Session not found' };
       }
 
+      // Missing provider is non-fatal here too (claude-code-cli has no in-process
+      // instance) — fall through to the MCP/IPC cancel emit + DB fallback. NIM-806.
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, resolvedSessionId);
       if (!provider) {
-        logger.main.warn(`[AIService] Provider not found for AskUserQuestion cancel: ${resolvedSessionId}`);
-        return { success: false, error: 'Provider not found' };
+        logger.main.info(`[AIService] No in-process provider for AskUserQuestion cancel (${session.provider}); routing via MCP/IPC channel: ${resolvedSessionId}`);
       }
 
-      const providerSupportsCancel = typeof (provider as any).rejectAskUserQuestion === 'function';
+      const providerSupportsCancel = !!provider && typeof (provider as any).rejectAskUserQuestion === 'function';
       if (providerSupportsCancel) {
         (provider as any).rejectAskUserQuestion(questionId, new Error('User cancelled'));
       }
@@ -2379,7 +2552,7 @@ export class AIService {
       // interrupt the in-flight MCP request before the cancellation result is delivered.
       if (!hasMcpWaiter && !hasSessionFallbackWaiter) {
         // Provider-backed AskUserQuestion path (Claude Code): abort active turn.
-        provider.abort();
+        provider?.abort();
       }
 
       return { success: true };
@@ -2394,7 +2567,7 @@ export class AIService {
     }: {
       requestId: string;
       sessionId: string;
-      response: { decision: 'allow' | 'deny'; scope: 'once' | 'session' | 'always' }
+      response: { decision: 'allow' | 'deny'; scope: 'once' | 'session' | 'always' | 'always-all' }
     }) => {
       logger.main.info(`[AIService] Tool permission response received: requestId=${requestId}, decision=${response.decision}, scope=${response.scope}`);
 
@@ -2412,21 +2585,48 @@ export class AIService {
         return { success: false, error: 'Session not found' };
       }
 
+      // SDK path (ClaudeCodeProvider) resolves via the in-process provider.
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      if (!provider) {
-        logger.main.warn(`[AIService] Provider not found for tool permission: ${sessionId}`);
-        return { success: false, error: 'Provider not found' };
-      }
-
-      // Check if this is a ClaudeCodeProvider with the resolve method
-      if (typeof (provider as any).resolveToolPermission === 'function') {
-        // Pass sessionId for response message persistence
+      if (provider && typeof (provider as any).resolveToolPermission === 'function') {
         (provider as any).resolveToolPermission(requestId, response, sessionId, 'desktop');
         return { success: true };
-      } else {
-        logger.main.warn(`[AIService] Provider does not support tool permission: ${session.provider}`);
-        return { success: false, error: 'Provider does not support tool permission' };
       }
+
+      // External/agentless providers (e.g. claude-code-cli) have NO in-process
+      // provider holding the pending permission — the MCP handler
+      // (handleToolPermission) is blocked on the per-request IPC channel instead.
+      // So a missing/unsupported provider is NOT fatal: emit on that channel so
+      // the waiting MCP handler resolves and returns the decision to the CLI.
+      // (Mirrors the AskUserQuestion CLI fix — NIM-806.)
+      const { AgentMessagesRepository } = await import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository');
+      await AgentMessagesRepository.create({
+        sessionId,
+        source: 'nimbalyst',
+        direction: 'output',
+        createdAt: new Date(),
+        content: JSON.stringify(buildToolPermissionResponseRecord({
+          requestId,
+          answer: response,
+          respondedBy: 'desktop',
+        })),
+      });
+
+      const mcpPermissionChannel = `tool-permission-response:${sessionId}:${requestId}`;
+      const hasMcpWaiter = ipcMain.listenerCount(mcpPermissionChannel) > 0;
+      if (hasMcpWaiter) {
+        logger.main.info(`[AIService] Tool permission emitting on MCP channel: ${mcpPermissionChannel}`);
+        ipcMain.emit(mcpPermissionChannel, event, {
+          requestId,
+          sessionId,
+          decision: response.decision,
+          scope: response.scope,
+          respondedBy: 'desktop',
+        });
+        return { success: true };
+      }
+
+      logger.main.info(`[AIService] Tool permission response persisted without live MCP waiter: ${session.provider} (${sessionId})`);
+      return { success: true };
     });
 
     // Handle tool permission cancel from renderer
@@ -2454,22 +2654,33 @@ export class AIService {
         return { success: false, error: 'Session not found' };
       }
 
+      // SDK path: reject via the in-process provider and abort the turn.
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      if (!provider) {
-        logger.main.warn(`[AIService] Provider not found for tool permission cancel: ${sessionId}`);
-        return { success: false, error: 'Provider not found' };
-      }
-
-      // Check if this is a ClaudeCodeProvider with the reject method
-      if (typeof (provider as any).rejectToolPermission === 'function') {
+      if (provider && typeof (provider as any).rejectToolPermission === 'function') {
         (provider as any).rejectToolPermission(requestId, new Error('User cancelled'));
-        // Also abort the provider to stop the AI request
         provider.abort();
         return { success: true };
-      } else {
-        logger.main.warn(`[AIService] Provider does not support tool permission cancel: ${session.provider}`);
-        return { success: false, error: 'Provider does not support tool permission cancel' };
       }
+
+      // External CLI: no provider to reject. Settle the blocked MCP handler with a
+      // cancelled deny so it returns {behavior:'deny'} to the CLI (NIM-806).
+      const mcpPermissionChannel = `tool-permission-response:${sessionId}:${requestId}`;
+      const hasMcpWaiter = ipcMain.listenerCount(mcpPermissionChannel) > 0;
+      if (hasMcpWaiter) {
+        logger.main.info(`[AIService] Tool permission cancel emitting on MCP channel: ${mcpPermissionChannel}`);
+        ipcMain.emit(mcpPermissionChannel, event, {
+          requestId,
+          sessionId,
+          decision: 'deny',
+          scope: 'once',
+          cancelled: true,
+          respondedBy: 'desktop',
+        });
+        return { success: true };
+      }
+
+      logger.main.warn(`[AIService] No provider or MCP waiter for tool permission cancel: ${session.provider} (${sessionId})`);
+      return { success: false, error: 'No handler for tool permission cancel' };
     });
 
     // Cancel current request
@@ -2487,6 +2698,23 @@ export class AIService {
       if (!session) {
         console.warn(`[AIService] Cancel failed - session not found: ${sessionId}`);
         return { success: false, error: 'Session not found' };
+      }
+
+      if (session.provider === 'claude-code-cli') {
+        const terminalManager = getTerminalSessionManager();
+        if (!terminalManager.isTerminalActive(sessionId)) {
+          console.warn(`[AIService] Cancel failed - no active claude-code-cli terminal for session: ${sessionId}`);
+          return { success: false, error: 'No active terminal for session' };
+        }
+
+        terminalManager.writeToTerminal(sessionId, '\x03');
+        this.analytics.sendEvent('ai_stream_interrupted', {
+          provider: 'claude-code-cli',
+          chunksReceived: chunksReceived || 0,
+          reason: 'user_cancel'
+        });
+        this.analytics.sendEvent('cancel_ai_request', { provider: 'claude-code-cli' });
+        return { success: true };
       }
 
       // console.log(`[AIService] Session found, provider type: ${session.provider}`);
@@ -2556,6 +2784,17 @@ export class AIService {
         return { success: false, error: 'Session not found' };
       }
 
+      if (session.provider === 'claude-code-cli') {
+        const terminalManager = getTerminalSessionManager();
+        if (!terminalManager.isTerminalActive(sessionId)) {
+          return { success: false, error: 'No active terminal for session' };
+        }
+
+        terminalManager.writeToTerminal(sessionId, '\x03');
+        logger.main.info(`[AIService] Interrupted claude-code-cli terminal for session ${sessionId}`);
+        return { success: true, method: 'terminal-ctrl-c' };
+      }
+
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
       if (!provider) {
         return { success: false, error: 'No active provider for session' };
@@ -2590,6 +2829,7 @@ export class AIService {
       const showPromptAdditions = this.getSettingsStore().get('showPromptAdditions', false) as boolean;
       const showUsageIndicator = this.getSettingsStore().get('showUsageIndicator', true) as boolean;
       const showCodexUsageIndicator = this.getSettingsStore().get('showCodexUsageIndicator', true) as boolean;
+      const showGeminiUsageIndicator = this.getSettingsStore().get('showGeminiUsageIndicator', true) as boolean;
       const customClaudeCodePath = this.getSettingsStore().get('customClaudeCodePath', '') as string;
       const autoCommitEnabled = this.getSettingsStore().get('autoCommitEnabled', false) as boolean;
       const trackerAutomation = this.getSettingsStore().get('trackerAutomation', {
@@ -2613,6 +2853,7 @@ export class AIService {
         showPromptAdditions,
         showUsageIndicator,
         showCodexUsageIndicator,
+        showGeminiUsageIndicator,
         customClaudeCodePath,
         autoCommitEnabled,
         trackerAutomation,
@@ -2621,139 +2862,114 @@ export class AIService {
     });
 
     safeHandle('ai:saveSettings', async (event, settings: any) => {
+      // Legacy compat shim: this used to spread the incoming blob over the
+      // stored blob (`{...currentProviderSettings, ...settings.providerSettings}`),
+      // which silently dropped fields whenever the renderer's view was stale
+      // (NIM-801, codex-lost). Now every field is routed through the per-key
+      // SettingsService -- one validated write per key, broadcast to every
+      // window, no blob in the wire payload to lose anything from.
+      //
+      // Renderer code that wants to be safe should call `window.electronAPI.settingsSet`
+      // directly; this handler stays only for callers that haven't been
+      // migrated yet (and as the implementation behind the convenience helpers
+      // like `scheduleAIDebugPersist` until those are removed too).
+      const svc = getSettingsService();
+
+      const safeSet = (key: string, value: unknown): void => {
+        try {
+          svc.set(key as any, value as any);
+        } catch (err) {
+          logger.main.error(`[ai:saveSettings] svc.set(${key}) rejected:`, err);
+        }
+      };
+
       if (settings.defaultProvider !== undefined) {
-        this.getSettingsStore().set('defaultProvider', settings.defaultProvider);
+        safeSet('ai.defaultProvider', settings.defaultProvider);
       }
 
       if (settings.apiKeys) {
-        // Only update changed API keys
-        const currentKeys = this.getSettingsStore().get('apiKeys', {}) as Record<string, string>;
-
-        // Save Anthropic key
-        if (settings.apiKeys.anthropic !== undefined) {
-          const key = settings.apiKeys.anthropic;
-          if (!key) {
-            delete currentKeys['anthropic'];
-          } else if (key !== this.maskApiKey(currentKeys['anthropic'] || '')) {
-            currentKeys['anthropic'] = key as string;
+        // The renderer sends the masked form of unchanged keys so it can show
+        // them in form fields. Don't overwrite real keys with masks; compare
+        // each incoming value against the stored mask before writing.
+        const stored = (this.getSettingsStore().get('apiKeys', {}) as Record<string, string>) ?? {};
+        const writeApiKey = (name: string, incoming: unknown): void => {
+          if (incoming === undefined) return;
+          if (!incoming) {
+            // Empty string / null clears the key.
+            safeSet(`ai.apiKey.${name}`, '');
+            return;
           }
-        }
-
-        // Save Claude Code key (kept separate from anthropic)
-        if (settings.apiKeys['claude-code'] !== undefined) {
-          const key = settings.apiKeys['claude-code'];
-          if (!key) {
-            delete currentKeys['claude-code'];
-          } else if (key !== this.maskApiKey(currentKeys['claude-code'] || '')) {
-            currentKeys['claude-code'] = key as string;
-          }
-        }
-
-        // Save OpenAI key
-        if (settings.apiKeys.openai !== undefined) {
-          const key = settings.apiKeys.openai;
-          if (!key) {
-            delete currentKeys['openai'];
-          } else if (key !== this.maskApiKey(currentKeys['openai'] || '')) {
-            currentKeys['openai'] = key as string;
-            // Sync to mobile devices for voice mode
+          if (typeof incoming !== 'string') return;
+          if (incoming === this.maskApiKey(stored[name] || '')) return; // unchanged
+          safeSet(`ai.apiKey.${name}`, incoming);
+          if (name === 'openai') {
+            // Sync openai key to mobile devices for voice mode.
             import('../SyncManager').then(({ syncSettingsToMobile }) => {
-              syncSettingsToMobile(key as string);
-            }).catch(() => {
-              // Sync manager may not be available
-            });
+              syncSettingsToMobile(incoming);
+            }).catch(() => { /* sync manager may not be available */ });
           }
-        }
-
-        // Save OpenAI Codex key
-        if (settings.apiKeys['openai-codex'] !== undefined) {
-          const key = settings.apiKeys['openai-codex'];
-          if (!key) {
-            delete currentKeys['openai-codex'];
-          } else if (key !== this.maskApiKey(currentKeys['openai-codex'] || '')) {
-            currentKeys['openai-codex'] = key as string;
-          }
-        }
-
-        // Save LMStudio URL
-        if (settings.apiKeys.lmstudio_url !== undefined) {
-          currentKeys['lmstudio_url'] = settings.apiKeys.lmstudio_url as string;
-        }
-
-        this.getSettingsStore().set('apiKeys', currentKeys);
-      }
-
-      if (settings.providerSettings) {
-        // Renderer sends only the provider slices it touched; merge at the
-        // provider-id level so untouched providers are preserved on disk.
-        // Each incoming slice replaces the stored slice wholesale -- the
-        // renderer owns the full config for any provider it sends.
-        //
-        // Cache invalidation order matters: getNormalizedProviderSettings()
-        // re-populates the cache from disk, so we must invalidate AFTER the
-        // disk write or subsequent reads return the pre-save snapshot
-        // (toggled-off providers reappear as enabled, etc.).
-        this.cachedNormalizedProviderSettings = null;
-        const currentProviderSettings = this.getNormalizedProviderSettings();
-        const mergedProviderSettings: Record<string, unknown> = {
-          ...currentProviderSettings,
-          ...(settings.providerSettings as Record<string, unknown>),
         };
+        writeApiKey('anthropic', settings.apiKeys.anthropic);
+        writeApiKey('claude-code', settings.apiKeys['claude-code']);
+        writeApiKey('openai', settings.apiKeys.openai);
+        writeApiKey('openai-codex', settings.apiKeys['openai-codex']);
+        if (settings.apiKeys.lmstudio_url !== undefined) {
+          // lmstudio_url is a regular setting -- no masking, just write it.
+          safeSet('ai.apiKey.lmstudio_url', settings.apiKeys.lmstudio_url);
+        }
+      }
 
-        this.getSettingsStore().set('providerSettings', this.normalizeProviderSettings(mergedProviderSettings));
+      if (settings.providerSettings && typeof settings.providerSettings === 'object') {
+        // Each incoming slice replaces the stored slice wholesale -- the
+        // renderer owns the full config for any provider it sends. By writing
+        // per provider id we never touch providers the caller didn't name.
+        //
+        // normalizeProviderSettings runs per-slice so transient/UI-only fields
+        // (testStatus: 'testing', etc.) don't reach disk.
+        const normalizedAll = this.normalizeProviderSettings(
+          settings.providerSettings as Record<string, unknown>,
+        ) as Record<string, unknown>;
+        for (const [providerId, config] of Object.entries(normalizedAll)) {
+          if (config === undefined) continue;
+          safeSet(`ai.provider.${providerId}`, config);
+        }
+        // Provider cache must be invalidated after writes so the next read
+        // returns the new value rather than the pre-save snapshot.
         this.cachedNormalizedProviderSettings = null;
       }
 
-      if (settings.showToolCalls !== undefined) {
-        this.getSettingsStore().set('showToolCalls', settings.showToolCalls);
-      }
+      if (settings.showToolCalls !== undefined)        safeSet('ai.showToolCalls', settings.showToolCalls);
+      if (settings.chatShowToolCalls !== undefined)    safeSet('ai.chatShowToolCalls', settings.chatShowToolCalls);
+      if (settings.aiDebugLogging !== undefined)       safeSet('ai.aiDebugLogging', settings.aiDebugLogging);
+      if (settings.showPromptAdditions !== undefined)  safeSet('ai.showPromptAdditions', settings.showPromptAdditions);
+      if (settings.customClaudeCodePath !== undefined) safeSet('ai.customClaudeCodePath', settings.customClaudeCodePath);
+      if (settings.autoCommitEnabled !== undefined)    safeSet('ai.autoCommitEnabled', settings.autoCommitEnabled);
 
-      if (settings.chatShowToolCalls !== undefined) {
-        this.getSettingsStore().set('chatShowToolCalls', settings.chatShowToolCalls);
-      }
+      if (settings.showUsageIndicator !== undefined)       safeSet('ai.showUsageIndicator', settings.showUsageIndicator);
+      if (settings.showCodexUsageIndicator !== undefined)  safeSet('ai.showCodexUsageIndicator', settings.showCodexUsageIndicator);
+      if (settings.showGeminiUsageIndicator !== undefined) safeSet('ai.showGeminiUsageIndicator', settings.showGeminiUsageIndicator);
 
-      if (settings.aiDebugLogging !== undefined) {
-        this.getSettingsStore().set('aiDebugLogging', settings.aiDebugLogging);
-      }
-
-      if (settings.showPromptAdditions !== undefined) {
-        this.getSettingsStore().set('showPromptAdditions', settings.showPromptAdditions);
-      }
-
-      if (settings.showUsageIndicator !== undefined) {
-        this.getSettingsStore().set('showUsageIndicator', settings.showUsageIndicator);
-      }
-
-      if (settings.showCodexUsageIndicator !== undefined) {
-        this.getSettingsStore().set('showCodexUsageIndicator', settings.showCodexUsageIndicator);
-      }
-
-      if (settings.customClaudeCodePath !== undefined) {
-        this.getSettingsStore().set('customClaudeCodePath', settings.customClaudeCodePath);
-      }
-
-      if (settings.autoCommitEnabled !== undefined) {
-        this.getSettingsStore().set('autoCommitEnabled', settings.autoCommitEnabled);
-      }
-
-      if (settings.trackerAutomation !== undefined) {
-        // Merge with existing to allow partial updates
-        const current = this.getSettingsStore().get('trackerAutomation', {
+      if (settings.trackerAutomation !== undefined && typeof settings.trackerAutomation === 'object') {
+        // Merge with current for partial updates (callers may send just the
+        // toggled field). Whole-object write through SettingsService below.
+        const current = (this.getSettingsStore().get('trackerAutomation', {
           enabled: false,
           autoCloseOnCommit: true,
-        }) as Record<string, unknown>;
-        this.getSettingsStore().set('trackerAutomation', { ...current, ...settings.trackerAutomation });
+        }) as Record<string, unknown>) ?? {};
+        safeSet('ai.trackerAutomation', { ...current, ...settings.trackerAutomation });
       }
 
       if (settings.diffPeekSize !== undefined) {
-        // Allow null to clear; otherwise expect { width, height }.
+        // null clears, otherwise expect { width, height }. SettingsService's
+        // Zod schema validates the structure too -- safeSet is just additional
+        // input shaping.
         if (
           settings.diffPeekSize === null ||
           (typeof settings.diffPeekSize === 'object' &&
             typeof settings.diffPeekSize.width === 'number' &&
             typeof settings.diffPeekSize.height === 'number')
         ) {
-          this.getSettingsStore().set('diffPeekSize', settings.diffPeekSize);
+          safeSet('ai.diffPeekSize', settings.diffPeekSize);
         }
       }
 
@@ -2764,43 +2980,64 @@ export class AIService {
     safeHandle('ai:testConnection', async (event, provider: string, workspacePath?: string) => {
       const apiKeys = this.getSettingsStore().get('apiKeys', {}) as Record<string, string>;
 
-      // Get the appropriate API key based on provider
+      // Get the appropriate API key based on provider.
+      // Extension-agent providers (aiAgentProviders contributions) handle their
+      // own auth inside the extension's backend module (e.g. Antigravity rides
+      // ~/.gemini OAuth via AntigravityServerManager.hasGeminiAuth). On the host
+      // side we treat them as 'not-required' and return success: the extension's
+      // own backend healthcheck would be the ideal probe, but that contract
+      // sits behind the seed PR's coordinated host scaffolding work. For now,
+      // accepting indicates the extension is installed + the provider is
+      // registered, which is what the user sees the green check confirming.
       let apiKey: string | undefined;
-      switch (provider) {
-        case 'claude':
-          apiKey = apiKeys['anthropic'];
-          if (!apiKey) {
-            return { success: false, error: 'Anthropic API key not configured' };
-          }
-          break;
-        case 'claude-code':
-          // Claude Code: API key is optional, uses SSO login if not provided
-          apiKey = apiKeys['claude-code'];
-          // No error if missing - will use SSO login
-          break;
-        case 'openai':
-          apiKey = apiKeys['openai'];
-          if (!apiKey) {
-            return { success: false, error: 'OpenAI API key not configured' };
-          }
-          break;
-        case 'openai-codex':
-          apiKey = apiKeys['openai-codex'];
-          break;
-        case 'opencode':
-          // OpenCode: API key is optional, uses its own config
-          apiKey = apiKeys['opencode'] || 'not-required';
-          break;
-        case 'copilot-cli':
-          // Copilot uses its own CLI auth, no API key needed
-          apiKey = 'not-required';
-          break;
-        case 'lmstudio':
-          // LMStudio doesn't need an API key, just test the connection
-          apiKey = 'not-required';
-          break;
-        default:
-          return { success: false, error: `Unknown provider: ${provider}` };
+      if (isExtensionAgentProvider(provider)) {
+        apiKey = 'not-required';
+      } else {
+        switch (provider) {
+          case 'claude':
+            apiKey = apiKeys['anthropic'];
+            if (!apiKey) {
+              return { success: false, error: 'Anthropic API key not configured' };
+            }
+            break;
+          case 'claude-code':
+            // Claude Code: API key is optional, uses SSO login if not provided
+            apiKey = apiKeys['claude-code'];
+            // No error if missing - will use SSO login
+            break;
+          case 'openai':
+            apiKey = apiKeys['openai'];
+            if (!apiKey) {
+              return { success: false, error: 'OpenAI API key not configured' };
+            }
+            break;
+          case 'openai-codex':
+            apiKey = apiKeys['openai-codex'];
+            break;
+          case 'opencode':
+            // OpenCode: API key is optional, uses its own config
+            apiKey = apiKeys['opencode'] || 'not-required';
+            break;
+          case 'copilot-cli':
+            // Copilot uses its own CLI auth, no API key needed
+            apiKey = 'not-required';
+            break;
+          case 'lmstudio':
+            // LMStudio doesn't need an API key, just test the connection
+            apiKey = 'not-required';
+            break;
+          default:
+            return { success: false, error: `Unknown provider: ${provider}` };
+        }
+      }
+
+      // Extension-agent providers: skip the per-provider connectivity probes
+      // below and return success directly. The 'try' block below contains
+      // provider-specific connectivity logic (list models, run a real SDK
+      // request, etc.) tied to each built-in id; none of it applies to an
+      // extension-agent and the IDs would all miss the conditional checks.
+      if (isExtensionAgentProvider(provider)) {
+        return { success: true, provider };
       }
 
       try {
@@ -2991,6 +3228,18 @@ export class AIService {
       };
       const allModels = await ModelRegistry.getAllModels(modelsConfig, enabledSet);
 
+      // Append extension-contributed agent provider models (see ai:getModels).
+      for (const agentEntry of getAgentProviderRegistry().list()) {
+        if (agentEntry.status === 'denied') continue;
+        for (const m of agentEntry.contribution.models ?? []) {
+          allModels.push({
+            id: m.id,
+            name: m.name,
+            provider: agentEntry.contributionId as AIProviderType,
+          });
+        }
+      }
+
       // Group ALL models by provider (for configuration UI)
       const grouped: Record<string, any[]> = {};
       for (const model of allModels) {
@@ -3038,10 +3287,18 @@ export class AIService {
           provider: resolvedProvider,
         });
 
+        // NIM-845: for a genuine claude-code-cli session, hide extension-plugin
+        // (namespaced) commands when the resolved `claude` is too old to accept
+        // `--plugin-dir` — those plugins can't load, so the commands would never
+        // resolve. The SDK `claude-code` path always loads them in-process.
+        const excludePluginCommands =
+          resolvedProvider === 'claude-code-cli' && !claudeCliSessionSupportsPlugins();
+
         const workflows = await getAgentWorkflowService(request.workspacePath).listEntries({
           provider: resolvedProvider,
           nativeCommands: nativeCatalog.commands,
           nativeSkills: nativeCatalog.skills,
+          excludePluginCommands,
         });
 
         return { success: true, workflows };
@@ -3093,6 +3350,12 @@ export class AIService {
           // Respect the user's toggle but don't require an API key—Claude Code uses CLI auth
           enabled: claudeCodeSettings.enabled !== false,
           models: claudeCodeSettings.models
+        },
+        'claude-code-cli': {
+          // Genuine `claude` CLI on the user's subscription. On by default (like
+          // `claude-code`); no API key required — the CLI uses its own login.
+          enabled: providerSettings['claude-code-cli']?.enabled !== false,
+          models: providerSettings['claude-code-cli']?.models
         },
         'openai': {
           enabled: providerSettings['openai']?.enabled === true && !!apiKeys['openai'],
@@ -3166,6 +3429,31 @@ export class AIService {
         return true;
       });
 
+      // Surface extension-contributed agent providers (aiAgentProviders) in the
+      // picker. The built-in `enabledProviders` map is keyed on AIProviderType,
+      // so the filter above drops them; append after it. Each registered,
+      // non-denied entry contributes its manifest models under its flat
+      // contribution id -- the value session.provider carries and the host-side
+      // resolver (providerResolution.ts) looks up. Descriptor/affordance shape
+      // flagged for Greg's call in the seed PR.
+      const providerLabels: Record<string, string> = {};
+      const providerIcons: Record<string, string> = {};
+      for (const agentEntry of getAgentProviderRegistry().list()) {
+        if (agentEntry.status === 'denied') continue;
+        providerLabels[agentEntry.contributionId] =
+          agentEntry.contribution.displayName || agentEntry.contributionId;
+        if (agentEntry.contribution.icon) {
+          providerIcons[agentEntry.contributionId] = agentEntry.contribution.icon;
+        }
+        for (const m of agentEntry.contribution.models ?? []) {
+          enabledModels.push({
+            id: m.id,
+            name: m.name,
+            provider: agentEntry.contributionId as AIProviderType,
+          });
+        }
+      }
+
       // Group ENABLED models by provider (not all models)
       const grouped: Record<string, any[]> = {};
       for (const model of enabledModels) {
@@ -3189,7 +3477,12 @@ export class AIService {
           maxTokens: m.maxTokens
         })),
         grouped,  // This now contains only enabled models
-        providers: enabledProviders
+        providers: enabledProviders,
+        // Maps of extension contribution id -> manifest displayName / icon, so
+        // the picker labels extension agent groups (e.g. "Gemini" + auto_awesome)
+        // instead of prettifying the raw contribution id.
+        providerLabels,
+        providerIcons
       };
     });
 
@@ -3649,7 +3942,7 @@ export class AIService {
 
     session.worktreePath = worktreePath;
     session.worktreeProjectPath = worktreeProjectPath;
-    await this.hooklessWatcher.ensureForSession(session.id, worktreePath, event);
+    await this.hooklessWatcher.ensureForSession(session.id, worktreePath);
 
     logger.main.info('[AIService] Adopted worktree path for session:', {
       sessionId: session.id,

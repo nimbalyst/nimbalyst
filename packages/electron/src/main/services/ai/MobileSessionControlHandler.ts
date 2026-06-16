@@ -17,6 +17,7 @@ import {
   getGitCommitProposalResponseChannel,
   resolveGitCommitProposalPromptId,
 } from './gitCommitProposalPromptUtils';
+import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 
 const log = logger.ai;
 
@@ -372,14 +373,10 @@ async function handleCancel(
   sessionId: string,
   callbacks: MobileSessionControlCallbacks
 ): Promise<void> {
-  const provider = ProviderFactory.getProvider('claude-code', sessionId);
-  if (provider && 'abort' in provider) {
-    log.info('Aborting session:', sessionId);
-
-    // Defensive cleanup: if a queued prompt was in-flight when mobile
-    // cancelled, the DB row would otherwise stay 'executing' and be
-    // invisible to listPending. Rollback so the queue isn't wedged after
-    // this cancel.
+  // Defensive cleanup (provider-agnostic): if a queued prompt was in-flight when
+  // mobile cancelled, the DB row would otherwise stay 'executing' and be invisible
+  // to listPending. Rollback so the queue isn't wedged after this cancel.
+  const rollbackQueuedPrompts = async () => {
     try {
       const rolledBack = await callbacks.rollbackExecutingPrompts(sessionId);
       if (rolledBack > 0) {
@@ -388,7 +385,31 @@ async function handleCancel(
     } catch (rollbackErr) {
       log.error('Mobile cancel: rollbackExecutingPrompts failed:', rollbackErr);
     }
+  };
 
+  // claude-code-cli is an external CLI process with NO in-process provider —
+  // abort it by sending Ctrl-C to the terminal PTY, mirroring the desktop
+  // `ai:cancelRequest` handler (AIService.ts).
+  const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+  const session = await AISessionsRepository.get(sessionId);
+  if (session?.provider === 'claude-code-cli') {
+    const { getTerminalSessionManager } = await import('../TerminalSessionManager');
+    const terminalManager = getTerminalSessionManager();
+    if (!terminalManager.isTerminalActive(sessionId)) {
+      log.warn('Mobile cancel: no active claude-code-cli terminal for session:', sessionId);
+      return;
+    }
+    await rollbackQueuedPrompts();
+    terminalManager.writeToTerminal(sessionId, '\x03');
+    log.info('Mobile cancel: sent Ctrl+C to CLI session', sessionId);
+    notifyAllWindows('ai:sessionCancelled', { sessionId });
+    return;
+  }
+
+  const provider = ProviderFactory.getProvider((session?.provider as Parameters<typeof ProviderFactory.getProvider>[0]) || 'claude-code', sessionId);
+  if (provider && 'abort' in provider) {
+    log.info('Aborting session:', sessionId);
+    await rollbackQueuedPrompts();
     (provider as { abort: () => void }).abort();
 
     // Notify renderer to update UI
@@ -588,6 +609,41 @@ function handleToolPermissionResponse(
     log.warn('No provider found or provider does not support tool permission for session:', sessionId);
   }
 
+  import('electron').then(({ ipcMain }) => {
+    const channel = `tool-permission-response:${sessionId}:${promptId}`;
+    const hasMcpWaiter = ipcMain.listenerCount(channel) > 0;
+    if (hasMcpWaiter) {
+      log.info(`[Mobile] Emitting ToolPermission response on MCP channel: ${channel}`);
+      ipcMain.emit(channel, {}, {
+        requestId: promptId,
+        sessionId,
+        decision: response.decision,
+        scope: response.scope,
+        respondedBy: 'mobile',
+      });
+    }
+  }).catch((err) => {
+    log.warn(`[Mobile] Failed to emit ToolPermission response over IPC: ${err}`);
+  });
+
+  import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository').then(({ AgentMessagesRepository }) => {
+    AgentMessagesRepository.create({
+      sessionId,
+      source: 'nimbalyst',
+      direction: 'output' as const,
+      createdAt: new Date(),
+      content: JSON.stringify(buildToolPermissionResponseRecord({
+        requestId: promptId,
+        answer: response,
+        respondedBy: 'mobile',
+      })),
+    }).catch((err) => {
+      log.warn(`[Mobile] Failed to persist ToolPermission response to database: ${err}`);
+    });
+  }).catch((err) => {
+    log.warn(`[Mobile] Failed to load AgentMessagesRepository for ToolPermission response: ${err}`);
+  });
+
   // Notify renderer to update the UI
   notifyAllWindows('ai:toolPermissionResponse', {
     sessionId,
@@ -596,6 +652,8 @@ function handleToolPermissionResponse(
     scope: response.scope,
     answeredBy: 'mobile',
   });
+  notifyAllWindows('ai:toolPermissionResolved', { sessionId, requestId: promptId });
+  TrayManager.getInstance().onPromptResolved(sessionId);
 }
 
 /**

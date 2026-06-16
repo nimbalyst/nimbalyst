@@ -25,6 +25,7 @@ import {
   getRoleField,
   getFieldByRole,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { materializeTrackerTypeDef, materializeTrackerTypeDefs } from './tracker/trackerTypeDefStore';
 
 // ---------------------------------------------------------------------------
 // Service State
@@ -90,17 +91,23 @@ function loadWorkspaceSchemas(workspacePath: string): void {
       f => f.endsWith('.yaml') || f.endsWith('.yml')
     );
 
+    const loaded: TrackerDataModel[] = [];
     for (const file of files) {
       try {
         const filePath = path.join(trackersDir, file);
         const content = fs.readFileSync(filePath, 'utf-8');
         const model = parseTrackerYAML(content);
         globalRegistry.register(model); // workspace schemas are not builtin
+        loaded.push(model);
         // console.log(`[TrackerSchemaService] Loaded workspace schema: ${model.type}`);
       } catch (err) {
         console.error(`[TrackerSchemaService] Failed to load ${file}:`, err);
       }
     }
+    // Mirror the loaded models into the DB so the database is the local source
+    // of truth for offline consumers (the `nim` CLI). Best-effort; never blocks
+    // schema loading. YAML stays the init/import format for git-backed projects.
+    if (loaded.length) void materializeTrackerTypeDefs(workspacePath, loaded);
   } catch (err) {
     // Directory doesn't exist or can't be read -- that's fine
   }
@@ -111,6 +118,7 @@ function reloadWorkspaceSchema(filePath: string): void {
     const content = fs.readFileSync(filePath, 'utf-8');
     const model = parseTrackerYAML(content);
     globalRegistry.register(model);
+    if (currentWorkspacePath) void materializeTrackerTypeDef(currentWorkspacePath, model);
     // console.log(`[TrackerSchemaService] Reloaded schema: ${model.type}`);
     notifySchemaChanged();
   } catch (err) {

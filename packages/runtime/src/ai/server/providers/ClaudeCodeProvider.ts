@@ -42,6 +42,7 @@ import {
   CLAUDE_CODE_VARIANT_VERSIONS,
   CLAUDE_CODE_MODEL_LABELS,
   CLAUDE_CODE_VARIANTS_WITH_1M,
+  CLAUDE_CODE_SAFE_FALLBACK_MODEL,
 } from '../../modelConstants';
 import { isBedrockToolSearchError } from '../utils/errorDetection';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
@@ -49,7 +50,7 @@ import { TranscriptMigrationRepository } from '../../../storage/repositories/Tra
 import { TeammateManager, type TeammateToLeadMessage } from './TeammateManager';
 import path from 'path';
 import os from 'os';
-import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt } from '../../prompt';
+import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
 
 import { SessionManager } from '../SessionManager';
 import { parseBashForFileOps, hasShellChainingOperators, splitOnShellOperators } from '../permissions/BashCommandAnalyzer';
@@ -94,6 +95,13 @@ import {
 } from './claudeCode/toolAuthorization';
 import { ClaudeCodeDeps } from './claudeCode/dependencyInjection';
 import { buildSdkOptions, type PromptStreamController } from './claudeCode/sdkOptionsBuilder';
+import { resolveEffectiveSessionMode } from './claudeCode/resolveEffectiveSessionMode';
+import {
+  isBunRuntimeSpawnCrash,
+  collectSpawnCrashDiagnostics,
+  armAgentSdkDebugLogging,
+  readLatestSdkDebugLogTail,
+} from './claudeCode/spawnCrashDiagnostics';
 import { applyTaskListMutation, sortTaskList, type TaskListItem } from './claudeCode/taskListReconstruct';
 
 
@@ -302,7 +310,6 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       settingsAgentToolsDisabledLoader: ClaudeCodeDeps.settingsAgentToolsDisabledLoader,
       mcpAuthToken: ClaudeCodeDeps.mcpAuthToken,
       mcpConfigLoader: ClaudeCodeDeps.mcpConfigLoader,
-      extensionPluginsLoader: ClaudeCodeDeps.extensionPluginsLoader,
       claudeSettingsEnvLoader: ClaudeCodeDeps.claudeSettingsEnvLoader,
       shellEnvironmentLoader: ClaudeCodeDeps.shellEnvironmentLoader,
     });
@@ -414,7 +421,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   public static setImageCompressor(compressor: ((buffer: Buffer, mimeType: string, options?: { targetSizeBytes?: number }) => Promise<{ buffer: Buffer; mimeType: string; wasCompressed: boolean }>) | null): void { ClaudeCodeDeps.setImageCompressor(compressor); }
   public static setClaudeSettingsPatternSaver(saver: ((workspacePath: string, pattern: string) => Promise<void>) | null): void { ClaudeCodeDeps.setClaudeSettingsPatternSaver(saver); }
   public static setClaudeSettingsPatternChecker(checker: ((workspacePath: string, pattern: string) => Promise<boolean>) | null): void { ClaudeCodeDeps.setClaudeSettingsPatternChecker(checker); }
-  public static setTrustChecker(checker: ((workspacePath: string) => { trusted: boolean; mode: 'ask' | 'allow-all' | 'bypass-all' | null }) | null): void { BaseAgentProvider.setTrustChecker(checker); }
+  public static setTrustChecker(checker: ((workspacePath: string) => { trusted: boolean; mode: 'ask' | 'allow-all' | 'bypass-all' | null; allowAllUsesClassifier?: boolean }) | null): void { BaseAgentProvider.setTrustChecker(checker); }
   public static setExtensionFileTypesLoader(loader: (() => Set<string>) | null): void { ClaudeCodeDeps.setExtensionFileTypesLoader(loader); }
 
   private static scheduleWakeupHandler: ((request: ScheduleWakeupRequest) => Promise<void>) | null = null;
@@ -444,7 +451,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   }
 
   private resolveModelVariant(): string {
-    return resolveClaudeCodeModelVariant(this.config.model, ClaudeCodeProvider.DEFAULT_MODEL);
+    // Billing safety (#631 / NIM-848): when no explicit model is set, fall back
+    // to a STANDARD 200k model, never the 1M user-facing default. The `[1m]`
+    // beta must only ever be emitted for an explicitly-selected `-1m` model.
+    return resolveClaudeCodeModelVariant(this.config.model, CLAUDE_CODE_SAFE_FALLBACK_MODEL);
   }
 
 
@@ -475,17 +485,16 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     this.currentMode = (documentContext as any)?.mode || 'agent';
 
     // Trust-level upgrade: when workspace permission is "Allow All" (internal
-    // mode 'bypass-all') and session mode is 'agent', transparently upgrade to
-    // 'auto' so the SDK classifier handles permissions instead of Nimbalyst
-    // bypassing everything. This matches CLI auto-mode behaviour and adds a
-    // safety layer on top of the previous blanket bypass. Plan mode is never
-    // upgraded — it always uses the SDK's native read-only enforcement.
+    // mode 'bypass-all') and session mode is 'agent', the session is upgraded
+    // to 'auto' so the SDK classifier handles permissions instead of Nimbalyst
+    // bypassing everything. This is now OPT-IN per workspace (issue #628): by
+    // default "Allow All" means literal allow-all and no upgrade happens. Plan
+    // mode is never upgraded — it always uses the SDK's native read-only
+    // enforcement.
     const pathForTrustUpgrade = (documentContext as any)?.permissionsPath || workspacePath;
     if (this.currentMode === 'agent' && pathForTrustUpgrade && BaseAgentProvider.trustChecker) {
       const trustStatus = BaseAgentProvider.trustChecker(pathForTrustUpgrade);
-      if (trustStatus.trusted && trustStatus.mode === 'bypass-all') {
-        this.currentMode = 'auto';
-      }
+      this.currentMode = resolveEffectiveSessionMode(this.currentMode, trustStatus);
     }
 
     // Threshold for large text attachments that should be written to /tmp instead of sent inline
@@ -532,6 +541,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
     // Capture stderr from the subprocess for diagnostics (populated inside try, read in catch)
     const stderrLines: string[] = [];
+
+    // Spawn context for native-binary crash diagnostics (#614). Populated
+    // after buildSdkOptions so the catch block can see it.
+    let spawnDiagContext: { binaryPath?: string; cwd?: string } | null = null;
 
     // Hoisted so the catch block can avoid double-yielding `complete` if the
     // result chunk's early-yield already fired before an error was thrown.
@@ -586,7 +599,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       const enableAgentTeams = settingsEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1';
       const agentRole = await this.getAgentRole(sessionId);
       const isMetaAgent = agentRole === 'meta-agent';
-      const systemPrompt = this.buildSystemPrompt(documentContext, enableAgentTeams, isMetaAgent);
+      const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(sessionId) : 'default';
+      const systemPrompt = this.buildSystemPrompt(documentContext, enableAgentTeams, isMetaAgent, workflowPreset);
 
       // Note: Attachments (images/documents) are NOT added to the message text.
       // They're sent as separate content blocks via the API's multimodal format.
@@ -650,6 +664,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       const { options, promptInput, promptController } = sdkResult;
       this.helperMethod = sdkResult.helperMethod;
       this.promptController = promptController;
+      spawnDiagContext = { binaryPath: options.pathToClaudeCodeExecutable, cwd: options.cwd };
 
       // Meta-agent: override MCP config with meta-agent profile and apply tool restrictions
       if (isMetaAgent) {
@@ -1502,6 +1517,27 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           const stderrSummary = stderrLines.join('').trim().slice(0, 500);
           if (stderrSummary) {
             error.message = `${error.message}\n\nProcess output:\n${stderrSummary}`;
+          }
+        }
+
+        // #614: the bundled CLI is a Bun-compiled binary; "An unknown error
+        // occurred (Unexpected)" on exit 1 is Bun's native startup failure,
+        // emitted before any JS-level logging. Log the process attributes a
+        // child inherits from Electron (the prime suspects -- they can't be
+        // reproduced by replaying argv/env in a shell), and arm the SDK's
+        // debug mode so the next attempt passes --debug-file to the CLI.
+        if (isBunRuntimeSpawnCrash(error.message, stderrLines)) {
+          const diag = collectSpawnCrashDiagnostics(spawnDiagContext ?? {});
+          console.error(`[CLAUDE-CODE] Native binary startup crash (Bun runtime). Spawn diagnostics: ${JSON.stringify(diag)}`);
+          if (armAgentSdkDebugLogging()) {
+            console.error('[CLAUDE-CODE] Armed DEBUG_CLAUDE_AGENT_SDK for subsequent attempts in this app run -- retry the message to capture a CLI debug log.');
+          } else {
+            const debugLog = await readLatestSdkDebugLogTail().catch(() => null);
+            if (debugLog) {
+              console.error(`[CLAUDE-CODE] SDK/CLI debug log tail (${debugLog.path}):\n${debugLog.tail}`);
+            } else {
+              console.error('[CLAUDE-CODE] Debug mode was armed but no SDK/CLI debug log was found -- the binary crashed before writing one.');
+            }
           }
         }
       }
@@ -3130,10 +3166,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   }
 
 
-  protected buildSystemPrompt(documentContext?: DocumentContext, enableAgentTeams?: boolean, isMetaAgent: boolean = false): string {
+  protected buildSystemPrompt(documentContext?: DocumentContext, enableAgentTeams?: boolean, isMetaAgent: boolean = false, workflowPreset: MetaAgentWorkflowPreset = 'default'): string {
     if (isMetaAgent) {
-      // TODO: Get workflowPreset from session metadata or documentContext
-      return buildMetaAgentSystemPrompt('claude', 'default', {
+      return buildMetaAgentSystemPrompt('claude', workflowPreset, {
         provider: 'claude-code',
         model: this.config.model ?? undefined,
       });

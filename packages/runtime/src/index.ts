@@ -2,6 +2,7 @@
 export * from './editor';
 export * from './core/types';
 export * from './core/DocumentService';
+export * from './core/trackerOrigin';
 export * from './core/FileSystemService';
 export * from './storage/repositories/DocumentsRepository';
 // AI

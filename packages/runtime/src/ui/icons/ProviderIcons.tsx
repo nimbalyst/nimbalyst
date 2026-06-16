@@ -10,6 +10,10 @@ const PROVIDER_ICON_MAP: Record<string, string> = {
   'copilot-cli': 'terminal',
   // ACP transport reuses the OpenAI Codex icon (same underlying agent).
   'openai-codex-acp': 'openai-codex',
+  'claude-code-cli': 'claude-code',
+  // Gemini Antigravity extension provider -> Gemini brand glyph.
+  'antigravity-gemini-agent': 'gemini',
+  'antigravity-gemini': 'gemini',
 };
 
 export function resolveProviderIcon(provider: string): string {
