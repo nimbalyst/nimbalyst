@@ -27,6 +27,21 @@ describe('buildClaudeCliSpawnConfig', () => {
     expect(cfg.args[cfg.args.indexOf('--model') + 1]).toBe('opus');
   });
 
+  // NIM-843: without --strict-mcp-config the genuine `claude` binary merges its
+  // own MCP discovery (~/.claude.json, project .mcp.json, claude.ai connectors)
+  // on top of our --mcp-config snapshot and ignores the `disabled` flag we write,
+  // so user-disabled third-party servers leak into CLI sessions. Strict mode makes
+  // the binary use ONLY the snapshot (which already carries the enabled set,
+  // filtered by isMCPServerEnabledForProvider).
+  it('passes --strict-mcp-config alongside --mcp-config so the binary uses ONLY our snapshot', () => {
+    const cfg = buildClaudeCliSpawnConfig({ ...base, mcpConfigPath: '/tmp/mcp.json' });
+    expect(cfg.args).toContain('--strict-mcp-config');
+  });
+
+  it('omits --strict-mcp-config when there is no --mcp-config snapshot', () => {
+    expect(buildClaudeCliSpawnConfig(base).args).not.toContain('--strict-mcp-config');
+  });
+
   it('resumes a session with --resume <id>', () => {
     const cfg = buildClaudeCliSpawnConfig({ ...base, resumeSessionId: 'abc-123' });
     expect(cfg.args).toContain('--resume');
@@ -319,6 +334,51 @@ describe('buildClaudeCliSpawnConfig', () => {
     expect(cfg.args[disallowed + 1]).toBe('AskUserQuestion');
   });
 
+  // NIM-845: extension Claude-plugins (the source of namespaced slash commands
+  // like /feedback:bug-report) load into a claude-code-cli session via one
+  // `--plugin-dir <dir>` per resolved plugin directory — the CLI analog of the
+  // SDK's { type: 'local', path }. Each is value-bearing (a single path), so it
+  // must precede the trailing --allowedTools/--disallowedTools variadics.
+  it('emits --plugin-dir for each plugin directory', () => {
+    const cfg = buildClaudeCliSpawnConfig({
+      ...base,
+      pluginDirs: ['/ext/a/plugin', '/ext/b/plugin'],
+    });
+    const i = cfg.args.indexOf('--plugin-dir');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(cfg.args[i + 1]).toBe('/ext/a/plugin');
+    // repeatable flag — a second --plugin-dir for the second dir
+    const j = cfg.args.indexOf('--plugin-dir', i + 2);
+    expect(j).toBeGreaterThanOrEqual(0);
+    expect(cfg.args[j + 1]).toBe('/ext/b/plugin');
+    // exactly two occurrences
+    expect(cfg.args.filter((a) => a === '--plugin-dir')).toHaveLength(2);
+  });
+
+  it('filters empty/whitespace plugin dirs and omits --plugin-dir when none remain', () => {
+    expect(buildClaudeCliSpawnConfig(base).args).not.toContain('--plugin-dir');
+    expect(buildClaudeCliSpawnConfig({ ...base, pluginDirs: [] }).args).not.toContain('--plugin-dir');
+    expect(
+      buildClaudeCliSpawnConfig({ ...base, pluginDirs: ['', '   '] }).args,
+    ).not.toContain('--plugin-dir');
+  });
+
+  it('places --plugin-dir before the variadics (not swallowed) and does not terminate the disallow built-in', () => {
+    const cfg = buildClaudeCliSpawnConfig({
+      ...base,
+      pluginDirs: ['/ext/a/plugin'],
+      allowedMcpServerNames: ['nimbalyst-mcp'],
+    });
+    const pluginDir = cfg.args.indexOf('--plugin-dir');
+    const allowed = cfg.args.indexOf('--allowedTools');
+    const disallowed = cfg.args.indexOf('--disallowedTools');
+    expect(pluginDir).toBeGreaterThanOrEqual(0);
+    expect(pluginDir).toBeLessThan(allowed);
+    expect(pluginDir).toBeLessThan(disallowed);
+    // the disallow built-in survived intact (not swallowed by an earlier variadic)
+    expect(cfg.args[disallowed + 1]).toBe('AskUserQuestion');
+  });
+
   it('does NOT disallow our MCP AskUserQuestion (different tool name from the built-in)', () => {
     const cfg = buildClaudeCliSpawnConfig({ ...base, allowedMcpServerNames: ['nimbalyst-mcp'] });
     // --disallowedTools only carries the bare built-in name, never the mcp__ one
@@ -334,8 +394,6 @@ describe('buildClaudeCliSpawnConfig', () => {
 
 describe('resolveClaudeCliModelArg', () => {
   it('strips the provider prefix and translates -1m to the CLI `[1m]` form (NIM-809)', () => {
-    expect(resolveClaudeCliModelArg('claude-code-cli:fable')).toBe('fable');
-    expect(resolveClaudeCliModelArg('claude-code-cli:fable-1m')).toBe('fable');
     expect(resolveClaudeCliModelArg('claude-code-cli:opus-1m')).toBe('opus[1m]');
     expect(resolveClaudeCliModelArg('claude-code-cli:sonnet')).toBe('sonnet');
     expect(resolveClaudeCliModelArg('claude-code:haiku')).toBe('haiku');
@@ -346,8 +404,18 @@ describe('resolveClaudeCliModelArg', () => {
     expect(resolveClaudeCliModelArg('claude-code-cli:opus-4-6')).toBe('opus');
   });
 
+  it('passes the fable variant through as the CLI `fable` alias', () => {
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable')).toBe('fable');
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable-5')).toBe('fable');
+    expect(resolveClaudeCliModelArg('fable')).toBe('fable');
+  });
+
+  it('translates fable-1m to the CLI `fable[1m]` form — plain fable is windowed at 200k', () => {
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable-1m')).toBe('fable[1m]');
+    expect(resolveClaudeCliModelArg('fable-1m')).toBe('fable[1m]');
+  });
+
   it('passes a bare variant through (normalized), translating -1m to [1m]', () => {
-    expect(resolveClaudeCliModelArg('FABLE')).toBe('fable');
     expect(resolveClaudeCliModelArg('opus')).toBe('opus');
     expect(resolveClaudeCliModelArg('opus-1m')).toBe('opus[1m]');
     expect(resolveClaudeCliModelArg('SONNET')).toBe('sonnet');

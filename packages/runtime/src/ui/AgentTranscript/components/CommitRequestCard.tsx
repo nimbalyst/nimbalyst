@@ -18,10 +18,13 @@ interface ParsedCommitRequest {
 export function isCommitRequestMessage(text: string): boolean {
   // Detect on the file-list header rather than the exact "call the tool" wording.
   // The instruction sentence is reworded between producers (GitOperationsPanel,
-  // voiceModeListeners), but the injected list always opens with this header --
-  // and it's only present when there ARE files for the card to show.
+  // voiceModeListeners), but the injected list always opens with one of these
+  // headers -- and they're only present when there ARE files for the card to show.
+  // Worktree commits use the "all the uncommitted changes" header; shared-checkout
+  // commits use the "files edited" header.
   return text.startsWith(COMMIT_REQUEST_PREFIX) &&
-    text.includes('Here are the files edited');
+    (text.includes('Here are the files edited') ||
+      text.includes('Here are all the uncommitted changes'));
 }
 
 export function parseCommitRequest(text: string): ParsedCommitRequest | null {

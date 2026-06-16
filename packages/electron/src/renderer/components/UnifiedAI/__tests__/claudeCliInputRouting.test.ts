@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  CLAUDE_CLI_INTERRUPT_INPUT,
   CLAUDE_CLI_PROVIDER_ID,
-  formatClaudeCliInterruptInput,
   isClaudeCliTerminalSession,
 } from '../claudeCliInputRouting';
 
@@ -28,10 +26,6 @@ describe('claudeCliInputRouting', () => {
     });
   });
 
-  describe('formatClaudeCliInterruptInput', () => {
-    it('returns Ctrl-C for interrupting the terminal-backed CLI', () => {
-      expect(formatClaudeCliInterruptInput()).toBe(CLAUDE_CLI_INTERRUPT_INPUT);
-      expect(formatClaudeCliInterruptInput()).toBe('\x03');
-    });
-  });
+  // Interrupt/stop is covered by main/services/ai/__tests__/claudeCliInterrupt.test.ts
+  // (NIM-814) — the renderer no longer writes the Ctrl-C byte itself.
 });

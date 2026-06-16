@@ -11,6 +11,7 @@
 
 import Store from 'electron-store';
 import { logger } from '../utils/logger';
+import { parseJsonObjectColumn } from '../utils/jsonColumn';
 import type { CommitDetectedEvent } from '../file/GitRefWatcher';
 import type { TrackerAutomationSettings } from '../utils/store';
 import { getEffectiveTrackerAutomation } from '../utils/store';
@@ -140,8 +141,12 @@ export class CommitTrackerLinker {
 
       if (sessionResult.rows.length === 0) return;
 
-      const metadata = sessionResult.rows[0].metadata;
-      const linkedTrackerItemIds: string[] = metadata?.linkedTrackerItemIds ?? [];
+      // SQLite returns metadata as a raw JSON string (NIM-829); an unparsed
+      // read sees no linked items and session-based commit linking no-ops.
+      const metadata = parseJsonObjectColumn(sessionResult.rows[0].metadata);
+      const linkedTrackerItemIds: string[] = Array.isArray(metadata.linkedTrackerItemIds)
+        ? metadata.linkedTrackerItemIds
+        : [];
       if (linkedTrackerItemIds.length === 0) return;
 
       const commit: LinkedCommit = {

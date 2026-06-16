@@ -8,7 +8,8 @@
  * Lifecycle:
  *  - On mount, it only registers that an inline tip surface exists.
  *  - TipProvider decides whether an eligible tip should be activated.
- *  - Dismiss / action clear the active tip; Next is explicit user browsing.
+ *  - Action clears the active tip; Next is explicit user browsing. Tips are
+ *    not dismissible -- the empty-session surface always offers a tip.
  *
  * Footer controls:
  *  - "Next" cycles forward.
@@ -25,7 +26,7 @@ import { useAtom, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { TipCard } from './TipCard';
 import { tips } from './definitions';
-import { markTipCompleted, markTipDismissed, recordTipShown } from './TipService';
+import { markTipCompleted, recordTipShown } from './TipService';
 import { activeTipIdAtom, emptyTranscriptVisibleCountAtom } from './atoms';
 import { AllTipsDialog } from './AllTipsDialog';
 
@@ -41,7 +42,16 @@ function nextTipAfter(tipId: string | null) {
   return orderedTips[(idx + 1) % orderedTips.length];
 }
 
-export function InlineTipDisplay() {
+interface InlineTipDisplayProps {
+  /**
+   * Inserts text into the session composer (e.g. a slash command). Provided
+   * only when there is somewhere to insert -- i.e. a claude-code session.
+   * When absent, tips whose action is an `insertPrompt` hide that button.
+   */
+  onInsertPrompt?: (text: string) => void;
+}
+
+export function InlineTipDisplay({ onInsertPrompt }: InlineTipDisplayProps = {}) {
   const posthog = usePostHog();
   const [activeTipId, setActiveTipId] = useAtom(activeTipIdAtom);
   const setVisibleCount = useSetAtom(emptyTranscriptVisibleCountAtom);
@@ -58,6 +68,17 @@ export function InlineTipDisplay() {
     if (!activeTipId) return null;
     return orderedTips.find((t) => t.id === activeTipId) ?? null;
   }, [activeTipId]);
+
+  // An insert-prompt action needs somewhere to insert. When that's
+  // unavailable (non-claude-code session), strip the action so TipCard
+  // doesn't render a dead button.
+  const displayTip = useMemo(() => {
+    if (!activeTip) return null;
+    if (activeTip.content.action?.insertPrompt && !onInsertPrompt) {
+      return { ...activeTip, content: { ...activeTip.content, action: undefined } };
+    }
+    return activeTip;
+  }, [activeTip, onInsertPrompt]);
 
   const advance = useCallback(
     (eventName: string, extra?: Record<string, unknown>) => {
@@ -77,29 +98,22 @@ export function InlineTipDisplay() {
     [activeTip, posthog, setActiveTipId]
   );
 
-  const dismissTip = useCallback(() => {
-    if (!activeTip) return;
-    posthog?.capture('tip_dismissed', {
-      tip_id: activeTip.id,
-      tip_name: activeTip.name,
-      surface: 'inline_empty_transcript',
-    });
-    markTipDismissed(activeTip.id, activeTip.version);
-    setActiveTipId(null);
-  }, [activeTip, posthog, setActiveTipId]);
-
   const handleAction = useCallback(() => {
-    if (!activeTip?.content.action) return;
+    const action = activeTip?.content.action;
+    if (!activeTip || !action) return;
     posthog?.capture('tip_action_clicked', {
       tip_id: activeTip.id,
       tip_name: activeTip.name,
-      action_label: activeTip.content.action.label,
+      action_label: action.label,
       surface: 'inline_empty_transcript',
     });
-    activeTip.content.action.onClick();
+    if (action.insertPrompt && onInsertPrompt) {
+      onInsertPrompt(action.insertPrompt);
+    }
+    action.onClick?.();
     markTipCompleted(activeTip.id, activeTip.version);
     setActiveTipId(null);
-  }, [activeTip, posthog, setActiveTipId]);
+  }, [activeTip, onInsertPrompt, posthog, setActiveTipId]);
 
   const handleSecondaryAction = useCallback(() => {
     if (!activeTip?.content.secondaryAction) return;
@@ -110,7 +124,7 @@ export function InlineTipDisplay() {
       action_type: 'secondary',
       surface: 'inline_empty_transcript',
     });
-    activeTip.content.secondaryAction.onClick();
+    activeTip.content.secondaryAction.onClick?.();
   }, [activeTip, posthog]);
 
   const handleNext = useCallback(() => {
@@ -159,8 +173,7 @@ export function InlineTipDisplay() {
   return (
     <>
       <TipCard
-        tip={activeTip}
-        onDismiss={dismissTip}
+        tip={displayTip ?? activeTip}
         onAction={handleAction}
         onSecondaryAction={activeTip.content.secondaryAction ? handleSecondaryAction : undefined}
         variant="inline"

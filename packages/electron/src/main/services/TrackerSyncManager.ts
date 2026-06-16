@@ -432,10 +432,15 @@ async function backfillSharedLocalItems(workspacePath: string): Promise<void> {
     return;
   }
 
+  // Candidates: never-synced items (`sync_id IS NULL`) plus items left
+  // `sync_status='pending'` by an offline mutation -- including the `nim` CLI
+  // writing directly to SQLite while the app was closed. Re-pushing an
+  // already-synced item is idempotent: `applyRemoteItem` flips it back to
+  // 'synced' on ack, so it falls out of this set on the next launch.
   const candidates = await db.query(
     `SELECT * FROM tracker_items
      WHERE workspace = $1
-       AND sync_id IS NULL
+       AND (sync_id IS NULL OR sync_status = 'pending')
        AND deleted_at IS NULL
      ORDER BY created ASC`,
     [workspacePath],

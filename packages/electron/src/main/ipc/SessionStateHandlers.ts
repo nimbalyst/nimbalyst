@@ -38,7 +38,16 @@ async function getCanonicalWorkspacePathForSession(sessionId: string): Promise<s
       [sessionId]
     );
     const workspacePath = rows[0]?.workspace_id ?? null;
-    sessionWorkspaceCache.set(sessionId, workspacePath);
+    // Only cache a RESOLVED (non-null) path. A null here usually means the
+    // session row was not committed yet when the first event fired (common for
+    // meta-agent child sessions created mid-run). Caching null would PERMANENTLY
+    // drop every later event for this session, because the workspace filter
+    // never matches null -- which pinned child spinners on "Thinking..." forever
+    // and left the meta-agent's aggregate stuck. Leaving null uncached lets the
+    // next event re-resolve once the row is committed.
+    if (workspacePath !== null) {
+      sessionWorkspaceCache.set(sessionId, workspacePath);
+    }
     return workspacePath;
   } catch (error) {
     console.error('[SessionStateHandlers] Failed to resolve canonical workspace path:', error);
@@ -60,13 +69,27 @@ export async function registerSessionStateHandlers() {
   // Subscribe to state changes and sync to mobile
   setupSyncSubscription(stateManager);
 
-  // Get active session IDs
-  safeHandle('ai-session-state:get-active', async (_event) => {
+  // Get tracked session IDs (bare map membership; may include idle sessions).
+  // NOT a "running" signal — see getTrackedSessionIds / NIM-846. Most callers
+  // want ai-session-state:get-running instead.
+  safeHandle('ai-session-state:get-tracked', async (_event) => {
     try {
-      const activeIds = stateManager.getActiveSessionIds();
-      return { success: true, sessionIds: activeIds };
+      const trackedIds = stateManager.getTrackedSessionIds();
+      return { success: true, sessionIds: trackedIds };
     } catch (error) {
-      console.error('[SessionStateHandlers] Error getting active sessions:', error);
+      console.error('[SessionStateHandlers] Error getting tracked sessions:', error);
+      return { success: false, error: String(error), sessionIds: [] };
+    }
+  });
+
+  // Get session IDs whose turn is actually in progress (running / streaming).
+  // This is the canonical "is it running?" query (NIM-846).
+  safeHandle('ai-session-state:get-running', async (_event) => {
+    try {
+      const sessionIds = stateManager.getRunningSessionIds();
+      return { success: true, sessionIds };
+    } catch (error) {
+      console.error('[SessionStateHandlers] Error getting running sessions:', error);
       return { success: false, error: String(error), sessionIds: [] };
     }
   });
@@ -145,8 +168,25 @@ export async function registerSessionStateHandlers() {
                 break;
               }
             }
+            const isTerminal =
+              stateEvent.type === 'session:completed' ||
+              stateEvent.type === 'session:error' ||
+              stateEvent.type === 'session:interrupted';
             if (!matched) {
-              return;
+              // A workspace-filter miss on a NON-terminal event is dropped as
+              // before (those drive workspace-scoped state and need a real path).
+              // But a TERMINAL event is forwarded anyway: the renderer's terminal
+              // clear is keyed only by sessionId (workspace-agnostic), so
+              // over-delivering it is harmless, while dropping it pins the
+              // session's spinner (and a parent meta-agent header) on "Thinking..."
+              // - common for a worktree-resident meta-agent child whose canonical
+              // workspace_id has not committed or does not match this window.
+              if (!isTerminal) return;
+              console.warn(
+                `[SessionStateHandlers] forwarding unmatched terminal ${stateEvent.type} for session ` +
+                `${stateEvent.sessionId} (sessionWorkspacePath=${sessionWorkspacePath ?? 'null'}, ` +
+                `eventWorkspacePath=${stateEvent.workspacePath ?? 'null'}) to avoid a stuck spinner`,
+              );
             }
           }
 
@@ -326,16 +366,7 @@ function setupSyncSubscription(stateManager: ReturnType<typeof getSessionStateMa
  * Used by the quit handler to show a confirmation dialog.
  */
 export function hasActiveStreamingSessions(): boolean {
-  const stateManager = getSessionStateManager();
-  const activeIds = stateManager.getActiveSessionIds();
-
-  for (const sessionId of activeIds) {
-    const state = stateManager.getSessionState(sessionId);
-    if (state && (state.status === 'running' || state.isStreaming)) {
-      return true;
-    }
-  }
-  return false;
+  return getSessionStateManager().getRunningSessionIds().length > 0;
 }
 
 /**

@@ -7,10 +7,12 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useAtomValue } from 'jotai';
-import { init, Terminal, FitAddon, OSC8LinkProvider, UrlRegexProvider, type ITheme, type ILinkProvider, type ILink } from 'ghostty-web';
+import { Terminal, FitAddon, OSC8LinkProvider, UrlRegexProvider, type ITheme, type ILinkProvider, type ILink } from 'ghostty-web';
 import { themeIdAtom } from '@nimbalyst/runtime/store';
 import { TerminalContextMenu } from './TerminalContextMenu';
 import { sanitizeScrollback, stripProblematicEscapeSequences, cleanScrollback } from './scrollbackSanitization';
+import { loadTerminalGhostty } from './ghosttyInstance';
+import { isElementMeasurable, waitUntilElementMeasurable } from './terminalVisibility';
 
 // Type for terminal API is defined in electron.d.ts
 
@@ -40,38 +42,14 @@ export interface TerminalPanelProps {
    * bump re-focuses even if the value was previously seen.
    */
   focusNonce?: number;
-}
-
-// Track if ghostty WASM has been initialized
-let ghosttyInitialized = false;
-let ghosttyInitPromise: Promise<void> | null = null;
-
-async function ensureGhosttyInit(): Promise<void> {
-  if (ghosttyInitialized) return;
-  if (ghosttyInitPromise) return ghosttyInitPromise;
-
-  ghosttyInitPromise = init().then(() => {
-    ghosttyInitialized = true;
-  });
-
-  return ghosttyInitPromise;
-}
-
-async function waitForVisibleTerminalDimensions(
-  element: HTMLElement,
-  timeoutMs = 1500
-): Promise<void> {
-  const start = Date.now();
-
-  while (Date.now() - start < timeoutMs) {
-    const rect = element.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      return;
-    }
-    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
-  }
-
-  throw new Error('Terminal container never became measurable');
+  /**
+   * Whether mount/activation pulls keyboard focus into the xterm. Default true
+   * (the bottom shell panel wants it). The CLI drawer passes false (NIM-820) —
+   * its submits come from the chat input, and stealing focus there forced the
+   * user to click back into the input every turn. `focusNonce` still focuses
+   * explicitly for native pickers.
+   */
+  autoFocus?: boolean;
 }
 
 function getVisibleScreenLines(terminal: Terminal): string[] {
@@ -133,6 +111,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   launchMode = 'shell',
   claudeCliModel,
   focusNonce,
+  autoFocus = true,
 }) => {
   // Support legacy sessionId prop name
   const sessionId = terminalId;
@@ -168,6 +147,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   const [hasExited, setHasExited] = useState(false);
   const hasExitedRef = useRef(false); // Ref to track exit state for callbacks
   const hasAutoRestartedRef = useRef(false); // Track if we've already auto-restarted (prevent loops)
+  const lateInitRecoveredRef = useRef(false); // NIM-817: one-shot auto-retry when the backend comes up after the init timeout
   const initStartTimeRef = useRef<number>(0); // Track when initialization started
   const disposedRef = useRef(false); // Ref to track disposed state for async callbacks
   const [exitCode, setExitCode] = useState<number | null>(null);
@@ -209,6 +189,16 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     window.electronAPI.terminal.clearScrollback(sessionId);
   }, [sessionId]);
 
+  // Re-run trigger for the full init effect (NIM-817). Bumped by Retry when
+  // initialization never completed — initBackend alone can't recover a failed
+  // initTerminal (no ghostty Terminal, no output subscription, isInitialized
+  // never flips), which is why Retry used to look like it did nothing.
+  const [initAttempt, setInitAttempt] = useState(0);
+
+  // Track if terminal has been initialized (separate from isInitialized state)
+  // This ref persists across renders and prevents re-initialization on tab switches
+  const hasInitializedRef = useRef(false);
+
   // Handle terminal restart after exit
   // Use a ref to store the restart function to avoid effect re-runs
   const handleRestartRef = useRef<() => Promise<void>>();
@@ -218,6 +208,15 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     setExitCode(null);
     setInitError(null);
     setRestoreWarning(null);
+
+    // NIM-817: no live Terminal instance means initTerminal failed (WASM init,
+    // dimension wait, backend timeout, ...). Tear down the partial attempt and
+    // re-run the entire init effect instead of only re-ensuring the PTY.
+    if (!terminalInstanceRef.current) {
+      hasInitializedRef.current = false;
+      setInitAttempt((n) => n + 1);
+      return;
+    }
 
     try {
       await initBackend();
@@ -231,10 +230,6 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   const handleRestart = useCallback(() => {
     return handleRestartRef.current?.() ?? Promise.resolve();
   }, []);
-
-  // Track if terminal has been initialized (separate from isInitialized state)
-  // This ref persists across renders and prevents re-initialization on tab switches
-  const hasInitializedRef = useRef(false);
 
   // Track whether this terminal should initialize. Set to true when the terminal
   // first becomes active, and stays true forever after. This allows us to:
@@ -314,18 +309,98 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
         // Track when initialization started for quick-exit detection
         initStartTimeRef.current = Date.now();
 
-        // Initialize ghostty WASM first
-        await ensureGhosttyInit();
+        // Load a dedicated ghostty WASM instance for this terminal — never the
+        // module singleton. See ghosttyInstance.ts: freeing a terminal that
+        // rendered a multi-codepoint grapheme corrupts the instance's shared
+        // memory (coder/ghostty-web#141) and can hang the renderer in an
+        // uninterruptible WASM loop on the next write from any co-resident
+        // terminal.
+        const ghostty = await loadTerminalGhostty();
 
         if (disposed) return;
 
         if (!terminalRef.current) return;
-        await waitForVisibleTerminalDimensions(terminalRef.current);
 
-        if (disposed) return;
+        /**
+         * Race the backend init against a timeout, mirroring the NIM-817
+         * late-recovery semantics: a late FAILURE replaces the generic message
+         * with the real error; a late SUCCESS auto-retries the full init once.
+         * Returns false when the caller must bail (error already surfaced, or
+         * disposed mid-race).
+         */
+        const INIT_TIMEOUT_MS = 10000;
+        const initBackendWithTimeout = async (
+          dims?: { cols?: number; rows?: number }
+        ): Promise<boolean> => {
+          const initPromise = initBackend(dims);
+          const timedOutSentinel = { success: false as const, error: `Terminal initialization timed out after ${INIT_TIMEOUT_MS / 1000} seconds` };
+          const timeoutPromise = new Promise<typeof timedOutSentinel>((resolve) => {
+            setTimeout(() => resolve(timedOutSentinel), INIT_TIMEOUT_MS);
+          });
+
+          const result = await Promise.race([initPromise, timeoutPromise]);
+
+          if (disposed) return false;
+
+          if (result === timedOutSentinel) {
+            // NIM-817: the backend is still working (slow claude spawn /
+            // MCP-config build / proxy startup). Show the timeout, but keep
+            // listening: a late FAILURE replaces the generic message with the
+            // real error; a late SUCCESS auto-retries the full init once so the
+            // user doesn't have to click Retry at all.
+            initPromise.then((late) => {
+              if (disposedRef.current) return;
+              if (late.success || ('alreadyActive' in late && late.alreadyActive)) {
+                if (!lateInitRecoveredRef.current) {
+                  lateInitRecoveredRef.current = true;
+                  console.warn('[TerminalPanel] Backend came up after the init timeout; re-initializing');
+                  handleRestart();
+                }
+              } else {
+                setInitError(late.error || 'Failed to initialize PTY');
+              }
+            }).catch((err) => {
+              if (!disposedRef.current) {
+                setInitError(err instanceof Error ? err.message : String(err));
+              }
+            });
+            console.error('[TerminalPanel] Failed to initialize PTY:', timedOutSentinel.error);
+            setInitError(timedOutSentinel.error);
+            return false;
+          }
+
+          if (!result.success && !('alreadyActive' in result && result.alreadyActive)) {
+            const errorMessage = result.error || 'Failed to initialize PTY';
+            console.error('[TerminalPanel] Failed to initialize PTY:', errorMessage);
+            setInitError(errorMessage);
+            return false;
+          }
+
+          return true;
+        };
+
+        // NIM-826: a (re)mount while the container is hidden — the CLI drawer
+        // body is display:none when collapsed, and NIM-820 made a user
+        // collapse sticky across remounts — used to throw "Terminal container
+        // never became measurable" after 1.5s, stranding the strip in a dead
+        // error state even though the PTY in main was still alive (the visible
+        // "CLI session disconnected when I switched sessions" failure). The
+        // backend doesn't need pixel dimensions, so bring it up immediately
+        // (spawn/queue-flush proceed while hidden) and wait WITHOUT a deadline
+        // for the container before building the visual terminal.
+        let backendReady = false;
+        if (!isElementMeasurable(terminalRef.current)) {
+          if (!(await initBackendWithTimeout(undefined))) return;
+          backendReady = true;
+          const visibility = await waitUntilElementMeasurable(terminalRef.current, {
+            isDisposed: () => disposed,
+          });
+          if (visibility !== 'measurable' || disposed) return;
+        }
 
         // Create Ghostty Terminal instance
         terminal = new Terminal({
+          ghostty,
           fontSize: 13,
           fontFamily: '"SF Mono", Monaco, "Courier New", monospace',
           scrollback: 50000,
@@ -351,28 +426,19 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
             console.warn('[TerminalPanel] Initial fit failed:', e);
           }
 
-          // Initialize the backend (shell or claude CLI) after we know real dimensions.
-          const initPromise = initBackend({
-            cols: initialDims?.cols,
-            rows: initialDims?.rows,
-          });
-
-          const timeoutPromise = new Promise<{ success: false; error: string }>((resolve) => {
-            setTimeout(() => {
-              resolve({ success: false, error: 'Terminal initialization timed out after 10 seconds' });
-            }, 10000);
-          });
-
-          const result = await Promise.race([initPromise, timeoutPromise]);
+          // Initialize the backend (shell or claude CLI) after we know real
+          // dimensions — unless the hidden-mount path already brought it up,
+          // in which case the resize below corrects the spawn-default size.
+          if (!backendReady) {
+            if (!(await initBackendWithTimeout({
+              cols: initialDims?.cols,
+              rows: initialDims?.rows,
+            }))) {
+              return;
+            }
+          }
 
           if (disposed) return;
-
-          if (!result.success && !('alreadyActive' in result && result.alreadyActive)) {
-            const errorMessage = result.error || 'Failed to initialize PTY';
-            console.error('[TerminalPanel] Failed to initialize PTY:', errorMessage);
-            setInitError(errorMessage);
-            return;
-          }
 
           if (initialDims) {
             window.electronAPI.terminal.resize(sessionId, initialDims.cols, initialDims.rows);
@@ -440,8 +506,27 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           const snapshot = await window.electronAPI.terminal.getRestoreSnapshot(workspacePath, sessionId);
           lastAppliedSequence = snapshot.sequence;
 
-          // Restore scrollback if available
-          if (snapshot.scrollback && !disposed) {
+          // NIM-823: for a full-screen TUI (the genuine claude CLI) the raw
+          // scrollback already CONTAINS the rendered screen, so replaying it and
+          // then re-stamping snapshot.screenLines painted everything twice.
+          // Restore only the captured screen + cursor; the authoritative resize
+          // at the end of init delivers a SIGWINCH that makes the live TUI
+          // repaint itself over the stamp.
+          if (launchMode === 'claude-cli') {
+            if (!disposed && snapshot.screenLines && snapshot.screenLines.length > 0) {
+              terminal.write('\x1b[r'); // reset scroll region
+              const visibleLines = snapshot.screenLines.slice(-terminal.rows);
+              for (let row = 0; row < visibleLines.length; row += 1) {
+                const line = escapeScreenLineForReplay(visibleLines[row]);
+                terminal.write(`\x1b[${row + 1};1H\x1b[2K${line}`);
+              }
+              if (snapshot.cursorX !== undefined && snapshot.cursorY !== undefined) {
+                const cursorRow = Math.max(0, Math.min(snapshot.cursorY, terminal.rows - 1));
+                const cursorCol = Math.max(0, Math.min(snapshot.cursorX, terminal.cols - 1));
+                terminal.write(`\x1b[${cursorRow + 1};${cursorCol + 1}H`);
+              }
+            }
+          } else if (snapshot.scrollback && !disposed) {
             // Sanitize the scrollback to remove invalid code points that could crash
             // the terminal's render loop. This must happen BEFORE any write attempts.
             const sanitized = sanitizeScrollback(snapshot.scrollback);
@@ -608,6 +693,14 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           });
           resizeObserver.observe(terminalRef.current);
 
+          // NIM-823: one authoritative resize once init settles. Covers a PTY
+          // that booted at the 80x30 fallback (initial fit failed / dims were
+          // unknown at spawn) — without this, a TUI laid out for the wrong width
+          // stays mis-wrapped until the next layout change happens to fire the
+          // observer. For the CLI it also delivers a SIGWINCH that makes the
+          // live TUI repaint after a snapshot-only restore.
+          applyResize();
+
           // Register link providers that open URLs in the default browser
           const wrapProvider = (provider: ILinkProvider): ILinkProvider => ({
             provideLinks(y: number, callback: (links: ILink[] | undefined) => void) {
@@ -635,8 +728,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           hasInitializedRef.current = true;
           scheduleRenderStatePersist();
 
-          // Auto-focus if this is the active terminal and panel is visible
-          if (isActive) {
+          // Auto-focus if this is the active terminal and panel is visible.
+          // Opt-out for the CLI drawer (NIM-820): submits come from the chat
+          // input and must not lose focus to the terminal.
+          if (isActive && autoFocus) {
             setTimeout(() => terminal?.focus(), 50);
           }
         }
@@ -684,22 +779,27 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   // effect re-runs when terminal exits (which would dispose and recreate it)
   // Note: onExit and handleRestart are NOT in deps - we use refs for both to avoid
   // effect re-runs when callbacks change
+  // Note: initAttempt IS in deps (NIM-817) — Retry bumps it to tear down a
+  // failed partial init and re-run this effect from scratch.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [terminalId, workspacePath, shouldInit]);
+  }, [terminalId, workspacePath, shouldInit, initAttempt]);
 
-  // Blur terminal when panel hides, focus when it shows
+  // Blur terminal when panel hides, focus when it shows (focus is opt-out for
+  // the CLI drawer, NIM-820 — see autoFocus).
   useEffect(() => {
     if (!terminalInstanceRef.current) return;
     if (isActive && panelVisible) {
-      // Panel became visible - focus and re-fit after DOM updates
-      setTimeout(() => {
-        terminalInstanceRef.current?.focus();
-      }, 50);
+      if (autoFocus) {
+        // Panel became visible - focus and re-fit after DOM updates
+        setTimeout(() => {
+          terminalInstanceRef.current?.focus();
+        }, 50);
+      }
     } else if (!panelVisible) {
       // Panel hidden - blur terminal
       terminalInstanceRef.current.blur();
     }
-  }, [isActive, panelVisible]);
+  }, [isActive, panelVisible, autoFocus]);
 
   // Imperative focus pulse (NIM-810): the reveal listener bumps `focusNonce` when
   // the CLI opens a native picker so keyboard nav reaches it. Skip the initial

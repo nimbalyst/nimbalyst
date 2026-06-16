@@ -1,12 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
 import { ProviderConfig, Model } from '../../Settings/SettingsView';
 import {ClaudeForWindowsInstallation} from "../../../../main/services/CLIManager.ts";
 import {usePostHog} from "posthog-js/react";
-import {
-  claudeUsageIndicatorEnabledAtom,
-  setClaudeUsageIndicatorEnabledAtom,
-} from '../../../store/atoms/claudeUsageAtoms';
+import { useSetting, useSetSetting } from '../../../hooks/useSetting';
 import { SettingsToggle, ToggleSwitch } from '../SettingsToggle';
 
 // Built-in SDK version (injected at build time via electron.vite.config.ts define)
@@ -75,8 +71,8 @@ export function ClaudeCodePanel({
   const [editingValue, setEditingValue] = useState('');
 
   // Usage indicator setting
-  const usageIndicatorEnabled = useAtomValue(claudeUsageIndicatorEnabledAtom);
-  const setUsageIndicatorEnabled = useSetAtom(setClaudeUsageIndicatorEnabledAtom);
+  const usageIndicatorEnabled = useSetting('ai.showUsageIndicator');
+  const setUsageIndicatorEnabled = useSetSetting('ai.showUsageIndicator');
 
   // Custom Claude executable path. In project scope, `customClaudeCodePath` reflects the
   // workspace override (empty string when no override is set, inheriting the global value);
@@ -251,8 +247,9 @@ export function ClaudeCodePanel({
           throw new Error(saveResult?.error || 'Failed to save project override');
         }
       } else {
-        // Send only the changed field -- ai:saveSettings handles partial updates
-        await window.electronAPI.aiSaveSettings({ customClaudeCodePath: newPath });
+        // Per-key write via SettingsService -- structurally cannot clobber
+        // sibling AI settings the way the old aiSaveSettings blob path could.
+        await window.electronAPI.settingsSet('ai.customClaudeCodePath', newPath);
         setGlobalCustomClaudeCodePath(newPath);
       }
     } catch (error) {

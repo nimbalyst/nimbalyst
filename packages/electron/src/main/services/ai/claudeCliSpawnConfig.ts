@@ -31,8 +31,6 @@ import { normalizeClaudeCodeVariant } from '@nimbalyst/runtime/ai/modelConstants
  * session actually runs at 1M context — the CLI strips `[1m]` before sending the
  * model id, same as the Agent SDK (see `resolveClaudeCodeModelVariant`). Dropping
  * the suffix instead silently downgraded 1M selections to 200k (NIM-809).
- * Fable 5 is already 1M where available and the CLI accepts the plain `fable`
- * alias, not `fable[1m]`, so stale fable-1m selections are canonicalized.
  *
  * Returns `undefined` when there's nothing usable (let the CLI default). A bare
  * full model name (no recognizable variant) passes through unchanged since the
@@ -52,7 +50,6 @@ export function resolveClaudeCliModelArg(model: string | undefined): string | un
   if (variant) {
     // Collapse pinned opus variants (opus-4-7 / opus-4-6) to the CLI's `opus` alias.
     const alias = variant.startsWith('opus') ? 'opus' : variant;
-    if (alias === 'fable') return alias;
     return isExtended ? `${alias}[1m]` : alias;
   }
 
@@ -129,6 +126,20 @@ export interface ClaudeCliSpawnInput {
    * entries are skipped; omit for no extra directories.
    */
   additionalDirectories?: string[];
+  /**
+   * Extension Claude-plugin directories to load for this session via
+   * `--plugin-dir <dir>` (NIM-845). Each is a bare plugin directory (one
+   * containing `.claude-plugin/plugin.json` + `commands/`) — the CLI analog of
+   * the Agent SDK's `{ type: 'local', path }`. Loading them is what makes
+   * namespaced slash commands (`/feedback:bug-report`, `/planning:design`, …)
+   * resolve in a `claude-code-cli` session; without them the binary honestly
+   * reports `Unknown command`. The launcher only populates this when the resolved
+   * CLI is new enough to accept `--plugin-dir` (≥ 2.1.142 — see
+   * `claudeCliPluginSupport.ts`); on older CLIs it's omitted (the flag would be
+   * rejected as unknown and crash the launch). Empty/whitespace entries are
+   * skipped; omit for no extension plugins.
+   */
+  pluginDirs?: string[];
   /** Extra CLI args appended verbatim (escape hatch for flags we pass through). */
   extraArgs?: string[];
 }
@@ -225,6 +236,15 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
   }
   if (input.mcpConfigPath) {
     args.push('--mcp-config', input.mcpConfigPath);
+    // NIM-843: pair with --strict-mcp-config so the genuine `claude` binary uses
+    // ONLY this snapshot and does NOT merge its own discovery (~/.claude.json,
+    // project .mcp.json, .claude/settings.json, claude.ai connectors). Without it
+    // the binary loads every server it finds in ~/.claude.json — ignoring the
+    // `disabled` flag Nimbalyst writes — so user-disabled third-party servers leak
+    // into CLI sessions and eat context. The snapshot already carries the enabled
+    // set (filtered by isMCPServerEnabledForProvider), so strict mode gives the
+    // Nimbalyst toggle the same authority over CLI sessions as the SDK path.
+    args.push('--strict-mcp-config');
   }
   if (input.resumeSessionId) {
     args.push('--resume', input.resumeSessionId);
@@ -262,6 +282,18 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
     .filter((d) => d.length > 0);
   if (additionalDirs.length > 0) {
     args.push('--add-dir', ...additionalDirs);
+  }
+  // Load extension Claude-plugins so namespaced slash commands resolve (NIM-845).
+  // `--plugin-dir` is value-bearing (ONE path per flag) and repeatable — emit it
+  // once per directory. It must precede the trailing --allowedTools/--disallowedTools
+  // variadics so its single value isn't swallowed; placed after --add-dir, both
+  // before the variadics. The launcher only passes pluginDirs when the resolved CLI
+  // supports the flag (≥ 2.1.142); older CLIs would reject it as an unknown option.
+  const pluginDirs = (input.pluginDirs ?? [])
+    .map((d) => (typeof d === 'string' ? d.trim() : ''))
+    .filter((d) => d.length > 0);
+  for (const dir of pluginDirs) {
+    args.push('--plugin-dir', dir);
   }
   // Pre-allow our trusted Nimbalyst MCP servers at the server level so the genuine
   // CLI doesn't double-prompt (its built-in TUI permission gate) on top of the

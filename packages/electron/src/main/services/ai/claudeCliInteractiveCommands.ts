@@ -63,9 +63,12 @@ const SELECTION_CARET = '❯'; // ❯
  * detection — a model-initiated or directly-typed picker the allowlist can't see.
  *
  * Matches the Ink selection caret (`❯ `) that highlights the active row of a
- * picker. Reveal is non-destructive, so a rare false positive only flashes the
- * drawer open; a false negative is covered by `detectInteractiveCliCommand`. The
- * caller must debounce — pickers redraw on every keypress.
+ * picker. The glyph also appears in ordinary output (vitest, slash-autocomplete
+ * dropdowns, fancy shell prompts), so false positives are routine, not rare.
+ * Output-sourced reveals must therefore never pulse focus — they only expand the
+ * drawer visually (NIM-828); a false negative is covered by
+ * `detectInteractiveCliCommand`. The caller must debounce — pickers redraw on
+ * every keypress.
  */
 export function detectCliPickerInChunk(chunk: string | undefined): boolean {
   if (!chunk) return false;

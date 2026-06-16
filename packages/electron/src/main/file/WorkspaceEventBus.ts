@@ -148,6 +148,8 @@ interface CircuitBreakerState {
   writeIndex: number;
   /** Whether this breaker has already tripped. */
   tripped: boolean;
+  /** Whether the deferred watcher teardown has already been scheduled (idempotency). */
+  teardownScheduled: boolean;
 }
 
 function createCircuitBreaker(): CircuitBreakerState {
@@ -155,6 +157,7 @@ function createCircuitBreaker(): CircuitBreakerState {
     timestamps: new Array(CIRCUIT_BREAKER_THRESHOLD).fill(0),
     writeIndex: 0,
     tripped: false,
+    teardownScheduled: false,
   };
 }
 
@@ -760,6 +763,37 @@ function closeWatcher(watcher: fs.FSWatcher | ChokidarFSWatcher): void {
   }
 }
 
+/**
+ * Close a watcher from OUTSIDE its own delivery callback.
+ *
+ * On macOS, `fs.watch(recursive:true)` is FSEvents-backed and `close()` performs
+ * a blocking round-trip to the FSEvents CFRunLoop thread (`uv__fsevents_close`).
+ * Calling that synchronously from inside the watch callback — while libuv is still
+ * delivering the current event batch — can abort Electron (SIGABRT/SIGTRAP). This
+ * is exactly what happens when the circuit breaker trips during an event storm
+ * (issue #629). Deferring to `setImmediate` runs the close in the next loop's
+ * check phase, after the native batch has fully unwound. Use this from any code
+ * path that closes a watcher from within a watcher callback (circuit breaker,
+ * EMFILE/ENFILE error handlers); use the synchronous `closeWatcher` from app-driven
+ * paths (`unsubscribe`, `stopAll`) where we are not inside a delivery callback.
+ */
+function closeWatcherDeferred(
+  key: string,
+  watcher: fs.FSWatcher | ChokidarFSWatcher,
+  reason: string,
+): void {
+  setImmediate(() => {
+    try {
+      closeWatcher(watcher);
+    } catch (error) {
+      logger.main.error(
+        `[WorkspaceEventBus] Error closing watcher for "${key}" (${reason}):`,
+        error,
+      );
+    }
+  });
+}
+
 /** Returns true if the relative path should be filtered out. */
 /** Returns true if a file has a .md extension. */
 function isMarkdownFile(filePath: string): boolean {
@@ -855,14 +889,28 @@ function replayDroppedEvents(entry: BusEntry, absolutePath: string): void {
 }
 
 function tripCircuitBreaker(key: string, entry: BusEntry): void {
+  // Idempotent: a burst delivers many events synchronously, and the breaker may
+  // be reached more than once before the deferred close runs. Schedule teardown
+  // exactly once so we never double-close the (now-closed) watcher.
+  if (entry.circuitBreaker.teardownScheduled) return;
+  entry.circuitBreaker.teardownScheduled = true;
+
   logger.main.error(
     `[WorkspaceEventBus] Circuit breaker tripped for "${key}" — ` +
     `received ${CIRCUIT_BREAKER_THRESHOLD} events in ${CIRCUIT_BREAKER_WINDOW_MS}ms. ` +
     `Killing watcher to protect the process. This workspace may be too large, ` +
     `missing a .gitignore at the workspace root, or contain nested repos whose .gitignore is not honored.`
   );
-  closeWatcher(entry.watcher);
+
+  // Remove from the registry synchronously so further events in this burst
+  // early-return (recordEvent short-circuits on `tripped`) and so unsubscribe/
+  // stopAll won't also try to close this watcher.
   busEntries.delete(key);
+
+  // Defer the actual close out of the fs.watch/FSEvents delivery callback — see
+  // closeWatcherDeferred. Capture entry.watcher directly because the registry
+  // entry is already gone.
+  closeWatcherDeferred(key, entry.watcher, 'circuit breaker tripped');
 }
 
 function startRecursiveWatch(
@@ -956,8 +1004,11 @@ function startRecursiveWatch(
           `closing watcher. File changes will not be detected.`
         );
         if (busEntries.has(key)) {
-          (watcher as fs.FSWatcher).close();
+          // Delete synchronously, but defer the close: this 'error' handler can
+          // fire from within FSEvents delivery, where a synchronous close can
+          // abort Electron (same hazard as the circuit breaker — issue #629).
           busEntries.delete(key);
+          closeWatcherDeferred(key, watcher, `${code} too many open files`);
         }
       } else if (code === 'EPERM' || code === 'EACCES' || code === 'UNKNOWN') {
         logger.main.debug('[WorkspaceEventBus] Skipping unwatchable path:', error);
@@ -1115,8 +1166,10 @@ function startChokidarWatch(
             `closing watcher to stop retry-spam. File changes will not be detected.`
           );
           if (busEntries.has(key)) {
-            closeWatcher(entry.watcher);
+            // Delete synchronously, defer the close out of chokidar's own
+            // event handler for symmetry with the recursive path (issue #629).
             busEntries.delete(key);
+            closeWatcherDeferred(key, entry.watcher, `${code} too many open files`);
           }
         } else if (code === 'EPERM' || code === 'EACCES' || code === 'UNKNOWN') {
           logger.main.debug('[WorkspaceEventBus] Skipping unwatchable path:', error);

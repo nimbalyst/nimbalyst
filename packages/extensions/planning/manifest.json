@@ -45,6 +45,10 @@
         {
           "name": "launch-new-session",
           "description": "Spin off a sibling AI session to keep working in parallel"
+        },
+        {
+          "name": "session-cleanup",
+          "description": "Tidy your Sessions board -- fix phases, mark work complete, flag old sessions to archive"
         }
       ]
     }

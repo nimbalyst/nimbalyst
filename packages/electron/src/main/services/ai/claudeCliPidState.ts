@@ -84,9 +84,14 @@ export function parseClaudePidFile(contents: string): ParsedClaudePidFile | null
 
 /**
  * Whether an ACTIVE (`busy`/`waiting`) PID file looks stale — its `updatedAt` is
- * older than `staleAfterMs`. A process that died mid-turn leaves its last
- * `busy`/`waiting` file behind without updating it, which would otherwise pin the
- * UI to "running" forever. clarp does no such check; this improves on it.
+ * older than `staleAfterMs`.
+ *
+ * WARNING (NIM-814): the CLI only rewrites `updatedAt` on STATUS TRANSITIONS,
+ * not periodically during a turn (verified empirically against CLI 2.1.170 — a
+ * live busy turn showed a 5+ minute old `updatedAt`). An age threshold therefore
+ * falsely idles long agentic turns. Prefer the process-liveness backstop
+ * (`isProcessAlive`) for stuck detection; this check remains opt-in and unused
+ * by production wiring.
  *
  * `idle` is never stale (an idle CLI legitimately stops refreshing the file), and
  * a file with no `updatedAt` is treated as fresh (we can't judge it).
@@ -133,6 +138,20 @@ export function claudePidFilePath(pid: number, homeDir: string = os.homedir()): 
   return path.join(homeDir, '.claude', 'sessions', `${pid}.json`);
 }
 
+/**
+ * Default process-liveness probe. Signal 0 performs the permission/existence
+ * check without delivering a signal; ESRCH (throw) means the process is gone.
+ * The watched pid is always our own child, so EPERM can't occur.
+ */
+function defaultIsProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface PidStateWatcherOptions {
   pid: number;
   /** Poll cadence in ms. Default 500ms — matches a responsive UI without thrashing fs. */
@@ -142,21 +161,34 @@ export interface PidStateWatcherOptions {
   /** Override the file reader (tests). */
   readFile?: (filePath: string) => Promise<string>;
   /**
-   * Opt-in staleness guard. When set, an ACTIVE (`busy`/`waiting`) PID file whose
-   * `updatedAt` is older than this many ms is treated as `idle` — so a CLI that
-   * died mid-turn (leaving a stale `busy` file) doesn't pin the UI to "running".
-   * Omit to disable (clarp's behavior — trust the file verbatim).
+   * Opt-in `updatedAt` staleness guard. See the WARNING on `isClaudePidFileStale`:
+   * the CLI only rewrites `updatedAt` on status transitions, so this falsely
+   * idles long turns. Left for tests/forward-compat; production relies on the
+   * liveness backstop instead.
    */
   staleAfterMs?: number;
   /** Clock override (tests). Defaults to `Date.now`. */
   now?: () => number;
-  /** Emitted only when the mapped turn state changes. */
-  onTurnState: (state: ClaudeTurnState, parsed: ParsedClaudePidFile) => void;
+  /** Liveness probe override (tests). Defaults to `process.kill(pid, 0)`. */
+  isProcessAlive?: (pid: number) => boolean;
+  /**
+   * Emitted only when the mapped turn state changes. `parsed` is null when the
+   * state was synthesized by the liveness backstop (no readable PID file).
+   */
+  onTurnState: (state: ClaudeTurnState, parsed: ParsedClaudePidFile | null) => void;
 }
 
 /**
  * Polls a single CLI PID file and invokes `onTurnState` whenever the mapped
- * turn state changes. Holds last-known state across unreadable/malformed reads.
+ * turn state changes. Holds last-known state across unreadable/malformed reads
+ * while the process is alive.
+ *
+ * Liveness backstop (NIM-814): an ACTIVE (`running`/`waiting_for_input`) state —
+ * whether read this tick or held from a previous good read — is only trusted
+ * while the process actually exists. A CLI that died mid-turn leaves its last
+ * `busy` file behind forever (the file is never cleaned up), which would
+ * otherwise pin the UI to "Thinking"; a dead process maps to `idle`.
+ *
  * Returns a stop function.
  */
 export function watchClaudePidState(options: PidStateWatcherOptions): () => void {
@@ -164,28 +196,37 @@ export function watchClaudePidState(options: PidStateWatcherOptions): () => void
   const filePath = claudePidFilePath(options.pid, options.homeDir);
   const read = options.readFile ?? ((p: string) => fs.readFile(p, 'utf8'));
   const now = options.now ?? (() => Date.now());
+  const isAlive = options.isProcessAlive ?? defaultIsProcessAlive;
 
   let lastState: ClaudeTurnState | undefined;
   let stopped = false;
 
   const tick = async () => {
     if (stopped) return;
+    let parsed: ParsedClaudePidFile | null = null;
     try {
-      const contents = await read(filePath);
-      const parsed = parseClaudePidFile(contents);
-      if (!parsed) return; // hold last-known
+      parsed = parseClaudePidFile(await read(filePath));
+    } catch {
+      // File missing/unreadable (process not started yet, or already exited).
+    }
+    let next: ClaudeTurnState | undefined;
+    if (parsed) {
       const stale =
         options.staleAfterMs !== undefined &&
         isClaudePidFileStale(parsed, now(), options.staleAfterMs);
-      const next = stale ? 'idle' : mapPidStatusToTurnState(parsed.status);
-      const diff = diffTurnState(lastState, next);
-      if (diff.changed) {
-        lastState = next;
-        options.onTurnState(next, parsed);
-      }
-    } catch {
-      // File missing/unreadable (process not started yet, or already exited).
-      // Hold last-known state.
+      next = stale ? 'idle' : mapPidStatusToTurnState(parsed.status);
+    }
+    // Liveness backstop: never report (or keep holding) an active state for a
+    // process that no longer exists.
+    const effective = next ?? lastState;
+    if (effective !== undefined && effective !== 'idle' && !isAlive(options.pid)) {
+      next = 'idle';
+    }
+    if (next === undefined) return; // nothing known yet; hold
+    const diff = diffTurnState(lastState, next);
+    if (diff.changed) {
+      lastState = next;
+      options.onTurnState(next, parsed);
     }
   };
 
@@ -199,4 +240,34 @@ export function watchClaudePidState(options: PidStateWatcherOptions): () => void
     stopped = true;
     clearInterval(timer);
   };
+}
+
+export interface ReadClaudePidTurnStateOptions {
+  pid: number;
+  /** Override the home dir (tests). */
+  homeDir?: string;
+  /** Override the file reader (tests). */
+  readFile?: (filePath: string) => Promise<string>;
+  /** Liveness probe override (tests). Defaults to `process.kill(pid, 0)`. */
+  isProcessAlive?: (pid: number) => boolean;
+}
+
+/**
+ * One-shot turn-state read for a CLI pid (NIM-814 — used by the escalating
+ * interrupt to re-check between steps). A dead process is `idle` regardless of
+ * file contents; an unreadable/unparseable file with a live process is `null`
+ * (unknown).
+ */
+export async function readClaudePidTurnState(
+  options: ReadClaudePidTurnStateOptions
+): Promise<ClaudeTurnState | null> {
+  const isAlive = options.isProcessAlive ?? defaultIsProcessAlive;
+  if (!isAlive(options.pid)) return 'idle';
+  const read = options.readFile ?? ((p: string) => fs.readFile(p, 'utf8'));
+  try {
+    const parsed = parseClaudePidFile(await read(claudePidFilePath(options.pid, options.homeDir)));
+    return parsed ? mapPidStatusToTurnState(parsed.status) : null;
+  } catch {
+    return null;
+  }
 }

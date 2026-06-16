@@ -23,12 +23,15 @@ import { getTerminalSessionManager } from '../TerminalSessionManager';
 import { getEnhancedPath, getShellEnvironment } from '../CLIManager';
 import { ClaudeCliSessionLauncher } from './ClaudeCliSessionLauncher';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
-import { resolveClaudeExecutablePath } from './claudeExecutableResolver';
+import { resolveClaudeExecutablePath, isClaudeExecutableInstalled } from './claudeExecutableResolver';
+import { resolveClaudeCliSupportsPluginDir } from './claudeCliPluginSupport';
+import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { workspacePathToDir } from '../AttachmentService';
 import { resolveClaudePermissionHookScriptPath } from './claudeCliPermissionHookPath';
 import { getPermissionService } from '../PermissionService';
 import { startClaudeCliProxyObservation, fireClaudeCliTurnCompletion } from './claudeCliObservationSingleton';
 import { flushNextClaudeCliQueuedPromptForSession } from './claudeCliQueueFlushSingleton';
+import { maybeAutoNameClaudeCliSessionProduction } from './claudeCliSessionAutoNameSingleton';
 import type { ClaudeTurnState } from './claudeCliPidState';
 
 interface ClaudeCliLauncherConfig {
@@ -86,6 +89,20 @@ function resolveClaudeExecutable(): string {
 }
 
 /**
+ * Whether the genuine `claude` CLI is installed anywhere we could spawn it
+ * (NIM-852). The renderer checks this (via `claude-cli:is-installed`) to show an
+ * install notice instead of spawning a bare `claude` that yields a cryptic
+ * `command not found`. `ensureClaudeCliSession` also short-circuits on it.
+ */
+export function isClaudeCliInstalled(): boolean {
+  return isClaudeExecutableInstalled({
+    homedir: os.homedir(),
+    pathExists: existsSync,
+    enhancedPath: getEnhancedPath(),
+  });
+}
+
+/**
  * Resolve (and create) the workspace's chat-attachments root and return it as the
  * `--add-dir` allow-list for the CLI. Mirrors `AttachmentService`'s storage
  * layout (`<userData>/chat-attachments/<workspaceDir>`) via the shared
@@ -93,6 +110,17 @@ function resolveClaudeExecutable(): string {
  * Returns `undefined` on any failure so a directory-prep error never blocks the
  * CLI launch.
  */
+/**
+ * Whether a `claude-code-cli` session launched right now would be able to load
+ * extension Claude-plugins — i.e. the resolved `claude` accepts `--plugin-dir`
+ * (≥ 2.1.142). The slash-command picker uses this to hide namespaced plugin
+ * commands when the CLI can't run them (NIM-845). Resolves the same executable
+ * the launcher would spawn, so the picker matches actual launch behavior.
+ */
+export function claudeCliSessionSupportsPlugins(): boolean {
+  return resolveClaudeCliSupportsPluginDir(resolveClaudeExecutable());
+}
+
 function prepareAttachmentsAllowDir(workspacePath: string): string[] | undefined {
   try {
     const attachmentsRoot = join(
@@ -123,7 +151,6 @@ function buildMcpConfigService(): McpConfigService {
     settingsAgentToolsDisabledLoader: config.settingsAgentToolsDisabledLoader,
     mcpAuthToken: config.mcpAuthToken,
     mcpConfigLoader: config.mcpConfigLoader,
-    extensionPluginsLoader: null,
     claudeSettingsEnvLoader: null,
     shellEnvironmentLoader: () => getShellEnvironment(),
   });
@@ -149,6 +176,20 @@ function buildLauncher(): ClaudeCliSessionLauncher {
     // project so trust is shared.
     getPermissionMode: (workspacePath: string) =>
       getPermissionService().getPermissionMode(workspacePath),
+    // NIM-845: load extension Claude-plugins so namespaced slash commands
+    // (`/feedback:bug-report`, …) resolve in CLI sessions. Mirror the SDK path's
+    // loader EXACTLY (`getClaudeProviderPluginPaths`, the same aggregator wired at
+    // index.ts → setExtensionPluginsLoader): native + legacy + CLI-installed AND
+    // GENERATED extension-workflow plugins. The raw `getClaudePluginPaths` omits
+    // the generated ones, so a supported-CLI user would see generated namespaced
+    // commands in the picker that the launched CLI couldn't resolve. We map to the
+    // bare directory paths the CLI's `--plugin-dir` expects. Gated by the
+    // `--version` probe below so old CLIs that reject the flag silently skip it.
+    loadPluginDirs: async (workspacePath: string) =>
+      (await getAgentWorkflowService(workspacePath).getClaudeProviderPluginPaths()).map(
+        (plugin) => plugin.path,
+      ),
+    cliSupportsPluginDir: (executable: string) => resolveClaudeCliSupportsPluginDir(executable),
   });
 }
 
@@ -167,6 +208,8 @@ export interface EnsureClaudeCliSessionResult {
   success: boolean;
   alreadyActive?: boolean;
   error?: string;
+  /** NIM-852: the `claude` CLI isn't installed, so we never spawned. */
+  claudeNotInstalled?: boolean;
 }
 
 const launchInFlight = new Map<string, Promise<EnsureClaudeCliSessionResult>>();
@@ -194,6 +237,17 @@ export async function ensureClaudeCliSession(
   const manager = getTerminalSessionManager();
   if (manager.isTerminalActive(input.sessionId)) {
     return { success: true, alreadyActive: true };
+  }
+
+  // NIM-852: don't spawn a bare `claude` when it isn't installed — that yields a
+  // cryptic `command not found` and strands the session as "running". The
+  // renderer shows an install notice; this is the defense-in-depth short-circuit.
+  if (!isClaudeCliInstalled()) {
+    return {
+      success: false,
+      claudeNotInstalled: true,
+      error: 'Claude Code CLI is not installed',
+    };
   }
 
   const existingLaunch = launchInFlight.get(input.sessionId);
@@ -242,6 +296,10 @@ export async function ensureClaudeCliSession(
             // Task sub-agents) — fire completion notification/sound/analytics here,
             // not per proxy message, so sub-agent end_turns don't spuriously notify.
             fireClaudeCliTurnCompletion(input.sessionId, input.workspacePath);
+            // NIM-822: deterministic host-driven naming — if the agent's
+            // opportunistic update_session_meta call didn't name the session by
+            // its first completed turn, derive a title from the first prompt.
+            void maybeAutoNameClaudeCliSessionProduction(input.sessionId);
             // Flush the next queued prompt (if any) into the now-idle CLI. The
             // write restarts the CLI, so the following idle drains the next one.
             void flushNextClaudeCliQueuedPromptForSession(input.sessionId, input.workspacePath);
@@ -249,7 +307,7 @@ export async function ensureClaudeCliSession(
             void stateManager.updateActivity({ sessionId: input.sessionId, status: 'running', isStreaming: true });
             // Idempotent; cancels any pending scheduled-stop from a prior turn.
             void cliFileWatcher
-              .ensureForSession(input.sessionId, watchRoot, null)
+              .ensureForSession(input.sessionId, watchRoot)
               .catch((err) => console.warn('[ClaudeCliLauncher] file watcher start failed:', err));
           } else if (state === 'waiting_for_input') {
             void stateManager.updateActivity({ sessionId: input.sessionId, status: 'waiting_for_input', isStreaming: false });

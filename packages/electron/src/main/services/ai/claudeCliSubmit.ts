@@ -17,7 +17,10 @@
  */
 
 import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
-import { composeClaudeCliPtySubmission } from './claudeCliPromptComposer';
+import {
+  composeClaudeCliPtySubmission,
+  type ClaudeCliDocumentContext,
+} from './claudeCliPromptComposer';
 
 /** Carriage return = Enter for the CLI's readline (PTYs expect `\r`, not `\n`). */
 const SUBMIT_TERMINATOR = '\r';
@@ -29,6 +32,8 @@ export interface SubmitClaudeCliPromptInput {
   workspacePath: string;
   prompt: string;
   attachments?: ChatAttachment[];
+  /** Active document / selection context (NIM-818) — appended to the PTY line. */
+  documentContext?: ClaudeCliDocumentContext | null;
 }
 
 export interface SubmitClaudeCliPromptDeps {
@@ -43,6 +48,7 @@ export interface SubmitClaudeCliPromptDeps {
     messageLength: number;
     hasAttachments: boolean;
     attachmentCount: number;
+    hasDocumentContext: boolean;
   }) => void;
   delay: (ms: number) => Promise<void>;
 }
@@ -58,14 +64,55 @@ export async function submitClaudeCliPrompt(
   const prompt = (input.prompt ?? '').trim();
   const attachments = input.attachments ?? [];
 
-  const ptyText = composeClaudeCliPtySubmission({ prompt, attachments });
-  if (!ptyText) {
-    return { submitted: false };
-  }
+  // NIM-819: the claude TUI only opens its slash-command/memory mode when
+  // / or # arrives as the FIRST interactive keystroke on an empty prompt — a
+  // bulk-pasted "/clear" is treated as literal text. Write the trigger char as
+  // its own keystroke, then the remainder, then Enter. Skips the document
+  // context block (it would corrupt the command line) and only applies to
+  // attachment-free prompts (paths after a command make no sense).
+  const isTuiTrigger =
+    (prompt.startsWith('/') || prompt.startsWith('#')) && attachments.length === 0;
 
-  deps.writeToTerminal(input.sessionId, ptyText);
-  await deps.delay(SUBMIT_WRITE_GAP_MS);
-  deps.writeToTerminal(input.sessionId, SUBMIT_TERMINATOR);
+  if (isTuiTrigger) {
+    deps.writeToTerminal(input.sessionId, prompt[0]);
+    await deps.delay(SUBMIT_WRITE_GAP_MS);
+    if (prompt.length > 1) {
+      deps.writeToTerminal(input.sessionId, prompt.slice(1));
+      await deps.delay(SUBMIT_WRITE_GAP_MS);
+    }
+    // NIM-851: writing `/` first opens the claude TUI's slash-command
+    // autocomplete menu, and that menu (a) fuzzy-matches command DESCRIPTIONS
+    // not just names — typing "implement" surfaces `/investigate` ("...before
+    // implementing") and `/session-cleanup` ("...implementing -> validating") —
+    // and (b) hijacks Enter to run the HIGHLIGHTED row instead of the literal
+    // typed text. For a bare command (no args) the menu stays open through
+    // Enter, so a stale/recency-shifted highlight runs the wrong command (real
+    // incident: typed `/implement`, ran `/investigate` with empty args). Type a
+    // trailing space first: it ends the command token and dismisses the menu
+    // (verified on claude 2.1.177), so Enter submits the literal command.
+    // Commands WITH args already closed the menu via their separating space;
+    // bare `/` and `#` memory mode are different UIs and left untouched.
+    const isBareSlashCommand =
+      prompt.startsWith('/') && prompt.length > 1 && !/\s/.test(prompt);
+    if (isBareSlashCommand) {
+      deps.writeToTerminal(input.sessionId, ' ');
+      await deps.delay(SUBMIT_WRITE_GAP_MS);
+    }
+    deps.writeToTerminal(input.sessionId, SUBMIT_TERMINATOR);
+  } else {
+    const ptyText = composeClaudeCliPtySubmission({
+      prompt,
+      attachments,
+      documentContext: input.documentContext,
+    });
+    if (!ptyText) {
+      return { submitted: false };
+    }
+
+    deps.writeToTerminal(input.sessionId, ptyText);
+    await deps.delay(SUBMIT_WRITE_GAP_MS);
+    deps.writeToTerminal(input.sessionId, SUBMIT_TERMINATOR);
+  }
 
   // Log the CLEAN typed prompt (+ attachment chips), NOT the path-augmented PTY
   // line. Best-effort: the CLI turn already started.
@@ -80,6 +127,12 @@ export async function submitClaudeCliPrompt(
     messageLength: prompt.length,
     hasAttachments: attachments.length > 0,
     attachmentCount: attachments.length,
+    hasDocumentContext: !!(
+      input.documentContext?.filePath ||
+      (typeof input.documentContext?.textSelection === 'string'
+        ? input.documentContext.textSelection
+        : input.documentContext?.textSelection?.text)
+    ),
   });
 
   return { submitted: true };

@@ -12,6 +12,7 @@ import { TrustIndicator } from '../TrustIndicator';
 import { ExtensionDevIndicator } from '../ExtensionDevIndicator';
 import { ClaudeUsageIndicator } from '../ClaudeUsageIndicator';
 import { CodexUsageIndicator } from '../CodexUsageIndicator';
+import { GeminiUsageIndicator } from '../GeminiUsageIndicator';
 import { BackgroundTaskIndicator } from '../BackgroundTaskIndicator';
 import { VoiceModeButton } from '../UnifiedAI/VoiceModeButton';
 import { useExtensionGutterButtons, useExtensionBottomPanelButtons } from '../../extensions/panels/usePanels';
@@ -616,6 +617,13 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
         {!isHidden('codex-usage') && (
           <div onContextMenu={(e) => openContextMenu(e, 'codex-usage')}>
             <CodexUsageIndicator />
+          </div>
+        )}
+
+        {/* Gemini Usage Indicator - Shows Gemini (Antigravity) usage limits */}
+        {!isHidden('gemini-usage') && (
+          <div onContextMenu={(e) => openContextMenu(e, 'gemini-usage')}>
+            <GeminiUsageIndicator />
           </div>
         )}
 

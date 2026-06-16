@@ -155,6 +155,7 @@ const COPY_TABLES: readonly string[] = [
   'super_loops',
   'super_iterations',
   'collab_local_origins',
+  'project_file_sync_baseline',
 ];
 
 /**

@@ -19,6 +19,7 @@ import { addGitignoreBypass } from '../file/WorkspaceEventBus';
 import { documentServices } from '../window/WindowManager';
 import { sessionEditQuota } from './SessionEditQuota';
 import { extractFilePath } from './ai/tools/extractFilePath';
+import { notifySessionFilesUpdated } from './sessionFilesNotify';
 
 /**
  * Extract file mentions from user messages
@@ -414,6 +415,13 @@ export class SessionFileTracker {
       if (linkType === 'edited') {
         const dedupeKey = this.makeEditDedupeKey(sessionId, filePath, toolUseId);
         this.recentEdits.set(dedupeKey, Date.now());
+
+        // NIM-816: invalidate the IPC cache and ping the renderer from the
+        // write boundary itself, so EVERY entrypoint that feeds the tracker
+        // (SDK streaming loop, CLI observation path) keeps the
+        // FilesEditedSidebar live. The CLI path has no streaming-handler
+        // broadcast of its own; without this its first edit never showed.
+        notifySessionFilesUpdated(sessionId);
       }
 
       logger.main.debug(`[SessionFileTracker] Tracked ${linkType} link: ${filePath}`);

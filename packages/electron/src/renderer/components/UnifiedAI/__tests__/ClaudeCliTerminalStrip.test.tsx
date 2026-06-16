@@ -2,6 +2,8 @@
 import React from 'react';
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, act } from '@testing-library/react';
+import { Provider, createStore } from 'jotai';
+import { windowFocusedAtom } from '../../../store/atoms/windowFocus';
 
 // Capture what the strip hands to TerminalPanel without pulling in xterm/ghostty.
 // `isActive`/`panelVisible` true === "the genuine CLI is being launched".
@@ -31,14 +33,10 @@ function triggerOnScreen() {
   });
 }
 
-let windowFocused = true;
-
 beforeEach(() => {
   terminalProps.length = 0;
   intersectCallbacks = [];
   (globalThis as unknown as { IntersectionObserver: typeof MockIO }).IntersectionObserver = MockIO;
-  windowFocused = true;
-  vi.spyOn(document, 'hasFocus').mockImplementation(() => windowFocused);
 });
 
 afterEach(() => {
@@ -49,31 +47,44 @@ afterEach(() => {
 const launched = () =>
   terminalProps.length > 0 && terminalProps[terminalProps.length - 1].isActive;
 
-describe('ClaudeCliTerminalStrip - launches the CLI only when the window is focused (NIM-813)', () => {
-  it('does NOT launch when on-screen but the window is not focused', () => {
-    windowFocused = false;
-    render(<ClaudeCliTerminalStrip sessionId="s1" workspacePath="/ws" />);
+function renderStrip(store: ReturnType<typeof createStore>) {
+  return render(
+    <Provider store={store}>
+      <ClaudeCliTerminalStrip sessionId="s1" workspacePath="/ws" />
+    </Provider>,
+  );
+}
+
+describe('ClaudeCliTerminalStrip - launches the CLI only when this is the focused window (NIM-849)', () => {
+  it('does NOT launch when on-screen but this window is not the focused window', () => {
+    // The app is active (so document.hasFocus() would be true here), but main
+    // reports this window is not the OS-key window — the old gate misfired here.
+    const store = createStore();
+    store.set(windowFocusedAtom, false);
+    renderStrip(store);
     triggerOnScreen();
     expect(launched()).toBe(false);
   });
 
-  it('launches when on-screen and the window is focused', () => {
-    windowFocused = true;
-    render(<ClaudeCliTerminalStrip sessionId="s1" workspacePath="/ws" />);
+  it('launches when on-screen and this is the focused window', () => {
+    const store = createStore();
+    store.set(windowFocusedAtom, true);
+    renderStrip(store);
     triggerOnScreen();
     expect(launched()).toBe(true);
   });
 
-  it('launches a background window once it gains focus', () => {
-    windowFocused = false;
-    render(<ClaudeCliTerminalStrip sessionId="s1" workspacePath="/ws" />);
+  it('launches a background window once it actually becomes the focused window', () => {
+    const store = createStore();
+    store.set(windowFocusedAtom, false);
+    renderStrip(store);
     triggerOnScreen();
     expect(launched()).toBe(false);
 
-    // User brings the window forward.
-    windowFocused = true;
+    // User brings the window forward -> main sends window:focus-changed=true,
+    // the listener sets the atom, and the strip latches.
     act(() => {
-      window.dispatchEvent(new Event('focus'));
+      store.set(windowFocusedAtom, true);
     });
     expect(launched()).toBe(true);
   });

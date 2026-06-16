@@ -5,10 +5,6 @@ const DEFAULT_MODEL = 'claude-code:opus-1m';
 
 describe('resolveClaudeCodeModelVariant', () => {
   describe('standard variants (no extended context)', () => {
-    it('resolves fable variant', () => {
-      expect(resolveClaudeCodeModelVariant('claude-code:fable', DEFAULT_MODEL)).toBe('fable');
-    });
-
     it('resolves sonnet variant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:sonnet', DEFAULT_MODEL)).toBe('sonnet');
     });
@@ -21,6 +17,17 @@ describe('resolveClaudeCodeModelVariant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:haiku', DEFAULT_MODEL)).toBe('haiku');
     });
 
+    it('resolves fable to the pinned full model id — the SDK-bundled CLI rejects the bare `fable` alias', () => {
+      // Observed 2026-06-12: passing `fable` through produced "There's an issue
+      // with the selected model (fable). It may not exist..." from the Agent SDK.
+      expect(resolveClaudeCodeModelVariant('claude-code:fable', DEFAULT_MODEL)).toBe('claude-fable-5');
+      expect(resolveClaudeCodeModelVariant('claude-code:fable-5', DEFAULT_MODEL)).toBe('claude-fable-5');
+    });
+
+    it('fable-1m resolves to the pinned id with the [1m] suffix (same shape as pinned opus 1M variants)', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:fable-1m', DEFAULT_MODEL)).toBe('claude-fable-5[1m]');
+    });
+
     it('uses default model when config model is undefined', () => {
       expect(resolveClaudeCodeModelVariant(undefined, DEFAULT_MODEL)).toBe('opus[1m]');
     });
@@ -31,11 +38,6 @@ describe('resolveClaudeCodeModelVariant', () => {
   });
 
   describe('extended context (1M) variants', () => {
-    it('canonicalizes stale fable-1m selections to fable', () => {
-      const result = resolveClaudeCodeModelVariant('claude-code:fable-1m', DEFAULT_MODEL);
-      expect(result).toBe('fable');
-    });
-
     it('sonnet-1m resolves to sonnet[1m] (Sonnet 4.6)', () => {
       const result = resolveClaudeCodeModelVariant('claude-code:sonnet-1m', DEFAULT_MODEL);
       expect(result).toBe('sonnet[1m]');
@@ -59,7 +61,7 @@ describe('resolveClaudeCodeModelVariant', () => {
 
   describe('SDK compatibility', () => {
     it('standard variants are valid SDK model values', () => {
-      const validSdkValues = ['fable', 'sonnet', 'opus', 'haiku'];
+      const validSdkValues = ['sonnet', 'opus', 'haiku'];
       for (const variant of validSdkValues) {
         const result = resolveClaudeCodeModelVariant(`claude-code:${variant}`, DEFAULT_MODEL);
         expect(validSdkValues).toContain(result);
@@ -77,7 +79,7 @@ describe('resolveClaudeCodeModelVariant', () => {
     });
 
     it('standard variants do NOT include [1m] suffix', () => {
-      const variants = ['fable', 'sonnet', 'opus', 'haiku'];
+      const variants = ['sonnet', 'opus', 'haiku'];
       for (const variant of variants) {
         const result = resolveClaudeCodeModelVariant(`claude-code:${variant}`, DEFAULT_MODEL);
         expect(result).not.toContain('[1m]');
@@ -133,7 +135,6 @@ describe('resolveClaudeCodeModelVariant', () => {
     });
 
     it('handles raw variant names without provider prefix', () => {
-      expect(resolveClaudeCodeModelVariant('fable', DEFAULT_MODEL)).toBe('fable');
       expect(resolveClaudeCodeModelVariant('sonnet', DEFAULT_MODEL)).toBe('sonnet');
     });
 

@@ -1,9 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   parseClaudePidFile,
   mapPidStatusToTurnState,
   diffTurnState,
   isClaudePidFileStale,
+  watchClaudePidState,
+  readClaudePidTurnState,
+  type ClaudeTurnState,
 } from '../claudeCliPidState';
 
 /**
@@ -85,5 +88,117 @@ describe('diffTurnState', () => {
 
   it('treats an undefined previous state as a change', () => {
     expect(diffTurnState(undefined, 'running').changed).toBe(true);
+  });
+});
+
+/**
+ * NIM-814: a hung/dead CLI must not pin the UI to "Thinking" forever. The
+ * trustworthy stuck signal is process liveness, NOT `updatedAt` age: the CLI
+ * only rewrites `updatedAt` on status transitions (verified empirically against
+ * CLI 2.1.170 — a live busy turn showed a 5+ minute old `updatedAt`), so an
+ * age threshold would falsely idle long agentic turns.
+ */
+describe('watchClaudePidState liveness backstop', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const busyFile = JSON.stringify({ status: 'busy', pid: 999, updatedAt: 1_000 });
+
+  function setup(opts: {
+    readFile: (p: string) => Promise<string>;
+    isProcessAlive: (pid: number) => boolean;
+  }) {
+    vi.useFakeTimers();
+    const states: ClaudeTurnState[] = [];
+    const stop = watchClaudePidState({
+      pid: 999,
+      homeDir: '/fake-home',
+      intervalMs: 500,
+      readFile: opts.readFile,
+      isProcessAlive: opts.isProcessAlive,
+      onTurnState: (state) => states.push(state),
+    });
+    return { states, stop };
+  }
+
+  it('keeps trusting an old busy file while the process is alive (no updatedAt staleness)', async () => {
+    const { states, stop } = setup({
+      readFile: async () => busyFile,
+      isProcessAlive: () => true,
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(states).toEqual(['running']);
+    stop();
+  });
+
+  it('maps a busy file to idle once the process is dead', async () => {
+    let alive = true;
+    const { states, stop } = setup({
+      readFile: async () => busyFile,
+      isProcessAlive: () => alive,
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(states).toEqual(['running']);
+    alive = false;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(states).toEqual(['running', 'idle']);
+    stop();
+  });
+
+  it('releases a held running state to idle when the file becomes unreadable and the process is dead', async () => {
+    let alive = true;
+    let readable = true;
+    const { states, stop } = setup({
+      readFile: async () => {
+        if (!readable) throw new Error('ENOENT');
+        return busyFile;
+      },
+      isProcessAlive: () => alive,
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(states).toEqual(['running']);
+    readable = false;
+    await vi.advanceTimersByTimeAsync(1_000);
+    // File gone but process alive: hold last-known.
+    expect(states).toEqual(['running']);
+    alive = false;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(states).toEqual(['running', 'idle']);
+    stop();
+  });
+});
+
+describe('readClaudePidTurnState (one-shot)', () => {
+  it('returns the mapped state for a readable file with a live process', async () => {
+    const state = await readClaudePidTurnState({
+      pid: 999,
+      homeDir: '/fake-home',
+      readFile: async () => '{"status":"busy"}',
+      isProcessAlive: () => true,
+    });
+    expect(state).toBe('running');
+  });
+
+  it('returns idle for a dead process regardless of file contents', async () => {
+    const state = await readClaudePidTurnState({
+      pid: 999,
+      homeDir: '/fake-home',
+      readFile: async () => '{"status":"busy"}',
+      isProcessAlive: () => false,
+    });
+    expect(state).toBe('idle');
+  });
+
+  it('returns null when the file is unreadable but the process is alive (unknown)', async () => {
+    const state = await readClaudePidTurnState({
+      pid: 999,
+      homeDir: '/fake-home',
+      readFile: async () => {
+        throw new Error('ENOENT');
+      },
+      isProcessAlive: () => true,
+    });
+    expect(state).toBeNull();
   });
 });

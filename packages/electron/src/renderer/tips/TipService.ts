@@ -31,18 +31,11 @@ export function shouldShowTip(
   // Already completed (user clicked primary action)
   if (state.completed.includes(tip.id)) return false;
 
-  // Already dismissed (user clicked X)
+  // Legacy: tips are no longer dismissible, but honor any historical dismissed
+  // entries from the shared walkthrough store so they stay hidden.
   if (state.dismissed.includes(tip.id)) return false;
 
   return true;
-}
-
-/**
- * Mark a tip as dismissed (user clicked X).
- * Persisted -- won't show again for this version.
- */
-export async function markTipDismissed(tipId: string, version?: number): Promise<void> {
-  return window.electronAPI.invoke('walkthroughs:mark-dismissed', tipId, version);
 }
 
 /**

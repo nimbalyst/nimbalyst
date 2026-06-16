@@ -10,10 +10,10 @@ import { useAtomValue } from 'jotai';
 import {
   claudeUsageAtom,
   claudeUsageAvailableAtom,
-  claudeUsageIndicatorEnabledAtom,
   claudeUsageSessionColorAtom,
   formatResetTime,
 } from '../../store/atoms/claudeUsageAtoms';
+import { useSetting } from '../../hooks/useSetting';
 import { ClaudeUsagePopover } from './ClaudeUsagePopover';
 import { refreshClaudeUsage } from '../../store/listeners/claudeUsageListeners';
 
@@ -27,7 +27,7 @@ interface ClaudeUsageIndicatorProps {
 export const ClaudeUsageIndicator: React.FC<ClaudeUsageIndicatorProps> = ({ className }) => {
   const usage = useAtomValue(claudeUsageAtom);
   const isAvailable = useAtomValue(claudeUsageAvailableAtom);
-  const isEnabled = useAtomValue(claudeUsageIndicatorEnabledAtom);
+  const isEnabled = useSetting('ai.showUsageIndicator');
   const sessionColor = useAtomValue(claudeUsageSessionColorAtom);
 
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);

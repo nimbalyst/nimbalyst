@@ -10,12 +10,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- iOS: create a Meta Agent from the session create menu (alpha-gated to mirror the desktop `meta-agent` feature flag, synced to mobile).
+- New Gemini (Antigravity) marketplace extension, usable as an AI chat and meta-agent provider, with a usage indicator chip. (#558)
+- `/session-cleanup` command (Planning extension) tidies your Sessions board: it proposes phase corrections and "mark complete" candidates for your approval, and flags old sessions to archive.
+- `nim`, a companion CLI for trackers: list, create, update, comment on, archive, and import tracker items from the terminal — through a running Nimbalyst, or directly against the database when the app is closed.
+
+### Changed
+- Contextual tips now fill empty AI sessions immediately and on every empty session, instead of after a delay and only once per app launch.
+
+### Fixed
+- Personal docs sync no longer overwrites newer local edits (or an open editor's unsaved changes) with an older synced copy.
+- "Commit with AI" in a worktree now proposes all uncommitted changes in the worktree, not just the current session's edits.
+- Claude Code CLI sessions now show an install link when the Claude Code CLI isn't installed, instead of a cryptic terminal error.
+- Stop the AskUserQuestion widget from crashing when a question is missing its options.
+- Deleting a custom tracker type no longer fails on the SQLite backend.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.65.4] - 2026-06-15
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+- Lost-model fallback no longer silently sends paid 1M context; 1M is only used when you explicitly pick a 1M model. (#631)
+- "Allow All" permission mode auto-approves everything again; the Claude Code safety classifier is now opt-in per project. (#628)
+- No more Electron crash when a worktree produces a filesystem-event storm. (#629)
+- Auto-commit retries when another git process briefly holds .git/index.lock, so concurrent sessions commit on the first try.
+- Background Claude Code CLI sessions no longer spawn (and hit rate limits) when the app is reactivated.
+- Claude Code CLI: the "Thinking…" indicator no longer sticks off after you answer a question.
+- Claude Code CLI: a typed slash command no longer runs the autocomplete-highlighted command instead.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.65.3] - 2026-06-15
+
+
+### Added
+<!-- New features go here -->
 
 ### Changed
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
 <!-- Bug fixes go here -->
+- MCP servers disabled in Settings no longer load in Claude Code CLI sessions (they were leaking in and eating context).
+- Claude Code CLI sessions no longer get stuck showing a "Processing…" spinner after their turn finishes.
+- Namespaced extension slash commands (e.g. /feedback:bug-report) now resolve in Claude Code CLI sessions instead of failing.
+- Generated extension-workflow plugins now load in Claude Code CLI sessions, with broader CLI version support for plugin loading.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.65.2] - 2026-06-12
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Claude Code CLI sessions can now spawn sessions via the meta-agent tools, and prompts sent to them while closed (spawned sessions, restart continuations, scheduled wakeups) launch the CLI and deliver instead of failing.
+- Smart Commit and other queued prompts on Claude Code CLI sessions no longer linger in the queued list after they run.
+- The CLI terminal drawer no longer steals keyboard focus from the chat input when ordinary terminal output looks like a picker.
+- Linked tracker items now show up and survive linking additional items on the SQLite backend, and commits link to session trackers again.
+- Stopping an already-idle Claude Code CLI session no longer quits the CLI and leaves the session unresponsive.
+- Claude Agent startup crashes now log detailed spawn diagnostics and auto-capture a CLI debug log on retry, and the real error message reaches the renderer log (#614).
+- HTML preview renders again instead of a blank pane (or a Windows Store popup), and in-workspace files on Windows are no longer rejected over drive-letter casing (#612, #625).
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.65.1] - 2026-06-12
+
+
+### Added
+<!-- New features go here -->
+- Claude Fable 5 is now selectable across all Claude providers, including a Fable 5 (1M) variant; existing Fable defaults migrate to 1M automatically.
+- Switch models mid-session on Claude Code CLI sessions from the model picker.
+- Claude Code CLI sessions receive your active document and selection as context, support workspace slash commands and the memory widget, and auto-name themselves from the first prompt.
+- Toggle the raw-terminal drawer with Ctrl+Shift+`; hover help on the model picker explains the Claude Agent vs Claude Code CLI choice.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Stopping a Claude Code CLI turn now reliably interrupts the CLI, and queued prompts no longer get stuck near turn boundaries.
+- API failures in Claude Code CLI sessions surface in the transcript without false alarms at session startup.
+- The raw-terminal drawer stays closed once you collapse it and no longer steals keyboard focus from the chat input.
+- Files Edited sidebar updates immediately as Claude Code CLI sessions edit files.
+- Fixed the whole app freezing permanently after closing a terminal that had rendered emoji output.
+- Terminal Retry now actually recovers a failed initialization, and a slow-starting backend auto-recovers without clicking Retry.
+- Claude Code CLI raw terminal no longer double-paints or mis-wraps its display after restoring a session.
+- Fable 5 sessions no longer hit a false 200k context ceiling: selecting Fable resolves to a model the Claude Agent SDK accepts, and the context indicator matches the CLI's real window.
+- Claude Code CLI sessions no longer appear disconnected after switching sessions — the terminal reattaches even while its drawer is collapsed.
 
 ### Removed
 <!-- Removed features go here -->

@@ -190,10 +190,28 @@ export function registerWindowHandlers() {
         reportDesktopActivity();
     });
 
+    // Authoritative per-window focus state for renderers (NIM-849).
+    //
+    // The renderer's own `document.hasFocus()` is true for EVERY window while the
+    // app is the active application — it cannot tell the OS-key window from a
+    // background one. That misfire let background-project Claude CLI sessions all
+    // spawn on app activation, each firing an upstream request and stampeding the
+    // subscription rate limit. `browser-window-focus`/`blur` fire only for the
+    // specific window that gained/lost OS focus, so reporting THIS window's state
+    // to its own renderer is the reliable signal the CLI launch gate needs.
+    safeHandle('window:is-focused', (event) => {
+        const win = BrowserWindow.fromWebContents(event.sender);
+        return !!win && !win.isDestroyed() && win.isFocused();
+    });
+
     // Track window focus for sync presence and DAU analytics
-    // Note: These are app-level events, not window-specific
-    app.on('browser-window-focus', () => {
+    // Note: setWindowFocused() is app-level; the per-window send below is not.
+    app.on('browser-window-focus', (_event, win) => {
         setWindowFocused(true);
+
+        if (win && !win.isDestroyed()) {
+            win.webContents.send('window:focus-changed', true);
+        }
 
         // Emit app_foregrounded for DAU tracking when a window gains focus,
         // throttled to once per 30 minutes to keep event volume low
@@ -204,10 +222,14 @@ export function registerWindowHandlers() {
         }
     });
 
-    app.on('browser-window-blur', () => {
+    app.on('browser-window-blur', (_event, win) => {
         // Check if any window is still focused
         const anyFocused = BrowserWindow.getAllWindows().some(w => w.isFocused());
         setWindowFocused(anyFocused);
+
+        if (win && !win.isDestroyed()) {
+            win.webContents.send('window:focus-changed', false);
+        }
     });
 
     // Track screen lock state for sync presence. Note: reconnect logic itself

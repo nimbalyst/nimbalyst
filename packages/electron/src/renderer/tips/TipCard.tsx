@@ -1,9 +1,11 @@
 /**
  * TipCard Component
  *
- * A compact, dismissible card with two rendering variants:
- * - 'floating' (default): fixed bottom-left, rendered through a portal.
- * - 'inline': flows in the parent layout, no portal, no fixed position.
+ * A compact card with two rendering variants:
+ * - 'floating' (default): fixed bottom-left, rendered through a portal;
+ *   shows a dismiss X when `onDismiss` is provided.
+ * - 'inline': flows in the parent layout, no portal, no fixed position, no
+ *   dismiss affordance.
  *
  * Both variants share the same internal structure (header / body / actions).
  */
@@ -64,8 +66,11 @@ function parseBoldText(text: string): React.ReactNode {
 interface TipCardProps {
   /** The tip definition to display */
   tip: TipDefinition;
-  /** Called when user clicks X or presses Escape */
-  onDismiss: () => void;
+  /**
+   * Called when user clicks X or presses Escape. Only relevant to the
+   * floating variant; when omitted, no dismiss affordance is rendered.
+   */
+  onDismiss?: () => void;
   /** Called when user clicks the primary action */
   onAction: () => void;
   /** Called when user clicks the secondary action */
@@ -97,7 +102,7 @@ export function TipCard({
   // Handle Escape key for the floating variant only -- inline cards live
   // inside a transcript and shouldn't capture Escape globally.
   useEffect(() => {
-    if (!isFloating) return;
+    if (!isFloating || !onDismiss) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -169,7 +174,7 @@ export function TipCard({
             {tip.content.title}
           </div>
         </div>
-        {isFloating && (
+        {isFloating && onDismiss && (
           <button
             className="nim-btn-icon w-6 h-6 flex items-center justify-center shrink-0 -mt-0.5 -mr-1 text-[var(--nim-text-faint)] hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text-muted)] rounded transition-all duration-150"
             onClick={onDismiss}

@@ -100,6 +100,22 @@ export interface ToolCall {
   };
 }
 
+/**
+ * OpenAI function-calling shaped tool definition threaded to extension-agent
+ * providers so their tool loops (e.g. gemini-antigravity) can present the host's
+ * meta-agent tools as JSON in the model prompt. Built-in providers ignore this
+ * — they discover the same tools over an SSE MCP server instead. Optional and
+ * additive everywhere it appears so no built-in provider path is affected.
+ */
+export interface AgentToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+}
+
 export interface Message {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
@@ -199,6 +215,14 @@ export function shouldBlockStartedSessionProviderSwitch(
  * `opus-4-7` and `opus-4-6` are pinned-version variants retained after bumping
  * the canonical `opus` alias to 4.8, so users can still choose previous
  * generations. See CLAUDE_CODE_PINNED_SDK_MODELS in modelConstants.ts.
+ *
+ * `fable` is the Fable 5 tier above Opus — the CLI accepts it as a first-class
+ * alias (`--model fable`, `/model fable`). The CLI gates the 1M window behind
+ * the `fable[1m]` form just like opus/sonnet (plain `fable` is windowed at
+ * 200k client-side; verified on CLI 2.1.175), so `fable` IS in
+ * CLAUDE_CODE_VARIANTS_WITH_1M and gets a `fable-1m` picker row. Note it
+ * requires usage credits on subscription plans (the CLI surfaces that itself
+ * when unavailable).
  */
 export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-7', 'opus-4-6', 'sonnet', 'haiku'] as const;
 
@@ -213,8 +237,6 @@ export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-7', 'opus-4-6', 's
  *   specific version regardless of what "latest" becomes.
  * - For -1m variants, appends `[1m]` so the SDK adds the 1M-context beta
  *   header; the SDK strips `[1m]` before sending the model ID to the API.
- * - Fable 5 already runs with 1M context on supported surfaces, so stale
- *   fable-1m selections are canonicalized back to the plain `fable` alias.
  */
 export function resolveClaudeCodeModelVariant(configuredModel: string | undefined, defaultModel: string): string {
   type ClaudeCodeVariant = typeof CLAUDE_CODE_VARIANTS[number];
@@ -229,7 +251,6 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
     const variant = parsed.baseVariant as ClaudeCodeVariant;
     if ((CLAUDE_CODE_VARIANTS as readonly string[]).includes(variant)) {
       const sdkBase = toSdkBase(variant);
-      if (variant === 'fable') return sdkBase;
       // Append [1m] suffix for extended context so the SDK auto-detects the 1M beta
       return parsed.isExtendedContext ? `${sdkBase}[1m]` : sdkBase;
     }
@@ -244,7 +265,6 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
   const normalizedVariant = withoutContext ? normalizeClaudeCodeVariant(withoutContext) : null;
   if (normalizedVariant) {
     const sdkBase = toSdkBase(normalizedVariant);
-    if (normalizedVariant === 'fable') return sdkBase;
     return isExtended ? `${sdkBase}[1m]` : sdkBase;
   }
 

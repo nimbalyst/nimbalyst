@@ -53,6 +53,64 @@ describe('GitCommitService', () => {
     expect(result.error).toContain('HOOK_DETAIL: lint failed');
   });
 
+  it('retries past a briefly-held .git/index.lock and commits successfully', async () => {
+    await git(['init', '-q'], tmpRoot);
+    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
+    await git(['config', 'user.name', 'Test User'], tmpRoot);
+
+    // Seed commit so executeGitCommit's reset-HEAD path (which writes the index) runs.
+    await fs.writeFile(path.join(tmpRoot, 'seed.txt'), 'seed\n', 'utf8');
+    await git(['add', 'seed.txt'], tmpRoot);
+    await git(['commit', '-q', '-m', 'seed'], tmpRoot);
+
+    await fs.writeFile(path.join(tmpRoot, 'a.txt'), 'hello\n', 'utf8');
+
+    // Simulate another git process holding index.lock, releasing it shortly after.
+    const lockPath = path.join(tmpRoot, '.git', 'index.lock');
+    await fs.writeFile(lockPath, '', 'utf8');
+    const releaseTimer = setTimeout(() => {
+      void fs.rm(lockPath, { force: true });
+    }, 250);
+
+    try {
+      const result = await executeGitCommit(tmpRoot, 'commit under lock', ['a.txt'], {
+        logContext: '[test:git-commit]',
+        lockRetry: { maxRetries: 8, baseDelayMs: 50 },
+      });
+      expect(result.success).toBe(true);
+      expect(result.commitHash).toBeTruthy();
+    } finally {
+      clearTimeout(releaseTimer);
+      await fs.rm(lockPath, { force: true });
+    }
+  });
+
+  it('surfaces a clear lock error when .git/index.lock is held persistently', async () => {
+    await git(['init', '-q'], tmpRoot);
+    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
+    await git(['config', 'user.name', 'Test User'], tmpRoot);
+
+    await fs.writeFile(path.join(tmpRoot, 'seed.txt'), 'seed\n', 'utf8');
+    await git(['add', 'seed.txt'], tmpRoot);
+    await git(['commit', '-q', '-m', 'seed'], tmpRoot);
+
+    await fs.writeFile(path.join(tmpRoot, 'a.txt'), 'hello\n', 'utf8');
+
+    const lockPath = path.join(tmpRoot, '.git', 'index.lock');
+    await fs.writeFile(lockPath, '', 'utf8');
+
+    try {
+      const result = await executeGitCommit(tmpRoot, 'commit under lock', ['a.txt'], {
+        logContext: '[test:git-commit]',
+        lockRetry: { maxRetries: 3, baseDelayMs: 20 },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/locked by another git process/i);
+    } finally {
+      await fs.rm(lockPath, { force: true });
+    }
+  });
+
   it('maps failed commit execution to an error proposal response', () => {
     expect(
       createGitCommitProposalResponse(

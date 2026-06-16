@@ -9,6 +9,7 @@
  * from the pure core so the core unit-tests without pulling in electron.
  */
 
+import { BrowserWindow } from 'electron';
 import { getQueuedPromptsStore } from '../RepositoryManager';
 import { submitClaudeCliPromptProduction } from './claudeCliSubmitSingleton';
 import { flushNextClaudeCliQueuedPrompt } from './claudeCliQueueFlush';
@@ -36,6 +37,16 @@ export async function flushNextClaudeCliQueuedPromptForSession(
         complete: (id) => store.complete(id),
         fail: (id, m) => store.fail(id, m),
         submit: (i) => submitClaudeCliPromptProduction(i),
+        // The flush runs from the PID-idle transition with no originating IPC
+        // event, so there is no single target window; broadcasting is safe
+        // because the renderer filters by sessionId (NIM-830).
+        notifyClaimed: (promptId) => {
+          for (const win of BrowserWindow.getAllWindows()) {
+            if (!win.isDestroyed()) {
+              win.webContents.send('ai:promptClaimed', { sessionId, promptId });
+            }
+          }
+        },
       },
     );
   } catch (error) {

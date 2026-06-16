@@ -33,6 +33,7 @@ import {
 } from '../utils/store';
 import { registerFileExtension, clearRegisteredExtensions } from '../extensions/RegisteredFileTypes';
 import { validateBackendModules } from '@nimbalyst/extension-sdk';
+import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import type { ReleaseChannel } from '../utils/store';
 import { buildExtensionFindFilesPlan } from './extensionFindFilesPlan';
 import { database } from '../database/PGLiteDatabaseWorker';
@@ -40,6 +41,12 @@ import {
   isAllowedToContributeBackendModules,
   type BackendModuleAllowResult,
 } from '../extensions/backendModuleAllowlist';
+import { getAgentProviderRegistry } from '../extensions/AgentProviderRegistry';
+import type {
+  AiAgentProviderContribution,
+  BackendModuleContribution,
+  ExtensionManifest,
+} from '@nimbalyst/extension-sdk';
 
 /**
  * Validate `contributions.backendModules` on a parsed manifest, then apply
@@ -139,7 +146,10 @@ export async function initializeExtensionFileTypes(): Promise<void> {
     const extensionDirs = await getAllExtensionDirectories();
     const currentChannel = getReleaseChannel();
 
-    for (const extensionsDir of extensionDirs) {
+    for (let dirIndex = 0; dirIndex < extensionDirs.length; dirIndex++) {
+      const extensionsDir = extensionDirs[dirIndex];
+      // extensionDirs[0] is the user extensions dir; the rest are built-in.
+      const isBuiltinDir = dirIndex > 0;
       let subdirs;
       try {
         subdirs = await fs.readdir(extensionsDir, { withFileTypes: true });
@@ -148,8 +158,9 @@ export async function initializeExtensionFileTypes(): Promise<void> {
       }
 
       for (const subdir of subdirs) {
+        const isSymlink = subdir.isSymbolicLink();
         let isDir = subdir.isDirectory();
-        if (!isDir && subdir.isSymbolicLink()) {
+        if (!isDir && isSymlink) {
           try {
             const targetPath = path.join(extensionsDir, subdir.name);
             const stat = await fs.stat(targetPath);
@@ -187,6 +198,24 @@ export async function initializeExtensionFileTypes(): Promise<void> {
               }
             }
           }
+
+          // Catalog aiAgentProviders into the AgentProviderRegistry here too,
+          // so the catalog is populated at boot and after every install /
+          // uninstall (this function is the shared rescan hook), not only when
+          // the renderer happens to invoke extensions:list-installed. Without
+          // this an installed agent-provider extension stays invisible to the
+          // model picker until a list-installed call lands. register() is
+          // idempotent and preserves consent status, so re-running is safe.
+          const agentExtensionId = manifest.id || subdir.name;
+          validateAndScrubBackendModules(manifest, agentExtensionId, {
+            isBuiltin: isBuiltinDir,
+            isSymlink,
+          });
+          registerAgentProviderContributions(
+            manifest as ExtensionManifest,
+            agentExtensionId,
+            extensionPath
+          );
         } catch {
           // Skip directories without valid manifest
         }
@@ -662,6 +691,59 @@ export async function getClaudePluginPaths(workspacePath?: string): Promise<Arra
 }
 
 /**
+ * Register each `aiAgentProviders` contribution from a parsed manifest into
+ * the AgentProviderRegistry. Skips contributions whose `backendModuleId`
+ * doesn't point at a surviving `backendModules` entry -- a contribution that
+ * lost its backing module (because validation stripped it, or it was never
+ * declared) is dead weight; hiding it from the dropdown is correct.
+ *
+ * Called from the list-installed scan AFTER validateAndScrubBackendModules
+ * has run so `manifest.contributions.backendModules` reflects what actually
+ * survived.
+ */
+function registerAgentProviderContributions(
+  manifest: ExtensionManifest,
+  extensionId: string,
+  extensionPath: string
+): void {
+  const contributions = manifest.contributions as
+    | { backendModules?: BackendModuleContribution[]; aiAgentProviders?: AiAgentProviderContribution[] }
+    | undefined;
+  const providers = contributions?.aiAgentProviders;
+  if (!providers || providers.length === 0) return;
+
+  const surviving = new Set<string>(
+    (contributions?.backendModules ?? []).map((m) => m.id)
+  );
+  const registry = getAgentProviderRegistry();
+  for (const provider of providers) {
+    if (!surviving.has(provider.backendModuleId)) {
+      logger.main.warn(
+        `[ExtensionHandlers] Extension ${extensionId} aiAgentProviders[${provider.id}] ` +
+          `references backendModuleId "${provider.backendModuleId}" which is not a surviving ` +
+          `backend module. Hiding the provider from the dropdown.`
+      );
+      continue;
+    }
+    registry.register({
+      extensionId,
+      contributionId: provider.id,
+      manifest,
+      contribution: provider,
+      backendModuleId: provider.backendModuleId,
+      extensionPath,
+    });
+    logger.main.info(
+      `[ExtensionHandlers] Registered agent provider: ${provider.id} (from ${extensionId})`
+    );
+    // Teach ModelIdentifier this provider id so provider-from-model derivation
+    // (sessions:create, sessionHistoryActions, etc.) resolves it instead of
+    // falling back to claude-code.
+    ModelIdentifier.registerExtensionProvider(provider.id);
+  }
+}
+
+/**
  * Register IPC handlers for extension operations.
  */
 export function registerExtensionHandlers(): void {
@@ -921,6 +1003,16 @@ export function registerExtensionHandlers(): void {
               isSymlink,
             });
 
+            // Catalog any `aiAgentProviders` whose backing backend module
+            // survived. The registry entry is metadata only; the host won't
+            // spawn the runtime until a session targeting this provider
+            // triggers the first-use consent flow.
+            registerAgentProviderContributions(
+              manifest as ExtensionManifest,
+              extensionId,
+              extensionPath
+            );
+
             // Register file patterns from customEditors
             if (manifest.contributions?.customEditors) {
               for (const editor of manifest.contributions.customEditors) {
@@ -953,6 +1045,30 @@ export function registerExtensionHandlers(): void {
     } catch (error) {
       logger.main.error('[ExtensionHandlers] Failed to list installed extensions:', error);
       return [];
+    }
+  });
+
+  // List registered extension-contributed AI agent providers for the renderer
+  // (Settings AGENT PROVIDERS panel). Returns provider metadata from the
+  // AgentProviderRegistry; denied entries are hidden. The model picker gets
+  // models via ai:getModels; this is the provider-level listing.
+  safeHandle('agent-providers:list', async () => {
+    try {
+      const data = getAgentProviderRegistry()
+        .list()
+        .filter((entry) => entry.status !== 'denied')
+        .map((entry) => ({
+          id: entry.contributionId,
+          extensionId: entry.extensionId,
+          name: entry.contribution.displayName || entry.contributionId,
+          icon: entry.contribution.icon,
+          status: entry.status,
+          models: (entry.contribution.models ?? []).map((m) => ({ id: m.id, name: m.name })),
+        }));
+      return { success: true, data };
+    } catch (error) {
+      logger.main.error('[ExtensionHandlers] Failed to list agent providers:', error);
+      return { success: false, error: String(error), data: [] };
     }
   });
 
@@ -1136,6 +1252,10 @@ export function registerExtensionHandlers(): void {
           if (manifest.id === extensionId) {
             // Found it - remove the symlink/directory
             await fs.rm(entryPath, { recursive: true, force: true });
+            // Evict any aiAgentProviders the extension had registered so
+            // the dropdown stops listing them. The PrivilegedExtensionHost
+            // handles its own teardown via handleExtensionUninstalled.
+            getAgentProviderRegistry().clearAll(extensionId);
             logger.main.info(`[ExtensionHandlers] Removed dev extension: ${extensionId} at ${entryPath}`);
             return { success: true };
           }

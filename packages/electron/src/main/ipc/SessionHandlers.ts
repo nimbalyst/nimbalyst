@@ -1502,8 +1502,12 @@ export async function registerSessionHandlers() {
                     [payload.sessionId]
                 );
                 if (sessionResult.rows.length > 0) {
-                    const metadata = sessionResult.rows[0].metadata ?? {};
-                    const linkedTrackerItemIds: string[] = metadata.linkedTrackerItemIds || [];
+                    // SQLite returns metadata as a raw JSON string (NIM-829);
+                    // an unparsed read starts from [] and clobbers prior links.
+                    const metadata = parseJsonObjectColumn(sessionResult.rows[0].metadata);
+                    const linkedTrackerItemIds: string[] = Array.isArray(metadata.linkedTrackerItemIds)
+                        ? metadata.linkedTrackerItemIds
+                        : [];
                     if (!linkedTrackerItemIds.includes(fileRef)) {
                         linkedTrackerItemIds.push(fileRef);
                         await db.query(

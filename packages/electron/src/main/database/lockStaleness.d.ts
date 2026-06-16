@@ -35,6 +35,27 @@ export interface DecideLockIsRunningArgs {
    * 60_000 ms.
    */
   staleGraceMs?: number;
+  /**
+   * Optional process-identity probe. Given a PID, returns a short identity
+   * string (e.g. the executable name) or `null` if it cannot be determined.
+   * When the `kill(0)` liveness check succeeds and this returns an identity
+   * that does NOT match the app, the lock is treated as stale (the PID was
+   * reused by an unrelated process). Unknown identity fails closed to
+   * 'running' so a live sibling is never clobbered.
+   */
+  processIdentityFn?: (pid: number) => string | null;
+  /**
+   * Lowercased substrings that mark a probed identity as belonging to this
+   * app. Default `['electron', 'nimbalyst']`. A matching identity is a live
+   * sibling; a non-matching one is stale PID reuse.
+   */
+  appProcessSignatures?: string[];
+  /**
+   * This process's own PID. Defaults to `process.pid`. If the lock file's
+   * PID equals this, the dead holder's PID was reused for us and the lock is
+   * stale (we have not acquired it yet this run). Injectable for tests.
+   */
+  selfPid?: number;
 }
 
 /**

@@ -7,12 +7,20 @@
  */
 
 import { atom } from 'jotai';
+import { store } from '@nimbalyst/runtime/store';
+import { onSettingChanged } from './settingAtomFamily';
 
 /**
  * Whether auto-commit is enabled for git commit proposals.
  * Defaults to false (opt-in).
  */
 export const autoCommitEnabledAtom = atom<boolean>(false);
+
+// Mirror cross-window writes into the atom so a toggle in another window
+// reflects here without waiting for a reload.
+onSettingChanged('ai.autoCommitEnabled', (enabled) => {
+  store.set(autoCommitEnabledAtom, enabled);
+});
 
 /**
  * Debounce timer for persistence.
@@ -29,13 +37,13 @@ function scheduleAutoCommitPersist(enabled: boolean): void {
   }
   autoCommitPersistTimer = setTimeout(async () => {
     autoCommitPersistTimer = null;
-    if (typeof window !== 'undefined' && window.electronAPI) {
-      try {
-        // Send only the changed field -- ai:saveSettings handles partial updates
-        await window.electronAPI.aiSaveSettings({ autoCommitEnabled: enabled });
-      } catch (error) {
-        console.error('[autoCommitAtoms] Failed to save auto-commit setting:', error);
-      }
+    if (typeof window === 'undefined' || !window.electronAPI?.settingsSet) return;
+    try {
+      // Per-key write via SettingsService -- one validated, broadcasted write,
+      // no shared payload to step on adjacent fields.
+      await window.electronAPI.settingsSet('ai.autoCommitEnabled', enabled);
+    } catch (error) {
+      console.error('[autoCommitAtoms] Failed to save auto-commit setting:', error);
     }
   }, AUTO_COMMIT_PERSIST_DEBOUNCE_MS);
 }

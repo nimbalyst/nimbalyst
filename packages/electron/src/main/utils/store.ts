@@ -199,6 +199,8 @@ interface AppStoreSchema {
   preferredTerminalShell?: PreferredTerminalShell;
   // Last known app version (for migrations)
   lastKnownVersion?: string;
+  // One-shot migration flag: plain fable default bumped to fable-1m (NIM-827)
+  fableDefaultMigratedTo1m?: boolean;
   // Extension marketplace install tracking
   marketplaceInstalls?: Record<string, MarketplaceInstallRecord>;
   // Multi-project rail: opt-in flag to host multiple projects in a single
@@ -370,6 +372,12 @@ export type AgentPermissionMode = 'ask' | 'allow-all' | 'bypass-all' | null;
 export interface AgentPermissions {
   /** Permission mode: null=untrusted, 'ask'=smart permissions, 'allow-all'=auto-approve edits, 'bypass-all'=auto-approve everything */
   permissionMode: AgentPermissionMode;
+  /**
+   * Opt-in (issue #628): when true, "Allow All" (bypass-all) routes agent-mode
+   * Claude Code sessions through the SDK auto-mode classifier instead of
+   * bypassing every operation. Undefined/false = literal allow-all.
+   */
+  allowAllUsesClassifier?: boolean;
 }
 
 export interface AgenticCodingWindowState {
@@ -1824,7 +1832,14 @@ export function getAgentPermissions(workspacePath: string): AgentPermissions | u
 
 export function saveAgentPermissions(workspacePath: string, permissions: AgentPermissions): void {
   updateWorkspaceState(workspacePath, (state) => {
-    state.agentPermissions = { permissionMode: permissions.permissionMode };
+    state.agentPermissions = {
+      permissionMode: permissions.permissionMode,
+      // Preserve the "Allow All" classifier opt-in (issue #628). Without this the
+      // field is dropped on every save and the toggle never sticks.
+      ...(permissions.allowAllUsesClassifier !== undefined && {
+        allowAllUsesClassifier: permissions.allowAllUsesClassifier,
+      }),
+    };
   });
 }
 
@@ -1835,7 +1850,14 @@ export function isWorkspaceTrusted(workspacePath: string): boolean {
 
 export function setWorkspaceTrusted(workspacePath: string, trusted: boolean, mode: 'ask' | 'allow-all' | 'bypass-all' = 'ask'): void {
   updateWorkspaceState(workspacePath, (state) => {
-    state.agentPermissions = { permissionMode: trusted ? mode : null };
+    const existing = state.agentPermissions;
+    state.agentPermissions = {
+      permissionMode: trusted ? mode : null,
+      // Preserve the "Allow All" classifier opt-in across trust toggles (issue #628).
+      ...(existing?.allowAllUsesClassifier !== undefined && {
+        allowAllUsesClassifier: existing.allowAllUsesClassifier,
+      }),
+    };
   });
 }
 
@@ -2326,6 +2348,23 @@ export function runMigrations(currentVersion: string): void {
   // Missing lastKnownVersion means user is upgrading from <= 0.52.10
   // (versions before we started tracking lastKnownVersion)
   const isUpgradingFromOldVersion = !lastKnownVersion;
+
+  // One-shot, version-independent migration (NIM-827): plain `fable` defaults
+  // become `fable-1m`. Claude Code windows plain `fable` at 200k and gates the
+  // 1M window behind `fable[1m]`; the original Fable picker row predated
+  // `fable-1m`, so users who picked it were silently on 200k and hit "Prompt
+  // is too long" as soon as a large skill loaded. Flag-guarded (not
+  // version-gated) so it also fires on dev builds where the version doesn't
+  // change; a user who later deliberately re-picks plain Fable stays on it.
+  if (!getAppStore().get('fableDefaultMigratedTo1m')) {
+    const currentDefault = getAppStore().get('defaultAIModel');
+    if (currentDefault === 'claude-code:fable' || currentDefault === 'claude-code-cli:fable') {
+      const migrated = `${currentDefault}-1m`;
+      logger.store.info(`[Migrations] Migrating default model from ${currentDefault} to ${migrated}`);
+      getAppStore().set('defaultAIModel', migrated);
+    }
+    getAppStore().set('fableDefaultMigratedTo1m', true);
+  }
 
   // Same version - no migration needed
   if (!isUpgradingFromOldVersion && lastKnownVersion === currentVersion) {

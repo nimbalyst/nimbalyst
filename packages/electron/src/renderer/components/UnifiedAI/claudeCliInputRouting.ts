@@ -14,19 +14,11 @@
 /** Provider id whose input box routes to the terminal PTY. */
 export const CLAUDE_CLI_PROVIDER_ID = 'claude-code-cli';
 
-/**
- * Ctrl-C as terminal input. For the genuine Claude CLI, cancel/stop should go
- * through the PTY so the running CLI, proxy observer, and transcript remain on
- * the same session.
- */
-export const CLAUDE_CLI_INTERRUPT_INPUT = '\x03';
-
 /** True when the session's provider is the genuine terminal-backed Claude CLI. */
 export function isClaudeCliTerminalSession(provider: string | null | undefined): boolean {
   return provider === CLAUDE_CLI_PROVIDER_ID;
 }
 
-/** Format an interrupt for writing to the CLI's PTY. */
-export function formatClaudeCliInterruptInput(): string {
-  return CLAUDE_CLI_INTERRUPT_INPUT;
-}
+// Cancel/stop no longer writes a raw Ctrl-C from the renderer: the
+// `claude-cli:interrupt` IPC escalates Ctrl-C → Ctrl-C → SIGINT in the main
+// process (NIM-814, see main/services/ai/claudeCliInterrupt.ts).

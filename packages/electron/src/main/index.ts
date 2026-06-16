@@ -20,6 +20,7 @@ import { registerFileHandlers } from './ipc/FileHandlers';
 import { registerWorkspaceHandlers } from './ipc/WorkspaceHandlers.ts';
 import { registerSettingsHandlers } from './ipc/SettingsHandlers';
 import { registerWindowHandlers } from './ipc/WindowHandlers';
+import { registerEditorStateHandlers } from './ipc/EditorStateHandlers';
 import { registerHistoryHandlers } from './ipc/HistoryHandlers';
 import { registerSessionHandlers } from './ipc/SessionHandlers';
 import { registerSessionStateHandlers, shutdownSessionStateHandlers, hasActiveStreamingSessions } from './ipc/SessionStateHandlers';
@@ -89,6 +90,7 @@ import { AIService } from './services/ai/AIService';
 import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesForWorkspace } from './utils/workspaceDetection';
 import { cliManager, initEnhancedPath, getEnhancedPath, getShellEnvironment } from './services/CLIManager';
 import { registerWorkspaceWindow, registerExtensionTools, shutdownHttpServer, startMcpHttpServer, updateDocumentState } from './mcp/httpServer';
+import { writeMcpEndpointDescriptor, removeMcpEndpointDescriptor, type EndpointWorkspace } from './mcp/mcpEndpointDescriptor';
 import { startSessionContextServer, cleanupSessionContextServer, shutdownSessionContextServer } from './mcp/sessionContextServer';
 import { startSettingsServer, shutdownSettingsServer } from './mcp/settingsServer';
 import { generateMcpAuthToken, getMcpAuthToken } from './mcp/mcpAuth';
@@ -125,10 +127,13 @@ import { registerClaudeUsageHandlers } from './ipc/ClaudeUsageHandlers';
 import { claudeUsageService } from './services/ClaudeUsageService';
 import { registerCodexUsageHandlers } from './ipc/CodexUsageHandlers';
 import { codexUsageService } from './services/CodexUsageService';
+import { registerGeminiUsageHandlers } from './ipc/GeminiUsageHandlers';
+import { geminiUsageService } from './services/GeminiUsageService';
 import { codexAuthService } from './services/CodexAuthService';
 import { registerExtensionHandlers, getClaudePluginPaths, initializeExtensionFileTypes } from './ipc/ExtensionHandlers';
 import { registerExtensionPermissionHandlers } from './ipc/ExtensionPermissionHandlers';
 import { registerTrackerImporterHandlers } from './ipc/TrackerImporterHandlers';
+import { installExtensionAgentBridge } from './extensions/extensionAgentBridge';
 import { getAgentWorkflowService } from './services/AgentWorkflowService';
 import { queueMarketplaceInstallRequest, registerExtensionMarketplaceHandlers, runExtensionAutoUpdate } from './ipc/ExtensionMarketplaceHandlers';
 import { getRegisteredExtensions } from './extensions/RegisteredFileTypes';
@@ -857,6 +862,40 @@ async function handleDeepLink(url: string): Promise<void> {
 }
 
 /**
+ * Snapshot the workspaces currently open across all windows, for the `nim` CLI
+ * endpoint descriptor. Best-effort and de-duplicated; falls back to recent
+ * workspaces if no windows are open yet.
+ */
+function collectOpenWorkspaces(): EndpointWorkspace[] {
+    const seen = new Set<string>();
+    const out: EndpointWorkspace[] = [];
+    try {
+        for (const state of windowStates.values()) {
+            const paths = new Set<string>();
+            const active = resolveActiveWorkspacePath(state);
+            if (active) paths.add(active);
+            if (state?.workspacePath) paths.add(state.workspacePath);
+            for (const p of state?.additionalWorkspacePaths ?? []) paths.add(p);
+            for (const p of paths) {
+                if (!p || seen.has(p)) continue;
+                seen.add(p);
+                out.push({ path: p, name: path.basename(p) });
+            }
+        }
+        if (out.length === 0) {
+            for (const item of getRecentItems('workspaces')) {
+                if (!item?.path || seen.has(item.path)) continue;
+                seen.add(item.path);
+                out.push({ path: item.path, name: (item as any).name ?? path.basename(item.path) });
+            }
+        }
+    } catch {
+        /* best-effort */
+    }
+    return out;
+}
+
+/**
  * Find a workspace path whose team matches the given orgId. Looks first
  * across all open windows (active + rail-warm), then falls back to the
  * user's recent workspaces. Returns null if no known workspace matches.
@@ -1372,6 +1411,7 @@ app.whenReady().then(async () => {
     registerWorkspaceWatcherHandlers();
     registerSettingsHandlers();
     registerWindowHandlers();
+    registerEditorStateHandlers();
     await registerHistoryHandlers();
     await registerSessionHandlers();
     await registerSessionStateHandlers();
@@ -1394,6 +1434,8 @@ app.whenReady().then(async () => {
     claudeUsageService.initialize();
     registerCodexUsageHandlers();
     codexUsageService.initialize();
+    registerGeminiUsageHandlers();
+    geminiUsageService.initialize();
     registerPermissionHandlers();
     registerGitStatusHandlers();
     registerGitHandlers();
@@ -1811,7 +1853,11 @@ app.whenReady().then(async () => {
     // checker receives the parent project path, not the worktree path.
     const trustChecker = (workspacePath: string) => {
       const mode = permissionService.getPermissionMode(workspacePath);
-      return { trusted: mode !== null, mode };
+      return {
+        trusted: mode !== null,
+        mode,
+        allowAllUsesClassifier: permissionService.getAllowAllUsesClassifier(workspacePath),
+      };
     };
 
     if (process.env.NODE_ENV === 'development') {
@@ -1918,6 +1964,28 @@ app.whenReady().then(async () => {
     registerExtensionMarketplaceHandlers();
     registerOffscreenEditorHandlers();
 
+    // Phase 4: install the extension-agent bridge so the runtime-side
+    // `ExtensionAgentProvider` wrapper can route to PrivilegedExtensionHost.
+    // Workspace resolution prefers the focused window's active workspace;
+    // falls back to any window with one open. Returns null if no window has
+    // a workspace path -- the bridge surfaces this as a `no-workspace` error.
+    installExtensionAgentBridge({
+      resolveActiveWorkspacePath: () => {
+        const { BrowserWindow } = require('electron') as typeof import('electron');
+        const focused = BrowserWindow.getFocusedWindow();
+        if (focused) {
+          const state = windowStates.get(focused.id);
+          const path = resolveActiveWorkspacePath(state);
+          if (path) return path;
+        }
+        for (const state of windowStates.values()) {
+          const path = resolveActiveWorkspacePath(state);
+          if (path) return path;
+        }
+        return null;
+      },
+    });
+
     // Initialize extension file types (must happen before file operations)
     markStart('extension-file-types');
     await initializeExtensionFileTypes();
@@ -2013,6 +2081,20 @@ app.whenReady().then(async () => {
         OpenCodeProvider.setMcpServerPort(result.port);
         CopilotCLIProvider.setMcpServerPort(result.port);
         ClaudeCliLauncherConfig.setMcpServerPort(result.port);
+
+        // Publish the loopback endpoint + per-launch token so the `nim`
+        // companion CLI can discover and talk to this running instance (live
+        // mode). The file is 0600 and removed on quit; the CLI checks pid
+        // liveness before trusting it. See mcpEndpointDescriptor.ts.
+        try {
+            writeMcpEndpointDescriptor({
+                port: result.port,
+                token: mcpAuthToken,
+                workspaces: collectOpenWorkspaces(),
+            });
+        } catch (descriptorError) {
+            logger.mcp.error('Failed to publish MCP endpoint descriptor:', descriptorError);
+        }
     } catch (error) {
             logger.mcp.error('Failed to start MCP SSE server:', error);
     }
@@ -2520,26 +2602,25 @@ app.on('before-quit', async (event) => {
             cancelId: 1
         });
 
-        if (response.response === 0) {
-            // User clicked "Quit Anyway" - proceed with quit
-            console.log('[QUIT] User confirmed quit with active AI session');
-            analytics.sendEvent('quit_confirmation_result', {
-                result: 'quit_anyway'
-            });
-            // Set isAppQuitting before calling app.quit() to prevent re-showing dialog
-            isAppQuitting = true;
-            app.quit();
-        } else {
-            // User cancelled
+        if (response.response !== 0) {
+            // User cancelled - stay running.
             console.log('[QUIT] User cancelled quit due to active AI session');
             analytics.sendEvent('quit_confirmation_result', {
                 result: 'cancelled'
             });
             return;
         }
-        // If user confirmed quit, app.quit() was called above and before-quit will fire again
-        // with isAppQuitting=true, so we return here to avoid duplicate cleanup
-        return;
+
+        // User clicked "Quit Anyway". Fall through to the graceful cleanup block
+        // below (event.preventDefault was already called above) so the database
+        // is checkpointed, closed, and its lock released. The old code called
+        // app.quit() and returned here, which skipped cleanup on BOTH passes (the
+        // second before-quit short-circuits on isAppQuitting), leaking
+        // nimbalyst-db.pid and forcing the next launch onto stale-lock detection.
+        console.log('[QUIT] User confirmed quit with active AI session');
+        analytics.sendEvent('quit_confirmation_result', {
+            result: 'quit_anyway'
+        });
     }
 
     // Prevent default to do async cleanup
@@ -2746,6 +2827,12 @@ app.on('before-quit', async (event) => {
         console.log(`[QUIT] [${t7}] MCP HTTP server shutdown complete (${t7-t6}ms)`);
 
         mcpHttpServer = null;
+
+        // Remove the nim CLI endpoint descriptor so a stale token/port can't be
+        // discovered after this instance exits.
+        try {
+            removeMcpEndpointDescriptor();
+        } catch (e) {}
 
         // Clean up MCP config service file watchers
         if (mcpConfigService && !mcpConfigServiceCleanedUp) {

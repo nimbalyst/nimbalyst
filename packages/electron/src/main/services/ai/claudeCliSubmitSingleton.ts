@@ -28,14 +28,14 @@ export async function submitClaudeCliPromptProduction(
       prompt: string;
       attachments?: ChatAttachment[];
     }) => logClaudeCliUserPrompt(p),
-    sendAnalytics: ({ messageLength, hasAttachments, attachmentCount }) => {
+    sendAnalytics: ({ messageLength, hasAttachments, attachmentCount, hasDocumentContext }) => {
       // Analytics parity with the SDK path (MessageStreamingHandler fires
-      // ai_message_sent per send). document-context isn't wired for the CLI yet,
-      // so that flag stays false; attachment flags are now real.
+      // ai_message_sent per send). Document-context and attachment flags are real
+      // (NIM-818).
       try {
         AnalyticsService.getInstance().sendEvent('ai_message_sent', {
           provider: 'claude-code-cli',
-          hasDocumentContext: false,
+          hasDocumentContext,
           hasAttachments,
           attachmentCount,
           messageLength: bucketMessageLength(messageLength),

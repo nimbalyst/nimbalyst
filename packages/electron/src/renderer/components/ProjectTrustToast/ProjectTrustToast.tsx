@@ -29,6 +29,7 @@ export const ProjectTrustToast: React.FC<ProjectTrustToastProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isChangingMode, setIsChangingMode] = useState(false);
   const [selectedMode, setSelectedMode] = useState<TrustChoice>('allow-all');
+  const [allowAllUsesClassifier, setAllowAllUsesClassifier] = useState(false);
   const toastRef = useRef<HTMLDivElement>(null);
   const justSavedRef = useRef(false);
   const permissionChangeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -68,6 +69,7 @@ export const ProjectTrustToast: React.FC<ProjectTrustToastProps> = ({
           if (status.permissionMode) {
             setSelectedMode(status.permissionMode as TrustChoice);
           }
+          setAllowAllUsesClassifier(status.allowAllUsesClassifier === true);
         })
         .catch((error) => {
           console.error('[ProjectTrustToast] Failed to fetch current permission mode:', error);
@@ -164,10 +166,20 @@ export const ProjectTrustToast: React.FC<ProjectTrustToastProps> = ({
       // (any non-null mode means trusted)
       await window.electronAPI.invoke('permissions:setPermissionMode', workspacePath, selectedMode);
 
+      // Persist the "Allow All" classifier opt-in (issue #628). Only relevant
+      // for bypass-all; for other modes force it off so a later switch to
+      // Allow All doesn't inherit a stale opt-in.
+      await window.electronAPI.invoke(
+        'permissions:setAllowAllUsesClassifier',
+        workspacePath,
+        selectedMode === 'bypass-all' ? allowAllUsesClassifier : false,
+      );
+
       // Track trust dialog completion
       posthog?.capture('trust_dialog_saved', {
         permissionMode: selectedMode,
         isChangingMode,
+        allowAllUsesClassifier: selectedMode === 'bypass-all' ? allowAllUsesClassifier : false,
       });
 
       setIsVisible(false);
@@ -185,6 +197,7 @@ export const ProjectTrustToast: React.FC<ProjectTrustToastProps> = ({
     workspacePath,
     isSubmitting,
     selectedMode,
+    allowAllUsesClassifier,
     onDismiss,
     posthog,
     isChangingMode,
@@ -520,21 +533,19 @@ export const ProjectTrustToast: React.FC<ProjectTrustToastProps> = ({
                   </svg>
                   <span>Best for development and testing workflows</span>
                 </li>
-                <li
-                  className="flex items-start gap-2 text-[13px] leading-relaxed text-nim-muted"
-                >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    className="shrink-0 mt-0.5 text-nim-primary"
-                  >
-                    <path d="M13.5 4.5l-7 7-4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                  <span>For supported models (Claude Code), an AI classifier reviews each operation and prompts only for destructive or uncertain ones</span>
-                </li>
               </ul>
+              <label className="project-trust-toast-classifier-toggle flex items-start gap-2 mt-3 pt-3 border-t border-nim cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={allowAllUsesClassifier}
+                  onChange={(e) => setAllowAllUsesClassifier(e.target.checked)}
+                  disabled={isSubmitting}
+                  className="mt-0.5"
+                />
+                <span className="text-[13px] leading-relaxed text-nim-muted">
+                  <strong className="font-medium text-nim">Run an AI safety classifier (Claude Code)</strong> — review risky operations like deploys and prompt for confirmation instead of running them silently.
+                </span>
+              </label>
             </>
           )}
         </div>

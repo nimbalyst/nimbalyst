@@ -17,11 +17,14 @@
  */
 
 import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
+import type { ClaudeCliDocumentContext } from './claudeCliPromptComposer';
 
 export interface FlushQueuedPrompt {
   id: string;
   prompt?: string | null;
   attachments?: unknown[] | null;
+  /** Active-doc/selection context captured at queue time (NIM-818). */
+  documentContext?: ClaudeCliDocumentContext | null;
 }
 
 export interface FlushClaudeCliQueueDeps {
@@ -34,7 +37,14 @@ export interface FlushClaudeCliQueueDeps {
     workspacePath: string;
     prompt: string;
     attachments?: ChatAttachment[];
+    documentContext?: ClaudeCliDocumentContext | null;
   }) => Promise<{ submitted: boolean }>;
+  /**
+   * Tell the renderer a queued prompt has left the pending queue, so it drops
+   * the row from the queued-prompts UI (NIM-830). Mirrors the SDK dispatcher's
+   * `ai:promptClaimed`. Fired right after a successful claim.
+   */
+  notifyClaimed?: (promptId: string) => void;
 }
 
 /**
@@ -52,12 +62,15 @@ export async function flushNextClaudeCliQueuedPrompt(
   const claimed = await deps.claim(pending[0].id);
   if (!claimed) return false;
 
+  deps.notifyClaimed?.(claimed.id);
+
   try {
     const { submitted } = await deps.submit({
       sessionId: args.sessionId,
       workspacePath: args.workspacePath,
       prompt: claimed.prompt ?? '',
       attachments: (claimed.attachments as ChatAttachment[] | undefined) ?? undefined,
+      documentContext: claimed.documentContext ?? undefined,
     });
     await deps.complete(claimed.id);
     return submitted;

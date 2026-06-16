@@ -34,16 +34,22 @@ describe('claude-code-cli provider wiring (Phase 0)', () => {
 
   describe('model identifiers share the Claude variant namespace', () => {
     it('parses claude-code-cli variants', () => {
-      const id = ModelIdentifier.parse('claude-code-cli:fable');
+      const id = ModelIdentifier.parse('claude-code-cli:opus');
       expect(id.provider).toBe('claude-code-cli');
-      expect(id.model).toBe('fable');
-      expect(id.baseVariant).toBe('fable');
+      expect(id.model).toBe('opus');
+      expect(id.baseVariant).toBe('opus');
       expect(id.isExtendedContext).toBe(false);
     });
 
     it('supports the -1m extended-context suffix', () => {
       const id = ModelIdentifier.parse('claude-code-cli:sonnet-1m');
       expect(id.baseVariant).toBe('sonnet');
+      expect(id.isExtendedContext).toBe(true);
+    });
+
+    it('supports fable-1m — the only way to get the 1M window on Fable through the CLI', () => {
+      const id = ModelIdentifier.parse('claude-code-cli:fable-1m');
+      expect(id.baseVariant).toBe('fable');
       expect(id.isExtendedContext).toBe(true);
     });
 
@@ -60,7 +66,7 @@ describe('claude-code-cli provider wiring (Phase 0)', () => {
 
   describe('resolveClaudeCodeModelVariant accepts claude-code-cli', () => {
     it('resolves a plain variant', () => {
-      expect(resolveClaudeCodeModelVariant('claude-code-cli:fable', 'opus')).toBe('fable');
+      expect(resolveClaudeCodeModelVariant('claude-code-cli:opus', 'opus')).toBe('opus');
     });
 
     it('appends the [1m] beta marker for extended context', () => {

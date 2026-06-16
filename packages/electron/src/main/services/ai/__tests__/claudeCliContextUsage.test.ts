@@ -18,16 +18,16 @@ describe('contextWindowForCliModel', () => {
     expect(contextWindowForCliModel('claude-code-cli:sonnet')).toBe(200_000);
     expect(contextWindowForCliModel(undefined)).toBe(200_000);
   });
-
-  it('returns 1M for Fable because it is extended-context by default', () => {
-    expect(contextWindowForCliModel('claude-code-cli:fable')).toBe(1_000_000);
-    expect(contextWindowForCliModel('fable')).toBe(1_000_000);
-    expect(contextWindowForCliModel('claude-fable-5')).toBe(1_000_000);
-  });
-
   it('returns 1M for the -1m extended-context variants', () => {
     expect(contextWindowForCliModel('claude-code-cli:opus-1m')).toBe(1_000_000);
     expect(contextWindowForCliModel('claude-code-cli:sonnet-1M')).toBe(1_000_000);
+  });
+  it('windows plain fable at 200k and fable-1m at 1M, matching the CLI’s [1m] gating', () => {
+    // Claude Code windows plain `fable` at 200k client-side (observed: auto-
+    // compact at ~177k on CLI 2.1.175) even though the API serves Fable at 1M.
+    // The 1M window requires the fable[1m] model value — our fable-1m variant.
+    expect(contextWindowForCliModel('claude-code-cli:fable')).toBe(200_000);
+    expect(contextWindowForCliModel('claude-code-cli:fable-1m')).toBe(1_000_000);
   });
 });
 

@@ -6,14 +6,16 @@ function harness(pending: FlushQueuedPrompt[]) {
   const complete = vi.fn(async () => undefined);
   const fail = vi.fn(async () => undefined);
   const submit = vi.fn(async () => ({ submitted: true }));
+  const notifyClaimed = vi.fn();
   const deps = {
     listPending: vi.fn(async () => pending),
     claim,
     complete,
     fail,
     submit,
+    notifyClaimed,
   };
-  return { deps, claim, complete, fail, submit };
+  return { deps, claim, complete, fail, submit, notifyClaimed };
 }
 
 describe('flushNextClaudeCliQueuedPrompt', () => {
@@ -35,12 +37,22 @@ describe('flushNextClaudeCliQueuedPrompt', () => {
     expect(h.fail).not.toHaveBeenCalled();
   });
 
+  it('notifies the renderer (notifyClaimed) when a prompt is claimed so the queued-prompt UI clears', async () => {
+    // Regression for NIM-830: the CLI flush path drained the prompt (DB status
+    // -> completed) but never told the renderer, so it sat in the QUEUED list
+    // forever. notifyClaimed mirrors the SDK dispatcher's ai:promptClaimed.
+    const h = harness([{ id: 'q1', prompt: 'first' }]);
+    await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, h.deps);
+    expect(h.notifyClaimed).toHaveBeenCalledWith('q1');
+  });
+
   it('returns false and does nothing when the queue is empty', async () => {
     const h = harness([]);
     const result = await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, h.deps);
     expect(result).toBe(false);
     expect(h.claim).not.toHaveBeenCalled();
     expect(h.submit).not.toHaveBeenCalled();
+    expect(h.notifyClaimed).not.toHaveBeenCalled();
   });
 
   it('returns false when the prompt was already claimed by someone else', async () => {
@@ -58,5 +70,8 @@ describe('flushNextClaudeCliQueuedPrompt', () => {
     expect(result).toBe(false);
     expect(h.fail).toHaveBeenCalledWith('q1', 'pty gone');
     expect(h.complete).not.toHaveBeenCalled();
+    // The claim succeeded, so the prompt already left the pending queue; the UI
+    // must clear it even though submit later failed.
+    expect(h.notifyClaimed).toHaveBeenCalledWith('q1');
   });
 });

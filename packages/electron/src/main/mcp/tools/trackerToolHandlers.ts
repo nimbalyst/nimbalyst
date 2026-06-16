@@ -26,6 +26,7 @@ import { normalizeLegacyLabelValues } from '@nimbalyst/runtime/sync';
 import type { ElectronDocumentService } from '../../services/ElectronDocumentService';
 import { getTrackerImporterRegistry } from '../../services/tracker/TrackerImporterRegistry';
 import { getTrackerImportService } from '../../services/tracker/TrackerImportService';
+import { materializeTrackerTypeDef, removeTrackerTypeDef } from '../../services/tracker/trackerTypeDefStore';
 
 type McpToolResult = {
   content: Array<{ type: string; text?: string }>;
@@ -187,6 +188,21 @@ function appendActivity(
 }
 
 /**
+ * Read linkedTrackerItemIds from a raw ai_sessions.metadata column value.
+ * Whole-column JSON reads return a parsed object on PGLite but a raw JSON
+ * string on SQLite (NIM-829; see packages/electron/DATABASE.md), so every
+ * consumer must parse defensively or SQLite sees an empty list — which
+ * clobbered links on write and broadcast zero linked items to renderers.
+ */
+export function readLinkedTrackerItemIds(rawMetadata: unknown): string[] {
+  const metadata =
+    typeof rawMetadata === 'string'
+      ? JSON.parse(rawMetadata)
+      : (rawMetadata as Record<string, any>) ?? {};
+  return Array.isArray(metadata?.linkedTrackerItemIds) ? metadata.linkedTrackerItemIds : [];
+}
+
+/**
  * Create a bidirectional link between a tracker item and an AI session.
  * - Adds sessionId to tracker item's data.linkedSessions[]
  * - Adds trackerId to session's metadata.linkedTrackerItemIds[]
@@ -237,8 +253,7 @@ export async function createBidirectionalLink(
     [sessionId]
   );
   if (sessionResult.rows.length > 0) {
-    const metadata = sessionResult.rows[0].metadata ?? {};
-    const linkedTrackerItemIds: string[] = metadata.linkedTrackerItemIds || [];
+    const linkedTrackerItemIds = readLinkedTrackerItemIds(sessionResult.rows[0].metadata);
     if (!linkedTrackerItemIds.includes(trackerId)) {
       linkedTrackerItemIds.push(trackerId);
       await db.query(
@@ -307,10 +322,7 @@ export async function removeBidirectionalLink(
     [sessionId]
   );
   if (sessionResult.rows.length > 0) {
-    const metadata = sessionResult.rows[0].metadata ?? {};
-    const linkedTrackerItemIds: string[] = Array.isArray(metadata.linkedTrackerItemIds)
-      ? metadata.linkedTrackerItemIds
-      : [];
+    const linkedTrackerItemIds = readLinkedTrackerItemIds(sessionResult.rows[0].metadata);
     const nextLinkedTrackerItemIds = linkedTrackerItemIds.filter((linkedTrackerId) => linkedTrackerId !== trackerId);
     if (nextLinkedTrackerItemIds.length !== linkedTrackerItemIds.length) {
       const nextMetadata =
@@ -1247,6 +1259,10 @@ export async function handleTrackerDefineType(
       fileName: args?.fileName,
     });
 
+    // Mirror into the DB so offline consumers (the `nim` CLI) can resolve this
+    // type's role->field map without the YAML file. Best-effort.
+    await materializeTrackerTypeDef(workspacePath, model, 'cli');
+
     return {
       content: [
         {
@@ -1305,11 +1321,20 @@ export async function handleTrackerDeleteType(
 
     const { getDatabase } = await import("../../database/initialize");
     const db = getDatabase();
+    // type_tags membership differs by backend: TEXT[] (`= ANY`) on PGLite vs a
+    // JSON-string column on SQLite (no ANY()). Branch so delete-type works on
+    // both — previously this query threw "no such function: ANY" on SQLite and
+    // tracker_delete_type was entirely non-functional there.
+    const isSqlite =
+      typeof (db as any).getEngine === 'function' && (db as any).getEngine() === 'sqlite';
+    const tagMembership = isSqlite
+      ? `EXISTS (SELECT 1 FROM json_each(type_tags) WHERE value = $2)`
+      : `$2 = ANY(type_tags)`;
     const usage = await db.query<{ count: number | string }>(
       `SELECT COUNT(*)::int AS count
        FROM tracker_items
        WHERE workspace = $1
-         AND (type = $2 OR $2 = ANY(type_tags))`,
+         AND (type = $2 OR ${tagMembership})`,
       [workspacePath, args.type]
     );
     const count = Number(usage.rows[0]?.count ?? 0);
@@ -1339,6 +1364,9 @@ export async function handleTrackerDeleteType(
         isError: true,
       };
     }
+
+    // Tombstone the materialized definition so the CLI stops resolving it.
+    await removeTrackerTypeDef(workspacePath, args.type);
 
     return {
       content: [
@@ -1749,7 +1777,7 @@ export async function handleTrackerCreate(
         `SELECT metadata FROM ai_sessions WHERE id = $1`,
         [sessionId]
       );
-      const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
+      const linkedIds = readLinkedTrackerItemIds(sessionResult.rows[0]?.metadata);
       await notifySessionLinkedTrackerChanged(sessionId, linkedIds);
     }
 
@@ -2011,7 +2039,7 @@ export async function handleTrackerUpdate(
               `SELECT metadata FROM ai_sessions WHERE id = $1`,
               [sessionId]
             );
-            const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
+            const linkedIds = readLinkedTrackerItemIds(sessionResult.rows[0]?.metadata);
             await notifySessionLinkedTrackerChanged(sessionId, linkedIds);
           }
         }
@@ -2284,7 +2312,7 @@ export async function handleTrackerUpdate(
             `SELECT metadata FROM ai_sessions WHERE id = $1`,
             [sessionId]
           );
-          const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
+          const linkedIds = readLinkedTrackerItemIds(sessionResult.rows[0]?.metadata);
           await notifySessionLinkedTrackerChanged(sessionId, linkedIds);
         }
       }
@@ -2465,7 +2493,7 @@ export async function handleTrackerLinkSession(
         `SELECT metadata FROM ai_sessions WHERE id = $1`,
         [targetSessionId]
       );
-      const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
+      const linkedIds = readLinkedTrackerItemIds(sessionResult.rows[0]?.metadata);
       await notifySessionLinkedTrackerChanged(targetSessionId, linkedIds);
 
       const structured = {
@@ -2583,7 +2611,7 @@ export async function handleTrackerUnlinkSession(
         [targetSessionId]
       );
       if (sessionResult.rows.length > 0) {
-        const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
+        const linkedIds = readLinkedTrackerItemIds(sessionResult.rows[0]?.metadata);
         await notifySessionLinkedTrackerChanged(targetSessionId, linkedIds);
       }
 
@@ -2677,8 +2705,7 @@ export async function handleTrackerLinkFile(
       };
     }
 
-    const metadata = sessionResult.rows[0].metadata ?? {};
-    const linkedTrackerItemIds: string[] = metadata.linkedTrackerItemIds || [];
+    const linkedTrackerItemIds = readLinkedTrackerItemIds(sessionResult.rows[0].metadata);
     if (!linkedTrackerItemIds.includes(fileRef)) {
       linkedTrackerItemIds.push(fileRef);
       await db.query(

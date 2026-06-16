@@ -42,9 +42,14 @@ import { getEnhancedPath } from './CLIManager';
 import type { ClaudeCliSpawnConfig } from './ai/claudeCliSpawnConfig';
 import {
   watchClaudePidState,
+  readClaudePidTurnState,
   type ClaudeTurnState,
   type ParsedClaudePidFile,
 } from './ai/claudeCliPidState';
+import {
+  escalateClaudeCliInterrupt,
+  type ClaudeCliInterruptResult,
+} from './ai/claudeCliInterrupt';
 import { detectCliPickerInChunk } from './ai/claudeCliInteractiveCommands';
 import { broadcastClaudeCliRevealTerminal } from './ai/claudeCliRevealTerminal';
 import {
@@ -963,7 +968,7 @@ export class TerminalSessionManager {
        * file (busy→running, idle→idle, waiting→waiting_for_input). Wired by the
        * launcher to `SessionStateManager`. The watcher is torn down on exit.
        */
-      onTurnState?: (state: ClaudeTurnState, parsed: ParsedClaudePidFile) => void;
+      onTurnState?: (state: ClaudeTurnState, parsed: ParsedClaudePidFile | null) => void;
       /**
        * Extra teardown to run when the PTY exits — e.g. stopping the per-session
        * proxy observation backend (NIM-806, Phase 3). Composed with the
@@ -1065,6 +1070,55 @@ export class TerminalSessionManager {
    */
   isTerminalActive(sessionId: string): boolean {
     return this.terminals.has(sessionId);
+  }
+
+  /**
+   * One-shot LIVE turn state for a Claude CLI session, read straight from the
+   * PID file (NIM-821). SessionStateManager's status is updated asynchronously
+   * from the PID watcher, so callers deciding "is the CLI idle right now?"
+   * (e.g. the queued-prompt idle-kick) must not trust that snapshot — a prompt
+   * queued in the update gap would never flush. null = unknown (no terminal,
+   * no pid, or unreadable file).
+   */
+  async getClaudeCliLiveTurnState(sessionId: string): Promise<ClaudeTurnState | null> {
+    const terminal = this.terminals.get(sessionId);
+    if (!terminal || typeof terminal.pty.pid !== 'number') return null;
+    return readClaudePidTurnState({ pid: terminal.pty.pid });
+  }
+
+  /** Sessions with an interrupt escalation currently in flight (NIM-814). */
+  private claudeCliInterruptsInFlight = new Set<string>();
+
+  /**
+   * Stop a Claude CLI turn with escalation (NIM-814): Ctrl-C, then a second
+   * Ctrl-C, then SIGINT — re-checking the PID-file turn state between steps. A
+   * repeat press while an escalation is in flight just re-delivers Ctrl-C
+   * (harmless) instead of stacking timers.
+   */
+  async interruptClaudeCliTurn(
+    sessionId: string
+  ): Promise<{ success: boolean; resolvedAfter?: ClaudeCliInterruptResult['resolvedAfter'] }> {
+    const terminal = this.terminals.get(sessionId);
+    if (!terminal) {
+      console.warn(`[TerminalSessionManager] Cannot interrupt ${sessionId}: terminal not found`);
+      return { success: false };
+    }
+    if (this.claudeCliInterruptsInFlight.has(sessionId)) {
+      terminal.pty.write('\x03');
+      return { success: true };
+    }
+    this.claudeCliInterruptsInFlight.add(sessionId);
+    try {
+      const result = await escalateClaudeCliInterrupt({
+        write: (data) => terminal.pty.write(data),
+        kill: (signal) => terminal.pty.kill(signal),
+        readTurnState: () => readClaudePidTurnState({ pid: terminal.pty.pid }),
+        log: (message) => console.log(`[TerminalSessionManager] interrupt ${sessionId}: ${message}`),
+      });
+      return { success: true, resolvedAfter: result.resolvedAfter };
+    } finally {
+      this.claudeCliInterruptsInFlight.delete(sessionId);
+    }
   }
 
   /**

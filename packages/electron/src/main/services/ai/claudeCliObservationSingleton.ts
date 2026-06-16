@@ -34,6 +34,7 @@ import { logClaudeCliToolResults, loadSeenToolResultIds } from './claudeCliToolR
 import { getSeenToolResultIds, clearSeenToolResultIds } from './claudeCliToolResultSeen';
 import { logClaudeCliContextUsage } from './claudeCliContextUsage';
 import { classifyClaudeCliUpstreamError } from './claudeCliErrorClassifier';
+import { createClaudeCliErrorSurfacePolicy } from './claudeCliErrorSurfacePolicy';
 import { logClaudeCliUpstreamError } from './claudeCliErrorLog';
 import { extractToolResults } from './claudeCliObservation/claudeApiRequestParser';
 import {
@@ -192,15 +193,11 @@ export async function startClaudeCliProxyObservation(opts: {
     seenToolResultIds.add(id);
   }
 
-  // Failed-turn surfacing state (NIM-808). `lastSurfacedErrorKind` collapses a
-  // retry storm (the CLI re-requests on 429/529, each a fresh upstream error)
-  // into a single transcript row; it resets when a turn produces output.
-  // `hasProducedAssistantTurn` lets us skip the known transient startup-429 (it
-  // fires before any assistant output) for the self-healing rate-limit/overload
-  // kinds, while still surfacing non-recoverable errors (auth/context/api) on
-  // the very first turn.
-  let lastSurfacedErrorKind: string | null = null;
-  let hasProducedAssistantTurn = false;
+  // Failed-turn surfacing policy (NIM-808 / NIM-815): collapses retry storms
+  // into one transcript row per episode and swallows transient startup errors
+  // (cold-connection 429/529 plus a small budget of api_error/generic) until
+  // the first visible assistant output. See claudeCliErrorSurfacePolicy.ts.
+  const errorSurfacePolicy = createClaudeCliErrorSurfacePolicy();
 
   const observation = new ClaudeCliProxyObservation({
     sessionId,
@@ -212,8 +209,7 @@ export async function startClaudeCliProxyObservation(opts: {
       // A produced turn means the session is unblocked: allow the next failure
       // episode to surface, and (for visible turns) mark that startup is past so
       // a mid-session rate-limit/overload can surface.
-      lastSurfacedErrorKind = null;
-      if (!isSubAgentTurn) hasProducedAssistantTurn = true;
+      errorSurfacePolicy.noteAssistantMessage(!isSubAgentTurn);
       void persistAssistantTurn(sessionId, workspacePath, msg, isSubAgentTurn);
       noteAssistantTaskCalls(sessionId, msg);
       // Refresh the context-window fill indicator from this turn's usage (Slice E).
@@ -268,15 +264,12 @@ export async function startClaudeCliProxyObservation(opts: {
       const failure = classifyClaudeCliUpstreamError({ statusCode, body, retryAfter });
       if (!failure) return;
 
-      // Self-healing kinds (the CLI retries): skip the known transient startup
-      // 429/529 that fires before any assistant output. Non-recoverable kinds
-      // (auth / context_limit / api_error / generic) always surface.
-      const isSelfHealing = failure.kind === 'rate_limit' || failure.kind === 'overloaded';
-      if (isSelfHealing && !hasProducedAssistantTurn) return;
-
-      // Collapse a retry storm into one transcript row per episode.
-      if (failure.kind === lastSurfacedErrorKind) return;
-      lastSurfacedErrorKind = failure.kind;
+      if (!errorSurfacePolicy.shouldSurface(failure)) {
+        console.warn(
+          `[ClaudeCliObservation] suppressed upstream ${failure.kind} (${failure.statusCode}) for ${sessionId} (startup-transient or same-episode retry)`
+        );
+        return;
+      }
 
       void logClaudeCliUpstreamError({ sessionId, workspacePath, failure });
     },

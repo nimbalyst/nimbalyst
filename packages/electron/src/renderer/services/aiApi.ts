@@ -40,12 +40,17 @@ class AIApi {
   constructor() {
     // Set up IPC listener for errors
     window.electronAPI.onAIError((error: any) => {
-      console.error('AI API Error:', error);
-      console.error('Error details:', {
-        message: error.message,
-        type: error.type,
-        stack: error.stack
-      });
+      // Serialize explicitly: the file-based console capture stringifies raw
+      // objects as "[object Object]", which hid the real error in #614.
+      const detail = typeof error === 'string'
+        ? error
+        : JSON.stringify({
+            message: error?.message,
+            sessionId: error?.sessionId,
+            isAuthError: error?.isAuthError,
+            type: error?.type,
+          });
+      console.error('AI API Error:', detail);
 
       // Emit error event so UI can handle it
       this.emit('error', error);

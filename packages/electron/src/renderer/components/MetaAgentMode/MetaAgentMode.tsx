@@ -296,8 +296,27 @@ export function MetaAgentMode({
 
     const unsubscribe = store.sub(sessionRegistryAtom, debouncedRefresh);
 
+    // Also re-fetch when any session reaches a terminal state. A child's status
+    // change (running -> idle on completion) does not reliably rebuild
+    // sessionRegistryAtom - e.g. a worktree-resident child that is not part of the
+    // main session list - so the registry subscription alone left the delegated
+    // count stuck on "running" and the "Waiting for N sessions" text pinned until
+    // the user clicked the child. Terminal events are the authoritative signal and
+    // (preload keys listeners by callback) coexist with the central listener.
+    const handleSessionEvent = (event: { type?: string }) => {
+      if (
+        event?.type === 'session:completed' ||
+        event?.type === 'session:error' ||
+        event?.type === 'session:interrupted'
+      ) {
+        debouncedRefresh();
+      }
+    };
+    window.electronAPI?.sessionState?.onStateChange?.(handleSessionEvent);
+
     return () => {
       unsubscribe();
+      window.electronAPI?.sessionState?.removeStateChangeListener?.(handleSessionEvent);
       if (debounceTimer) clearTimeout(debounceTimer);
     };
   }, [metaSessionId, refreshSpawnedSessions]);

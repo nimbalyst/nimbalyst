@@ -153,6 +153,35 @@ export const cliTerminalFocusNonceAtom = atomFamily((_sessionId: string) => atom
  */
 export const cliTerminalAutoRevealedAtom = atomFamily((_sessionId: string) => atom(false));
 
+/**
+ * Sticky per-session "the user explicitly closed the drawer" flag (NIM-820).
+ * Output-sourced reveal signals (the PTY picker sniffer) must NOT reopen a
+ * drawer the user closed; an input-sourced interactive reveal (the user typed
+ * /model) clears it. Hydrated from session metadata (`cliRawTerminalCollapsed`)
+ * alongside the expanded state.
+ */
+export const cliTerminalUserCollapsedAtom = atomFamily((_sessionId: string) => atom(false));
+
+/**
+ * Shared user-toggle for the CLI raw-terminal drawer (NIM-820) — used by both
+ * the drawer header button and the keyboard shortcut so they keep the sticky
+ * user-collapsed flag and the persisted metadata in sync.
+ */
+export const toggleCliTerminalDrawerAtom = atom(null, (get, set, sessionId: string) => {
+  const next = !get(cliTerminalExpandedAtom(sessionId));
+  set(cliTerminalExpandedAtom(sessionId), next);
+  set(cliTerminalUserCollapsedAtom(sessionId), !next);
+  // Manual toggle is a user decision — clear the auto-reveal flag so the next
+  // normal prompt does not yank the drawer closed (NIM-810).
+  set(cliTerminalAutoRevealedAtom(sessionId), false);
+  // Persist (merge-style metadata update main-side). Best-effort.
+  void window.electronAPI
+    .invoke('sessions:update-metadata', sessionId, { cliRawTerminalCollapsed: !next })
+    .catch((err: unknown) => {
+      console.warn('[terminals] Failed to persist cliRawTerminalCollapsed:', err);
+    });
+});
+
 /** Default / clamp bounds for the resizable raw-terminal drawer body (px). */
 export const DEFAULT_CLI_TERMINAL_HEIGHT = 300;
 export const MIN_CLI_TERMINAL_HEIGHT = 120;

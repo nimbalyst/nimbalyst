@@ -290,6 +290,29 @@ export async function handleAskUserQuestion(
   // is still needed by the settle path (CLI defers turn-state to the PID watcher).
   const isCliSession = await isClaudeCliSession(sessionId);
 
+  // NIM-850: drive the pending-interactive-prompt flag from the explicit prompt
+  // lifecycle (mirrors PromptForUserInput's ai:requestUserInput and the SDK path),
+  // NOT from the coarse pid-`waiting` status. The renderer's session:waiting
+  // handler no longer sets the flag for claude-code-cli, because that pid signal
+  // also fires for routine tool/MCP waits and — with no symmetric clear — left
+  // "Thinking…" suppressed for the rest of the turn. Broadcasting ai:askUserQuestion
+  // here sets the flag (and feeds voice mode) exactly while the question is pending;
+  // the settle below broadcasts ai:askUserQuestionAnswered to clear it. Sent to all
+  // windows (the renderer handler keys by sessionId); handleAskUserQuestion only
+  // runs for the MCP-routed CLI path, so SDK sessions are unaffected.
+  if (isCliSession && sessionId) {
+    void setSessionPendingPrompt(sessionId, true);
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) {
+        w.webContents.send("ai:askUserQuestion", {
+          sessionId,
+          questionId,
+          questions: normalizedQuestions,
+        });
+      }
+    }
+  }
+
   return new Promise((resolve) => {
     let settled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -344,6 +367,21 @@ export async function handleAskUserQuestion(
           },
           isError: cancelled,
         });
+
+        // NIM-850: clear the pending-interactive-prompt flag the moment the prompt
+        // settles (answered or cancelled). For claude-code-cli the renderer otherwise
+        // never clears it mid-turn — session:streaming intentionally doesn't, and
+        // there was no resolved broadcast — so "Thinking…" stayed suppressed until
+        // the turn ended. Mirrors PromptForUserInput's ai:requestUserInputResolved.
+        void setSessionPendingPrompt(sessionId, false);
+        for (const w of BrowserWindow.getAllWindows()) {
+          if (!w.isDestroyed()) {
+            w.webContents.send("ai:askUserQuestionAnswered", {
+              sessionId,
+              questionId,
+            });
+          }
+        }
       }
 
       if (cancelled) {
@@ -902,9 +940,15 @@ export async function handleGitCommitProposal(
     // Persist resolved state + push to mobile
     void setSessionPendingPrompt(targetSessionId, false);
 
-    console.log(
-      `[MCP Server] Auto-commit completed: ${commitResult.commitHash || "no changes"}`
-    );
+    if (commitResult.success) {
+      console.log(
+        `[MCP Server] Auto-commit completed: ${commitResult.commitHash}`
+      );
+    } else {
+      console.warn(
+        `[MCP Server] Auto-commit did not commit: ${commitResult.error || "unknown error"}`
+      );
+    }
 
     if (response.action === "committed" && response.commitHash) {
       // Link commit to tracker items via session (fire-and-forget)

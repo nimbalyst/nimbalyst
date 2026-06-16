@@ -198,6 +198,33 @@ function getCodexTextFromContentArray(content: unknown[]): string | null {
 function extractCodexText(record: Record<string, unknown>): string | null {
   const eventType = typeof record.type === 'string' ? record.type : '';
 
+  // App-server transport envelope: production Codex persists notifications as
+  // `JSON.stringify({ method, params })` (see OpenAICodexProvider.storeRawEventIfPresent
+  // -> the synthesizedRaw `{ method, params }` row). The discriminator is the
+  // slash-delimited `record.method` ('item/completed', 'turn/completed', etc.)
+  // and the payload nests under `record.params.item`, NOT the top-level
+  // `record.type`/`record.item` SDK shapes handled below. Mirror the canonical
+  // reader (CodexAppServerRawParser.parseItemCompleted): an `agentMessage` /
+  // `reasoning` item carries the assistant text on `item.text`. Without this
+  // branch every SDK-shape check falls through and the meta-agent result API
+  // returns lastResponse: null even though the assistant text is in the DB.
+  if (typeof record.method === 'string' && isObject(record.params)) {
+    const method = record.method;
+    if (method === 'item/completed' || method === 'item/updated') {
+      const item = (record.params as Record<string, unknown>).item;
+      if (isObject(item)) {
+        const itemType = typeof item.type === 'string' ? item.type : '';
+        if (itemType === 'agentMessage' || itemType === 'reasoning') {
+          const text = getCodexTextCandidate(item);
+          if (text) return text;
+        }
+      }
+    }
+    // turn/completed, item/started (tool calls), turn/failed, error etc. carry
+    // no assistant prose -- leave them to the error/text fallbacks (the result
+    // API only wants assistant replies, not tool/turn bookkeeping).
+  }
+
   // task_complete emits last_agent_message directly on the event
   if (eventType === 'task_complete') {
     const text = getCodexTextCandidate(record.last_agent_message);

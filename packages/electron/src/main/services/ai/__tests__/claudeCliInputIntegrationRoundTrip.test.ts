@@ -62,6 +62,7 @@ interface AnalyticsPayload {
   messageLength: number;
   hasAttachments: boolean;
   attachmentCount: number;
+  hasDocumentContext: boolean;
 }
 
 /**
@@ -179,7 +180,7 @@ describe('claude-code-cli input integration round-trip (attachments + queued pro
 
     // Analytics: real attachment flags.
     expect(pipe.analytics).toEqual([
-      { messageLength: 'look at this'.length, hasAttachments: true, attachmentCount: 1 },
+      { messageLength: 'look at this'.length, hasAttachments: true, attachmentCount: 1, hasDocumentContext: false },
     ]);
   });
 

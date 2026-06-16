@@ -16,6 +16,7 @@ import {
   cliTerminalExpandedAtom,
   cliTerminalFocusNonceAtom,
   cliTerminalAutoRevealedAtom,
+  cliTerminalUserCollapsedAtom,
 } from '../atoms/terminals';
 
 interface RevealTerminalPayload {
@@ -28,6 +29,8 @@ interface RevealTerminalPayload {
 export interface RevealDrawerState {
   expanded: boolean;
   autoRevealed: boolean;
+  /** The user explicitly closed the drawer (NIM-820) — sticky until they reopen or type an interactive command. */
+  userCollapsed: boolean;
 }
 
 export interface RevealDrawerDecision extends RevealDrawerState {
@@ -39,23 +42,35 @@ export interface RevealDrawerDecision extends RevealDrawerState {
  * Pure decision for one reveal signal — kept separate so the branching is
  * unit-testable without the global store or `window`.
  *
- * - interactive + collapsed  → expand, mark auto-revealed, focus
- * - interactive + expanded   → keep, focus (drive the picker already on-screen)
+ * - interactive (output) + user-collapsed → NO change (NIM-820: the PTY picker
+ *   sniffer fires on ordinary output; never reopen a drawer the user closed)
+ * - interactive + collapsed  → expand, mark auto-revealed, clear user-collapsed
+ * - interactive + expanded   → keep
  * - normal + auto-revealed   → collapse, clear flag (return to where the user was)
  * - normal + user/default    → no change
+ *
+ * Focus only pulses for input-sourced interactive reveals (the user deliberately
+ * submitted an allowlisted command like /model). Output-sourced reveals come from
+ * the PTY sniffer, which false-positives on ordinary output containing the Ink
+ * caret glyph (vitest, autocomplete dropdowns, fancy prompts); focusing on those
+ * yanks the cursor out of the chat input mid-sentence (NIM-828).
  */
 export function computeRevealDrawerAction(
   current: RevealDrawerState,
   interactive: boolean,
+  source: 'input' | 'output',
 ): RevealDrawerDecision {
   if (interactive) {
-    if (!current.expanded) {
-      return { expanded: true, autoRevealed: true, focus: true };
+    if (current.userCollapsed && source === 'output') {
+      return { ...current, focus: false };
     }
-    return { ...current, focus: true };
+    if (!current.expanded) {
+      return { expanded: true, autoRevealed: true, userCollapsed: false, focus: source === 'input' };
+    }
+    return { ...current, userCollapsed: false, focus: source === 'input' };
   }
   if (current.autoRevealed) {
-    return { expanded: false, autoRevealed: false, focus: false };
+    return { ...current, expanded: false, autoRevealed: false, focus: false };
   }
   return { ...current, focus: false };
 }
@@ -68,14 +83,22 @@ export function initClaudeCliTerminalListeners(): () => void {
     const current: RevealDrawerState = {
       expanded: store.get(cliTerminalExpandedAtom(sessionId)),
       autoRevealed: store.get(cliTerminalAutoRevealedAtom(sessionId)),
+      userCollapsed: store.get(cliTerminalUserCollapsedAtom(sessionId)),
     };
-    const next = computeRevealDrawerAction(current, !!interactive);
+    const next = computeRevealDrawerAction(
+      current,
+      !!interactive,
+      payload?.source === 'output' ? 'output' : 'input',
+    );
 
     if (next.expanded !== current.expanded) {
       store.set(cliTerminalExpandedAtom(sessionId), next.expanded);
     }
     if (next.autoRevealed !== current.autoRevealed) {
       store.set(cliTerminalAutoRevealedAtom(sessionId), next.autoRevealed);
+    }
+    if (next.userCollapsed !== current.userCollapsed) {
+      store.set(cliTerminalUserCollapsedAtom(sessionId), next.userCollapsed);
     }
     if (next.focus) {
       store.set(cliTerminalFocusNonceAtom(sessionId), (n) => n + 1);

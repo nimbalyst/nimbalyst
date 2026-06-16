@@ -209,6 +209,33 @@ class PGLiteWorker {
           // against, and the closed PR #316 review thread for the
           // 'ambiguous' branch that asks the user instead of guessing.
           const { decideLockIsRunning } = require('./lockStaleness');
+          // Identify the PID holder so a reused PID (the original Nimbalyst died
+          // and the OS handed its PID to another process) is detected as stale
+          // instead of falsely "running". Returns the image name or null; null
+          // makes decideLockIsRunning fail closed (stay 'running').
+          const processIdentityFn = (pid) => {
+            if (!Number.isInteger(pid) || pid <= 0) return null;
+            try {
+              const cp = require('child_process');
+              if (process.platform === 'win32') {
+                const out = cp
+                  .execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+                    timeout: 4000,
+                    windowsHide: true,
+                  })
+                  .toString();
+                const m = out.match(/^"([^"]+)"/m);
+                return m ? m[1] : null;
+              }
+              const out = cp
+                .execSync(`ps -p ${pid} -o comm=`, { timeout: 4000 })
+                .toString()
+                .trim();
+              return out || null;
+            } catch {
+              return null;
+            }
+          };
           let livenessDecision = 'stale';
           let livenessReason = '';
           if (isStaleFromReboot) {
@@ -219,6 +246,7 @@ class PGLiteWorker {
               lockPid,
               lockTimestamp,
               killFn: process.kill.bind(process),
+              processIdentityFn,
             });
             livenessDecision = result.decision;
             livenessReason = result.reason;
@@ -2305,6 +2333,55 @@ class PGLiteWorker {
       console.log('[PGLite Worker] collab_local_origins table created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create collab_local_origins table:', error);
+      throw error;
+    }
+
+    // Migration: durable last-synced baseline for personal docs sync (System A).
+    // Lets the write-time conflict guard detect locally-diverged files across an
+    // app restart, so an older server snapshot can never clobber newer local
+    // content (NIM-853, Layer 3).
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS project_file_sync_baseline (
+          project_id TEXT NOT NULL,
+          sync_id TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          last_synced_mtime BIGINT NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY (project_id, sync_id)
+        );
+      `);
+      console.log('[PGLite Worker] project_file_sync_baseline table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create project_file_sync_baseline table:', error);
+      throw error;
+    }
+
+    // Migration: materialized tracker type definitions (schema version 12).
+    // Makes the database the local source of truth for custom tracker schemas
+    // (previously only YAML files + the in-memory registry), so offline
+    // consumers like the `nim` CLI can resolve a custom type's role->field map.
+    // `model` is JSON TEXT (not JSONB) so it reads identically across backends.
+    // sync_id / sync_status mirror tracker_items for a future schema-sync path.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tracker_type_defs (
+          id          TEXT PRIMARY KEY,
+          workspace   TEXT NOT NULL,
+          type        TEXT NOT NULL,
+          model       TEXT NOT NULL,
+          source      TEXT,
+          updated     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at  TIMESTAMPTZ,
+          sync_id     BIGINT,
+          sync_status TEXT DEFAULT 'local'
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tracker_type_defs_ws_type
+          ON tracker_type_defs (workspace, type);
+      `);
+      console.log('[PGLite Worker] tracker_type_defs table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tracker_type_defs table:', error);
       throw error;
     }
 
