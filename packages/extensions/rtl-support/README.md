@@ -1,20 +1,14 @@
 # RTL Support — Nimbalyst Extension
 
-[English](#english) | [فارسی](#فارسی)
-
----
-
-## English
-
 > Automatic Right-to-Left (RTL) text direction detection for agent transcripts, user prompts, and markdown content.
 > **Resolves [issue #237](https://github.com/nimbalyst/nimbalyst/issues/237).**
 
-### What it does
+## What it does
 
 When prompting agents in RTL languages (Persian, Arabic, Hebrew, etc.), responses were rendered left-to-right, hurting readability. This extension solves it automatically:
 
 - 🎯 **Automatic detection** of dominant text direction per block
-- 🔀 **Per-block** — mixed messages (Persian + English code) handled correctly
+- 🔀 **Per-block** — mixed messages (e.g. Persian text + English code) handled correctly
 - 🛡️ **Code blocks protected** — always stay LTR
 - ⌨️ **Input fields** — RTL applied to user input as they type
 - 🔤 **Inline detection** (optional) — isolates RTL runs within LTR paragraphs
@@ -22,7 +16,7 @@ When prompting agents in RTL languages (Persian, Arabic, Hebrew, etc.), response
 - 🎹 **Keyboard shortcut** — `Ctrl+Shift+R` / `Cmd+Shift+R` to toggle
 - 🌐 Supports: Persian, Arabic, Hebrew, Syriac, Thaana, NKo, and more
 
-### Architecture (official Nimbalyst APIs)
+## Architecture (official Nimbalyst APIs)
 
 | Component | Role |
 |-----------|------|
@@ -35,10 +29,10 @@ When prompting agents in RTL languages (Persian, Arabic, Hebrew, etc.), response
 
 **Key technical insight:** Nimbalyst's `MarkdownRenderer` uses custom React components that ignore hast `properties.dir`. The component overrides (`p`, `li`, `blockquote`, `h1`-`h6`, `table`, `td`, `th`) are required — they detect direction from children and apply `dir` + styles to the DOM directly.
 
-### Installation
+## Installation
 
 ```bash
-cd nimbalyst-rtl-support
+cd packages/extensions/rtl-support
 npm install
 npm run build
 ```
@@ -53,7 +47,7 @@ Then copy the folder to the user extensions directory:
 
 Restart Nimbalyst. See [INSTALL.md](./INSTALL.md) for detailed methods.
 
-### Settings
+## Settings
 
 Available via **Settings → RTL Support** panel, or configuration keys:
 
@@ -67,68 +61,30 @@ Available via **Settings → RTL Support** panel, or configuration keys:
 | `inlineDetect` | boolean | `false` | Inline RTL isolation |
 | `debug` | boolean | `false` | Console debug logging |
 
-### Verification
+## Runtime API
 
-Tested on live Nimbalyst: 93 RTL blocks, 88 table cells, 4 tables processed correctly. `direction: rtl` and `text-align: right` confirmed via `getComputedStyle`.
+After activation, an API is available on `globalThis.nimbalystRtlSupport`:
 
-### Development
+```typescript
+window.nimbalystRtlSupport.toggle();
+window.nimbalystRtlSupport.updateSettings({ threshold: 0.4 });
+window.nimbalystRtlSupport.getSettings();
+window.nimbalystRtlSupport.reset();
+```
+
+## Verification
+
+Tested on live Nimbalyst: 93 RTL blocks, 88 table cells, 4 tables processed correctly. `direction: rtl` and `text-align: right` confirmed via `getComputedStyle`. 15 unit tests passing.
+
+## Development
 
 ```bash
 npm run build      # build
-# for fast iteration, use extension_reload MCP tool:
+npm run typecheck  # type-check
+# for fast iteration, use the extension_reload MCP tool:
 # extension_reload(extensionId, path)
 ```
 
-### License
-
-MIT
-
----
-
-## فارسی
-
-> تشخیص خودکار جهت راست‌به‌چپ (RTL) برای پاسخ‌های agent، prompt کاربر، و محتوای markdown.
-> **حل [issue #237](https://github.com/nimbalyst/nimbalyst/issues/237).**
-
-### چه می‌کند
-
-وقتی با زبان‌های RTL (فارسی، عربی، عبری و...) به agent پیام می‌دهیم، پاسخ‌ها چپ‌به‌راست رندر می‌شدند که خوانایی را پایین می‌آورد. این extension آن را به‌صورت خودکار حل می‌کند:
-
-- 🎯 **تشخیص خودکار** جهت غالب متن در هر بلاک
-- 🔀 **Per-block** — پیام‌های مخلوط (فارسی + کد انگلیسی) درست هندل می‌شوند
-- 🛡️ **بلاک‌های کد محافظت می‌شوند** — همیشه LTR می‌مانند
-- ⌨️ **فیلدهای ورودی** — هنگام تایپ فارسی، direction ورودی RTL می‌شود
-- 🔤 **تشخیص inline** (اختیاری) — قطعات فارسی داخل پاراگراف انگلیسی isolate می‌شوند
-- ⚙️ **پنل تنظیمات** — بدون ویرایش JSON قابل تنظیم
-- 🎹 **میانبر صفحه‌کلید** — `Ctrl+Shift+R` برای toggle سریع
-- 🌐 پشتیبانی از: فارسی، عربی، عبری، Syriac، Thaana، NKo و بیشتر
-
-### نصب
-
-```bash
-cd nimbalyst-rtl-support
-npm install
-npm run build
-```
-
-سپس پوشه را به مسیر extensions کاربر کپی کنید:
-
-| سیستم‌عامل | مسیر |
-|-----------|------|
-| Windows | `%APPDATA%\@nimbalyst\electron\extensions\` |
-| macOS | `~/Library/Application Support/@nimbalyst/electron/extensions/` |
-| Linux | `~/.config/@nimbalyst/electron/extensions/` |
-
-Nimbalyst را restart کنید. برای راهنمای کامل [INSTALL.md](./INSTALL.md) را ببینید.
-
-### نکته فنی کلیدی
-
-`MarkdownRenderer` Nimbalyst از component سفارشی استفاده می‌کند که hast `properties.dir` را نادیده می‌گیرد. به همین دلیل، **component override** لازم است — هر component متن children را تحلیل کرده و `dir` + استایل را مستقیماً روی DOM اعمال می‌کند.
-
-### تایید
-
-تست شده روی Nimbalyst واقعی: ۹۳ بلاک RTL، ۸۸ سلول جدول، ۴ جدول به‌درستی پردازش شدند.
-
-### لایسنس
+## License
 
 MIT

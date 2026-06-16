@@ -2,14 +2,15 @@
  * RTL Support — Nimbalyst Extension
  * Entry point
  *
- * issue #237: تشخیص خودکار جهت RTL/LTR برای پاسخ‌های agent، prompt، و markdown.
+ * issue #237: automatic RTL/LTR direction detection for agent responses,
+ * user prompts, and markdown content.
  *
- * معماری (با API رسمی Nimbalyst):
+ * Architecture (official Nimbalyst APIs):
  *  - hostComponent: RtlTranscriptHost — rehype plugin + component overrides
- *  - inputRtl: اعمال RTL روی فیلدهای ورودی کاربر
+ *  - inputRtl: applies RTL to user input fields
  *  - settings: configuration service + localStorage + settingsPanel UI
  *
- * @nimbalyst/runtime external است و توسط host تأمین می‌شه.
+ * @nimbalyst/runtime is external and provided by the host.
  */
 
 import './styles.css';
@@ -20,12 +21,12 @@ import { loadSettings, saveSettings, resetSettings, type RtlSettings } from './s
 import { startInputRtl, stopInputRtl } from './inputRtl';
 import { setDebug, isDebug } from './debug';
 
-/** hostComponents — توسط manifest > contributions.hostComponents ارجاع می‌شه */
+/** hostComponents — referenced via manifest > contributions.hostComponents */
 export const hostComponents = {
   RtlTranscriptHost,
 };
 
-/** settingsPanel — توسط manifest > contributions.settingsPanel ارجاع می‌شه */
+/** settingsPanel — referenced via manifest > contributions.settingsPanel */
 export const settingsPanel = {
   RtlSettingsPanel,
 };
@@ -45,15 +46,15 @@ interface ExtensionContext {
 let currentSettings: RtlSettings = loadSettings();
 
 /**
- * Extension رو فعال کن.
+ * Activate the extension.
  */
 export function activate(context?: ExtensionContext): void {
   currentSettings = loadSettings();
 
-  // sync با configuration service (تنظیمات manifest)
+  // Sync with configuration service (manifest settings)
   if (context?.services?.configuration) {
     const config = context.services.configuration;
-    const c = {
+    const c: RtlSettings = {
       enabled: config.get('rtlSupport.enabled', currentSettings.enabled),
       mode: config.get<'auto' | 'rtl' | 'ltr'>('rtlSupport.mode', currentSettings.mode),
       threshold: config.get<number>('rtlSupport.threshold', currentSettings.threshold),
@@ -66,18 +67,18 @@ export function activate(context?: ExtensionContext): void {
     saveSettings(c);
   }
 
-  // debug flag
+  // Debug flag
   setDebug(currentSettings.debug);
 
-  // input RTL
+  // Input RTL
   if (currentSettings.enabled && currentSettings.inputRtl && typeof document !== 'undefined') {
     startInputRtl(document.body, currentSettings);
   }
 
-  // keyboard shortcut
+  // Keyboard shortcut
   registerKeyboardShortcut();
 
-  // runtime API
+  // Runtime API
   registerRuntimeApi();
 
   if (isDebug()) {
@@ -85,12 +86,11 @@ export function activate(context?: ExtensionContext): void {
   }
 }
 
-/** میانبر صفحه‌کلید: Ctrl+Shift+R برای toggle */
+/** Keyboard shortcut: Ctrl+Shift+R (or Cmd+Shift+R on mac) to toggle */
 function registerKeyboardShortcut(): void {
   if (typeof document === 'undefined') return;
 
   const handler = (e: KeyboardEvent) => {
-    // Ctrl+Shift+R (یا Cmd+Shift+R روی mac)
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'R' || e.key === 'r')) {
       e.preventDefault();
       const api = (globalThis as Record<string, unknown>).nimbalystRtlSupport as {
@@ -98,20 +98,14 @@ function registerKeyboardShortcut(): void {
       } | undefined;
       if (api) {
         const enabled = api.toggle();
-        console.log(`[RTL Support] ${enabled ? 'enabled' : 'disabled'} via shortcut`);
+        console.log('[RTL Support] ' + (enabled ? 'enabled' : 'disabled') + ' via shortcut');
       }
     }
   };
 
   document.addEventListener('keydown', handler);
-
-  // cleanup registration برای deactivate
-  if (currentSettings) {
-    const origDeactivate = deactivate;
-    // ذخیره handler برای cleanup — در deactivate پاک می‌شه
-    (globalThis as Record<string, unknown>)['__rtlShortcutHandler'] = handler;
-    void origDeactivate;
-  }
+  // Store handler for cleanup in deactivate
+  (globalThis as Record<string, unknown>)['__rtlShortcutHandler'] = handler;
 }
 
 function registerRuntimeApi(): void {
@@ -143,7 +137,7 @@ function registerRuntimeApi(): void {
 }
 
 export function deactivate(): void {
-  // keyboard shortcut cleanup
+  // Keyboard shortcut cleanup
   const handler = (globalThis as Record<string, unknown>)['__rtlShortcutHandler'];
   if (typeof handler === 'function' && typeof document !== 'undefined') {
     document.removeEventListener('keydown', handler as EventListener);

@@ -1,12 +1,12 @@
 /**
- * RtlTranscriptHost — host component که توسط Nimbalyst mount می‌شه
- * و transcript markdown contributions رو ثبت می‌کنه.
+ * RtlTranscriptHost — a host component mounted by Nimbalyst that registers
+ * transcript markdown contributions.
  *
- * استراتژی سه‌گانه:
- *  1. rehypePlugin: dir attribute روی hAST nodes (fallback برای renderer‌های استاندارد)
- *  2. components overrides: p, li, blockquote, h1-h6, table/td/th — راه‌حل اصلی
- *     (Nimbalyst MarkdownRenderer از component سفارشی استفاده می‌کنه)
- *  3. inline detection (اختیاری): run‌های RTL داخل پاراگراف LTR رو isolate می‌کنه
+ * Three-pronged strategy:
+ *  1. rehypePlugin: dir attribute on hAST nodes (fallback for standard renderers)
+ *  2. component overrides: p, li, blockquote, h1-h6, table/td/th — the main path
+ *     (Nimbalyst's MarkdownRenderer uses custom React components)
+ *  3. inline detection (optional): isolates RTL runs within LTR paragraphs
  */
 
 import { createElement, useEffect, type ReactNode } from 'react';
@@ -29,7 +29,7 @@ function buildPluginOptions(settings: RtlSettings) {
   };
 }
 
-/** استخراج متن از React children */
+/** Extract text from React children */
 function textFromChildren(children: ReactNode): string {
   if (children == null || children === false) return '';
   if (typeof children === 'string' || typeof children === 'number') return String(children);
@@ -41,12 +41,19 @@ function textFromChildren(children: ReactNode): string {
   return '';
 }
 
-/** رندر children با inline isolation برای run‌های RTL */
+/** Render children with inline isolation for RTL runs */
 function renderInline(children: ReactNode, enableInline: boolean): ReactNode {
   if (!enableInline) return children;
 
   const text = textFromChildren(children);
-  if (!text || !/[֐-ࣿיִ-﻿]/.test(text)) return children;
+  if (!text) return children;
+  // Quick check: skip processing if text has no RTL characters
+  // (Unicode ranges U+0590..U+08FF and presentation forms U+FB1D..U+FEFF)
+  const hasRtl = Array.from(text).some((ch) => {
+    const cp = ch.codePointAt(0)!;
+    return (cp >= 0x0590 && cp <= 0x08ff) || (cp >= 0xfb1d && cp <= 0xfeff);
+  });
+  if (!hasRtl) return children;
 
   const runs = detectInlineRuns(text);
   if (runs.length <= 1) return children;
@@ -67,8 +74,8 @@ function renderInline(children: ReactNode, enableInline: boolean): ReactNode {
 }
 
 /**
- * ساخت component overrides برای بلاک‌های متنی.
- * هر override متن children رو تحلیل می‌کنه و dir مناسب رو اعمال می‌کنه.
+ * Build component overrides for text blocks.
+ * Each override analyzes its children and applies the appropriate direction.
  */
 function buildComponentOverrides(settings: RtlSettings) {
   const opts = buildPluginOptions(settings);
@@ -80,7 +87,7 @@ function buildComponentOverrides(settings: RtlSettings) {
     return detectDirection(textFromChildren(children), opts.threshold);
   };
 
-  // بلاک‌های متنی با تشخیص جهت + استایل
+  // Text blocks with direction detection + styling
   const blockTag = (Tag: string) =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function RtlBlock(props: any) {
@@ -89,14 +96,14 @@ function buildComponentOverrides(settings: RtlSettings) {
       return createElement(Tag, {
         ...rest,
         dir,
-        className: `nim-rtl-block nim-rtl-${dir}${className ? ` ${className}` : ''}`,
+        className: 'nim-rtl-block nim-rtl-' + dir + (className ? ' ' + className : ''),
         style: dir === 'rtl'
           ? { direction: 'rtl', textAlign: 'right', unicodeBidi: 'plaintext', ...(style || {}) }
           : { ...(style || {}) },
       }, inline ? renderInline(children, inline) : children);
     };
 
-  // table cells — تشخیص جهت ولی بدون inline (جدول معمولاً ساده‌ست)
+  // Table cells — direction detection without inline (tables are usually simpler)
   const cellTag = (Tag: string) =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function RtlCell(props: any) {
@@ -105,14 +112,14 @@ function buildComponentOverrides(settings: RtlSettings) {
       return createElement(Tag, {
         ...rest,
         dir,
-        className: `nim-rtl-cell nim-rtl-${dir}${className ? ` ${className}` : ''}`,
+        className: 'nim-rtl-cell nim-rtl-' + dir + (className ? ' ' + className : ''),
         style: dir === 'rtl'
           ? { direction: 'rtl', textAlign: 'right', ...(style || {}) }
           : { ...(style || {}) },
       });
     };
 
-  // table خودش — اگر محتوای غالب RTL باشه، کل جدول mirror بشه
+  // The table itself — mirrors if its dominant content is RTL
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function RtlTable(props: any) {
     const dir = dirFor(props.children);
@@ -120,7 +127,7 @@ function buildComponentOverrides(settings: RtlSettings) {
     return createElement('table', {
       ...rest,
       dir,
-      className: `nim-rtl-table nim-rtl-${dir}${className ? ` ${className}` : ''}`,
+      className: 'nim-rtl-table nim-rtl-' + dir + (className ? ' ' + className : ''),
       style: dir === 'rtl'
         ? { direction: 'rtl', ...(style || {}) }
         : { ...(style || {}) },

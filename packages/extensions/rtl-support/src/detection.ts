@@ -1,15 +1,15 @@
 /**
- * RTL Detection — متن پردازش و جهت غالب رو تشخیص میده.
+ * RTL Detection — analyzes text and determines its dominant direction.
  *
- * الگوریتم:
- *  - کاراکترهای حرفی/عددی رو می‌شماره
- *  - تعداد کاراکترهای RTL رو با محدوده‌های Unicode RTL مقایسه می‌کنه
- *  - اگه نسبت RTL ≥ threshold باشه → 'rtl'، وگرنه 'ltr'
+ * Algorithm:
+ *  - Counts alphabetic/numeric characters
+ *  - Checks each against Unicode RTL script ranges
+ *  - If the RTL ratio is >= threshold → 'rtl', otherwise 'ltr'
  *
- * گرانولاریتی: per-block (هر بلاک متن جداگانه بررسی می‌شه)
+ * Granularity: per-block (each text block is analyzed independently)
  */
 
-/** محدوده‌های Unicode برای اسکریپت‌های راست‌به‌چپ */
+/** Unicode ranges for right-to-left scripts */
 const RTL_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x0590, 0x05ff], // Hebrew
   [0x0600, 0x06ff], // Arabic
@@ -31,7 +31,7 @@ const LTR_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x00c0, 0x024f], // Latin Extended
 ];
 
-/** تست اینکه آیا code point به اسکریپت RTL تعلق داره یا نه */
+/** Whether a code point belongs to an RTL script */
 function isRtlChar(code: number): boolean {
   for (const [start, end] of RTL_RANGES) {
     if (code >= start && code <= end) return true;
@@ -39,19 +39,18 @@ function isRtlChar(code: number): boolean {
   return false;
 }
 
-/** تست اینکه آیا code point یک کاراکتر حرفی/عددی معنادار هست */
+/** Whether a character is a meaningful letter/number (from any script) */
 function isMeaningfulChar(char: string): boolean {
-  // حروف و اعداد از هر اسکریپتی (شامل Latin, Arabic, Persian, Hebrew و...)
-  // \p{L} = هر حرف، \p{N} = هر عدد
+  // \p{L} = any letter, \p{N} = any number (covers Latin, Arabic, Persian, Hebrew, etc.)
   return /[\p{L}\p{N}]/u.test(char);
 }
 
 /**
- * جهت غالب یک متن رو تشخیص میده.
+ * Detects the dominant direction of a text.
  *
- * @param text متن ورودی (می‌تونه چندخطی باشه)
- * @param threshold حداقل نسبت RTL برای تشخیص RTL (پیش‌فرض 0.3 = ۳۰٪)
- * @returns 'rtl' یا 'ltr'
+ * @param text input text (may be multi-line)
+ * @param threshold minimum RTL ratio to classify as RTL (default 0.3 = 30%)
+ * @returns 'rtl' or 'ltr'
  */
 export function detectDirection(
   text: string,
@@ -77,10 +76,10 @@ export function detectDirection(
 }
 
 /**
- * جهت رو برای بلاک‌های جداگانه متن تشخیص میده (per-block).
- * متن رو با خطوط خالی به بلاک‌ها تقسیم می‌کنه و هر بلاک رو جدا بررسی می‌کنه.
+ * Detects direction for separate text blocks.
+ * Splits text on blank lines and analyzes each block independently.
  *
- * @returns آرایه‌ای از { text, direction }
+ * @returns array of { text, direction }
  */
 export function detectBlocks(
   text: string,
@@ -88,7 +87,7 @@ export function detectBlocks(
 ): Array<{ text: string; direction: 'rtl' | 'ltr' }> {
   if (!text) return [];
 
-  // تقسیم با خطوط خالی (یعنی پاراگراف‌ها)
+  // Split on blank lines (i.e. paragraphs)
   const blocks = text.split(/\n\s*\n/);
   return blocks.map((block) => ({
     text: block,
@@ -97,8 +96,8 @@ export function detectBlocks(
 }
 
 /**
- * جهت کلی یک پیام رو تشخیص میده — برای تصمیم‌گیری جهت پیش‌فرض کل پیام.
- * از روی غالب بلاک‌ها تصمیم می‌گیره.
+ * Detects the overall direction of a message — used to decide the
+ * default direction for the whole message. Decided by block majority.
  */
 export function detectMessageDirection(
   text: string,
@@ -110,17 +109,17 @@ export function detectMessageDirection(
   const rtlBlocks = blocks.filter((b) => b.direction === 'rtl').length;
   const ltrBlocks = blocks.length - rtlBlocks;
 
-  // اکثریت بلاک‌ها تصمیم می‌گیرن؛ تساوی → LTR
+  // Majority of blocks decides; tie → LTR
   return rtlBlocks > ltrBlocks ? 'rtl' : 'ltr';
 }
 
 /**
- * یه متن رو به run‌های هم‌جهت تقسیم می‌کنه (برای inline RTL).
- * مثلاً "Hello سلام world" → [{Hello, ltr}, {سلام, rtl}, {world, ltr}]
+ * Splits text into same-direction runs (for inline RTL handling).
+ * e.g. "Hello سلام world" → [{Hello, ltr}, {سلام, rtl}, {world, ltr}]
  *
- * این برای رندر inline استفاده می‌شه تا هر قطعه RTL با isolate به‌درستی نمایش داده بشه.
+ * Used for inline rendering so each RTL run displays correctly in isolation.
  *
- * @returns آرایه‌ای از { text, direction, isRtl }
+ * @returns array of { text, direction }
  */
 export function detectInlineRuns(
   text: string,
@@ -129,8 +128,6 @@ export function detectInlineRuns(
   if (!text) return [];
 
   const result: Array<{ text: string; direction: 'rtl' | 'ltr' }> = [];
-  // تقسیم با فواصل (space, tab) ولی حفظ delimiter
-  // استراتژی: کاراکتر به کاراکتر، جهت هر کاراکتر رو تعیین، run‌های هم‌جهت رو گروه کن
   let currentRun = '';
   let currentDir: 'rtl' | 'ltr' | 'neutral' = 'neutral';
 
@@ -142,12 +139,11 @@ export function detectInlineRuns(
   };
 
   for (const char of text) {
-    // فاصله و علائم نگارشی = neutral (به run فعلی اضافه می‌شن)
     const code = char.codePointAt(0);
     const isMeaningful = code !== undefined && /[\p{L}\p{N}]/u.test(char);
 
     if (!isMeaningful) {
-      // neutral char — به run فعلی اضافه کن
+      // Neutral character (space, punctuation) — append to current run
       currentRun += char;
       continue;
     }
@@ -161,30 +157,29 @@ export function detectInlineRuns(
     } else if (currentDir === charDir) {
       currentRun += char;
     } else {
-      // تغییر جهت — flush قبلی
+      // Direction change — flush the previous run
       flush(currentDir as 'rtl' | 'ltr');
       currentDir = charDir;
       currentRun = char;
     }
   }
 
-  // flush آخرین run
+  // Flush the final run
   if (currentDir !== 'neutral') {
     flush(currentDir as 'rtl' | 'ltr');
   } else if (currentRun) {
-    // فقط neutral (مثلاً فقط فاصله) — به‌عنوان ltr
+    // Only neutral (e.g. just whitespace) — classify as ltr
     result.push({ text: currentRun, direction: 'ltr' });
   }
 
-  // اگه تنظیمات inline فعال نیست، همه‌رو به‌عنوان جهت کلی برگردون
-  // (این تابع فقط برای inline استفاده می‌شه، پس threshold رو اینجا اعمال نمی‌کنیم)
+  // threshold is only used for block-level detection, not inline
   void threshold;
 
-  // ادغام run‌های RTL کوچک مجاور با neutral
+  // Merge adjacent same-direction runs (including neutrals between them)
   return mergeNeutralRuns(result);
 }
 
-/** neutral run‌های بین دو run هم‌جهت رو با اون direction ادغام کن */
+/** Merges neutral runs between two same-direction runs */
 function mergeNeutralRuns(
   runs: Array<{ text: string; direction: 'rtl' | 'ltr' }>
 ): Array<{ text: string; direction: 'rtl' | 'ltr' }> {
@@ -200,3 +195,6 @@ function mergeNeutralRuns(
   }
   return merged;
 }
+
+// LTR_RANGES is retained for potential future use (e.g. strict LTR classification)
+void LTR_RANGES;

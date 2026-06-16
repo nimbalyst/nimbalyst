@@ -1,9 +1,9 @@
 /**
- * debug — logging utility که با flag کنترل می‌شه.
+ * debug — logging utility gated behind a flag.
  *
- * برای فعال‌سازی:
+ * To enable:
  *   localStorage.setItem('nimbalyst.rtl-support.debug', 'true')
- *   یا window.nimbalystRtlSupport.updateSettings({ debug: true })
+ *   or window.nimbalystRtlSupport.updateSettings({ debug: true })
  */
 
 const DEBUG_KEY = 'nimbalyst.rtl-support.debug';
@@ -21,7 +21,7 @@ function readDebug(): boolean {
   return cachedDebug;
 }
 
-/** تنظیم دستی debug flag (از settings API) */
+/** Set the debug flag manually (from settings API) */
 export function setDebug(enabled: boolean): void {
   cachedDebug = enabled;
   if (typeof localStorage !== 'undefined') {
@@ -33,19 +33,19 @@ export function setDebug(enabled: boolean): void {
   }
 }
 
-/** آیا debug فعال است؟ */
+/** Whether debug is enabled */
 export function isDebug(): boolean {
   return readDebug();
 }
 
-/** لاگ فقط وقتی debug فعال باشه */
+/** Log only when debug is enabled */
 export function debug(...args: unknown[]): void {
   if (readDebug()) {
     console.log('[RTL Support]', ...args);
   }
 }
 
-/** خطا همیشه لاگ می‌شه */
+/** Errors are always logged */
 export function error(...args: unknown[]): void {
   console.error('[RTL Support]', ...args);
 }

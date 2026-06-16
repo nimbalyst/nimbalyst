@@ -1,17 +1,17 @@
 /**
- * inputRtl — اعمال خودکار RTL روی فیلدهای ورودی کاربر.
+ * inputRtl — automatically applies RTL to user input fields.
  *
- * وقتی کاربر فارسی تایپ می‌کنه، direction input به rtl تغییر می‌کنه.
- * برای input/textarea/contenteditable در transcript composer.
+ * When the user types in an RTL language, the input direction switches to rtl.
+ * Targets input/textarea/contenteditable in the transcript composer.
  *
- * استراتژی: input event listener که جهت رو بر اساس محتوای فعلی تشخیص می‌ده.
+ * Strategy: an input event listener that detects direction from current content.
  */
 
 import { detectDirection } from './detection';
 import type { RtlSettings } from './settings';
 import { debug } from './debug';
 
-/** selector‌های فیلد ورودی composer Nimbalyst */
+/** Selectors for Nimbalyst composer input fields */
 const INPUT_SELECTORS = [
   'textarea',
   'input[type="text"]',
@@ -34,7 +34,7 @@ function handleInput(e: Event): void {
   const dir = detectDirection(text, currentSettings.threshold);
   if (target.getAttribute('dir') !== dir) {
     target.setAttribute('dir', dir);
-    debug('input direction →', dir);
+    debug('input direction changed to', dir);
   }
 }
 
@@ -55,9 +55,7 @@ function attachInputListeners(el: HTMLElement): void {
 function scanForInputs(root: HTMLElement): void {
   for (const selector of INPUT_SELECTORS) {
     try {
-      // اول خود element
       if (root.matches(selector)) attachInputListeners(root);
-      // بعد children
       root.querySelectorAll<HTMLElement>(selector).forEach(attachInputListeners);
     } catch {
       // ignore bad selector
@@ -66,7 +64,7 @@ function scanForInputs(root: HTMLElement): void {
 }
 
 /**
- * شروع اعمال RTL روی فیلدهای ورودی.
+ * Start applying RTL to input fields.
  */
 export function startInputRtl(root: HTMLElement, settings: RtlSettings): void {
   currentSettings = settings;
@@ -75,10 +73,10 @@ export function startInputRtl(root: HTMLElement, settings: RtlSettings): void {
     return;
   }
 
-  // اسکن اولیه
+  // Initial scan
   scanForInputs(root);
 
-  // watch برای input‌های جدید (مثلاً وقتی composer mount می‌شه)
+  // Watch for new inputs (e.g. when composer mounts)
   observer = new MutationObserver((mutations) => {
     if (!currentSettings?.inputRtl) return;
     for (const mutation of mutations) {
@@ -94,7 +92,7 @@ export function startInputRtl(root: HTMLElement, settings: RtlSettings): void {
   debug('input RTL started');
 }
 
-/** توقف و پاک‌سازی */
+/** Stop and clean up */
 export function stopInputRtl(): void {
   if (observer) {
     observer.disconnect();

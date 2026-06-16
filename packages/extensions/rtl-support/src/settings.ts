@@ -1,23 +1,23 @@
 /**
- * Settings — مدیریت تنظیمات RTL extension.
+ * Settings — manages RTL extension configuration.
  */
 
 export type RtlMode = 'auto' | 'rtl' | 'ltr';
 
 export interface RtlSettings {
-  /** آیا extension فعال است؟ */
+  /** Whether the extension is enabled */
   enabled: boolean;
-  /** حالت عملکرد: auto = تشخیص خودکار، rtl/ltr = اجباری */
+  /** Operating mode: auto = detect, rtl/ltr = force */
   mode: RtlMode;
-  /** آستانه نسبت RTL برای تشخیص RTL (پیش‌فرض ۰.۳) */
+  /** RTL ratio threshold for detection (default 0.3) */
   threshold: number;
-  /** per-block یا فقط per-message */
+  /** Per-block vs per-message detection */
   perBlock: boolean;
-  /** اعمال RTL روی فیلد ورودی کاربر */
+  /** Apply RTL to user input fields */
   inputRtl: boolean;
-  /** تشخیص inline RTL داخل پاراگراف */
+  /** Inline RTL detection within paragraphs */
   inlineDetect: boolean;
-  /** لاگ‌های debug */
+  /** Debug logging */
   debug: boolean;
 }
 
@@ -65,7 +65,7 @@ export function saveSettings(settings: RtlSettings): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   } catch {
-    // ignore
+    // ignore — storage may be unavailable in sandboxed environments
   }
 }
 
