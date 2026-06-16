@@ -10,7 +10,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import Database from 'better-sqlite3';
+import { openDatabase } from '../db/openDatabase.js';
 import type { ParsedArgs } from '../cli/parse.js';
 import { flagStr, flagBool, flagInt } from '../cli/parse.js';
 import { usageError, notFoundError, connectionError } from '../cli/exitCodes.js';
@@ -28,7 +28,7 @@ export async function runSession(args: ParsedArgs): Promise<number> {
   if (!fs.existsSync(dbPath)) {
     throw connectionError(`No Nimbalyst database at ${dbPath}.`);
   }
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  const db = openDatabase(dbPath, { readonly: true, fileMustExist: true });
   db.pragma('query_only = true');
   try {
     if (verb === 'list') {

@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
+import { openDatabase } from '../../db/openDatabase.js';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -75,7 +76,7 @@ function insert(db: Database.Database, row: {
 
 beforeAll(() => {
   dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'nim-cli-')), 'nimbalyst.sqlite');
-  const db = new Database(dbPath);
+  const db = openDatabase(dbPath);
   db.exec(SCHEMA);
   db.prepare('INSERT INTO _migrations (version, name, applied_at) VALUES (?,?,?)').run(11, 'fixture', 'now');
 

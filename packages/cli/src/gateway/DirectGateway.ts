@@ -6,9 +6,9 @@
  * Row -> record conversion goes through the vendored `dbRowToRecord` so a
  * CLI-read row is shaped identically to an app-read one.
  */
-import Database from 'better-sqlite3';
 import type { Database as DB } from 'better-sqlite3';
 import * as fs from 'fs';
+import { openDatabase } from '../db/openDatabase.js';
 import { dbRowToRecord, type TrackerRecord } from '../vendor/trackerRecord.js';
 import {
   appendActivity,
@@ -59,7 +59,7 @@ export class DirectGateway implements TrackerGateway {
       );
     }
     try {
-      this.db = new Database(this.dbPath, { readonly: true, fileMustExist: true });
+      this.db = openDatabase(this.dbPath, { readonly: true, fileMustExist: true });
       // A read-only handle still benefits from WAL read semantics; do not change
       // journal mode (that would require a write lock).
       this.db.pragma('query_only = true');
@@ -353,7 +353,7 @@ export class DirectGateway implements TrackerGateway {
     }
 
     try {
-      const db = new Database(this.dbPath, { fileMustExist: true });
+      const db = openDatabase(this.dbPath, { fileMustExist: true });
       db.pragma('journal_mode = WAL');
       db.pragma('busy_timeout = 5000');
       this.wdb = db;

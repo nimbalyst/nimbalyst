@@ -8,7 +8,7 @@
  * temp fixture and points DirectGateway at it via --db.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+import { openDatabase } from '../../db/openDatabase.js';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -57,7 +57,7 @@ CREATE TABLE tracker_type_defs (
 
 /** Seed a materialized custom type definition (as the app would). */
 function seedTypeDef(type: string, model: Record<string, unknown>): void {
-  const db = new Database(dbPath);
+  const db = openDatabase(dbPath);
   db.prepare(
     `INSERT INTO tracker_type_defs (id, workspace, type, model, source, updated)
      VALUES (?, ?, ?, ?, 'yaml', ?)`,
@@ -74,7 +74,7 @@ function seed(row: {
   data: Record<string, unknown>; syncStatus?: string; syncId?: number | null;
   bodyVersion?: number;
 }): void {
-  const db = new Database(dbPath);
+  const db = openDatabase(dbPath);
   const iso = new Date().toISOString();
   db.prepare(
     `INSERT INTO tracker_items (id, issue_key, issue_number, type, data, workspace, document_path,
@@ -100,13 +100,13 @@ function seed(row: {
 
 /** Read raw row + body cache for assertions (separate read-only handle). */
 function rawRow(id: string): any {
-  const db = new Database(dbPath, { readonly: true });
+  const db = openDatabase(dbPath, { readonly: true });
   const row = db.prepare('SELECT * FROM tracker_items WHERE id = ?').get(id);
   db.close();
   return row;
 }
 function bodyCache(id: string): any[] {
-  const db = new Database(dbPath, { readonly: true });
+  const db = openDatabase(dbPath, { readonly: true });
   const rows = db.prepare('SELECT * FROM tracker_body_cache WHERE item_id = ? ORDER BY body_version').all(id);
   db.close();
   return rows as any[];
@@ -115,7 +115,7 @@ function bodyCache(id: string): any[] {
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-cli-write-'));
   dbPath = path.join(dir, 'nimbalyst.sqlite');
-  const db = new Database(dbPath);
+  const db = openDatabase(dbPath);
   db.exec(SCHEMA);
   db.prepare('INSERT INTO _migrations (version, name, applied_at) VALUES (?,?,?)').run(11, 'fixture', 'now');
   db.close();
@@ -302,7 +302,7 @@ describe('DirectGateway offline writes', () => {
       const dbDir = path.join(dir, 'sqlite-db');
       fs.mkdirSync(dbDir, { recursive: true });
       const defaultDbPath = path.join(dbDir, 'nimbalyst.sqlite');
-      const db = new Database(defaultDbPath);
+      const db = openDatabase(defaultDbPath);
       db.exec(SCHEMA);
       db.prepare('INSERT INTO _migrations (version, name, applied_at) VALUES (?,?,?)').run(11, 'fixture', 'now');
       db.close();
