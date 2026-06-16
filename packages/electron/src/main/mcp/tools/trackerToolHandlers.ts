@@ -4,9 +4,11 @@ import type { TrackerItem } from '@nimbalyst/runtime';
 import { getCurrentIdentity } from '../../services/TrackerIdentityService';
 import {
   deleteWorkspaceTrackerSchema,
+  ensureWorkspaceTrackerSchemasLoaded,
   getAllTrackerSchemas,
   getTrackerRoleField,
   isBuiltinTrackerSchema,
+  TrackerTypeExistsError,
   upsertWorkspaceTrackerSchema,
 } from '../../services/TrackerSchemaService';
 import {
@@ -827,6 +829,10 @@ export const trackerToolSchemas = [
           type: "string",
           description: "Optional YAML filename to use within .nimbalyst/trackers.",
         },
+        overwrite: {
+          type: "boolean",
+          description: "Replace an existing custom type of the same name. Defaults to false, which refuses to clobber. When true, the existing YAML is backed up first.",
+        },
       },
       required: ["schema"],
     },
@@ -1172,8 +1178,14 @@ export async function handleTrackerList(
 
 export async function handleTrackerListTypes(
   args: any,
+  workspacePath?: string,
 ): Promise<McpToolResult> {
   try {
+    // Custom (.nimbalyst/trackers/*.yaml) types are loaded into the registry by
+    // window/session events; the in-process MCP server can be queried before
+    // those fire (or after another window cleared them), so load on demand.
+    ensureWorkspaceTrackerSchemasLoaded(workspacePath);
+
     const includeBuiltin = args?.includeBuiltin !== false;
     const includeCustom = args?.includeCustom !== false;
     const search = typeof args?.search === 'string' ? args.search.trim().toLowerCase() : '';
@@ -1243,6 +1255,10 @@ export async function handleTrackerDefineType(
       };
     }
 
+    // Load existing custom types so a redefine collides with the right file and
+    // an agent doesn't think the type is missing (NIM-760).
+    ensureWorkspaceTrackerSchemasLoaded(workspacePath);
+
     const schema = buildTrackerSchemaFromArgs(args);
     if (typeof schema.type === 'string' && isBuiltinTrackerSchema(schema.type)) {
       return {
@@ -1255,14 +1271,18 @@ export async function handleTrackerDefineType(
         isError: true,
       };
     }
-    const { model, filePath } = await upsertWorkspaceTrackerSchema(workspacePath, schema, {
+    const { model, filePath, backupPath } = await upsertWorkspaceTrackerSchema(workspacePath, schema, {
       fileName: args?.fileName,
+      overwrite: args?.overwrite === true,
     });
 
     // Mirror into the DB so offline consumers (the `nim` CLI) can resolve this
     // type's role->field map without the YAML file. Best-effort.
     await materializeTrackerTypeDef(workspacePath, model, 'cli');
 
+    const backupNote = backupPath
+      ? ` Existing definition backed up to ${path.basename(backupPath)}.`
+      : '';
     return {
       content: [
         {
@@ -1273,14 +1293,21 @@ export async function handleTrackerDefineType(
               type: model.type,
               model,
               fileName: path.basename(filePath),
+              backupFileName: backupPath ? path.basename(backupPath) : undefined,
             },
-            summary: `Defined tracker type '${model.type}' in .nimbalyst/trackers/${path.basename(filePath)}.`,
+            summary: `Defined tracker type '${model.type}' in .nimbalyst/trackers/${path.basename(filePath)}.${backupNote}`,
           }),
         },
       ],
       isError: false,
     };
   } catch (error) {
+    if (error instanceof TrackerTypeExistsError) {
+      return {
+        content: [{ type: "text", text: `Error: ${error.message}` }],
+        isError: true,
+      };
+    }
     return {
       content: [
         {
@@ -1545,6 +1572,10 @@ export async function handleTrackerCreate(
         isError: true,
       };
     }
+
+    // Make custom (.nimbalyst/trackers/*.yaml) types visible to the registry so
+    // type validation below accepts them (NIM-760).
+    ensureWorkspaceTrackerSchemasLoaded(workspacePath);
 
     // Check if this type allows creation
     const model = globalRegistry.get(args.type);
@@ -1833,6 +1864,9 @@ export async function handleTrackerUpdate(
   try {
     const { getDatabase } = await import("../../database/initialize");
     const db = getDatabase();
+    // Make custom (.nimbalyst/trackers/*.yaml) types visible so primaryType
+    // reassignment and schema validation accept them (NIM-760).
+    ensureWorkspaceTrackerSchemasLoaded(workspacePath);
     const { docService, tempDocService } = await getDocumentServiceForWorkspace(workspacePath);
 
     try {

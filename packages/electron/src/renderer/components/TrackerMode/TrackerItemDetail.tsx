@@ -25,6 +25,7 @@ import { buildTrackerDeepLink } from '../../store/atoms/collabDocuments';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { useTrackerContentCollab } from '../../hooks/useTrackerContentCollab';
+import { reconcileExternalFieldChanges } from './trackerDetailFieldSync';
 
 interface TrackerItemDetailProps {
   itemId: string;
@@ -397,7 +398,14 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   const [localTitle, setLocalTitle] = useState(item ? getRecordTitle(item) : '');
   const [localDescription, setLocalDescription] = useState(item ? (item.fields.description as string ?? '') : '');
   const [localCustomFields, setLocalCustomFields] = useState<Record<string, any>>({});
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Per-field debounce timers (not one shared timer) so editing one field never
+  // drops another field's pending save, and so reconciliation can tell which
+  // fields are mid-edit. `pendingFieldsRef` holds fields with an unflushed save;
+  // `externalFieldBaselineRef` is the last-reconciled snapshot of persisted
+  // values used to detect external writes (NIM-790).
+  const fieldSaveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const pendingFieldsRef = useRef<Set<string>>(new Set());
+  const externalFieldBaselineRef = useRef<Record<string, unknown>>({});
   const editable = item ? isEditable(item) : false;
   const hasRichContent = item ? isNativeItem(item) : false; // Only native items have embedded Lexical content
 
@@ -432,16 +440,42 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     setLocalTitle(getRecordTitle(item));
     setLocalDescription(item.fields.description as string ?? '');
     setLocalCustomFields({});
-    // Clear any stale debounce timer from the previous item
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = null;
-    }
+    // Clear any stale per-field debounce timers from the previous item and seed
+    // the reconciliation baseline with the new item's persisted fields.
+    for (const timer of fieldSaveTimersRef.current.values()) clearTimeout(timer);
+    fieldSaveTimersRef.current.clear();
+    pendingFieldsRef.current.clear();
+    externalFieldBaselineRef.current = { ...item.fields };
     setIsLinkingExistingSession(false);
     setSessionSearchQuery('');
     setLinkingSessionId(null);
     setLinkSessionError(null);
   }, [itemId]); // itemId only -- not item fields
+
+  // Reconcile in-progress field overrides against external writes (MCP, sync,
+  // another window). When a field the user is NOT actively editing changes
+  // underneath us, drop the stale local override so the panel shows -- and
+  // saves -- the fresh value instead of clobbering it (NIM-790).
+  const itemFields = item?.fields;
+  useEffect(() => {
+    if (!itemFields) return;
+    const baseline = externalFieldBaselineRef.current;
+    externalFieldBaselineRef.current = { ...itemFields };
+    setLocalCustomFields((prev) => {
+      const overriddenFields = Object.keys(prev);
+      if (overriddenFields.length === 0) return prev;
+      const { clearedFields } = reconcileExternalFieldChanges({
+        previousPersisted: baseline,
+        currentPersisted: itemFields,
+        overriddenFields,
+        pendingFields: pendingFieldsRef.current,
+      });
+      if (clearedFields.length === 0) return prev;
+      const next = { ...prev };
+      for (const f of clearedFields) delete next[f];
+      return next;
+    });
+  }, [itemFields]);
 
   // Load rich content from PGLite once when navigating to a new item.
   // After initial load, the Lexical editor owns the content and saves via debounced saveContent.
@@ -651,13 +685,22 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     }
   }, [item?.id, item?.source, editable, syncMode]);
 
-  /** Debounced save for text fields */
-  const debouncedSave = useCallback((updates: Record<string, any>) => {
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => {
-      debounceTimerRef.current = null;
-      saveField(updates);
-    }, 500);
+  /** Debounced save for a single text field. Per-field timers + pending-field
+   *  tracking let the reconciliation effect distinguish "user is editing this
+   *  field" from "external write landed" (NIM-790). */
+  const debouncedSaveField = useCallback((fieldName: string, value: any) => {
+    pendingFieldsRef.current.add(fieldName);
+    const timers = fieldSaveTimersRef.current;
+    const existing = timers.get(fieldName);
+    if (existing) clearTimeout(existing);
+    timers.set(fieldName, setTimeout(async () => {
+      timers.delete(fieldName);
+      try {
+        await saveField({ [fieldName]: value });
+      } finally {
+        pendingFieldsRef.current.delete(fieldName);
+      }
+    }, 500));
   }, [saveField]);
 
   /** Debounced save for rich content.
@@ -710,8 +753,10 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
 
   // Cleanup timers
   useEffect(() => {
+    const timers = fieldSaveTimersRef.current;
     return () => {
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
       if (contentSaveTimerRef.current) clearTimeout(contentSaveTimerRef.current);
     };
   }, []);
@@ -754,8 +799,8 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     } else {
       setLocalCustomFields(prev => ({ ...prev, [fieldName]: value }));
     }
-    debouncedSave({ [fieldName]: value });
-  }, [debouncedSave]);
+    debouncedSaveField(fieldName, value);
+  }, [debouncedSaveField]);
 
   /** Open the source document in Files mode */
   const handleOpenDocument = useCallback(() => {

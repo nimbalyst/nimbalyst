@@ -53,13 +53,24 @@ vi.mock('../../../services/TrackerSyncManager', () => ({
   syncTrackerItem: vi.fn(),
 }));
 
-vi.mock('../../../services/TrackerSchemaService', () => ({
-  getTrackerRoleField: vi.fn(() => null),
-  upsertWorkspaceTrackerSchema: mockUpsertWorkspaceTrackerSchema,
-  deleteWorkspaceTrackerSchema: mockDeleteWorkspaceTrackerSchema,
-  getAllTrackerSchemas: mockGetAllTrackerSchemas,
-  isBuiltinTrackerSchema: mockIsBuiltinTrackerSchema,
-}));
+vi.mock('../../../services/TrackerSchemaService', () => {
+  class MockTrackerTypeExistsError extends Error {
+    readonly code = 'TRACKER_TYPE_EXISTS';
+    constructor(readonly type: string, readonly filePath: string) {
+      super(`Tracker type '${type}' already exists at ${filePath}.`);
+      this.name = 'TrackerTypeExistsError';
+    }
+  }
+  return {
+    getTrackerRoleField: vi.fn(() => null),
+    ensureWorkspaceTrackerSchemasLoaded: vi.fn(),
+    upsertWorkspaceTrackerSchema: mockUpsertWorkspaceTrackerSchema,
+    deleteWorkspaceTrackerSchema: mockDeleteWorkspaceTrackerSchema,
+    getAllTrackerSchemas: mockGetAllTrackerSchemas,
+    isBuiltinTrackerSchema: mockIsBuiltinTrackerSchema,
+    TrackerTypeExistsError: MockTrackerTypeExistsError,
+  };
+});
 
 vi.mock('../../../utils/store', () => ({
   getWorkspaceState: vi.fn(() => ({ issueKeyPrefix: 'NIM' })),
@@ -273,7 +284,7 @@ describe('tracker schema tools', () => {
     expect(mockUpsertWorkspaceTrackerSchema).toHaveBeenCalledWith(
       '/tmp/ws',
       expect.objectContaining({ type: 'incident' }),
-      { fileName: undefined },
+      { fileName: undefined, overwrite: false },
     );
   });
 

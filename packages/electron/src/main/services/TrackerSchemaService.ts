@@ -247,6 +247,47 @@ export function getAllTrackerSchemas(): TrackerDataModel[] {
   return globalRegistry.getAll();
 }
 
+/**
+ * Ensure the given workspace's custom YAML tracker schemas are registered in the
+ * global registry before an MCP tracker handler reads or validates a type.
+ *
+ * The registry is normally populated by window/session events
+ * (`updateTrackerSchemaWorkspace`). But the in-process MCP HTTP server can serve
+ * a tracker call when those events have not fired for this workspace, or after
+ * another window cleared the workspace schemas -- leaving only builtins, so
+ * custom types are invisible to `tracker_list_types` and rejected by
+ * `tracker_create`/`tracker_update` (NIM-760).
+ *
+ * Reads the `.nimbalyst/trackers` YAML dir directly and registers each model.
+ * Additive and idempotent (`register()` overwrites by type); it never clears, so
+ * it cannot wipe the active workspace's schemas when called for a different one.
+ * Builtins are assumed loaded by `initTrackerSchemaService` at startup.
+ */
+export function ensureWorkspaceTrackerSchemasLoaded(workspacePath: string | null | undefined): void {
+  if (!workspacePath) return;
+
+  const trackersDir = path.join(workspacePath, '.nimbalyst', 'trackers');
+  let files: string[];
+  try {
+    if (!fs.existsSync(trackersDir)) return;
+    files = fs.readdirSync(trackersDir).filter(
+      f => f.endsWith('.yaml') || f.endsWith('.yml'),
+    );
+  } catch {
+    return;
+  }
+
+  for (const file of files) {
+    try {
+      const content = fs.readFileSync(path.join(trackersDir, file), 'utf-8');
+      const model = parseTrackerYAML(content);
+      globalRegistry.register(model); // workspace schemas are not builtin
+    } catch (err) {
+      console.error(`[TrackerSchemaService] ensureWorkspaceTrackerSchemasLoaded failed for ${file}:`, err);
+    }
+  }
+}
+
 export function isBuiltinTrackerSchema(type: string): boolean {
   return globalRegistry.isBuiltin(type);
 }
@@ -302,11 +343,28 @@ function refreshWorkspaceSchemasIfCurrent(workspacePath: string): void {
   notifySchemaChanged();
 }
 
+/** Thrown by upsertWorkspaceTrackerSchema when a type already exists and the
+ *  caller did not opt into overwriting. `.code` lets callers map it to a
+ *  friendly tool error without string-matching the message. */
+export class TrackerTypeExistsError extends Error {
+  readonly code = 'TRACKER_TYPE_EXISTS';
+  constructor(
+    readonly type: string,
+    readonly filePath: string,
+  ) {
+    super(
+      `Tracker type '${type}' already exists at ${path.basename(filePath)}. ` +
+      `Pass overwrite: true to replace it (the existing file is backed up first).`,
+    );
+    this.name = 'TrackerTypeExistsError';
+  }
+}
+
 export async function upsertWorkspaceTrackerSchema(
   workspacePath: string,
   schema: TrackerDataModel | string,
-  options?: { fileName?: string },
-): Promise<{ model: TrackerDataModel; filePath: string }> {
+  options?: { fileName?: string; overwrite?: boolean },
+): Promise<{ model: TrackerDataModel; filePath: string; backupPath?: string }> {
   if (!workspacePath) throw new Error('workspacePath is required');
 
   const yamlContent = typeof schema === 'string' ? schema : serializeTrackerYAML(schema);
@@ -320,6 +378,20 @@ export async function upsertWorkspaceTrackerSchema(
   await fsPromises.mkdir(trackersDir, { recursive: true });
 
   const existingFilePath = await findWorkspaceSchemaFileByType(workspacePath, model.type);
+
+  // Guard against silent data loss: `.nimbalyst/` is gitignored, so blindly
+  // overwriting an existing custom-type definition (e.g. an agent that called
+  // tracker_define_type because tracker_list_types hid the type) destroys it
+  // with no recovery. Refuse unless the caller opts in, and back up first.
+  let backupPath: string | undefined;
+  if (existingFilePath) {
+    if (!options?.overwrite) {
+      throw new TrackerTypeExistsError(model.type, existingFilePath);
+    }
+    backupPath = `${existingFilePath}.${Date.now()}.bak`;
+    await fsPromises.copyFile(existingFilePath, backupPath);
+  }
+
   const filePath = existingFilePath ?? path.join(
     trackersDir,
     normalizeSchemaFileName(model.type, options?.fileName),
@@ -328,7 +400,7 @@ export async function upsertWorkspaceTrackerSchema(
   await fsPromises.writeFile(filePath, yamlContent, 'utf-8');
   refreshWorkspaceSchemasIfCurrent(workspacePath);
 
-  return { model, filePath };
+  return { model, filePath, backupPath };
 }
 
 export async function deleteWorkspaceTrackerSchema(
