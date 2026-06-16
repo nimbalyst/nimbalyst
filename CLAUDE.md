@@ -14,6 +14,10 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 **At release time, condense — don't ship the dev-time bullets verbatim.** `[Unreleased]` accumulates verbose per-commit bullets during development. Before tagging, collapse them: merge a feature's scattered bullets into one line, drop scaffolding, squash near-duplicates. If the release notes are longer than the equivalent section in a recent shipped version, cut harder.
 
+### Write and Run Tests for Behavioral Changes
+
+**Any change to runtime behavior ships with a unit test** — a new test, or an extension of an existing one. Pure refactors already covered by tests, formatting, docs, and config-only changes are exempt. Before pushing, run the gate locally: `npm run typecheck && npm run test:prepush`. The repo's pre-push hook runs this automatically; it installs on `npm install` (or `npm run hooks:install`). Never push to `main` with a red suite — CI on `main` is a backstop, not the gate. For high-risk areas (sync/collab, main-process init, IPC, restart-to-verify bugs) the test comes **first** and must fail before the fix — see [end-to-end-verification.md](./.claude/rules/end-to-end-verification.md).
+
 ### Use @floating-ui/react for All Popover/Tooltip/Menu Positioning
 
 See [floating-ui.md](./.claude/rules/floating-ui.md). Never manually calculate `position: fixed` coordinates — always use `@floating-ui/react` with `FloatingPortal`.
