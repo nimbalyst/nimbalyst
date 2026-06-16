@@ -3,42 +3,6 @@
   "generatedAt": "2026-04-21T17:42:59.236Z",
   "extensions": [
     {
-      "id": "gemini-antigravity",
-      "name": "Google Gemini (Antigravity)",
-      "description": "Google Gemini 3.5 Flash via the Antigravity language server. Auth rides your existing ~/.gemini login.",
-      "version": "1.0.0",
-      "author": "Nimbalyst",
-      "categories": [
-        "ai-tools"
-      ],
-      "tags": [
-        "gemini",
-        "google",
-        "ai",
-        "antigravity",
-        "agent"
-      ],
-      "icon": "auto_awesome",
-      "screenshots": [],
-      "downloads": 0,
-      "featured": true,
-      "permissions": [],
-      "minimumAppVersion": "1.0.0",
-      "downloadUrl": "bundled:gemini-antigravity.nimext",
-      "checksum": "4219e79f4cb160f5bafd04d55126345c8aa032f1a3ffc597c50e5fc37ed3dd0c",
-      "repositoryUrl": "",
-      "changelog": "Phase 5 reshape to aiAgentProviders + backendModules.",
-      "tagline": "Google Gemini 3.5 Flash via the Antigravity language server",
-      "longDescription": "Run Google's Gemini 3.5 Flash models locally through the Antigravity language server. Agent provider with tool-loop support. Authentication uses your existing ~/.gemini OAuth login - no API key required. Tracks per-model quota and account credits so you can avoid rate limits.",
-      "highlights": [
-        "Gemini 3.5 Flash (High / Medium / Low) via the local Antigravity language server",
-        "Agent provider with tool-loop and meta-agent mode",
-        "Account credits and per-model quota surfaced in the settings panel",
-        "Auth rides your existing Antigravity / ~/.gemini login - no key entered in Nimbalyst"
-      ],
-      "local": true
-    },
-    {
       "id": "com.developer.nimbalyst-mindmap",
       "name": "Nimbalyst Mindmap",
       "description": "A freeform spatial mindmap editor with AI-assisted editing",
