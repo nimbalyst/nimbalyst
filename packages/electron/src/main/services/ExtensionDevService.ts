@@ -1,4 +1,5 @@
 import { ClaudeCodeProvider, OpenAICodexProvider, OpenAICodexACPProvider, OpenCodeProvider } from '@nimbalyst/runtime/ai/server';
+import { ClaudeCliLauncherConfig } from './ai/claudeCliLauncherSingleton';
 import { BrowserWindow } from 'electron';
 import {
   startExtensionDevServer,
@@ -152,6 +153,7 @@ export class ExtensionDevService {
         OpenAICodexProvider.setExtensionDevServerPort(port);
         OpenAICodexACPProvider.setExtensionDevServerPort(port);
         OpenCodeProvider.setExtensionDevServerPort(port);
+        ClaudeCliLauncherConfig.setExtensionDevServerPort(port);
 
         this.started = true;
       } catch (error) {

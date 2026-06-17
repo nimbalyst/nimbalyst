@@ -36,7 +36,11 @@ import { setTrackerModeLayoutAtom } from '../store/atoms/trackers';
 import type { TypeaheadOption } from './Typeahead/GenericTypeahead';
 import type { SessionMeta as SessionItem } from '../store';
 import { KeyboardShortcuts, getShortcutDisplay } from '../../shared/KeyboardShortcuts';
-import { FilterChip, type FilterChipOption } from './UnifiedQuickOpen/FilterChip';
+import {
+  FilterChip,
+  type FilterChipHandle,
+  type FilterChipOption,
+} from './UnifiedQuickOpen/FilterChip';
 import { useRecentHistory } from './UnifiedQuickOpen/useRecentHistory';
 import { parseFileMask, matchesFileMask } from './UnifiedQuickOpen/fileMask';
 import type { TrackerItem } from '@nimbalyst/runtime/core/DocumentService';
@@ -111,6 +115,8 @@ const DEFAULT_TRACKER_TYPE_OPTIONS: FilterChipOption[] = [
 
 const RECENT_FILE_EXT_KEY = 'unifiedQuickOpen.recentFileMasks';
 const RECENT_TRACKER_TYPE_KEY = 'unifiedQuickOpen.recentTrackerTypes';
+const SELECTED_FILE_EXT_KEY = 'unifiedQuickOpen.selectedFileMask';
+const SELECTED_TRACKER_TYPE_KEY = 'unifiedQuickOpen.selectedTrackerType';
 
 // Tracker status badge colors. Kept here so the Trackers pane and any future
 // status filter stay consistent with the tracker mode UI.
@@ -138,6 +144,71 @@ export interface UnifiedQuickOpenProps {
    * and selecting the item via Jotai atoms. Pass to short-circuit for tests.
    */
   onTrackerSelect?: (trackerId: string) => void;
+}
+
+function usePersistedFilterValue(storageKey: string): [string | null, (value: string | null) => void] {
+  const [value, setValue] = useState<string | null>(null);
+  const loadedRef = useRef(false);
+  const changedBeforeLoadRef = useRef(false);
+  const latestValueRef = useRef<string | null>(null);
+
+  const persistValue = useCallback(
+    (next: string | null) => {
+      const api = (window as any).electronAPI;
+      if (!api?.invoke) return;
+      api.invoke('app-settings:set', storageKey, next).catch(() => {
+        /* ignore */
+      });
+    },
+    [storageKey],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const api = (window as any).electronAPI;
+    if (!api?.invoke) {
+      loadedRef.current = true;
+      return;
+    }
+
+    api
+      .invoke('app-settings:get', storageKey)
+      .then((stored: unknown) => {
+        if (cancelled) return;
+        loadedRef.current = true;
+        if (changedBeforeLoadRef.current) {
+          persistValue(latestValueRef.current);
+          return;
+        }
+        const next = typeof stored === 'string' && stored.trim() ? stored : null;
+        latestValueRef.current = next;
+        setValue(next);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        loadedRef.current = true;
+        if (changedBeforeLoadRef.current) {
+          persistValue(latestValueRef.current);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [storageKey, persistValue]);
+
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    persistValue(value);
+  }, [value, persistValue]);
+
+  const setPersistedValue = useCallback((next: string | null) => {
+    changedBeforeLoadRef.current = !loadedRef.current;
+    latestValueRef.current = next;
+    setValue(next);
+  }, []);
+
+  return [value, setPersistedValue];
 }
 
 // -----------------------------------------------------------------------------
@@ -170,9 +241,10 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
     'idle' | 'searching' | 'results'
   >('idle');
   // Per-tab filter chip values, hoisted so they survive tab switches.
-  const [fileExtFilter, setFileExtFilter] = useState<string | null>(null);
-  const [trackerTypeFilter, setTrackerTypeFilter] = useState<string | null>(null);
+  const [fileExtFilter, setFileExtFilter] = usePersistedFilterValue(SELECTED_FILE_EXT_KEY);
+  const [trackerTypeFilter, setTrackerTypeFilter] = usePersistedFilterValue(SELECTED_TRACKER_TYPE_KEY);
   const inputRef = useRef<HTMLInputElement>(null);
+  const trackerTypeFilterRef = useRef<FilterChipHandle>(null);
 
   // Recent-history dropdowns (persisted to app-settings).
   const fileExtHistory = useRecentHistory(RECENT_FILE_EXT_KEY);
@@ -212,6 +284,11 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
     setTimeout(() => inputRef.current?.focus(), 0);
   }, []);
 
+  const openTrackerTypeFilter = useCallback(() => {
+    setActiveTab('trackers');
+    setTimeout(() => trackerTypeFilterRef.current?.open(), 0);
+  }, []);
+
   // Tab / Shift+Tab cycles tabs. We use capture to win over any per-pane
   // handler that might also listen to Tab.
   useEffect(() => {
@@ -238,6 +315,19 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
           ? (idx - 1 + TAB_SPECS.length) % TAB_SPECS.length
           : (idx + 1) % TAB_SPECS.length;
         switchTab(TAB_SPECS[nextIdx].id);
+        return;
+      }
+
+      if (
+        e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        (e.key === 'T' || e.key === 't')
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        openTrackerTypeFilter();
         return;
       }
 
@@ -284,7 +374,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isOpen, activeTab, switchTab, query]);
+  }, [isOpen, activeTab, switchTab, query, openTrackerTypeFilter]);
 
   if (!isOpen) return null;
 
@@ -424,6 +514,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
             )}
             {activeTab === 'trackers' && (
               <FilterChip
+                ref={trackerTypeFilterRef}
                 label="Type"
                 value={trackerTypeFilter}
                 onChange={setTrackerTypeFilter}
@@ -526,6 +617,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
               label={activeTab === 'prompts' ? 'Open at this prompt' : 'Open'}
             />
             <FooterHint kbd="Tab" label="Next tab" />
+            {activeTab === 'trackers' && <FooterHint kbd="Ctrl+T" label="Type" />}
             <FooterHint kbd="Esc" label="Close" />
           </div>
         </div>
@@ -631,6 +723,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
         const fileNameResults = await api.searchWorkspaceFileNames(
           workspacePath,
           query,
+          extFilter ? { fileMask: extFilter } : undefined,
         );
         if (Array.isArray(fileNameResults)) {
           const processed: FileItem[] = fileNameResults.map((r: any) => ({
@@ -678,7 +771,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
     return () => {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
     };
-  }, [query, workspacePath, recentFiles, posthog]);
+  }, [query, extFilter, workspacePath, recentFiles, posthog]);
 
   const recentItems: FileItem[] = useMemo(
     () =>

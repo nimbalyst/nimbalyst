@@ -1618,6 +1618,8 @@ export const RichTranscriptView = React.forwardRef<
         return 'Claude';
       case 'claude-code':
         return 'Claude Agent';
+      case 'claude-code-cli':
+        return 'Claude Code CLI';
       case 'openai':
       case 'openai-codex':
         return 'OpenAI';

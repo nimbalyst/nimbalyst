@@ -1,6 +1,5 @@
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { BrowserWindow } from 'electron';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { historyManager } from '../HistoryManager';
 import { getSubscriberIds } from '../file/WorkspaceEventBus';
@@ -10,6 +9,7 @@ import { sessionEditQuota } from './SessionEditQuota';
 import { workspaceAttributionThrottle } from './WorkspaceAttributionThrottle';
 import { toolCallMatcher } from './ToolCallMatcher';
 import { codexEditWindowRegistry } from './CodexEditWindowRegistry';
+import { notifySessionFilesUpdated } from './sessionFilesNotify';
 
 export interface WorkspaceFileEditEvent {
   workspacePath: string;
@@ -368,12 +368,10 @@ class WorkspaceFileEditAttributionServiceImpl {
       //   messageId: winner.messageId,
       // });
 
-      const windows = BrowserWindow.getAllWindows();
-      for (const window of windows) {
-        if (!window.isDestroyed()) {
-          window.webContents.send('session-files:updated', winner.sessionId);
-        }
-      }
+      // NIM-816: route through the shared notifier so the session-files IPC
+      // cache is invalidated too — broadcasting without invalidating let the
+      // renderer re-query into a stale empty cache entry.
+      notifySessionFilesUpdated(winner.sessionId);
     } catch (error) {
       logger.main.error('[WorkspaceFileEditAttributionService] Failed to process event:', {
         filePath: event.filePath,

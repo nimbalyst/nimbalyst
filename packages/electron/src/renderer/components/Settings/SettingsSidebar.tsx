@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAtomValue } from 'jotai';
 import { createPortal } from 'react-dom';
 import { MaterialSymbol, getProviderIcon } from '@nimbalyst/runtime';
@@ -41,7 +41,10 @@ interface CategoryGroup {
 }
 
 interface CategoryItem {
-  id: SettingsCategory;
+  // Built-in panels use the strict SettingsCategory union. Extension-contributed
+  // agent providers append entries keyed by their contribution id (a free
+  // string), so the id is widened to accept those.
+  id: SettingsCategory | string;
   name: string;
   icon: React.ReactNode;
   badge?: string | number;
@@ -53,8 +56,8 @@ interface CategoryItem {
 export type SettingsScope = 'user' | 'project';
 
 interface SettingsSidebarProps {
-  selectedCategory: SettingsCategory;
-  onSelectCategory: (category: SettingsCategory) => void;
+  selectedCategory: SettingsCategory | string;
+  onSelectCategory: (category: SettingsCategory | string) => void;
   providerStatus?: Record<string, { enabled: boolean; testStatus?: string }>;
   scope?: SettingsScope;
 }
@@ -79,6 +82,37 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
     if (status.enabled && status.testStatus === 'error') return 'error';
     return undefined;
   };
+
+  // Extension-contributed agent providers from the main-process
+  // AgentProviderRegistry, so installed agent extensions (e.g. the Gemini
+  // Antigravity extension) appear in this list alongside the built-ins.
+  const [extAgentProviders, setExtAgentProviders] = useState<
+    Array<{ id: string; name: string; icon?: string; status: string }>
+  >([]);
+  useEffect(() => {
+    let cancelled = false;
+    const invoke = window.electronAPI?.invoke;
+    if (!invoke) return;
+    invoke('agent-providers:list')
+      .then((res: { success?: boolean; data?: Array<{ id: string; name: string; icon?: string; status: string }> }) => {
+        if (!cancelled && res?.success && Array.isArray(res.data)) {
+          setExtAgentProviders(res.data);
+        }
+      })
+      .catch(() => {
+        /* registry unavailable; show built-ins only */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const extAgentItems: CategoryItem[] = extAgentProviders.map((p) => ({
+    id: p.id,
+    name: p.name,
+    icon: p.icon ? <MaterialSymbol icon={p.icon} size={16} /> : getProviderIcon(p.id, { size: 16 }),
+    statusDot: p.status === 'active' ? 'success' : p.status === 'denied' ? 'error' : undefined,
+    isAlpha: true,
+  }));
 
   const categoryGroups: CategoryGroup[] = [
     {
@@ -171,6 +205,7 @@ Best for complex coding tasks.`,
           statusDot: getStatusDot('copilot-cli'),
           isAlpha: true,
         },
+        ...extAgentItems,
       ],
     },
     {
@@ -199,6 +234,10 @@ Best for quick edits and tasks that do not require multi-file operations.`,
           icon: getProviderIcon('lmstudio', { size: 16 }),
           statusDot: getStatusDot('lmstudio'),
         },
+        // Extension agent providers (e.g. Gemini) are also surfaced under Chat
+        // Providers per product request; selection routes through the same
+        // extension-agent backend.
+        ...extAgentItems,
       ],
     },
     {

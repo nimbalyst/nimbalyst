@@ -1,5 +1,6 @@
 import type { TypeaheadOption } from './GenericTypeahead';
 import type { SlashTypeaheadScope } from './typeaheadUtils';
+import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 
 export interface SlashCommandEntry {
   name: string;
@@ -10,7 +11,7 @@ export interface SlashCommandEntry {
 }
 
 export function supportsWorkspaceSlashCommands(provider?: string | null): boolean {
-  return provider === 'claude-code' || provider === 'openai-codex';
+  return supportsWorkspaceSlashWorkflowProvider(provider);
 }
 
 export async function fetchSlashCommandEntries(options: {

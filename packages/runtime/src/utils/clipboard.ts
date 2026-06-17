@@ -18,6 +18,56 @@ export async function copyToClipboard(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);
 }
 
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read blob'));
+    reader.onload = () => resolve(String(reader.result));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function resolveImageDataUrl(src: string): Promise<string> {
+  if (src.startsWith('data:')) {
+    return src;
+  }
+
+  const response = await fetch(src);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch image: ${response.status}`);
+  }
+
+  return blobToDataUrl(await response.blob());
+}
+
+export async function copyImageToClipboard(options: { src: string; filePath?: string }): Promise<void> {
+  const electronAPI = (window as any).electronAPI;
+  if (electronAPI?.copyImageToClipboard) {
+    const dataUrl = options.filePath ? undefined : await resolveImageDataUrl(options.src);
+    await electronAPI.copyImageToClipboard({
+      filePath: options.filePath,
+      dataUrl,
+    });
+    return;
+  }
+
+  const response = await fetch(options.src);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch image: ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  if (typeof ClipboardItem === 'undefined') {
+    throw new Error('Image clipboard is not supported in this environment');
+  }
+
+  await navigator.clipboard.write([
+    new ClipboardItem({
+      [blob.type || 'image/png']: blob,
+    }),
+  ]);
+}
+
 export async function readClipboard(): Promise<string> {
   const electronAPI = (window as any).electronAPI;
   if (electronAPI?.readClipboard) {

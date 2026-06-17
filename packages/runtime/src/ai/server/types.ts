@@ -100,6 +100,22 @@ export interface ToolCall {
   };
 }
 
+/**
+ * OpenAI function-calling shaped tool definition threaded to extension-agent
+ * providers so their tool loops (e.g. gemini-antigravity) can present the host's
+ * meta-agent tools as JSON in the model prompt. Built-in providers ignore this
+ * — they discover the same tools over an SSE MCP server instead. Optional and
+ * additive everywhere it appears so no built-in provider path is affected.
+ */
+export interface AgentToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+}
+
 export interface Message {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
@@ -135,7 +151,7 @@ export interface Message {
  * Add new providers here -- the type, runtime array, and exhaustiveness
  * checks all derive from this one definition.
  */
-export const AI_PROVIDER_TYPES = ['claude', 'claude-code', 'openai', 'openai-codex', 'openai-codex-acp', 'lmstudio', 'opencode', 'copilot-cli'] as const;
+export const AI_PROVIDER_TYPES = ['claude', 'claude-code', 'claude-code-cli', 'openai', 'openai-codex', 'openai-codex-acp', 'lmstudio', 'opencode', 'copilot-cli'] as const;
 
 export type AIProviderType = typeof AI_PROVIDER_TYPES[number];
 
@@ -154,8 +170,26 @@ export function assertExhaustiveProvider(provider: never): never {
   throw new Error(`Unhandled provider: ${provider}`);
 }
 
-export function isAgentProvider(provider: string | null | undefined): provider is 'claude-code' | 'openai-codex' | 'openai-codex-acp' | 'opencode' | 'copilot-cli' {
-  return provider === 'claude-code' || provider === 'openai-codex' || provider === 'openai-codex-acp' || provider === 'opencode' || provider === 'copilot-cli';
+export function isAgentProvider(provider: string | null | undefined): provider is 'claude-code' | 'claude-code-cli' | 'openai-codex' | 'openai-codex-acp' | 'opencode' | 'copilot-cli' {
+  return provider === 'claude-code' || provider === 'claude-code-cli' || provider === 'openai-codex' || provider === 'openai-codex-acp' || provider === 'opencode' || provider === 'copilot-cli';
+}
+
+/**
+ * The Claude Code provider family — both Claude-Code variants that drive the
+ * genuine `claude` agent and share the Claude model variant namespace
+ * (opus/sonnet/haiku) and the `ClaudeCodeRawParser` transcript shape:
+ *
+ * - `claude-code`      — Agent SDK in-process, billed to the user's API key.
+ * - `claude-code-cli`  — genuine `claude` CLI on the user's Pro/Max
+ *                        subscription (no API metering). See NIM-805.
+ *
+ * The two are distinct provider IDs so billing is locked per session by
+ * `shouldBlockStartedSessionProviderSwitch()`. Use this guard anywhere a code
+ * path must treat both the same (model validation, variant resolution, parser
+ * routing) rather than hard-coding `=== 'claude-code'`.
+ */
+export function isClaudeCodeFamily(provider: string | null | undefined): provider is 'claude-code' | 'claude-code-cli' {
+  return provider === 'claude-code' || provider === 'claude-code-cli';
 }
 
 /**
@@ -181,8 +215,16 @@ export function shouldBlockStartedSessionProviderSwitch(
  * `opus-4-7` and `opus-4-6` are pinned-version variants retained after bumping
  * the canonical `opus` alias to 4.8, so users can still choose previous
  * generations. See CLAUDE_CODE_PINNED_SDK_MODELS in modelConstants.ts.
+ *
+ * `fable` is the Fable 5 tier above Opus — the CLI accepts it as a first-class
+ * alias (`--model fable`, `/model fable`). The CLI gates the 1M window behind
+ * the `fable[1m]` form just like opus/sonnet (plain `fable` is windowed at
+ * 200k client-side; verified on CLI 2.1.175), so `fable` IS in
+ * CLAUDE_CODE_VARIANTS_WITH_1M and gets a `fable-1m` picker row. Note it
+ * requires usage credits on subscription plans (the CLI surfaces that itself
+ * when unavailable).
  */
-export const CLAUDE_CODE_VARIANTS = ['opus', 'opus-4-7', 'opus-4-6', 'sonnet', 'haiku'] as const;
+export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-7', 'opus-4-6', 'sonnet', 'haiku'] as const;
 
 /**
  * Resolves a configured model string to the SDK model value.
@@ -204,7 +246,7 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
 
   // Try parsing with ModelIdentifier
   const parsed = ModelIdentifier.tryParse(configured);
-  if (parsed && parsed.provider === 'claude-code') {
+  if (parsed && isClaudeCodeFamily(parsed.provider)) {
     // baseVariant strips suffixes like -1m
     const variant = parsed.baseVariant as ClaudeCodeVariant;
     if ((CLAUDE_CODE_VARIANTS as readonly string[]).includes(variant)) {
@@ -227,7 +269,7 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
   }
 
   const supported = CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS.join(', ');
-  if (parsed && parsed.provider !== 'claude-code') {
+  if (parsed && !isClaudeCodeFamily(parsed.provider)) {
     throw new Error(`Claude Agent requires a claude-code:* model identifier. Received: ${configured}`);
   }
 

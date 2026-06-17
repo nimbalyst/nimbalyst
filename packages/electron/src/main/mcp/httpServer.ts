@@ -50,10 +50,16 @@ import {
   handleTrackerUnlinkSession,
   handleTrackerLinkFile,
   handleTrackerAddComment,
+  handleTrackerImporterList,
+  handleTrackerImporterSearch,
+  handleTrackerImport,
+  handleTrackerResnapshot,
+  handleTrackerGetByUrn,
   trackerToolSchemas,
 } from "./tools/trackerToolHandlers";
 import {
   handleAskUserQuestion,
+  handleToolPermission,
   handleGitCommitProposal,
   handleRequestUserInput,
   getInteractiveToolSchemas,
@@ -429,6 +435,21 @@ function createSharedMcpServer(
         case "tracker_add_comment":
           return handleTrackerAddComment(args, workspacePath);
 
+        case "tracker_importer_list":
+          return handleTrackerImporterList(args, workspacePath);
+
+        case "tracker_importer_search":
+          return handleTrackerImporterSearch(args, workspacePath);
+
+        case "tracker_import":
+          return handleTrackerImport(args, workspacePath);
+
+        case "tracker_resnapshot":
+          return handleTrackerResnapshot(args, workspacePath);
+
+        case "tracker_get_by_urn":
+          return handleTrackerGetByUrn(args, workspacePath);
+
         case "feedback_anonymize_text":
           return handleFeedbackAnonymizeText(args, workspacePath);
 
@@ -536,6 +557,54 @@ async function tryCreateServer(port: number): Promise<any> {
             });
           }
           res.end();
+          return;
+        }
+
+        // NIM-806 Phase 4 (Direction A): loopback endpoint the genuine CLI's
+        // PreToolUse permission hook POSTs to. Renders the ToolPermission widget
+        // (via handleToolPermission) and returns the user's decision, which the
+        // hook translates into the CLI's permissionDecision. Bearer-gated like
+        // /mcp. Reuses the same handler/widget/cache as the (dead-interactively)
+        // --permission-prompt-tool path — only the transport differs.
+        if (pathname === "/permission" && req.method === "POST") {
+          if (!requireMcpAuth(req)) {
+            res.writeHead(401);
+            res.end("Unauthorized");
+            return;
+          }
+          const body = (await readJsonBody(req)) as
+            | { sessionId?: string; toolName?: string; toolInput?: unknown; cwd?: string }
+            | undefined;
+          const permSessionId = body?.sessionId;
+          const permToolName = body?.toolName;
+          if (!permSessionId || !permToolName) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ decision: "ask", reason: "missing sessionId or toolName" }));
+            return;
+          }
+          try {
+            // The handler blocks until the user answers the widget (up to ~10m).
+            const result = await handleToolPermission(
+              { tool_name: permToolName, input: body?.toolInput ?? {} },
+              permSessionId,
+              body?.cwd,
+              {},
+            );
+            let decision: "allow" | "deny" = "deny";
+            try {
+              const behavior = JSON.parse(result.content?.[0]?.text || "{}");
+              decision = behavior?.behavior === "allow" ? "allow" : "deny";
+            } catch {
+              // malformed → deny (fail closed for an answered prompt)
+            }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ decision }));
+          } catch (err) {
+            console.error("[MCP Server] /permission handler error:", err);
+            // True error (not a deny) → let the CLI fall back to its native prompt.
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ decision: "ask", reason: "permission handler error" }));
+          }
           return;
         }
 

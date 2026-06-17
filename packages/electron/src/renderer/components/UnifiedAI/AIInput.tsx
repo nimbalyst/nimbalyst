@@ -73,6 +73,13 @@ interface AIInputProps {
   onModelChange?: (modelId: string) => void;
   sessionHasMessages?: boolean;  // Whether current session has any messages
   currentProvider?: string | null;  // Current session provider
+  /**
+   * Show the model picker as a read-only chip even when onModelChange is
+   * omitted (e.g. a committed claude-code-cli session whose model is fixed at
+   * spawn). Keeps the provider/model visible without offering a no-op switch.
+   */
+  readOnlyModel?: boolean;
+  readOnlyModelTitle?: string;
 
   // Effort level support (Opus 4.6 adaptive reasoning)
   effortLevel?: EffortLevel;
@@ -152,6 +159,8 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     onModelChange,
     sessionHasMessages,
     currentProvider,
+    readOnlyModel = false,
+    readOnlyModelTitle,
     effortLevel,
     onEffortLevelChange,
     showEffortLevel,
@@ -1262,7 +1271,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         />
 
         {/* Inline controls row - hidden in memory mode */}
-        {!isMemoryMode && (onModeChange || onModelChange || workspacePath || (tokenUsage && provider === 'claude-code')) && (
+        {!isMemoryMode && (onModeChange || onModelChange || readOnlyModel || workspacePath || (tokenUsage && provider === 'claude-code')) && (
           <div style={{
             display: 'flex',
             alignItems: 'center',
@@ -1270,14 +1279,16 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
           }}>
 {onModeChange && provider === 'claude-code' && mode && <ModeTag mode={mode} onModeChange={onModeChange} />}
 
-            {onModelChange && (
+            {(onModelChange || (readOnlyModel && currentModel)) && (
               <HelpTooltip testId="model-picker">
                 <span style={{ display: 'inline-flex' }}>
                   <ModelSelector
                     currentModel={currentModel || ''}
-                    onModelChange={onModelChange}
+                    onModelChange={onModelChange ?? (() => {})}
                     sessionHasMessages={sessionHasMessages}
                     currentProvider={currentProvider}
+                    readOnly={!onModelChange && readOnlyModel}
+                    readOnlyTitle={readOnlyModelTitle}
                   />
                 </span>
               </HelpTooltip>

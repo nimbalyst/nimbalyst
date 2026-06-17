@@ -1,0 +1,90 @@
+{
+  "id": "gemini-antigravity",
+  "name": "Google Gemini (Antigravity)",
+  "version": "1.0.0",
+  "description": "Google Gemini 3.5 Flash via the Antigravity language server. Auth rides your existing ~/.gemini login.",
+  "author": "Nimbalyst",
+  "main": "dist/index.js",
+  "apiVersion": "1.0.0",
+  "defaultEnabled": true,
+  "contributions": {
+    "aiAgentProviders": [
+      {
+        "id": "antigravity-gemini-agent",
+        "displayName": "Gemini",
+        "platform": "antigravity-gemini",
+        "backendModuleId": "antigravity-server",
+        "supportsResume": true,
+        "supportsForking": false,
+        "supportsAttachments": ["image"],
+        "modelDiscovery": "static",
+        "models": [
+          {
+            "id": "antigravity-gemini-agent:gemini-3-flash-agent",
+            "name": "Gemini 3.5 Flash (High)",
+            "default": true
+          },
+          {
+            "id": "antigravity-gemini-agent:gemini-3.5-flash-low",
+            "name": "Gemini 3.5 Flash (Medium)"
+          },
+          {
+            "id": "antigravity-gemini-agent:gemini-3.5-flash-extra-low",
+            "name": "Gemini 3.5 Flash (Low)"
+          }
+        ],
+        "icon": "gemini",
+        "settingsPanelComponent": "AntigravityAgentSettings"
+      }
+    ],
+    "backendModules": [
+      {
+        "id": "antigravity-server",
+        "entry": "dist/agent.js",
+        "runtime": "utility-process",
+        "permissions": ["nimbalyst-database-write", "workspace-files"],
+        "enablement": {
+          "default": "disabled",
+          "promptOn": "firstUse",
+          "purpose": "Runs Google's Gemini 3.5 Flash via the local Antigravity language server, and gives the agent workspace tools to read, list, and search files, write files, and run shell commands (git, build, test) in the workspace so it can investigate and modify the codebase."
+        }
+      }
+    ],
+    "configuration": {
+      "properties": {
+        "didAutoEnableOnInstall": {
+          "type": "boolean",
+          "default": false,
+          "description": "Internal sentinel: true after the extension has auto-enabled its providers and fired a one-shot Test connection. Prevents the auto-enable flow from running on every boot."
+        },
+        "overrideIdeVersion": {
+          "type": "string",
+          "default": "2.1.4",
+          "description": "Version string passed to the Antigravity language server via --override_ide_version. The server enforces a version gate and rejects builds that report an unsupported value. Bump this when Antigravity ships a new required version so the extension can update without a Nimbalyst release."
+        }
+      }
+    }
+  },
+  "marketplace": {
+    "categories": [
+      "ai-tools"
+    ],
+    "tags": [
+      "gemini",
+      "google",
+      "ai",
+      "antigravity",
+      "agent"
+    ],
+    "icon": "auto_awesome",
+    "featured": true,
+    "tagline": "Google Gemini 3.5 Flash via the Antigravity language server",
+    "longDescription": "Run Google's Gemini 3.5 Flash models locally through the Antigravity language server. Agent provider with tool-loop support. Authentication uses your existing ~/.gemini OAuth login - no API key required. Tracks per-model quota and account credits so you can avoid rate limits.",
+    "highlights": [
+      "Gemini 3.5 Flash (High / Medium / Low) via the local Antigravity language server",
+      "Agent provider with tool-loop and meta-agent mode",
+      "Account credits and per-model quota surfaced in the settings panel",
+      "Auth rides your existing Antigravity / ~/.gemini login - no key entered in Nimbalyst"
+    ]
+  }
+}

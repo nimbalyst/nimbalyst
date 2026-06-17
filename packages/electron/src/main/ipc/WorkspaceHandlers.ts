@@ -1,4 +1,4 @@
-import { BrowserWindow, app, shell, clipboard } from 'electron';
+import { BrowserWindow, app, shell, clipboard, nativeImage } from 'electron';
 import { readFileSync, readdirSync, statSync, existsSync, promises as fsPromises } from 'fs';
 import * as fs from 'fs';
 import { join, basename, dirname, extname } from 'path';
@@ -82,6 +82,10 @@ function getFileType(filePath: string): string {
 // Cache for quick open file searches
 const fileNameCaches = new Map<string, Array<{ path: string; name: string; type: 'file' | 'directory' }>>();
 
+interface QuickOpenFileNameSearchOptions {
+    fileMask?: string | null;
+}
+
 // Binary file extensions to exclude from QuickOpen results
 // Note: Images are NOT excluded - Nimbalyst can display them
 // Note: PDFs are NOT excluded - extensions may add support
@@ -104,6 +108,41 @@ const BINARY_EXTENSIONS = new Set([
 ]);
 
 const NIMBALYST_LOCAL_DIRNAME = 'nimbalyst-local';
+
+function globToRegex(glob: string): RegExp {
+    const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    const pattern = escaped
+        .replace(/\*\*/g, '__DOUBLESTAR__')
+        .replace(/\*/g, '[^/]*')
+        .replace(/__DOUBLESTAR__/g, '.*')
+        .replace(/\?/g, '[^/]');
+    return new RegExp(`^${pattern}$`, 'i');
+}
+
+function parseQuickOpenFileMask(mask: string | null | undefined): RegExp[] {
+    if (!mask) return [];
+    return mask
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(globToRegex);
+}
+
+function matchesQuickOpenFileMask(filePath: string, patterns: RegExp[]): boolean {
+    if (patterns.length === 0) return true;
+    const normalizedPath = filePath.replace(/\\/g, '/');
+    const base = path.basename(normalizedPath);
+    return patterns.some(re => re.test(base) || re.test(normalizedPath));
+}
+
+function shouldIncludeQuickOpenCacheItem(
+    item: { path: string; type: 'file' | 'directory' },
+    maskPatterns: RegExp[]
+): boolean {
+    if (maskPatterns.length === 0) return true;
+    if (item.type === 'directory') return false;
+    return matchesQuickOpenFileMask(item.path, maskPatterns);
+}
 
 // Get the ripgrep binary path for the current platform.
 // Resolves the rg bundled by the @vscode/ripgrep package at
@@ -410,9 +449,15 @@ export function registerWorkspaceHandlers() {
 
     // Search workspace file names only (fast, uses cache)
     // Supports fuzzy matching with CamelCase abbreviations (e.g., "ClaCoPro" matches "ClaudeCodeProvider")
-    safeHandle('search-workspace-file-names', async (event, workspacePath: string, query: string) => {
+    safeHandle('search-workspace-file-names', async (
+        event,
+        workspacePath: string,
+        query: string,
+        options?: QuickOpenFileNameSearchOptions
+    ) => {
         try {
             const trimmedQuery = query.trim();
+            const maskPatterns = parseQuickOpenFileMask(options?.fileMask);
 
             // Use cache if available
             const cache = fileNameCaches.get(workspacePath);
@@ -443,6 +488,7 @@ export function registerWorkspaceHandlers() {
             // Use fuzzy matching for better search experience
             // Supports: substring, CamelCase abbreviation (ClaCoPro), delimiter-separated (tra-bug)
             const scoredResults = cache
+                .filter(item => shouldIncludeQuickOpenCacheItem(item, maskPatterns))
                 .map(item => {
                     const match = fuzzyMatchPath(trimmedQuery, item.path);
                     return {
@@ -1029,6 +1075,29 @@ export function registerWorkspaceHandlers() {
     safeHandle('copy-to-clipboard', async (_event, text: string) => {
         clipboard.writeText(text);
         return { success: true };
+    });
+
+    safeHandle('copy-image-to-clipboard', async (_event, payload: { filePath?: string; dataUrl?: string }) => {
+        try {
+            let image;
+            if (payload.filePath) {
+                image = nativeImage.createFromPath(payload.filePath);
+            } else if (payload.dataUrl) {
+                image = nativeImage.createFromDataURL(payload.dataUrl);
+            } else {
+                return { success: false, error: 'No image source provided' };
+            }
+
+            if (image.isEmpty()) {
+                return { success: false, error: 'Failed to decode image for clipboard' };
+            }
+
+            clipboard.writeImage(image);
+            return { success: true };
+        } catch (error: any) {
+            console.error('Error copying image to clipboard:', error);
+            return { success: false, error: error.message };
+        }
     });
 
     safeHandle('read-from-clipboard', async () => {

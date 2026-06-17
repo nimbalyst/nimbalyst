@@ -9,60 +9,174 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Internal scaffolding for the upcoming PR review panel: detects whether the `gh` CLI is installed and authenticated, with an onboarding banner that guides install/login without ever storing a GitHub token. (#307)
-- PR review cache schema (`pull_requests`, `pull_request_files`, `pull_request_commits`, `pull_request_checks`) and `worktrees.pr_*` linkage columns, plus a typed `PullRequestsStore` and `WorktreeStore.linkPullRequest` / `findByPullRequest` helpers. (#307)
-- `GhApiService` and IPC channels (`pr:list`, `pr:get`, `pr:files`, `pr:file-contents`, `pr:commits`, `pr:checks`, `pr:conversation`, `pr:refresh`, `pr:detect-remote`) that fetch GitHub data via `gh api` and persist normalized rows to the cache. (#307)
-- `PullRequestPollScheduler` that polls open PRs every 60s when the PR review panel is in the foreground and every 5min otherwise, broadcasting `pr:list-updated` after each successful tick so the renderer re-reads the cache. (#307)
-- A `pr-review` workspace mode with a navigation-gutter button (with a help tooltip and the `Cmd/Ctrl+U` shortcut) that appears only when the active project has a GitHub remote, wired to PR atoms and listeners (gh status, remote detection, list-updated). (#307)
-- PR list view with a filter sidebar (open/closed/awaiting-review/created-by-me/with-conflicts/draft), title/number search, and sortable columns (last activity / created / number); selecting the state filter fetches via `gh`, the rest narrow client-side. (#307)
-- Read-only PR detail panel with Conversation, Files Changed (Monaco side-by-side diff), Commits, and Checks tabs; the panel re-fetches its visible tab every 60s while open. (#307)
-- "Open in Worktree" on a PR fetches the PR head branch into a worktree (reused if it already exists), links the worktree to the PR, spawns/reuses an agent session in it, and switches to Agent mode. (#307)
-- Approve and merge a PR (squash / merge commit / rebase) from the detail header, gated by the viewer's `gh`-derived repo permissions and the repo's allowed merge methods; merging requires an explicit in-app confirm. (#307)
-- Edit the merge commit title/message before merging (squash / merge-commit) via the merge dropdown's "Edit commit message…" option. (#307)
-- Inline review threads in the Conversation tab, grouped by file with Open/Resolved status and resolved threads collapsed by default (via `gh api graphql`). (#307)
-- `NIMBALYST_GH_PATH` env var to pin a non-standard `gh` CLI location for PR review. (#307)
-- Per-project GitHub account for PR review: pick a global default `gh` account in User settings and override it per project in Project settings (GitHub panel). The selected account's token is resolved from the `gh` keyring per request and never stored by Nimbalyst. (#307)
-- A guided walkthrough that introduces the PR review mode from the navigation gutter. (#307)
-- PR review Files Changed adds a "Collapsed diff" mode: a scrollable diff across all changed files with syntax highlighting, line numbers, and red/green backgrounds, switchable between unified and side-by-side (split) layouts. (#307)
-- Refresh button in the Files Mode sidebar header reloads the file tree from disk without using the Developer menu. (#259)
 <!-- New features go here -->
 - iOS: create a Meta Agent from the session create menu (alpha-gated to mirror the desktop `meta-agent` feature flag, synced to mobile).
 - Sync: the desktop session-index sync payload now emits `agentRole` and `createdBySessionId`, so meta-agent grouping data reaches mobile.
 - iOS: stores the `agentRole` marker and `createdBySessionId` sub-agent link from session-index sync (new `v13` database migration), so mobile knows which sessions are meta agents and which are their children.
 - iOS: meta-agent sessions and their sub-agents now appear as a collapsible "Meta Agent" group — tapping the header opens the meta session, and a separate chevron expands or collapses the children.
-- Claude Code sessions use the SDK's `permissionMode: 'auto'` classifier when workspace trust is "Allow All"; safe operations run silently, uncertain ones prompt the user. (#379)
-- File paths mentioned in AI transcripts are now clickable links that open the file, even when the agent writes them as plain text or inline code.
-- New Browser Tab command in the File menu (Cmd+Shift+B) opens a browser virtual tab in files mode.
-- Quick Open's Sessions tab can now search message contents (Shift+Tab or the in-input button), not just titles.
-- Inline comments on shared documents: select text to add a comment, reply in threads with @-mentions, and resolve threads, all synced in realtime across collaborators.
+- New Gemini (Antigravity) marketplace extension, usable as an AI chat and meta-agent provider, with a usage indicator chip. (#558)
+- `/session-cleanup` command (Planning extension) tidies your Sessions board: it proposes phase corrections and "mark complete" candidates for your approval, and flags old sessions to archive.
+- `nim`, a companion CLI for trackers: list, create, update, comment on, archive, and import tracker items from the terminal — through a running Nimbalyst, or directly against the database when the app is closed.
 
 ### Changed
-<!-- Changes to existing functionality go here -->
-- PR review now uses a persistent master/detail layout with the PR list and filters fixed in the left sidebar. (#307)
-- PR review Files Changed groups files into a collapsible directory tree (expanded by default) and colors filenames by status instead of A/M/D letters. (#307)
-- PR list rows lead with the title at full width, moving the PR number to the metadata line so long titles stay readable. (#307)
-- PR review GitHub account settings now appear only in Developer Mode. (#307)
-- Calc Sheets now ship a Falcon 9 `.calc.md` demo and custom syntax coloring for headings, comments, variables, units, and formatters.
+- Contextual tips now fill empty AI sessions immediately and on every empty session, instead of after a delay and only once per app launch.
 
 ### Fixed
-- `.calc.md` files open in the Calc Sheet editor again: the host now exposes `MonacoCodeEditor` to extensions, so the calc-sheets extension loads instead of falling back to the Lexical editor.
-- Session list rows now expose the full session name via a hover title, matching the session tab, so names clipped in the list stay readable. (#577)
-- Inline tracker item edits now save back to the markdown file for markers without an explicit id, and due-date edits persist across a re-scan instead of being dropped (#404).
-- PR review now shows an actionable message on a GitHub 404 (repo not found or the active `gh` account lacks access — check `gh auth status` / `gh auth switch`) instead of a raw error, and no longer prints a duplicated `api` in the failure text. (#307)
-- PR review cache tables are now created on the better-sqlite3 backend too (migration registered with the SQLite runner), not only on PGLite. (#307)
-- PR review: merged PRs now show as "Merged" (not "Closed") in the list, the Approve/Merge buttons refresh immediately after a merge (cache-bypassed refetch), and a success notice / "Merged" badge confirms the action. (#307)
-<!-- Bug fixes go here -->
-- Context usage meter now opens its breakdown on click instead of hover, so the popover no longer lingers over and blocks the queued-prompt controls. (#429)
-- Effort Level selector now takes effect: sessions follow the selected/default effort instead of always running at "high".
-- Typing in the chat box no longer has keystrokes hijacked into an open markdown file while an agent is editing it.
-- Restored diff application in headless mode (tests and server-side diffing), which had started throwing on `getRootElement` after the chat-box focus fix.
-- Browser extension toolbar and URL bar now use the active theme's colors instead of rendering with a white URL box in dark mode.
-- Multi-Project: manually running an automation now creates its session in the active rail project instead of always landing in the startup project. (#544)
+- Personal docs sync no longer overwrites newer local edits (or an open editor's unsaved changes) with an older synced copy.
+- "Commit with AI" in a worktree now proposes all uncommitted changes in the worktree, not just the current session's edits.
+- Claude Code CLI sessions now show an install link when the Claude Code CLI isn't installed, instead of a cryptic terminal error.
+- Stop the AskUserQuestion widget from crashing when a question is missing its options.
+- Deleting a custom tracker type no longer fails on the SQLite backend.
 - Sync: newly created meta agents and their spawned children now carry `agentRole`/`createdBySessionId` on the real-time create/update push and the cross-device broadcast, so mobile groups them immediately instead of only after the next bulk resync.
 - iOS: the Meta Agent group no longer reads a stale feature-gate value when the desktop toggles the alpha flag while you're on another tab.
 
 ### Removed
 <!-- Removed features go here -->
+
+## [0.65.4] - 2026-06-15
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+- Lost-model fallback no longer silently sends paid 1M context; 1M is only used when you explicitly pick a 1M model. (#631)
+- "Allow All" permission mode auto-approves everything again; the Claude Code safety classifier is now opt-in per project. (#628)
+- No more Electron crash when a worktree produces a filesystem-event storm. (#629)
+- Auto-commit retries when another git process briefly holds .git/index.lock, so concurrent sessions commit on the first try.
+- Background Claude Code CLI sessions no longer spawn (and hit rate limits) when the app is reactivated.
+- Claude Code CLI: the "Thinking…" indicator no longer sticks off after you answer a question.
+- Claude Code CLI: a typed slash command no longer runs the autocomplete-highlighted command instead.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.65.3] - 2026-06-15
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- MCP servers disabled in Settings no longer load in Claude Code CLI sessions (they were leaking in and eating context).
+- Claude Code CLI sessions no longer get stuck showing a "Processing…" spinner after their turn finishes.
+- Namespaced extension slash commands (e.g. /feedback:bug-report) now resolve in Claude Code CLI sessions instead of failing.
+- Generated extension-workflow plugins now load in Claude Code CLI sessions, with broader CLI version support for plugin loading.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.65.2] - 2026-06-12
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Claude Code CLI sessions can now spawn sessions via the meta-agent tools, and prompts sent to them while closed (spawned sessions, restart continuations, scheduled wakeups) launch the CLI and deliver instead of failing.
+- Smart Commit and other queued prompts on Claude Code CLI sessions no longer linger in the queued list after they run.
+- The CLI terminal drawer no longer steals keyboard focus from the chat input when ordinary terminal output looks like a picker.
+- Linked tracker items now show up and survive linking additional items on the SQLite backend, and commits link to session trackers again.
+- Stopping an already-idle Claude Code CLI session no longer quits the CLI and leaves the session unresponsive.
+- Claude Agent startup crashes now log detailed spawn diagnostics and auto-capture a CLI debug log on retry, and the real error message reaches the renderer log (#614).
+- HTML preview renders again instead of a blank pane (or a Windows Store popup), and in-workspace files on Windows are no longer rejected over drive-letter casing (#612, #625).
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.65.1] - 2026-06-12
+
+
+### Added
+<!-- New features go here -->
+- Claude Fable 5 is now selectable across all Claude providers, including a Fable 5 (1M) variant; existing Fable defaults migrate to 1M automatically.
+- Switch models mid-session on Claude Code CLI sessions from the model picker.
+- Claude Code CLI sessions receive your active document and selection as context, support workspace slash commands and the memory widget, and auto-name themselves from the first prompt.
+- Toggle the raw-terminal drawer with Ctrl+Shift+`; hover help on the model picker explains the Claude Agent vs Claude Code CLI choice.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Stopping a Claude Code CLI turn now reliably interrupts the CLI, and queued prompts no longer get stuck near turn boundaries.
+- API failures in Claude Code CLI sessions surface in the transcript without false alarms at session startup.
+- The raw-terminal drawer stays closed once you collapse it and no longer steals keyboard focus from the chat input.
+- Files Edited sidebar updates immediately as Claude Code CLI sessions edit files.
+- Fixed the whole app freezing permanently after closing a terminal that had rendered emoji output.
+- Terminal Retry now actually recovers a failed initialization, and a slow-starting backend auto-recovers without clicking Retry.
+- Claude Code CLI raw terminal no longer double-paints or mis-wraps its display after restoring a session.
+- Fable 5 sessions no longer hit a false 200k context ceiling: selecting Fable resolves to a model the Claude Agent SDK accepts, and the context indicator matches the CLI's real window.
+- Claude Code CLI sessions no longer appear disconnected after switching sessions — the terminal reattaches even while its drawer is collapsed.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.65.0] - 2026-06-09
+
+
+### Added
+- Run agent sessions on the genuine Claude Code CLI using your Claude Pro/Max subscription (no API metering), with the same live transcript, file tracking, and interactive prompts as the built-in agents — plus a resizable raw-terminal drawer that auto-reveals when the CLI opens a native picker (`/model`, `/login`, …).
+- Import GitHub issues into the tracker as native bug, task, or feature items that link back to the source, with one-click re-snapshot to pull the latest title, status, and body. Uses your installed `gh` login.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+- Restarting the app no longer relaunches every Claude Code CLI session at once (which stampeded the subscription rate limit and failed turns) — only the focused window's session resumes; background windows resume when you switch to them.
+- Smart Commit (and any queued prompt) on a Claude Code CLI session now runs immediately instead of sitting queued when the CLI is idle.
+- In Multi-Project mode, a project's tracker list no longer shows another open project's items. (#591)
+- Docs a session just created now sync to mobile immediately, and tapping their transcript link on mobile waits for the doc to sync instead of dead-ending with "not synced to this device".
+- Launching an action in a new session with a different provider's model (e.g. "Implement in Codex" from a Claude session) no longer fails with a model-identifier error.
+- Synced tracker item bodies containing lists or links now load for teammates instead of appearing blank.
+- Voice mode connects again after OpenAI retired the Realtime Beta API (migrated desktop and iOS to the GA shape).
+- Renaming or moving a project no longer fails and rolls back on the SQLite backend.
+- Quick Open remembers your filter selections, and file-mask filters now return matching results.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.64.5] - 2026-06-06
+
+### Added
+- Built-in PR review mode (Cmd/Ctrl+U): browse, filter, diff, comment on, and approve/merge PRs using your existing `gh` login; open a PR into a worktree with an agent session. (#307)
+- Auto session mode for Claude Code: safe actions run silently, only uncertain ones prompt, when workspace trust is "Allow All". (#379)
+- Inline comments on shared documents: select text to comment, reply in @-mention threads, and resolve, synced live across collaborators.
+- Browser tabs for HTML preview (Cmd+Shift+B), plus browser tools that agents can drive.
+- Quick Open's Sessions tab now searches message contents, not just titles.
+- Clickable file paths in AI transcripts.
+- Refresh button in the Files Mode sidebar header. (#259)
+- Calc Sheets ship a Falcon 9 demo with custom syntax coloring.
+- Sync WebSocket connections report platform and version for connect/disconnect telemetry.
+- Expanded extension release and share-viewer support.
+
+### Fixed
+- Effort Level selector now takes effect instead of always running at "high".
+- Context usage breakdown opens on click, no longer blocking the queued-prompt controls. (#429)
+- Chat box no longer leaks keystrokes into a file an agent is editing.
+- `.calc.md` files and shared calc sheets render in the Calc Sheet/Monaco editor again.
+- Inline tracker edits save for id-less markers, and due dates persist across a re-scan. (#404)
+- Truncated session names now show in full on hover. (#577)
+- Local markdown links open correctly, resolving relative paths from the current document.
+- Session images can be copied; transcript images are zoomable, uncropped, and persist across reloads. (#580)
+- LM Studio uses the loaded model ID; Opus 4.8 aliases resolve without falling back to Sonnet; OpenCode slash autocomplete works. (#143)
+- Generated Codex workflows preserve their command arguments.
+- Multi-Project rail is preserved on reload, and automations run in the active rail project. (#544, #557)
+- New workspaces default to Documents on Windows.
+- Broken markdown embed commands are hidden; the keep-awake tip only shows when eligible.
+- Browser toolbar and URL bar respect the active theme in dark mode.
+- Restored diff application in headless mode.
 
 ## [0.64.4] - 2026-06-03
 

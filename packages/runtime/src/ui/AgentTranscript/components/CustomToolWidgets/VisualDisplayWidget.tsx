@@ -10,6 +10,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { FullscreenModal } from '../FullscreenModal';
+import { ZoomableImageSurface } from '../ZoomableImageSurface';
 import {
   BarChart,
   Bar,
@@ -522,7 +523,8 @@ const ImageDisplay: React.FC<{
   image: ImageContent;
   description?: string;
   readFile?: (path: string) => Promise<{ success: boolean; content?: string; error?: string }>;
-}> = ({ image, description, readFile }) => {
+  className?: string;
+}> = ({ image, description, readFile, className }) => {
   const [imageData, setImageData] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -618,7 +620,7 @@ const ImageDisplay: React.FC<{
         <img
           src={imageData || ''}
           alt={description || 'Image'}
-          className="max-w-full h-auto block"
+          className={`max-w-full h-auto block ${className || ''}`.trim()}
           onError={(e) => {
             console.error('[VisualDisplayWidget] Image element failed to load:', {
               path: image.path,
@@ -708,52 +710,53 @@ const Lightbox: React.FC<{
       isOpen={true}
       onClose={onClose}
       ariaLabel="Image lightbox"
-      contentClassName="max-w-[90vw] max-h-[90vh] flex flex-col items-center"
+      contentClassName="h-[92vh] w-[96vw] max-w-[1400px] overflow-hidden rounded-lg border border-nim bg-nim"
     >
-      <button
-        className="absolute top-2 right-2 w-10 h-10 p-2 bg-nim-secondary border border-nim rounded-full text-nim-muted cursor-pointer transition-all duration-200 flex items-center justify-center z-10 shadow-lg hover:bg-nim-hover hover:text-nim hover:scale-110"
-        onClick={onClose}
-        aria-label="Close"
-      >
-        <span className="text-2xl leading-none">&times;</span>
-      </button>
-      <div className="max-w-full max-h-[calc(90vh-3rem)]">
-        <ImageDisplay
-          image={images[selectedIndex].image!}
-          description={images[selectedIndex].description}
-          readFile={readFile}
-        />
-      </div>
-      <div className="mt-3 text-sm text-nim-muted font-mono bg-nim-secondary py-2 px-3 rounded text-center">
-        {images[selectedIndex].description}
-      </div>
-      {images.length > 1 && (
-        <div className="flex items-center gap-3 mt-3">
-          <button
-            className="w-10 h-10 flex items-center justify-center bg-nim-secondary border border-nim rounded-full text-nim-muted cursor-pointer transition-all duration-200 hover:bg-nim-hover hover:text-nim"
-            onClick={(e) => {
-              e.stopPropagation();
-              onNavigate((selectedIndex - 1 + images.length) % images.length);
-            }}
-            aria-label="Previous"
-          >
-            &larr;
-          </button>
-          <span className="text-sm text-nim-muted font-mono">
-            {selectedIndex + 1} / {images.length}
-          </span>
-          <button
-            className="w-10 h-10 flex items-center justify-center bg-nim-secondary border border-nim rounded-full text-nim-muted cursor-pointer transition-all duration-200 hover:bg-nim-hover hover:text-nim"
-            onClick={(e) => {
-              e.stopPropagation();
-              onNavigate((selectedIndex + 1) % images.length);
-            }}
-            aria-label="Next"
-          >
-            &rarr;
-          </button>
-        </div>
-      )}
+      <ZoomableImageSurface
+        src={localAssetUrl(images[selectedIndex].image!.path)}
+        alt={images[selectedIndex].description}
+        copyFilePath={images[selectedIndex].image!.path}
+        toolbarLabel={(
+          <div className="min-w-0 truncate font-mono text-sm text-nim" title={images[selectedIndex].description}>
+            {images[selectedIndex].description}
+          </div>
+        )}
+        toolbarExtras={(
+          <>
+            {images.length > 1 ? (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  className="rounded border border-[var(--nim-border)] bg-[var(--nim-bg)] px-2 py-1 text-xs text-[var(--nim-text)] transition-colors duration-150 hover:bg-[var(--nim-bg-hover)]"
+                  onClick={() => onNavigate((selectedIndex - 1 + images.length) % images.length)}
+                  aria-label="Previous image"
+                >
+                  Prev
+                </button>
+                <div className="min-w-[3.5rem] text-center font-mono text-xs text-[var(--nim-text-muted)]">
+                  {selectedIndex + 1} / {images.length}
+                </div>
+                <button
+                  type="button"
+                  className="rounded border border-[var(--nim-border)] bg-[var(--nim-bg)] px-2 py-1 text-xs text-[var(--nim-text)] transition-colors duration-150 hover:bg-[var(--nim-bg-hover)]"
+                  onClick={() => onNavigate((selectedIndex + 1) % images.length)}
+                  aria-label="Next image"
+                >
+                  Next
+                </button>
+              </div>
+            ) : null}
+            <button
+              type="button"
+              className="rounded border border-[var(--nim-border)] bg-[var(--nim-bg)] px-2 py-1 text-xs text-[var(--nim-text)] transition-colors duration-150 hover:bg-[var(--nim-bg-hover)]"
+              onClick={onClose}
+              aria-label="Close"
+            >
+              Close
+            </button>
+          </>
+        )}
+      />
     </FullscreenModal>
   );
 };
@@ -793,8 +796,13 @@ const ImageGallery: React.FC<{
               className={`group cursor-pointer rounded-md overflow-hidden border border-nim bg-nim-secondary transition-all duration-200 hover:border-nim-primary hover:shadow-md ${isSingleImage ? 'max-w-full' : 'aspect-square'}`}
               onClick={() => setSelectedIndex(index)}
             >
-              <div className={`${isSingleImage ? 'max-h-96' : 'w-full h-full'} overflow-hidden`}>
-                <ImageDisplay image={item.image!} description={item.description} readFile={readFile} />
+              <div className={`${isSingleImage ? 'flex max-h-96 items-center justify-center bg-[var(--nim-bg)] p-2' : 'w-full h-full'} overflow-hidden`}>
+                <ImageDisplay
+                  image={item.image!}
+                  description={item.description}
+                  readFile={readFile}
+                  className={isSingleImage ? 'mx-auto max-h-[22rem] w-auto object-contain' : ''}
+                />
               </div>
               <div className="p-2 bg-nim-secondary text-xs text-nim-muted truncate">{item.description}</div>
             </div>

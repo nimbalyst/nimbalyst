@@ -6,6 +6,11 @@
  */
 
 import { getTerminalSessionManager } from '../services/TerminalSessionManager';
+import { ensureClaudeCliSession, isClaudeCliInstalled } from '../services/ai/claudeCliLauncherSingleton';
+import { submitClaudeCliPromptProduction } from '../services/ai/claudeCliSubmitSingleton';
+import { switchClaudeCliModel } from '../services/ai/claudeCliModelSwitch';
+import type { ClaudeCliDocumentContext } from '../services/ai/claudeCliPromptComposer';
+import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
 import { ShellDetector } from '../services/ShellDetector';
 import { safeHandle } from '../utils/ipcRegistry';
 import { ulid } from 'ulid';
@@ -263,6 +268,132 @@ export function registerTerminalHandlers(): void {
    */
   safeHandle('terminal:is-active', async (_event, sessionId: string) => {
     return manager.isTerminalActive(sessionId);
+  });
+
+  /**
+   * Ensure the genuine `claude` CLI is running for a `claude-code-cli` session
+   * (NIM-806, Phase 1). Idempotent: the renderer calls this when the session
+   * view mounts; the terminalId IS the Nimbalyst session id, so the same
+   * sessionId-bearing MCP config reaches the CLI. Returns the same
+   * `{ success, alreadyActive? }` shape as `terminal:initialize` so TerminalPanel
+   * can branch on it identically.
+   */
+  safeHandle(
+    'claude-cli:ensure-session',
+    async (
+      _event,
+      payload: {
+        sessionId: string;
+        workspacePath: string;
+        cwd?: string;
+        model?: string;
+        resumeSessionId?: string;
+        cols?: number;
+        rows?: number;
+      }
+    ) => {
+      if (!payload?.sessionId || typeof payload.sessionId !== 'string') {
+        throw new Error('sessionId is required and must be a string');
+      }
+      if (!payload?.workspacePath || typeof payload.workspacePath !== 'string') {
+        throw new Error('workspacePath is required and must be a string');
+      }
+      return ensureClaudeCliSession(payload);
+    }
+  );
+
+  /**
+   * Whether the genuine `claude` CLI is installed (NIM-852). The renderer calls
+   * this for a claude-code-cli session to show an install notice (and skip the
+   * spawn) instead of producing a cryptic `command not found` in the terminal.
+   */
+  safeHandle('claude-cli:is-installed', async () => {
+    return isClaudeCliInstalled();
+  });
+
+  /**
+   * Submit a claude-code-cli prompt (NIM-806 — input integration). The genuine
+   * CLI is driven by its PTY, so this composes the PTY line (prompt + inline
+   * attachment paths), writes it to the terminal, persists the CLEAN typed prompt
+   * (+ attachment chips) as the transcript user row, and fires `ai_message_sent`.
+   * Replaces the prior `claude-cli:log-user-prompt` (which only logged) so the
+   * write + log + analytics live in one place shared with the queue flusher.
+   */
+  safeHandle(
+    'claude-cli:submit-prompt',
+    async (
+      _event,
+      payload: {
+        sessionId: string;
+        workspacePath: string;
+        prompt: string;
+        attachments?: ChatAttachment[];
+        documentContext?: ClaudeCliDocumentContext | null;
+      }
+    ) => {
+      if (!payload?.sessionId || typeof payload.sessionId !== 'string') {
+        throw new Error('sessionId is required and must be a string');
+      }
+      if (!payload?.workspacePath || typeof payload.workspacePath !== 'string') {
+        throw new Error('workspacePath is required and must be a string');
+      }
+      const prompt = typeof payload.prompt === 'string' ? payload.prompt : '';
+      const attachments = Array.isArray(payload.attachments) ? payload.attachments : undefined;
+      // NIM-818: active-doc/selection context rides along so the composer can
+      // append the compact context block to the PTY line.
+      const documentContext =
+        payload.documentContext && typeof payload.documentContext === 'object'
+          ? payload.documentContext
+          : undefined;
+      await submitClaudeCliPromptProduction({
+        sessionId: payload.sessionId,
+        workspacePath: payload.workspacePath,
+        prompt,
+        attachments,
+        documentContext,
+      });
+      return { success: true };
+    }
+  );
+
+  /**
+   * Switch a running claude-code-cli session's model (NIM-806) by typing
+   * `/model <alias>` into its PTY — the genuine CLI supports it as a direct
+   * setter, so no respawn is needed. The renderer gates this to idle turns and
+   * persists the new model via `sessions:update-metadata` on success (keeping
+   * `--model` consistent on a later respawn/resume).
+   */
+  safeHandle(
+    'claude-cli:set-model',
+    async (_event, payload: { sessionId: string; model: string }) => {
+      if (!payload?.sessionId || typeof payload.sessionId !== 'string') {
+        throw new Error('sessionId is required and must be a string');
+      }
+      if (!payload?.model || typeof payload.model !== 'string') {
+        throw new Error('model is required and must be a string');
+      }
+      const result = await switchClaudeCliModel(payload, {
+        writeToTerminal: (sessionId: string, data: string) =>
+          manager.writeToTerminal(sessionId, data),
+        delay: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+      });
+      if (!result.switched) {
+        throw new Error(`Model "${payload.model}" cannot be applied to a Claude Code CLI session`);
+      }
+      return { success: true, cliArg: result.cliArg };
+    }
+  );
+
+  /**
+   * Stop a claude-code-cli turn (NIM-814). Escalates Ctrl-C → Ctrl-C → SIGINT
+   * in the main process so a CLI blocked in a network read still gets
+   * interrupted (a single renderer-written Ctrl-C can be silently ignored).
+   */
+  safeHandle('claude-cli:interrupt', async (_event, sessionId: string) => {
+    if (!sessionId || typeof sessionId !== 'string') {
+      throw new Error('sessionId is required and must be a string');
+    }
+    return manager.interruptClaudeCliTurn(sessionId);
   });
 
   /**

@@ -29,6 +29,23 @@ class WebSocketClient(
         @Volatile
         private var cachedDeviceId: String? = null
 
+        /**
+         * App version string used to label sync WebSocket connections for the
+         * server's connect/disconnect telemetry. Set once at app startup (see
+         * NimbalystApplication). Null until set, in which case "unknown" is sent.
+         */
+        @Volatile
+        var appVersion: String? = null
+
+        /**
+         * Clamp a sync telemetry label to 32 chars (matching the server) and
+         * URL-encode it for use in the WebSocket upgrade query string.
+         */
+        fun encodedClientLabel(value: String): String {
+            val clamped = if (value.length > 32) value.substring(0, 32) else value
+            return URLEncoder.encode(clamped, StandardCharsets.UTF_8)
+        }
+
         fun getDeviceId(context: Context): String {
             cachedDeviceId?.let { return it }
             val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -149,7 +166,10 @@ class WebSocketClient(
             .replace("http://", "ws://")
             .trimEnd('/')
         val encodedToken = URLEncoder.encode(params.authToken, StandardCharsets.UTF_8)
-        return "$wsBase/sync/${params.roomId}?token=$encodedToken"
+        // Non-sensitive client labels for server connect/disconnect telemetry.
+        val platformLabel = encodedClientLabel("mobile")
+        val versionLabel = encodedClientLabel(appVersion ?: "unknown")
+        return "$wsBase/sync/${params.roomId}?token=$encodedToken&platform=$platformLabel&version=$versionLabel"
     }
 
     private fun updateConnection(connected: Boolean) {

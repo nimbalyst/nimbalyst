@@ -29,7 +29,18 @@ vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(() => '/mock/path'),
     getName: vi.fn(() => 'test-app'),
-    getVersion: vi.fn(() => '1.0.0')
+    getVersion: vi.fn(() => '1.0.0'),
+    // Lifecycle event registration: several main-process modules call
+    // `app.on('before-quit', ...)` at import time (e.g. WindowManager via
+    // WorkspaceWatcher). Stub the EventEmitter-style surface so importing them
+    // under test doesn't throw "app.on is not a function".
+    on: vi.fn(),
+    once: vi.fn(),
+    off: vi.fn(),
+    removeListener: vi.fn(),
+    whenReady: vi.fn(() => Promise.resolve()),
+    quit: vi.fn(),
+    isReady: vi.fn(() => true)
   },
   ipcRenderer: {
     send: vi.fn(),

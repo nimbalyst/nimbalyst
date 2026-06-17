@@ -9,7 +9,13 @@
  * Modeled on the FileMaskFilter pattern in the git extension's GitLogPanel,
  * but factored out so multiple panes can share it.
  */
-import React, { useCallback, useMemo, useState } from 'react';
+import React, {
+  forwardRef,
+  useCallback,
+  useImperativeHandle,
+  useMemo,
+  useState,
+} from 'react';
 import {
   useFloating,
   useDismiss,
@@ -56,20 +62,40 @@ interface FilterChipProps {
   resolveLabel?: (value: string) => string;
 }
 
-export const FilterChip: React.FC<FilterChipProps> = ({
-  label,
-  value,
-  onChange,
-  options = [],
-  history = [],
-  freeText = false,
-  placeholder = 'Filter...',
-  onAddToHistory,
-  onRemoveFromHistory,
-  resolveLabel,
-}) => {
+export interface FilterChipHandle {
+  open: () => void;
+  close: () => void;
+  toggle: () => void;
+}
+
+export const FilterChip = forwardRef<FilterChipHandle, FilterChipProps>(
+  (
+    {
+      label,
+      value,
+      onChange,
+      options = [],
+      history = [],
+      freeText = false,
+      placeholder = 'Filter...',
+      onAddToHistory,
+      onRemoveFromHistory,
+      resolveLabel,
+    },
+    ref,
+  ) => {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      open: () => setOpen(true),
+      close: () => setOpen(false),
+      toggle: () => setOpen((o) => !o),
+    }),
+    [],
+  );
 
   const { refs, floatingStyles, context } = useFloating({
     open,
@@ -246,7 +272,10 @@ export const FilterChip: React.FC<FilterChipProps> = ({
       )}
     </>
   );
-};
+  },
+);
+
+FilterChip.displayName = 'FilterChip';
 
 const MenuHeader: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-nim-faint">

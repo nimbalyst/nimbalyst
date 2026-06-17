@@ -6,6 +6,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { ZoomableImageSurface } from '@nimbalyst/runtime/ui/AgentTranscript/components/ZoomableImageSurface';
 import { nimAssetUrl } from '../utils/assetUrl';
 
 interface ImageViewerProps {
@@ -37,14 +38,6 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ filePath, fileName }) 
     loadImage();
   }, [filePath]);
 
-  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
-    const img = e.currentTarget;
-    setDimensions({
-      width: img.naturalWidth,
-      height: img.naturalHeight,
-    });
-  };
-
   const handleImageError = () => {
     setError('Failed to load image');
   };
@@ -70,27 +63,26 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ filePath, fileName }) 
   }
 
   return (
-    <div className="flex flex-col h-full overflow-auto bg-nim">
-      {/* Info bar */}
-      {dimensions && (
-        <div className="px-4 py-2 bg-nim-secondary border-b border-nim text-nim-muted text-xs flex gap-4">
-          <span>{fileName}</span>
-          <span>
-            {dimensions.width} × {dimensions.height}
-          </span>
-        </div>
-      )}
-
-      {/* Image container */}
-      <div className="flex-1 flex items-center justify-center p-4">
-        <img
-          src={imageSrc}
-          alt={fileName}
-          onLoad={handleImageLoad}
-          onError={handleImageError}
-          className="max-w-full max-h-full object-contain"
-        />
-      </div>
+    <div className="h-full bg-nim">
+      <ZoomableImageSurface
+        src={imageSrc}
+        alt={fileName}
+        copyFilePath={filePath}
+        className="h-full"
+        toolbarLabel={(
+          <div className="flex min-w-0 items-center gap-3 text-xs text-nim-muted">
+            <span className="truncate text-sm text-nim" title={fileName}>{fileName}</span>
+            {dimensions ? (
+              <span className="shrink-0 font-mono">
+                {dimensions.width} × {dimensions.height}
+              </span>
+            ) : null}
+          </div>
+        )}
+        onImageLoad={setDimensions}
+        onImageError={handleImageError}
+        imageClassName="shadow-none"
+      />
     </div>
   );
 };

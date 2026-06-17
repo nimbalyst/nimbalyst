@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.64.4",
+  "version": "0.65.4",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -324,6 +324,10 @@
       {
         "from": "resources/codex-pre-edit-hook.mjs",
         "to": "codex-pre-edit-hook.mjs"
+      },
+      {
+        "from": "resources/claudeCliPermissionHook.cjs",
+        "to": "claudeCliPermissionHook.cjs"
       },
       {
         "from": "../extensions",

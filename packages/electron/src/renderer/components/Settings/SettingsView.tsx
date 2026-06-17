@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
+import { getExtensionLoader } from '@nimbalyst/runtime';
 import { store } from '@nimbalyst/runtime/store';
 import { SettingsSidebar, type SettingsCategory } from './SettingsSidebar';
 import { pushNavigationEntryAtom, isRestoringNavigationAtom } from '../../store';
@@ -77,6 +78,147 @@ interface SettingsViewProps {
   onMarketplaceInstallRequestHandled?: (token: number) => void;
 }
 
+type ExtAgentItem = {
+  id: string;
+  extensionId: string;
+  name: string;
+  status: string;
+  models?: Array<{ id: string; name: string }>;
+};
+
+/**
+ * Renders an extension-contributed agent provider's own settings panel (e.g. the
+ * Gemini AntigravityAgentSettings component), wired with the same provider props
+ * the built-in panels use plus the backend-module grant flow:
+ *   backendModuleEnabled  <- ext-permissions:is-module-enabled (grant state)
+ *   onEnableBackendModule -> ext-permissions:grant-module (the native-code consent)
+ * Falls back to a static notice when the extension's component is unavailable.
+ */
+const ExtensionAgentSettingsPanel: React.FC<{
+  extEntry: ExtAgentItem;
+  commonProps: Record<string, unknown>;
+  workspacePath?: string;
+  scope: 'user' | 'project';
+  onOpenInstalledExtensions: () => void;
+}> = ({ extEntry, commonProps, workspacePath, scope, onOpenInstalledExtensions }) => {
+  const loadedExt = getExtensionLoader().getExtension(extEntry.extensionId);
+  const contributions = (loadedExt?.manifest?.contributions ?? {}) as Record<string, unknown>;
+  const aiProviders = contributions.aiAgentProviders as
+    | Array<{ id: string; backendModuleId?: string; settingsPanelComponent?: string }>
+    | undefined;
+  const providerContribution = aiProviders?.find((pr) => pr.id === extEntry.id);
+  const moduleId = providerContribution?.backendModuleId;
+  const componentName = providerContribution?.settingsPanelComponent;
+  const backendModules = contributions.backendModules as
+    | Array<{ id: string; permissions?: string[] }>
+    | undefined;
+  const declaredPermissions = (backendModules?.find((m) => m.id === moduleId)?.permissions ?? []) as string[];
+  const settingsPanelExports = (loadedExt?.module as { settingsPanel?: Record<string, React.ComponentType<Record<string, unknown>>> } | undefined)?.settingsPanel;
+  const ExtPanel = componentName ? settingsPanelExports?.[componentName] : undefined;
+
+  // The permissions bridge lives at electronAPI.extensions.permissions (not
+  // electronAPI.permissions). The existing Privileged Capabilities UI uses the
+  // same path; reading the wrong one leaves perms undefined, which silently
+  // disables both the grant check and the Enable-provider button.
+  const perms = (window.electronAPI as {
+    extensions?: {
+      permissions?: {
+        listEnabledModules?: (workspacePath?: string) => Promise<Array<{ extensionId: string; moduleId: string }>>;
+        isModuleEnabled?: (a: { extensionId: string; moduleId: string; declaredPermissions: string[]; workspacePath?: string }) => Promise<boolean>;
+        grantModule: (a: { extensionId: string; moduleId: string; permissions: string[]; scope: 'workspace' | 'global'; workspacePath?: string }) => Promise<unknown>;
+        onStateChanged?: (cb: (h: { extensionId: string; moduleId: string }) => void) => () => void;
+      };
+    };
+  } | undefined)?.extensions?.permissions;
+
+  const [granted, setGranted] = useState(false);
+  const permsKey = declaredPermissions.join(',');
+
+  const refreshGrant = useCallback(async () => {
+    if (!perms || !moduleId) return;
+    try {
+      // Robust host-truth: listEnabledModules returns every module that has
+      // any grant row (real permission OR the module-enabled sentinel), so it
+      // does not depend on the renderer passing an exact declaredPermissions
+      // set that matches what was granted.
+      let ok = false;
+      if (typeof perms.listEnabledModules === 'function') {
+        const mods = await perms.listEnabledModules(workspacePath);
+        ok = Array.isArray(mods) && mods.some(
+          (m) => m.extensionId === extEntry.extensionId && m.moduleId === moduleId
+        );
+      }
+      if (!ok && typeof perms.isModuleEnabled === 'function') {
+        ok = Boolean(await perms.isModuleEnabled({ extensionId: extEntry.extensionId, moduleId, declaredPermissions, workspacePath }));
+      }
+      setGranted(ok);
+    } catch (err) {
+      console.error('[ext-agent-settings] grant check failed', err);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [perms, moduleId, extEntry.extensionId, workspacePath, permsKey]);
+
+  useEffect(() => { void refreshGrant(); }, [refreshGrant]);
+  useEffect(() => {
+    if (!perms?.onStateChanged) return;
+    return perms.onStateChanged((h) => {
+      if (h.extensionId === extEntry.extensionId && h.moduleId === moduleId) void refreshGrant();
+    });
+  }, [perms, extEntry.extensionId, moduleId, refreshGrant]);
+
+  if (!ExtPanel) {
+    return (
+      <div className="settings-extension-provider-panel">
+        <h2 className="text-lg font-semibold text-[var(--nim-text)] mb-2">{extEntry.name || extEntry.id}</h2>
+        <p className="text-sm text-[var(--nim-text-muted)] mb-4 max-w-[60ch]">
+          This agent provider comes from an installed extension. Choose its models from the model
+          selector in the chat input. To configure or manage the extension, open Installed Extensions.
+        </p>
+        <button
+          type="button"
+          className="px-3 py-1.5 rounded text-xs bg-[var(--nim-bg-secondary)] text-[var(--nim-text)] border border-[var(--nim-border)] hover:bg-[var(--nim-bg-hover)]"
+          onClick={onOpenInstalledExtensions}
+        >
+          Open Installed Extensions
+        </button>
+      </div>
+    );
+  }
+
+  const cfg = (commonProps.config as Record<string, unknown> | undefined) ?? {};
+  const extModels = (extEntry.models ?? []).map((m) => ({ id: m.id, name: m.name, provider: extEntry.id }));
+  return (
+    <ExtPanel
+      {...commonProps}
+      config={{ ...cfg, backendModuleEnabled: granted }}
+      availableModels={extModels}
+      onEnableBackendModule={async () => {
+        if (!perms || !moduleId) {
+          throw new Error(
+            !perms
+              ? 'Permissions bridge unavailable in this host.'
+              : 'Backend module id missing from the extension manifest.'
+          );
+        }
+        try {
+          await perms.grantModule({
+            extensionId: extEntry.extensionId,
+            moduleId,
+            permissions: declaredPermissions,
+            scope: scope === 'project' ? 'workspace' : 'global',
+            workspacePath,
+          });
+        } catch (err) {
+          console.error('[ext-agent-settings] grantModule failed', err);
+          throw err;
+        } finally {
+          await refreshGrant();
+        }
+      }}
+    />
+  );
+};
+
 export function SettingsView({
   workspacePath,
   workspaceName,
@@ -89,7 +231,23 @@ export function SettingsView({
   const posthog = usePostHog();
   const developerMode = useAtomValue(developerModeAtom);
 
-  const [selectedCategory, setSelectedCategory] = useState<SettingsCategory>(initialCategory || 'claude-code');
+  const [selectedCategory, setSelectedCategory] = useState<SettingsCategory | string>(initialCategory || 'claude-code');
+  // Extension-contributed agent providers (id, owning extension, live status,
+  // static model list) so the provider settings page can render the extension's
+  // own panel component (e.g. Gemini Antigravity) wired like a built-in panel.
+  const [extAgentProviders, setExtAgentProviders] = useState<
+    Array<{ id: string; extensionId: string; name: string; status: string; models?: Array<{ id: string; name: string }> }>
+  >([]);
+  const refreshExtAgentProviders = useCallback(() => {
+    const invoke = window.electronAPI?.invoke;
+    if (!invoke) return;
+    invoke('agent-providers:list')
+      .then((res: { success?: boolean; data?: Array<{ id: string; extensionId: string; name: string; status: string; models?: Array<{ id: string; name: string }> }> }) => {
+        if (res?.success && Array.isArray(res.data)) setExtAgentProviders(res.data);
+      })
+      .catch(() => { /* registry unavailable; static fallback panel is used */ });
+  }, []);
+  useEffect(() => { refreshExtAgentProviders(); }, [refreshExtAgentProviders]);
   const [scope, setScope] = useState<SettingsScope>(initialScope || 'user');
 
   // AI Provider settings - using Jotai atoms (Phase 5b)
@@ -221,11 +379,14 @@ export function SettingsView({
   // When scope changes, ensure selected category is valid for that scope
   useEffect(() => {
     const validCategories = scope === 'project' ? projectCategories : userCategories;
-    if (!validCategories.includes(selectedCategory)) {
+    // Extension-contributed agent providers (e.g. antigravity-gemini-agent) are
+    // valid selectable categories too; don't bounce the user off them.
+    const isExtensionProvider = extAgentProviders.some((pr) => pr.id === selectedCategory);
+    if (!isExtensionProvider && !validCategories.includes(selectedCategory as SettingsCategory)) {
       // Default to first valid category for the scope
       setSelectedCategory(scope === 'project' ? 'agent-permissions' : 'claude-code');
     }
-  }, [scope, selectedCategory, developerMode]);
+  }, [scope, selectedCategory, developerMode, extAgentProviders]);
 
   useEffect(() => {
     if (!developerMode && selectedCategory === 'github') {
@@ -279,6 +440,33 @@ export function SettingsView({
       }
     } catch (error) {
       console.error('Failed to fetch initial models:', error);
+    }
+
+    // Re-hydrate extension-contributed agent providers from persisted settings.
+    // The provider atom is seeded once at app startup, which can predate an
+    // extension's enable-on-activate write (e.g. Gemini enabling itself + its
+    // models on first detection). Re-reading here, additively, makes the panel
+    // reflect that write without a restart. Built-in providers are already in
+    // the atom, so this only fills in keys the atom is missing - it never
+    // clobbers an in-flight edit.
+    try {
+      const persisted = await window.electronAPI.aiGetSettings();
+      const providerSettings = (persisted?.providerSettings ?? {}) as Record<string, ProviderConfig>;
+      if (Object.keys(providerSettings).length > 0) {
+        setProviders((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          for (const [key, value] of Object.entries(providerSettings)) {
+            if (!(key in next)) {
+              next[key] = { testStatus: 'idle', ...value, enabled: value.enabled ?? false };
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }
+    } catch (error) {
+      console.error('Failed to re-hydrate extension provider settings:', error);
     }
   };
 
@@ -675,8 +863,49 @@ export function SettingsView({
             onViewInstalled={() => setSelectedCategory('installed-extensions')}
           />
         );
-      default:
-        return null;
+      default: {
+        // An extension-contributed agent provider (e.g. antigravity-gemini-agent)
+        // was selected. Its models are usable from the chat model picker; its
+        // configuration lives in the extension, reachable from Installed Extensions.
+        const providerId = String(selectedCategory);
+        // Render the extension's own provider settings panel (declared via
+        // aiAgentProviders[].settingsPanelComponent), wired with the same props the
+        // built-in panels receive. Falls back to the static notice below when the
+        // component is unavailable.
+        const extEntry = extAgentProviders.find((pr) => pr.id === providerId);
+        if (extEntry) {
+          return (
+            <ExtensionAgentSettingsPanel
+              extEntry={extEntry}
+              commonProps={commonProps as unknown as Record<string, unknown>}
+              workspacePath={workspacePath ?? undefined}
+              scope={scope}
+              onOpenInstalledExtensions={() => setSelectedCategory('installed-extensions')}
+            />
+          );
+        }
+        const label = providerId
+          .replace(/-agent$/, '')
+          .replace(/[-_]+/g, ' ')
+          .replace(/\b\w/g, (c) => c.toUpperCase());
+        return (
+          <div className="settings-extension-provider-panel">
+            <h2 className="text-lg font-semibold text-[var(--nim-text)] mb-2">{label}</h2>
+            <p className="text-sm text-[var(--nim-text-muted)] mb-4 max-w-[60ch]">
+              This agent provider comes from an installed extension. Choose its models from the
+              model selector in the chat input. To configure or manage the extension, open Installed
+              Extensions.
+            </p>
+            <button
+              type="button"
+              className="px-3 py-1.5 rounded text-xs bg-[var(--nim-bg-secondary)] text-[var(--nim-text)] border border-[var(--nim-border)] hover:bg-[var(--nim-bg-hover)]"
+              onClick={() => setSelectedCategory('installed-extensions')}
+            >
+              Open Installed Extensions
+            </button>
+          </div>
+        );
+      }
     }
   };
 
@@ -687,7 +916,7 @@ export function SettingsView({
   const handleScopeChange = (newScope: SettingsScope) => {
     setScope(newScope);
     // Only change category if current one is not available in the new scope
-    if (newScope === 'user' && projectOnlyCategories.includes(selectedCategory)) {
+    if (newScope === 'user' && projectOnlyCategories.includes(selectedCategory as SettingsCategory)) {
       // Switching to user scope from a project-only category
       setSelectedCategory('claude-code');
     }

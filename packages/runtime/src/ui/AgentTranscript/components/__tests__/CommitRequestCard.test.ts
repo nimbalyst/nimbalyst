@@ -13,6 +13,18 @@ function buildCommitPrompt(fileList: string): string {
   return message;
 }
 
+// Mirrors the worktree branch GitOperationsPanel builds: all uncommitted changes in
+// the worktree, not just the current session's edits.
+function buildWorktreeCommitPrompt(fileList: string): string {
+  let message = 'Use the developer_git_commit_proposal tool to create a commit.';
+  message += `\n\nHere are all the uncommitted changes in this worktree:\n${fileList}`;
+  message += '\n\nThis is the complete set of uncommitted changes in this worktree. ' +
+    'A worktree is dedicated to a single line of work, so include all of these files in the commit.';
+  message += '\n\nThen call developer_git_commit_proposal with the file list.';
+  message += '\n\nThis work is on a worktree branch. Consider the full set of changes on this branch.';
+  return message;
+}
+
 describe('isCommitRequestMessage', () => {
   it('detects the reworded commit prompt (no "immediately" phrasing)', () => {
     const text = buildCommitPrompt('- src/index.ts (modified)');
@@ -28,6 +40,11 @@ describe('isCommitRequestMessage', () => {
   it('does not match unrelated user messages', () => {
     expect(isCommitRequestMessage('Please commit my changes')).toBe(false);
   });
+
+  it('detects the worktree "all uncommitted changes" prompt', () => {
+    const text = buildWorktreeCommitPrompt('- src/index.ts (modified)');
+    expect(isCommitRequestMessage(text)).toBe(true);
+  });
 });
 
 describe('parseCommitRequest', () => {
@@ -40,5 +57,18 @@ describe('parseCommitRequest', () => {
       { path: 'package-lock.json', status: 'modified' },
     ]);
     expect(parsed!.scenario).toBe('single');
+  });
+
+  it('parses the worktree prompt and flags it as a worktree commit', () => {
+    const fileList = ['- a.ts (modified)', '- b.ts (added)', '- c.ts (deleted)'].join('\n');
+    const parsed = parseCommitRequest(buildWorktreeCommitPrompt(fileList));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.files).toEqual([
+      { path: 'a.ts', status: 'modified' },
+      { path: 'b.ts', status: 'added' },
+      { path: 'c.ts', status: 'deleted' },
+    ]);
+    expect(parsed!.scenario).toBe('single');
+    expect(parsed!.isWorktree).toBe(true);
   });
 });

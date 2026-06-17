@@ -263,6 +263,7 @@ interface ElectronAPI {
   copyFile: (sourcePath: string, targetPath: string) => Promise<{ success: boolean; newPath?: string; error?: string }>;
   getPathForFile: (file: File) => string;
   copyToClipboard: (text: string) => Promise<{ success: boolean }>;
+  copyImageToClipboard: (payload: { filePath?: string; dataUrl?: string }) => Promise<{ success: boolean; error?: string }>;
   readClipboard: () => Promise<{ success: boolean; text?: string }>;
 
   // Settings operations
@@ -272,7 +273,7 @@ interface ElectronAPI {
   // QuickOpen operations
   buildQuickOpenCache: (workspacePath: string) => Promise<{ success: boolean; fileCount?: number; error?: string }>;
   searchWorkspaceFiles: (workspacePath: string, query: string) => Promise<any[]>;
-  searchWorkspaceFileNames: (workspacePath: string, query: string) => Promise<any[]>;
+  searchWorkspaceFileNames: (workspacePath: string, query: string, options?: { fileMask?: string | null }) => Promise<any[]>;
   searchWorkspaceFileContent: (workspacePath: string, query: string) => Promise<any[]>;
   getRecentWorkspaceFiles: (workspacePath?: string) => Promise<string[]>;
   addToWorkspaceRecentFiles: (filePath: string) => void;
@@ -312,7 +313,8 @@ interface ElectronAPI {
 
   // Session state tracking operations
   sessionState: {
-    getActiveSessionIds: () => Promise<{ success: boolean; sessionIds: string[]; error?: string }>;
+    getTrackedSessionIds: () => Promise<{ success: boolean; sessionIds: string[]; error?: string }>;
+    getRunningSessionIds: () => Promise<{ success: boolean; sessionIds: string[]; error?: string }>;
     getSessionState: (sessionId: string) => Promise<any>;
     isSessionActive: (sessionId: string) => Promise<boolean>;
     subscribe: (workspacePath?: string | string[]) => Promise<void>;
@@ -328,7 +330,7 @@ interface ElectronAPI {
   // AI operations (flat methods)
   aiHasApiKey: () => Promise<boolean>;
   aiInitialize: (provider?: string, apiKey?: string) => Promise<any>;
-  aiCreateSession: (provider: 'claude' | 'claude-code' | 'openai' | 'openai-codex' | 'opencode' | 'copilot-cli' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) => Promise<any>;
+  aiCreateSession: (provider: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai' | 'openai-codex' | 'opencode' | 'copilot-cli' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) => Promise<any>;
   aiSendMessage: (message: string, documentContext?: any, sessionId?: string, workspacePath?: string) => Promise<any>;
   aiGetSessions: (workspacePath?: string) => Promise<any>;
   aiLoadSession: (sessionId: string, workspacePath?: string, trackAsResume?: boolean) => Promise<any>;
@@ -338,6 +340,14 @@ interface ElectronAPI {
   aiDeleteSession: (sessionId: string, workspacePath?: string) => Promise<{ success: boolean }>;
   aiCancelRequest: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
   aiApplyEdit: (edit: any) => Promise<any>;
+
+  // Flat-key settings -- single read-everything snapshot, single per-key write,
+  // single per-key broadcast. See shared/settings/keys.ts for the registry.
+  settingsGetAll: () => Promise<Record<string, unknown>>;
+  settingsSet: (key: string, value: unknown) => Promise<{ ok: true }>;
+  settingsDelete: (key: string) => Promise<{ ok: true }>;
+  onSettingsChanged: (callback: (payload: { key: string; value: unknown }) => void) => () => void;
+
   getAISettings: () => Promise<any>;
   saveAISettings: (settings: any) => Promise<void>;
   testAIConnection: (provider: 'claude' | 'claude-code' | 'openai' | 'lmstudio') => Promise<any>;
@@ -400,7 +410,7 @@ interface ElectronAPI {
   ai: {
     hasApiKey: () => Promise<boolean>;
     initialize: (provider?: string, apiKey?: string) => Promise<any>;
-    createSession: (provider: 'claude' | 'claude-code' | 'openai' | 'openai-codex' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) => Promise<any>;
+    createSession: (provider: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai' | 'openai-codex' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) => Promise<any>;
     sendMessage: (message: string, documentContext?: any, sessionId?: string, workspacePath?: string) => Promise<any>;
     getSessions: (workspacePath?: string) => Promise<any>;
     getSessionList: (workspacePath?: string) => Promise<any>;
@@ -803,6 +813,11 @@ interface ElectronAPI {
 
     // PTY operations
     initialize: (terminalId: string, options: { workspacePath: string; cwd?: string; cols?: number; rows?: number }) => Promise<{ success: boolean; alreadyActive?: boolean; error?: string }>;
+    ensureClaudeCliSession: (payload: { sessionId: string; workspacePath: string; cwd?: string; model?: string; resumeSessionId?: string; cols?: number; rows?: number }) => Promise<{ success: boolean; alreadyActive?: boolean; error?: string; claudeNotInstalled?: boolean }>;
+    isClaudeCliInstalled: () => Promise<boolean>;
+    submitClaudeCliPrompt: (payload: { sessionId: string; workspacePath: string; prompt: string; attachments?: unknown[]; documentContext?: unknown }) => Promise<{ success: boolean }>;
+    setClaudeCliModel: (sessionId: string, model: string) => Promise<{ success: boolean; cliArg: string }>;
+    interruptClaudeCli: (sessionId: string) => Promise<{ success: boolean; resolvedAfter?: 'first-interrupt' | 'second-interrupt' | 'sigint' | 'unresolved' }>;
     isActive: (terminalId: string) => Promise<boolean>;
     write: (terminalId: string, data: string) => Promise<void>;
     resize: (terminalId: string, cols: number, rows: number) => Promise<void>;

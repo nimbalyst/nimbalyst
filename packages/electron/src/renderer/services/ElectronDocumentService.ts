@@ -27,7 +27,7 @@ export class ElectronRendererDocumentService implements DocumentService {
         path: path
       };
     }
-    return null;
+    return window.electronAPI.documentService.getByPath(path);
   }
 
   async openDocument(documentId: string, fallback?: DocumentOpenOptions): Promise<void> {

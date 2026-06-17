@@ -273,6 +273,66 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   const typeColor = TYPE_COLORS[item?.primaryType ?? ''] || '#6b7280';
   const icon = model?.icon || getTypeIcon(item?.primaryType ?? '');
 
+  // External-source provenance (source chip). origin lives in record system metadata.
+  const externalOrigin =
+    item?.system?.origin?.kind === 'external' ? item.system.origin.external : null;
+  const [importerSummaries, setImporterSummaries] = useState<
+    Array<{ id: string; displayName: string; icon: string }>
+  >([]);
+  const [resnapshotting, setResnapshotting] = useState(false);
+  const [bodyBusy, setBodyBusy] = useState(false);
+  const handleResnapshot = useCallback(async () => {
+    if (!externalOrigin || !workspacePath || resnapshotting) return;
+    setResnapshotting(true);
+    try {
+      await window.electronAPI.invoke('tracker:importer:resnapshot', {
+        workspacePath,
+        urn: externalOrigin.urn,
+      });
+    } catch (e) {
+      errorNotificationService.showError(
+        'Re-snapshot failed',
+        e instanceof Error ? e.message : String(e)
+      );
+    } finally {
+      setResnapshotting(false);
+    }
+  }, [externalOrigin, workspacePath, resnapshotting]);
+  const handleBodyAction = useCallback(
+    async (action: 'applyBody' | 'dismissBody') => {
+      if (!externalOrigin || !workspacePath || bodyBusy) return;
+      setBodyBusy(true);
+      try {
+        await window.electronAPI.invoke(`tracker:importer:${action}`, {
+          workspacePath,
+          urn: externalOrigin.urn,
+        });
+      } catch (e) {
+        errorNotificationService.showError(
+          'Update failed',
+          e instanceof Error ? e.message : String(e)
+        );
+      } finally {
+        setBodyBusy(false);
+      }
+    },
+    [externalOrigin, workspacePath, bodyBusy]
+  );
+  useEffect(() => {
+    if (!externalOrigin || !workspacePath) return;
+    let cancelled = false;
+    window.electronAPI
+      .invoke('tracker:importer:list', workspacePath)
+      .then((list: unknown) => {
+        if (!cancelled && Array.isArray(list)) setImporterSummaries(list as typeof importerSummaries);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalOrigin?.providerId, workspacePath]);
+
   // Resolve linked sessions from registry (silently filter deleted ones)
   // Two sources: 1) tracker item's linkedSessions[] (forward link from DB items)
   //              2) sessions whose linkedTrackerItemIds contains this item's ID or file path (reverse link)
@@ -957,6 +1017,62 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
               </span>
             )}
           </div>
+          {externalOrigin && (() => {
+            const summary = importerSummaries.find((s) => s.id === externalOrigin.providerId);
+            const installed = Boolean(summary);
+            const ref = externalOrigin.urn.includes('://')
+              ? externalOrigin.urn.split('://')[1]
+              : externalOrigin.externalId;
+            return (
+              <div
+                className="flex items-center gap-1.5 mt-1.5 text-[11px]"
+                data-testid="tracker-source-chip"
+                title={installed ? undefined : 'Install the importer to refresh this item'}
+              >
+                <span className={installed ? 'text-nim-muted' : 'text-nim-faint'}>
+                  <MaterialSymbol icon={summary?.icon || 'cloud_download'} size={13} />
+                </span>
+                <span className={installed ? 'text-nim-muted' : 'text-nim-faint'}>
+                  From {summary?.displayName || externalOrigin.providerId}
+                </span>
+                <span className="text-nim-faint">·</span>
+                <span className="font-mono text-nim-faint truncate max-w-[180px]">{ref}</span>
+                {installed && (
+                  <button
+                    type="button"
+                    className="ml-1 inline-flex items-center text-nim-muted hover:text-nim-accent disabled:opacity-50"
+                    title="Pull latest from source"
+                    data-testid="tracker-source-resnapshot"
+                    disabled={resnapshotting}
+                    onClick={handleResnapshot}
+                  >
+                    <MaterialSymbol icon={resnapshotting ? 'hourglass_empty' : 'sync'} size={12} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="ml-1 inline-flex items-center gap-0.5 text-nim-muted hover:text-nim-accent"
+                  title="Open original"
+                  data-testid="tracker-source-open"
+                  onClick={() => {
+                    window.electronAPI
+                      .invoke('tracker:importer:openExternal', {
+                        workspacePath,
+                        providerId: externalOrigin.providerId,
+                        externalId: externalOrigin.externalId,
+                        url: externalOrigin.url,
+                      })
+                      .catch(() => {
+                        if (externalOrigin.url) window.open(externalOrigin.url, '_blank');
+                      });
+                  }}
+                >
+                  Open
+                  <MaterialSymbol icon="open_in_new" size={11} />
+                </button>
+              </div>
+            );
+          })()}
         </div>
         <div className="flex items-center gap-1 shrink-0">
           {teamOrgId && (
@@ -1001,6 +1117,33 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Upstream body-change banner (re-snapshot detected an upstream edit) */}
+      {externalOrigin?.upstreamBodyChanged && (
+        <div
+          className="flex items-center gap-2 px-4 py-2 border-b border-nim bg-[var(--nim-warning)]/10 text-xs text-nim shrink-0"
+          data-testid="tracker-upstream-body-banner"
+        >
+          <MaterialSymbol icon="sync_problem" size={14} className="text-nim-warning" />
+          <span className="flex-1">The source body changed upstream. Update to overwrite the local body, or dismiss to keep yours.</span>
+          <button
+            type="button"
+            className="px-2 py-0.5 rounded text-white bg-[var(--nim-primary)] hover:opacity-90 disabled:opacity-50"
+            disabled={bodyBusy}
+            onClick={() => handleBodyAction('applyBody')}
+          >
+            Update body
+          </button>
+          <button
+            type="button"
+            className="px-2 py-0.5 rounded border border-nim text-nim-muted hover:bg-nim-tertiary disabled:opacity-50"
+            disabled={bodyBusy}
+            onClick={() => handleBodyAction('dismissBody')}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">

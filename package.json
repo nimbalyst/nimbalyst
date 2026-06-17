@@ -19,6 +19,7 @@
     "test:unit:ui": "vitest --ui",
     "test:unit:coverage": "vitest --coverage",
     "test:provider:integration": "cross-env RUN_AI_PROVIDER_TESTS=true vitest --run",
+    "prepare": "node scripts/install-git-hooks.mjs",
     "hooks:install": "node scripts/install-git-hooks.mjs",
     "extension-sdk:check-public": "bash scripts/extension-sdk-public-checks.sh",
     "analyze": "node scripts/bundle-size.js",
@@ -71,6 +72,7 @@
   "workspaces": [
     "packages/electron",
     "packages/runtime",
+    "packages/cli",
     "packages/core",
     "packages/collab-protocol",
     "packages/collab-adapters",

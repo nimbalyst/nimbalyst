@@ -12,6 +12,7 @@ import {
   getReleaseChannel,
   type ReleaseChannel,
 } from '../utils/store';
+import { usesCodexStyleAgentWorkflows } from '../../shared/agentWorkflowProviders';
 
 export type AgentWorkflowKind = 'command' | 'skill';
 export type AgentWorkflowInvocation = 'explicit' | 'implicit' | 'both';
@@ -73,6 +74,15 @@ export interface AgentWorkflowQueryOptions {
   provider?: string | null;
   nativeCommands?: string[];
   nativeSkills?: string[];
+  /**
+   * Drop extension Claude-plugin commands (`source: 'plugin'`) from the result
+   * (NIM-845). Set by the picker for a `claude-code-cli` session whose resolved
+   * `claude` is too old to accept `--plugin-dir` (< 2.1.142): those plugins can't
+   * load, so their namespaced commands (`/feedback:bug-report`, …) would never
+   * resolve — offering them is a silent dead-end. When the CLI supports the flag
+   * (or for the SDK `claude-code` path), leave this unset so plugin commands show.
+   */
+  excludePluginCommands?: boolean;
 }
 
 export interface AgentWorkflowServiceOptions {
@@ -227,6 +237,8 @@ function renderCodexSkillMarkdown(descriptor: AgentWorkflowDescriptor, codexName
   if (descriptor.kind === 'command') {
     lines.push(`Use this when the user explicitly invokes \`/${codexName}\` or requests the "${descriptor.name}" workflow.`);
     lines.push('');
+    lines.push(renderCodexCommandInvocationNote(codexName, descriptor.argumentHint));
+    lines.push('');
     lines.push('Follow this workflow:');
     lines.push('');
   } else {
@@ -235,7 +247,11 @@ function renderCodexSkillMarkdown(descriptor: AgentWorkflowDescriptor, codexName
   }
 
   if (descriptor.body?.trim()) {
-    lines.push(descriptor.body.trim());
+    lines.push(
+      descriptor.kind === 'command'
+        ? rewriteCommandBodyForCodex(descriptor.body.trim(), codexName, descriptor.argumentHint)
+        : descriptor.body.trim()
+    );
     lines.push('');
   } else if (descriptor.description) {
     lines.push(descriptor.description);
@@ -243,6 +259,31 @@ function renderCodexSkillMarkdown(descriptor: AgentWorkflowDescriptor, codexName
   }
 
   return `${lines.join('\n').trim()}\n`;
+}
+
+function renderCodexCommandInvocationNote(codexName: string, argumentHint?: string): string {
+  if (argumentHint) {
+    return `Important: treat the text after \`/${codexName}\` as the command arguments ${argumentHint}. Use those arguments anywhere the original Claude command expects its argument placeholder.`;
+  }
+
+  return `Important: treat the text after \`/${codexName}\` as the command arguments. Use those arguments anywhere the original Claude command expects its argument placeholder.`;
+}
+
+function rewriteCommandBodyForCodex(body: string, codexName: string, argumentHint?: string): string {
+  const standaloneReplacement = argumentHint
+    ? `Use the invoking message text after \`/${codexName}\` as the command arguments ${argumentHint}. If the user did not provide explicit slash-command arguments, use the surrounding request text instead.`
+    : `Use the invoking message text after \`/${codexName}\` as the command arguments. If the user did not provide explicit slash-command arguments, use the surrounding request text instead.`;
+
+  return body
+    .split('\n')
+    .map((line) => {
+      if (line.trim() === '$ARGUMENTS') {
+        return standaloneReplacement;
+      }
+
+      return line.replace(/\$ARGUMENTS\b/g, "the user's command arguments");
+    })
+    .join('\n');
 }
 
 async function ensureFileMatches(targetPath: string, content: string | Buffer): Promise<void> {
@@ -357,7 +398,7 @@ export class AgentWorkflowService {
     const snapshot = await this.getSnapshot();
     const exportSettings = getAgentWorkflowExportSettings();
 
-    if (provider === 'openai-codex' && exportSettings.codexEnabled) {
+    if (usesCodexStyleAgentWorkflows(provider) && exportSettings.codexEnabled) {
       await this.ensureCodexExportsSynced(snapshot);
     }
 
@@ -373,6 +414,11 @@ export class AgentWorkflowService {
     const seenNames = new Set<string>();
     return providerEntries.filter(entry => {
       if (!entry.name || seenNames.has(entry.name)) {
+        return false;
+      }
+      // NIM-845: on a claude-code-cli whose CLI can't load plugins, drop plugin
+      // commands so the picker doesn't offer commands that will never resolve.
+      if (options.excludePluginCommands && entry.source === 'plugin') {
         return false;
       }
       seenNames.add(entry.name);
@@ -841,7 +887,12 @@ export class AgentWorkflowService {
     nativeCommands: string[],
     nativeSkills: string[],
   ): AgentWorkflowEntry[] {
-    const commandDescriptions: Record<string, string> = provider === 'openai-codex'
+    const nativeSkillProviderLabel = provider === 'opencode'
+      ? 'OpenCode'
+      : usesCodexStyleAgentWorkflows(provider)
+        ? 'Codex'
+        : 'Claude';
+    const commandDescriptions: Record<string, string> = usesCodexStyleAgentWorkflows(provider)
       ? {
           compact: 'Summarize the current conversation to free context while preserving key points',
           diff: 'Show the current Git diff, including untracked files',
@@ -881,7 +932,7 @@ export class AgentWorkflowService {
       entries.push({
         id: `provider-native:skill:${name}`,
         name,
-        description: `Invoke the ${name} ${provider === 'openai-codex' ? 'Codex' : 'Claude'} skill`,
+        description: `Invoke the ${name} ${nativeSkillProviderLabel} skill`,
         source: 'plugin',
         kind: 'skill',
         sourceType: 'provider-native',
@@ -892,7 +943,7 @@ export class AgentWorkflowService {
   }
 
   private buildDescriptorEntries(descriptors: AgentWorkflowDescriptor[], provider: string): AgentWorkflowEntry[] {
-    const target = provider === 'openai-codex' ? 'codex' : 'claude';
+    const target = usesCodexStyleAgentWorkflows(provider) ? 'codex' : 'claude';
 
     return descriptors
       .filter(descriptor => descriptor.providerTargets.includes(target))

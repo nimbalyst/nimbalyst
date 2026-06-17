@@ -371,30 +371,43 @@ export class ProjectMigrationService {
       [newPath, oldPath]
     );
 
-    // Update file paths within the workspace that are stored as absolute paths
-    // This updates ai_sessions.file_path for files that were within the workspace
-    await this.dbWorker.query(
-      `UPDATE ai_sessions
-       SET file_path = $1 || SUBSTRING(file_path FROM LENGTH($2) + 1)
-       WHERE workspace_id = $1 AND file_path LIKE $2 || '%'`,
-      [newPath, oldPath]
+    // Rewrite absolute file_path prefixes for rows now in the new workspace.
+    // Done in JS rather than SQL string surgery: the prior
+    // `$1 || SUBSTRING(file_path FROM LENGTH($2) + 1)` form is PostgreSQL-only
+    // and the PG->SQLite dialect translator mangles both the `SUBSTRING(... FROM
+    // ...)` syntax and the text `||` (which it rewrites to json_patch). A
+    // SELECT + per-row UPDATE works identically on PGLite and SQLite. (NIM-807)
+    await this.rewriteFilePathPrefix('ai_sessions', oldPath, newPath);
+    await this.rewriteFilePathPrefix('session_files', oldPath, newPath);
+    await this.rewriteFilePathPrefix('document_history', oldPath, newPath);
+  }
+
+  /**
+   * Rewrite absolute `file_path` values in a table so a leading `oldPath`
+   * prefix becomes `newPath`. Assumes `workspace_id` has already been migrated
+   * to `newPath`. Backend-agnostic: no PG-specific SQL.
+   */
+  private async rewriteFilePathPrefix(
+    table: 'ai_sessions' | 'session_files' | 'document_history',
+    oldPath: string,
+    newPath: string
+  ): Promise<void> {
+    const result = await this.dbWorker.query<{ id: string | number; file_path: string | null }>(
+      `SELECT id, file_path FROM ${table} WHERE workspace_id = $1`,
+      [newPath]
     );
 
-    // Update session_files.file_path
-    await this.dbWorker.query(
-      `UPDATE session_files
-       SET file_path = $1 || SUBSTRING(file_path FROM LENGTH($2) + 1)
-       WHERE workspace_id = $1 AND file_path LIKE $2 || '%'`,
-      [newPath, oldPath]
-    );
-
-    // Update document_history.file_path
-    await this.dbWorker.query(
-      `UPDATE document_history
-       SET file_path = $1 || SUBSTRING(file_path FROM LENGTH($2) + 1)
-       WHERE workspace_id = $1 AND file_path LIKE $2 || '%'`,
-      [newPath, oldPath]
-    );
+    for (const row of result.rows) {
+      const filePath = row.file_path;
+      if (typeof filePath !== 'string' || !filePath.startsWith(oldPath)) {
+        continue;
+      }
+      const updated = newPath + filePath.substring(oldPath.length);
+      await this.dbWorker.query(
+        `UPDATE ${table} SET file_path = $1 WHERE id = $2`,
+        [updated, row.id]
+      );
+    }
   }
 
   /**

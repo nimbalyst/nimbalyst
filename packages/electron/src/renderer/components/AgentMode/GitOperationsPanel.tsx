@@ -43,6 +43,7 @@ import { isPathInWorkspace } from '../../../shared/pathUtils';
 import { SuperFilesPanel } from './SuperFilesPanel';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
 import { type AgentModelOption } from './AgentModelPicker';
+import { isClaudeCliTerminalSession } from '../UnifiedAI/claudeCliInputRouting';
 
 // Types for worktree mode (copied from DiffModeView)
 interface WorktreeChangedFile {
@@ -404,39 +405,55 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
         // session-edited-files cross-reference with git status resolves to matching paths.
         const commitContextPath = worktreePath || workspacePath;
 
-        // Pre-fetch commit context from main process
+        // Pre-fetch commit context from main process. In a worktree, the worktree is
+        // the isolation boundary for this whole workstream, so include ALL uncommitted
+        // changes -- not just the current session's edits.
         const commitContext = await window.electronAPI.invoke(
           'git:get-commit-context',
           commitContextPath,
           sessionId,
-          isInWorkstream ? childSessionIds : undefined
+          isInWorkstream ? childSessionIds : undefined,
+          isInWorktree
         ) as {
           success: boolean;
           files: Array<{ path: string; status: 'added' | 'modified' | 'deleted' }>;
-          scenario: 'single' | 'workstream';
+          scenario: 'single' | 'workstream' | 'worktree';
           error?: string;
         };
 
         let message = 'Use the developer_git_commit_proposal tool to create a commit.';
 
         if (commitContext.success && commitContext.files.length > 0) {
-          // Inject pre-fetched file list directly into the prompt
-          const scope = commitContext.scenario === 'workstream'
-            ? `across ${childSessionIds!.length} sessions in this workstream`
-            : 'in this session';
           const fileList = commitContext.files
             .map(f => `- ${f.path} (${f.status})`)
             .join('\n');
 
-          message += `\n\nHere are the files edited ${scope} that have uncommitted changes:\n${fileList}`;
-          message += '\n\nThis list covers files edited directly. If you ALSO ran commands this session that change files as a side effect ' +
-            '(e.g. npm install rewriting package-lock.json, a build/codegen step, license regeneration), include those changed files too -- ' +
-            'check git status for them. If you ran no such commands, the list above is complete; do not go looking. ' +
-            'Either way, do NOT add unrelated uncommitted changes -- other concurrent sessions may have their own work in this repo.';
-          message += '\n\nThen call developer_git_commit_proposal with the file list.';
-          message += '\nDo NOT call get_session_edited_files or get_workstream_edited_files -- the edited-file data is already provided above.';
+          if (commitContext.scenario === 'worktree') {
+            // Worktree: everything uncommitted here belongs to this workstream.
+            message += `\n\nHere are all the uncommitted changes in this worktree:\n${fileList}`;
+            message += '\n\nThis is the complete set of uncommitted changes in this worktree. ' +
+              'A worktree is dedicated to a single line of work, so include all of these files in the commit.';
+            message += '\n\nThen call developer_git_commit_proposal with the file list.';
+            message += '\nDo NOT call get_session_edited_files or get_workstream_edited_files -- the file data is already provided above.';
+          } else {
+            // Shared checkout: scope to this session's/workstream's edits so concurrent
+            // sessions' unrelated work isn't swept in.
+            const scope = commitContext.scenario === 'workstream'
+              ? `across ${childSessionIds!.length} sessions in this workstream`
+              : 'in this session';
+
+            message += `\n\nHere are the files edited ${scope} that have uncommitted changes:\n${fileList}`;
+            message += '\n\nThis list covers files edited directly. If you ALSO ran commands this session that change files as a side effect ' +
+              '(e.g. npm install rewriting package-lock.json, a build/codegen step, license regeneration), include those changed files too -- ' +
+              'check git status for them. If you ran no such commands, the list above is complete; do not go looking. ' +
+              'Either way, do NOT add unrelated uncommitted changes -- other concurrent sessions may have their own work in this repo.';
+            message += '\n\nThen call developer_git_commit_proposal with the file list.';
+            message += '\nDo NOT call get_session_edited_files or get_workstream_edited_files -- the edited-file data is already provided above.';
+          }
         } else if (commitContext.success && commitContext.files.length === 0) {
-          message += '\n\nNo session-edited files have uncommitted changes. Check git status to see if there are any other uncommitted changes to commit.';
+          message += isInWorktree
+            ? '\n\nNo uncommitted changes in this worktree.'
+            : '\n\nNo session-edited files have uncommitted changes. Check git status to see if there are any other uncommitted changes to commit.';
         } else {
           // Fallback: let the agent discover files the old way
           if (isInWorkstream) {
@@ -463,7 +480,27 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
           mode: 'agent',
           inputType: 'user' as const,
         };
-        await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
+
+        // claude-code-cli (subscription, NIM-806): the genuine `claude` CLI is
+        // driven by its PTY, not the Agent SDK loop. ai:sendMessage has no
+        // in-process provider for it and throws ("Unknown provider"). Route the
+        // smart-commit prompt through the Nimbalyst queue instead; the
+        // main-process PID-idle flusher drains it to the terminal once the CLI is
+        // idle, whether or not a turn is currently in flight.
+        let provider: string | null = null;
+        try {
+          const sessionResult = await window.electronAPI.invoke('sessions:get', sessionId) as
+            { session?: { provider?: string } } | null;
+          provider = sessionResult?.session?.provider ?? null;
+        } catch {
+          /* fall through to the SDK send path */
+        }
+
+        if (isClaudeCliTerminalSession(provider)) {
+          await window.electronAPI.invoke('ai:createQueuedPrompt', sessionId, message, [], docContext);
+        } else {
+          await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
+        }
       } catch (error) {
         console.error('[GitOperationsPanel] Failed to send smart commit message:', error);
       }

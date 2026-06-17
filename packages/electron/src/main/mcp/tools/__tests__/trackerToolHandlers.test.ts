@@ -93,6 +93,7 @@ vi.mock('../../../services/MainBodyDocService', () => ({
 }));
 
 import {
+  createBidirectionalLink,
   handleTrackerCreate,
   handleTrackerDefineType,
   handleTrackerDeleteType,
@@ -101,6 +102,8 @@ import {
   handleTrackerListTypes,
   handleTrackerUnlinkSession,
   handleTrackerUpdate,
+  readLinkedTrackerItemIds,
+  removeBidirectionalLink,
   rowToTrackerItem,
 } from '../trackerToolHandlers';
 import { isTrackerSyncActive } from '../../../services/TrackerSyncManager';
@@ -153,6 +156,21 @@ describe('rowToTrackerItem typeTags normalization', () => {
   it('falls back to [type] when type_tags is missing or unparseable', () => {
     expect(rowToTrackerItem(makeRow({ type_tags: null })).typeTags).toEqual(['bug']);
     expect(rowToTrackerItem(makeRow({ type_tags: 'not json' })).typeTags).toEqual(['bug']);
+  });
+
+  it('surfaces data.origin as a top-level field (not buried in customFields)', () => {
+    // Regression: origin landing in customFields made item.origin undefined, so
+    // the TrackerRecord write-back dropped data.origin and the URN index went
+    // empty -- imports could not resolve their own URN after the first sync.
+    const origin = {
+      kind: 'external',
+      external: { providerId: 'github-issues', externalId: 'owner/repo#42', urn: 'github://owner/repo#42' },
+    };
+    const item = rowToTrackerItem(
+      makeRow({ data: JSON.stringify({ title: 'Imported', status: 'to-do', origin }) })
+    );
+    expect(item.origin).toEqual(origin);
+    expect(item.customFields?.origin).toBeUndefined();
   });
 });
 
@@ -357,6 +375,45 @@ describe('handleTrackerCreate session linking', () => {
     expect(result.isError).toBe(false);
     const sqls = mockQuery.mock.calls.map((c) => String(c[0]));
     expect(sqls.some((s) => s.includes('UPDATE ai_sessions'))).toBe(false);
+  });
+
+  it('persists a structured origin and derives source/source_ref for imports', async () => {
+    setupCreateQueueWithoutLink();
+
+    const origin = {
+      kind: 'external' as const,
+      external: {
+        providerId: 'github-issues',
+        externalId: 'owner/repo#42',
+        urn: 'github://owner/repo#42',
+        url: 'https://github.com/owner/repo/issues/42',
+        titleSnapshot: 'Some bug',
+        stateSnapshot: 'open',
+        importedAt: '2026-06-07T00:00:00.000Z',
+        lastSyncedAt: '2026-06-07T00:00:00.000Z',
+      },
+    };
+
+    const result = await handleTrackerCreate(
+      { type: 'bug', title: 'Some bug', origin, createdByAgent: false },
+      '/tmp/ws',
+      undefined,
+    );
+
+    expect(result.isError).toBe(false);
+    const insertCall = mockQuery.mock.calls.find((c) =>
+      String(c[0]).includes('INSERT INTO tracker_items'),
+    );
+    expect(insertCall).toBeTruthy();
+    const params = insertCall![1] as unknown[];
+    // External imports are native DB items; provenance lives in data.origin, not
+    // the legacy source column (which would otherwise be treated as file-backed).
+    expect(params[7]).toBe('native');
+    expect(params[8]).toBeNull();
+    const data = JSON.parse(params[3] as string);
+    expect(data.origin.kind).toBe('external');
+    expect(data.origin.external.urn).toBe('github://owner/repo#42');
+    expect(data.createdByAgent).toBe(false);
   });
 
   it('rejects tracker_create when the schema validation fails', async () => {
@@ -817,5 +874,80 @@ describe('handleTrackerUpdate description / collab body', () => {
     const payload = JSON.parse(result.content[0].text!);
     expect(payload.structured.id).toBe(publicId);
     expect(payload.structured.type).toBe('plan');
+  });
+});
+
+/**
+ * NIM-829: whole-column reads of ai_sessions.metadata return a parsed object on
+ * PGLite but a raw JSON string on SQLite (see packages/electron/DATABASE.md).
+ * The link helpers read metadata.linkedTrackerItemIds without parsing, so on
+ * SQLite they always saw [] — linking a second item erased the first, unlink
+ * silently no-oped, and the linked-tracker broadcast told renderers the session
+ * had zero links (TrackerPanel never rendered).
+ */
+describe('session metadata parsing on SQLite (NIM-829)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('readLinkedTrackerItemIds parses string metadata (SQLite) and object metadata (PGLite)', () => {
+    expect(readLinkedTrackerItemIds('{"linkedTrackerItemIds":["a","b"]}')).toEqual(['a', 'b']);
+    expect(readLinkedTrackerItemIds({ linkedTrackerItemIds: ['a'] })).toEqual(['a']);
+    expect(readLinkedTrackerItemIds(null)).toEqual([]);
+    expect(readLinkedTrackerItemIds(undefined)).toEqual([]);
+    expect(readLinkedTrackerItemIds('{}')).toEqual([]);
+    expect(readLinkedTrackerItemIds({ linkedTrackerItemIds: 'not-an-array' })).toEqual([]);
+  });
+
+  it('createBidirectionalLink preserves existing links when metadata arrives as a string', async () => {
+    mockQuery
+      // SELECT tracker_items (local row -> linkedSessions persisted)
+      .mockResolvedValueOnce({
+        rows: [{ workspace: '/tmp/ws', type: 'bug', sync_status: 'local', data: '{}' }],
+      })
+      // UPDATE tracker_items (linkedSessions write)
+      .mockResolvedValueOnce({ rows: [] })
+      // SELECT metadata FROM ai_sessions — string shape, one existing link
+      .mockResolvedValueOnce({
+        rows: [{ metadata: '{"linkedTrackerItemIds":["bug_existing"]}' }],
+      })
+      // UPDATE ai_sessions
+      .mockResolvedValueOnce({ rows: [] });
+
+    const changed = await createBidirectionalLink('bug_new', 'session_1');
+
+    expect(changed).toBe(true);
+    const updateCall = mockQuery.mock.calls.find((c) =>
+      String(c[0]).includes('UPDATE ai_sessions'),
+    );
+    expect(updateCall).toBeTruthy();
+    const written = JSON.parse(updateCall![1]![0] as string);
+    // Both the pre-existing link and the new one must survive; the unparsed
+    // string read started from [] and clobbered bug_existing.
+    expect(written.linkedTrackerItemIds).toEqual(['bug_existing', 'bug_new']);
+  });
+
+  it('removeBidirectionalLink removes a link when metadata arrives as a string', async () => {
+    mockQuery
+      // SELECT tracker_items
+      .mockResolvedValueOnce({
+        rows: [{ workspace: '/tmp/ws', type: 'bug', sync_status: 'local', data: '{}' }],
+      })
+      // SELECT metadata FROM ai_sessions — string shape, contains the link
+      .mockResolvedValueOnce({
+        rows: [{ metadata: '{"linkedTrackerItemIds":["bug_a","bug_b"]}' }],
+      })
+      // UPDATE ai_sessions
+      .mockResolvedValueOnce({ rows: [] });
+
+    const changed = await removeBidirectionalLink('bug_a', 'session_1');
+
+    expect(changed).toBe(true);
+    const updateCall = mockQuery.mock.calls.find((c) =>
+      String(c[0]).includes('UPDATE ai_sessions'),
+    );
+    expect(updateCall).toBeTruthy();
+    const written = JSON.parse(updateCall![1]![0] as string);
+    expect(written.linkedTrackerItemIds).toEqual(['bug_b']);
   });
 });

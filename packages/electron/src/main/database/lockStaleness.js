@@ -46,15 +46,60 @@
 
 const DEFAULT_STALE_LOCK_GRACE_MS = 60_000;
 
-function decideLockIsRunning({ lockPid, lockTimestamp, killFn, now = Date.now(), staleGraceMs = DEFAULT_STALE_LOCK_GRACE_MS }) {
+function identityMatchesApp(identity, signatures) {
+  const lower = String(identity).toLowerCase();
+  return signatures.some((sig) => lower.includes(String(sig).toLowerCase()));
+}
+
+function decideLockIsRunning({ lockPid, lockTimestamp, killFn, now = Date.now(), staleGraceMs = DEFAULT_STALE_LOCK_GRACE_MS, processIdentityFn, appProcessSignatures = ['electron', 'nimbalyst'], selfPid = (typeof process !== 'undefined' && process && Number.isInteger(process.pid) ? process.pid : undefined) }) {
   const parsedLockTime =
     lockTimestamp && lockTimestamp !== 'unknown'
       ? new Date(lockTimestamp).getTime()
       : NaN;
   const lockAgeMs = Number.isFinite(parsedLockTime) ? now - parsedLockTime : Number.POSITIVE_INFINITY;
 
+  // PID reuse onto ourselves. We have not acquired the lock yet this run, so a
+  // lock file whose PID equals our own brand-new process means the OS recycled
+  // the dead holder's PID to us. kill(0) on our own PID always succeeds and
+  // would otherwise wrongly report 'running', blocking our own boot. Stale.
+  if (Number.isInteger(selfPid) && lockPid === selfPid) {
+    return {
+      decision: 'stale',
+      isRunning: false,
+      reason: `lock PID ${lockPid} equals this process's own PID; the dead holder's PID was reused for us`,
+      lockPid,
+      lockAgeMs,
+    };
+  }
+
   try {
     killFn(lockPid, 0);
+    // kill(0) success only proves SOME process holds this PID. On Windows the
+    // PID may have been reused by an unrelated process after the original holder
+    // died (nimbalyst#272: the timestamp grace below covers the EPERM path, but
+    // a same-user reused PID returns success, not EPERM). If we can identify the
+    // holder and it is clearly NOT one of our processes, the lock is stale.
+    // If identity is unknown, FAIL CLOSED (stay 'running') so we never clobber a
+    // possibly-live sibling.
+    if (typeof processIdentityFn === 'function') {
+      let identity = null;
+      try {
+        identity = processIdentityFn(lockPid);
+      } catch {
+        identity = null;
+      }
+      if (identity && !identityMatchesApp(identity, appProcessSignatures)) {
+        return {
+          decision: 'stale',
+          isRunning: false,
+          reason:
+            `kill(0) succeeded but PID ${lockPid} is "${identity}", not a Nimbalyst ` +
+            `process; the PID was reused after the original holder died`,
+          lockPid,
+          lockAgeMs,
+        };
+      }
+    }
     return {
       decision: 'running',
       isRunning: true,

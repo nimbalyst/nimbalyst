@@ -157,7 +157,11 @@ final class WebSocketClient: @unchecked Sendable {
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
 
         let encodedToken = authToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? authToken
-        let urlString = "\(wsBase)/sync/\(roomId)?token=\(encodedToken)"
+        // Non-sensitive client labels for server connect/disconnect telemetry.
+        // Server clamps each to 32 chars; keep them short and URL-encoded.
+        let platformLabel = Self.encodedClientLabel("mobile")
+        let versionLabel = Self.encodedClientLabel(Self.appVersion ?? "unknown")
+        let urlString = "\(wsBase)/sync/\(roomId)?token=\(encodedToken)&platform=\(platformLabel)&version=\(versionLabel)"
 
         guard let url = URL(string: urlString) else {
             logger.error("Invalid WebSocket URL: \(urlString)")
@@ -405,5 +409,12 @@ final class WebSocketClient: @unchecked Sendable {
 
     private static var appVersion: String? {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+    }
+
+    /// Clamp a sync telemetry label to 32 chars (matching the server) and
+    /// URL-encode it for use in the WebSocket upgrade query string.
+    private static func encodedClientLabel(_ value: String) -> String {
+        let clamped = String(value.prefix(32))
+        return clamped.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? clamped
     }
 }

@@ -20,6 +20,7 @@ import {
   sessionProcessingAtom,
   sessionPendingPromptsAtom,
   sessionRegistryAtom,
+  sessionChildrenAtom,
   sessionLastActivityAtom,
   type SessionMeta,
 } from '../atoms/sessions';
@@ -67,7 +68,8 @@ function makeApi() {
     sessionState: {
       subscribe: vi.fn().mockResolvedValue({ success: true }),
       unsubscribe: vi.fn().mockResolvedValue({ success: true }),
-      getActiveSessionIds: vi.fn().mockResolvedValue({ success: true, sessionIds: [] }),
+      getTrackedSessionIds: vi.fn().mockResolvedValue({ success: true, sessionIds: [] }),
+      getRunningSessionIds: vi.fn().mockResolvedValue({ success: true, sessionIds: [] }),
       // The listener uses sessionState.onStateChange as the dedicated channel
       // for lifecycle events (session:started/streaming/waiting/completed/error/interrupted).
       // Capture the handler under the same key the rest of the test code uses.
@@ -132,6 +134,45 @@ describe('lifecycle: session:waiting', () => {
 
     expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(true);
     expect(store.get(sessionProcessingAtom(sid))).toBe(true);
+  });
+
+  // NIM-850: the genuine Claude CLI writes a coarse `waiting` pid status that
+  // fires transiently mid-turn (e.g. while blocked on a tool/MCP round-trip),
+  // not just for real user prompts. AND it has no symmetric clear, so once set it
+  // suppressed the "Thinking…" indicator for the rest of the turn. For
+  // claude-code-cli sessions, session:waiting must NOT set the pending flag — the
+  // flag is driven by the explicit prompt-lifecycle broadcasts (ai:askUserQuestion
+  // / ai:requestUserInput, set AND cleared by the MCP handler). The session stays
+  // "processing" so the indicator keeps showing between prompts.
+  it('does NOT set the pending interactive prompt flag for claude-code-cli (NIM-850)', () => {
+    const sid = uniqueSessionId('waiting-cli');
+    seedRegistry([{ id: sid, provider: 'claude-code-cli', workspaceId: WS }]);
+
+    const handler = handlers.get('ai-session-state:event');
+    handler!({ type: 'session:waiting', sessionId: sid, workspacePath: WS });
+
+    expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(false);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(true);
+  });
+});
+
+// NIM-850: the "awaiting input" flag for claude-code-cli AskUserQuestion is now
+// owned by the explicit prompt-lifecycle broadcasts the MCP handler emits — set on
+// ask, cleared on settle (answer OR cancel) — instead of the coarse, never-cleared
+// pid `waiting` status. This locks the renderer contract those broadcasts rely on.
+describe('AskUserQuestion prompt lifecycle (NIM-850)', () => {
+  it('ai:askUserQuestion sets the pending flag; ai:askUserQuestionAnswered clears it', () => {
+    const sid = uniqueSessionId('auq');
+    const ask = handlers.get('ai:askUserQuestion');
+    const answered = handlers.get('ai:askUserQuestionAnswered');
+    expect(ask).toBeTypeOf('function');
+    expect(answered).toBeTypeOf('function');
+
+    ask!({ sessionId: sid, questionId: 'q1', questions: [] });
+    expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(true);
+
+    answered!({ sessionId: sid, questionId: 'q1' });
+    expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(false);
   });
 });
 
@@ -450,5 +491,54 @@ describe('contract: per-message events must not bump turn activity', () => {
     const turnsForWs = store.get(globalSessionTurnActivityAtom).get(WS);
     expect(turnsForWs?.get(childId)).toBeUndefined();
     expect(turnsForWs?.get(parentId)).toBeUndefined();
+  });
+});
+
+describe('processing reconcile on terminal events', () => {
+  it('heals a stuck processing session promptly when any session reaches a terminal state', async () => {
+    vi.useFakeTimers();
+    try {
+      // A session whose processing atom is stuck true while the backend no longer
+      // reports it running (getRunningSessionIds mock returns []). This stands in
+      // for a meta-agent child whose terminal clear was missed, pinning the header.
+      const stuck = uniqueSessionId('stuck');
+      seedRegistry([{ id: stuck }]);
+      store.set(sessionProcessingAtom(stuck), true);
+
+      // A DIFFERENT session completing must trigger the debounced reconcile, which
+      // re-derives processing atoms against the authoritative active set.
+      const other = uniqueSessionId('other');
+      const handler = handlers.get('ai-session-state:event')!;
+      handler({ type: 'session:completed', sessionId: other, workspacePath: WS });
+
+      expect(store.get(sessionProcessingAtom(stuck))).toBe(true); // not yet (debounced)
+      await vi.advanceTimersByTimeAsync(700);
+      expect(store.get(sessionProcessingAtom(stuck))).toBe(false); // healed by reconcile
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconcile heals a stuck child that is in sessionChildrenAtom but NOT the registry', async () => {
+    vi.useFakeTimers();
+    try {
+      // The meta header (sessionOrChildProcessingAtom) reads children from
+      // sessionChildrenAtom too. A meta-agent child can sit there while not being
+      // a registry key (child-added patches it; archived children drop from the
+      // list). The reconcile must still heal it, or the header stays stuck.
+      const meta = uniqueSessionId('meta');
+      const child = uniqueSessionId('child');
+      seedRegistry([{ id: meta, sessionType: 'meta-agent' as SessionMeta['sessionType'] }]);
+      store.set(sessionChildrenAtom(meta), [child]); // child known only via children atom
+      store.set(sessionProcessingAtom(child), true); // stuck
+
+      const handler = handlers.get('ai-session-state:event')!;
+      handler({ type: 'session:completed', sessionId: meta, workspacePath: WS });
+      await vi.advanceTimersByTimeAsync(700);
+
+      expect(store.get(sessionProcessingAtom(child))).toBe(false); // healed via children union
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

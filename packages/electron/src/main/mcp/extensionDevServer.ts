@@ -32,6 +32,55 @@ import { database } from "../database/initialize";
 import { findWindowByWorkspace } from "../window/WindowManager";
 import { getRestartSignalPath, getPackageRoot } from "../utils/appPaths";
 import { requireMcpAuth } from "./mcpAuth";
+import { selectFocusedRestartSessions } from "./restartContinuationSelection";
+
+// ============================================================================
+// Restart continuation
+// ============================================================================
+
+/**
+ * Of the running/streaming agent sessions, return only the one the FOCUSED
+ * window is viewing, so /restart resumes just that session (NIM-813). Reuses the
+ * renderer's existing `notifications:check-active-session` answerer (it replies
+ * from `activeSessionIdAtom`), so no new renderer plumbing. A window views one
+ * agent session, so the result is 0 or 1 id; returns `[]` when no window is
+ * focused or none of the running sessions is the focused one.
+ */
+async function selectFocusedRestartContinuationSessions(
+  runningSessionIds: string[]
+): Promise<string[]> {
+  if (runningSessionIds.length === 0) return [];
+
+  const { BrowserWindow, ipcMain } = require("electron");
+  const focused = BrowserWindow.getFocusedWindow();
+  if (!focused || focused.isDestroyed()) return [];
+
+  const viewingBySession: Record<string, boolean> = {};
+  await Promise.all(
+    runningSessionIds.map(
+      (sessionId) =>
+        new Promise<void>((resolve) => {
+          const requestId = `restart-continuation-${Date.now()}-${Math.random()}`;
+          const channel = `notifications:session-check-response:${requestId}`;
+          const timeout = setTimeout(() => {
+            ipcMain.removeAllListeners(channel);
+            resolve();
+          }, 500);
+          ipcMain.once(channel, (_event: unknown, isViewing: boolean) => {
+            clearTimeout(timeout);
+            viewingBySession[sessionId] = isViewing === true;
+            resolve();
+          });
+          focused.webContents.send("notifications:check-active-session", {
+            requestId,
+            sessionId,
+          });
+        })
+    )
+  );
+
+  return selectFocusedRestartSessions(runningSessionIds, viewingBySession);
+}
 
 // ============================================================================
 // File Utilities
@@ -1609,25 +1658,28 @@ function createExtensionDevMcpServer(
             "@nimbalyst/runtime/ai/server/SessionStateManager"
           );
           const stateManager = getSessionStateManager();
-          const activeSessionIds = stateManager.getActiveSessionIds();
+          // Only sessions whose turn is actually in progress need to be resumed
+          // after restart (NIM-846: getTrackedSessionIds would also return idle
+          // claude-code-cli sessions retained in the map between turns).
+          const agentSessionIds = stateManager.getRunningSessionIds();
 
-          // Filter to only agent sessions that are running or streaming
-          const agentSessionIds: string[] = [];
-          for (const sessionId of activeSessionIds) {
-            const state = stateManager.getSessionState(sessionId);
-            if (state && (state.status === "running" || state.isStreaming)) {
-              agentSessionIds.push(sessionId);
-            }
-          }
+          // Resume only the session the FOCUSED window is viewing, not every
+          // running session across every window. Auto-resuming all of them
+          // re-creates the launch stampede that rate-limits the subscription
+          // (NIM-813); the user only expects the window they were working in to
+          // pick back up. Background sessions stay paused until interacted with.
+          const focusedSessionIds = await selectFocusedRestartContinuationSessions(
+            agentSessionIds
+          );
 
-          if (agentSessionIds.length > 0) {
+          if (focusedSessionIds.length > 0) {
             const userData = app.getPath("userData");
             const restartContinuationPath = path.join(
               userData,
               "restart-continuation.json"
             );
             const continuationData = {
-              sessionIds: agentSessionIds,
+              sessionIds: focusedSessionIds,
               timestamp: Date.now(),
             };
             fs.writeFileSync(
@@ -1636,8 +1688,12 @@ function createExtensionDevMcpServer(
               "utf8"
             );
             console.log(
-              `[Extension Dev MCP] Saved restart continuation for ${agentSessionIds.length} active session(s):`,
-              agentSessionIds
+              `[Extension Dev MCP] Saved restart continuation for focused session(s):`,
+              focusedSessionIds
+            );
+          } else {
+            console.log(
+              `[Extension Dev MCP] No focused running session to continue (had ${agentSessionIds.length} running)`
             );
           }
         } catch (error) {

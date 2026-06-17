@@ -17,6 +17,17 @@ describe('resolveClaudeCodeModelVariant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:haiku', DEFAULT_MODEL)).toBe('haiku');
     });
 
+    it('resolves fable to the pinned full model id — the SDK-bundled CLI rejects the bare `fable` alias', () => {
+      // Observed 2026-06-12: passing `fable` through produced "There's an issue
+      // with the selected model (fable). It may not exist..." from the Agent SDK.
+      expect(resolveClaudeCodeModelVariant('claude-code:fable', DEFAULT_MODEL)).toBe('claude-fable-5');
+      expect(resolveClaudeCodeModelVariant('claude-code:fable-5', DEFAULT_MODEL)).toBe('claude-fable-5');
+    });
+
+    it('fable-1m resolves to the pinned id with the [1m] suffix (same shape as pinned opus 1M variants)', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:fable-1m', DEFAULT_MODEL)).toBe('claude-fable-5[1m]');
+    });
+
     it('uses default model when config model is undefined', () => {
       expect(resolveClaudeCodeModelVariant(undefined, DEFAULT_MODEL)).toBe('opus[1m]');
     });

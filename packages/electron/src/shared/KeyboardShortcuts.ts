@@ -48,6 +48,7 @@ export const KeyboardShortcuts = {
     toggleAIChat: 'Cmd+Shift+A',
     toggleBottomPanel: 'Cmd+J',
     toggleTerminalPanel: 'Ctrl+`',
+    toggleCliTerminalDrawer: 'Ctrl+Shift+`',
     trackerMode: 'Cmd+T',
     collabMode: 'Cmd+D',
     prReviewMode: 'Cmd+U',

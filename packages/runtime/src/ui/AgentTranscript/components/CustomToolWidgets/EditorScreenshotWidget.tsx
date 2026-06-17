@@ -14,6 +14,7 @@
 import React, { useState, useEffect } from 'react';
 import type { CustomToolWidgetProps } from './index';
 import { parseToolResult } from '../../../../ai/server/transcript/toolResultParser';
+import { ZoomableImageSurface } from '../ZoomableImageSurface';
 
 /**
  * Extract a display name from a file path
@@ -394,28 +395,29 @@ export const EditorScreenshotWidget: React.FC<CustomToolWidgetProps> = ({
           aria-label="Image preview"
         >
           <div
-            className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center"
+            className="h-[92vh] w-[96vw] max-w-[1400px] overflow-hidden rounded-lg border border-nim bg-nim shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <button
-              className="absolute top-2 right-2 w-10 h-10 p-2 bg-nim-secondary border border-nim rounded-full text-nim-muted cursor-pointer transition-all duration-200 flex items-center justify-center z-10 shadow-lg hover:bg-nim-hover hover:text-nim hover:scale-110"
-              onClick={() => setShowLightbox(false)}
-              aria-label="Close (Escape)"
-              title="Close (Escape)"
-            >
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                <path d="M15 5L5 15M5 5L15 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
-            <img
+            <ZoomableImageSurface
               src={imageSrc}
               alt={fileName}
-              className="max-w-full max-h-[calc(90vh-3rem)] object-contain rounded-lg shadow-2xl"
+              toolbarLabel={(
+                <div className="min-w-0 truncate font-mono text-sm text-nim" title={fileName}>
+                  {fileName}
+                </div>
+              )}
+              toolbarExtras={(
+                <button
+                  type="button"
+                  className="rounded border border-[var(--nim-border)] bg-[var(--nim-bg)] px-2 py-1 text-xs text-[var(--nim-text)] transition-colors duration-150 hover:bg-[var(--nim-bg-hover)]"
+                  onClick={() => setShowLightbox(false)}
+                  aria-label="Close (Escape)"
+                  title="Close (Escape)"
+                >
+                  Close
+                </button>
+              )}
             />
-            <div className="mt-3 text-sm text-nim-muted font-mono bg-nim-secondary py-2 px-3 rounded text-center flex flex-col gap-1">
-              {fileName}
-              <span className="text-xs text-nim-faint font-sans">Click outside or press Escape to close</span>
-            </div>
           </div>
         </div>
       )}

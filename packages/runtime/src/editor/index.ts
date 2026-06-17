@@ -87,6 +87,9 @@ export {
 
 // Node types - for advanced customization
 export { default as EditorNodes } from './nodes/EditorNodes';
+// Complete node set for the headless main-process body seeder (markdown ->
+// Y.Doc). EditorNodes alone is missing extension nodes like list/link/image.
+export { default as HeadlessBodyNodes } from './nodes/headlessBodyNodes';
 
 // Re-export key Lexical types that consumers might need
 export type {

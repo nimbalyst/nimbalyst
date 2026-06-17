@@ -25,6 +25,18 @@ const {
 });
 
 vi.mock('electron', () => ({
+  app: {
+    getPath: vi.fn(() => '/tmp'),
+    isPackaged: false,
+    getName: vi.fn(() => 'Nimbalyst'),
+    getVersion: vi.fn(() => '0.0.0-test'),
+    on: vi.fn(),
+    off: vi.fn(),
+    once: vi.fn(),
+    whenReady: vi.fn(() => Promise.resolve()),
+    isReady: vi.fn(() => true),
+    quit: vi.fn(),
+  },
   BrowserWindow: {
     getAllWindows: () => [
       {
@@ -38,6 +50,8 @@ vi.mock('electron', () => ({
 
 vi.mock('../../utils/ipcRegistry', () => ({
   safeHandle: mockSafeHandle,
+  safeOn: vi.fn(),
+  safeOnce: vi.fn(),
 }));
 
 vi.mock('chokidar', () => ({

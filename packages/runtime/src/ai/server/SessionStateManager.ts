@@ -115,6 +115,10 @@ export class SessionStateManager extends EventEmitter {
           this.emitEvent({ type: 'session:error', sessionId, workspacePath, error: 'Session error', timestamp: new Date() });
         } else if (status === 'running') {
           this.emitEvent({ type: isStreaming ? 'session:streaming' : 'session:started', sessionId, workspacePath, timestamp: new Date() });
+        } else if (status === 'idle') {
+          // Turn boundary (e.g. claude-code-cli PID watcher): a terminal event so
+          // the renderer clears the running indicator. session:activity would not.
+          this.emitEvent({ type: 'session:completed', sessionId, workspacePath, timestamp: new Date() });
         }
       } else {
         console.warn(`[SessionStateManager] Cannot update activity for unknown session: ${sessionId}`);
@@ -168,6 +172,18 @@ export class SessionStateManager extends EventEmitter {
         sessionId,
         workspacePath: state.workspacePath,
         error: 'Session encountered an error',
+        timestamp: new Date(),
+      });
+    } else if (status === 'idle') {
+      // An explicit idle status is a turn boundary (e.g. the claude-code-cli PID
+      // watcher reporting the CLI finished). Emit a terminal event so the
+      // renderer clears sessionProcessingAtom — session:activity would leave the
+      // running indicator stuck on. The session stays in activeSessions so the
+      // next turn's running transition is still detected.
+      this.emitEvent({
+        type: 'session:completed',
+        sessionId,
+        workspacePath: state.workspacePath,
         timestamp: new Date(),
       });
     } else {
@@ -247,10 +263,36 @@ export class SessionStateManager extends EventEmitter {
   }
 
   /**
-   * Get all active session IDs
+   * Get the IDs of every session this manager is currently TRACKING — i.e. bare
+   * `activeSessions` map membership. This is NOT the same as "currently running":
+   * a `claude-code-cli` session is deliberately retained in the map after its
+   * turn goes idle (so the next turn's running transition is detected on the same
+   * entry), and the genuine `claude` CLI is a long-lived interactive process that
+   * stays alive — idle — between turns. So this list includes idle sessions.
+   *
+   * Almost every caller actually wants "whose turn is in progress?" — use
+   * `getRunningSessionIds()` for that. Treating membership as "running" pinned the
+   * renderer's "Processing…" spinner on idle background CLI sessions forever
+   * (NIM-846). Use this only when you genuinely need the tracked/alive set.
    */
-  getActiveSessionIds(): string[] {
+  getTrackedSessionIds(): string[] {
     return Array.from(this.activeSessions.keys());
+  }
+
+  /**
+   * Get the IDs of sessions whose turn is actually in progress — status
+   * 'running' or actively streaming. This is the canonical "is it running?"
+   * query; unlike `getTrackedSessionIds()` it excludes idle entries retained in
+   * the map (notably long-lived claude-code-cli sessions). See NIM-846.
+   */
+  getRunningSessionIds(): string[] {
+    const ids: string[] = [];
+    for (const [sessionId, state] of this.activeSessions) {
+      if (state.status === 'running' || state.isStreaming) {
+        ids.push(sessionId);
+      }
+    }
+    return ids;
   }
 
   /**

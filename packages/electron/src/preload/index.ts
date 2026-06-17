@@ -333,6 +333,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // for the File (e.g. synthetic blobs).
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   copyToClipboard: (text: string) => ipcRenderer.invoke('copy-to-clipboard', text),
+  copyImageToClipboard: (payload: { filePath?: string; dataUrl?: string }) =>
+    ipcRenderer.invoke('copy-image-to-clipboard', payload),
   readClipboard: () => ipcRenderer.invoke('read-from-clipboard'),
 
   // File change event listeners
@@ -374,7 +376,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // QuickOpen operations
   buildQuickOpenCache: (workspacePath: string) => ipcRenderer.invoke('build-quick-open-cache', workspacePath),
   searchWorkspaceFiles: (workspacePath: string, query: string) => ipcRenderer.invoke('search-workspace-files', workspacePath, query),
-  searchWorkspaceFileNames: (workspacePath: string, query: string) => ipcRenderer.invoke('search-workspace-file-names', workspacePath, query),
+  searchWorkspaceFileNames: (workspacePath: string, query: string, options?: { fileMask?: string | null }) =>
+    ipcRenderer.invoke('search-workspace-file-names', workspacePath, query, options),
   searchWorkspaceFileContent: (workspacePath: string, query: string) => ipcRenderer.invoke('search-workspace-file-content', workspacePath, query),
   getRecentWorkspaceFiles: (workspacePath?: string) => ipcRenderer.invoke('get-recent-workspace-files', workspacePath),
   addToWorkspaceRecentFiles: (filePath: string) => ipcRenderer.send('add-to-workspace-recent-files', filePath),
@@ -447,8 +450,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Session state tracking operations
   sessionState: {
-    getActiveSessionIds: () =>
-      ipcRenderer.invoke('ai-session-state:get-active'),
+    getTrackedSessionIds: () =>
+      ipcRenderer.invoke('ai-session-state:get-tracked'),
+    getRunningSessionIds: () =>
+      ipcRenderer.invoke('ai-session-state:get-running'),
     getSessionState: (sessionId: string) =>
       ipcRenderer.invoke('ai-session-state:get-state', sessionId),
     isSessionActive: (sessionId: string) =>
@@ -485,7 +490,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // AI operations (new unified interface)
   aiHasApiKey: () => ipcRenderer.invoke('ai:hasApiKey'),
   aiInitialize: (provider?: string, apiKey?: string) => ipcRenderer.invoke('ai:initialize', provider, apiKey),
-  aiCreateSession: (provider: 'claude' | 'claude-code' | 'openai' | 'openai-codex' | 'opencode' | 'copilot-cli' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) => {
+  aiCreateSession: (provider: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai' | 'openai-codex' | 'opencode' | 'copilot-cli' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) => {
     // console.log('[Preload] aiCreateSession called:', { provider, workspacePath, sessionType, worktreeId });
     return ipcRenderer.invoke('ai:createSession', provider, documentContext, workspacePath, modelId, sessionType, worktreeId);
   },
@@ -499,6 +504,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   aiSaveDraftInput: (sessionId: string, draftInput: string, workspacePath?: string) =>
     ipcRenderer.invoke('ai:saveDraftInput', sessionId, draftInput, workspacePath),
   aiDeleteSession: (sessionId: string, workspacePath?: string) => ipcRenderer.invoke('ai:deleteSession', sessionId, workspacePath),
+
+  // Flat-key settings (see shared/settings/keys.ts and main/services/SettingsService.ts).
+  // settingsGetAll seeds every atom at startup; settingsSet is the only write path.
+  // settings:changed is broadcast from main on every mutation.
+  settingsGetAll: () => ipcRenderer.invoke('settings:getAll'),
+  settingsSet: (key: string, value: unknown) => ipcRenderer.invoke('settings:set', key, value),
+  settingsDelete: (key: string) => ipcRenderer.invoke('settings:delete', key),
+  onSettingsChanged: (callback: (payload: { key: string; value: unknown }) => void) => {
+    const handler = (_event: any, payload: { key: string; value: unknown }) => callback(payload);
+    ipcRenderer.on('settings:changed', handler);
+    return () => ipcRenderer.removeListener('settings:changed', handler);
+  },
+
   getAISettings: () => ipcRenderer.invoke('ai:getSettings'),
   saveAISettings: (settings: any) => ipcRenderer.invoke('ai:saveSettings', settings),
   testAIConnection: (provider: 'claude' | 'claude-code' | 'openai' | 'lmstudio') => ipcRenderer.invoke('ai:testConnection', provider),
@@ -659,7 +677,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ai: {
     hasApiKey: () => ipcRenderer.invoke('ai:hasApiKey'),
     initialize: (provider?: string, apiKey?: string) => ipcRenderer.invoke('ai:initialize', provider, apiKey),
-    createSession: (provider: 'claude' | 'claude-code' | 'openai' | 'openai-codex' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) =>
+    createSession: (provider: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai' | 'openai-codex' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) =>
       ipcRenderer.invoke('ai:createSession', provider, documentContext, workspacePath, modelId, sessionType, worktreeId),
     sendMessage: (message: string, documentContext?: any, sessionId?: string, workspacePath?: string) =>
       ipcRenderer.invoke('ai:sendMessage', message, documentContext, sessionId, workspacePath),
@@ -1609,6 +1627,41 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // PTY operations
     initialize: (terminalId: string, options: { workspacePath: string; cwd?: string; cols?: number; rows?: number }) =>
       ipcRenderer.invoke('terminal:initialize', terminalId, options),
+    // Launch the genuine `claude` CLI for a claude-code-cli session (NIM-806).
+    // terminalId IS the Nimbalyst session id; idempotent.
+    ensureClaudeCliSession: (payload: {
+      sessionId: string;
+      workspacePath: string;
+      cwd?: string;
+      model?: string;
+      resumeSessionId?: string;
+      cols?: number;
+      rows?: number;
+    }) => ipcRenderer.invoke('claude-cli:ensure-session', payload),
+    // Whether the genuine `claude` CLI is installed (NIM-852). The transcript
+    // checks this for a claude-code-cli session to show an install notice and
+    // skip the spawn, rather than producing a cryptic `command not found`.
+    isClaudeCliInstalled: (): Promise<boolean> =>
+      ipcRenderer.invoke('claude-cli:is-installed'),
+    // Submit a claude-code-cli prompt (NIM-806) — composes the PTY line (prompt +
+    // inline attachment paths), writes it to the terminal, and logs the clean
+    // typed prompt (+ attachment chips) as the transcript user row in the main
+    // process. Replaces the prior log-only `logClaudeCliUserPrompt`.
+    submitClaudeCliPrompt: (payload: {
+      sessionId: string;
+      workspacePath: string;
+      prompt: string;
+      attachments?: unknown[];
+      // NIM-818: active-doc/selection context for the PTY context block.
+      documentContext?: unknown;
+    }) => ipcRenderer.invoke('claude-cli:submit-prompt', payload),
+    // Switch a running claude-code-cli session's model via `/model` (NIM-806).
+    setClaudeCliModel: (sessionId: string, model: string) =>
+      ipcRenderer.invoke('claude-cli:set-model', { sessionId, model }),
+    // Stop a claude-code-cli turn with escalation (NIM-814): Ctrl-C → Ctrl-C →
+    // SIGINT, re-checking the PID turn state between steps.
+    interruptClaudeCli: (sessionId: string) =>
+      ipcRenderer.invoke('claude-cli:interrupt', sessionId),
     isActive: (terminalId: string) =>
       ipcRenderer.invoke('terminal:is-active', terminalId),
     write: (terminalId: string, data: string) =>

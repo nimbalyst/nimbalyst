@@ -36,7 +36,16 @@ export interface PendingPermission {
 
 export type TrustChecker = (
   workspacePath: string
-) => { trusted: boolean; mode: PermissionMode };
+) => {
+  trusted: boolean;
+  mode: PermissionMode;
+  /**
+   * Opt-in flag (issue #628): when true, "Allow All" (bypass-all) workspaces
+   * route agent-mode Claude Code sessions through the SDK auto-mode classifier.
+   * Defaults to off so "Allow All" stays literal allow-all.
+   */
+  allowAllUsesClassifier?: boolean;
+};
 
 export type PermissionPatternSaver = (
   workspacePath: string,

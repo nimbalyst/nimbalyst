@@ -16,7 +16,7 @@
 import type { SessionStore } from '@nimbalyst/runtime';
 import type { DeviceInfo } from '@nimbalyst/runtime/sync';
 import * as syncModule from '@nimbalyst/runtime/sync';
-import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, store, type SessionSyncConfig } from '../utils/store';
+import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, getAlphaFeatures, store, type SessionSyncConfig } from '../utils/store';
 import { logger } from '../utils/logger';
 import { getCredentials } from './CredentialService';
 import { getStytchUserId, isAuthenticated, getPersonalOrgId, getPersonalUserId, resolvePersonalUserId, getPersonalSessionJwt, refreshPersonalSession } from './StytchAuthService';
@@ -303,6 +303,10 @@ function getDeviceInfo(userId: string): DeviceInfo {
  */
 export async function initializeSync(baseStore: SessionStore): Promise<SessionStore> {
   logger.main.info('[SyncManager] initializeSync called');
+
+  // Label every sync WebSocket connection with this client build so the server
+  // can attribute connect/disconnect telemetry to a platform + version.
+  syncModule.setSyncClientInfo({ platform: 'desktop', version: app.getVersion() });
 
   const config = getSessionSyncConfig();
   logger.main.info('[SyncManager] config:', JSON.stringify(config));
@@ -1235,6 +1239,9 @@ export async function syncSettingsToMobile(openaiApiKey?: string): Promise<void>
   // Get available AI models for the mobile model picker
   const { models: availableModels, defaultModel } = await getAvailableModelsForMobile();
 
+  // Whether the desktop "meta-agent" alpha feature is enabled (gates the mobile Meta Agent UI)
+  const metaAgentEnabled = getAlphaFeatures()['meta-agent'] ?? false;
+
   // logger.main.info(`[SyncManager] Syncing settings to mobile devices (version ${settingsVersion}, ${availableModels.length} models)`);
 
   try {
@@ -1246,6 +1253,7 @@ export async function syncSettingsToMobile(openaiApiKey?: string): Promise<void>
       } : undefined,
       availableModels,
       defaultModel,
+      metaAgentEnabled,
       version: settingsVersion,
     });
     // logger.main.info('[SyncManager] Settings synced successfully');

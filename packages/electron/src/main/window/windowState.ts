@@ -34,6 +34,24 @@ export function resolveActiveWorkspacePathForWindowId(windowId: number | null | 
 }
 
 /**
+ * Resolve the workspace path whose DocumentService should serve an IPC
+ * request for this window. Honors the project rail's active selection so a
+ * tracker / document query reads the project the user is currently looking
+ * at, not the window's startup primary.
+ *
+ * Returns null for windows that should not have document-service access
+ * (wrong mode, or no workspace at all). Single-sources the path logic for
+ * both the WindowManager and MultiProjectRailHandlers resolvers so they
+ * can't diverge again (issue #591: WindowManager's resolver read the raw
+ * `workspacePath`, leaking another project's tracker items in the rail).
+ */
+export function resolveDocumentServicePath(state: WindowState | undefined): string | null {
+    if (!state) return null;
+    if (state.mode !== 'workspace' && state.mode !== 'agentic-coding') return null;
+    return resolveActiveWorkspacePath(state);
+}
+
+/**
  * Whether a window has any interest in a workspace path — either as its
  * primary path or as a warm "additional" path in the project rail. Used
  * by service-cleanup logic so destroying a window only frees a workspace's

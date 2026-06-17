@@ -181,6 +181,85 @@ Inspect the codebase, write the plan, and capture open questions.
     expect(codexSkill).toContain('description: "Create a new plan document for tracking work."');
   });
 
+  it('treats OpenCode as a codex-style workflow consumer', async () => {
+    const commandsDir = path.join(workspacePath, '.claude', 'commands');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(commandsDir, 'design.md'),
+      `---
+description: Create a design plan
+---
+
+Write a plan before implementation.
+`,
+      'utf-8',
+    );
+
+    const service = new AgentWorkflowService(workspacePath, {
+      userHomePath,
+      extensionDirectoriesLoader: async () => [],
+      nativeClaudePluginPathsLoader: async () => [],
+      releaseChannelLoader: () => 'stable',
+    });
+
+    const entries = await service.listEntries({ provider: 'opencode' });
+    expect(entries.some(entry => entry.name === 'design')).toBe(true);
+
+    const exportedSkillPath = path.join(
+      workspacePath,
+      '.agents',
+      'skills',
+      '.nimbalyst-generated',
+      'design',
+      'SKILL.md',
+    );
+    expect(fs.existsSync(exportedSkillPath)).toBe(true);
+    expect(fs.readFileSync(exportedSkillPath, 'utf-8')).toContain('/design');
+  });
+
+  it('rewrites Claude command argument placeholders into Codex-friendly guidance', async () => {
+    const commandsDir = path.join(workspacePath, '.claude', 'commands');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(commandsDir, 'investigate.md'),
+      `---
+description: Investigate before implementing
+argument-hint: [issue-or-problem]
+---
+
+# Investigate
+
+## User's Problem Description
+
+$ARGUMENTS
+`,
+      'utf-8',
+    );
+
+    const service = new AgentWorkflowService(workspacePath, {
+      userHomePath,
+      extensionDirectoriesLoader: async () => [],
+      nativeClaudePluginPathsLoader: async () => [],
+      releaseChannelLoader: () => 'stable',
+    });
+
+    await service.listEntries({ provider: 'openai-codex' });
+
+    const codexSkillPath = path.join(
+      workspacePath,
+      '.agents',
+      'skills',
+      '.nimbalyst-generated',
+      'investigate',
+      'SKILL.md',
+    );
+    const codexSkill = fs.readFileSync(codexSkillPath, 'utf-8');
+
+    expect(codexSkill).toContain('Important: treat the text after `/investigate` as the command arguments [issue-or-problem].');
+    expect(codexSkill).toContain('Use the invoking message text after `/investigate` as the command arguments [issue-or-problem].');
+    expect(codexSkill).not.toContain('$ARGUMENTS');
+  });
+
   it('imports legacy Claude plugins into the registry and exports command aliases for Codex', async () => {
     const pluginRoot = path.join(workspacePath, 'legacy-plugin');
     fs.mkdirSync(path.join(pluginRoot, '.claude-plugin'), { recursive: true });
@@ -235,6 +314,48 @@ Use this when the user needs a helper workflow.
     const codexEntries = await service.listEntries({ provider: 'openai-codex' });
     expect(codexEntries.some(entry => entry.name === 'legacy-tools-inspect')).toBe(true);
     expect(codexEntries.some(entry => entry.name === 'legacy-tools-helper')).toBe(true);
+  });
+
+  // NIM-845: a claude-code-cli session whose resolved `claude` is too old to
+  // accept `--plugin-dir` can't load extension Claude-plugins, so their namespaced
+  // commands (`legacy-tools:inspect`) won't resolve. The picker must not offer
+  // them — `excludePluginCommands` drops every `source: 'plugin'` entry while
+  // keeping built-in / project / user commands. A CLI that DOES support the flag
+  // (excludePluginCommands omitted/false) still sees them.
+  it('hides plugin (namespaced) commands when excludePluginCommands is set (unsupported CLI), keeps them otherwise', async () => {
+    const pluginRoot = path.join(workspacePath, 'legacy-plugin');
+    fs.mkdirSync(path.join(pluginRoot, '.claude-plugin'), { recursive: true });
+    fs.mkdirSync(path.join(pluginRoot, 'commands'), { recursive: true });
+
+    fs.writeFileSync(
+      path.join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'legacy-tools', version: '0.1.0', author: { name: 'Nimbalyst' } }, null, 2),
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(pluginRoot, 'commands', 'inspect.md'),
+      `---\ndescription: Inspect the current change\n---\n\nRead the diff.\n`,
+      'utf-8',
+    );
+
+    const service = new AgentWorkflowService(workspacePath, {
+      userHomePath,
+      extensionDirectoriesLoader: async () => [],
+      nativeClaudePluginPathsLoader: async () => [{ type: 'local', path: pluginRoot }],
+      releaseChannelLoader: () => 'stable',
+    });
+
+    // Supported CLI (flag omitted): the namespaced plugin command is offered.
+    const supported = await service.listEntries({ provider: 'claude-code-cli' });
+    expect(supported.some(entry => entry.name === 'legacy-tools:inspect')).toBe(true);
+
+    // Unsupported CLI: plugin-sourced commands are filtered out entirely.
+    const unsupported = await service.listEntries({
+      provider: 'claude-code-cli',
+      excludePluginCommands: true,
+    });
+    expect(unsupported.some(entry => entry.name === 'legacy-tools:inspect')).toBe(false);
+    expect(unsupported.every(entry => entry.source !== 'plugin')).toBe(true);
   });
 
   it('deduplicates concurrent Codex export syncs', async () => {

@@ -39,6 +39,7 @@ import type {
   InboxEventSourceKind,
   InboxEventPayload,
 } from '@nimbalyst/collab-protocol';
+import { appendSyncClientParams } from './syncClientInfo';
 
 // ============================================================================
 // Encryption Utilities
@@ -151,7 +152,7 @@ export class TeamSyncProvider {
       url = this.config.buildUrl(roomId);
     } else {
       const jwt = await this.config.getJwt();
-      url = `${serverUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`;
+      url = appendSyncClientParams(`${serverUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`);
     }
 
     const ws = new WebSocket(url);

@@ -32,6 +32,7 @@ import type {
   DocAwarenessBroadcastMessage,
   DocUpdateAckMessage,
 } from './documentSyncTypes';
+import { appendSyncClientParams } from './syncClientInfo';
 
 // ============================================================================
 // Base64 / Encryption Utilities
@@ -251,7 +252,7 @@ export class DocumentSyncProvider {
         url = this.config.buildUrl(roomId);
       } else {
         const jwt = await this.config.getJwt();
-        url = `${serverUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`;
+        url = appendSyncClientParams(`${serverUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`);
       }
     } catch (err) {
       console.error('[DocumentSync] Failed to build URL:', err);

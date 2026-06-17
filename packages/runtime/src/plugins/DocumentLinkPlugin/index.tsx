@@ -16,6 +16,8 @@ import { fuzzyFilterDocuments } from '../../utils/fuzzyMatch';
 import { MaterialSymbol } from "../../ui";
 import { $createEmbeddedFileNode } from '../../editor/plugins/EmbedPlugin/EmbeddedFileNode';
 import { isEmbeddableUrl } from '../../editor/plugins/EmbedPlugin/embeddableExtensions';
+import { useDocumentPath } from '../../DocumentPathContext';
+import { resolveDocumentLinkLookupPath } from './documentLinkPaths';
 
 const DOCUMENT_REFERENCE_STYLE_ID = 'document-reference-styles';
 
@@ -87,6 +89,7 @@ export function DocumentLinkPlugin({
   anchorElem,
 }: DocumentLinkPluginProps): JSX.Element {
   const [editor] = useLexicalComposerContext();
+  const { documentPath: currentDocumentPath } = useDocumentPath();
   const [queryString, setQueryString] = useState<string>('');
   const [documents, setDocuments] = useState<any[]>([]);
   const menuOpenRef = useRef(false);
@@ -137,9 +140,28 @@ export function DocumentLinkPlugin({
         }
       } catch {}
 
-      void documentService
-        .openDocument(documentId ?? '', { path: documentPath, name: documentName })
-        .catch(error => {
+      const workspacePath = (window as unknown as { __workspacePath?: string }).__workspacePath ?? null;
+      const resolvedPath = documentPath
+        ? resolveDocumentLinkLookupPath(documentPath, currentDocumentPath, workspacePath)
+        : undefined;
+
+      void (async () => {
+        const resolvedDoc = resolvedPath
+          ? await documentService.getDocumentByPath(resolvedPath)
+          : null;
+
+        if (resolvedDoc) {
+          await documentService.openDocument(resolvedDoc.id, {
+            path: resolvedDoc.path,
+          });
+          return;
+        }
+
+        await documentService.openDocument(resolvedPath ? '' : (documentId ?? ''), {
+          path: resolvedPath ?? documentPath,
+          name: resolvedPath ? undefined : documentName,
+        });
+      })().catch(error => {
           console.error('Failed to open document reference', error);
         });
     };
@@ -162,7 +184,7 @@ export function DocumentLinkPlugin({
       }
       return undefined;
     });
-  }, [editor, documentService]);
+  }, [currentDocumentPath, editor, documentService]);
 
   // Load documents only when menu opens, with cache
   const loadDocuments = useCallback(async () => {
@@ -258,7 +280,7 @@ export function DocumentLinkPlugin({
       const replacementNode = $createDocumentReferenceNode(
         doc.id,
         doc.name,
-        doc.path,
+        linkPath,
         doc.workspace
       );
 

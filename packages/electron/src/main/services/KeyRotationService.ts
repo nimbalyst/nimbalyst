@@ -43,7 +43,7 @@ import type {
   TrackerSyncResponseMessage,
   TrackerItemPayload,
 } from '@nimbalyst/runtime/sync';
-import { encryptTrackerPayload, decryptTrackerEnvelope } from '@nimbalyst/runtime/sync';
+import { encryptTrackerPayload, decryptTrackerEnvelope, appendSyncClientParams } from '@nimbalyst/runtime/sync';
 
 // ============================================================================
 // Types
@@ -239,7 +239,7 @@ async function wsRoundTrip<T>(
   timeoutMs = WS_TIMEOUT_MS
 ): Promise<T> {
   const wsUrl = serverUrl.replace(/^http/, 'ws');
-  const url = `${wsUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`;
+  const url = appendSyncClientParams(`${wsUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`);
 
   return new Promise<T>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -294,7 +294,7 @@ async function wsSendAndClose(
   ...messages: object[]
 ): Promise<void> {
   const wsUrl = serverUrl.replace(/^http/, 'ws');
-  const url = `${wsUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`;
+  const url = appendSyncClientParams(`${wsUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`);
 
   return new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -350,7 +350,7 @@ async function downloadDocumentState(
 ): Promise<DecryptedDocContent> {
   const roomId = `org:${orgId}:doc:${documentId}`;
   const wsUrl = serverUrl.replace(/^http/, 'ws');
-  const url = `${wsUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`;
+  const url = appendSyncClientParams(`${wsUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`);
 
   return new Promise<DecryptedDocContent>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -483,7 +483,7 @@ async function downloadTrackerItems(
 }> {
   const roomId = `org:${orgId}:tracker:${projectId}`;
   const wsUrl = serverUrl.replace(/^http/, 'ws');
-  const url = `${wsUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`;
+  const url = appendSyncClientParams(`${wsUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`);
 
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {

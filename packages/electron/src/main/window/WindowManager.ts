@@ -25,7 +25,7 @@ import { ExtensionLogService } from '../services/ExtensionLogService';
 import { getMcpConfigService } from '../mcpConfigServiceRef';
 import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
 import { addNimPreviewWorkspaceRoot } from '../protocols/nimPreviewProtocol';
-import { windows, windowStates, anyWindowReferencesWorkspace } from './windowState';
+import { windows, windowStates, anyWindowReferencesWorkspace, resolveDocumentServicePath } from './windowState';
 
 // Window management
 export { windows, windowStates };
@@ -109,22 +109,15 @@ function resolveDocumentServiceForEvent(event: IpcMainEvent | IpcMainInvokeEvent
         return null;
     }
     const state = windowStates.get(windowId);
-    // Support both 'workspace' and 'agentic-coding' modes
-    if (!state || !state.workspacePath) {
-        // console.log('[DocumentService] Window has no workspace path:', {
-        //     hasState: !!state,
-        //     mode: state?.mode,
-        //     hasPath: !!state?.workspacePath
-        // });
+    // Honor the project rail's active selection (issue #591). Reading the raw
+    // primary `workspacePath` here leaked another project's tracker items when
+    // the visible project differed from the window's startup project.
+    const path = resolveDocumentServicePath(state);
+    if (!path) {
         return null;
     }
-    // Both workspace and agentic-coding windows should have document service access
-    if (state.mode !== 'workspace' && state.mode !== 'agentic-coding') {
-        // console.log('[DocumentService] Window not in supported mode:', state.mode);
-        return null;
-    }
-    const service = documentServices.get(state.workspacePath);
-    // console.log('[DocumentService] Resolved service for path:', state.workspacePath, '-> found:', !!service);
+    const service = documentServices.get(path);
+    // console.log('[DocumentService] Resolved service for path:', path, '-> found:', !!service);
     return service ?? null;
 }
 

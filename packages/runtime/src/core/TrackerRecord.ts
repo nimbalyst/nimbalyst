@@ -6,7 +6,7 @@
  * No layer outside the schema may assume field names.
  */
 
-import type { TrackerIdentity, TrackerActivity, TrackerItem, TrackerItemSource } from './DocumentService';
+import type { TrackerIdentity, TrackerActivity, TrackerItem, TrackerItemSource, TrackerOrigin } from './DocumentService';
 import type { TrackerCommentEntry as TrackerComment } from '../sync/trackerProtocol';
 
 // ---------------------------------------------------------------------------
@@ -36,6 +36,8 @@ export interface TrackerRecordSystem {
   documentId?: string;
   activity?: TrackerActivity[];
   comments?: TrackerComment[];
+  /** Structured origin (how the item entered Nimbalyst; pointer to upstream for imports). */
+  origin?: TrackerOrigin;
 }
 
 export interface TrackerRecord {
@@ -67,6 +69,7 @@ const SYSTEM_KEYS = new Set([
   'documentId',
   'activity',
   'comments',
+  'origin',
   // also pulled from row-level columns, not from data JSONB
   'assigneeId',
   'reporterId',
@@ -148,6 +151,7 @@ export function trackerItemToRecord(item: TrackerItem): TrackerRecord {
       linkedCommitSha: item.linkedCommitSha,
       linkedCommits: item.linkedCommits,
       documentId: item.documentId,
+      origin: item.origin,
     },
     fields,
   };
@@ -216,6 +220,7 @@ export function trackerRecordToItem(record: TrackerRecord): TrackerItem {
     content: record.content,
     archived: record.archived,
     archivedAt: undefined, // not stored on TrackerRecord -- derive from activity if needed
+    origin: record.system.origin,
     source: record.source as TrackerItemSource,
     sourceRef: record.sourceRef,
     authorIdentity: record.system.authorIdentity,
@@ -301,6 +306,7 @@ export function dbRowToRecord(row: any): TrackerRecord {
       documentId: data.documentId || undefined,
       activity: data.activity || undefined,
       comments: data.comments || undefined,
+      origin: data.origin || undefined,
     },
     fields,
   };
@@ -339,6 +345,7 @@ export function recordToDbParams(record: TrackerRecord): {
   if (record.system.documentId) data.documentId = record.system.documentId;
   if (record.system.activity?.length) data.activity = record.system.activity;
   if (record.system.comments?.length) data.comments = record.system.comments;
+  if (record.system.origin) data.origin = record.system.origin;
   if (record.system.createdAt) data.created = record.system.createdAt;
   if (record.system.updatedAt) data.updated = record.system.updatedAt;
 

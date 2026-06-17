@@ -24,6 +24,9 @@ import {
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
 import { normalizeLegacyLabelValues } from '@nimbalyst/runtime/sync';
 import type { ElectronDocumentService } from '../../services/ElectronDocumentService';
+import { getTrackerImporterRegistry } from '../../services/tracker/TrackerImporterRegistry';
+import { getTrackerImportService } from '../../services/tracker/TrackerImportService';
+import { materializeTrackerTypeDef, removeTrackerTypeDef } from '../../services/tracker/trackerTypeDefStore';
 
 type McpToolResult = {
   content: Array<{ type: string; text?: string }>;
@@ -185,6 +188,21 @@ function appendActivity(
 }
 
 /**
+ * Read linkedTrackerItemIds from a raw ai_sessions.metadata column value.
+ * Whole-column JSON reads return a parsed object on PGLite but a raw JSON
+ * string on SQLite (NIM-829; see packages/electron/DATABASE.md), so every
+ * consumer must parse defensively or SQLite sees an empty list — which
+ * clobbered links on write and broadcast zero linked items to renderers.
+ */
+export function readLinkedTrackerItemIds(rawMetadata: unknown): string[] {
+  const metadata =
+    typeof rawMetadata === 'string'
+      ? JSON.parse(rawMetadata)
+      : (rawMetadata as Record<string, any>) ?? {};
+  return Array.isArray(metadata?.linkedTrackerItemIds) ? metadata.linkedTrackerItemIds : [];
+}
+
+/**
  * Create a bidirectional link between a tracker item and an AI session.
  * - Adds sessionId to tracker item's data.linkedSessions[]
  * - Adds trackerId to session's metadata.linkedTrackerItemIds[]
@@ -235,8 +253,7 @@ export async function createBidirectionalLink(
     [sessionId]
   );
   if (sessionResult.rows.length > 0) {
-    const metadata = sessionResult.rows[0].metadata ?? {};
-    const linkedTrackerItemIds: string[] = metadata.linkedTrackerItemIds || [];
+    const linkedTrackerItemIds = readLinkedTrackerItemIds(sessionResult.rows[0].metadata);
     if (!linkedTrackerItemIds.includes(trackerId)) {
       linkedTrackerItemIds.push(trackerId);
       await db.query(
@@ -305,10 +322,7 @@ export async function removeBidirectionalLink(
     [sessionId]
   );
   if (sessionResult.rows.length > 0) {
-    const metadata = sessionResult.rows[0].metadata ?? {};
-    const linkedTrackerItemIds: string[] = Array.isArray(metadata.linkedTrackerItemIds)
-      ? metadata.linkedTrackerItemIds
-      : [];
+    const linkedTrackerItemIds = readLinkedTrackerItemIds(sessionResult.rows[0].metadata);
     const nextLinkedTrackerItemIds = linkedTrackerItemIds.filter((linkedTrackerId) => linkedTrackerId !== trackerId);
     if (nextLinkedTrackerItemIds.length !== linkedTrackerItemIds.length) {
       const nextMetadata =
@@ -381,6 +395,14 @@ export function rowToTrackerItem(row: any): any {
     archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
     source: row.source || (row.document_path ? 'inline' : 'native'),
     sourceRef: row.source_ref || undefined,
+    // Structured origin (external-source importers). Must be surfaced as a
+    // top-level field, not left to fall into `customFields` below: the
+    // TrackerRecord conversion reads `item.origin` into `system.origin`, and
+    // the DB write-back only persists `data.origin` when `system.origin` is
+    // set. If origin sits in customFields instead, the first sync re-serialize
+    // rewrites `data` without it and the `data.origin.external.urn` index goes
+    // empty (imports then fail to resolve their own URN).
+    origin: data.origin || undefined,
     // Identity fields
     authorIdentity: data.authorIdentity || undefined,
     lastModifiedBy: data.lastModifiedBy || undefined,
@@ -896,6 +918,93 @@ export const trackerToolSchemas = [
       required: ["trackerId", "body"],
     },
   },
+  {
+    name: "tracker_importer_list",
+    description:
+      "List installed external-source importers (e.g. GitHub Issues), their URN scheme, the tracker types they import as, and whether the user is authenticated. Use before tracker_importer_search / tracker_import to discover available providers.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+  },
+  {
+    name: "tracker_importer_search",
+    description:
+      "Search importable items from an external source for one binding (e.g. a GitHub repo). Returns a page of lightweight entries (externalId, urn, url, title, state). Fetch the full body at import time via tracker_import.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        providerId: {
+          type: "string",
+          description: "Importer id from tracker_importer_list (e.g. 'github-issues')",
+        },
+        bindingId: {
+          type: "string",
+          description: "Binding id (e.g. 'owner/repo' for GitHub). If omitted, the importer's first binding is used.",
+        },
+        search: { type: "string", description: "Free-text search filter" },
+        state: {
+          type: "string",
+          description: "Item state filter: 'open' | 'closed' | 'all' (default 'open')",
+        },
+        limit: { type: "number", description: "Max items to return" },
+      },
+      required: ["providerId"],
+    },
+  },
+  {
+    name: "tracker_import",
+    description:
+      "Import one external item into the native tracker as an ordinary item that carries a back-link (origin) to its source. Creates a new item, or returns the existing one if this external item was already imported. Returns the local tracker id and URN.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        providerId: {
+          type: "string",
+          description: "Importer id (e.g. 'github-issues')",
+        },
+        externalId: {
+          type: "string",
+          description: "The provider's id for the item (e.g. a GitHub issue number, from tracker_importer_search)",
+        },
+        primaryType: {
+          type: "string",
+          description: "Tracker type to create as (e.g. 'bug', 'task'). Defaults to the importer's first allowed type.",
+        },
+      },
+      required: ["providerId", "externalId"],
+    },
+  },
+  {
+    name: "tracker_resnapshot",
+    description:
+      "Pull the latest from an imported item's external source and merge it conservatively: title/status update only if unchanged locally, labels union, and the body is flagged (never auto-overwritten) when upstream changed. Identify the item by its URN.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        urn: {
+          type: "string",
+          description: "External URN of the imported item, e.g. 'github://owner/repo#42'",
+        },
+      },
+      required: ["urn"],
+    },
+  },
+  {
+    name: "tracker_get_by_urn",
+    description:
+      "Resolve the local tracker item for an external URN (e.g. 'github://owner/repo#42'). Returns the item if it has been imported, else null. Use to check whether an external item already exists locally.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        urn: {
+          type: "string",
+          description: "External URN, e.g. 'github://owner/repo#42' or 'linear://NIM-123'",
+        },
+      },
+      required: ["urn"],
+    },
+  },
 ];
 
 export async function handleTrackerList(
@@ -1150,6 +1259,10 @@ export async function handleTrackerDefineType(
       fileName: args?.fileName,
     });
 
+    // Mirror into the DB so offline consumers (the `nim` CLI) can resolve this
+    // type's role->field map without the YAML file. Best-effort.
+    await materializeTrackerTypeDef(workspacePath, model, 'cli');
+
     return {
       content: [
         {
@@ -1208,11 +1321,20 @@ export async function handleTrackerDeleteType(
 
     const { getDatabase } = await import("../../database/initialize");
     const db = getDatabase();
+    // type_tags membership differs by backend: TEXT[] (`= ANY`) on PGLite vs a
+    // JSON-string column on SQLite (no ANY()). Branch so delete-type works on
+    // both — previously this query threw "no such function: ANY" on SQLite and
+    // tracker_delete_type was entirely non-functional there.
+    const isSqlite =
+      typeof (db as any).getEngine === 'function' && (db as any).getEngine() === 'sqlite';
+    const tagMembership = isSqlite
+      ? `EXISTS (SELECT 1 FROM json_each(type_tags) WHERE value = $2)`
+      : `$2 = ANY(type_tags)`;
     const usage = await db.query<{ count: number | string }>(
       `SELECT COUNT(*)::int AS count
        FROM tracker_items
        WHERE workspace = $1
-         AND (type = $2 OR $2 = ANY(type_tags))`,
+         AND (type = $2 OR ${tagMembership})`,
       [workspacePath, args.type]
     );
     const count = Number(usage.rows[0]?.count ?? 0);
@@ -1242,6 +1364,9 @@ export async function handleTrackerDeleteType(
         isError: true,
       };
     }
+
+    // Tombstone the materialized definition so the CLI stops resolving it.
+    await removeTrackerTypeDef(workspacePath, args.type);
 
     return {
       content: [
@@ -1443,7 +1568,14 @@ export async function handleTrackerCreate(
       : { mode: 'local' as const, scope: 'project' as const };
     const syncStatus = getInitialTrackerSyncStatus(syncPolicy);
 
-    const id = `${args.type}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    // Callers may supply an explicit id (e.g. external imports derive a
+    // deterministic, URN-based id so two clients importing the same upstream
+    // item converge on one row at the sync `ON CONFLICT (id)` layer instead of
+    // creating duplicates). Otherwise allocate the usual random id.
+    const id =
+      typeof args.id === 'string' && args.id.trim()
+        ? args.id.trim()
+        : `${args.type}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     // Resolve field names via schema roles so that fixed MCP args
     // (title, status, priority, etc.) are placed at the correct field name
@@ -1460,7 +1592,9 @@ export async function handleTrackerCreate(
       [priorityField]: args.priority || "medium",
       created: new Date().toISOString().split("T")[0],
       authorIdentity,
-      createdByAgent: true,
+      // Imports pass createdByAgent: false (the item is mirrored from upstream,
+      // not authored by the agent). MCP tool callers default to true.
+      createdByAgent: args.createdByAgent !== undefined ? args.createdByAgent : true,
     };
     if (Array.isArray(args.tags) && args.tags.length) data[rf('tags', 'tags')] = args.tags;
     if (args.description) data.description = args.description.replace(/\\n/g, '\n');
@@ -1494,6 +1628,26 @@ export async function handleTrackerCreate(
     // Record creation activity
     appendActivity(data, authorIdentity, 'created');
 
+    // Structured origin (external-source importers). Provenance lives entirely
+    // in data.origin (and the data.origin.external.urn index). The legacy
+    // `source` column stays 'native' for external imports on purpose: imported
+    // items ARE native DB items (no file backing), and code paths like
+    // handleTrackerUpdate treat source==='import' as file-backed. Only
+    // inline/frontmatter (genuinely file-backed) map onto the legacy column.
+    if (args.origin) {
+      data.origin = args.origin;
+    }
+    const originSource: string =
+      args.origin?.kind === 'inline'
+        ? 'inline'
+        : args.origin?.kind === 'frontmatter'
+          ? 'frontmatter'
+          : 'native';
+    const originSourceRef: string | null =
+      args.origin?.kind === 'inline' || args.origin?.kind === 'frontmatter'
+        ? args.origin.filePath
+        : null;
+
     // Build type_tags: always includes primary type + any additional tags
     const typeTags: string[] = [args.type];
     if (args.typeTags?.length) {
@@ -1515,8 +1669,8 @@ export async function handleTrackerCreate(
         id, type, type_tags, data, workspace, document_path, line_number,
         created, updated, last_indexed, sync_status,
         content, archived, source, source_ref
-      ) VALUES ($1, $2, $3, $4, $5, '', NULL, NOW(), NOW(), NOW(), $6, $7, FALSE, 'native', NULL)`,
-      [id, args.type, typeTags, JSON.stringify(data), workspacePath, syncStatus, contentJson]
+      ) VALUES ($1, $2, $3, $4, $5, '', NULL, NOW(), NOW(), NOW(), $6, $7, FALSE, $8, $9)`,
+      [id, args.type, typeTags, JSON.stringify(data), workspacePath, syncStatus, contentJson, originSource, originSourceRef]
     );
 
     let createdRow = await resolveTrackerRowByReference(db, id, workspacePath);
@@ -1623,7 +1777,7 @@ export async function handleTrackerCreate(
         `SELECT metadata FROM ai_sessions WHERE id = $1`,
         [sessionId]
       );
-      const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
+      const linkedIds = readLinkedTrackerItemIds(sessionResult.rows[0]?.metadata);
       await notifySessionLinkedTrackerChanged(sessionId, linkedIds);
     }
 
@@ -1885,7 +2039,7 @@ export async function handleTrackerUpdate(
               `SELECT metadata FROM ai_sessions WHERE id = $1`,
               [sessionId]
             );
-            const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
+            const linkedIds = readLinkedTrackerItemIds(sessionResult.rows[0]?.metadata);
             await notifySessionLinkedTrackerChanged(sessionId, linkedIds);
           }
         }
@@ -2008,6 +2162,9 @@ export async function handleTrackerUpdate(
       }
       if (args.labels !== undefined) { data.labels = args.labels; }
       if (args.linkedCommitSha !== undefined) { data.linkedCommitSha = args.linkedCommitSha; }
+      // Structured origin refresh (external-source re-snapshot). Merged into the
+      // data JSONB so the source chip + URN index stay current.
+      if (args.origin !== undefined) { data.origin = args.origin; }
       if (args.archived !== undefined) {
         changes.archived = { from: row.archived ?? false, to: args.archived };
       }
@@ -2155,7 +2312,7 @@ export async function handleTrackerUpdate(
             `SELECT metadata FROM ai_sessions WHERE id = $1`,
             [sessionId]
           );
-          const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
+          const linkedIds = readLinkedTrackerItemIds(sessionResult.rows[0]?.metadata);
           await notifySessionLinkedTrackerChanged(sessionId, linkedIds);
         }
       }
@@ -2336,7 +2493,7 @@ export async function handleTrackerLinkSession(
         `SELECT metadata FROM ai_sessions WHERE id = $1`,
         [targetSessionId]
       );
-      const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
+      const linkedIds = readLinkedTrackerItemIds(sessionResult.rows[0]?.metadata);
       await notifySessionLinkedTrackerChanged(targetSessionId, linkedIds);
 
       const structured = {
@@ -2454,7 +2611,7 @@ export async function handleTrackerUnlinkSession(
         [targetSessionId]
       );
       if (sessionResult.rows.length > 0) {
-        const linkedIds = sessionResult.rows[0]?.metadata?.linkedTrackerItemIds || [];
+        const linkedIds = readLinkedTrackerItemIds(sessionResult.rows[0]?.metadata);
         await notifySessionLinkedTrackerChanged(targetSessionId, linkedIds);
       }
 
@@ -2548,8 +2705,7 @@ export async function handleTrackerLinkFile(
       };
     }
 
-    const metadata = sessionResult.rows[0].metadata ?? {};
-    const linkedTrackerItemIds: string[] = metadata.linkedTrackerItemIds || [];
+    const linkedTrackerItemIds = readLinkedTrackerItemIds(sessionResult.rows[0].metadata);
     if (!linkedTrackerItemIds.includes(fileRef)) {
       linkedTrackerItemIds.push(fileRef);
       await db.query(
@@ -2684,6 +2840,167 @@ export async function handleTrackerAddComment(
     console.error("[MCP Server] tracker_add_comment failed:", error);
     return {
       content: [{ type: "text", text: `Error adding comment: ${error instanceof Error ? error.message : String(error)}` }],
+      isError: true,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// External-source importers
+// ---------------------------------------------------------------------------
+
+export async function handleTrackerImporterList(
+  _args: any,
+  workspacePath: string | undefined
+): Promise<McpToolResult> {
+  try {
+    if (!workspacePath) {
+      return { content: [{ type: "text", text: "Error: No workspace path available." }], isError: true };
+    }
+    const importers = await getTrackerImporterRegistry().listImporters(workspacePath);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ importers }, null, 2) }],
+      isError: false,
+    };
+  } catch (error) {
+    return {
+      content: [{ type: "text", text: `Error listing importers: ${error instanceof Error ? error.message : String(error)}` }],
+      isError: true,
+    };
+  }
+}
+
+export async function handleTrackerImporterSearch(
+  args: any,
+  workspacePath: string | undefined
+): Promise<McpToolResult> {
+  try {
+    if (!workspacePath) {
+      return { content: [{ type: "text", text: "Error: No workspace path available." }], isError: true };
+    }
+    const registry = getTrackerImporterRegistry();
+    const bindings = await registry.listBindings(workspacePath, args.providerId);
+    if (bindings.length === 0) {
+      return {
+        content: [{ type: "text", text: `Importer '${args.providerId}' has no configured bindings. Configure one in its settings panel first.` }],
+        isError: true,
+      };
+    }
+    const binding = args.bindingId
+      ? bindings.find((b) => b.id === args.bindingId)
+      : bindings[0];
+    if (!binding) {
+      return {
+        content: [{ type: "text", text: `Binding '${args.bindingId}' not found for importer '${args.providerId}'. Available: ${bindings.map((b) => b.id).join(', ')}` }],
+        isError: true,
+      };
+    }
+    const page = await registry.listItems(workspacePath, args.providerId, binding, {
+      search: args.search,
+      state: args.state,
+      limit: args.limit,
+    });
+    return {
+      content: [{ type: "text", text: JSON.stringify({ binding: binding.id, ...page }, null, 2) }],
+      isError: false,
+    };
+  } catch (error) {
+    return {
+      content: [{ type: "text", text: `Error searching importable items: ${error instanceof Error ? error.message : String(error)}` }],
+      isError: true,
+    };
+  }
+}
+
+export async function handleTrackerImport(
+  args: any,
+  workspacePath: string | undefined
+): Promise<McpToolResult> {
+  try {
+    if (!workspacePath) {
+      return { content: [{ type: "text", text: "Error: No workspace path available." }], isError: true };
+    }
+    const result = await getTrackerImportService().runImport({
+      workspacePath,
+      providerId: args.providerId,
+      externalId: String(args.externalId),
+      primaryType: args.primaryType,
+    });
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          id: result.id,
+          urn: result.urn,
+          created: result.created,
+          summary: result.created
+            ? `Imported ${result.urn} as ${result.id}`
+            : `${result.urn} was already imported as ${result.id}`,
+        }, null, 2),
+      }],
+      isError: false,
+    };
+  } catch (error) {
+    return {
+      content: [{ type: "text", text: `Error importing item: ${error instanceof Error ? error.message : String(error)}` }],
+      isError: true,
+    };
+  }
+}
+
+export async function handleTrackerResnapshot(
+  args: any,
+  workspacePath: string | undefined
+): Promise<McpToolResult> {
+  try {
+    if (!workspacePath) {
+      return { content: [{ type: "text", text: "Error: No workspace path available." }], isError: true };
+    }
+    const result = await getTrackerImportService().resnapshot({ workspacePath, urn: args.urn });
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          id: result.id,
+          urn: result.urn,
+          titleUpdated: result.titleUpdated,
+          statusUpdated: result.statusUpdated,
+          bodyChanged: result.bodyChanged,
+          summary: result.bodyChanged
+            ? `Re-snapshotted ${result.urn}; upstream body changed and is flagged for review.`
+            : `Re-snapshotted ${result.urn}.`,
+        }, null, 2),
+      }],
+      isError: false,
+    };
+  } catch (error) {
+    return {
+      content: [{ type: "text", text: `Error re-snapshotting: ${error instanceof Error ? error.message : String(error)}` }],
+      isError: true,
+    };
+  }
+}
+
+export async function handleTrackerGetByUrn(
+  args: any,
+  workspacePath: string | undefined
+): Promise<McpToolResult> {
+  try {
+    if (!workspacePath) {
+      return { content: [{ type: "text", text: "Error: No workspace path available." }], isError: true };
+    }
+    const id = await getTrackerImporterRegistry().findLocalIdByUrn(workspacePath, args.urn);
+    if (!id) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ found: false, urn: args.urn }, null, 2) }],
+        isError: false,
+      };
+    }
+    // Delegate to tracker_get for the full item rendering.
+    return handleTrackerGet({ id }, workspacePath);
+  } catch (error) {
+    return {
+      content: [{ type: "text", text: `Error resolving URN: ${error instanceof Error ? error.message : String(error)}` }],
       isError: true,
     };
   }

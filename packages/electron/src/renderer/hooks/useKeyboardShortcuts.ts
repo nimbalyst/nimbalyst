@@ -5,7 +5,9 @@ import type { AgentModeRef } from '../components/AgentMode';
 import {
   toggleTerminalPanelAtom,
   closeTerminalPanelAtom,
+  toggleCliTerminalDrawerAtom,
 } from '../store/atoms/terminals';
+import { activeSessionIdAtom, sessionProviderAtom } from '../store/atoms/sessions';
 import { setViewModeAtom, viewModeAtom } from '../store/atoms/agentMode';
 import { historyDialogFileAtom } from '../store';
 import { store } from '@nimbalyst/runtime/store';
@@ -160,6 +162,17 @@ export function useKeyboardShortcuts({
         e.preventDefault();
         e.stopPropagation();
         toggleTerminalPanel();
+      }
+      // Ctrl+Shift+` toggles the CLI raw-terminal drawer for the active
+      // claude-code-cli session (NIM-820).
+      if (workspaceMode && e.code === 'Backquote' && e.shiftKey && !e.altKey &&
+          e.ctrlKey && !e.metaKey) {
+        const activeSessionId = store.get(activeSessionIdAtom);
+        if (activeSessionId && store.get(sessionProviderAtom(activeSessionId)) === 'claude-code-cli') {
+          e.preventDefault();
+          e.stopPropagation();
+          store.set(toggleCliTerminalDrawerAtom, activeSessionId);
+        }
       }
       // Cmd+Shift+K for Kanban view (switch to agent mode + kanban, or toggle if already there)
       if (workspaceMode && isAppModifier && e.shiftKey && e.key === 'k') {

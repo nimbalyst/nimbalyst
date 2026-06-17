@@ -173,6 +173,13 @@ export interface TrackerPayloadSystem {
   linkedCommits?: Array<{ sha: string; message: string; sessionId?: string; timestamp: string }>;
   /** Body document ID, if the body is hosted in a DocumentRoom. */
   documentId?: string;
+  /**
+   * Structured origin (how the item entered Nimbalyst; for imports, a pointer
+   * back to the upstream source). LWW per `syncId`. Optional — older clients
+   * omit it and newer clients tolerate its absence. Imported items sync like
+   * any other item; only the importer owner can re-snapshot (auth is local).
+   */
+  origin?: TrackerOrigin;
   /** Client-asserted creation timestamp (ms). */
   createdAt?: string;
   /** Client-asserted last-update timestamp (ms). Server clock is `syncId`. */
@@ -184,7 +191,7 @@ export interface TrackerPayloadSystem {
  * the in-memory `TrackerItem`/`TrackerRecord` shapes share one source
  * of truth (snapshotted email + display name + git fallbacks).
  */
-import type { TrackerIdentity } from '../core/DocumentService';
+import type { TrackerIdentity, TrackerOrigin } from '../core/DocumentService';
 export type { TrackerIdentity };
 
 /**

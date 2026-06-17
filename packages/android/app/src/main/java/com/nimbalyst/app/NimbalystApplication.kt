@@ -7,6 +7,7 @@ import com.nimbalyst.app.notifications.NotificationManager
 import com.nimbalyst.app.pairing.PairingStore
 import com.nimbalyst.app.analytics.AnalyticsManager
 import com.nimbalyst.app.sync.SyncManager
+import com.nimbalyst.app.sync.WebSocketClient
 import com.nimbalyst.app.transcript.TranscriptWebViewPool
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,6 +49,11 @@ class NimbalystApplication : Application() {
         super.onCreate()
         AnalyticsManager.initialize(this)
         TranscriptWebViewPool.warmup(this)
+        // Label every sync WebSocket connection with this build's version so the
+        // server can attribute connect/disconnect telemetry to platform + version.
+        WebSocketClient.appVersion = runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        }.getOrNull()
     }
 
     override fun onTerminate() {

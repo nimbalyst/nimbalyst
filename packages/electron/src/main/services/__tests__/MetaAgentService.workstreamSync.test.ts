@@ -54,6 +54,11 @@ vi.mock('../metaAgentMessageText', () => ({
   extractMessageText: vi.fn(),
   extractUserPrompts: vi.fn(),
 }));
+// NIM-828: MetaAgentService statically imports the CLI launcher singleton (to wire
+// the meta-agent port); mock it so node-pty/electron-app don't enter the graph.
+vi.mock('../ai/claudeCliLauncherSingleton', () => ({
+  ClaudeCliLauncherConfig: { setMetaAgentServerPort: vi.fn() },
+}));
 
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { MetaAgentService } from '../MetaAgentService';

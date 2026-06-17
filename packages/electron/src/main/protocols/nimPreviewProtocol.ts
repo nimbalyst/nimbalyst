@@ -7,7 +7,9 @@
  * types while still being workspace-scoped.
  *
  * URL shape:
- *   `nim-preview://<base64url-workspace-root>@workspace/<relative-path>`
+ *   `nim-preview://<hex-workspace-root>/<relative-path>`
+ * (see `encodeNimPreviewUrl` for why the root lives in the host, and the
+ * decoder for the two legacy `workspace`-host forms still accepted)
  *
  * The handler decodes the workspace root, resolves the path within it, and
  * only serves the file if:
@@ -23,12 +25,13 @@
  * to for in-app HTML preview.
  */
 
-import { protocol, net } from 'electron';
+import { protocol, net, type Session } from 'electron';
 import { realpath } from 'fs/promises';
 import { resolve, sep, extname, join } from 'path';
 import { pathToFileURL } from 'url';
 
 export const NIM_PREVIEW_SCHEME = 'nim-preview';
+/** Host of the two legacy URL forms; current URLs carry the hex root as host. */
 export const NIM_PREVIEW_HOST = 'workspace';
 
 /**
@@ -89,60 +92,113 @@ export function getNimPreviewWorkspaceRoots(): string[] {
 }
 
 /**
- * Encode an absolute workspace root + relative file path into a preview URL.
+ * Encode an absolute workspace root + relative file path into a preview URL:
+ *   `nim-preview://<hex-workspace-root>/<relative-path>`
  *
- * The workspace root is stored in the URL username so root-relative asset
- * paths preserve it. Example:
- *   base document: `nim-preview://<root>@workspace/site/index.html`
- *   `<script src="/app.js">` resolves to
- *   `nim-preview://<root>@workspace/app.js`
+ * The workspace root is the URL *host*, so the page's origin itself carries
+ * it and every asset reference style resolves correctly: page-relative
+ * (`./app.js`) keeps the path, root-relative (`/app.js`) resolves against
+ * the origin -- which is the root.
  *
- * Relative paths continue to work normally because the relative path is
- * appended raw (after URL-encoding each segment).
+ * Hex (not base64url) because URL hosts are case-normalized to lowercase by
+ * Chromium's canonicalizer; base64url is case-sensitive and would corrupt.
+ *
+ * The original design carried the root in the URL *username*
+ * (`nim-preview://<root>@workspace/<path>`). That format is dead on
+ * Electron 41 (issue #612): `protocol.handle` strips credentials before the
+ * handler sees the URL, partitioned sessions refuse to navigate to
+ * credentialed URLs at all (ERR_FAILED), and no Referer header is sent on
+ * custom-scheme requests that could recover the root. The decoder keeps
+ * accepting the old `workspace`-host forms for URLs persisted before the
+ * switch.
  */
 export function encodeNimPreviewUrl(workspaceRoot: string, relativePath: string): string {
-  const encodedRoot = Buffer.from(resolve(workspaceRoot), 'utf8').toString('base64url');
+  const encodedRoot = Buffer.from(resolve(workspaceRoot), 'utf8').toString('hex');
   const cleaned = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
   const segments = cleaned.split('/').map((s) => encodeURIComponent(s));
-  return `${NIM_PREVIEW_SCHEME}://${encodedRoot}@${NIM_PREVIEW_HOST}/${segments.join('/')}`;
+  return `${NIM_PREVIEW_SCHEME}://${encodedRoot}/${segments.join('/')}`;
 }
 
-function decodePreviewRequest(url: URL): { encodedRoot: string; relativePath: string } | null {
-  if (url.host !== NIM_PREVIEW_HOST) {
-    return null;
-  }
+function decodeRelativePath(pathname: string): string {
+  return pathname
+    .replace(/^\/+/, '')
+    .split('/')
+    .filter(Boolean)
+    .map((s) => decodeURIComponent(s))
+    .join('/');
+}
 
-  // New format: nim-preview://<encoded-root>@workspace/<rel-path>
-  if (url.username) {
-    const relativePath = url.pathname
-      .replace(/^\/+/, '')
-      .split('/')
-      .filter(Boolean)
-      .map((s) => decodeURIComponent(s))
-      .join('/');
+function decodePreviewRequest(url: URL): { workspaceRoot: string; relativePath: string } | null {
+  // Current format: nim-preview://<hex-root>/<rel-path>
+  if (url.host !== NIM_PREVIEW_HOST) {
+    if (!/^[0-9a-f]+$/.test(url.host) || url.host.length % 2 !== 0) {
+      return null;
+    }
+    const relativePath = decodeRelativePath(url.pathname);
     if (!relativePath) return null;
     return {
-      encodedRoot: decodeURIComponent(url.username),
+      workspaceRoot: Buffer.from(url.host, 'hex').toString('utf8'),
       relativePath,
     };
   }
 
-  // Backward compatibility with the original path-prefixed form:
-  // nim-preview://workspace/<encoded-root>/<rel-path>
+  // Legacy username form: nim-preview://<base64url-root>@workspace/<rel-path>
+  if (url.username) {
+    const relativePath = decodeRelativePath(url.pathname);
+    if (!relativePath) return null;
+    return {
+      workspaceRoot: decodeBase64UrlRoot(decodeURIComponent(url.username)),
+      relativePath,
+    };
+  }
+
+  // Legacy path-prefixed form: nim-preview://workspace/<base64url-root>/<rel-path>
   const trimmed = url.pathname.replace(/^\/+/, '');
   const firstSlash = trimmed.indexOf('/');
   if (firstSlash < 0) {
     return null;
   }
   return {
-    encodedRoot: decodeURIComponent(trimmed.substring(0, firstSlash)),
-    relativePath: trimmed
-      .substring(firstSlash + 1)
-      .split('/')
-      .filter(Boolean)
-      .map((s) => decodeURIComponent(s))
-      .join('/'),
+    workspaceRoot: decodeBase64UrlRoot(decodeURIComponent(trimmed.substring(0, firstSlash))),
+    relativePath: decodeRelativePath(trimmed.substring(firstSlash + 1)),
   };
+}
+
+function decodeBase64UrlRoot(encodedRoot: string): string {
+  return Buffer.from(encodedRoot, 'base64url').toString('utf8');
+}
+
+/**
+ * Windows filesystems are case-insensitive and drive-letter casing varies
+ * between path sources (`D:\` from the open-folder dialog vs `d:\` from an
+ * AI-agent-typed tool argument), so path comparisons there must ignore case.
+ * Issue #612: in-workspace files were rejected over exactly this divergence.
+ */
+const PATHS_CASE_INSENSITIVE = process.platform === 'win32';
+
+/** Compare two resolved absolute paths for equality. Exposed for unit tests. */
+export function previewPathsEqual(
+  a: string,
+  b: string,
+  caseInsensitive: boolean = PATHS_CASE_INSENSITIVE,
+): boolean {
+  return caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+/**
+ * True when resolved absolute `candidate` is `root` itself or strictly under
+ * it (directory-boundary match, never substring). Exposed for unit tests.
+ */
+export function previewPathInsideRoot(
+  root: string,
+  candidate: string,
+  caseInsensitive: boolean = PATHS_CASE_INSENSITIVE,
+): boolean {
+  if (previewPathsEqual(candidate, root, caseInsensitive)) return true;
+  const prefix = root + sep;
+  return caseInsensitive
+    ? candidate.toLowerCase().startsWith(prefix.toLowerCase())
+    : candidate.startsWith(prefix);
 }
 
 /**
@@ -163,7 +219,7 @@ export function validateNimPreviewPath(
 
   let matched = false;
   for (const root of roots) {
-    if (resolve(root) === rootResolved) {
+    if (previewPathsEqual(resolve(root), rootResolved)) {
       matched = true;
       break;
     }
@@ -176,7 +232,7 @@ export function validateNimPreviewPath(
   if (segments.includes('..')) return null;
 
   const candidate = resolve(join(rootResolved, ...segments));
-  if (candidate !== rootResolved && !candidate.startsWith(rootResolved + sep)) {
+  if (!previewPathInsideRoot(rootResolved, candidate)) {
     return null;
   }
 
@@ -203,44 +259,58 @@ export function registerNimPreviewSchemeAsPrivileged(): void {
   ]);
 }
 
-export function registerNimPreviewProtocolHandler(): void {
-  protocol.handle(NIM_PREVIEW_SCHEME, async (request) => {
-    try {
-      const url = new URL(request.url);
-      const parsed = decodePreviewRequest(url);
-      if (!parsed) {
-        return new Response('Bad request', { status: 400 });
-      }
-      const { encodedRoot, relativePath } = parsed;
-
-      let workspaceRoot: string;
-      try {
-        workspaceRoot = Buffer.from(encodedRoot, 'base64url').toString('utf8');
-      } catch {
-        return new Response('Bad request', { status: 400 });
-      }
-
-      const resolvedPath = validateNimPreviewPath(workspaceRoot, relativePath, allowedWorkspaceRoots);
-      if (!resolvedPath) {
-        return new Response('Forbidden', { status: 403 });
-      }
-
-      let real: string;
-      try {
-        real = await realpath(resolvedPath);
-      } catch {
-        return new Response('Not found', { status: 404 });
-      }
-
-      const realRoot = await realpath(resolve(workspaceRoot)).catch(() => resolve(workspaceRoot));
-      if (real !== realRoot && !real.startsWith(realRoot + sep)) {
-        return new Response('Forbidden', { status: 403 });
-      }
-
-      return net.fetch(pathToFileURL(real).toString());
-    } catch (err) {
-      console.error('[nim-preview] handler error:', err);
-      return new Response('Internal error', { status: 500 });
+async function handleNimPreviewRequest(request: Request): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const parsed = decodePreviewRequest(url);
+    if (!parsed) {
+      return new Response('Bad request', { status: 400 });
     }
-  });
+    const { workspaceRoot, relativePath } = parsed;
+
+    const resolvedPath = validateNimPreviewPath(workspaceRoot, relativePath, allowedWorkspaceRoots);
+    if (!resolvedPath) {
+      return new Response('Forbidden', { status: 403 });
+    }
+
+    let real: string;
+    try {
+      real = await realpath(resolvedPath);
+    } catch {
+      return new Response('Not found', { status: 404 });
+    }
+
+    const realRoot = await realpath(resolve(workspaceRoot)).catch(() => resolve(workspaceRoot));
+    if (!previewPathInsideRoot(realRoot, real)) {
+      return new Response('Forbidden', { status: 403 });
+    }
+
+    return net.fetch(pathToFileURL(real).toString());
+  } catch (err) {
+    console.error('[nim-preview] handler error:', err);
+    return new Response('Internal error', { status: 500 });
+  }
+}
+
+export function registerNimPreviewProtocolHandler(): void {
+  protocol.handle(NIM_PREVIEW_SCHEME, handleNimPreviewRequest);
+}
+
+const sessionsWithHandler = new WeakSet<Session>();
+
+/**
+ * `protocol.handle` above only covers the default session. WebContentsViews
+ * created from a custom partition (BrowserSessionService) get their own
+ * session where the scheme would otherwise be unhandled -- blank preview on
+ * macOS, and on Windows Chromium hands the unknown scheme to the OS, which
+ * shows the "look for an app in the Store" popup (issue #612). Every session
+ * that will navigate to nim-preview:// must be registered here.
+ */
+export function ensureNimPreviewProtocolForSession(ses: Session): void {
+  if (sessionsWithHandler.has(ses)) return;
+  sessionsWithHandler.add(ses);
+  // Guards the default session (registered via registerNimPreviewProtocolHandler):
+  // handle() throws on an already-handled scheme.
+  if (ses.protocol.isProtocolHandled(NIM_PREVIEW_SCHEME)) return;
+  ses.protocol.handle(NIM_PREVIEW_SCHEME, handleNimPreviewRequest);
 }

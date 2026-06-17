@@ -215,3 +215,13 @@ packages/android/app/google-services.json
 # Generated bundle / packaged extension artifact
 packages/electron/index.js
 packages/browser-extension/nimbalyst-web-clipper.zip
+# Built-in extensions ship via build:extensions + electron-builder, not as committed .nimext blobs
+packages/electron/resources/bundled-extensions/*.nimext
+
+# accidentally-tracked SQLite caches
+packages/electron/data/*.db
+packages/electron/memories.db
+
+# Local RAG/memory-tool artifacts (SQLite stores + caches created in the cwd)
+memories.db
+.rag-cache/

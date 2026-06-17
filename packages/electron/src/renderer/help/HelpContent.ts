@@ -231,6 +231,14 @@ export const HelpContent: Record<string, HelpEntry> = {
     title: 'Select AI Model',
     body: 'Choose which AI model to use. Different models have different capabilities and speeds.',
   },
+  'model-picker-provider-claude-code': {
+    title: 'Claude Agent (Claude Code Based)',
+    body: 'The in-app agent built on Claude Code with full Nimbalyst integration: it sees your active document and selection, renders the rich inline transcript, and tracks every file it edits. Uses your configured Anthropic API key.',
+  },
+  'model-picker-provider-claude-code-cli': {
+    title: 'Claude Code CLI (Terminal Mode)',
+    body: 'Runs the genuine claude terminal binary in an embedded terminal, billed to your Claude subscription. You get native CLI behavior — its slash commands and TUI — in the Raw terminal drawer, while Nimbalyst mirrors the conversation into the rich transcript.',
+  },
   'action-prompts-dropdown': {
     title: 'Action Prompts',
     body: 'Reusable prompts you define in nimbalyst-local/ai-actions.md. Picking one inserts its body into the draft so you can tweak it before sending.',

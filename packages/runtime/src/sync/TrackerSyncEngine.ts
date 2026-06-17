@@ -48,6 +48,7 @@ import type {
   TrackerTransactionRow,
 } from './trackerProtocol';
 import { SYNC_ID_INITIAL, buildTrackerRoomId } from './trackerProtocol';
+import { appendSyncClientParams } from './syncClientInfo';
 import {
   encryptTrackerPayload,
   decryptTrackerEnvelope,
@@ -268,7 +269,7 @@ export class TrackerSyncEngine {
         url = this.config.buildUrl(roomId);
       } else {
         const jwt = await this.config.getJwt();
-        url = `${this.config.serverUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`;
+        url = appendSyncClientParams(`${this.config.serverUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`);
       }
     } catch (err) {
       this.connecting = false;

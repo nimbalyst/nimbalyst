@@ -14,3 +14,13 @@ export * from './providers/OpenCodeProvider';
 export * from './providers/CopilotCLIProvider';
 export * from './utils/errorDetection';
 export * from './preferredAgentLanguageConfig';
+export { McpConfigService } from './services/McpConfigService';
+export type { McpConfigServiceDeps } from './services/McpConfigService';
+
+// Meta-agent persona builder. Re-exported here (rather than from the root
+// barrel which would collide with `buildSystemPrompt`) so the electron-main
+// extension-agent path can deliver the SAME persona text the built-in
+// providers (claude-code, openai-codex) use. Keeping the source shared means
+// the gemini extension and claude-code never drift.
+export { buildMetaAgentSystemPrompt, buildDevAgentSystemPrompt } from '../prompt';
+export type { MetaAgentWorkflowPreset } from '../prompt';

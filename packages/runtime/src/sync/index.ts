@@ -54,6 +54,13 @@ export type {
 export { createCollabV3Sync } from './CollabV3Sync';
 
 export {
+  setSyncClientInfo,
+  getSyncClientInfo,
+  appendSyncClientParams,
+  type SyncClientInfo,
+} from './syncClientInfo';
+
+export {
   createSyncedSessionStore,
   createMessageSyncHandler,
   type SyncedSessionStoreOptions,

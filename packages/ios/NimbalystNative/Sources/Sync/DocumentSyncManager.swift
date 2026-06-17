@@ -154,6 +154,40 @@ public final class DocumentSyncManager: ObservableObject {
         }
     }
 
+    // MARK: - On-Demand Fetch
+
+    /// Resolve a document by relative path, ensuring it syncs to this device if
+    /// it isn't here yet. Used when a user taps a transcript link for a doc the
+    /// session just created: viewing a transcript does NOT connect us to that
+    /// project's sync room, so the doc may never have arrived. Connecting sends a
+    /// sync request that pulls any server docs we're missing; we then poll the
+    /// local DB until the doc lands or we time out.
+    ///
+    /// Returns the document if it resolves within `timeout`, else nil.
+    public func awaitDocument(
+        projectId: String,
+        relativePath: String,
+        timeout: TimeInterval = 8.0
+    ) async -> SyncedDocument? {
+        // Fast path: already synced locally.
+        if let doc = try? database.document(forProject: projectId, relativePath: relativePath) {
+            return doc
+        }
+
+        // Connecting triggers sendSyncRequest -> server returns missing docs as
+        // newFiles, which get upserted into the DB. Idempotent if already connected.
+        connectProject(projectId)
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 300_000_000) // 300ms
+            if let doc = try? database.document(forProject: projectId, relativePath: relativePath) {
+                return doc
+            }
+        }
+        return try? database.document(forProject: projectId, relativePath: relativePath)
+    }
+
     // MARK: - Sync Request
 
     /// Send initial sync request with manifest of locally cached documents.

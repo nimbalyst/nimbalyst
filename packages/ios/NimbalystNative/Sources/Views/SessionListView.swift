@@ -628,6 +628,9 @@ public struct SessionListView: View {
             }
         }
         .disabled(isCreatingSession)
+        .onReceive(NotificationCenter.default.publisher(for: .init("MetaAgentEnabledSynced"))) { _ in
+            metaAgentEnabled = FeaturePreferences.metaAgentEnabled
+        }
     }
 
     // MARK: - Session List Item View

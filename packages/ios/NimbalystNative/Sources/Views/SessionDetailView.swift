@@ -1008,31 +1008,34 @@ public struct SessionDetailView: View {
 
         logger.info("handleOpenFile: relativePath = \(relativePath)")
 
-        // Look up the synced document by relative path
-        do {
-            let document = try db.writer.read { db in
-                try SyncedDocument
-                    .filter(SyncedDocument.Columns.projectId == projectId)
-                    .filter(SyncedDocument.Columns.relativePath == relativePath)
-                    .fetchOne(db)
-            }
+        // Fast path: the doc is already synced to this device -- open immediately.
+        if let document = try? db.document(forProject: projectId, relativePath: relativePath) {
+            logger.info("handleOpenFile: found document id=\(document.id), title=\(document.title)")
+            fileSheetDocument = document
+            return
+        }
 
-            if let document {
-                logger.info("handleOpenFile: found document id=\(document.id), title=\(document.title)")
-                fileSheetDocument = document
-            } else {
-                // Debug: list all synced docs for this project to see what's available
-                let allDocs = try db.writer.read { db in
-                    try SyncedDocument
-                        .filter(SyncedDocument.Columns.projectId == projectId)
-                        .fetchAll(db)
+        // Miss: the session likely just created this doc and we've never connected
+        // to its sync room (viewing a transcript doesn't connect us). Ask the sync
+        // manager to connect + pull it, showing a syncing state while we wait.
+        guard let docSync = appState.documentSyncManager else {
+            withAnimation { fileNotAvailableToast = "This file is not synced to this device" }
+            return
+        }
+
+        withAnimation { fileNotAvailableToast = "Syncing this file…" }
+        Task {
+            let document = await docSync.awaitDocument(projectId: projectId, relativePath: relativePath)
+            await MainActor.run {
+                if let document {
+                    logger.info("handleOpenFile: resolved document id=\(document.id) after sync")
+                    withAnimation { fileNotAvailableToast = nil }
+                    fileSheetDocument = document
+                } else {
+                    logger.info("handleOpenFile: doc '\(relativePath)' did not sync in time")
+                    withAnimation { fileNotAvailableToast = "This file is not synced to this device" }
                 }
-                logger.info("handleOpenFile: no match for '\(relativePath)'. Available docs (\(allDocs.count)): \(allDocs.map { $0.relativePath }.joined(separator: ", "))")
-                withAnimation { fileNotAvailableToast = "This file is not synced to this device" }
             }
-        } catch {
-            logger.error("handleOpenFile: DB error: \(error.localizedDescription)")
-            withAnimation { fileNotAvailableToast = "Could not look up file" }
         }
     }
 

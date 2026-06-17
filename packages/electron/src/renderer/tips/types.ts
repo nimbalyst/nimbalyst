@@ -41,8 +41,15 @@ export interface TipTrigger {
 export interface TipAction {
   /** Button label */
   label: string;
-  /** What happens on click */
-  onClick: () => void;
+  /** What happens on click. Optional when `insertPrompt` is the action. */
+  onClick?: () => void;
+  /**
+   * Text to insert into the session composer when clicked (e.g. a slash
+   * command like '/session-cleanup '). Only honored for the inline tip
+   * surface in a claude-code session; the button is hidden where there is
+   * nowhere to insert. Runs before `onClick`.
+   */
+  insertPrompt?: string;
   /** Style variant */
   variant?: 'primary' | 'secondary' | 'link';
 }

@@ -118,7 +118,6 @@ export class OpenCodeProvider extends BaseAgentProvider {
       settingsAgentToolsDisabledLoader: OpenCodeProvider.settingsAgentToolsDisabledLoader,
       mcpAuthToken: OpenCodeProvider.mcpAuthToken,
       mcpConfigLoader: OpenCodeProvider.mcpConfigLoader,
-      extensionPluginsLoader: null,
       claudeSettingsEnvLoader: null,
       shellEnvironmentLoader: OpenCodeProvider.shellEnvironmentLoader,
     });

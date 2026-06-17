@@ -507,3 +507,16 @@ CREATE INDEX IF NOT EXISTS idx_collab_local_origins_git_remote_hash
   ON collab_local_origins(git_remote_hash);
 CREATE INDEX IF NOT EXISTS idx_collab_local_origins_relative_path
   ON collab_local_origins(org_id, relative_path);
+
+-- ----------------------------------------------------------------------------
+-- project_file_sync_baseline (durable last-synced baseline for personal docs sync)
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS project_file_sync_baseline (
+  project_id TEXT NOT NULL,
+  sync_id TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  last_synced_mtime INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, sync_id)
+);

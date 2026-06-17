@@ -43,10 +43,10 @@ import { SessionFileWatcher } from '../../file/SessionFileWatcher';
 import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { workspaceFileEditAttributionService } from '../WorkspaceFileEditAttributionService';
 import { sessionEditQuota } from '../SessionEditQuota';
+import { notifySessionFilesUpdated } from '../sessionFilesNotify';
 import { pathContainsExcludedDir } from '../../utils/fileFilters';
 import { isFileInWorkspaceOrWorktree } from '../../utils/workspaceDetection';
 import {
-  safeSend,
   readFileContentOrNull,
   recoverBaselineFromHistory,
   isBinaryFile,
@@ -70,7 +70,6 @@ export class HooklessAgentFileWatcher {
   async ensureForSession(
     sessionId: string,
     workspacePath: string,
-    event: Electron.IpcMainInvokeEvent,
   ): Promise<void> {
     // Cancel any pending delayed-stop timer so it doesn't destroy the watcher
     // we're about to reuse (race: new turn starts within the 500ms drain delay).
@@ -131,7 +130,12 @@ export class HooklessAgentFileWatcher {
           timestamp: watchEvent.timestamp,
           beforeContent: watchEvent.beforeContent,
         });
-        safeSend(event, 'session-files:updated', sessionId);
+        // NIM-816: notify through the shared helper so the session-files IPC
+        // cache is invalidated alongside the broadcast. Note this ping races
+        // the (async) attribution row write above — the attribution service
+        // sends its own post-write notification, this one just keeps the
+        // sidebar snappy for already-written rows.
+        notifySessionFilesUpdated(sessionId);
       },
     );
     this.watchers.set(sessionId, { cache, watcher, workspacePath });

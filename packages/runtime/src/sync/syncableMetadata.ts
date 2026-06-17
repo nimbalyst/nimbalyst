@@ -36,6 +36,14 @@ export const SYNC_RELEVANT_FIELDS = {
    * Keys inside the `metadata` JSONB blob that get promoted onto the wire.
    * Stored locally as `payload.metadata.<key>` but flattened into the top
    * level of SyncedSessionMetadata when pushed.
+   *
+   * NOTE: a key only actually syncs if it is ALSO threaded through the inbound
+   * apply path (SyncedSessionMetadata, CollabV3Sync ClientMetadata + cache
+   * merge + decrypt). Pushing a key that the receiver never reads is a no-op.
+   * `workflowPreset` is intentionally NOT here: it is device-local (persisted in
+   * ai_sessions.metadata, read back by getWorkflowPreset on the same device) and
+   * wiring it cross-device means touching the encrypted client-metadata path,
+   * which is a deliberate follow-up rather than a half-wired push.
    */
   metadataKeys: ['phase', 'tags'] as const,
 

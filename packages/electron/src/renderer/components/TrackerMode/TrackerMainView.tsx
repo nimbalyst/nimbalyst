@@ -20,6 +20,7 @@ import type { TrackerDataModel } from '@nimbalyst/runtime/plugins/TrackerPlugin/
 import { KanbanBoard } from './KanbanBoard';
 import { TrackerItemDetail } from './TrackerItemDetail';
 import { TrackerSyncRejectionBanner } from './TrackerSyncRejectionBanner';
+import { ImportFromSourceDialog } from './ImportFromSourceDialog';
 import {
   trackerModeLayoutAtom,
   setTrackerModeLayoutAtom,
@@ -41,6 +42,27 @@ import { useFloatingMenu } from '../../hooks/useFloatingMenu';
 import { buildTrackerTagOptions, filterTrackerItemsByTags } from './trackerTagFilterUtils';
 
 export type ViewMode = 'list' | 'table' | 'kanban';
+
+/** Provenance key for a record: the importer provider id, or 'native'. */
+function recordSourceKey(record: TrackerRecord): string {
+  const origin = record.system.origin;
+  return origin?.kind === 'external' ? origin.external.providerId : 'native';
+}
+
+/** Human label for a source key without probing the importer (avoids backend start). */
+function sourceKeyLabel(key: string): string {
+  if (key === 'native') return 'Native';
+  // Map known provider ids; otherwise title-case the id.
+  const known: Record<string, string> = {
+    'github-issues': 'GitHub',
+    linear: 'Linear',
+  };
+  if (known[key]) return known[key];
+  return key
+    .split(/[-_]/)
+    .map((p) => (p ? p[0].toUpperCase() + p.slice(1) : p))
+    .join(' ');
+}
 
 interface TrackerMainViewProps {
   filterType: TrackerItemType | 'all';
@@ -65,6 +87,8 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   const [sortDirection, setSortDirection] = useState<TrackerSortDirection>('desc');
   const [searchQuery, setSearchQuery] = useState('');
   const [tagFilter, setTagFilter] = useState<string[]>([]);
+  // Source filter: provider ids (e.g. 'github-issues') plus 'native'.
+  const [sourceFilter, setSourceFilter] = useState<string[]>([]);
   const [quickAddType, setQuickAddType] = useState<string | null>(null);
   const [showTagDropdown, setShowTagDropdown] = useState(false);
   const [tagQuery, setTagQuery] = useState('');
@@ -303,9 +327,26 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
       .filter((tag) => !query || tag.name.toLowerCase().includes(query));
   }, [allTags, tagFilter, tagQuery]);
 
+  // Source provenance: 'native' or the importer provider id (from origin).
+  const sourceOptions = useMemo(() => {
+    const keys = new Set<string>();
+    for (const r of baseFilteredItems) keys.add(recordSourceKey(r));
+    return Array.from(keys).sort((a, b) => (a === 'native' ? -1 : b === 'native' ? 1 : a.localeCompare(b)));
+  }, [baseFilteredItems]);
+
+  // Only worth showing the Source filter once imported items coexist with native ones.
+  const showSourceFilter = sourceOptions.some((k) => k !== 'native');
+
   const filteredItems = useMemo(() => {
-    return filterTrackerItemsByTags(baseFilteredItems, tagFilter);
-  }, [baseFilteredItems, tagFilter]);
+    const byTags = filterTrackerItemsByTags(baseFilteredItems, tagFilter);
+    if (sourceFilter.length === 0) return byTags;
+    const set = new Set(sourceFilter);
+    return byTags.filter((r) => set.has(recordSourceKey(r)));
+  }, [baseFilteredItems, tagFilter, sourceFilter]);
+
+  const toggleSource = useCallback((key: string) => {
+    setSourceFilter((cur) => (cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]));
+  }, []);
 
   const tagMenu = useFloatingMenu({
     placement: 'bottom-start',
@@ -512,6 +553,14 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const importMenuRef = useRef<HTMLDivElement>(null);
 
+  // External-source importers (GitHub, ...) discovered from installed extensions.
+  const [externalImporters, setExternalImporters] = useState<
+    Array<{ id: string; displayName: string; icon: string; importsAs?: string[] }>
+  >([]);
+  const [sourceDialog, setSourceDialog] = useState<
+    { providerId: string; providerLabel: string; importsAs?: string[] } | null
+  >(null);
+
   // Close import menu on outside click
   useEffect(() => {
     if (!importMenuOpen) return;
@@ -523,6 +572,23 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, [importMenuOpen]);
+
+  // Load external importers when the import menu opens.
+  useEffect(() => {
+    if (!importMenuOpen || !workspacePath) return;
+    let cancelled = false;
+    window.electronAPI
+      .invoke('tracker:importer:list', workspacePath)
+      .then((list: unknown) => {
+        if (!cancelled && Array.isArray(list)) {
+          setExternalImporters(list as typeof externalImporters);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [importMenuOpen, workspacePath]);
 
   const handleBulkImport = useCallback(async (directory: string) => {
     setImportMenuOpen(false);
@@ -725,6 +791,31 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
           </div>
         )}
 
+        {/* Source provenance filter (appears once imported items exist) */}
+        {showSourceFilter && (
+          <div className="flex items-center gap-1 shrink-0" data-testid="tracker-source-filter">
+            {sourceOptions.map((key) => {
+              const active = sourceFilter.includes(key);
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => toggleSource(key)}
+                  className={
+                    active
+                      ? 'px-2 py-0.5 rounded-full text-[11px] border bg-[var(--nim-primary)]/15 border-[var(--nim-primary)]/40 text-nim'
+                      : 'px-2 py-0.5 rounded-full text-[11px] border border-nim text-nim-muted hover:bg-nim-tertiary'
+                  }
+                  title={`Filter by ${sourceKeyLabel(key)}`}
+                  data-testid={`tracker-source-filter-${key}`}
+                >
+                  {sourceKeyLabel(key)}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         <div className="flex-1" />
 
         <div className="relative" ref={importMenuRef}>
@@ -759,6 +850,27 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
                 <MaterialSymbol icon="folder_open" size={14} />
                 Import from design/
               </button>
+              {externalImporters.length > 0 && (
+                <div className="my-1 border-t border-nim" />
+              )}
+              {externalImporters.map((imp) => (
+                <button
+                  key={imp.id}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-nim-muted hover:bg-nim-tertiary hover:text-nim text-left"
+                  onClick={() => {
+                    setImportMenuOpen(false);
+                    setSourceDialog({
+                      providerId: imp.id,
+                      providerLabel: imp.displayName,
+                      importsAs: imp.importsAs,
+                    });
+                  }}
+                  data-testid={`tracker-import-source-${imp.id}`}
+                >
+                  <MaterialSymbol icon={imp.icon || 'cloud_download'} size={14} />
+                  Import from {imp.displayName}
+                </button>
+              ))}
             </div>
           )}
         </div>
@@ -879,6 +991,23 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
           </DetailPanelResizable>
         )}
       </div>
+
+      {/* External-source import picker */}
+      {sourceDialog && workspacePath && (
+        <ImportFromSourceDialog
+          providerId={sourceDialog.providerId}
+          providerLabel={sourceDialog.providerLabel}
+          importsAs={sourceDialog.importsAs}
+          workspacePath={workspacePath}
+          onClose={() => setSourceDialog(null)}
+          onImported={(count) => {
+            if (count > 0) {
+              setImportStatus(`Imported ${count} item${count === 1 ? '' : 's'}`);
+              setTimeout(() => setImportStatus(null), 4000);
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

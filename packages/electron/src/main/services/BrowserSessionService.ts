@@ -27,6 +27,7 @@
 import { WebContentsView, BrowserWindow, session as electronSession } from 'electron';
 import { EventEmitter } from 'events';
 import { logger } from '../utils/logger';
+import { ensureNimPreviewProtocolForSession } from '../protocols/nimPreviewProtocol';
 
 export interface BrowserSessionInitOptions {
   /** Stable session id chosen by the caller. */
@@ -221,6 +222,10 @@ export class BrowserSessionService extends EventEmitter {
 
     const partitionName = resolveBrowserPartitionName(opts.partition);
     const ses = electronSession.fromPartition(partitionName);
+    // Custom partitions do not inherit the default session's protocol
+    // handlers; without this, nim-preview:// is an unknown scheme in the view
+    // (issue #612).
+    ensureNimPreviewProtocolForSession(ses);
     const headless = opts.headless === true;
 
     const view = new WebContentsView({
