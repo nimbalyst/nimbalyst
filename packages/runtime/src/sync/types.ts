@@ -341,6 +341,10 @@ export interface SessionIndexData {
   parentSessionId?: string;
   /** Worktree ID for git worktree association */
   worktreeId?: string;
+  /** Agent role marker (e.g. 'meta-agent', 'standard'); drives mobile meta-agent grouping. */
+  agentRole?: string;
+  /** Meta-agent parent session ID for spawned children; drives mobile meta-agent grouping. */
+  createdBySessionId?: string | null;
   /** Whether the session is archived */
   isArchived?: boolean;
   /** Whether the session is pinned */
@@ -413,6 +417,10 @@ export interface SyncedSessionMetadata {
   parentSessionId?: string;
   /** Worktree association (mirrored from ai_sessions.worktree_id). */
   worktreeId?: string;
+  /** Agent role marker (e.g. 'meta-agent', 'standard'); drives mobile meta-agent grouping. */
+  agentRole?: string;
+  /** Meta-agent parent session ID for spawned children; drives mobile meta-agent grouping. */
+  createdBySessionId?: string;
   provider?: string;
   model?: string;
   workspaceId?: string;
@@ -471,6 +479,10 @@ export interface SessionIndexEntry {
   parentSessionId?: string;
   /** Worktree ID for git worktree association */
   worktreeId?: string;
+  /** Agent role marker (e.g. 'meta-agent', 'standard'); drives mobile meta-agent grouping. */
+  agentRole?: string;
+  /** Meta-agent parent session ID for spawned children; drives mobile meta-agent grouping. */
+  createdBySessionId?: string;
   /** Whether the session is archived */
   isArchived?: boolean;
   /** Whether the session is pinned */
@@ -565,6 +577,8 @@ export interface CreateSessionRequest {
   provider?: string;
   /** Model ID selected by mobile (e.g., "claude-code:opus"). Falls back to desktop default if omitted. */
   model?: string;
+  /** Agent role (e.g., "meta-agent", "standard"). Falls back to "standard" if omitted. */
+  agentRole?: string;
   /** Timestamp when request was created */
   timestamp: number;
 }
@@ -650,6 +664,8 @@ export interface SyncedSettings {
   availableModels?: SyncedAvailableModel[];
   /** Desktop's default model ID (e.g., "claude-code:opus") */
   defaultModel?: string;
+  /** Whether the desktop "meta-agent" alpha feature is enabled (gates the mobile Meta Agent UI) */
+  metaAgentEnabled?: boolean;
   /** Version for handling future upgrades */
   version: number;
 }

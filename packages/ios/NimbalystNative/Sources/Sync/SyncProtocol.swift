@@ -32,6 +32,10 @@ struct ServerSessionEntry: Codable {
     let sessionType: String?
     /// Parent session ID for workstream/worktree hierarchy
     let parentSessionId: String?
+    /// Agent role marker (e.g. "meta-agent"); gates meta-agent powers on desktop
+    let agentRole: String?
+    /// Session ID of the meta-agent that spawned this sub-agent (child link)
+    let createdBySessionId: String?
     /// Worktree ID for git worktree association
     let worktreeId: String?
     /// Whether this session is archived
@@ -219,6 +223,8 @@ public struct SyncedSettings: Codable {
     public let voiceMode: SyncedVoiceModeSettings?
     public let availableModels: [SyncedAvailableModel]?
     public let defaultModel: String?
+    /// Whether the desktop "meta-agent" alpha feature is enabled (gates the mobile Meta Agent UI).
+    public let metaAgentEnabled: Bool?
     public let version: Int
 }
 
@@ -277,6 +283,7 @@ struct EncryptedCreateSessionRequest: Codable {
     let parentSessionId: String?
     let provider: String?
     let model: String?
+    let agentRole: String?
     let timestamp: Int
 }
 

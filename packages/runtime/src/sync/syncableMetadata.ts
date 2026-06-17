@@ -27,6 +27,8 @@ export const SYNC_RELEVANT_FIELDS = {
     'sessionType',
     'parentSessionId',
     'worktreeId',
+    'agentRole',
+    'createdBySessionId',
     'draftInput',
   ] as const,
 

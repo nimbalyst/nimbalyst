@@ -47,7 +47,10 @@ const DEFAULT_OPTIONS: SyncedSessionStoreOptions = {
  * activity. updateMetadata() only sets updatedAt when a sort-relevant
  * column actually changed.
  */
-function buildSyncPayload(
+// Exported for the regression lock in __tests__/syncPayloadFields.test.ts, which
+// pins that the create() / updateMetadata() push payload carries the
+// SYNC_RELEVANT_FIELDS columns (incl. the meta-agent grouping fields).
+export function buildSyncPayload(
   payload: Record<string, unknown>,
   options: { forceUpdatedAt?: boolean } = {}
 ): Record<string, unknown> {

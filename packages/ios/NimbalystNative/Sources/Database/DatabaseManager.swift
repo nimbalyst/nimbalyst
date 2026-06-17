@@ -266,6 +266,15 @@ public final class DatabaseManager: @unchecked Sendable {
             }
         }
 
+        migrator.registerMigration("v13_meta_agent") { db in
+            try db.alter(table: "sessions") { t in
+                t.add(column: "agentRole", .text)
+                t.add(column: "createdBySessionId", .text)
+            }
+            // Index for efficient sub-agent (child) lookups by meta-agent session
+            try db.create(index: "idx_sessions_created_by", on: "sessions", columns: ["createdBySessionId"])
+        }
+
         try migrator.migrate(writer)
     }
 
