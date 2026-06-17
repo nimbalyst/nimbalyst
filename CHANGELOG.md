@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Launching a sibling session from a normal session no longer moves it (and the new session) into the Meta Agent group in the session list.
 - Tracker items from one project no longer leak into another project's panel.
 - The tracker detail panel no longer overwrites custom field edits made elsewhere while it's open.
+- Personal and settings sync no longer gets stuck when a stale stored account id blocked the personal sync connection.
 
 ### Removed
 <!-- Removed features go here -->

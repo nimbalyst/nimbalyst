@@ -524,10 +524,14 @@ export class TrackerSyncEngine {
 
     let cursor: SyncId = await hooks.getMaxSyncId();
     let staleKeyRefreshTried = false;
+    console.info(`[TrackerSchemaSync] bootstrap start since sync_id=${cursor}`);
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const response = await this.requestSchemaSync(cursor);
+      console.info(
+        `[TrackerSchemaSync] bootstrap batch: ${response.schemas.length} schema(s), cursor=${response.cursorSyncId}, hasMore=${response.hasMore}`,
+      );
 
       if (!staleKeyRefreshTried && this.shouldRefreshForStaleSchemaKey(response.schemas)) {
         staleKeyRefreshTried = true;
@@ -543,6 +547,7 @@ export class TrackerSyncEngine {
       cursor = response.cursorSyncId;
       if (!response.hasMore) break;
     }
+    console.info(`[TrackerSchemaSync] bootstrap complete at sync_id=${cursor}`);
   }
 
   private shouldRefreshForStaleSchemaKey(schemas: EncryptedTrackerSchemaEnvelope[]): boolean {
@@ -748,6 +753,9 @@ export class TrackerSyncEngine {
   }
 
   private async handleSchemaDelta(msg: TrackerSchemaDeltaMessage): Promise<void> {
+    console.info(
+      `[TrackerSchemaSync] delta type=${msg.schema.schemaType} sync_id=${msg.schema.syncId} tombstone=${msg.schema.encryptedPayload === null}`,
+    );
     const applied = await this.applySchemaEnvelope(msg.schema);
     if (!applied && msg.schema.orgKeyFingerprint && this.orgKeyFingerprint &&
         msg.schema.orgKeyFingerprint !== this.orgKeyFingerprint &&
@@ -761,6 +769,11 @@ export class TrackerSyncEngine {
   }
 
   private async handleSchemaAck(msg: TrackerSchemaMutationAckMessage): Promise<void> {
+    console.info(
+      `[TrackerSchemaSync] ack cmid=${msg.clientMutationId} accepted=${msg.accepted}` +
+        `${msg.schema ? ` type=${msg.schema.schemaType} sync_id=${msg.schema.syncId}` : ''}` +
+        `${msg.error ? ` error=${msg.error.code}` : ''}`,
+    );
     if (msg.accepted && msg.schema) {
       await this.applySchemaEnvelope(msg.schema);
       return;
@@ -957,9 +970,13 @@ export class TrackerSyncEngine {
     if (!this.orgKeyFingerprint) return;
 
     const pending = await hooks.listUnsynced();
+    if (pending.length > 0) {
+      console.info(`[TrackerSchemaSync] pushing ${pending.length} unsynced schema mutation(s)`);
+    }
     for (const def of pending) {
       const clientMutationId = generateClientMutationId();
       if (def.deleted || def.model === null) {
+        console.info(`[TrackerSchemaSync] -> mutation (delete) type=${def.type} cmid=${clientMutationId}`);
         this.send({
           type: 'trackerSchemaMutation',
           clientMutationId,
@@ -971,6 +988,7 @@ export class TrackerSyncEngine {
       }
 
       const enc = await encryptTrackerSchemaPayload(def.model, this.encryptionKey, def.type);
+      console.info(`[TrackerSchemaSync] -> mutation (upsert) type=${def.type} cmid=${clientMutationId}`);
       this.send({
         type: 'trackerSchemaMutation',
         clientMutationId,
