@@ -48,6 +48,16 @@ jobs:
           cd ../..
           npm ci --ignore-scripts
 
+      # The editor bundle (vite.config.editor.ts) aliases @nimbalyst/runtime to
+      # source, and that source imports @nimbalyst/extension-sdk from its built
+      # dist. `npm ci --ignore-scripts` skips that build, so build it explicitly
+      # here (as ci.yml does) or the "Build Editor Web Bundle" script phase fails
+      # with: Failed to resolve entry for package "@nimbalyst/extension-sdk".
+      - name: Build extension-sdk
+        run: |
+          cd ../..
+          npm run build --prefix packages/extension-sdk
+
       - name: Build transcript bundle
         run: npx vite build --config vite.config.transcript.ts
 

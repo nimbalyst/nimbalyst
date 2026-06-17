@@ -1153,6 +1153,8 @@ export class AIService {
                 mode: session.mode,
                 sessionType: session.sessionType,
                 parentSessionId: request.parentSessionId ?? session.parentSessionId ?? undefined,
+                agentRole: session.agentRole,
+                createdBySessionId: session.createdBySessionId ?? undefined,
                 workspaceId: session.workspacePath,
                 workspacePath: session.workspacePath,
                 messageCount: session.messages.length,

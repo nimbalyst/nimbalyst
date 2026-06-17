@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 <!-- New features go here -->
 - iOS: create a Meta Agent from the session create menu (alpha-gated to mirror the desktop `meta-agent` feature flag, synced to mobile).
+- Sync: the desktop session-index sync payload now emits `agentRole` and `createdBySessionId`, so meta-agent grouping data reaches mobile.
+- iOS: stores the `agentRole` marker and `createdBySessionId` sub-agent link from session-index sync (new `v13` database migration), so mobile knows which sessions are meta agents and which are their children.
+- iOS: meta-agent sessions and their sub-agents now appear as a collapsible "Meta Agent" group — tapping the header opens the meta session, and a separate chevron expands or collapses the children.
 - New Gemini (Antigravity) marketplace extension, usable as an AI chat and meta-agent provider, with a usage indicator chip. (#558)
 - `/session-cleanup` command (Planning extension) tidies your Sessions board: it proposes phase corrections and "mark complete" candidates for your approval, and flags old sessions to archive.
 - `nim`, a companion CLI for trackers: list, create, update, comment on, archive, and import tracker items from the terminal — through a running Nimbalyst, or directly against the database when the app is closed.
@@ -24,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude Code CLI sessions now show an install link when the Claude Code CLI isn't installed, instead of a cryptic terminal error.
 - Stop the AskUserQuestion widget from crashing when a question is missing its options.
 - Deleting a custom tracker type no longer fails on the SQLite backend.
+- Sync: newly created meta agents and their spawned children now carry `agentRole`/`createdBySessionId` on the real-time create/update push and the cross-device broadcast, so mobile groups them immediately instead of only after the next bulk resync.
+- iOS: the Meta Agent group no longer reads a stale feature-gate value when the desktop toggles the alpha flag while you're on another tab.
 
 ### Removed
 <!-- Removed features go here -->
