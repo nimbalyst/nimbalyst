@@ -28,6 +28,10 @@
     "ios:test:swift": "npm run test:swift --prefix packages/ios",
     "ios:build:transcript": "npm run build:transcript --prefix packages/ios",
     "ios:build:editor": "npm run build:editor --prefix packages/ios",
+    "android:build:transcript": "npm run build:transcript --prefix packages/android",
+    "android:test:unit": "npm run android:test:unit --prefix packages/android",
+    "android:assemble:debug": "npm run android:assemble:debug --prefix packages/android",
+    "android:assemble:release": "npm run android:assemble:release --prefix packages/android",
     "test:extensions": "bash scripts/run-extension-tests.sh"
   },
   "devDependencies": {
@@ -76,6 +80,7 @@
     "packages/collab-protocol",
     "packages/collab-adapters",
     "packages/ios",
+    "packages/android",
     "packages/extension-sdk",
     "packages/extensions/*",
     "packages/marketplace"

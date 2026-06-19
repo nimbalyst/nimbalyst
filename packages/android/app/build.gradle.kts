@@ -3,10 +3,17 @@ import org.gradle.api.tasks.Sync
 
 plugins {
     id("com.android.application")
-    id("com.google.gms.google-services")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
+}
+
+// The google-services plugin hard-fails when app/google-services.json is absent
+// (it is gitignored, so it is missing in CI and on most dev machines). Apply it
+// only when the config file is present. NotificationManager already no-ops when
+// Firebase is unconfigured, so a JSON-less build is green and push stays inert.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
 }
 
 ksp {
@@ -30,13 +37,40 @@ android {
         }
     }
 
+    // Release signing is configured only when a keystore is provided via env or
+    // gradle properties (e.g. CI secrets). With no keystore the release build is
+    // simply unsigned, so a secret-less build (CI without the keystore secret, or
+    // a fresh clone) still succeeds. No secrets ever live in source.
+    val keystorePath = System.getenv("NIMBALYST_ANDROID_KEYSTORE")
+        ?: (project.findProperty("nimbalyst.android.keystore") as String?)
+    val hasReleaseKeystore = !keystorePath.isNullOrBlank() && file(keystorePath).exists()
+
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(keystorePath!!)
+                storePassword = System.getenv("NIMBALYST_ANDROID_KEYSTORE_PASSWORD")
+                    ?: (project.findProperty("nimbalyst.android.keystorePassword") as String?)
+                keyAlias = System.getenv("NIMBALYST_ANDROID_KEY_ALIAS")
+                    ?: (project.findProperty("nimbalyst.android.keyAlias") as String?)
+                keyPassword = System.getenv("NIMBALYST_ANDROID_KEY_PASSWORD")
+                    ?: (project.findProperty("nimbalyst.android.keyPassword") as String?)
+            }
+        }
+    }
+
     buildTypes {
         release {
+            // Keep minification off: SyncProtocol relies on Gson reflection and Room
+            // codegen would need extensive keep rules under R8. Signed != minified.
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -60,6 +94,13 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
         }
     }
 }
@@ -101,6 +142,11 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
+    testImplementation("androidx.room:room-testing:2.6.1")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

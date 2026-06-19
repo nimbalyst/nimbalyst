@@ -16,6 +16,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.NimbalystAndroid">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -43,7 +44,19 @@
                     android:host="pair"
                     android:scheme="nimbalyst" />
             </intent-filter>
+            <!-- Note: nimbalyst://session/[id] is delivered only via the push
+                 notification's explicit Intent(MainActivity) (see
+                 NimbalystFirebaseMessagingService). No BROWSABLE intent-filter is
+                 declared for it, which would needlessly let any web page invoke it. -->
         </activity>
+
+        <service
+            android:name=".notifications.NimbalystFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>
