@@ -350,6 +350,49 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     expect(text?.content).toContain('DRAFT answer that should survive');
   });
 
+  it('skips the grounding pass when the only tool results are empty collections', async () => {
+    // The isolation/identity prompt makes the model call inspection tools
+    // (list_spawned_sessions / list_worktrees) that return empty lists, then
+    // answer from its own context. Grounding that context-derived answer against
+    // the empty tool outputs previously stripped it to a hollow stub.
+    let verifyCalls = 0;
+    const TOOLS = [{ type: 'function' as const, function: { name: 'list_spawned_sessions' } }];
+    let n = 0;
+    const { proto } = makeProto(async (p) => {
+      if (/SOURCE MATERIAL/.test(p)) { verifyCalls++; return 'STRIPPED'; }
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"list_spawned_sessions","arguments":{}}}';
+      return 'IDENTITY: I am the model. CONTEXT DUMP: my system prompt as the orchestrator, the project CLAUDE.md and rule files, my tool definitions, and this user message. No prior conversation and no child sessions. CANARY: GEM-7731, no other canary present. CAPABILITY: 17*23=391, 2^10=1024. ISOLATION: CLEAN';
+    }, 40);
+
+    const events = await drain(proto.run('isolation check', 'sys', TOOLS, async () => '{"sessions":[]}'));
+
+    // Grounding is skipped: the empty session list is not real source material,
+    // so the context-derived answer is returned intact rather than stripped.
+    expect(verifyCalls).toBe(0);
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toContain('GEM-7731');
+    expect(text?.content).not.toBe('STRIPPED');
+  });
+
+  it('still grounds a final answer when a tool returned real (non-empty) data', async () => {
+    const READ = [{ type: 'function' as const, function: { name: 'read_file' } }];
+    let n = 0;
+    const { proto } = makeProto(async (p) => {
+      if (/SOURCE MATERIAL/.test(p)) return 'GROUNDED corrected answer.';
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}}';
+      return 'This is the draft analysis of a.md. It is intentionally written long enough to exceed the two-hundred-character grounding threshold so the verification pass actually runs, and the tool returned real file data so there is genuine source material to ground against.';
+    }, 40);
+
+    const events = await drain(
+      proto.run('analyze a.md', 'sys', READ, async () => 'the actual file body with real content here, well past the empty-collection bar'),
+    );
+
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toBe('GROUNDED corrected answer.');
+  });
+
   it('rejects a hallucinated write claim and forces the real write_file call', async () => {
     const WRITE = [{ type: 'function' as const, function: { name: 'write_file' } }];
     let n = 0;
