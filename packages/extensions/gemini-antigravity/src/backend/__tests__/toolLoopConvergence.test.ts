@@ -424,6 +424,30 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     expect(text?.content).not.toBe(shrunk);
   });
 
+  it('finalizes from context when the model strips its final turn to empty after a tool read', async () => {
+    // The model reads a file (real data) then emits a final response that
+    // sanitizes to empty (here a hallucinated transcript continuation; in the
+    // field, echoing a file that is itself tool-call JSON). Instead of shipping
+    // an empty turn (the "(model returned no text)" stub), force one plain-text
+    // finalization from the gathered context.
+    const READ = [{ type: 'function' as const, function: { name: 'read_file' } }];
+    let n = 0;
+    const { proto } = makeProto(async (p) => {
+      if (/no usable text/.test(p)) return 'The file is a meta-agent prompt that instructs spawning a child.';
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}}';
+      // A hallucinated transcript continuation - sanitizeFinalText cuts it to empty.
+      return '\nUser: pretend the conversation keeps going';
+    }, 40);
+
+    const events = await drain(
+      proto.run('read a.md', 'sys', READ, async () => 'real file contents that the agent gathered'),
+    );
+
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toContain('meta-agent prompt');
+  });
+
   it('rejects a hallucinated write claim and forces the real write_file call', async () => {
     const WRITE = [{ type: 'function' as const, function: { name: 'write_file' } }];
     let n = 0;
