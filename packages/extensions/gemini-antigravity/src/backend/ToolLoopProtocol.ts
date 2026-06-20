@@ -989,6 +989,11 @@ export class AntigravityToolLoopProtocol {
     const SOURCE_BUDGET = 48_000;
     const sources: string[] = [];
     let used = 0;
+    // True when a real (non-empty) tool result was dropped because it did not
+    // fit the grounding budget. The verifier then judged the draft against an
+    // incomplete source and must not be trusted to remove content under that
+    // blind spot.
+    let truncatedRealSource = false;
     for (let i = this.history.length - 1; i >= 0; i--) {
       const m = this.history[i];
       if (m.role !== 'tool' || m.toolName === 'system') continue;
@@ -997,7 +1002,10 @@ export class AntigravityToolLoopProtocol {
       // a draft whose substance comes from the conversation and the model's own
       // context - not these tools - would otherwise be stripped to a hollow stub.
       if (this.isEmptyToolResult(m.content)) continue;
-      if (used + m.content.length > SOURCE_BUDGET) continue;
+      if (used + m.content.length > SOURCE_BUDGET) {
+        truncatedRealSource = true;
+        continue;
+      }
       sources.unshift('Tool result (' + (m.toolName ?? 'unknown') + '): ' + m.content);
       used += m.content.length;
     }
@@ -1016,8 +1024,10 @@ export class AntigravityToolLoopProtocol {
       'dependency, a flag) that the source does not contain. KEEP claims that do not purport',
       'to come from these tools - the answer may also draw on the conversation and the',
       'assistant\'s own context, so do not delete such a claim merely because these tool',
-      'outputs are silent about it. Do NOT invent new facts. Preserve the structure and wording otherwise. Output ONLY the',
-      'corrected answer text, with no preamble.',
+      'outputs are silent about it. If you are unsure whether a claim came from a tool or from your own',
+      'reasoning, KEEP it. If nothing in the draft contradicts the source, return the draft unchanged, word',
+      'for word. Never return an empty or near-empty answer. Do NOT invent new facts. Preserve the structure',
+      'and wording otherwise. Output ONLY the corrected answer text, with no preamble.',
       '',
       '=== SOURCE MATERIAL ===',
       sources.join('\n\n'),
@@ -1030,7 +1040,16 @@ export class AntigravityToolLoopProtocol {
       const resp = await this.server.getModelResponse(verifyPrompt, this.modelKey, timeoutMs);
       if (this.aborted) return draft;
       const verified = this.sanitizeFinalText(this.stripToolCallJson(resp));
-      return verified.trim().length > 0 ? verified : draft;
+      const verifiedLen = verified.trim().length;
+      if (verifiedLen === 0) return draft;
+      // Incomplete source: a real tool result was too large to fit the grounding
+      // budget, so the verifier never saw the full evidence and cannot reliably
+      // decide what to remove. Under that blind spot, reject a rewrite that
+      // shrinks the answer and keep the draft; accept only a light touch-up. When
+      // the source IS complete a large shrink is trusted - grounding is allowed
+      // to replace a verbose, partly-fabricated draft with a concise corrected one.
+      if (truncatedRealSource && verifiedLen < draft.trim().length * 0.85) return draft;
+      return verified;
     } catch {
       return draft;
     }

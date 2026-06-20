@@ -393,6 +393,37 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     expect(text?.content).toBe('GROUNDED corrected answer.');
   });
 
+  it('keeps the draft when a real tool result was dropped for exceeding the grounding budget', async () => {
+    // Three large tool results each hit the per-result cap; together they exceed
+    // the grounding source budget, so at least one real result is dropped. The
+    // verifier then judged the draft against an incomplete source, so a rewrite
+    // that shrinks the answer is not trustworthy - keep the draft. (A large shrink
+    // against a COMPLETE source is still trusted - covered by the tests above.)
+    const READ = [{ type: 'function' as const, function: { name: 'read_file' } }];
+    let n = 0;
+    let reads = 0;
+    const draft = 'This is the analysis derived from the small tool result. '.repeat(10);
+    const shrunk = 'This is the analysis derived from the small tool result. '.repeat(6);
+    const { proto } = makeProto(async (p) => {
+      if (/SOURCE MATERIAL/.test(p)) return shrunk;
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"read_file","arguments":{"path":"big1.bin"}}}';
+      if (n === 2) return '{"tool_call":{"name":"read_file","arguments":{"path":"big2.bin"}}}';
+      if (n === 3) return '{"tool_call":{"name":"read_file","arguments":{"path":"big3.bin"}}}';
+      return draft;
+    }, 40);
+
+    // Each read returns more than the per-result cap and is unique (avoids
+    // duplicate-read collapsing), so three of them exceed the grounding budget.
+    const events = await drain(
+      proto.run('analyze', 'sys', READ, async () => 'X'.repeat(50_000) + String(reads++)),
+    );
+
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toBe(draft.trim());
+    expect(text?.content).not.toBe(shrunk);
+  });
+
   it('rejects a hallucinated write claim and forces the real write_file call', async () => {
     const WRITE = [{ type: 'function' as const, function: { name: 'write_file' } }];
     let n = 0;
