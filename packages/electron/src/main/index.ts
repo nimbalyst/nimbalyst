@@ -174,6 +174,7 @@ import { getPermissionService } from './services/PermissionService';
 import { ClaudeSettingsManager } from './services/ClaudeSettingsManager';
 import { TrayManager } from './tray/TrayManager';
 import { pathToFileURL } from 'url';
+import { registerLinuxAppImageProtocolHandler } from './services/LinuxProtocolRegistration';
 
 // CRITICAL: Hide dock icon when running as background Node process
 // This prevents Terminal icon from appearing when Claude Code spawns child processes
@@ -519,6 +520,8 @@ if (process.defaultApp) {
     app.setAsDefaultProtocolClient('nimbalyst');
 }
 
+registerLinuxAppImageProtocolHandler();
+
 // Single-instance lock
 // Ensures only one instance runs at a time. When a second instance launches
 // (e.g., from a file double-click), it forwards its context to the primary instance.
@@ -548,6 +551,10 @@ if (!allowMultipleInstances) {
         if (fileArg) {
             logger.main.info(`[SingleInstance] Found file in argv: ${fileArg}`);
             try { writeFileSync(pendingOpenFilePath, fileArg, 'utf-8'); } catch (_) {}
+            app.quit();
+        } else if (process.argv.find(arg => arg.startsWith('nimbalyst://'))) {
+            // Primary instance will handle via second-instance event; quit immediately
+            logger.main.info('[SingleInstance] Second instance has deep link arg, quitting immediately');
             app.quit();
         } else {
             // No file in argv -- wait for open-file Apple Event
@@ -1113,6 +1120,9 @@ function parseCommandLineArgs() {
         } else if (arg === '--filter' && i + 1 < args.length) {
             pendingFilter = args[i + 1];
             logger.main.info(`✓ Filter from CLI: ${pendingFilter}`);
+        } else if (arg.startsWith('nimbalyst://')) {
+            pendingDeepLinkUrl = arg;
+            logger.main.info(`[SingleInstance] Found deep link in argv: ${arg.substring(0, 60)}...`);
         } else if (!arg.startsWith('--') && !arg.startsWith('-')) {
             // Handle plain file path argument (e.g., "preditor file.md")
             const argExists = existsSync(arg);
