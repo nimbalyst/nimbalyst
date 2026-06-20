@@ -5,9 +5,11 @@
  */
 
 import { Notification, BrowserWindow, app, ipcMain, shell } from 'electron';
+import * as path from 'path';
 import { logger } from '../utils/logger';
 import { isOSNotificationsEnabled, isNotifyWhenFocusedEnabled, isSessionBlockedNotificationsEnabled } from '../utils/store';
 import { findWindowByWorkspace } from '../window/WindowManager';
+import { getPackageRoot } from '../utils/appPaths';
 
 export interface NotificationOptions {
   title: string;
@@ -261,16 +263,21 @@ class NotificationService {
   }
 
   /**
-   * Get app icon path for notifications
+   * Get app icon path for notifications.
+   * Must be an image file path — not the exe path, which shows the Electron icon.
    */
   private getAppIcon(): string {
-    // Use app icon path based on platform
-    if (process.platform === 'darwin') {
-      return app.getPath('exe');
-    } else if (process.platform === 'win32') {
-      return app.getPath('exe');
+    const resourcesDir = app.isPackaged
+      ? process.resourcesPath
+      : path.join(getPackageRoot(), 'resources');
+
+    if (process.platform === 'win32') {
+      return path.join(resourcesDir, 'icon.ico');
     }
-    return '';
+    if (process.platform === 'darwin') {
+      return path.join(resourcesDir, 'icon.icns');
+    }
+    return path.join(resourcesDir, 'icon.png');
   }
 
   /**
