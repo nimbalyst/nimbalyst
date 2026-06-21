@@ -8,6 +8,10 @@ import type { SimpleGitOptions } from 'simple-git';
  * implicitly — i.e. no `.env()` call — the scan does not run, which is why
  * normal commits work despite those vars being present.)
  *
+ * The scan lives in the bundled `@simple-git/argv-parser`: its `parseEnv`
+ * maps each GIT_* var to a matching `allowUnsafe*` category, which is why
+ * every flag below is load-bearing rather than dead config.
+ *
  * When we deliberately pass the user's own login-shell environment so hooks run
  * like a real terminal (see getGitSubprocessEnv), we must opt back into allowing
  * those variables. The environment is the user's own trusted machine config —
