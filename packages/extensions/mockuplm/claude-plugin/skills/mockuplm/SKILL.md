@@ -42,7 +42,7 @@ MockupLM is Nimbalyst's visual mockup system for UI/UX design and planning. Crea
 1. **Create mockup file** in `nimbalyst-local/mockups/[descriptive-name].mockup.html`
 2. **Build the mockup** with HTML and inline CSS
 3. **Verify visually** using the Task tool to spawn a sub-agent that will:
-   - Capture screenshot with `mcp__nimbalyst-mcp__capture_editor_screenshot`
+   - Capture screenshot with `mcp__nimbalyst__capture_editor_screenshot`
    - Analyze for layout/visual issues
    - Fix with Edit tool if needed
    - Re-capture and iterate until correct
@@ -51,7 +51,7 @@ MockupLM is Nimbalyst's visual mockup system for UI/UX design and planning. Crea
 
 Users can draw directly on mockups in the editor (circles, arrows, highlights). These annotations are NOT in the HTML source.
 
-**To see user annotations**: Use `mcp__nimbalyst-mcp__capture_editor_screenshot` to capture a screenshot that includes the annotations.
+**To see user annotations**: Use `mcp__nimbalyst__capture_editor_screenshot` to capture a screenshot that includes the annotations.
 
 When the user draws on a mockup:
 1. Capture a screenshot to see what they marked

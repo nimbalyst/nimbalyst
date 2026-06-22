@@ -41,14 +41,6 @@ import {
   externalEditorSettingsAtom,
   initExternalEditorSettings,
 } from './store/atoms/appSettings';
-import {
-  claudeUsageIndicatorEnabledAtom,
-  initClaudeUsageIndicatorSetting,
-} from './store/atoms/claudeUsageAtoms';
-import {
-  codexUsageIndicatorEnabledAtom,
-  initCodexUsageIndicatorSetting,
-} from './store/atoms/codexUsageAtoms';
 import { initVoiceModeListeners } from './store/listeners/voiceModeListeners';
 import {
   autoCommitEnabledAtom,
@@ -62,6 +54,10 @@ import {
   trackerAutomationAtom,
   initTrackerAutomationSettings,
 } from './store/atoms/trackerAutomationAtoms';
+import {
+  hydrateSettingsAtoms,
+  registerSettingsChangeListener,
+} from './store/atoms/settingAtomFamily';
 
 // console.log('[RENDERER] Imports complete at', new Date().toISOString());
 
@@ -117,9 +113,30 @@ initializeTheme();
 // Expose offscreen renderer on window for main process access
 (window as any).offscreenEditorRenderer = offscreenEditorRenderer;
 
-// Initialize app settings atoms from main process
-// This loads settings and hydrates the Jotai atoms before React renders
-// MUST be awaited to ensure settings are loaded before components mount
+// Initialize the flat-key settings system (SettingsService).
+// Awaited before React mounts so every consumer of `useSetting(key)` reads
+// the real persisted value on its first render, never a default. The
+// broadcast listener keeps every window in lockstep on subsequent writes.
+// See nimbalyst-local/plans/settings-atomwithstorage-rewrite.md for the
+// design and shared/settings/keys.ts for the registry of keys.
+try {
+  const snapshot = await window.electronAPI.settingsGetAll();
+  hydrateSettingsAtoms(snapshot as any);
+  registerSettingsChangeListener();
+} catch (err) {
+  // Fail loud, fail fast: a missing settings snapshot means components would
+  // render against defaults and any setter would clobber real settings on
+  // disk via the legacy blob paths still in flight. Re-throw so the
+  // ErrorBoundary surfaces the failure.
+  console.error('[renderer] settings:getAll failed at startup; refusing to mount React', err);
+  throw err;
+}
+
+// Initialize legacy app settings atoms from main process.
+// These still drive most settings UI today; the flat-key SettingsService above
+// is the migration target. Domains are being migrated key-by-key (starting
+// with AI providers/keys), so for now we run both pipelines.
+// MUST be awaited to ensure settings are loaded before components mount.
 await Promise.allSettled([
   initVoiceModeSettings().then((settings) => {
     store.set(voiceModeSettingsAtom, settings);
@@ -147,12 +164,6 @@ await Promise.allSettled([
   }),
   initExternalEditorSettings().then((settings) => {
     store.set(externalEditorSettingsAtom, settings);
-  }),
-  initClaudeUsageIndicatorSetting().then((enabled) => {
-    store.set(claudeUsageIndicatorEnabledAtom, enabled);
-  }),
-  initCodexUsageIndicatorSetting().then((enabled) => {
-    store.set(codexUsageIndicatorEnabledAtom, enabled);
   }),
   initAutoCommitSetting().then((enabled) => {
     store.set(autoCommitEnabledAtom, enabled);

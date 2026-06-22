@@ -36,6 +36,7 @@ import {
   sessionHasPendingInteractivePromptAtom,
   sessionPendingPromptsAtom,
   sessionRegistryAtom,
+  sessionChildrenAtom,
   sessionStoreAtom,
   sessionDraftInputAtom,
   sessionLastSubmitAtAtom,
@@ -195,6 +196,11 @@ export function initSessionStateListeners(): () => void {
     return () => {};
   }
 
+  // Debounced trigger for the processing-state reconcile (assigned once the
+  // reconcile function is defined below). Fired on terminal session events so a
+  // stuck spinner clears within ~1s instead of waiting for the slow interval.
+  let scheduleProcessingReconcile: (() => void) | undefined;
+
   // Wire reconciliation against multi-project rail state so subscriptions
   // include every warm project, not just the visible one.
   ensureMultiProjectSubscribers();
@@ -289,6 +295,13 @@ export function initSessionStateListeners(): () => void {
       // after the session ended in the no-workspacePath race documented
       // above. Per @ghinkle's review on the closed #293.
       store.set(clearSessionStreamingAtom, { sessionId });
+      // A session reached a terminal state, so it left the backend's active set.
+      // Re-derive the processing atoms against that authoritative set now (debounced
+      // ~600ms) instead of waiting up to 15s for the interval. A meta-agent header
+      // reflects child processing too (sessionOrChildProcessingAtom), so when a
+      // child finishes this clears the parent's spinner within ~1s rather than
+      // leaving it stuck until the user clicks the child.
+      scheduleProcessingReconcile?.();
     }
 
     if (!ownedWorkspacePath) {
@@ -332,7 +345,20 @@ export function initSessionStateListeners(): () => void {
       // Session is waiting for user input (AskUserQuestion, ExitPlanMode, ToolPermission)
       case 'session:waiting':
         store.set(sessionProcessingAtom(sessionId), true);
-        store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
+        // NIM-850: the genuine Claude CLI (claude-code-cli) drives this event off
+        // a coarse `waiting` pid-file status that fires transiently mid-turn — e.g.
+        // while the CLI is merely blocked on a tool/MCP round-trip — not only for
+        // real user prompts. Letting it set the pending-interactive-prompt flag
+        // poisoned `isWaitingForResponse`, suppressing the "Thinking…" indicator
+        // for the rest of the turn (the flag is only cleared by terminal events;
+        // session:streaming deliberately doesn't clear it). For CLI sessions the
+        // flag is owned solely by the real durable-prompt events
+        // (ai:askUserQuestion / ai:exitPlanModeConfirm / ai:toolPermission /
+        // ai:requestUserInput), which set AND clear it explicitly. Keeping
+        // sessionProcessingAtom true above means the indicator keeps showing.
+        if (sessionMeta?.provider !== 'claude-code-cli') {
+          store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
+        }
         // Treat "waiting on user" as still processing for rail badge purposes —
         // the user typically hasn't switched away because of the prompt.
         store.set(markSessionStreamingAtom, { sessionId, workspacePath: resolvedWorkspacePath });
@@ -976,24 +1002,80 @@ export function initSessionStateListeners(): () => void {
     }
   };
 
+  // Handle for the self-healing processing-state reconcile interval (below).
+  let processingReconcileInterval: ReturnType<typeof setInterval> | undefined;
+
   // First, subscribe to the session state manager (IPC call to register this window).
   // Workspace can change during app lifetime; this is updated via updateSessionStateListenerWorkspace().
   activeWorkspacePathSnapshot = store.get(sessionListWorkspaceAtom) || null;
   reconcileSessionStateSubscription();
 
-  // Fetch currently active sessions and restore their processing state
-  // This handles the case where the renderer refreshes while sessions are running
-  window.electronAPI.sessionState.getActiveSessionIds?.()
-    .then((result: { success: boolean; sessionIds: string[] }) => {
-      if (result.success && result.sessionIds.length > 0) {
-        for (const sessionId of result.sessionIds) {
-          store.set(sessionProcessingAtom(sessionId), true);
+  // Restore + reconcile processing spinners using getRunningSessionIds (status
+  // running/streaming), NOT bare activeSessions membership: the latter retains
+  // idle claude-code-cli sessions between turns and pinned their spinner forever
+  // (NIM-846). We also heal strays: clear the processing atom for any known
+  // session that is NOT running, so a dropped terminal event (or a stale spinner)
+  // cannot stay stuck. If the preload predates getRunningSessionIds, skip rather
+  // than fall back to membership; a running session's spinner is re-established by
+  // its next streaming event.
+  //
+  // Runs once on init, on a slow interval, AND - debounced - on every terminal
+  // session event (via scheduleProcessingReconcile), so a parent meta-agent header
+  // (which reflects child processing through sessionOrChildProcessingAtom) clears
+  // within ~1s when a child finishes instead of staying stuck until the user clicks
+  // the child.
+  const reconcileProcessingState = async () => {
+    const api = window.electronAPI.sessionState;
+    if (!api.getRunningSessionIds) return;
+    try {
+      const result = await api.getRunningSessionIds();
+      if (!result?.success) return;
+      const running = new Set(result.sessionIds);
+      for (const sessionId of running) {
+        store.set(sessionProcessingAtom(sessionId), true);
+      }
+      // Heal strays across the SAME superset the meta-agent header aggregates
+      // over (sessionOrChildProcessingAtom = self OR any child). The header reads
+      // children from sessionChildrenAtom too, and a meta-agent child can sit in
+      // sessionChildrenAtom while NOT being a sessionRegistryAtom key (child-added
+      // patches the former; archived / worktree-archived children are dropped from
+      // sessions:list). Iterating the registry alone left such a child's stuck
+      // processing atom unhealed, pinning the header until the user clicked the
+      // child. Union the registry keys with every parent's loaded children.
+      const candidates = new Set<string>(store.get(sessionRegistryAtom).keys());
+      for (const parentId of store.get(sessionRegistryAtom).keys()) {
+        const children = store.get(sessionChildrenAtom(parentId));
+        if (Array.isArray(children)) {
+          for (const childId of children) candidates.add(childId);
         }
       }
-    })
-    .catch((error: any) => {
-      console.error('[sessionStateListeners] Error fetching active sessions:', error);
-    });
+      let healed = 0;
+      for (const sessionId of candidates) {
+        if (!running.has(sessionId) && store.get(sessionProcessingAtom(sessionId))) {
+          store.set(sessionProcessingAtom(sessionId), false);
+          healed++;
+        }
+      }
+      if (healed > 0) {
+        console.debug(
+          `[sessionStateListeners] reconcile: healed ${healed} stuck processing session(s)`,
+        );
+      }
+    } catch (error) {
+      console.error('[sessionStateListeners] reconcileProcessingState failed:', error);
+    }
+  };
+  void reconcileProcessingState();
+  processingReconcileInterval = setInterval(() => void reconcileProcessingState(), 15000);
+
+  // Debounced trigger wired now that reconcileProcessingState exists; fired from
+  // the terminal-event branch of handleStateChange. Coalesces a burst of
+  // completions (several children finishing) into one re-sync.
+  let reconcileDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+  scheduleProcessingReconcile = () => {
+    if (reconcileDebounceTimer) clearTimeout(reconcileDebounceTimer);
+    reconcileDebounceTimer = setTimeout(() => void reconcileProcessingState(), 600);
+  };
 
   // Then, listen for state change events
   window.electronAPI.sessionState.onStateChange(handleStateChange);
@@ -1071,6 +1153,15 @@ export function initSessionStateListeners(): () => void {
     readStateSyncTimers.clear();
 
     blitzAnalysisTriggered.clear();
+
+    if (processingReconcileInterval) {
+      clearInterval(processingReconcileInterval);
+      processingReconcileInterval = undefined;
+    }
+    if (reconcileDebounceTimer) {
+      clearTimeout(reconcileDebounceTimer);
+      reconcileDebounceTimer = undefined;
+    }
 
     window.electronAPI.sessionState?.removeStateChangeListener?.(handleStateChange);
     window.electronAPI.sessionState?.unsubscribe?.();

@@ -20,8 +20,7 @@ This package currently contains:
 - interactive widget responses bridged from the transcript `WebView` back to desktop session control
 - unread-state tracking for the active session and unread indicators in the session list
 - desktop settings/model metadata sync surfaced in Android settings
-- notification permission and FCM token registration plumbing wired on the Android client
-- server-side FCM send path added in `packages/collabv3` for Android mobile push delivery
+- notification permission and FCM token registration plumbing wired on the Android client (the server-side push send path lives in the sibling `nimbalyst-collab` repository, not this monorepo)
 - a dedicated Vite transcript bundle setup under `src/transcript/`
 - package-local docs and scripts so Android work can evolve without touching the monorepo root
 
@@ -55,13 +54,29 @@ npm run sync:transcript-assets
 
 ### Android app
 
+The project builds with JDK 17. It targets `JavaVersion.VERSION_17` / `jvmTarget = "17"`, and Temurin 17 matches CI. From the repository root:
+
 ```bash
-cd packages/android
-./gradlew :app:assembleDebug
-./gradlew :app:testDebugUnitTest
+npm run android:test:unit         # ./gradlew :app:testDebugUnitTest
+npm run android:assemble:debug    # ./gradlew :app:assembleDebug
+npm run android:assemble:release  # ./gradlew :app:assembleRelease
 ```
 
-If `JAVA_HOME` points at GraalVM on this machine, Android builds can fail during the AGP `jlink` step. Using the installed OpenJDK at `/Users/ghinkle/Library/Java/JavaVirtualMachines/openjdk-20.0.2/Contents/Home` worked for `assembleDebug` and `testDebugUnitTest`.
+To run Gradle directly, point `JAVA_HOME` at a Temurin 17 install:
+
+```bash
+cd packages/android
+JAVA_HOME=/path/to/temurin-17 ./gradlew :app:assembleDebug
+JAVA_HOME=/path/to/temurin-17 ./gradlew :app:testDebugUnitTest
+```
+
+If `JAVA_HOME` points at GraalVM, Android builds can fail during the AGP `jlink` step. Temurin 17 sidesteps that and matches the Gradle config.
+
+### Builds, signing, and CI
+
+- `google-services` is applied conditionally (only when `app/google-services.json` exists), so the build is green without it and push stays inert until the file is added.
+- The release `signingConfig` reads the keystore path and credentials from environment variables: `NIMBALYST_ANDROID_KEYSTORE`, `NIMBALYST_ANDROID_KEYSTORE_PASSWORD`, `NIMBALYST_ANDROID_KEY_ALIAS`, `NIMBALYST_ANDROID_KEY_PASSWORD`. With no keystore the release build is unsigned. Minification stays off.
+- `.github/workflows/android-build.yml` builds the APK in CI and supplies the signing secrets to produce a signed release artifact.
 
 The app currently boots into a native Compose shell with placeholder project, session, and settings screens plus a `TranscriptWebView` container that will load the generated transcript asset bundle once `dist-transcript/` has been synced into the Android build assets.
 
@@ -83,5 +98,5 @@ Android can now:
 
 Current push blocker:
 
-- There is no `google-services.json` in this workspace, so Android cannot complete real FCM registration yet.
-- Firebase/FCM secrets still need to be provided to the worker environment before Android push can deliver in production.
+- There is no `google-services.json` in this workspace, so Android cannot complete real FCM registration yet. The `google-services` plugin is applied conditionally, so the build stays green and push stays inert until the file is added.
+- Firebase/FCM secrets still need to be provided to the collab server environment (the sibling `nimbalyst-collab` repository) before Android push can deliver in production.

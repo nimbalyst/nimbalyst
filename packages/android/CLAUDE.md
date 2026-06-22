@@ -56,33 +56,43 @@ packages/android/
 
 ### Firebase / Notifications
 
-- `app/google-services.json` is local environment config. Do **not** commit it.
+- `app/google-services.json` is local environment config. Do **not** commit it. The `google-services` Gradle plugin is applied conditionally (only when the file exists), so a build without it stays green and push stays inert.
 - Client push registration lives in `notifications/NotificationManager.kt`.
-- Server push delivery is implemented in `packages/collabv3`. Android push changes usually require coordinated client + server work.
+- Server push delivery lives in the collab server, which is the sibling `nimbalyst-collab` repository, not this monorepo. Clone it next to this repo at `../nimbalyst-collab` (override with `COLLAB_SERVER_PATH`); collab tests are gated by `RUN_COLLAB_TESTS=1`. See `.github/workflows/ci.yml`. Android push changes usually require coordinated client + server work.
 
 ## Development
 
 ### Prerequisites
 
 - Android Studio Ladybug / AGP-compatible version for this project
-- JDK 20 for Gradle builds on this machine
+- JDK 17 for Gradle builds. The project targets `JavaVersion.VERSION_17` and `jvmTarget = "17"`, and Temurin 17 matches CI. A non-17 JDK (e.g. GraalVM) can fail the AGP `jlink` step.
 - Android SDK + emulator tooling
 - Node.js 20+ for transcript bundle builds
 
 ### Commands
 
+From the repository root the npm scripts wrap the Gradle tasks:
+
 ```bash
-# Build transcript bundle
-npm run build:transcript --prefix packages/android
-
-# Assemble debug APK
-cd packages/android
-JAVA_HOME=/Users/ghinkle/Library/Java/JavaVirtualMachines/openjdk-20.0.2/Contents/Home ./gradlew :app:assembleDebug
-
-# Run unit tests
-cd packages/android
-JAVA_HOME=/Users/ghinkle/Library/Java/JavaVirtualMachines/openjdk-20.0.2/Contents/Home ./gradlew :app:testDebugUnitTest
+npm run android:build:transcript    # build the transcript bundle
+npm run android:test:unit           # ./gradlew :app:testDebugUnitTest
+npm run android:assemble:debug      # ./gradlew :app:assembleDebug
+npm run android:assemble:release    # ./gradlew :app:assembleRelease
 ```
+
+To invoke Gradle directly, point `JAVA_HOME` at a Temurin 17 install (no hard-coded user path):
+
+```bash
+cd packages/android
+JAVA_HOME=/path/to/temurin-17 ./gradlew :app:assembleDebug
+JAVA_HOME=/path/to/temurin-17 ./gradlew :app:testDebugUnitTest
+```
+
+### Builds, signing, and CI
+
+- The `google-services` plugin is applied only when `app/google-services.json` is present, so a build without it succeeds and push stays inert until the file is added.
+- The release `signingConfig` reads the keystore path and credentials from environment variables: `NIMBALYST_ANDROID_KEYSTORE`, `NIMBALYST_ANDROID_KEYSTORE_PASSWORD`, `NIMBALYST_ANDROID_KEY_ALIAS`, `NIMBALYST_ANDROID_KEY_PASSWORD`. When the keystore is absent the release build is simply unsigned. Minification stays off (signed is not the same as minified).
+- CI builds the APK via `.github/workflows/android-build.yml`, which supplies the keystore and signing secrets to produce a signed release artifact.
 
 Open `packages/android/` in Android Studio, not the repo root.
 
@@ -95,7 +105,7 @@ Open `packages/android/` in Android Studio, not the repo root.
   - `local.properties`
   - build outputs
 - If Android Studio reports AGP incompatibility, the correct fix is usually to update Android Studio rather than downgrade AGP/Kotlin.
-- When changing sync protocol behavior, inspect the matching iOS and CollabV3 code paths before editing.
+- When changing sync protocol behavior, inspect the matching iOS code paths in this repo and the collab server code paths in the sibling `nimbalyst-collab` repository before editing.
 - When changing transcript bridge behavior, update or add Android tests in `app/src/test/` where possible.
 
 ## Important Files

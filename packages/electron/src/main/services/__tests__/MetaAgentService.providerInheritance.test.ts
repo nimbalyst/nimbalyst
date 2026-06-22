@@ -52,6 +52,20 @@ vi.mock('@nimbalyst/runtime/ai/server/SessionStateManager', () => ({
   getSessionStateManager: () => ({ subscribe: vi.fn() }),
 }));
 
+// resolveExtensionAgentRef is the "parent is a chat-only extension agent"
+// detector the fix keys on. The real impl reads the AgentProviderRegistry
+// singleton, which is empty in this hermetic unit test (no extension would be
+// registered), so it would return null for 'antigravity-gemini-agent' and the
+// redirect would never fire. Mock it to mark only the gemini provider as an
+// extension agent; built-ins (claude-code, openai-codex) stay null.
+vi.mock('../ai/providerResolution', () => ({
+  resolveExtensionAgentRef: (provider: string) =>
+    provider === 'antigravity-gemini-agent'
+      ? { extensionId: 'antigravity-gemini', contributionId: provider }
+      : null,
+  isExtensionAgentProvider: (provider: string) => provider === 'antigravity-gemini-agent',
+}));
+
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [] },
 }));
@@ -62,14 +76,17 @@ vi.mock('../../utils/store', () => ({ getDefaultAIModel: () => null }));
 vi.mock('../../utils/timestampUtils', () => ({ toMillis: (v: unknown) => v }));
 vi.mock('../WorktreeStore', () => ({ createWorktreeStore: vi.fn() }));
 vi.mock('../GitWorktreeService', () => ({ GitWorktreeService: class {} }));
-vi.mock('../../database/PGLiteDatabaseWorker', () => ({ database: { query: vi.fn() } }));
+// createChildSessionInternal runs an IN_FLIGHT_SPAWN_CAP COUNT(*) query and
+// destructures { rows } from the result, so the worker mock must return a shape
+// with rows (count '0' => under the cap, spawn proceeds).
+vi.mock('../../database/PGLiteDatabaseWorker', () => ({
+  database: { query: vi.fn().mockResolvedValue({ rows: [{ count: '0' }] }) },
+}));
 vi.mock('../../database/initialize', () => ({ getDatabase: () => null }));
 vi.mock('../../file/GitRefWatcher', () => ({ gitRefWatcher: {} }));
 vi.mock('./ai/AIService', () => ({ AIService: class {} }));
 vi.mock('../../mcp/metaAgentServer', () => ({
-  startMetaAgentServer: vi.fn(),
   setMetaAgentToolFns: vi.fn(),
-  shutdownMetaAgentServer: vi.fn(),
 }));
 vi.mock('../metaAgentNotificationSignature', () => ({ computeNotificationSignature: vi.fn() }));
 vi.mock('../metaAgentMessageText', () => ({
@@ -83,6 +100,7 @@ vi.mock('../ai/claudeCliLauncherSingleton', () => ({
 }));
 
 import { AISessionsRepository } from '@nimbalyst/runtime';
+import { database as databaseWorker } from '../../database/PGLiteDatabaseWorker';
 import { MetaAgentService } from '../MetaAgentService';
 
 const GEMINI_PARENT = {
@@ -97,32 +115,81 @@ const CLAUDE_PARENT = {
   model: 'claude-code:opus',
 };
 
+const CODEX_PARENT = {
+  id: 'parent-codex-session',
+  provider: 'openai-codex',
+  model: 'openai-codex:gpt-5.4',
+};
+
+
 describe('MetaAgentService child-spawn provider inheritance', () => {
   beforeEach(() => {
     vi.mocked(AISessionsRepository.create).mockReset();
     vi.mocked(AISessionsRepository.get).mockReset();
   });
 
-  it('inherits a non-Claude parent provider+model when the spawn omits an explicit model (no silent claude-code:opus fallback)', async () => {
+  it('inherits the gemini parent provider+model when the parent is a chat-only extension agent and no provider is given', async () => {
     const service = MetaAgentService.getInstance();
     // The child-spawn path guards on this.aiService being present.
     (service as any).aiService = { queuePromptForSession: vi.fn() };
     vi.mocked(AISessionsRepository.get).mockResolvedValue(GEMINI_PARENT as any);
 
-    // No explicit model/provider - the case the model hits when it leaves the
-    // optional `model` arg off. getDefaultAIModel() is mocked to null, so the
-    // pre-fix code would resolve to the hardcoded 'claude-code:opus'.
+    // No explicit model/provider - the default delegated-child case. A gemini
+    // (antigravity-gemini-agent) meta-agent parent spawns a gemini child by
+    // default, the same way a claude-code parent spawns claude-code children and
+    // an openai-codex parent spawns openai-codex children. The child inherits the
+    // parent provider+model verbatim.
     await (service as any).createChildSessionInternal('parent-gemini-session', '/workspace/path', {});
 
     expect(AISessionsRepository.create).toHaveBeenCalledTimes(1);
 
-    // Behavior is the contract: the child carries the parent's provider+model.
     const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
     expect(created.provider).toBe('antigravity-gemini-agent');
     expect(created.model).toBe('antigravity-gemini-agent:gemini-flash-3.5');
-    // The regression guard: a Gemini parent must never spawn a Claude/Opus child.
+    // The regression guard: the gemini parent must NOT be silently redirected to
+    // claude-code anymore.
     expect(created.provider).not.toBe('claude-code');
-    expect(created.model).not.toBe('claude-code:opus');
+  });
+
+  it('honors an explicit args.provider so the model can deliberately spawn a gemini child from a claude-code parent', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    // Parent is dev-capable claude-code, but the caller explicitly asks for the
+    // chat-only gemini provider. The explicit override must win.
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(CLAUDE_PARENT as any);
+
+    await (service as any).createChildSessionInternal('parent-claude-session', '/workspace/path', {
+      provider: 'antigravity-gemini-agent',
+    });
+
+    const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
+    expect(created.provider).toBe('antigravity-gemini-agent');
+  });
+
+  it('still inherits a dev-capable built-in parent (claude-code) when no provider is given', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(CLAUDE_PARENT as any);
+
+    await (service as any).createChildSessionInternal('parent-claude-session', '/workspace/path', {});
+
+    const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
+    // resolveExtensionAgentRef returns null for built-ins, so the redirect does
+    // not fire and the child inherits the parent provider+model unchanged.
+    expect(created.provider).toBe('claude-code');
+    expect(created.model).toBe('claude-code:opus');
+  });
+
+  it('still inherits a dev-capable built-in parent (openai-codex) when no provider is given', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(CODEX_PARENT as any);
+
+    await (service as any).createChildSessionInternal('parent-codex-session', '/workspace/path', {});
+
+    const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
+    expect(created.provider).toBe('openai-codex');
+    expect(created.model).toBe('openai-codex:gpt-5.4');
   });
 
   it('still lets an explicit model arg win over the inherited parent', async () => {
@@ -196,5 +263,80 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
     // matters: an orphan call still resolves to claude-code, unchanged by the fix.
     expect(created.provider).toBe('claude-code');
     expect(created.model).toMatch(/^claude-code:/);
+  });
+
+  it('inherits the gemini MODEL via args.model from a gemini parent (spawn_session inheritModel path)', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(GEMINI_PARENT as any);
+
+    // spawn_session with inheritModel passes the parent's gemini model verbatim as
+    // args.model. The child keeps that model and tryParse recovers the gemini
+    // provider, so the child stays gemini - the desired same-provider inheritance.
+    await (service as any).createChildSessionInternal('parent-gemini-session', '/workspace/path', {
+      model: 'antigravity-gemini-agent:gemini-flash-3.5',
+    });
+
+    const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
+    expect(created.provider).toBe('antigravity-gemini-agent');
+    expect(created.model).toBe('antigravity-gemini-agent:gemini-flash-3.5');
+    expect(created.provider).not.toBe('claude-code');
+  });
+
+  it('honors an explicit gemini provider on a gemini parent (explicit-copy path is no longer forced to claude-code)', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(GEMINI_PARENT as any);
+
+    // A gemini parent that copies its own provider into args.provider must be
+    // honored as gemini - the same-provider default. The old post-resolution force
+    // wrongly rewrote this to claude-code; that override is reverted.
+    await (service as any).createChildSessionInternal('parent-gemini-session', '/workspace/path', {
+      provider: 'antigravity-gemini-agent',
+    });
+
+    const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
+    expect(created.provider).toBe('antigravity-gemini-agent');
+    expect(created.provider).not.toBe('claude-code');
+  });
+});
+
+describe('MetaAgentService total spawn cap', () => {
+  beforeEach(() => {
+    vi.mocked(AISessionsRepository.create).mockReset();
+    vi.mocked(AISessionsRepository.get).mockReset();
+    // Reset the shared worker-query mock back to the under-cap default so other
+    // tests in this file are unaffected by the over-cap override below.
+    vi.mocked(databaseWorker.query).mockResolvedValue({ rows: [{ count: '0' }] } as any);
+  });
+
+  it('throws past the total spawn cap (children counted regardless of status)', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(CLAUDE_PARENT as any);
+    // 15 total children already spawned by this parent (>= TOTAL_SPAWN_CAP). The
+    // count includes settled children now, so sequential re-spawning from
+    // completion-wakeups is bounded where the old in-flight-only count was not.
+    vi.mocked(databaseWorker.query).mockResolvedValue({ rows: [{ count: '15' }] } as any);
+
+    await expect(
+      (service as any).createChildSessionInternal('parent-claude-session', '/workspace/path', {})
+    ).rejects.toThrow(/spawn cap reached/);
+
+    expect(AISessionsRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('never pairs an explicit claude-code provider with the inherited gemini model (consistency guard)', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(GEMINI_PARENT as any);
+    // A Gemini meta-agent explicitly picks claude-code but passes NO model.
+    // The child must NOT be persisted as claude-code + the inherited gemini
+    // model (which routes to Claude Code, is rejected, and dies with no output).
+    await (service as any).createChildSessionInternal('parent-gemini-session', '/workspace/path', { provider: 'claude-code' });
+    const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
+    expect(created.provider).toBe('claude-code');
+    expect(String(created.model)).not.toContain('antigravity-gemini-agent');
+    expect(String(created.model).startsWith('claude-code:')).toBe(true);
   });
 });

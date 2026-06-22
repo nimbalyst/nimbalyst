@@ -16,7 +16,7 @@ import { bucketContentLength } from './aiServiceUtils';
 const CHART_TOOL_NAMES = new Set([
   'display_chart',
   'mcp__nimbalyst__display_chart',
-  'mcp__nimbalyst-mcp__display_to_user',
+  'mcp__nimbalyst__display_to_user',
 ]);
 
 export interface ClaudeCliResponseEvent {

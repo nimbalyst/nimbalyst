@@ -987,6 +987,73 @@ describe('AskUserQuestionWidget', () => {
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
   });
+
+  it('does not crash when a question is missing its options array (issue #618)', () => {
+    // Regression: the model called AskUserQuestion with a non-select field shape
+    // (e.g. editText/confirm) that has no `options`. Before the parseQuestions
+    // hardening this threw "Cannot read properties of undefined (reading 'map')"
+    // in both the pending and completed render branches. A malformed question
+    // must be dropped, and any valid sibling question must still render.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const message = makeToolMessage('AskUserQuestion', {
+      questions: [
+        // Malformed: no options array at all.
+        { question: 'Free text?', header: 'Text', type: 'editText' },
+        // Valid sibling that must survive.
+        {
+          question: 'Which framework?',
+          header: 'Framework',
+          options: [
+            { label: 'React', description: 'Component library' },
+            { label: 'Vue', description: 'Progressive framework' },
+          ],
+          multiSelect: false,
+        },
+      ],
+    });
+    expect(() =>
+      render(
+        <Wrapper>
+          <AskUserQuestionWidget
+            message={message}
+            isExpanded={false}
+            onToggle={() => {}}
+            sessionId="issue-618"
+          />
+        </Wrapper>
+      )
+    ).not.toThrow();
+    // The valid question renders; the malformed one is dropped.
+    expect(screen.getByText('Which framework?')).toBeDefined();
+    expect(screen.queryByText('Free text?')).toBeNull();
+    expect(screen.getAllByTestId('ask-user-question-option').length).toBe(2);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('returns null when every question is malformed (issue #618)', () => {
+    // All questions lack options -> nothing renderable -> widget renders nothing
+    // rather than a "Widget failed to render" error card.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const message = makeToolMessage('AskUserQuestion', {
+      questions: [
+        { question: 'Confirm?', header: 'Confirm', type: 'confirm' },
+        { question: 'Free text?', header: 'Text', type: 'editText' },
+      ],
+    });
+    const { container } = render(
+      <Wrapper>
+        <AskUserQuestionWidget
+          message={message}
+          isExpanded={false}
+          onToggle={() => {}}
+          sessionId="issue-618-all-bad"
+        />
+      </Wrapper>
+    );
+    expect(container.innerHTML).toBe('');
+    warnSpy.mockRestore();
+  });
 });
 
 // ============================================================================

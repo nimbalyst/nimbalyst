@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+echo "[pre-push] Checking override/dep sync..."
+npm run check:override-sync
+
 echo "[pre-push] Running typecheck..."
 npm run typecheck
 

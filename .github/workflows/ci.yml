@@ -49,6 +49,9 @@ jobs:
         working-directory: packages/extension-sdk
         run: npm run build
 
+      - name: Check override/dep sync
+        run: npm run check:override-sync
+
       - name: Run unit tests
         run: npm run test:unit -- --run
 

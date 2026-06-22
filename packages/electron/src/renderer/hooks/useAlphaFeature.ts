@@ -7,9 +7,9 @@
  * @example
  * ```tsx
  * function MyComponent() {
- *   const isCollaborationEnabled = useAlphaFeature('collaboration');
+ *   const isBlitzEnabled = useAlphaFeature('blitz');
  *
- *   if (!isCollaborationEnabled) {
+ *   if (!isBlitzEnabled) {
  *     return <div>Feature not available</div>;
  *   }
  *

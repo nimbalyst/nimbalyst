@@ -48,12 +48,17 @@ import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { isAuthenticated } from './StytchAuthService';
 import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
-import { getOrgKey, getOrgKeyFingerprint, fetchAndUnwrapOrgKey } from './OrgKeyService';
+import { getOrgKey, getOrgKeyFingerprint, fetchAndUnwrapOrgKey, fetchTeamKeyStatus, setTeamKeyCustodyMode } from './OrgKeyService';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { getDatabase } from '../database/initialize';
 import { TrackerPGLiteStore } from './tracker/TrackerPGLiteStore';
+import {
+  getMaxTrackerSchemaSyncId,
+  listUnsyncedTrackerSchemaDefs,
+} from './tracker/trackerTypeDefStore';
+import { applyRemoteWorkspaceTrackerSchemaDef } from './TrackerSchemaService';
 import { windows, windowStates } from '../window/windowState';
-import { getEffectiveTrackerSyncPolicy, shouldSyncTrackerPolicy } from './TrackerPolicyService';
+import { getEffectiveTrackerSyncPolicy, decideBackfillAction } from './TrackerPolicyService';
 import { rowToTrackerItem } from '../mcp/tools/trackerToolHandlers';
 
 // ============================================================================
@@ -243,27 +248,44 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
     return;
   }
 
-  // Resolve org encryption key. If the envelope hasn't been shared with
-  // us yet, surface a status update but don't crash; the user can ask
-  // an admin to share, then we'll reinitialize.
-  let encryptionKey = await getOrgKey(team.orgId);
-  if (!encryptionKey) {
-    try {
-      const orgJwt = await getOrgScopedJwt(team.orgId);
-      encryptionKey = await fetchAndUnwrapOrgKey(team.orgId, orgJwt);
-    } catch (err) {
-      logger.main.warn('[TrackerSyncManager] failed to fetch org key envelope:', err);
-    }
+  // Epic H2: decide the key-custody lane BEFORE touching the ECDH envelope
+  // path. In server-managed mode the server holds the per-team DEK and the
+  // engine syncs PLAINTEXT, so no org key is fetched or required.
+  let keyStatusMode: 'legacy-e2e' | 'server-managed' = 'legacy-e2e';
+  try {
+    const orgJwt = await getOrgScopedJwt(team.orgId);
+    keyStatusMode = (await fetchTeamKeyStatus(team.orgId, orgJwt)).mode;
+  } catch (err) {
+    logger.main.warn('[TrackerSyncManager] key-status fetch failed; assuming legacy-e2e:', err);
+  }
+  const serverManaged = keyStatusMode === 'server-managed';
+
+  // Resolve org encryption key (legacy mode only). If the envelope hasn't been
+  // shared with us yet, surface a status update but don't crash; the user can
+  // ask an admin to share, then we'll reinitialize.
+  let encryptionKey: CryptoKey | null = null;
+  if (!serverManaged) {
+    encryptionKey = await getOrgKey(team.orgId);
     if (!encryptionKey) {
-      logger.main.warn(
-        '[TrackerSyncManager] no encryption key for', team.orgId,
-        '-- engine not started until admin shares envelope.',
-      );
-      return;
+      try {
+        const orgJwt = await getOrgScopedJwt(team.orgId);
+        encryptionKey = await fetchAndUnwrapOrgKey(team.orgId, orgJwt);
+      } catch (err) {
+        logger.main.warn('[TrackerSyncManager] failed to fetch org key envelope:', err);
+      }
+      if (!encryptionKey) {
+        logger.main.warn(
+          '[TrackerSyncManager] no encryption key for', team.orgId,
+          '-- engine not started until admin shares envelope.',
+        );
+        return;
+      }
     }
+  } else {
+    logger.main.info('[TrackerSyncManager] team', team.orgId, 'is server-managed; skipping ECDH org-key unwrap');
   }
 
-  const orgKeyFingerprint = getOrgKeyFingerprint(team.orgId);
+  const orgKeyFingerprint = serverManaged ? null : getOrgKeyFingerprint(team.orgId);
 
   const db = getDatabase();
   if (!db) {
@@ -278,11 +300,19 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
     orgId: team.orgId,
     teamProjectId: team.teamProjectId,
     userId: '',  // informational only; the JWT carries the authoritative sub
-    encryptionKey,
+    keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
+    encryptionKey: encryptionKey ?? undefined,
     orgKeyFingerprint,
     persistence,
+    schemaSync: {
+      getMaxSyncId: () => getMaxTrackerSchemaSyncId(workspacePath),
+      listUnsynced: () => listUnsyncedTrackerSchemaDefs(workspacePath),
+      applyRemote: (def) => applyRemoteWorkspaceTrackerSchemaDef(workspacePath, def),
+    },
     getJwt: () => getOrgScopedJwt(team.orgId),
-    refreshKey: () => refreshKeyForOrg(team.orgId),
+    // Legacy-only: server-managed mode never hits staleKeyEpoch (server owns
+    // the epoch), so a key-refresh callback would be dead weight.
+    refreshKey: serverManaged ? undefined : () => refreshKeyForOrg(team.orgId),
     // Node.js 22+ ships a global WebSocket, but Electron's main process
     // historically pinned a Chromium-era version; use `ws` from the same
     // import DocumentSyncHandlers does for reliability across Electron
@@ -334,6 +364,14 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
       // names the failure mode -- decrypt failure, websocket drop, etc.
       logger.main.error('[TrackerSyncManager] bootstrap failed for', workspacePath, ':', err);
     },
+    onRoomMoved: (dest) => {
+      // Epic H3 P1: the project's tracker room was relocated to another org.
+      // Re-resolve routing (findTeamForWorkspace now reflects the flipped D1
+      // project_discovery) and reconnect to the destination room.
+      logger.main.info('[TrackerSyncManager] room moved for', workspacePath, '->', `${dest.destOrgId}:${dest.destTeamProjectId}`, '; re-resolving routing');
+      void reinitializeTrackerSync(workspacePath).catch(err =>
+        logger.main.warn('[TrackerSyncManager] reinitialize after room-moved failed for', workspacePath, err));
+    },
   };
 
   logger.main.info('[TrackerSyncManager] creating engine for', workspacePath, 'roomId:', `org:${team.orgId}:tracker:${team.teamProjectId}`);
@@ -375,6 +413,130 @@ export function shutdownTrackerSync(workspacePath?: string): void {
 export async function reinitializeTrackerSync(workspacePath: string): Promise<void> {
   shutdownTrackerSync(workspacePath);
   await initializeTrackerSync(workspacePath);
+}
+
+/**
+ * Epic H2 client-assisted migration cutover (admin action).
+ *
+ * Flips a team from legacy-e2e (client-side zero-knowledge) to server-managed,
+ * then re-uploads the team's locally-decrypted tracker data as PLAINTEXT so the
+ * server can re-encrypt it at rest with the team DEK. The legacy ciphertext rows
+ * (written under the old org key, undecryptable to keyless clients) are thereby
+ * replaced.
+ *
+ * Steps:
+ *   1. POST set-key-custody-mode=server-managed (admin-gated server-side).
+ *   2. Mark every shared local tracker item AND schema def for re-push
+ *      (`sync_id = NULL`, `sync_status = 'pending'`).
+ *   3. Reinitialize the engine — it fetches key-status (now server-managed),
+ *      runs in plaintext pass-through, and the on-connect backfill re-uploads
+ *      the marked items; `pushPendingSchemas` re-uploads the marked schemas.
+ *
+ * NOTE (documents): shared documents/doc-index titles re-seed on the same
+ * reconnect (TeamSync re-registers titles on the next title write; a Yjs doc
+ * re-compacts as plaintext when its client next elects). A future enhancement
+ * can force an explicit document re-seed; tracker data is the priority path.
+ *
+ * Returns the orgId and how many items were marked for re-push. Requires the
+ * caller to be a team admin (enforced by the server REST gate).
+ */
+export async function migrateTeamToServerManaged(
+  orgId: string,
+  workspacePath?: string,
+): Promise<{ orgId: string; itemsMarked: number; schemasMarked: number; workspacesMarked: string[] }> {
+  if (!orgId) throw new Error('orgId required');
+
+  if (workspacePath) {
+    const team = await findTeamForWorkspace(workspacePath);
+    if (!team) throw new Error('No team found for this workspace');
+    if (team.orgId !== orgId) {
+      throw new Error('Selected organization does not match the active workspace.');
+    }
+  }
+
+  const db = getDatabase();
+  if (!db) throw new Error('Database not available');
+
+  const docRows = await db.query<{ n: number | string }>(
+    `SELECT COUNT(*) AS n FROM collab_local_origins WHERE org_id = $1`,
+    [orgId],
+  );
+  const linkedDocCount = Number(docRows.rows[0]?.n ?? 0);
+  if (linkedDocCount > 0) {
+    throw new Error(
+      `Cannot update encryption yet: ${linkedDocCount} linked shared document${linkedDocCount === 1 ? '' : 's'} still need document migration support.`,
+    );
+  }
+
+  const workspaceRows = await db.query<{ workspace: string }>(
+    `
+      SELECT DISTINCT workspace FROM tracker_items WHERE workspace IS NOT NULL
+      UNION
+      SELECT DISTINCT workspace FROM tracker_type_defs WHERE workspace IS NOT NULL
+    `,
+  );
+  const workspacesForOrg: string[] = [];
+  for (const row of workspaceRows.rows) {
+    if (!row.workspace) continue;
+    try {
+      const team = await findTeamForWorkspace(row.workspace);
+      if (team?.orgId === orgId) {
+        workspacesForOrg.push(row.workspace);
+      }
+    } catch {
+      // Ignore stale/missing local workspaces; they cannot be safely reuploaded.
+    }
+  }
+  if (workspacePath && !workspacesForOrg.includes(workspacePath)) {
+    workspacesForOrg.push(workspacePath);
+  }
+  if (workspacesForOrg.length === 0) {
+    throw new Error('No local tracker workspaces found for this organization.');
+  }
+
+  const orgJwt = await getOrgScopedJwt(orgId);
+  // 1. Server cutover (admin-gated; throws on non-admin / failure).
+  await setTeamKeyCustodyMode(orgId, 'server-managed', orgJwt);
+
+  // 2. Mark shared local items + schema defs for re-push as plaintext. Count
+  // first (cross-backend: the query seam doesn't expose an affected-row count).
+  const countRows = async (table: string, workspace: string): Promise<number> => {
+    const res = await db.query(
+      `SELECT COUNT(*) AS n FROM ${table} WHERE workspace = $1 AND deleted_at IS NULL`,
+      [workspace],
+    );
+    return Number((res.rows[0] as { n: number | string } | undefined)?.n ?? 0);
+  };
+  let itemsMarked = 0;
+  let schemasMarked = 0;
+  for (const workspace of workspacesForOrg) {
+    itemsMarked += await countRows('tracker_items', workspace);
+    schemasMarked += await countRows('tracker_type_defs', workspace);
+    await db.query(
+      `UPDATE tracker_items
+          SET sync_id = NULL, sync_status = 'pending'
+        WHERE workspace = $1 AND deleted_at IS NULL`,
+      [workspace],
+    );
+    await db.query(
+      `UPDATE tracker_type_defs
+          SET sync_id = NULL, sync_status = 'pending'
+        WHERE workspace = $1 AND deleted_at IS NULL`,
+      [workspace],
+    );
+  }
+  logger.main.info(
+    '[TrackerSyncManager] migrate-to-server-managed for', orgId,
+    '-- marked', itemsMarked, 'items and', schemasMarked, 'schemas across', workspacesForOrg.length, 'workspaces for plaintext re-push',
+  );
+
+  // 3. Reconnect in server-managed mode; on-connect backfill re-uploads.
+  for (const workspace of workspacesForOrg) {
+    backfilledWorkspaces.delete(workspace);
+    await reinitializeTrackerSync(workspace);
+  }
+
+  return { orgId, itemsMarked, schemasMarked, workspacesMarked: workspacesForOrg };
 }
 
 /**
@@ -432,10 +594,15 @@ async function backfillSharedLocalItems(workspacePath: string): Promise<void> {
     return;
   }
 
+  // Candidates: never-synced items (`sync_id IS NULL`) plus items left
+  // `sync_status='pending'` by an offline mutation -- including the `nim` CLI
+  // writing directly to SQLite while the app was closed. Re-pushing an
+  // already-synced item is idempotent: `applyRemoteItem` flips it back to
+  // 'synced' on ack, so it falls out of this set on the next launch.
   const candidates = await db.query(
     `SELECT * FROM tracker_items
      WHERE workspace = $1
-       AND sync_id IS NULL
+       AND (sync_id IS NULL OR sync_status = 'pending')
        AND deleted_at IS NULL
      ORDER BY created ASC`,
     [workspacePath],
@@ -448,14 +615,38 @@ async function backfillSharedLocalItems(workspacePath: string): Promise<void> {
 
   let queued = 0;
   let skipped = 0;
+  let deleted = 0;
   for (const row of candidates.rows) {
     const policy = getEffectiveTrackerSyncPolicy(workspacePath, row.type as string);
-    if (!shouldSyncTrackerPolicy(policy)) {
+    const item = rowToTrackerItem(row) as TrackerItem;
+    // Per-item gate (NIM-876 / NIM-880): hybrid types sync ONLY flagged items.
+    //   - flagged/shared            -> upsert
+    //   - previously shared (sync_id set) but now UNFLAGGED -> delete from the
+    //       room (propagates an offline unshare; previously this re-uploaded the
+    //       item or left a stale copy behind)
+    //   - never shared + unflagged  -> skip (local-only, no leak)
+    const previouslyShared = row.sync_id != null;
+    const action = decideBackfillAction(policy, item, previouslyShared);
+    if (action === 'skip') {
       skipped++;
       continue;
     }
+    if (action === 'delete') {
+      try {
+        await entry.engine.deleteItem(row.id as string);
+        // Reset the local row so it isn't re-processed (or re-deleted) on the
+        // next reconnect.
+        await db.query(
+          `UPDATE tracker_items SET sync_status = 'local', sync_id = NULL WHERE id = $1`,
+          [row.id],
+        );
+        deleted++;
+      } catch (err) {
+        logger.main.warn('[TrackerSyncManager] backfill deleteItem failed for item', row.id, err);
+      }
+      continue;
+    }
     try {
-      const item = rowToTrackerItem(row) as TrackerItem;
       const payload = trackerItemToPayload(item);
       await entry.engine.upsertItem(payload);
       queued++;
@@ -466,7 +657,7 @@ async function backfillSharedLocalItems(workspacePath: string): Promise<void> {
 
   logger.main.info(
     '[TrackerSyncManager] backfill complete for', workspacePath,
-    'queued:', queued, 'skipped-local-only:', skipped, 'total-candidates:', candidates.rows.length,
+    'queued:', queued, 'deleted:', deleted, 'skipped-local-only:', skipped, 'total-candidates:', candidates.rows.length,
   );
 }
 
@@ -660,6 +851,22 @@ export function registerTrackerSyncHandlers(): void {
     }
   });
 
+  // Epic H2 admin action: migrate this workspace's team from legacy-e2e to
+  // server-managed key custody, then re-push local tracker data as plaintext.
+  safeHandle('tracker-sync:migrate-to-server-managed', async (_event, payload: string | { orgId?: string; workspacePath?: string }) => {
+    const orgId = typeof payload === 'string' ? undefined : payload?.orgId;
+    const wp = typeof payload === 'string' ? payload : payload?.workspacePath;
+    if (!orgId) {
+      return { success: false, error: 'orgId required' };
+    }
+    try {
+      const result = await migrateTeamToServerManaged(orgId, wp);
+      return { success: true, ...result };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
   safeHandle('tracker-sync:upsert-item', async (_event, payload: { item: TrackerItem }) => {
     if (!payload?.item) {
       return { success: false, error: 'item required' };
@@ -752,6 +959,11 @@ export function registerTrackerSyncHandlers(): void {
           encryptionKey,
           orgKeyFingerprint,
           persistence,
+          schemaSync: {
+            getMaxSyncId: () => getMaxTrackerSchemaSyncId(workspacePath),
+            listUnsynced: () => listUnsyncedTrackerSchemaDefs(workspacePath),
+            applyRemote: (def) => applyRemoteWorkspaceTrackerSchemaDef(workspacePath, def),
+          },
           getJwt: async () => 'test-jwt',
           createWebSocket: ((url: string) => new WebSocket(url)) as unknown as TrackerSyncEngineConfig['createWebSocket'],
           onStatusChange: (status) => {

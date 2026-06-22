@@ -8,8 +8,12 @@ import type { TrackerItemType } from '@nimbalyst/runtime';
 import {
   trackerModeLayoutAtom,
   setTrackerModeLayoutAtom,
+  trackerSavedViewsAtom,
+  saveTrackerViewAtom,
+  deleteTrackerViewAtom,
   type TrackerFilterChip,
 } from '../../store/atoms/trackers';
+import type { SavedView } from './trackerSavedViews';
 
 // Ensure built-in trackers are loaded
 loadBuiltinTrackers();
@@ -67,6 +71,41 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
     setModeLayout({ viewMode: mode });
   }, [setModeLayout]);
 
+  // Saved views (NIM-788)
+  const savedViews = useAtomValue(trackerSavedViewsAtom);
+  const saveView = useSetAtom(saveTrackerViewAtom);
+  const deleteView = useSetAtom(deleteTrackerViewAtom);
+
+  const handleSaveView = useCallback((name: string) => {
+    const view: SavedView = {
+      id: crypto.randomUUID(),
+      name,
+      definition: {
+        selectedType: modeLayout.selectedType,
+        activeFilters: modeLayout.activeFilters,
+        viewMode: modeLayout.viewMode,
+        tagFilter: [],
+        groupBy: modeLayout.groupBy,
+      },
+    };
+    saveView(view);
+  }, [modeLayout.selectedType, modeLayout.activeFilters, modeLayout.viewMode, modeLayout.groupBy, saveView]);
+
+  const handleApplyView = useCallback((view: SavedView) => {
+    const def = view.definition;
+    setModeLayout({
+      selectedType: def.selectedType,
+      activeFilters: def.activeFilters,
+      viewMode: def.viewMode,
+      groupBy: def.groupBy,
+      selectedItemId: null,
+    });
+  }, [setModeLayout]);
+
+  const handleDeleteView = useCallback((viewId: string) => {
+    deleteView(viewId);
+  }, [deleteView]);
+
   const handleSidebarWidthChange = useCallback((width: number) => {
     setModeLayout({ sidebarWidth: width });
   }, [setModeLayout]);
@@ -84,6 +123,10 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
       onSelectType={handleSelectType}
       onToggleFilter={handleToggleFilter}
       onViewModeChange={handleViewModeChange}
+      savedViews={savedViews}
+      onApplyView={handleApplyView}
+      onSaveView={handleSaveView}
+      onDeleteView={handleDeleteView}
     />
   );
 

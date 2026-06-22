@@ -60,6 +60,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            "session" -> {
+                // nimbalyst://session/<sessionId> -- opened from a push notification tap.
+                val sessionId = deepLink.pathSegments.firstOrNull()?.takeIf { it.isNotBlank() }
+                if (sessionId == null) {
+                    "Invalid session link."
+                } else {
+                    app.requestSessionNavigation(sessionId)
+                    null
+                }
+            }
+
             "auth" -> when (
                 val result = com.nimbalyst.app.auth.AuthCallbackParser.parse(
                     deepLink = deepLink.toString(),

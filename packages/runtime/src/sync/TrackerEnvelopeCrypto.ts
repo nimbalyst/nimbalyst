@@ -30,6 +30,7 @@
 
 import type {
   EncryptedTrackerItemEnvelope,
+  EncryptedTrackerSchemaEnvelope,
   TrackerItemPayload,
 } from './trackerProtocol';
 import { stripLocalOnlyFields } from './trackerProtocol';
@@ -79,6 +80,10 @@ function base64ToUint8Array(base64: string): Uint8Array {
  */
 function buildItemIdAad(itemId: string): Uint8Array {
   return new TextEncoder().encode(`tracker-item:${itemId}`);
+}
+
+function buildSchemaTypeAad(schemaType: string): Uint8Array {
+  return new TextEncoder().encode(`tracker-schema:${schemaType}`);
 }
 
 // ============================================================================
@@ -150,6 +155,97 @@ export async function decryptTrackerEnvelope(
   );
   const json = new TextDecoder().decode(plaintext);
   return JSON.parse(json) as TrackerItemPayload;
+}
+
+/**
+ * Encrypt a JSON-serialized TrackerDataModel for schema sync. The server never
+ * reads the model, and the plaintext schema type is bound into AES-GCM AAD so a
+ * ciphertext for one type cannot be replayed under another.
+ */
+export async function encryptTrackerSchemaPayload(
+  modelJson: string,
+  key: CryptoKey,
+  schemaType: string,
+): Promise<{ encryptedPayload: string; iv: string }> {
+  const cleartext = new TextEncoder().encode(modelJson);
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTE_LENGTH));
+  const aad = buildSchemaTypeAad(schemaType);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: aad as BufferSource },
+    key,
+    cleartext as BufferSource,
+  );
+  return {
+    encryptedPayload: uint8ArrayToBase64(new Uint8Array(ciphertext)),
+    iv: uint8ArrayToBase64(iv),
+  };
+}
+
+export async function decryptTrackerSchemaEnvelope(
+  envelope: EncryptedTrackerSchemaEnvelope,
+  key: CryptoKey,
+): Promise<string> {
+  if (envelope.encryptedPayload === null) {
+    throw new Error('decryptTrackerSchemaEnvelope called on a tombstone (encryptedPayload=null)');
+  }
+  if (!envelope.iv) {
+    throw new Error('decryptTrackerSchemaEnvelope: envelope missing iv');
+  }
+  const ciphertext = base64ToUint8Array(envelope.encryptedPayload);
+  const iv = base64ToUint8Array(envelope.iv);
+  const aad = buildSchemaTypeAad(envelope.schemaType);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: iv as BufferSource, additionalData: aad as BufferSource },
+    key,
+    ciphertext as BufferSource,
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
+// ============================================================================
+// Epic H2 — server-managed pass-through (no client-side crypto)
+// ============================================================================
+//
+// In `server-managed` key custody the server holds the per-team DEK and
+// encrypts team data at rest. The client sends and receives PLAINTEXT in the
+// `encryptedPayload` field (no iv; `orgKeyFingerprint` null). These helpers are
+// the identity replacements for encrypt/decrypt so TrackerSyncEngine can branch
+// on mode without inlining JSON handling. The itemId/schemaType AAD binding is
+// performed server-side in this mode.
+
+/**
+ * Serialize a `TrackerItemPayload` to the plaintext wire form for
+ * server-managed mode. Strips device-local fields exactly like the encrypted
+ * path so they never cross the wire.
+ */
+export function encodeTrackerPayloadPlaintext(payload: TrackerItemPayload): string {
+  return JSON.stringify(stripLocalOnlyFields(payload));
+}
+
+/**
+ * Parse a plaintext server-managed item envelope back into a payload. Throws
+ * (caught per-item by the engine) on malformed JSON or a missing payload.
+ */
+export function decodeTrackerEnvelopePlaintext(
+  envelope: EncryptedTrackerItemEnvelope,
+): TrackerItemPayload {
+  if (envelope.encryptedPayload === null) {
+    throw new Error('decodeTrackerEnvelopePlaintext called on a tombstone (encryptedPayload=null)');
+  }
+  return JSON.parse(envelope.encryptedPayload) as TrackerItemPayload;
+}
+
+/**
+ * Parse a plaintext server-managed schema envelope back into its model JSON
+ * string. The model is already JSON, so this is a presence/typing guard.
+ */
+export function decodeTrackerSchemaEnvelopePlaintext(
+  envelope: EncryptedTrackerSchemaEnvelope,
+): string {
+  if (envelope.encryptedPayload === null) {
+    throw new Error('decodeTrackerSchemaEnvelopePlaintext called on a tombstone (encryptedPayload=null)');
+  }
+  return envelope.encryptedPayload;
 }
 
 /**

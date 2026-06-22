@@ -377,6 +377,12 @@ export type AgentPermissionMode = 'ask' | 'allow-all' | 'bypass-all' | null;
 export interface AgentPermissions {
   /** Permission mode: null=untrusted, 'ask'=smart permissions, 'allow-all'=auto-approve edits, 'bypass-all'=auto-approve everything */
   permissionMode: AgentPermissionMode;
+  /**
+   * Opt-in (issue #628): when true, "Allow All" (bypass-all) routes agent-mode
+   * Claude Code sessions through the SDK auto-mode classifier instead of
+   * bypassing every operation. Undefined/false = literal allow-all.
+   */
+  allowAllUsesClassifier?: boolean;
 }
 
 export interface AgenticCodingWindowState {
@@ -455,6 +461,10 @@ export interface WorkspaceState {
     updatedAt: number;
   }>;
   trackerSyncPolicies?: Record<string, TrackerSyncModeSetting | TrackerSyncPolicySetting>;
+  // Per-project opt-out for agent tracker tools. When false, McpConfigService
+  // omits the `nimbalyst-trackers` MCP server so the agent gets no tracker_*
+  // tools in this project. Defaults to enabled (undefined === true).
+  trackersEnabled?: boolean;
   // Issue key prefix for tracker items (e.g., "NIM", "APP"). Used for local-only trackers.
   // For synced trackers, the prefix is stored server-side in TrackerRoom metadata.
   issueKeyPrefix?: string;
@@ -1772,6 +1782,19 @@ export function setSettingsAgentToolsDisabled(disabled: boolean): void {
   getAppStore().set('settingsAgentToolsDisabled', disabled);
 }
 
+// Per-project agent tracker-tools opt-out. The `nimbalyst-trackers` MCP server
+// is on by default; flipping this off makes McpConfigService omit it for this
+// workspace so the agent gets no tracker_* tools. Default true (undefined).
+export function isTrackersAgentToolsEnabled(workspacePath: string): boolean {
+  return getWorkspaceState(workspacePath).trackersEnabled ?? true;
+}
+
+export function setTrackersAgentToolsEnabled(workspacePath: string, enabled: boolean): void {
+  updateWorkspaceState(workspacePath, (state) => {
+    state.trackersEnabled = enabled;
+  });
+}
+
 export function getExtensionConfiguration(extensionId: string): Record<string, unknown> {
   const settings = getExtensionSettings();
   return settings[extensionId]?.configuration ?? {};
@@ -1861,7 +1884,14 @@ export function getAgentPermissions(workspacePath: string): AgentPermissions | u
 
 export function saveAgentPermissions(workspacePath: string, permissions: AgentPermissions): void {
   updateWorkspaceState(workspacePath, (state) => {
-    state.agentPermissions = { permissionMode: permissions.permissionMode };
+    state.agentPermissions = {
+      permissionMode: permissions.permissionMode,
+      // Preserve the "Allow All" classifier opt-in (issue #628). Without this the
+      // field is dropped on every save and the toggle never sticks.
+      ...(permissions.allowAllUsesClassifier !== undefined && {
+        allowAllUsesClassifier: permissions.allowAllUsesClassifier,
+      }),
+    };
   });
 }
 
@@ -1872,7 +1902,14 @@ export function isWorkspaceTrusted(workspacePath: string): boolean {
 
 export function setWorkspaceTrusted(workspacePath: string, trusted: boolean, mode: 'ask' | 'allow-all' | 'bypass-all' = 'ask'): void {
   updateWorkspaceState(workspacePath, (state) => {
-    state.agentPermissions = { permissionMode: trusted ? mode : null };
+    const existing = state.agentPermissions;
+    state.agentPermissions = {
+      permissionMode: trusted ? mode : null,
+      // Preserve the "Allow All" classifier opt-in across trust toggles (issue #628).
+      ...(existing?.allowAllUsesClassifier !== undefined && {
+        allowAllUsesClassifier: existing.allowAllUsesClassifier,
+      }),
+    };
   });
 }
 

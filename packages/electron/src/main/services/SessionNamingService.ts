@@ -1,17 +1,14 @@
 import { BrowserWindow } from 'electron';
-import { SessionManager, ClaudeCodeProvider, OpenAICodexProvider, OpenAICodexACPProvider, OpenCodeProvider, setPreferredAgentLanguage as setRuntimePreferredAgentLanguage } from '@nimbalyst/runtime/ai/server';
+import { SessionManager, setPreferredAgentLanguage as setRuntimePreferredAgentLanguage } from '@nimbalyst/runtime/ai/server';
 import { AISessionsRepository } from '@nimbalyst/runtime';
-import { ClaudeCliLauncherConfig } from './ai/claudeCliLauncherSingleton';
 import { setClaudeCliAutoNameApplyTitleFn } from './ai/claudeCliSessionAutoNameSingleton';
 import {
-  startSessionNamingServer,
   setUpdateSessionTitleFn,
   setUpdateSessionMetadataFn,
   setGetWorkspaceTagsFn,
   setGetSessionTagsFn,
   setGetSessionTitleFn,
   setGetSessionPhaseFn,
-  shutdownSessionNamingHttpServer
 } from '../mcp/sessionNamingServer';
 import { getDatabase } from '../database/initialize';
 import { createWorktreeStore } from './WorktreeStore';
@@ -155,18 +152,11 @@ export class SessionNamingService {
           return (session?.metadata as any)?.phase || null;
         });
 
-        // Start the MCP server
-        const { port } = await startSessionNamingServer();
-        this.serverPort = port;
-        console.log(`[SessionNamingService] MCP server started on port ${port}`);
-
-        // Inject the port into agent providers so they can configure the MCP server
-        ClaudeCodeProvider.setSessionNamingServerPort(port);
-        OpenAICodexProvider.setSessionNamingServerPort(port);
-        OpenAICodexACPProvider.setSessionNamingServerPort(port);
-        OpenCodeProvider.setSessionNamingServerPort(port);
-        ClaudeCliLauncherConfig.setSessionNamingServerPort(port);
-
+        // MCP consolidation Phase 7: `update_session_meta` is served by the
+        // unified server's eager core (`/mcp/core`) via the dispatch fn in
+        // sessionNamingServer.ts; this service no longer starts a standalone
+        // HTTP server. It still injects the title/metadata/query fns above, which
+        // that dispatch (and the auto-namer) call.
         this.started = true;
       } catch (error) {
         console.error('[SessionNamingService] Failed to start:', error);
@@ -282,11 +272,8 @@ export class SessionNamingService {
     }
 
     try {
-      await shutdownSessionNamingHttpServer();
-      ClaudeCodeProvider.setSessionNamingServerPort(null);
-      OpenAICodexProvider.setSessionNamingServerPort(null);
-      OpenAICodexACPProvider.setSessionNamingServerPort(null);
-      OpenCodeProvider.setSessionNamingServerPort(null);
+      // No standalone HTTP server to tear down (Phase 7); the injected fns are
+      // process-lifetime singletons. Just flip the started flag.
       this.serverPort = null;
       this.started = false;
       console.log('[SessionNamingService] Shutdown complete');

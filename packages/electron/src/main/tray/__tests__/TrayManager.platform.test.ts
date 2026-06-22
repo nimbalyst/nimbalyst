@@ -58,7 +58,9 @@ function createNativeImageMock() {
 }
 
 vi.mock('electron', () => ({
-  Tray: vi.fn().mockImplementation(() => trayInstance),
+  Tray: vi.fn(function () {
+    return trayInstance;
+  }),
   Menu: { buildFromTemplate: menuBuildFromTemplate },
   app: {
     dock: undefined,

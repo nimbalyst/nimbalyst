@@ -313,7 +313,8 @@ interface ElectronAPI {
 
   // Session state tracking operations
   sessionState: {
-    getActiveSessionIds: () => Promise<{ success: boolean; sessionIds: string[]; error?: string }>;
+    getTrackedSessionIds: () => Promise<{ success: boolean; sessionIds: string[]; error?: string }>;
+    getRunningSessionIds: () => Promise<{ success: boolean; sessionIds: string[]; error?: string }>;
     getSessionState: (sessionId: string) => Promise<any>;
     isSessionActive: (sessionId: string) => Promise<boolean>;
     subscribe: (workspacePath?: string | string[]) => Promise<void>;
@@ -339,6 +340,14 @@ interface ElectronAPI {
   aiDeleteSession: (sessionId: string, workspacePath?: string) => Promise<{ success: boolean }>;
   aiCancelRequest: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
   aiApplyEdit: (edit: any) => Promise<any>;
+
+  // Flat-key settings -- single read-everything snapshot, single per-key write,
+  // single per-key broadcast. See shared/settings/keys.ts for the registry.
+  settingsGetAll: () => Promise<Record<string, unknown>>;
+  settingsSet: (key: string, value: unknown) => Promise<{ ok: true }>;
+  settingsDelete: (key: string) => Promise<{ ok: true }>;
+  onSettingsChanged: (callback: (payload: { key: string; value: unknown }) => void) => () => void;
+
   getAISettings: () => Promise<any>;
   saveAISettings: (settings: any) => Promise<void>;
   testAIConnection: (provider: 'claude' | 'claude-code' | 'openai' | 'lmstudio') => Promise<any>;
@@ -804,7 +813,8 @@ interface ElectronAPI {
 
     // PTY operations
     initialize: (terminalId: string, options: { workspacePath: string; cwd?: string; cols?: number; rows?: number }) => Promise<{ success: boolean; alreadyActive?: boolean; error?: string }>;
-    ensureClaudeCliSession: (payload: { sessionId: string; workspacePath: string; cwd?: string; model?: string; resumeSessionId?: string; cols?: number; rows?: number }) => Promise<{ success: boolean; alreadyActive?: boolean; error?: string }>;
+    ensureClaudeCliSession: (payload: { sessionId: string; workspacePath: string; cwd?: string; model?: string; resumeSessionId?: string; cols?: number; rows?: number }) => Promise<{ success: boolean; alreadyActive?: boolean; error?: string; claudeNotInstalled?: boolean }>;
+    isClaudeCliInstalled: () => Promise<boolean>;
     submitClaudeCliPrompt: (payload: { sessionId: string; workspacePath: string; prompt: string; attachments?: unknown[]; documentContext?: unknown }) => Promise<{ success: boolean }>;
     setClaudeCliModel: (sessionId: string, model: string) => Promise<{ success: boolean; cliArg: string }>;
     interruptClaudeCli: (sessionId: string) => Promise<{ success: boolean; resolvedAfter?: 'first-interrupt' | 'second-interrupt' | 'sigint' | 'unresolved' }>;
@@ -864,7 +874,10 @@ interface ElectronAPI {
         documentId: string;
         title: string;
         documentType?: string;
+        keyCustody?: 'legacy-e2e' | 'server-managed';
         orgKeyBase64: string;
+        /** Legacy org key for reading pre-migration rows in server-managed mode (NIM-878). */
+        legacyOrgKeyBase64?: string;
         orgKeyFingerprint?: string;
         serverUrl: string;
         userId: string;
@@ -1039,6 +1052,8 @@ interface ElectronAPI {
       success: boolean;
       config?: {
         orgId: string;
+        teamProjectId?: string | null;
+        keyCustody?: 'legacy-e2e' | 'server-managed';
         orgKeyBase64: string;
         orgKeyFingerprint: string | null;
         serverUrl: string;

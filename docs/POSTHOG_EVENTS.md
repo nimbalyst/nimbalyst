@@ -96,7 +96,7 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
 | --- | --- | --- | --- | --- | --- |
 | `content_mode_switched` | `NavigationGutter.tsx:111` | User switches between Files and Agent modes via navigation gutter | `fromMode` (files/agent/settings)<br/>`toMode` (files/agent/settings) | v0.48.13 (2025-12-17) |  |
-| `editor_type_opened` | `TabEditor.tsx:242` | User opens a file in an editor tab | `editorCategory` (markdown/monaco/image or extension name like "Spreadsheet Editor", "PDF Viewer", "Excalidraw Editor", "Data Model Editor")<br/>`fileExtension` (e.g., .md, .csv, .prisma, .mockup.html)<br/>`hasMermaid` (boolean, for markdown)<br/>`hasDataModel` (boolean, for markdown) | v0.48.13 (2025-12-17) | (pending release): Renamed editorType to editorCategory; editorCategory now uses extension displayName for custom editors; fileExtension contains actual extension |
+| `editor_type_opened` | `TabEditor.tsx:277` | User opens a file in an editor tab | `editorCategory` (markdown/monaco/image or extension name like "Spreadsheet Editor", "PDF Viewer", "Excalidraw Editor", "Data Model Editor")<br/>`fileExtension` (e.g., .md, .csv, .prisma, .mockup.html)<br/>`hasMermaid` (boolean, for markdown)<br/>`hasDataModel` (boolean, for markdown) | v0.48.13 (2025-12-17) | (pending release): Renamed editorType to editorCategory; editorCategory now uses extension displayName for custom editors; fileExtension contains actual extension<br/>(pending release): Defer emit until the editor type settles and re-arm on registry changes, so late-registering extension editors (e.g. .mockup.html, .calc.md) report their compound key/displayName instead of the fallback (.html/.md/monaco) |
 | `markdown_view_mode_switched` | `TabEditor.tsx:1556, 1606` | User switches between rich text (lexical) and raw markdown (monaco) view modes | `fromMode` (lexical/monaco)<br/>`toMode` (lexical/monaco) | v0.48.13 (2025-12-17) |  |
 | `session_view_mode_switched` | `SessionHistory.tsx` | User switches between list and kanban views for session history | `fromMode` (list/card/kanban)<br/>`toMode` (list/card/kanban) | (pending release) |  |
 | `session_list_filter_applied` | `SessionHistory.tsx` | User applies a tag filter or searches in the sessions list panel | `filterType` (tag/search)<br/>`activeTagCount` (number of active tag filters) | (pending release) |  |
@@ -372,8 +372,10 @@ The `known_error` event uses an `errorId` property to identify specific error co
 | `mobile_project_selected` | `ProjectListScreen.tsx:74` | User taps on a project | None (privacy - no project names) | (pending release) |  |
 | `mobile_ai_message_sent` | `SessionDetailScreen.tsx:648` | User sends a message to AI from mobile | `hasAttachments` (boolean) | (pending release) |  |
 | `mobile_pairing_completed` | `SettingsScreen.tsx:134` | QR code scan successful | None | (pending release) |  |
+| `mobile_login_started` | `LoginScreen.kt` | User initiates sign-in (Google or magic link) | `method` (google/magic_link) | (pending release) |  |
 | `mobile_login_completed` | `SettingsScreen.tsx:63` | User completes Stytch authentication | None | (pending release) |  |
 | `mobile_analytics_opt_out` | `AnalyticsService.ts:93` | User opts out of analytics | None | (pending release) |  |
+| `mobile_meta_agent_created` | `SessionListView.swift` | User creates a Meta Agent from the create menu (alpha-gated) | `model` (string) | (pending release) |  |
 
 ### Mobile App (Capacitor)
 

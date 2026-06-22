@@ -31,6 +31,46 @@ interface TrackerTypeConfig {
   syncMode: TrackerSyncMode;
 }
 
+interface TrackerSchemaOverrideState {
+  overridden: boolean;
+  filePath?: string;
+}
+
+/** Mirror of SchemaDriftEntry from the main-process trackerTypeDefStore. */
+type SchemaDriftStatus =
+  | 'in-sync'
+  | 'drifted'
+  | 'yaml-only'
+  | 'db-only-orphan'
+  | 'db-native';
+
+interface SchemaDriftEntry {
+  type: string;
+  status: SchemaDriftStatus;
+  source: string | null;
+}
+
+interface WorkspaceSchemaDrift {
+  entries: SchemaDriftEntry[];
+  hasDrift: boolean;
+}
+
+/** Statuses that represent an actionable mirror inconsistency (vs. informational). */
+const DRIFT_WARNING_STATUSES: ReadonlySet<SchemaDriftStatus> = new Set([
+  'drifted',
+  'yaml-only',
+  'db-only-orphan',
+]);
+
+function describeDriftStatus(status: SchemaDriftStatus): string {
+  switch (status) {
+    case 'drifted': return 'definition differs from file';
+    case 'yaml-only': return 'in file, not yet in database';
+    case 'db-only-orphan': return 'in database, file missing';
+    default: return '';
+  }
+}
+
 const ISSUE_KEY_PREFIX_REGEX = /^[A-Z]{2,5}$/;
 
 // ============================================================================
@@ -116,6 +156,54 @@ function DeleteTrackerTypeButton({
     >
       <MaterialSymbol icon="delete" size={14} />
     </button>
+  );
+}
+
+function SchemaOverrideActions({
+  model,
+  workspacePath,
+  override,
+  onCustomize,
+  onReset,
+}: {
+  model: TrackerDataModel;
+  workspacePath?: string;
+  override?: TrackerSchemaOverrideState;
+  onCustomize: (model: TrackerDataModel) => void;
+  onReset: (model: TrackerDataModel) => void;
+}) {
+  const isBuiltin = globalRegistry.isBuiltin(model.type);
+  if (!workspacePath) return null;
+
+  return (
+    <>
+      {override?.overridden && (
+        <span
+          className="px-1.5 py-[1px] rounded bg-[rgba(245,158,11,0.12)] text-[#f59e0b] text-[10px] font-semibold"
+          title="Workspace override"
+        >
+          Override
+        </span>
+      )}
+      <button
+        onClick={() => onCustomize(model)}
+        className="p-1 rounded text-[var(--nim-text-muted)] hover:text-[var(--nim-primary)] hover:bg-[var(--nim-bg-tertiary)] cursor-pointer"
+        title={override?.overridden ? `Edit ${model.displayNamePlural} schema override` : `Customize ${model.displayNamePlural}`}
+        data-testid={`customize-tracker-type-${model.type}`}
+      >
+        <MaterialSymbol icon={override?.overridden ? 'edit' : 'tune'} size={14} />
+      </button>
+      {isBuiltin && override?.overridden && (
+        <button
+          onClick={() => onReset(model)}
+          className="p-1 rounded text-[var(--nim-text-muted)] hover:text-[#ef4444] hover:bg-[var(--nim-bg-tertiary)] cursor-pointer"
+          title={`Reset ${model.displayNamePlural} to default`}
+          data-testid={`reset-tracker-type-${model.type}`}
+        >
+          <MaterialSymbol icon="restart_alt" size={14} />
+        </button>
+      )}
+    </>
   );
 }
 
@@ -281,13 +369,73 @@ function IssueKeyPrefixInput({ value, onChange }: {
 }
 
 // ============================================================================
+// AI Agent Access (per-project tracker-tools opt-out)
+// ============================================================================
+
+/**
+ * Per-project toggle controlling whether the AI agent gets the tracker MCP
+ * tools (`tracker_*`). When off, McpConfigService skips registering the
+ * `nimbalyst-trackers` server for this workspace, so the agent can't read or
+ * mutate trackers here. Takes effect on the next agent session start.
+ */
+function AgentAccessSection({ enabled, onChange }: {
+  enabled: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  return (
+    <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
+      <h4 className="provider-panel-section-title text-[15px] font-semibold mb-2 text-[var(--nim-text)]">
+        AI Agent Access
+      </h4>
+      <p className="text-[13px] leading-relaxed text-[var(--nim-text-muted)] mb-3">
+        Let AI agents read and update trackers in this project. When off, tracker
+        tools are removed from the agent entirely. Applies to new agent sessions.
+      </p>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        onClick={() => onChange(!enabled)}
+        data-testid="tracker-agent-access-toggle"
+        className="inline-flex items-center gap-2.5 cursor-pointer bg-transparent border-none p-0"
+      >
+        <span
+          className={`relative inline-flex w-9 h-5 rounded-full transition-colors duration-150 ${
+            enabled ? 'bg-[var(--nim-primary)]' : 'bg-[var(--nim-bg-tertiary)]'
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-150 ${
+              enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+            }`}
+          />
+        </span>
+        <span className="text-[13px] font-medium text-[var(--nim-text)]">
+          {enabled ? 'Enabled' : 'Disabled'}
+        </span>
+      </button>
+    </div>
+  );
+}
+
+// ============================================================================
 // Admin View
 // ============================================================================
 
-function AdminView({ trackers, onSyncModeChange, workspacePath }: {
+function AdminView({
+  trackers,
+  onSyncModeChange,
+  workspacePath,
+  overrides,
+  onCustomizeSchema,
+  onResetSchema,
+}: {
   trackers: TrackerTypeConfig[];
   onSyncModeChange: (type: string, mode: TrackerSyncMode) => void;
   workspacePath?: string;
+  overrides: Record<string, TrackerSchemaOverrideState>;
+  onCustomizeSchema: (model: TrackerDataModel) => void;
+  onResetSchema: (model: TrackerDataModel) => void;
 }) {
   return (
     <>
@@ -333,6 +481,13 @@ function AdminView({ trackers, onSyncModeChange, workspacePath }: {
                 </div>
               </div>
               <div className="shrink-0 flex items-center gap-1">
+                <SchemaOverrideActions
+                  model={tracker.model}
+                  workspacePath={workspacePath}
+                  override={overrides[tracker.model.type]}
+                  onCustomize={onCustomizeSchema}
+                  onReset={onResetSchema}
+                />
                 <SyncModeToggle
                   mode={tracker.syncMode}
                   onChange={(mode) => onSyncModeChange(tracker.model.type, mode)}
@@ -471,15 +626,128 @@ function MemberView({ trackers, workspacePath }: { trackers: TrackerTypeConfig[]
 }
 
 // ============================================================================
+// Schema Drift Warning
+// ============================================================================
+
+/**
+ * Warns when the on-disk YAML schemas (the git-tracked init/import format) have
+ * fallen out of step with the DB-materialized mirror (the local source of truth
+ * read by the `nim` CLI). Offers a non-destructive "Resync from files" reset.
+ */
+function SchemaDriftWarning({ workspacePath }: { workspacePath?: string }) {
+  const [drift, setDrift] = useState<WorkspaceSchemaDrift | null>(null);
+  const [resyncing, setResyncing] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!workspacePath) {
+      setDrift(null);
+      return;
+    }
+    try {
+      const result: WorkspaceSchemaDrift = await (window as any).electronAPI.invoke(
+        'tracker-schema:get-drift',
+        workspacePath
+      );
+      setDrift(result ?? null);
+    } catch {
+      setDrift(null);
+    }
+  }, [workspacePath]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const handleResync = useCallback(async () => {
+    if (!workspacePath || resyncing) return;
+    setResyncing(true);
+    try {
+      const result: WorkspaceSchemaDrift = await (window as any).electronAPI.invoke(
+        'tracker-schema:resync-mirror',
+        workspacePath
+      );
+      setDrift(result ?? null);
+    } catch {
+      // Leave the existing warning in place on failure.
+    } finally {
+      setResyncing(false);
+    }
+  }, [workspacePath, resyncing]);
+
+  if (!drift?.hasDrift) return null;
+
+  const warnings = drift.entries.filter((e) => DRIFT_WARNING_STATUSES.has(e.status));
+  if (warnings.length === 0) return null;
+
+  return (
+    <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
+      <div
+        className="tracker-schema-drift-warning flex items-start gap-2.5 p-3 bg-[rgba(245,158,11,0.08)] border border-[rgba(245,158,11,0.25)] rounded-lg"
+        data-testid="tracker-schema-drift-warning"
+      >
+        <MaterialSymbol icon="sync_problem" size={14} className="text-[#f59e0b] shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-medium text-[var(--nim-text)] mb-1">
+            Schema files are out of sync
+          </div>
+          <p className="text-[12px] text-[var(--nim-text-muted)] leading-relaxed mb-2">
+            The tracker schema files in <code className="text-[11px] text-[var(--nim-code-text)] bg-[var(--nim-code-bg)] px-1 py-[1px] rounded">.nimbalyst/trackers</code> differ from the local database mirror.
+          </p>
+          <ul className="text-[12px] text-[var(--nim-text-muted)] leading-relaxed mb-3 space-y-0.5">
+            {warnings.map((e) => (
+              <li key={e.type} className="flex items-center gap-1.5">
+                <span className="font-mono text-[11px] text-[var(--nim-text)]">{e.type}</span>
+                <span className="text-[var(--nim-text-faint)]">- {describeDriftStatus(e.status)}</span>
+              </li>
+            ))}
+          </ul>
+          <button
+            onClick={handleResync}
+            disabled={resyncing}
+            className="inline-flex items-center gap-1 px-2.5 py-1 bg-transparent border border-[rgba(245,158,11,0.4)] rounded text-[#f59e0b] text-[11px] cursor-pointer hover:bg-[rgba(245,158,11,0.12)] disabled:opacity-50 disabled:cursor-default"
+            data-testid="tracker-schema-resync-button"
+          >
+            <MaterialSymbol icon="sync" size={12} />
+            {resyncing ? 'Resyncing...' : 'Resync from files'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
 // TrackerConfigPanel
 // ============================================================================
 
 export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
   const [trackers, setTrackers] = useState<TrackerTypeConfig[]>([]);
+  const [schemaOverrides, setSchemaOverrides] = useState<Record<string, TrackerSchemaOverrideState>>({});
   const [isAdmin, setIsAdmin] = useState(false);
   const [issueKeyPrefix, setIssueKeyPrefix] = useState('NIM');
   const [isSyncConnected, setIsSyncConnected] = useState(false);
+  const [agentAccessEnabled, setAgentAccessEnabled] = useState(true);
   const { confirm } = useDialog();
+
+  const refreshSchemaOverrides = useCallback(async (models: TrackerDataModel[]) => {
+    if (!workspacePath) {
+      setSchemaOverrides({});
+      return;
+    }
+    const entries = await Promise.all(models.map(async (model) => {
+      try {
+        const state = await (window as any).electronAPI.invoke(
+          'tracker-schema:get-override',
+          workspacePath,
+          model.type,
+        ) as TrackerSchemaOverrideState;
+        return [model.type, state ?? { overridden: false }] as const;
+      } catch {
+        return [model.type, { overridden: false }] as const;
+      }
+    }));
+    setSchemaOverrides(Object.fromEntries(entries));
+  }, [workspacePath]);
 
   useEffect(() => {
     // Load saved sync policies from workspace state, then merge with registry
@@ -492,6 +760,7 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
           if (state?.issueKeyPrefix) {
             setIssueKeyPrefix(state.issueKeyPrefix);
           }
+          setAgentAccessEnabled(state?.trackersEnabled ?? true);
         } catch {
           // Workspace state not available
         }
@@ -526,6 +795,7 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
         syncMode: savedPolicies[model.type] ?? model.sync?.mode ?? 'local',
       }));
       setTrackers(configs);
+      void refreshSchemaOverrides(models);
     };
 
     loadPolicies();
@@ -535,17 +805,19 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
       const updatedModels = globalRegistry.getAll();
       setTrackers((prev) => {
         const existingModes = new Map(prev.map((t) => [t.model.type, t.syncMode]));
-        return updatedModels.map((model) => ({
+        const updatedTrackers = updatedModels.map((model) => ({
           model,
           syncMode: existingModes.get(model.type) ?? model.sync?.mode ?? 'local',
         }));
+        void refreshSchemaOverrides(updatedModels);
+        return updatedTrackers;
       });
     });
 
     return () => {
       unsubscribe();
     };
-  }, [workspacePath]);
+  }, [refreshSchemaOverrides, workspacePath]);
 
   // React to `tracker-sync:config-changed` events broadcast by main. The IPC
   // event is handled centrally in store/listeners/trackerSyncListeners.ts
@@ -581,6 +853,15 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
     }
   }, [workspacePath, isSyncConnected]);
 
+  const handleAgentAccessChange = useCallback((enabled: boolean) => {
+    setAgentAccessEnabled(enabled);
+    if (workspacePath) {
+      (window as any).electronAPI.invoke('workspace:update-state', workspacePath, {
+        trackersEnabled: enabled,
+      });
+    }
+  }, [workspacePath]);
+
   const handleSyncModeChange = useCallback(async (type: string, mode: TrackerSyncMode) => {
     const tracker = trackers.find((entry) => entry.model.type === type);
     if (!tracker || tracker.syncMode === mode) {
@@ -614,6 +895,48 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
     }
   }, [confirm, isAdmin, trackers, workspacePath]);
 
+  const handleCustomizeSchema = useCallback(async (model: TrackerDataModel) => {
+    if (!workspacePath) return;
+    try {
+      const result = await (window as any).electronAPI.invoke(
+        'tracker-schema:customize',
+        workspacePath,
+        model.type,
+      ) as { filePath?: string };
+      if (result?.filePath) {
+        await (window as any).electronAPI.invoke('workspace:open-file', {
+          workspacePath,
+          filePath: result.filePath,
+        });
+      }
+      await refreshSchemaOverrides(globalRegistry.getAll());
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : `Could not customize ${model.displayNamePlural}.`);
+    }
+  }, [refreshSchemaOverrides, workspacePath]);
+
+  const handleResetSchema = useCallback(async (model: TrackerDataModel) => {
+    if (!workspacePath) return;
+    const approved = await confirm({
+      title: `Reset ${model.displayNamePlural}?`,
+      message: `Delete the workspace schema override for "${model.displayNamePlural}" and return to the built-in default?`,
+      confirmLabel: 'Reset to default',
+      cancelLabel: 'Cancel',
+      destructive: true,
+    });
+    if (!approved) return;
+    try {
+      await (window as any).electronAPI.invoke(
+        'tracker-schema:reset-override',
+        workspacePath,
+        model.type,
+      );
+      await refreshSchemaOverrides(globalRegistry.getAll());
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : `Could not reset ${model.displayNamePlural}.`);
+    }
+  }, [confirm, refreshSchemaOverrides, workspacePath]);
+
   return (
     <div className="tracker-config-panel provider-panel flex flex-col">
       {/* Header */}
@@ -631,6 +954,13 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
 
       <TrackerStorageInfoBanner />
 
+      <AgentAccessSection
+        enabled={agentAccessEnabled}
+        onChange={handleAgentAccessChange}
+      />
+
+      <SchemaDriftWarning workspacePath={workspacePath} />
+
       <IssueKeyPrefixInput
         value={issueKeyPrefix}
         onChange={handlePrefixChange}
@@ -641,6 +971,9 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
           trackers={trackers}
           onSyncModeChange={handleSyncModeChange}
           workspacePath={workspacePath}
+          overrides={schemaOverrides}
+          onCustomizeSchema={handleCustomizeSchema}
+          onResetSchema={handleResetSchema}
         />
       ) : (
         <MemberView trackers={trackers} workspacePath={workspacePath} />

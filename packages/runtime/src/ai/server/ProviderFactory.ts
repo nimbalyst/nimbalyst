@@ -12,6 +12,7 @@ import { OpenAICodexACPProvider } from './providers/OpenAICodexACPProvider';
 import { LMStudioProvider } from './providers/LMStudioProvider';
 import { OpenCodeProvider } from './providers/OpenCodeProvider';
 import { CopilotCLIProvider } from './providers/CopilotCLIProvider';
+import { ExtensionAgentProvider } from './providers/ExtensionAgentProvider';
 import { ProviderConfig, AIProviderType, assertExhaustiveProvider } from './types';
 
 export class ProviderFactory {
@@ -89,6 +90,59 @@ export class ProviderFactory {
     // console.log(`[ProviderFactory] Created ${type} provider in ${Date.now() - startTime}ms`);
 
     return provider;
+  }
+
+  /**
+   * Create a new extension-contributed agent provider.
+   *
+   * This is the 'extension-agent' branch of the factory: instead of a
+   * built-in provider class, the implementation lives in a privileged
+   * backend module spawned by `PrivilegedExtensionHost`. The returned
+   * `ExtensionAgentProvider` is a thin wrapper that delegates every call
+   * across the host-installed `ExtensionAgentBridge`.
+   *
+   * The wrapper does NOT eagerly start the backend module. The first
+   * `initialize` call routes through the bridge, which looks up the
+   * AgentProviderRegistry entry: if status is `registered`, the bridge
+   * raises the first-use consent prompt and then calls
+   * `PrivilegedExtensionHost.startModule(...)`; once `active`, the bridge
+   * dispatches subsequent calls through the broker. This matches the
+   * Phase 4 design's "lazy spawn on first use" requirement.
+   *
+   * Cache key is namespaced by `extension-agent:${extensionId}/${contributionId}-${sessionId}`
+   * so it never collides with the built-in providers (whose keys start with
+   * the AIProviderType string).
+   */
+  static createExtensionAgentProvider(args: {
+    extensionId: string;
+    contributionId: string;
+    sessionId: string;
+    model?: string;
+  }): ExtensionAgentProvider {
+    const key = `extension-agent:${args.extensionId}/${args.contributionId}-${args.sessionId}`;
+    const provider = new ExtensionAgentProvider({
+      extensionId: args.extensionId,
+      contributionId: args.contributionId,
+      sessionId: args.sessionId,
+      model: args.model,
+    });
+    this.providers.set(key, provider);
+    return provider;
+  }
+
+  /**
+   * Look up a previously created extension-agent provider. Mirrors
+   * `getProvider` for the built-in branch so callers can resolve a turn
+   * to its provider instance.
+   */
+  static getExtensionAgentProvider(args: {
+    extensionId: string;
+    contributionId: string;
+    sessionId: string;
+  }): ExtensionAgentProvider | null {
+    const key = `extension-agent:${args.extensionId}/${args.contributionId}-${args.sessionId}`;
+    const provider = this.providers.get(key);
+    return (provider as ExtensionAgentProvider | undefined) ?? null;
   }
 
   /**

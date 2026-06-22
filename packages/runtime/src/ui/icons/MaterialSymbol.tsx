@@ -57,6 +57,13 @@ const CUSTOM_ICONS: Record<string, (size: number, className: string) => React.Re
       <path d="M2.84 2a1.273 1.273 0 100 2.547h10.287a1.274 1.274 0 000-2.547H2.84zM7.935 5.33a1.273 1.273 0 000 2.548h10.287a1.274 1.274 0 000-2.547H7.935zM3.624 9.935c0-.704.57-1.274 1.274-1.274h10.286a1.273 1.273 0 110 2.547H4.898c-.703 0-1.274-.57-1.274-1.273zM1.273 12.188a1.273 1.273 0 100 2.547h10.287a1.273 1.273 0 100-2.547H1.273zM3.624 16.792c0-.704.57-1.274 1.274-1.274h10.286a1.274 1.274 0 010 2.547H4.898c-.703 0-1.274-.57-1.274-1.273zM13.029 18.849a1.273 1.273 0 100 2.547h5.195a1.273 1.273 0 100-2.547h-5.195z"/>
     </svg>
   ),
+
+  // Google Gemini logo (four-point spark)
+  'gemini': (size, className) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M12 2c.9 5.4 4.6 9.1 10 10-5.4.9-9.1 4.6-10 10-.9-5.4-4.6-9.1-10-10 5.4-.9 9.1-4.6 10-10z"/>
+    </svg>
+  ),
 };
 
 export function MaterialSymbol({

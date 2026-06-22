@@ -12,6 +12,7 @@ import { TrustIndicator } from '../TrustIndicator';
 import { ExtensionDevIndicator } from '../ExtensionDevIndicator';
 import { ClaudeUsageIndicator } from '../ClaudeUsageIndicator';
 import { CodexUsageIndicator } from '../CodexUsageIndicator';
+import { GeminiUsageIndicator } from '../GeminiUsageIndicator';
 import { BackgroundTaskIndicator } from '../BackgroundTaskIndicator';
 import { VoiceModeButton } from '../UnifiedAI/VoiceModeButton';
 import { useExtensionGutterButtons, useExtensionBottomPanelButtons } from '../../extensions/panels/usePanels';
@@ -25,7 +26,6 @@ import {
 } from '../../store/atoms/appSettings';
 import { workspaceHasTeamAtom } from '../../store/atoms/collabDocuments';
 import { stytchIsSignedInAtom } from '../../store/atoms/stytchAuth';
-import { useAlphaFeature } from '../../hooks/useAlphaFeature';
 import { AlphaBadge } from '../common/AlphaBadge';
 import { UserMenuPopover } from './UserMenuPopover';
 import { GutterContextMenu } from './GutterContextMenu';
@@ -140,11 +140,8 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
   // Check if terminal feature is available (developer mode + feature enabled)
   const isTerminalAvailable = useAtomValue(terminalFeatureAvailableAtom);
 
-  // Collaboration features are gated behind the alpha release channel
-  const isCollaborationEnabled = useAlphaFeature('collaboration');
-
-  // Only show collab mode button when workspace has an active team AND collaboration alpha is enabled
-  const hasTeam = useAtomValue(workspaceHasTeamAtom) && isCollaborationEnabled;
+  // Show the collab mode button whenever the workspace has an active team.
+  const hasTeam = useAtomValue(workspaceHasTeamAtom);
 
   // Only show the PR review button when the active workspace has a GitHub
   // remote (detected by pullRequestListeners). Guard on workspacePath so a
@@ -616,6 +613,13 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
         {!isHidden('codex-usage') && (
           <div onContextMenu={(e) => openContextMenu(e, 'codex-usage')}>
             <CodexUsageIndicator />
+          </div>
+        )}
+
+        {/* Gemini Usage Indicator - Shows Gemini (Antigravity) usage limits */}
+        {!isHidden('gemini-usage') && (
+          <div onContextMenu={(e) => openContextMenu(e, 'gemini-usage')}>
+            <GeminiUsageIndicator />
           </div>
         )}
 

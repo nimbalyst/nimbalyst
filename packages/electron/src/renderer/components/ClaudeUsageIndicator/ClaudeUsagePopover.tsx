@@ -6,15 +6,15 @@
  */
 
 import React, { useEffect, RefObject } from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import {
   claudeUsageAtom,
   claudeUsageSessionColorAtom,
   claudeUsageWeeklyColorAtom,
   formatResetTime,
-  setClaudeUsageIndicatorEnabledAtom,
 } from '../../store/atoms/claudeUsageAtoms';
+import { useSetSetting } from '../../hooks/useSetting';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
 
 interface ClaudeUsagePopoverProps {
@@ -108,7 +108,7 @@ export const ClaudeUsagePopover: React.FC<ClaudeUsagePopoverProps> = ({
   const usage = useAtomValue(claudeUsageAtom);
   const sessionColor = useAtomValue(claudeUsageSessionColorAtom);
   const weeklyColor = useAtomValue(claudeUsageWeeklyColorAtom);
-  const setUsageIndicatorEnabled = useSetAtom(setClaudeUsageIndicatorEnabledAtom);
+  const setUsageIndicatorEnabled = useSetSetting('ai.showUsageIndicator');
   const [isRefreshing, setIsRefreshing] = React.useState(false);
 
   const menu = useFloatingMenu({

@@ -31,6 +31,14 @@ export class ModelRegistry {
     //   return cached;
     // }
 
+    // Extension-contributed agent providers supply their models via the
+    // AgentProviderRegistry (surfaced in AIService.ai:getModels), not this
+    // built-in registry. Short-circuit so the exhaustive switch below does not
+    // log a spurious "Unhandled provider" error for them.
+    if (ModelIdentifier.isExtensionProvider(provider)) {
+      return [];
+    }
+
     // Fetch fresh models
     let models: AIModel[] = [];
 
@@ -133,6 +141,11 @@ export class ModelRegistry {
    * Get the default model for a provider
    */
   static async getDefaultModel(provider: AIProviderType): Promise<string> {
+    if (ModelIdentifier.isExtensionProvider(provider)) {
+      // Extension providers have no built-in default; the picker uses the
+      // provider's own model list from ai:getModels.
+      return '';
+    }
     switch (provider) {
       case 'claude':
         const { ClaudeProvider } = await import('./providers/ClaudeProvider');

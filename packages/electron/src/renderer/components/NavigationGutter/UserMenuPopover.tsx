@@ -1,11 +1,9 @@
 import React, { useEffect } from 'react';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
-import { useAlphaFeature } from '../../hooks/useAlphaFeature';
 import type { SettingsCategory } from '../Settings/SettingsSidebar';
 import type { SettingsScope } from '../Settings/SettingsView';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
-import { AlphaBadge } from '../common/AlphaBadge';
 import { stytchAuthAtom } from '../../store/atoms/stytchAuth';
 
 interface UserMenuPopoverProps {
@@ -33,13 +31,12 @@ export function UserMenuPopover({ onNavigateSettings, onClose, isProjectConnecte
     }
   }, [anchorEl, menu.refs]);
 
-  const isCollaborationEnabled = useAlphaFeature('collaboration');
   const email = authState?.user?.emails?.[0]?.email;
   const isSignedIn = authState?.isAuthenticated ?? false;
 
   const menuItems = [
     {
-      label: 'User Settings',
+      label: 'Application Settings',
       icon: 'person' as const,
       onClick: () => {
         onNavigateSettings('user');
@@ -54,11 +51,10 @@ export function UserMenuPopover({ onNavigateSettings, onClose, isProjectConnecte
         onClose();
       },
     },
-    // Show Team Settings when connected AND collaboration alpha is enabled
-    ...(isProjectConnected && isCollaborationEnabled ? [{
+    // Show Team Settings when the workspace has a team / sync connection.
+    ...(isProjectConnected ? [{
       label: 'Team Settings',
       icon: 'group' as const,
-      alpha: true,
       onClick: () => {
         onNavigateSettings('project', 'team');
         onClose();
@@ -95,7 +91,6 @@ export function UserMenuPopover({ onNavigateSettings, onClose, isProjectConnecte
             >
               <MaterialSymbol icon={item.icon} size={18} className="text-nim-muted shrink-0" />
               <span className="flex-1">{item.label}</span>
-              {'alpha' in item && item.alpha && <AlphaBadge size="xs" />}
             </button>
           ))}
         </div>

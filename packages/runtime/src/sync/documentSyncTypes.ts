@@ -44,8 +44,32 @@ export interface DocumentSyncConfig {
   /** B2B organization ID */
   orgId: string;
 
-  /** AES-256-GCM key for encrypting/decrypting Yjs updates */
-  documentKey: CryptoKey;
+  /**
+   * Epic H2 key custody. `legacy-e2e` (default): the client encrypts/decrypts
+   * Yjs updates with `documentKey` (zero-knowledge). `server-managed`: the
+   * server holds the per-team DEK and encrypts at rest, so the client sends and
+   * receives PLAINTEXT (base64 raw bytes, no iv) and `documentKey` is unused.
+   */
+  keyCustody?: 'legacy-e2e' | 'server-managed';
+
+  /**
+   * AES-256-GCM key for encrypting/decrypting Yjs updates. Required in
+   * `legacy-e2e` mode; unused (and optional) in `server-managed` mode.
+   */
+  documentKey?: CryptoKey;
+
+  /**
+   * Legacy org key for reading PRE-MIGRATION rows in `server-managed` mode.
+   *
+   * When a team migrates legacy-e2e -> server-managed, rows written before the
+   * flip are still AES-ciphertext (the server passes them through with their
+   * original iv; only DEK-fingerprinted rows are server-decrypted to plaintext
+   * with an empty-iv sentinel). To read those old rows the client must AES-
+   * decrypt them with the original org key. This holds that key so server-
+   * managed docs can still surface their legacy history. Optional: absent when
+   * the legacy envelope is unavailable (those rows then skip, never crash).
+   */
+  legacyDocumentKey?: CryptoKey;
 
   /** Current user's ID */
   userId: string;
@@ -109,6 +133,13 @@ export interface DocumentSyncConfig {
     senderPublicKey: string;
     senderUserId: string;
   }) => void;
+
+  /**
+   * Epic H3 P1: called when the server reports this document room was relocated
+   * to another org by the move engine. The doc id is unchanged; the host should
+   * re-resolve which org owns the document and reconnect.
+   */
+  onRoomMoved?: (dest: { destOrgId: string }) => void;
 
   /**
    * Enable the review gate for remote changes.

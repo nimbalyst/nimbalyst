@@ -14,7 +14,7 @@ import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl, getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
 import { isAuthenticated, getStytchUserId, getUserEmail, getAuthState, getPersonalOrgId, getPersonalSessionJwt, refreshPersonalSession } from '../services/StytchAuthService';
 import { findTeamForWorkspace, getOrgScopedJwt } from '../services/TeamService';
-import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIdentityKeyToOrg, fetchAndUnwrapOrgKey, clearOrgKey } from '../services/OrgKeyService';
+import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIdentityKeyToOrg, fetchAndUnwrapOrgKey, clearOrgKey, fetchTeamKeyStatus } from '../services/OrgKeyService';
 import { getWorkspaceState, updateWorkspaceState } from '../utils/store';
 import { getPersonalDocSyncConfig, isSyncEnabled } from '../services/SyncManager';
 import { resolveCollabDocumentType } from './collabDocumentTypeResolver';
@@ -193,40 +193,80 @@ export function registerDocumentSyncHandlers(): void {
     }
     const orgId = team.orgId;
 
-    // Get org encryption key
+    // Epic H2: decide the key-custody lane before touching the ECDH envelope
+    // path. In server-managed mode the server holds the per-team DEK and the
+    // doc syncs PLAINTEXT, so no org key is fetched or required.
+    let serverManaged = false;
+    try {
+      const orgJwt = await getOrgScopedJwt(orgId);
+      serverManaged = (await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed';
+    } catch (err) {
+      logger.main.warn('[DocumentSyncHandlers] key-status fetch failed; assuming legacy-e2e:', err);
+    }
+
+    // Get org encryption key (legacy mode only).
     const keyStart = Date.now();
-    let encryptionKey = await getOrgKey(orgId);
-    if (!encryptionKey) {
-      logger.main.info('[DocumentSyncHandlers] No org key cached, attempting to fetch envelope...');
-      try {
-        const orgJwt = await getOrgScopedJwt(orgId);
-        await getOrCreateIdentityKeyPair();
-        await uploadIdentityKeyToOrg(orgJwt);
-        encryptionKey = await fetchAndUnwrapOrgKey(orgId, orgJwt);
-      } catch (err) {
-        logger.main.warn('[DocumentSyncHandlers] Failed to fetch org key envelope:', err);
-      }
+    let orgKeyBase64 = '';
+    let orgKeyFp: string | undefined;
+    // NIM-878: legacy org key for reading PRE-MIGRATION rows in server-managed
+    // mode (rows written before the flip are still AES-ciphertext).
+    let legacyOrgKeyBase64 = '';
+    if (!serverManaged) {
+      let encryptionKey = await getOrgKey(orgId);
       if (!encryptionKey) {
-        return { success: false, error: 'No encryption key available. Team admin may need to re-share keys.' };
+        logger.main.info('[DocumentSyncHandlers] No org key cached, attempting to fetch envelope...');
+        try {
+          const orgJwt = await getOrgScopedJwt(orgId);
+          await getOrCreateIdentityKeyPair();
+          await uploadIdentityKeyToOrg(orgJwt);
+          encryptionKey = await fetchAndUnwrapOrgKey(orgId, orgJwt);
+        } catch (err) {
+          logger.main.warn('[DocumentSyncHandlers] Failed to fetch org key envelope:', err);
+        }
+        if (!encryptionKey) {
+          return { success: false, error: 'No encryption key available. Team admin may need to re-share keys.' };
+        }
+      }
+      logPhase('getOrgKey/fetchEnvelope', keyStart);
+
+      // Verify local key fingerprint against server to detect stale keys.
+      // Single-flight + 60s TTL per orgId; see verifyOrgKeyFingerprintCached.
+      const fpStart = Date.now();
+      const fpResult = await verifyOrgKeyFingerprintCached(orgId);
+      logPhase('verifyFingerprint', fpStart);
+      if (!fpResult.ok) return { success: false, error: fpResult.error };
+      // Re-read the key in case the cached verify rotated it for this org.
+      encryptionKey = await getOrgKey(orgId);
+      if (!encryptionKey) {
+        return { success: false, error: 'No encryption key available.' };
+      }
+
+      // Export key as raw base64 for renderer to reconstruct
+      const rawBytes = await crypto.subtle.exportKey('raw', encryptionKey);
+      orgKeyBase64 = Buffer.from(rawBytes).toString('base64');
+      orgKeyFp = getOrgKeyFingerprint(orgId) ?? undefined;
+    } else {
+      logger.main.info('[DocumentSyncHandlers] team', orgId, 'is server-managed; skipping ECDH org-key unwrap');
+      // NIM-878: documents created before this team migrated to server-managed
+      // still have legacy-e2e AES-ciphertext rows on the server (passed through
+      // with their original iv). Best-effort fetch the legacy org key so the
+      // renderer can decrypt those old rows. If unavailable (no envelope), the
+      // old rows are simply skipped on read -- never a crash.
+      try {
+        let legacyKey = await getOrgKey(orgId);
+        if (!legacyKey) {
+          const orgJwt = await getOrgScopedJwt(orgId);
+          await getOrCreateIdentityKeyPair();
+          legacyKey = await fetchAndUnwrapOrgKey(orgId, orgJwt);
+        }
+        if (legacyKey) {
+          const rawBytes = await crypto.subtle.exportKey('raw', legacyKey);
+          legacyOrgKeyBase64 = Buffer.from(rawBytes).toString('base64');
+        }
+      } catch (err) {
+        logger.main.info('[DocumentSyncHandlers] no legacy org key for server-managed migration read (pre-migration rows may not load):', err);
       }
     }
-    logPhase('getOrgKey/fetchEnvelope', keyStart);
-
-    // Verify local key fingerprint against server to detect stale keys.
-    // Single-flight + 60s TTL per orgId; see verifyOrgKeyFingerprintCached.
-    const fpStart = Date.now();
-    const fpResult = await verifyOrgKeyFingerprintCached(orgId);
-    logPhase('verifyFingerprint', fpStart);
-    if (!fpResult.ok) return { success: false, error: fpResult.error };
-    // Re-read the key in case the cached verify rotated it for this org.
-    encryptionKey = await getOrgKey(orgId);
-    if (!encryptionKey) {
-      return { success: false, error: 'No encryption key available.' };
-    }
-
-    // Export key as raw base64 for renderer to reconstruct
-    const rawBytes = await crypto.subtle.exportKey('raw', encryptionKey!);
-    const orgKeyBase64 = Buffer.from(rawBytes).toString('base64');
     logPhase('total', handlerStart);
 
     const serverUrl = getCollabSyncWsUrl();
@@ -252,8 +292,6 @@ export function registerDocumentSyncHandlers(): void {
     //   serverUrl,
     //   userId,
     // });
-
-    const orgKeyFp = getOrgKeyFingerprint(orgId) ?? undefined;
 
     // Authorize THIS renderer (webContents) to load this doc's encrypted
     // assets via collab-asset:// and to invoke upload-asset / gc-assets
@@ -282,7 +320,9 @@ export function registerDocumentSyncHandlers(): void {
         documentId: payload.documentId,
         title: payload.title || payload.documentId,
         documentType: resolvedDocumentType,
+        keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
         orgKeyBase64,
+        legacyOrgKeyBase64,
         orgKeyFingerprint: orgKeyFp,
         serverUrl,
         userId,
@@ -747,25 +787,41 @@ export function registerDocumentSyncHandlers(): void {
     }
     const orgId = team.orgId;
 
-    let encryptionKey = await getOrgKey(orgId);
-    if (!encryptionKey) {
-      logger.main.info('[DocumentSyncHandlers] No org key cached for index, attempting to fetch envelope...');
-      try {
-        const orgJwt = await getOrgScopedJwt(orgId);
-        await getOrCreateIdentityKeyPair();
-        await uploadIdentityKeyToOrg(orgJwt);
-        encryptionKey = await fetchAndUnwrapOrgKey(orgId, orgJwt);
-      } catch (err) {
-        logger.main.warn('[DocumentSyncHandlers] Failed to fetch org key envelope:', err);
-      }
-      if (!encryptionKey) {
-        return { success: false, error: 'No encryption key available. Team admin may need to re-share keys.' };
-      }
+    // Epic H2: server-managed teams sync doc-index titles as PLAINTEXT (the
+    // server encrypts at rest with the team DEK), so no org key is needed.
+    let serverManaged = false;
+    try {
+      const orgJwt = await getOrgScopedJwt(orgId);
+      serverManaged = (await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed';
+    } catch (err) {
+      logger.main.warn('[DocumentSyncHandlers] index key-status fetch failed; assuming legacy-e2e:', err);
     }
 
-    const rawBytes = await crypto.subtle.exportKey('raw', encryptionKey);
-    const orgKeyBase64 = Buffer.from(rawBytes).toString('base64');
-    const orgKeyFingerprint = await getOrgKeyFingerprint(orgId);
+    let orgKeyBase64 = '';
+    let orgKeyFingerprint: string | null = null;
+    if (!serverManaged) {
+      let encryptionKey = await getOrgKey(orgId);
+      if (!encryptionKey) {
+        logger.main.info('[DocumentSyncHandlers] No org key cached for index, attempting to fetch envelope...');
+        try {
+          const orgJwt = await getOrgScopedJwt(orgId);
+          await getOrCreateIdentityKeyPair();
+          await uploadIdentityKeyToOrg(orgJwt);
+          encryptionKey = await fetchAndUnwrapOrgKey(orgId, orgJwt);
+        } catch (err) {
+          logger.main.warn('[DocumentSyncHandlers] Failed to fetch org key envelope:', err);
+        }
+        if (!encryptionKey) {
+          return { success: false, error: 'No encryption key available. Team admin may need to re-share keys.' };
+        }
+      }
+
+      const rawBytes = await crypto.subtle.exportKey('raw', encryptionKey);
+      orgKeyBase64 = Buffer.from(rawBytes).toString('base64');
+      orgKeyFingerprint = (await getOrgKeyFingerprint(orgId)) ?? null;
+    } else {
+      logger.main.info('[DocumentSyncHandlers] index for', orgId, 'is server-managed; skipping ECDH org-key unwrap');
+    }
     const serverUrl = getCollabSyncWsUrl();
 
     // logger.main.info('[DocumentSyncHandlers] Resolved doc index config', { orgId, serverUrl, userId });
@@ -774,6 +830,12 @@ export function registerDocumentSyncHandlers(): void {
       success: true,
       config: {
         orgId,
+        // Epic H3 P0/A: the resolved project's tracker-room routing key. For a
+        // workspace matched to a SECONDARY project this is that project's id;
+        // the TeamSyncProvider tags every docIndexRegister with it so the
+        // server's project-partitioned doc index attributes docs correctly.
+        teamProjectId: team.teamProjectId ?? null,
+        keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
         orgKeyBase64,
         orgKeyFingerprint,
         serverUrl,

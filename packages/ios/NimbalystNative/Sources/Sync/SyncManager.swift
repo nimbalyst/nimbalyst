@@ -881,6 +881,12 @@ public final class SyncManager: ObservableObject {
             logger.info("Desktop default model: \(defaultModel)")
         }
 
+        // Persist the meta-agent alpha gate from desktop and notify gated UI.
+        let metaAgentEnabled = settings.metaAgentEnabled ?? false
+        FeaturePreferences.setMetaAgentEnabled(metaAgentEnabled)
+        NotificationCenter.default.post(name: .init("MetaAgentEnabledSynced"), object: nil)
+        logger.info("Meta Agent alpha gate from desktop: \(metaAgentEnabled)")
+
         onSettingsSynced?(settings)
     }
 
@@ -1602,7 +1608,8 @@ public final class SyncManager: ObservableObject {
         sessionType: String? = nil,
         parentSessionId: String? = nil,
         provider: String? = nil,
-        model: String? = nil
+        model: String? = nil,
+        agentRole: String? = nil
     ) throws {
         let encryptedProjectId = try crypto.encryptProjectId(projectId)
 
@@ -1625,6 +1632,7 @@ public final class SyncManager: ObservableObject {
                 parentSessionId: parentSessionId,
                 provider: provider,
                 model: model,
+                agentRole: agentRole,
                 timestamp: Int(Date().timeIntervalSince1970 * 1000)
             )
         )

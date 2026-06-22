@@ -180,6 +180,15 @@ describe('deleteTrackerItem sync integration', () => {
 // ============================================================================
 
 describe('archiveTrackerItem sync integration', () => {
+  // Archive now pushes to the room only for share-eligible items (NIM-880):
+  // syncTrackerItem itself does no policy check, so the call site gates on the
+  // per-item policy. Use a shared-mode type here -- the realistic "archive
+  // propagates to teammates" scenario. (An unflagged hybrid/local item correctly
+  // does NOT push; covered in ElectronDocumentService.planTransition.test.ts.)
+  beforeEach(() => {
+    mockGlobalRegistryGet.mockReturnValue({ sync: { mode: 'shared', scope: 'project' } });
+  });
+
   it('should call syncTrackerItem when archiving with sync active', async () => {
     mockIsTrackerSyncActive.mockReturnValue(true);
     mockSyncTrackerItem.mockResolvedValue(undefined);

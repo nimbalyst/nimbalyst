@@ -12,6 +12,8 @@
  */
 
 import { atom } from 'jotai';
+import { store } from '@nimbalyst/runtime/store';
+import { onSettingChanged } from './settingAtomFamily';
 
 export interface TrackerAutomationSettings {
   enabled: boolean;
@@ -24,6 +26,14 @@ const DEFAULT_TRACKER_AUTOMATION: TrackerAutomationSettings = {
 };
 
 export const trackerAutomationAtom = atom<TrackerAutomationSettings>({ ...DEFAULT_TRACKER_AUTOMATION });
+
+// Mirror cross-window writes so a toggle in another window reflects here.
+onSettingChanged('ai.trackerAutomation', (value) => {
+  store.set(trackerAutomationAtom, {
+    enabled: value?.enabled ?? DEFAULT_TRACKER_AUTOMATION.enabled,
+    autoCloseOnCommit: value?.autoCloseOnCommit ?? DEFAULT_TRACKER_AUTOMATION.autoCloseOnCommit,
+  });
+});
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 const PERSIST_DEBOUNCE_MS = 500;

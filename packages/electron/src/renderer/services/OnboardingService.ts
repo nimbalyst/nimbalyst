@@ -1138,7 +1138,7 @@ First, determine if this is:
 4. **Build the mockup** - Write HTML with inline CSS that matches the style guide, ensuring consistency with the existing app
 
 5. **Verify visually** - Use the Task tool to spawn a sub-agent that will:
-   - Capture screenshot with \`mcp__nimbalyst-mcp__capture_editor_screenshot\`
+   - Capture screenshot with \`mcp__nimbalyst__capture_editor_screenshot\`
    - Analyze for layout issues or problems
    - Fix with Edit tool if needed
    - Re-capture and iterate until correct
@@ -1219,7 +1219,7 @@ Use standalone HTML with inline CSS. No external dependencies.
 
 ## User Annotations
 
-The user can draw on mockups (circles, arrows, highlights). These annotations are **NOT** in the HTML source - you can only see them by capturing a screenshot with \`mcp__nimbalyst-mcp__capture_editor_screenshot\`.
+The user can draw on mockups (circles, arrows, highlights). These annotations are **NOT** in the HTML source - you can only see them by capturing a screenshot with \`mcp__nimbalyst__capture_editor_screenshot\`.
 
 When the user draws annotations:
 1. Capture a screenshot to see what they marked

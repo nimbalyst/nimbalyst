@@ -69,3 +69,14 @@ export function resolveClaudeExecutablePath(deps: ResolveClaudeExecutableDeps): 
   // 4. Bare command — node-pty resolves it against the spawned (enhanced) PATH.
   return 'claude';
 }
+
+/**
+ * Whether a `claude` executable is actually installed somewhere we could spawn
+ * (NIM-852). Reuses the resolver so it matches exactly what node-pty would run:
+ * the resolver scans the SAME enhanced PATH node-pty spawns with, so a bare
+ * `'claude'` fallback means nothing was found on disk OR PATH → not installed.
+ * Pure (deps injected) for unit testing without touching the filesystem.
+ */
+export function isClaudeExecutableInstalled(deps: ResolveClaudeExecutableDeps): boolean {
+  return resolveClaudeExecutablePath(deps) !== 'claude';
+}

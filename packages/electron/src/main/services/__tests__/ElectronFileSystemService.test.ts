@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi, Mock } from 'vitest';
 
 // Mock all dependencies before imports
+const { mockExecAsync } = vi.hoisted(() => ({ mockExecAsync: vi.fn() }));
 vi.mock('child_process');
-vi.mock('util', () => {
-  const mockExecAsync = vi.fn();
+vi.mock('node:util', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('util')>();
   return {
+    ...actual,
     promisify: vi.fn(() => mockExecAsync),
-    __mockExecAsync: mockExecAsync // Export for test access
   };
 });
 vi.mock('fs/promises');
@@ -22,19 +23,14 @@ vi.mock('../utils/logger', () => ({
 
 // Import modules after mocks
 import { ElectronFileSystemService } from '../ElectronFileSystemService';
-import * as util from 'util';
 import * as fs from 'fs/promises';
 import { glob } from 'glob';
 
 describe('ElectronFileSystemService', () => {
   let service: ElectronFileSystemService;
   const testWorkspacePath = '/test/workspace';
-  let mockExecAsync: Mock;
 
   beforeEach(() => {
-    // Get mock exec function from util mock
-    mockExecAsync = (util as any).__mockExecAsync;
-
     // Clear mocks before creating service
     vi.clearAllMocks();
 

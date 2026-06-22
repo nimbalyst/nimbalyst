@@ -7,6 +7,8 @@
  */
 
 import { atom } from 'jotai';
+import { store } from '@nimbalyst/runtime/store';
+import { onSettingChanged } from './settingAtomFamily';
 
 export interface DiffPeekSize {
   width: number;
@@ -23,6 +25,11 @@ export const DEFAULT_DIFF_PEEK_SIZE: DiffPeekSize = { width: 640, height: 380 };
  * Current persisted diff peek size. `null` means "use default".
  */
 export const diffPeekSizeAtom = atom<DiffPeekSize | null>(null);
+
+// Mirror cross-window writes so a resize in another window reflects here.
+onSettingChanged('ai.diffPeekSize', (size) => {
+  store.set(diffPeekSizeAtom, size);
+});
 
 let diffPeekPersistTimer: ReturnType<typeof setTimeout> | null = null;
 const DIFF_PEEK_PERSIST_DEBOUNCE_MS = 300;

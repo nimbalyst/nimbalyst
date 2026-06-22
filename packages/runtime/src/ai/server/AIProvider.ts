@@ -10,6 +10,7 @@ import {
   StreamChunk,
   ToolHandler,
   ToolDefinition,
+  AgentToolDefinition,
 } from './types';
 import { toolRegistry, toAnthropicTools, toOpenAITools } from '../tools';
 import { buildSystemPrompt } from '../prompt';
@@ -78,7 +79,21 @@ export interface AIProvider extends EventEmitter {
     sessionId?: string,
     messages?: any[],
     workspacePath?: string,
-    attachments?: any[]
+    attachments?: any[],
+    /**
+     * Optional, additive. Tool definitions the host wants this turn to expose.
+     * Only extension-agent providers read it (their tool loop renders tools as
+     * JSON in the prompt); built-in providers ignore the extra arg entirely.
+     */
+    tools?: AgentToolDefinition[],
+    /**
+     * Optional, additive. System-prompt override for this turn. Only
+     * extension-agent providers read it (they prepend it as the
+     * baseSystemPrompt ahead of the tool-envelope block). Built-in providers
+     * build their own system prompt internally and ignore the extra arg. Used
+     * to deliver the meta-agent persona to extension agents.
+     */
+    systemPrompt?: string
   ): AsyncIterableIterator<StreamChunk>;
 
   /**
@@ -179,7 +194,9 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
     sessionId?: string,
     messages?: any[],
     workspacePath?: string,
-    attachments?: any[]
+    attachments?: any[],
+    tools?: AgentToolDefinition[],
+    systemPrompt?: string
   ): AsyncIterableIterator<StreamChunk>;
   abstract abort(): void;
   abstract getCapabilities(): ProviderCapabilities;

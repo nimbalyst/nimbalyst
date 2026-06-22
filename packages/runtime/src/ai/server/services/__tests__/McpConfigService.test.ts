@@ -8,12 +8,8 @@ describe('McpConfigService', () => {
   beforeEach(() => {
     mockDeps = {
       mcpServerPort: 3000,
-      sessionNamingServerPort: 3001,
       extensionDevServerPort: 3002,
-      superLoopProgressServerPort: null,
-      sessionContextServerPort: null,
       mcpConfigLoader: null,
-      extensionPluginsLoader: null,
       claudeSettingsEnvLoader: null,
       shellEnvironmentLoader: null,
     };
@@ -161,35 +157,52 @@ describe('McpConfigService', () => {
   });
 
   describe('Built-in Server Merging', () => {
-    it('should include nimbalyst-mcp server when port is set and workspace path exists', async () => {
+    it('registers the eager core nimbalyst server when port + workspace are set', async () => {
       service = new McpConfigService(mockDeps);
       const config = await service.getMcpServersConfig({
         sessionId: 'session123',
         workspacePath: '/test/workspace'
       });
 
-      expect(config['nimbalyst-mcp']).toEqual(
+      // The legacy monolith `nimbalyst-mcp` is retired; the unified server's
+      // eager core endpoint is `/mcp/core` on the same port.
+      expect(config['nimbalyst-mcp']).toBeUndefined();
+      expect(config['nimbalyst']).toEqual(
         expect.objectContaining({
           type: 'sse',
           transport: 'sse',
-          url: 'http://127.0.0.1:3000/mcp?workspacePath=%2Ftest%2Fworkspace&sessionId=session123'
+          alwaysLoad: true,
+          url: 'http://127.0.0.1:3000/mcp/core?workspacePath=%2Ftest%2Fworkspace&sessionId=session123',
         }),
       );
     });
 
-    it('should include session-naming server when port is set and session ID exists', async () => {
+    it('folds session metadata into the eager core; no standalone session-naming server (Phase 5)', async () => {
       service = new McpConfigService(mockDeps);
       const config = await service.getMcpServersConfig({
         sessionId: 'session123',
         workspacePath: '/test/workspace'
       });
 
-      expect(config['nimbalyst-session-naming']).toEqual({
-        type: 'sse',
-        transport: 'sse',
-        url: 'http://127.0.0.1:3001/mcp?sessionId=session123',
-        alwaysLoad: true,
-      });
+      // The standalone session-naming / session-context / meta-agent / settings
+      // servers are no longer registered; their tools fold onto the unified
+      // `/mcp/core` (update_session_meta) and `/mcp/host` endpoints.
+      expect(config['nimbalyst-session-naming']).toBeUndefined();
+      expect(config['nimbalyst-session-context']).toBeUndefined();
+      expect(config['nimbalyst-meta-agent']).toBeUndefined();
+      expect(config['nimbalyst-settings']).toBeUndefined();
+      // update_session_meta rides on the eager core `nimbalyst` server.
+      expect(config['nimbalyst']).toEqual(
+        expect.objectContaining({
+          alwaysLoad: true,
+          url: expect.stringContaining('/mcp/core'),
+        }),
+      );
+      // session-context + meta-agent ride on the deferred `nimbalyst-host` server.
+      expect(config['nimbalyst-host']).toEqual(
+        expect.objectContaining({ url: expect.stringContaining('/mcp/host') }),
+      );
+      expect(config['nimbalyst-host'].alwaysLoad).toBeFalsy();
     });
 
     it('should include extension-dev server when port is set', async () => {
@@ -207,8 +220,6 @@ describe('McpConfigService', () => {
 
     describe('Bearer-token plumbing (Issue #146)', () => {
       it('emits Authorization header on every nimbalyst-* server when mcpAuthToken is set', async () => {
-        mockDeps.sessionContextServerPort = 3003;
-        mockDeps.metaAgentServerPort = 3004;
         mockDeps.mcpAuthToken = 'token-abc123';
 
         service = new McpConfigService(mockDeps);
@@ -217,26 +228,26 @@ describe('McpConfigService', () => {
           workspacePath: '/test/workspace',
         });
 
-        expect(config['nimbalyst-mcp'].headers).toEqual({
+        // Unified-server endpoints (core / host / trackers / situational) on the
+        // shared port, plus the standalone extension-dev server.
+        expect(config['nimbalyst'].headers).toEqual({
           Authorization: 'Bearer token-abc123',
         });
-        expect(config['nimbalyst-session-naming'].headers).toEqual({
+        expect(config['nimbalyst-host'].headers).toEqual({
+          Authorization: 'Bearer token-abc123',
+        });
+        expect(config['nimbalyst-trackers'].headers).toEqual({
+          Authorization: 'Bearer token-abc123',
+        });
+        expect(config['nimbalyst-situational'].headers).toEqual({
           Authorization: 'Bearer token-abc123',
         });
         expect(config['nimbalyst-extension-dev'].headers).toEqual({
           Authorization: 'Bearer token-abc123',
         });
-        expect(config['nimbalyst-session-context'].headers).toEqual({
-          Authorization: 'Bearer token-abc123',
-        });
-        expect(config['nimbalyst-meta-agent'].headers).toEqual({
-          Authorization: 'Bearer token-abc123',
-        });
       });
 
       it('emits no Authorization header when mcpAuthToken is unset (legacy/test compatibility)', async () => {
-        mockDeps.sessionContextServerPort = 3003;
-        mockDeps.metaAgentServerPort = 3004;
         // mcpAuthToken intentionally omitted
 
         service = new McpConfigService(mockDeps);
@@ -245,17 +256,16 @@ describe('McpConfigService', () => {
           workspacePath: '/test/workspace',
         });
 
-        expect(config['nimbalyst-mcp'].headers).toBeUndefined();
-        expect(config['nimbalyst-session-naming'].headers).toBeUndefined();
+        expect(config['nimbalyst'].headers).toBeUndefined();
+        expect(config['nimbalyst-host'].headers).toBeUndefined();
+        expect(config['nimbalyst-trackers'].headers).toBeUndefined();
+        expect(config['nimbalyst-situational'].headers).toBeUndefined();
         expect(config['nimbalyst-extension-dev'].headers).toBeUndefined();
-        expect(config['nimbalyst-session-context'].headers).toBeUndefined();
-        expect(config['nimbalyst-meta-agent'].headers).toBeUndefined();
       });
     });
 
     it('should not include servers when ports are null', async () => {
       mockDeps.mcpServerPort = null;
-      mockDeps.sessionNamingServerPort = null;
       mockDeps.extensionDevServerPort = null;
 
       service = new McpConfigService(mockDeps);
@@ -265,7 +275,8 @@ describe('McpConfigService', () => {
       });
 
       expect(config['nimbalyst-mcp']).toBeUndefined();
-      expect(config['nimbalyst-session-naming']).toBeUndefined();
+      expect(config['nimbalyst']).toBeUndefined();
+      expect(config['nimbalyst-host']).toBeUndefined();
       expect(config['nimbalyst-extension-dev']).toBeUndefined();
     });
   });
@@ -286,14 +297,14 @@ describe('McpConfigService', () => {
         workspacePath: '/test/workspace'
       });
 
-      expect(config['nimbalyst-mcp']).toBeDefined();
+      expect(config['nimbalyst']).toBeDefined();
       expect(config['user-server']).toBeDefined();
       expect(config['user-server'].command).toBe('custom-server');
     });
 
     it('should override built-in servers with user config', async () => {
       mockDeps.mcpConfigLoader = async () => ({
-        'nimbalyst-mcp': {
+        'nimbalyst': {
           type: 'stdio',
           command: 'custom-override',
           args: []
@@ -306,8 +317,8 @@ describe('McpConfigService', () => {
         workspacePath: '/test/workspace'
       });
 
-      expect(config['nimbalyst-mcp'].command).toBe('custom-override');
-      expect(config['nimbalyst-mcp'].type).toBe('stdio');
+      expect(config['nimbalyst'].command).toBe('custom-override');
+      expect(config['nimbalyst'].type).toBe('stdio');
     });
 
     it('should handle mcpConfigLoader errors and fall back to workspace loading', async () => {
@@ -464,7 +475,7 @@ describe('McpConfigService', () => {
       });
 
       // Built-in servers should still be included
-      expect(config['nimbalyst-mcp']).toBeDefined();
+      expect(config['nimbalyst']).toBeDefined();
       // Note: workspace server loading requires actual fs module, so this test is illustrative
     });
 

@@ -205,7 +205,10 @@ export function useTrackerContentCollab({
         serverUrl: config.serverUrl,
         getJwt: config.getJwt,
         orgId: config.orgId,
+        keyCustody: config.keyCustody,
         documentKey: config.documentKey,
+        // Legacy org key so pre-migration tracker bodies still decrypt (NIM-878).
+        legacyDocumentKey: config.legacyDocumentKey,
         orgKeyFingerprint: config.orgKeyFingerprint,
         userId: config.userId,
         documentId: config.documentId,

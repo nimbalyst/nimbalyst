@@ -42,6 +42,7 @@ import {
   CLAUDE_CODE_VARIANT_VERSIONS,
   CLAUDE_CODE_MODEL_LABELS,
   CLAUDE_CODE_VARIANTS_WITH_1M,
+  CLAUDE_CODE_SAFE_FALLBACK_MODEL,
 } from '../../modelConstants';
 import { isBedrockToolSearchError } from '../utils/errorDetection';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
@@ -49,7 +50,7 @@ import { TranscriptMigrationRepository } from '../../../storage/repositories/Tra
 import { TeammateManager, type TeammateToLeadMessage } from './TeammateManager';
 import path from 'path';
 import os from 'os';
-import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt } from '../../prompt';
+import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
 
 import { SessionManager } from '../SessionManager';
 import { parseBashForFileOps, hasShellChainingOperators, splitOnShellOperators } from '../permissions/BashCommandAnalyzer';
@@ -57,6 +58,7 @@ import { parseBashForFileOps, hasShellChainingOperators, splitOnShellOperators }
 import { ToolPermissionService } from '../permissions/ToolPermissionService';
 import { AgentToolHooks } from '../permissions/AgentToolHooks';
 import { McpConfigService } from '../services/McpConfigService';
+import { getMcpConfigService, isInternalMcpServerEnabled } from '../services/mcpServerConfig';
 import { historyManager } from '../../../../../electron/src/main/HistoryManager';
 import {
   appendLargeAttachmentInstructions,
@@ -94,6 +96,7 @@ import {
 } from './claudeCode/toolAuthorization';
 import { ClaudeCodeDeps } from './claudeCode/dependencyInjection';
 import { buildSdkOptions, type PromptStreamController } from './claudeCode/sdkOptionsBuilder';
+import { resolveEffectiveSessionMode } from './claudeCode/resolveEffectiveSessionMode';
 import {
   isBunRuntimeSpawnCrash,
   collectSpawnCrashDiagnostics,
@@ -296,19 +299,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       });
     }
 
-    // Initialize MCP configuration service
-    this.mcpConfigService = new McpConfigService({
-      mcpServerPort: ClaudeCodeDeps.mcpServerPort,
-      sessionNamingServerPort: ClaudeCodeDeps.sessionNamingServerPort,
-      extensionDevServerPort: ClaudeCodeDeps.extensionDevServerPort,
-      superLoopProgressServerPort: null, // Disabled - was leaking into non-super-loop sessions
-      sessionContextServerPort: ClaudeCodeDeps.sessionContextServerPort,
-      metaAgentServerPort: ClaudeCodeDeps.metaAgentServerPort,
-      settingsServerPort: ClaudeCodeDeps.settingsServerPort,
-      settingsAgentToolsDisabledLoader: ClaudeCodeDeps.settingsAgentToolsDisabledLoader,
-      mcpAuthToken: ClaudeCodeDeps.mcpAuthToken,
+    // Initialize MCP configuration service from the shared registry + the
+    // provider-owned config/env loaders.
+    this.mcpConfigService = getMcpConfigService({
       mcpConfigLoader: ClaudeCodeDeps.mcpConfigLoader,
-      extensionPluginsLoader: ClaudeCodeDeps.extensionPluginsLoader,
       claudeSettingsEnvLoader: ClaudeCodeDeps.claudeSettingsEnvLoader,
       shellEnvironmentLoader: ClaudeCodeDeps.shellEnvironmentLoader,
     });
@@ -400,15 +394,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
   static readonly DEFAULT_MODEL = ClaudeCodeDeps.DEFAULT_MODEL;
 
-  public static setMcpServerPort(port: number | null): void { ClaudeCodeDeps.setMcpServerPort(port); }
-  public static setSessionNamingServerPort(port: number | null): void { ClaudeCodeDeps.setSessionNamingServerPort(port); }
-  public static setExtensionDevServerPort(port: number | null): void { ClaudeCodeDeps.setExtensionDevServerPort(port); }
-  public static setSuperLoopProgressServerPort(port: number | null): void { ClaudeCodeDeps.setSuperLoopProgressServerPort(port); }
-  public static setSessionContextServerPort(port: number | null): void { ClaudeCodeDeps.setSessionContextServerPort(port); }
-  public static setMetaAgentServerPort(port: number | null): void { ClaudeCodeDeps.setMetaAgentServerPort(port); }
-  public static setSettingsServerPort(port: number | null): void { ClaudeCodeDeps.setSettingsServerPort(port); }
-  public static setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void { ClaudeCodeDeps.setSettingsAgentToolsDisabledLoader(loader); }
-  public static setMcpAuthToken(token: string | null): void { ClaudeCodeDeps.setMcpAuthToken(token); }
+  // Internal MCP-server ports / kill-switches / loaders / auth token are
+  // configured once via `configureMcpServers` (shared registry), not per-provider.
   public static setMCPConfigLoader(loader: ((workspacePath?: string) => Promise<Record<string, any>>) | null): void { ClaudeCodeDeps.setMCPConfigLoader(loader); }
   public static setExtensionPluginsLoader(loader: ((workspacePath?: string) => Promise<Array<{ type: 'local'; path: string }>>) | null): void { ClaudeCodeDeps.setExtensionPluginsLoader(loader); }
   public static setClaudeCodeSettingsLoader(loader: (() => Promise<{ projectCommandsEnabled: boolean; userCommandsEnabled: boolean }>) | null): void { ClaudeCodeDeps.setClaudeCodeSettingsLoader(loader); }
@@ -420,7 +407,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   public static setImageCompressor(compressor: ((buffer: Buffer, mimeType: string, options?: { targetSizeBytes?: number }) => Promise<{ buffer: Buffer; mimeType: string; wasCompressed: boolean }>) | null): void { ClaudeCodeDeps.setImageCompressor(compressor); }
   public static setClaudeSettingsPatternSaver(saver: ((workspacePath: string, pattern: string) => Promise<void>) | null): void { ClaudeCodeDeps.setClaudeSettingsPatternSaver(saver); }
   public static setClaudeSettingsPatternChecker(checker: ((workspacePath: string, pattern: string) => Promise<boolean>) | null): void { ClaudeCodeDeps.setClaudeSettingsPatternChecker(checker); }
-  public static setTrustChecker(checker: ((workspacePath: string) => { trusted: boolean; mode: 'ask' | 'allow-all' | 'bypass-all' | null }) | null): void { BaseAgentProvider.setTrustChecker(checker); }
+  public static setTrustChecker(checker: ((workspacePath: string) => { trusted: boolean; mode: 'ask' | 'allow-all' | 'bypass-all' | null; allowAllUsesClassifier?: boolean }) | null): void { BaseAgentProvider.setTrustChecker(checker); }
   public static setExtensionFileTypesLoader(loader: (() => Set<string>) | null): void { ClaudeCodeDeps.setExtensionFileTypesLoader(loader); }
 
   private static scheduleWakeupHandler: ((request: ScheduleWakeupRequest) => Promise<void>) | null = null;
@@ -450,7 +437,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   }
 
   private resolveModelVariant(): string {
-    return resolveClaudeCodeModelVariant(this.config.model, ClaudeCodeProvider.DEFAULT_MODEL);
+    // Billing safety (#631 / NIM-848): when no explicit model is set, fall back
+    // to a STANDARD 200k model, never the 1M user-facing default. The `[1m]`
+    // beta must only ever be emitted for an explicitly-selected `-1m` model.
+    return resolveClaudeCodeModelVariant(this.config.model, CLAUDE_CODE_SAFE_FALLBACK_MODEL);
   }
 
 
@@ -481,17 +471,16 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     this.currentMode = (documentContext as any)?.mode || 'agent';
 
     // Trust-level upgrade: when workspace permission is "Allow All" (internal
-    // mode 'bypass-all') and session mode is 'agent', transparently upgrade to
-    // 'auto' so the SDK classifier handles permissions instead of Nimbalyst
-    // bypassing everything. This matches CLI auto-mode behaviour and adds a
-    // safety layer on top of the previous blanket bypass. Plan mode is never
-    // upgraded — it always uses the SDK's native read-only enforcement.
+    // mode 'bypass-all') and session mode is 'agent', the session is upgraded
+    // to 'auto' so the SDK classifier handles permissions instead of Nimbalyst
+    // bypassing everything. This is now OPT-IN per workspace (issue #628): by
+    // default "Allow All" means literal allow-all and no upgrade happens. Plan
+    // mode is never upgraded — it always uses the SDK's native read-only
+    // enforcement.
     const pathForTrustUpgrade = (documentContext as any)?.permissionsPath || workspacePath;
     if (this.currentMode === 'agent' && pathForTrustUpgrade && BaseAgentProvider.trustChecker) {
       const trustStatus = BaseAgentProvider.trustChecker(pathForTrustUpgrade);
-      if (trustStatus.trusted && trustStatus.mode === 'bypass-all') {
-        this.currentMode = 'auto';
-      }
+      this.currentMode = resolveEffectiveSessionMode(this.currentMode, trustStatus);
     }
 
     // Threshold for large text attachments that should be written to /tmp instead of sent inline
@@ -596,7 +585,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       const enableAgentTeams = settingsEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1';
       const agentRole = await this.getAgentRole(sessionId);
       const isMetaAgent = agentRole === 'meta-agent';
-      const systemPrompt = this.buildSystemPrompt(documentContext, enableAgentTeams, isMetaAgent);
+      const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(sessionId) : 'default';
+      const systemPrompt = this.buildSystemPrompt(documentContext, enableAgentTeams, isMetaAgent, workflowPreset);
 
       // Note: Attachments (images/documents) are NOT added to the message text.
       // They're sent as separate content blocks via the API's multimodal format.
@@ -992,7 +982,22 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
               case 'usage':
                 usageData = item.usage;
-                if (item.isPerStep) lastAssistantUsage = item.usage;
+                if (item.isPerStep) {
+                  lastAssistantUsage = item.usage;
+                  // Surface context fill live, per assistant step, so the UI's
+                  // context indicator updates throughout a long agentic turn
+                  // instead of only at the `result` chunk (turn end). This is a
+                  // mid-turn snapshot: contextFillTokens ONLY -- cumulative
+                  // input/output usage stays on the `complete` chunk to avoid
+                  // double-counting. See NIM-868.
+                  const stepContextTokens =
+                    (item.usage?.input_tokens || 0)
+                    + (item.usage?.cache_read_input_tokens || 0)
+                    + (item.usage?.cache_creation_input_tokens || 0);
+                  if (stepContextTokens > 0) {
+                    yield { type: 'context_usage', contextFillTokens: stepContextTokens };
+                  }
+                }
                 if (item.modelUsage) modelUsageData = item.modelUsage;
                 break;
 
@@ -3162,16 +3167,15 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   }
 
 
-  protected buildSystemPrompt(documentContext?: DocumentContext, enableAgentTeams?: boolean, isMetaAgent: boolean = false): string {
+  protected buildSystemPrompt(documentContext?: DocumentContext, enableAgentTeams?: boolean, isMetaAgent: boolean = false, workflowPreset: MetaAgentWorkflowPreset = 'default'): string {
     if (isMetaAgent) {
-      // TODO: Get workflowPreset from session metadata or documentContext
-      return buildMetaAgentSystemPrompt('claude', 'default', {
+      return buildMetaAgentSystemPrompt('claude', workflowPreset, {
         provider: 'claude-code',
         model: this.config.model ?? undefined,
       });
     }
 
-    const hasSessionNaming = ClaudeCodeDeps.sessionNamingServerPort !== null;
+    const hasSessionNaming = isInternalMcpServerEnabled();
     const worktreePath = documentContext?.worktreePath;
     const isVoiceMode = (documentContext as any)?.isVoiceMode;
     const voiceModeCodingAgentPrompt = (documentContext as any)?.voiceModeCodingAgentPrompt;

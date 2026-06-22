@@ -80,7 +80,7 @@ The Excalidraw extension provides these MCP tools for diagram manipulation:
 
 1. **Create file** - Create a new `.excalidraw` file or open existing one
 2. **Use MCP tools** - Use the Excalidraw MCP tools to add/modify elements
-3. **Verify visually (once)** - Use `mcp__nimbalyst-mcp__capture_editor_screenshot` a single time to confirm the diagram rendered
+3. **Verify visually (once)** - Use `mcp__nimbalyst__capture_editor_screenshot` a single time to confirm the diagram rendered
 4. **Stop** - Report what you made and hand control back. Do not iterate on polish unless the user asks for changes. See "STOP AFTER ONE PASS" above.
 
 ## Best Practices

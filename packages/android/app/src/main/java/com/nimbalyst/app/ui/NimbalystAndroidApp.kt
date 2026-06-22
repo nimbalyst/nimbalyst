@@ -107,6 +107,15 @@ private fun MainApp() {
         }
     }
 
+    // Route to a session when opened via a notification tap (nimbalyst://session/<id>).
+    val pendingSessionId by app.pendingSessionNavigation.collectAsState()
+    LaunchedEffect(pendingSessionId) {
+        pendingSessionId?.let { sessionId ->
+            navController.navigate("sessions/$sessionId")
+            app.consumeSessionNavigation()
+        }
+    }
+
     NavHost(navController = navController, startDestination = "projects") {
         composable("projects") {
             ProjectListScreen(navController = navController)

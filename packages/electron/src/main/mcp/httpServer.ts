@@ -33,7 +33,6 @@ import {
   handleApplyCollabDocEdit,
   handleReadCollabDoc,
   handleStreamContent,
-  handleOpenWorkspace,
   handleCaptureEditorScreenshot,
   handleGetSessionEditedFiles,
   getEditorToolSchemas,
@@ -71,12 +70,34 @@ import {
   feedbackToolSchemas,
 } from "./tools/feedbackToolHandlers";
 import { handleExtensionTool } from "./tools/extensionToolHandler";
+// Host + core tool surfaces folded onto the unified server (MCP consolidation
+// Phase 5). Each standalone server still runs (legacy ports, retired in Phase 7)
+// but exports its schemas + a dispatch fn so the unified `/mcp/host` (and core
+// `update_session_meta`) endpoints serve the same tools via the same handlers.
+import { settingsToolSchemas, dispatchSettingsTool } from "./settingsServer";
+import {
+  SESSION_CONTEXT_TOOL_SCHEMAS,
+  dispatchSessionContextTool,
+} from "./sessionContextServer";
+import { META_AGENT_TOOL_DEFS, dispatchMetaAgentTool } from "./metaAgentServer";
+import {
+  buildSessionMetaToolSchemas,
+  dispatchSessionMetaTool,
+} from "./sessionNamingServer";
+import {
+  McpEndpointSelection,
+  resolveMcpEndpoint,
+  isMcpEndpoint,
+  selectFirstPartyToolsForEndpoint,
+  selectExtensionToolsForEndpoint,
+} from "./mcpEndpointRouting";
 
 // Re-export functions that don't need transport state
 export {
   registerWorkspaceWindow,
   unregisterWindow,
   unregisterExtensionTools,
+  getActiveExtensionShortNames,
 } from "./mcpWorkspaceResolver";
 
 // ---- Transport State ----
@@ -290,61 +311,129 @@ function sanitizeToolName(name: string): string {
   return name.replace(/\./g, '_');
 }
 
+/**
+ * Log (but do not drop) any duplicate tool names in an endpoint's ListTools
+ * result. Duplicates indicate a topology/schema wiring bug; we surface them in
+ * the logs rather than silently shipping a malformed surface to the agent.
+ */
+function dedupeAndWarn<T extends { name: string }>(tools: T[], serverName: string): T[] {
+  const names = tools.map((t) => t.name);
+  const duplicates = names.filter((name, idx) => names.indexOf(name) !== idx);
+  if (duplicates.length > 0) {
+    console.error(`[MCP:${serverName}] DUPLICATE TOOL NAMES DETECTED:`, duplicates);
+    console.error(`[MCP:${serverName}] All tool names:`, names.join(", "));
+  }
+  return tools;
+}
+
+// Host-tool name sets for CallTool routing (MCP consolidation Phase 5). The
+// dispatch is endpoint-agnostic — a host tool resolves the same regardless of
+// which endpoint surfaced it — so we route by tool name to the owning server's
+// extracted dispatch fn. Derived from the same schema arrays listed in
+// ListTools so the two never drift.
+const SETTINGS_TOOL_NAMES = new Set(settingsToolSchemas.map((t) => t.name));
+const SESSION_CONTEXT_TOOL_NAMES = new Set(
+  SESSION_CONTEXT_TOOL_SCHEMAS.map((t) => t.name)
+);
+const META_AGENT_TOOL_NAMES = new Set(META_AGENT_TOOL_DEFS.map((t) => t.name));
+
 // ---- MCP Server Factory ----
 
 function createSharedMcpServer(
   workspacePath: string | undefined,
-  sessionId: string | undefined
+  sessionId: string | undefined,
+  endpoint: McpEndpointSelection = { kind: "legacy" },
+  // Phase 5: when true, the `/mcp/host` endpoint omits the settings tools
+  // (set for the meta-agent profile and when the settings kill-switch is on)
+  // while still serving session-context + meta-agent. Session-context and
+  // meta-agent are unaffected.
+  excludeHostSettings: boolean = false
 ): Server {
+  // Name the server after the endpoint it serves so multi-endpoint logs are
+  // distinguishable. The SDK namespaces tools by the client's config-key, not
+  // this self-reported name.
+  const serverName =
+    endpoint.kind === "firstParty"
+      ? endpoint.configKey
+      : endpoint.kind === "extension"
+        ? `nimbalyst-${endpoint.extensionShortName}`
+        : "nimbalyst-fallback";
+
   const server = new Server(
-    { name: "nimbalyst-mcp", version: "1.0.0" },
+    { name: serverName, version: "1.0.0" },
     { capabilities: { tools: { listChanged: true } } }
   );
 
   (server as { onerror?: (error: Error) => void }).onerror = (error: Error) => {
-    console.error("[MCP:nimbalyst-mcp] Server error:", error);
+    console.error(`[MCP:${serverName}] Server error:`, error);
   };
 
   // Register tool list handler
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const currentDocState = sessionId
-      ? documentStateBySession.get(sessionId)
-      : undefined;
-    const currentFilePath = currentDocState?.filePath;
+    let allTools: Array<{ name: string; description: string; inputSchema: any }>;
 
-    const builtInTools = [
+    if (endpoint.kind === "extension") {
+      // Per-extension endpoint: only this extension's tools, no first-party.
+      // Return before building the first-party `builtInTools` array — in
+      // particular `buildSessionMetaToolSchemas` does an async tag lookup that
+      // would otherwise run (and be discarded) on every extension endpoint.
+      const currentFilePath = sessionId
+        ? documentStateBySession.get(sessionId)?.filePath
+        : undefined;
+      const extensionTools = await getAvailableExtensionTools(
+        workspacePath,
+        currentFilePath
+      );
+      allTools = selectExtensionToolsForEndpoint(
+        extensionTools,
+        endpoint.extensionShortName
+      ).map((tool) => ({
+        name: sanitizeToolName(tool.name),
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+      }));
+      return { tools: dedupeAndWarn(allTools, serverName) };
+    }
+
+    // update_session_meta carries a dynamic description (workspace tag list);
+    // built async per session. Folded into the eager core (`nimbalyst`).
+    const sessionMetaSchemas = await buildSessionMetaToolSchemas(sessionId ?? "");
+
+    const builtInTools: Array<{ name: string; description: string; inputSchema: any }> = [
       ...getEditorToolSchemas(sessionId),
       ...displayToolSchemas,
       ...voiceToolSchemas,
       ...getInteractiveToolSchemas(sessionId),
       ...trackerToolSchemas,
       ...feedbackToolSchemas,
+      // Host surface (settings + session-context + meta-agent) on `/mcp/host`;
+      // update_session_meta on the eager core. The topology reverse index routes
+      // each schema to its endpoint via selectFirstPartyToolsForEndpoint.
+      ...settingsToolSchemas,
+      ...SESSION_CONTEXT_TOOL_SCHEMAS,
+      ...META_AGENT_TOOL_DEFS,
+      ...sessionMetaSchemas,
     ];
 
-    // Get extension tools for the current workspace/file
-    const extensionTools = await getAvailableExtensionTools(
-      workspacePath,
-      currentFilePath
-    );
-    const extensionToolSchemas = extensionTools.map((tool) => ({
-      name: sanitizeToolName(tool.name),
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-    }));
-
-    const allTools = [...builtInTools, ...extensionToolSchemas];
-
-    // Check for duplicate tool names
-    const toolNames = allTools.map((t) => t.name);
-    const duplicates = toolNames.filter(
-      (name, idx) => toolNames.indexOf(name) !== idx
-    );
-    if (duplicates.length > 0) {
-      console.error("[MCP Server] DUPLICATE TOOL NAMES DETECTED:", duplicates);
-      console.error("[MCP Server] All tool names:", toolNames.join(", "));
+    if (endpoint.kind === "firstParty") {
+      // First-party endpoint: only the topology subset for this server.
+      allTools = selectFirstPartyToolsForEndpoint(
+        builtInTools,
+        endpoint.configKey
+      );
+      // Host endpoint: drop the settings tools for the meta-agent profile /
+      // settings kill-switch (session-context + meta-agent stay).
+      if (excludeHostSettings) {
+        allTools = allTools.filter((tool) => !SETTINGS_TOOL_NAMES.has(tool.name));
+      }
+    } else {
+      // Fallback (bare `/mcp` or an unknown `/mcp/<x>`): the consolidation is
+      // complete and the legacy monolith is retired, so no first-party tools are
+      // served here. A stray connection just sees an empty surface.
+      allTools = [];
     }
 
-    return { tools: allTools };
+    return { tools: dedupeAndWarn(allTools, serverName) };
   });
 
   // Register tool execution handler
@@ -373,9 +462,6 @@ function createSharedMcpServer(
 
         case "streamContent":
           return handleStreamContent(args);
-
-        case "open_workspace":
-          return handleOpenWorkspace(args);
 
         case "capture_editor_screenshot":
           return handleCaptureEditorScreenshot(args);
@@ -409,7 +495,7 @@ function createSharedMcpServer(
           return handleTrackerGet(args, workspacePath);
 
         case "tracker_list_types":
-          return handleTrackerListTypes(args);
+          return handleTrackerListTypes(args, workspacePath);
 
         case "tracker_define_type":
           return handleTrackerDefineType(args, workspacePath);
@@ -460,11 +546,41 @@ function createSharedMcpServer(
           return await handleFeedbackOpenGithubIssue(args);
 
         default:
+          // Host surface (MCP consolidation Phase 5): settings / session-context
+          // / meta-agent / update_session_meta, folded onto the unified server.
+          // Routed by tool name to the owning server's extracted dispatch fn
+          // (same handlers + service singletons + IPC side effects as the
+          // retired standalone servers).
+          if (SETTINGS_TOOL_NAMES.has(toolName)) {
+            // The settings tools are dropped from ListTools when the meta-agent
+            // profile / kill-switch is active; enforce the same gate on CallTool
+            // so an unlisted tool can't still be executed (the standalone
+            // settings server used to be entirely unregistered in that case).
+            if (excludeHostSettings) {
+              throw new Error(`Tool "${toolName}" is not available in this session`);
+            }
+            return dispatchSettingsTool(name, args, sessionId ?? "", workspacePath);
+          }
+          if (SESSION_CONTEXT_TOOL_NAMES.has(toolName)) {
+            return dispatchSessionContextTool(name, args, sessionId ?? "", workspacePath ?? "");
+          }
+          if (META_AGENT_TOOL_NAMES.has(toolName)) {
+            const text = await dispatchMetaAgentTool(
+              name,
+              sessionId ?? "",
+              workspacePath ?? "",
+              args
+            );
+            return { content: [{ type: "text", text }], isError: false };
+          }
+          if (toolName === "update_session_meta") {
+            return dispatchSessionMetaTool(name, args, sessionId ?? "");
+          }
           return handleExtensionTool(toolName, name, args, sessionId, workspacePath);
       }
     } catch (error) {
-      console.error(`[MCP:nimbalyst-mcp] Tool "${name}" failed:`, error);
-      console.error(`[MCP:nimbalyst-mcp] Tool args:`, JSON.stringify(args).slice(0, 500));
+      console.error(`[MCP:${serverName}] Tool "${name}" failed:`, error);
+      console.error(`[MCP:${serverName}] Tool args:`, JSON.stringify(args).slice(0, 500));
       throw error;
     }
   });
@@ -608,17 +724,21 @@ async function tryCreateServer(port: number): Promise<any> {
           return;
         }
 
-        // Issue #146: every non-OPTIONS request to /mcp must carry the
-        // per-launch bearer token. /clip stays open below (intentional, per
+        // Issue #146: every non-OPTIONS request to an /mcp endpoint must carry
+        // the per-launch bearer token. /clip stays open below (intentional, per
         // plan: web-clipper extension fires from the user's browser).
-        if (pathname === "/mcp" && !requireMcpAuth(req)) {
+        if (isMcpEndpoint(pathname) && !requireMcpAuth(req)) {
           res.writeHead(401);
           res.end("Unauthorized");
           return;
         }
 
+        // Endpoint-path routing: which split server (or legacy full surface)
+        // this connection serves. null for non-/mcp paths (handled below).
+        const mcpEndpoint = resolveMcpEndpoint(pathname);
+
         // Handle SSE GET request to establish connection
-        if (pathname === "/mcp" && req.method === "GET") {
+        if (isMcpEndpoint(pathname) && req.method === "GET") {
           // Streamable HTTP GET (session established, uses Mcp-Session-Id header)
           if (mcpSessionIdHeader) {
             const metadata = activeStreamableTransports.get(mcpSessionIdHeader);
@@ -662,10 +782,16 @@ async function tryCreateServer(port: number): Promise<any> {
 
           registerWorkspaceMappingForConnection(workspacePath);
 
-          const server = createSharedMcpServer(workspacePath, sessionId);
+          const server = createSharedMcpServer(
+            workspacePath,
+            sessionId,
+            mcpEndpoint ?? { kind: "legacy" },
+            parsedUrl.query.hostExcludeSettings === "1"
+          );
 
-          // Create SSE transport
-          const transport = new SSEServerTransport("/mcp", res);
+          // Create SSE transport. The message path must match this endpoint so
+          // the client POSTs follow-ups back to the same /mcp[/...] path.
+          const transport = new SSEServerTransport(pathname || "/mcp", res);
           activeTransports.set(transport.sessionId, transport);
 
           // SSE keepalive: send periodic comment pings to prevent the
@@ -724,7 +850,7 @@ async function tryCreateServer(port: number): Promise<any> {
                 res.end();
               }
             });
-        } else if (pathname === "/mcp" && req.method === "POST") {
+        } else if (isMcpEndpoint(pathname) && req.method === "POST") {
           // Legacy SSE POST flow: route to existing SSE transport if found
           const legacyTransportSessionId = parsedUrl.query.sessionId as
             | string
@@ -809,7 +935,9 @@ async function tryCreateServer(port: number): Promise<any> {
 
             const server = createSharedMcpServer(
               workspacePath,
-              nimbalystSessionId
+              nimbalystSessionId,
+              mcpEndpoint ?? { kind: "legacy" },
+              parsedUrl.query.hostExcludeSettings === "1"
             );
             if (workspacePath) {
               if (!serversByWorkspace.has(workspacePath)) {
@@ -868,7 +996,7 @@ async function tryCreateServer(port: number): Promise<any> {
               res.end("Internal server error");
             }
           }
-        } else if (pathname === "/mcp" && req.method === "DELETE") {
+        } else if (isMcpEndpoint(pathname) && req.method === "DELETE") {
           // Streamable HTTP session termination
           if (!mcpSessionIdHeader) {
             res.writeHead(400);

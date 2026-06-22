@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   mockQuery,
+  mockGetEngine,
   mockUpsertWorkspaceTrackerSchema,
   mockDeleteWorkspaceTrackerSchema,
   mockGetAllTrackerSchemas,
@@ -12,6 +13,7 @@ const {
   mockDocService,
 } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
+  mockGetEngine: vi.fn(() => 'pglite'),
   mockUpsertWorkspaceTrackerSchema: vi.fn(),
   mockDeleteWorkspaceTrackerSchema: vi.fn(),
   mockGetAllTrackerSchemas: vi.fn((): any[] => []),
@@ -35,6 +37,7 @@ const {
 vi.mock('../../../database/initialize', () => ({
   getDatabase: () => ({
     query: mockQuery,
+    getEngine: mockGetEngine,
   }),
 }));
 
@@ -45,7 +48,7 @@ vi.mock('../../../services/TrackerIdentityService', () => ({
 vi.mock('../../../services/TrackerPolicyService', () => ({
   getEffectiveTrackerSyncPolicy: vi.fn(() => ({ mode: 'local', scope: 'project' })),
   getInitialTrackerSyncStatus: vi.fn(() => 'local'),
-  shouldSyncTrackerPolicy: vi.fn(() => false),
+  shouldSyncTrackerItem: vi.fn(() => false),
 }));
 
 vi.mock('../../../services/TrackerSyncManager', () => ({
@@ -53,13 +56,24 @@ vi.mock('../../../services/TrackerSyncManager', () => ({
   syncTrackerItem: vi.fn(),
 }));
 
-vi.mock('../../../services/TrackerSchemaService', () => ({
-  getTrackerRoleField: vi.fn(() => null),
-  upsertWorkspaceTrackerSchema: mockUpsertWorkspaceTrackerSchema,
-  deleteWorkspaceTrackerSchema: mockDeleteWorkspaceTrackerSchema,
-  getAllTrackerSchemas: mockGetAllTrackerSchemas,
-  isBuiltinTrackerSchema: mockIsBuiltinTrackerSchema,
-}));
+vi.mock('../../../services/TrackerSchemaService', () => {
+  class MockTrackerTypeExistsError extends Error {
+    readonly code = 'TRACKER_TYPE_EXISTS';
+    constructor(readonly type: string, readonly filePath: string) {
+      super(`Tracker type '${type}' already exists at ${filePath}.`);
+      this.name = 'TrackerTypeExistsError';
+    }
+  }
+  return {
+    getTrackerRoleField: vi.fn(() => null),
+    ensureWorkspaceTrackerSchemasLoaded: vi.fn(),
+    upsertWorkspaceTrackerSchema: mockUpsertWorkspaceTrackerSchema,
+    deleteWorkspaceTrackerSchema: mockDeleteWorkspaceTrackerSchema,
+    getAllTrackerSchemas: mockGetAllTrackerSchemas,
+    isBuiltinTrackerSchema: mockIsBuiltinTrackerSchema,
+    TrackerTypeExistsError: MockTrackerTypeExistsError,
+  };
+});
 
 vi.mock('../../../utils/store', () => ({
   getWorkspaceState: vi.fn(() => ({ issueKeyPrefix: 'NIM' })),
@@ -107,7 +121,7 @@ import {
   rowToTrackerItem,
 } from '../trackerToolHandlers';
 import { isTrackerSyncActive } from '../../../services/TrackerSyncManager';
-import { getEffectiveTrackerSyncPolicy, shouldSyncTrackerPolicy } from '../../../services/TrackerPolicyService';
+import { getEffectiveTrackerSyncPolicy, shouldSyncTrackerItem } from '../../../services/TrackerPolicyService';
 
 function makeRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -273,7 +287,7 @@ describe('tracker schema tools', () => {
     expect(mockUpsertWorkspaceTrackerSchema).toHaveBeenCalledWith(
       '/tmp/ws',
       expect.objectContaining({ type: 'incident' }),
-      { fileName: undefined },
+      { fileName: undefined, overwrite: false },
     );
   });
 
@@ -285,6 +299,20 @@ describe('tracker schema tools', () => {
     expect(result.isError).toBe(true);
     expect(mockDeleteWorkspaceTrackerSchema).not.toHaveBeenCalled();
     expect(result.content[0].text).toContain('still reference this type');
+  });
+
+  it('uses backend-portable SQL for SQLite tracker type usage checks', async () => {
+    mockGetEngine.mockReturnValueOnce('sqlite');
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: 2 }] });
+
+    const result = await handleTrackerDeleteType({ type: 'incident' }, '/tmp/ws');
+
+    expect(result.isError).toBe(true);
+    const usageSql = String(mockQuery.mock.calls[0][0]);
+    expect(usageSql).toContain('COUNT(*) AS count');
+    expect(usageSql).toContain('json_each(type_tags)');
+    expect(usageSql).not.toContain('ANY(type_tags)');
+    expect(usageSql).not.toContain('::int');
   });
 });
 
@@ -312,6 +340,25 @@ describe('handleTrackerCreate session linking', () => {
       .mockResolvedValueOnce({ rows: [] })                              // UPDATE issue_key
       .mockResolvedValueOnce({ rows: [{ ...createdRow, issue_key: 'NIM-1', issue_number: 1 }] }) // re-resolve
       .mockResolvedValueOnce({ rows: [{ ...createdRow, issue_key: 'NIM-1', issue_number: 1 }] }); // notifyTrackerItemAdded
+  }
+
+  function setupCreateQueueWithDescription() {
+    const createdRow = makeRow({
+      id: 'bug_test',
+      workspace: '/tmp/ws',
+      issue_key: null,
+      issue_number: null,
+    });
+    const keyedRow = { ...createdRow, issue_key: 'NIM-1', issue_number: 1 };
+    mockQuery
+      .mockResolvedValueOnce({ rows: [] }) // INSERT
+      .mockResolvedValueOnce({ rows: [createdRow] }) // resolve created
+      .mockResolvedValueOnce({ rows: [{ max_num: 0 }] }) // MAX(issue_number)
+      .mockResolvedValueOnce({ rows: [] }) // UPDATE issue_key
+      .mockResolvedValueOnce({ rows: [keyedRow] }) // re-resolve after issue key
+      .mockResolvedValueOnce({ rows: [{ body_version: 1 }] }) // UPDATE content + body_version
+      .mockResolvedValueOnce({ rows: [] }) // INSERT tracker_body_cache
+      .mockResolvedValueOnce({ rows: [keyedRow] }); // notifyTrackerItemAdded
   }
 
   it('does NOT auto-link the current session when linkSession is omitted', async () => {
@@ -414,6 +461,41 @@ describe('handleTrackerCreate session linking', () => {
     expect(data.origin.kind).toBe('external');
     expect(data.origin.external.urn).toBe('github://owner/repo#42');
     expect(data.createdByAgent).toBe(false);
+  });
+
+  it('seeds body cache and the live Y.Doc when creating with a description', async () => {
+    setupCreateQueueWithDescription();
+
+    const result = await handleTrackerCreate(
+      { id: 'bug_test', type: 'bug', title: 'Some bug', description: 'Created body text' },
+      '/tmp/ws',
+      undefined,
+    );
+
+    expect(result.isError).toBe(false);
+
+    const updateContentSql = mockQuery.mock.calls.find(
+      (c) => /UPDATE tracker_items[\s\S]+SET content[\s\S]+body_version/.test(String(c[0])),
+    );
+    expect(updateContentSql).toBeDefined();
+    expect(String(updateContentSql![0])).toMatch(/RETURNING body_version/);
+
+    const cacheInsert = mockQuery.mock.calls.find(
+      (c) => /INSERT INTO tracker_body_cache/.test(String(c[0])),
+    );
+    expect(cacheInsert).toBeDefined();
+    expect(cacheInsert![1]).toEqual([
+      'bug_test',
+      1,
+      JSON.stringify('Created body text'),
+    ]);
+
+    expect(mockApplyHeadlessBodyMarkdown).toHaveBeenCalledTimes(1);
+    expect(mockApplyHeadlessBodyMarkdown).toHaveBeenCalledWith(
+      '/tmp/ws',
+      'bug_test',
+      'Created body text',
+    );
   });
 
   it('rejects tracker_create when the schema validation fails', async () => {
@@ -701,7 +783,7 @@ describe('handleTrackerUpdate description / collab body', () => {
     mockGlobalRegistry.validate.mockReturnValue({ valid: true, errors: [] });
     // Default: non-collab (local) workspace -- description writes proceed.
     vi.mocked(getEffectiveTrackerSyncPolicy).mockReturnValue({ mode: 'local', scope: 'project' });
-    vi.mocked(shouldSyncTrackerPolicy).mockReturnValue(false);
+    vi.mocked(shouldSyncTrackerItem).mockReturnValue(false);
     vi.mocked(isTrackerSyncActive).mockReturnValue(false);
   });
 

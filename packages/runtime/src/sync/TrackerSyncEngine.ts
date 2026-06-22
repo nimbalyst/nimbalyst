@@ -46,12 +46,22 @@ import type {
   TrackerDeltaMessage,
   TrackerConfigBroadcastMessage,
   TrackerTransactionRow,
+  EncryptedTrackerSchemaEnvelope,
+  TrackerSchemaSyncResponseMessage,
+  TrackerSchemaDeltaMessage,
+  TrackerSchemaMutationAckMessage,
+  TrackerRoomMovedMessage,
 } from './trackerProtocol';
 import { SYNC_ID_INITIAL, buildTrackerRoomId } from './trackerProtocol';
 import { appendSyncClientParams } from './syncClientInfo';
 import {
   encryptTrackerPayload,
   decryptTrackerEnvelope,
+  encryptTrackerSchemaPayload,
+  decryptTrackerSchemaEnvelope,
+  encodeTrackerPayloadPlaintext,
+  decodeTrackerEnvelopePlaintext,
+  decodeTrackerSchemaEnvelopePlaintext,
 } from './TrackerEnvelopeCrypto';
 import type { TrackerPersistence, TrackerRowSnapshot } from './trackerPersistence';
 
@@ -91,6 +101,26 @@ export interface RejectedTrackerMutation {
   rejection: NonNullable<TrackerTransactionRow['lastRejection']>;
 }
 
+export interface TrackerSchemaLocalChange {
+  type: string;
+  /** JSON-serialized TrackerDataModel, or null for a tombstone. */
+  model: string | null;
+  deleted: boolean;
+}
+
+export interface AppliedTrackerSchema {
+  type: string;
+  syncId: SyncId;
+  model: string | null;
+  isTombstone: boolean;
+}
+
+export interface TrackerSchemaSyncHooks {
+  getMaxSyncId: () => Promise<SyncId>;
+  listUnsynced: () => Promise<TrackerSchemaLocalChange[]>;
+  applyRemote: (def: { type: string; model: string | null; syncId: SyncId }) => Promise<unknown>;
+}
+
 /**
  * Outcome of a key-refresh callback. Returning `null` indicates the host
  * could not produce a fresh key (e.g. admin hasn't re-shared yet); the
@@ -100,6 +130,15 @@ export interface TrackerKeyMaterial {
   encryptionKey: CryptoKey;
   orgKeyFingerprint: string;
 }
+
+/**
+ * Epic H2 key custody. `legacy-e2e` (default): the client encrypts/decrypts
+ * team data with the org key (zero-knowledge; the server is a dumb relay).
+ * `server-managed`: the server holds the per-team DEK and encrypts at rest, so
+ * the client sends/receives PLAINTEXT (no iv, `orgKeyFingerprint` null) and the
+ * `encryptionKey` is unused.
+ */
+export type TrackerKeyCustodyMode = 'legacy-e2e' | 'server-managed';
 
 export interface TrackerSyncEngineConfig {
   /** WebSocket server URL, e.g. `wss://sync.nimbalyst.com`. */
@@ -119,8 +158,19 @@ export interface TrackerSyncEngineConfig {
   /** The current user's ID (informational; not used in auth). */
   userId: string;
 
-  /** Current org AES-256-GCM encryption key. */
-  encryptionKey: CryptoKey;
+  /**
+   * Epic H2 key custody mode. Defaults to `legacy-e2e` when omitted (the
+   * historical zero-knowledge path). In `server-managed` the engine runs the
+   * encrypt/decrypt hooks as identity pass-throughs and `encryptionKey` /
+   * `orgKeyFingerprint` are ignored.
+   */
+  keyCustody?: TrackerKeyCustodyMode;
+
+  /**
+   * Current org AES-256-GCM encryption key. Required in `legacy-e2e` mode;
+   * unused (and optional) in `server-managed` mode.
+   */
+  encryptionKey?: CryptoKey;
 
   /**
    * Fingerprint of the encryption key, carried as `orgKeyFingerprint` on
@@ -132,6 +182,9 @@ export interface TrackerSyncEngineConfig {
 
   /** PGLite (or in-memory test) storage seam. */
   persistence: TrackerPersistence;
+
+  /** Optional schema sync seam. Electron wires this to tracker_type_defs. */
+  schemaSync?: TrackerSchemaSyncHooks;
 
   /**
    * Resolve a fresh team-scoped JWT. Called on every (re)connect AND
@@ -166,6 +219,9 @@ export interface TrackerSyncEngineConfig {
   /** Fires when a mutation was rejected and rolled back. */
   onRejection?: (rejection: RejectedTrackerMutation) => void;
 
+  /** Fires for every applied schema definition (remote OR self-originated ack). */
+  onSchemaApplied?: (schema: AppliedTrackerSchema) => void;
+
   /**
    * Fires when the bootstrap loop throws and is silently caught. Without
    * this hook the engine can sit at `syncing` indefinitely with no visible
@@ -173,6 +229,14 @@ export interface TrackerSyncEngineConfig {
    * decide to force a reconnect.
    */
   onBootstrapError?: (err: unknown) => void;
+
+  /**
+   * Epic H3 P1: fires when the server reports this tracker room was relocated
+   * to another org by the move engine. The engine stops (the old room is
+   * frozen/tombstoned); the host re-resolves routing and reconnects the
+   * project to its new org-scoped room.
+   */
+  onRoomMoved?: (dest: { destOrgId: string; destTeamProjectId: string }) => void;
 
   /**
    * Test seam: override the URL builder. The default appends `?token=...`
@@ -215,9 +279,13 @@ export class TrackerSyncEngine {
   private connecting = false;
   private suppressReconnect = false;
 
-  /** Current encryption material; mutated on key rotation. */
-  private encryptionKey: CryptoKey;
+  /** Current encryption material; mutated on key rotation. Null in
+   * server-managed mode (the server holds the DEK). */
+  private encryptionKey: CryptoKey | null;
   private orgKeyFingerprint: string | null;
+
+  /** Epic H2 key custody mode (default legacy-e2e). */
+  private readonly keyCustody: TrackerKeyCustodyMode;
 
   /** Reconnect bookkeeping. */
   private reconnectAttempt = 0;
@@ -241,8 +309,16 @@ export class TrackerSyncEngine {
   constructor(config: TrackerSyncEngineConfig) {
     this.config = config;
     this.persistence = config.persistence;
-    this.encryptionKey = config.encryptionKey;
-    this.orgKeyFingerprint = config.orgKeyFingerprint;
+    this.keyCustody = config.keyCustody ?? 'legacy-e2e';
+    this.encryptionKey = config.encryptionKey ?? null;
+    // In server-managed mode the server owns the key epoch; force the
+    // fingerprint null so the engine never asserts a client epoch on the wire.
+    this.orgKeyFingerprint = this.keyCustody === 'server-managed' ? null : config.orgKeyFingerprint;
+  }
+
+  /** Epic H2: true when the server holds the team DEK (no client crypto). */
+  private get serverManaged(): boolean {
+    return this.keyCustody === 'server-managed';
   }
 
   // --------------------------------------------------------------------------
@@ -434,11 +510,14 @@ export class TrackerSyncEngine {
         if (!response.hasMore) break;
       }
 
+      await this.runSchemaBootstrap();
+
       this.synced = true;
       this.setStatus('connected');
 
       // After bootstrap, replay any persisted-but-unconfirmed mutations.
       await this.replayPending();
+      await this.pushPendingSchemas();
     } catch (err) {
       // Bootstrap failures (e.g. socket drop mid-loop) fall through to the
       // disconnect path, which triggers a reconnect. Don't tear down here.
@@ -481,6 +560,75 @@ export class TrackerSyncEngine {
       this.ws.addEventListener('message', handler);
       this.send({ type: 'trackerSync', sinceSyncId });
     });
+  }
+
+  private async runSchemaBootstrap(): Promise<void> {
+    const hooks = this.config.schemaSync;
+    if (!hooks) return;
+
+    let cursor: SyncId = await hooks.getMaxSyncId();
+    let staleKeyRefreshTried = false;
+    console.info(`[TrackerSchemaSync] bootstrap start since sync_id=${cursor}`);
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const response = await this.requestSchemaSync(cursor);
+      console.info(
+        `[TrackerSchemaSync] bootstrap batch: ${response.schemas.length} schema(s), cursor=${response.cursorSyncId}, hasMore=${response.hasMore}`,
+      );
+
+      if (!staleKeyRefreshTried && this.shouldRefreshForStaleSchemaKey(response.schemas)) {
+        staleKeyRefreshTried = true;
+        if (this.config.refreshKey) {
+          const fresh = await this.config.refreshKey();
+          if (fresh) {
+            this.setKey(fresh);
+          }
+        }
+      }
+
+      await this.applySchemaBootstrapBatch(response);
+      cursor = response.cursorSyncId;
+      if (!response.hasMore) break;
+    }
+    console.info(`[TrackerSchemaSync] bootstrap complete at sync_id=${cursor}`);
+  }
+
+  private shouldRefreshForStaleSchemaKey(schemas: EncryptedTrackerSchemaEnvelope[]): boolean {
+    if (!this.orgKeyFingerprint) return false;
+    for (const env of schemas) {
+      if (env.encryptedPayload === null) continue;
+      if (env.orgKeyFingerprint === null) continue;
+      if (env.orgKeyFingerprint !== this.orgKeyFingerprint) return true;
+    }
+    return false;
+  }
+
+  private requestSchemaSync(sinceSyncId: SyncId): Promise<TrackerSchemaSyncResponseMessage> {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error('WebSocket not open'));
+        return;
+      }
+      const handler = (event: MessageEvent) => {
+        const msg = parseServerMessage(event.data);
+        if (!msg || msg.type !== 'trackerSchemaSyncResponse') return;
+        this.ws?.removeEventListener('message', handler);
+        resolve(msg);
+      };
+      this.ws.addEventListener('message', handler);
+      this.send({ type: 'trackerSchemaSync', sinceSyncId });
+    });
+  }
+
+  private async applySchemaBootstrapBatch(batch: TrackerSchemaSyncResponseMessage): Promise<void> {
+    for (const envelope of batch.schemas) {
+      try {
+        await this.applySchemaEnvelope(envelope);
+      } catch (err) {
+        this.config.onBootstrapError?.(err);
+      }
+    }
   }
 
   private async applyBootstrapBatch(batch: TrackerSyncResponseMessage): Promise<void> {
@@ -545,11 +693,20 @@ export class TrackerSyncEngine {
       case 'trackerMutationAck':
         await this.handleAck(msg);
         break;
+      case 'trackerSchemaDelta':
+        await this.handleSchemaDelta(msg);
+        break;
+      case 'trackerSchemaMutationAck':
+        await this.handleSchemaAck(msg);
+        break;
       case 'trackerConfigBroadcast':
         this.handleConfigBroadcast(msg);
         break;
       case 'trackerPong':
         // Keep-alive response; nothing to do.
+        break;
+      case 'trackerRoomMoved':
+        this.handleRoomMoved(msg);
         break;
       case 'trackerError':
         // Server-level error (not tied to a specific mutation). Surface as
@@ -560,7 +717,21 @@ export class TrackerSyncEngine {
         // The bootstrap loop owns these via its inline `requestSync`
         // listener. Live deltas show up as `trackerDelta`.
         break;
+      case 'trackerSchemaSyncResponse':
+        // The schema bootstrap loop owns these via `requestSchemaSync`.
+        break;
     }
+  }
+
+  /**
+   * Epic H3 P1: the server reports this room was relocated to another org. The
+   * old room is frozen/tombstoned, so stop reconnecting and hand the
+   * destination to the host, which re-resolves routing (the project now lives
+   * at a new org-scoped room) and spins up a fresh engine pointed there.
+   */
+  private handleRoomMoved(msg: TrackerRoomMovedMessage): void {
+    this.disconnect();
+    this.config.onRoomMoved?.({ destOrgId: msg.destOrgId, destTeamProjectId: msg.destTeamProjectId });
   }
 
   private async handleDelta(msg: TrackerDeltaMessage): Promise<void> {
@@ -639,6 +810,42 @@ export class TrackerSyncEngine {
     }
   }
 
+  private async handleSchemaDelta(msg: TrackerSchemaDeltaMessage): Promise<void> {
+    console.info(
+      `[TrackerSchemaSync] delta type=${msg.schema.schemaType} sync_id=${msg.schema.syncId} tombstone=${msg.schema.encryptedPayload === null}`,
+    );
+    const applied = await this.applySchemaEnvelope(msg.schema);
+    if (!applied && msg.schema.orgKeyFingerprint && this.orgKeyFingerprint &&
+        msg.schema.orgKeyFingerprint !== this.orgKeyFingerprint &&
+        this.config.refreshKey) {
+      const fresh = await this.config.refreshKey();
+      if (fresh) {
+        this.setKey(fresh);
+        await this.applySchemaEnvelope(msg.schema);
+      }
+    }
+  }
+
+  private async handleSchemaAck(msg: TrackerSchemaMutationAckMessage): Promise<void> {
+    console.info(
+      `[TrackerSchemaSync] ack cmid=${msg.clientMutationId} accepted=${msg.accepted}` +
+        `${msg.schema ? ` type=${msg.schema.schemaType} sync_id=${msg.schema.syncId}` : ''}` +
+        `${msg.error ? ` error=${msg.error.code}` : ''}`,
+    );
+    if (msg.accepted && msg.schema) {
+      await this.applySchemaEnvelope(msg.schema);
+      return;
+    }
+
+    if (!msg.accepted && msg.error?.code === 'staleKeyEpoch' && this.config.refreshKey) {
+      const fresh = await this.config.refreshKey();
+      if (fresh) {
+        this.setKey(fresh);
+        await this.pushPendingSchemas();
+      }
+    }
+  }
+
   private handleConfigBroadcast(msg: TrackerConfigBroadcastMessage): void {
     this.config.onConfigChange?.(msg.config);
   }
@@ -661,8 +868,27 @@ export class TrackerSyncEngine {
     const isTombstone = envelope.encryptedPayload === null;
     let payload: TrackerItemPayload | null = null;
     if (!isTombstone) {
+      // Server-managed: the payload is plaintext JSON (the server decrypted it).
+      if (this.serverManaged) {
+        try {
+          payload = decodeTrackerEnvelopePlaintext(envelope);
+        } catch (err) {
+          console.warn('[TrackerSync] failed to parse server-managed item payload; skipping', err);
+          return false;
+        }
+        await this.persistence.applyRemoteItem(envelope, payload);
+        this.config.onItemApplied?.({
+          itemId: envelope.itemId,
+          syncId: envelope.syncId,
+          payload,
+          isTombstone,
+          issueNumber: envelope.issueNumber,
+          issueKey: envelope.issueKey,
+        });
+        return true;
+      }
       try {
-        payload = await decryptTrackerEnvelope(envelope, this.encryptionKey);
+        payload = await decryptTrackerEnvelope(envelope, this.encryptionKey!);
       } catch (err) {
         // OperationError = AES-GCM auth failure. Two causes look the same
         // at this layer:
@@ -696,6 +922,46 @@ export class TrackerSyncEngine {
       isTombstone,
       issueNumber: envelope.issueNumber,
       issueKey: envelope.issueKey,
+    });
+    return true;
+  }
+
+  private async applySchemaEnvelope(envelope: EncryptedTrackerSchemaEnvelope): Promise<boolean> {
+    const hooks = this.config.schemaSync;
+    if (!hooks) return true;
+
+    const isTombstone = envelope.encryptedPayload === null;
+    let model: string | null = null;
+    if (!isTombstone) {
+      if (this.serverManaged) {
+        try {
+          model = decodeTrackerSchemaEnvelopePlaintext(envelope);
+        } catch (err) {
+          console.warn('[TrackerSchemaSync] failed to parse server-managed schema payload; skipping', err);
+          return false;
+        }
+      } else {
+        try {
+          model = await decryptTrackerSchemaEnvelope(envelope, this.encryptionKey!);
+        } catch (err) {
+          if (err !== null && typeof err === 'object' && (err as { name?: string }).name === 'OperationError') {
+            return false;
+          }
+          throw err;
+        }
+      }
+    }
+
+    await hooks.applyRemote({
+      type: envelope.schemaType,
+      model,
+      syncId: envelope.syncId,
+    });
+    this.config.onSchemaApplied?.({
+      type: envelope.schemaType,
+      syncId: envelope.syncId,
+      model,
+      isTombstone,
     });
     return true;
   }
@@ -752,7 +1018,9 @@ export class TrackerSyncEngine {
    */
   private async driveTransaction(row: TrackerTransactionRow): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    if (!this.orgKeyFingerprint) return;
+    // Legacy mode declines to upload until a key epoch is known. Server-managed
+    // mode has no client epoch, so it is always ready to send.
+    if (!this.serverManaged && !this.orgKeyFingerprint) return;
 
     const startedAt = Date.now();
     await this.persistence.markTransactionState(row.clientMutationId, 'executing', startedAt);
@@ -770,7 +1038,22 @@ export class TrackerSyncEngine {
       return;
     }
 
-    const enc = await encryptTrackerPayload(row.payload!, this.encryptionKey, row.itemId);
+    // Server-managed: send PLAINTEXT (no iv, null fingerprint); the server
+    // encrypts at rest with the team DEK.
+    if (this.serverManaged) {
+      this.send({
+        type: 'trackerMutation',
+        clientMutationId: row.clientMutationId,
+        itemId: row.itemId,
+        encryptedPayload: encodeTrackerPayloadPlaintext(row.payload!),
+        orgKeyFingerprint: null,
+        ...(row.payload?.issueNumber !== undefined ? { issueNumber: row.payload.issueNumber } : {}),
+        ...(row.payload?.issueKey !== undefined ? { issueKey: row.payload.issueKey } : {}),
+      });
+      return;
+    }
+
+    const enc = await encryptTrackerPayload(row.payload!, this.encryptionKey!, row.itemId);
     this.send({
       type: 'trackerMutation',
       clientMutationId: row.clientMutationId,
@@ -781,6 +1064,57 @@ export class TrackerSyncEngine {
       ...(row.payload?.issueNumber !== undefined ? { issueNumber: row.payload.issueNumber } : {}),
       ...(row.payload?.issueKey !== undefined ? { issueKey: row.payload.issueKey } : {}),
     });
+  }
+
+  private async pushPendingSchemas(): Promise<void> {
+    const hooks = this.config.schemaSync;
+    if (!hooks) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.serverManaged && !this.orgKeyFingerprint) return;
+
+    const pending = await hooks.listUnsynced();
+    if (pending.length > 0) {
+      console.info(`[TrackerSchemaSync] pushing ${pending.length} unsynced schema mutation(s)`);
+    }
+    for (const def of pending) {
+      const clientMutationId = generateClientMutationId();
+      if (def.deleted || def.model === null) {
+        console.info(`[TrackerSchemaSync] -> mutation (delete) type=${def.type} cmid=${clientMutationId}`);
+        this.send({
+          type: 'trackerSchemaMutation',
+          clientMutationId,
+          schemaType: def.type,
+          encryptedPayload: null,
+          orgKeyFingerprint: this.orgKeyFingerprint,
+        });
+        continue;
+      }
+
+      // Server-managed: the model JSON travels as plaintext; the server
+      // encrypts it at rest with the team DEK.
+      if (this.serverManaged) {
+        console.info(`[TrackerSchemaSync] -> mutation (upsert, plaintext) type=${def.type} cmid=${clientMutationId}`);
+        this.send({
+          type: 'trackerSchemaMutation',
+          clientMutationId,
+          schemaType: def.type,
+          encryptedPayload: def.model,
+          orgKeyFingerprint: null,
+        });
+        continue;
+      }
+
+      const enc = await encryptTrackerSchemaPayload(def.model, this.encryptionKey!, def.type);
+      console.info(`[TrackerSchemaSync] -> mutation (upsert) type=${def.type} cmid=${clientMutationId}`);
+      this.send({
+        type: 'trackerSchemaMutation',
+        clientMutationId,
+        schemaType: def.type,
+        encryptedPayload: enc.encryptedPayload,
+        iv: enc.iv,
+        orgKeyFingerprint: this.orgKeyFingerprint,
+      });
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -877,4 +1211,3 @@ function parseServerMessage(data: unknown): TrackerServerMessage | null {
     return null;
   }
 }
-

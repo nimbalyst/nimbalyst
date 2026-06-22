@@ -4,18 +4,21 @@ import type { TrackerItem } from '@nimbalyst/runtime';
 import { getCurrentIdentity } from '../../services/TrackerIdentityService';
 import {
   deleteWorkspaceTrackerSchema,
+  ensureWorkspaceTrackerSchemasLoaded,
   getAllTrackerSchemas,
   getTrackerRoleField,
   isBuiltinTrackerSchema,
+  TrackerTypeExistsError,
   upsertWorkspaceTrackerSchema,
 } from '../../services/TrackerSchemaService';
 import {
   getEffectiveTrackerSyncPolicy,
   getInitialTrackerSyncStatus,
-  shouldSyncTrackerPolicy,
+  shouldSyncTrackerItem,
 } from '../../services/TrackerPolicyService';
 import { isTrackerSyncActive, syncTrackerItem } from '../../services/TrackerSyncManager';
 import { applyHeadlessBodyMarkdown } from '../../services/MainBodyDocService';
+import { applyRelationshipFieldWrites } from '../../services/tracker/relationshipFieldWrite';
 import { getWorkspaceState } from '../../utils/store';
 import { getVisibleTrackerLinkedSessions, shouldPersistTrackerLinkedSessions } from '../../../shared/trackerSessionLinks';
 import {
@@ -26,6 +29,7 @@ import { normalizeLegacyLabelValues } from '@nimbalyst/runtime/sync';
 import type { ElectronDocumentService } from '../../services/ElectronDocumentService';
 import { getTrackerImporterRegistry } from '../../services/tracker/TrackerImporterRegistry';
 import { getTrackerImportService } from '../../services/tracker/TrackerImportService';
+import { materializeTrackerTypeDef, removeTrackerTypeDef } from '../../services/tracker/trackerTypeDefStore';
 
 type McpToolResult = {
   content: Array<{ type: string; text?: string }>;
@@ -826,6 +830,10 @@ export const trackerToolSchemas = [
           type: "string",
           description: "Optional YAML filename to use within .nimbalyst/trackers.",
         },
+        overwrite: {
+          type: "boolean",
+          description: "Replace an existing custom type of the same name. Defaults to false, which refuses to clobber. When true, the existing YAML is backed up first.",
+        },
       },
       required: ["schema"],
     },
@@ -1171,8 +1179,14 @@ export async function handleTrackerList(
 
 export async function handleTrackerListTypes(
   args: any,
+  workspacePath?: string,
 ): Promise<McpToolResult> {
   try {
+    // Custom (.nimbalyst/trackers/*.yaml) types are loaded into the registry by
+    // window/session events; the in-process MCP server can be queried before
+    // those fire (or after another window cleared them), so load on demand.
+    ensureWorkspaceTrackerSchemasLoaded(workspacePath);
+
     const includeBuiltin = args?.includeBuiltin !== false;
     const includeCustom = args?.includeCustom !== false;
     const search = typeof args?.search === 'string' ? args.search.trim().toLowerCase() : '';
@@ -1242,6 +1256,10 @@ export async function handleTrackerDefineType(
       };
     }
 
+    // Load existing custom types so a redefine collides with the right file and
+    // an agent doesn't think the type is missing (NIM-760).
+    ensureWorkspaceTrackerSchemasLoaded(workspacePath);
+
     const schema = buildTrackerSchemaFromArgs(args);
     if (typeof schema.type === 'string' && isBuiltinTrackerSchema(schema.type)) {
       return {
@@ -1254,10 +1272,18 @@ export async function handleTrackerDefineType(
         isError: true,
       };
     }
-    const { model, filePath } = await upsertWorkspaceTrackerSchema(workspacePath, schema, {
+    const { model, filePath, backupPath } = await upsertWorkspaceTrackerSchema(workspacePath, schema, {
       fileName: args?.fileName,
+      overwrite: args?.overwrite === true,
     });
 
+    // Mirror into the DB so offline consumers (the `nim` CLI) can resolve this
+    // type's role->field map without the YAML file. Best-effort.
+    await materializeTrackerTypeDef(workspacePath, model, 'cli');
+
+    const backupNote = backupPath
+      ? ` Existing definition backed up to ${path.basename(backupPath)}.`
+      : '';
     return {
       content: [
         {
@@ -1268,14 +1294,21 @@ export async function handleTrackerDefineType(
               type: model.type,
               model,
               fileName: path.basename(filePath),
+              backupFileName: backupPath ? path.basename(backupPath) : undefined,
             },
-            summary: `Defined tracker type '${model.type}' in .nimbalyst/trackers/${path.basename(filePath)}.`,
+            summary: `Defined tracker type '${model.type}' in .nimbalyst/trackers/${path.basename(filePath)}.${backupNote}`,
           }),
         },
       ],
       isError: false,
     };
   } catch (error) {
+    if (error instanceof TrackerTypeExistsError) {
+      return {
+        content: [{ type: "text", text: `Error: ${error.message}` }],
+        isError: true,
+      };
+    }
     return {
       content: [
         {
@@ -1316,11 +1349,20 @@ export async function handleTrackerDeleteType(
 
     const { getDatabase } = await import("../../database/initialize");
     const db = getDatabase();
+    // type_tags membership differs by backend: TEXT[] (`= ANY`) on PGLite vs a
+    // JSON-string column on SQLite (no ANY()). Branch so delete-type works on
+    // both — previously this query threw "no such function: ANY" on SQLite and
+    // tracker_delete_type was entirely non-functional there.
+    const isSqlite =
+      typeof (db as any).getEngine === 'function' && (db as any).getEngine() === 'sqlite';
+    const tagMembership = isSqlite
+      ? `EXISTS (SELECT 1 FROM json_each(type_tags) WHERE value = $2)`
+      : `$2 = ANY(type_tags)`;
     const usage = await db.query<{ count: number | string }>(
-      `SELECT COUNT(*)::int AS count
+      `SELECT COUNT(*) AS count
        FROM tracker_items
        WHERE workspace = $1
-         AND (type = $2 OR $2 = ANY(type_tags))`,
+         AND (type = $2 OR ${tagMembership})`,
       [workspacePath, args.type]
     );
     const count = Number(usage.rows[0]?.count ?? 0);
@@ -1350,6 +1392,9 @@ export async function handleTrackerDeleteType(
         isError: true,
       };
     }
+
+    // Tombstone the materialized definition so the CLI stops resolving it.
+    await removeTrackerTypeDef(workspacePath, args.type);
 
     return {
       content: [
@@ -1445,6 +1490,17 @@ export async function handleTrackerGet(
       lines.push(
         `**Linked Sessions**: ${item.linkedSessions.join(", ")}`
       );
+    // Schema-defined custom fields (e.g. github-pr's prNumber/author/branches)
+    // live in customFields, not on the known-field whitelist above. Render them
+    // so cold readers see them in the summary as well as the structured payload.
+    if (item.customFields && Object.keys(item.customFields).length > 0) {
+      for (const [key, value] of Object.entries(item.customFields)) {
+        if (value === undefined || value === null) continue;
+        const rendered =
+          typeof value === "object" ? JSON.stringify(value) : String(value);
+        lines.push(`**${key}**: ${rendered}`);
+      }
+    }
     lines.push(`**ID**: ${item.id}`);
     lines.push(`**Updated**: ${item.updated}`);
     lines.push("");
@@ -1478,6 +1534,12 @@ export async function handleTrackerGet(
         tags: item.tags || [],
         owner: item.owner || undefined,
         dueDate: item.dueDate || undefined,
+        // Surface schema-defined custom fields (e.g. github-pr's prNumber) that
+        // are otherwise dropped by the known-field whitelist above.
+        customFields:
+          item.customFields && Object.keys(item.customFields).length > 0
+            ? item.customFields
+            : undefined,
       },
     };
     tempDocService?.destroy?.();
@@ -1529,6 +1591,10 @@ export async function handleTrackerCreate(
       };
     }
 
+    // Make custom (.nimbalyst/trackers/*.yaml) types visible to the registry so
+    // type validation below accepts them (NIM-760).
+    ensureWorkspaceTrackerSchemasLoaded(workspacePath);
+
     // Check if this type allows creation
     const model = globalRegistry.get(args.type);
     if (model && model.creatable === false) {
@@ -1549,7 +1615,8 @@ export async function handleTrackerCreate(
     const syncPolicy = workspacePath
       ? getEffectiveTrackerSyncPolicy(workspacePath, args.type, model?.sync?.mode)
       : { mode: 'local' as const, scope: 'project' as const };
-    const syncStatus = getInitialTrackerSyncStatus(syncPolicy);
+    // `syncStatus` is computed after `data` is assembled below, because for
+    // hybrid types the decision is per-item (depends on the share flag in data).
 
     // Callers may supply an explicit id (e.g. external imports derive a
     // deterministic, URN-based id so two clients importing the same upstream
@@ -1603,10 +1670,23 @@ export async function handleTrackerCreate(
       }
     }
 
+    // Canonicalize + validate relationship fields (Epic C) before persistence.
+    const relWrite = applyRelationshipFieldWrites(data, globalRegistry.get(args.type)?.fields ?? [], id);
+    if (!relWrite.ok) {
+      return {
+        content: [{ type: 'text', text: `Invalid relationship field "${relWrite.field}": ${relWrite.errors.join('; ')}` }],
+        isError: true,
+      };
+    }
+
     const validationResult = globalRegistry.validate(args.type, data);
     if (!validationResult.valid) {
       return buildTrackerSchemaValidationError('tracker_create', args.type, validationResult.errors);
     }
+
+    // Per-item sync decision (NIM-876): hybrid types only sync flagged items, so
+    // the initial status depends on the assembled `data` (its share flag).
+    const syncStatus = getInitialTrackerSyncStatus(syncPolicy, data);
 
     // Record creation activity
     appendActivity(data, authorIdentity, 'created');
@@ -1662,7 +1742,7 @@ export async function handleTrackerCreate(
     if (
       createdItem &&
       workspacePath &&
-      shouldSyncTrackerPolicy(syncPolicy) &&
+      shouldSyncTrackerItem(syncPolicy, data) &&
       isTrackerSyncActive(workspacePath)
     ) {
       try {
@@ -1732,7 +1812,7 @@ export async function handleTrackerCreate(
 
         // Re-sync metadata so peers learn the bodyVersion bump (cold readers
         // invalidate their cache and refetch from `tracker_body_cache`).
-        if (shouldSyncTrackerPolicy(syncPolicy) && isTrackerSyncActive(workspacePath)) {
+        if (shouldSyncTrackerItem(syncPolicy, data) && isTrackerSyncActive(workspacePath)) {
           createdRow = await resolveTrackerRowByReference(db, id, workspacePath);
           createdItem = createdRow ? rowToTrackerItem(createdRow) : createdItem;
           if (createdItem) {
@@ -1816,6 +1896,9 @@ export async function handleTrackerUpdate(
   try {
     const { getDatabase } = await import("../../database/initialize");
     const db = getDatabase();
+    // Make custom (.nimbalyst/trackers/*.yaml) types visible so primaryType
+    // reassignment and schema validation accept them (NIM-760).
+    ensureWorkspaceTrackerSchemasLoaded(workspacePath);
     const { docService, tempDocService } = await getDocumentServiceForWorkspace(workspacePath);
 
     try {
@@ -2034,7 +2117,7 @@ export async function handleTrackerUpdate(
         if (row && workspacePath) {
           const updateModel = globalRegistry.get(refreshedItem.type);
           const syncPolicy = getEffectiveTrackerSyncPolicy(workspacePath, refreshedItem.type, updateModel?.sync?.mode);
-          if (shouldSyncTrackerPolicy(syncPolicy)) {
+          if (shouldSyncTrackerItem(syncPolicy, refreshedItem)) {
             if (isTrackerSyncActive(workspacePath)) {
               try {
                 await syncTrackerItem(refreshedItem);
@@ -2190,6 +2273,15 @@ export async function handleTrackerUpdate(
         primaryTypeChanged = true;
       }
 
+      // Canonicalize + validate relationship fields (Epic C) before persistence.
+      const relWrite = applyRelationshipFieldWrites(data, globalRegistry.get(row.type)?.fields ?? [], row.id);
+      if (!relWrite.ok) {
+        return {
+          content: [{ type: 'text', text: `Invalid relationship field "${relWrite.field}": ${relWrite.errors.join('; ')}` }],
+          isError: true,
+        };
+      }
+
       const validationResult = globalRegistry.validate(row.type, data);
       if (!validationResult.valid) {
         return buildTrackerSchemaValidationError('tracker_update', row.type, validationResult.errors);
@@ -2307,7 +2399,7 @@ export async function handleTrackerUpdate(
       if (refreshedRow && effectiveWorkspacePath) {
         const updateModel = globalRegistry.get(refreshedRow.type);
         const syncPolicy = getEffectiveTrackerSyncPolicy(effectiveWorkspacePath, refreshedRow.type, updateModel?.sync?.mode);
-        if (shouldSyncTrackerPolicy(syncPolicy)) {
+        if (shouldSyncTrackerItem(syncPolicy, rowToTrackerItem(refreshedRow))) {
           if (isTrackerSyncActive(effectiveWorkspacePath)) {
             try {
               await syncTrackerItem(rowToTrackerItem(refreshedRow));
@@ -2785,7 +2877,7 @@ export async function handleTrackerAddComment(
     try {
       if (workspacePath) {
         const syncPolicy = getEffectiveTrackerSyncPolicy(workspacePath, row.type);
-        if (shouldSyncTrackerPolicy(syncPolicy)) {
+        if (shouldSyncTrackerItem(syncPolicy, data)) {
           if (isTrackerSyncActive(workspacePath)) {
             const refreshed = await db.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [row.id]);
             if (refreshed.rows.length > 0) {

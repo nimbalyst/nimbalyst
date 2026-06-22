@@ -7,12 +7,8 @@ import {
   syncConfigAtom,
   setSyncConfigAtom,
   releaseChannelAtom,
-  advancedSettingsAtom,
-  setAdvancedSettingsAtom,
   type SyncConfig,
 } from '../../../store/atoms/appSettings';
-import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
-import { SettingsToggle } from '../SettingsToggle';
 
 /** Format a timestamp as relative time (e.g., "5 minutes ago") */
 function formatRelativeTime(timestamp: number): string {
@@ -123,11 +119,6 @@ export function SyncPanel() {
   const [, updateConfig] = useAtom(setSyncConfigAtom);
   const releaseChannel = useAtomValue(releaseChannelAtom);
   const isAlpha = releaseChannel === 'alpha';
-
-  // Collaboration alpha feature -- enables the Team and Trackers settings panels.
-  const [advancedSettings] = useAtom(advancedSettingsAtom);
-  const [, updateAdvancedSettings] = useAtom(setAdvancedSettingsAtom);
-  const collaborationEnabled = advancedSettings.alphaFeatures.collaboration ?? false;
 
   // Compute effective server URL early so it can be used throughout
   // Only honor config.environment in dev builds - production always uses production sync
@@ -511,33 +502,6 @@ export function SyncPanel() {
           Share sessions and documents via encrypted share links.
           All data is end-to-end encrypted.
         </p>
-      </div>
-
-      {/* Team Collaboration (alpha) */}
-      <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)]">
-        <div className="flex items-center gap-2 mb-2">
-          <h4 className="provider-panel-section-title text-base font-semibold text-[var(--nim-text)] m-0">Team Collaboration</h4>
-          <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
-        </div>
-        <SettingsToggle
-          variant="enable"
-          name="Enable team collaboration"
-          description="Adds shared trackers and team management. Reveals Team and Trackers settings panels."
-          checked={collaborationEnabled}
-          onChange={(checked) => {
-            updateAdvancedSettings({
-              alphaFeatures: {
-                ...advancedSettings.alphaFeatures,
-                collaboration: checked,
-              },
-            });
-            posthog?.capture('alpha_feature_toggled', {
-              feature_tag: 'collaboration',
-              enabled: checked,
-              source: 'sync_panel',
-            });
-          }}
-        />
       </div>
 
       {/* Environment Toggle - Dev Only */}

@@ -32,6 +32,7 @@ import {
   selectReleaseAsset,
   type GitHubReleaseAsset,
 } from './extensionReleaseAsset';
+import { getAgentProviderRegistry } from '../extensions/AgentProviderRegistry';
 
 // Import mock registry data (used as fallback when live registry is unreachable)
 import mockRegistry from '../data/extensionRegistry.json';
@@ -735,6 +736,11 @@ async function uninstallExtension(extensionId: string): Promise<InstallResult> {
 
     // Remove from tracking
     removeMarketplaceInstall(extensionId);
+
+    // Evict any aiAgentProviders the extension contributed. The
+    // PrivilegedExtensionHost handles its own teardown via
+    // handleExtensionUninstalled; this just clears the dropdown catalog.
+    getAgentProviderRegistry().clearAll(extensionId);
 
     // Re-register file types and notify renderer (with unload)
     await initializeExtensionFileTypes();

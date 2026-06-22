@@ -130,9 +130,17 @@ export function registerGitStatusHandlers(): void {
   });
 
   /**
-   * Get commit context for a session: session-edited files cross-referenced with git status.
-   * Returns only files that were edited in the session AND still have uncommitted changes.
-   * Used by "Commit with AI" to pre-fetch context so the agent can skip discovery tool calls.
+   * Get commit context for a session, used by "Commit with AI" to pre-fetch context
+   * so the agent can skip discovery tool calls.
+   *
+   * Two modes:
+   * - Default (shared checkout): session-edited files cross-referenced with git status,
+   *   so a commit only picks up THIS session's work and never sweeps in unrelated
+   *   uncommitted changes belonging to other concurrent sessions in the same repo.
+   * - `includeAllUncommitted` (worktree): a worktree is the isolation boundary for a
+   *   single workstream, so ALL uncommitted changes in it belong to this work. Return
+   *   the full uncommitted set (like a workstream commits all its sessions' files),
+   *   regardless of which session's tools touched each file.
    */
   safeHandle(
     'git:get-commit-context',
@@ -140,14 +148,33 @@ export function registerGitStatusHandlers(): void {
       _event,
       workspacePath: string,
       sessionId: string,
-      childSessionIds?: string[]
+      childSessionIds?: string[],
+      includeAllUncommitted?: boolean
     ): Promise<{
       success: boolean;
       files: Array<{ path: string; status: 'added' | 'modified' | 'deleted' }>;
-      scenario: 'single' | 'workstream';
+      scenario: 'single' | 'workstream' | 'worktree';
       error?: string;
     }> => {
       try {
+        const mapStatus = (s: string): 'added' | 'modified' | 'deleted' => {
+          if (s === 'untracked') return 'added';
+          if (s === 'deleted') return 'deleted';
+          return 'modified';
+        };
+
+        // Worktree: return every uncommitted change in the worktree, not just the
+        // current session's edits. The worktree isolates one workstream, so all of
+        // it is this work.
+        if (includeAllUncommitted) {
+          const allStatuses = await gitStatusService.getAllFileStatuses(workspacePath);
+          const files = Object.values(allStatuses).map(s => ({
+            path: relative(workspacePath, s.filePath),
+            status: mapStatus(s.status),
+          }));
+          return { success: true, files, scenario: 'worktree' as const };
+        }
+
         const isWorkstream = childSessionIds && childSessionIds.length > 1;
         const scenario = isWorkstream ? 'workstream' as const : 'single' as const;
 
@@ -181,17 +208,8 @@ export function registerGitStatusHandlers(): void {
           const gitStatus = allStatuses[absPath];
           if (!gitStatus) continue;
 
-          let status: 'added' | 'modified' | 'deleted';
-          if (gitStatus.status === 'untracked') {
-            status = 'added';
-          } else if (gitStatus.status === 'deleted') {
-            status = 'deleted';
-          } else {
-            status = 'modified';
-          }
-
           const relPath = relative(workspacePath, absPath);
-          files.push({ path: relPath, status });
+          files.push({ path: relPath, status: mapStatus(gitStatus.status) });
         }
 
         return { success: true, files, scenario };

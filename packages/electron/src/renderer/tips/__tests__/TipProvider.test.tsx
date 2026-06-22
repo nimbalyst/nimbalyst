@@ -8,7 +8,7 @@ import { store } from '../../store';
 import { hasActiveDialogsAtom } from '../../contexts/DialogContext';
 import { developerFeatureSettingsAtom, syncConfigAtom } from '../../store/atoms/appSettings';
 import { activeWalkthroughIdAtom, walkthroughStateAtom } from '../../walkthroughs/atoms';
-import { activeTipIdAtom, emptyTranscriptVisibleCountAtom, tipShownThisSessionAtom } from '../atoms';
+import { activeTipIdAtom, emptyTranscriptVisibleCountAtom } from '../atoms';
 import { TipProvider } from '../TipProvider';
 import { InlineTipDisplay } from '../InlineTipDisplay';
 import { FEATURE_USAGE_KEYS } from '../../../shared/featureUsage';
@@ -47,7 +47,6 @@ describe('TipProvider', () => {
     store.set(activeWalkthroughIdAtom, null);
     store.set(hasActiveDialogsAtom, false);
     store.set(activeTipIdAtom, null);
-    store.set(tipShownThisSessionAtom, false);
     store.set(emptyTranscriptVisibleCountAtom, 0);
     store.set(syncConfigAtom, {
       ...store.get(syncConfigAtom),
@@ -146,6 +145,42 @@ describe('TipProvider', () => {
       'tip-mobile-keep-awake',
       1,
     );
+  });
+
+  it('re-activates an eligible tip after the slot is cleared (no one-per-launch cooldown)', async () => {
+    render(
+      <JotaiProvider store={store as any}>
+        <TipProvider currentMode="files">
+          <InlineTipDisplay />
+        </TipProvider>
+      </JotaiProvider>
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(23_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(store.get(activeTipIdAtom)).toBe('tip-mobile-keep-awake');
+
+    // Simulate the slot being cleared without dismissing/completing (e.g. the
+    // surface unmounted/remounted). The condition is still met, so under the
+    // old per-launch cooldown the tip would stay null. It should re-activate.
+    // Flush the cleared-state render first so the eval loop's ref sees null
+    // before timers advance.
+    await act(async () => {
+      store.set(activeTipIdAtom, null);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(store.get(activeTipIdAtom)).toBe('tip-mobile-keep-awake');
   });
 
   it('does not activate tips when no empty transcript surface is mounted', async () => {

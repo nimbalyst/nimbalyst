@@ -154,6 +154,29 @@ export class PermissionService {
     stored.permissionMode = mode;
     saveAgentPermissions(projectPath, stored);
   }
+
+  /**
+   * Whether "Allow All" routes agent sessions through the auto-mode classifier
+   * (issue #628). Off by default — "Allow All" is literal allow-all.
+   */
+  public getAllowAllUsesClassifier(workspacePath: string): boolean {
+    const projectPath = resolveProjectPath(workspacePath);
+    const stored = getAgentPermissions(projectPath);
+    return stored?.allowAllUsesClassifier === true;
+  }
+
+  /**
+   * Toggle the "Allow All" classifier opt-in for a workspace (issue #628).
+   */
+  public setAllowAllUsesClassifier(workspacePath: string, enabled: boolean): void {
+    const projectPath = resolveProjectPath(workspacePath);
+    const workspaceName = path.basename(projectPath) || projectPath;
+    logger.main.info(`[PermissionService:${workspaceName}] Setting allowAllUsesClassifier: ${enabled}`);
+
+    const stored = getAgentPermissions(projectPath) || { permissionMode: null };
+    stored.allowAllUsesClassifier = enabled;
+    saveAgentPermissions(projectPath, stored);
+  }
 }
 
 // Export singleton instance getter

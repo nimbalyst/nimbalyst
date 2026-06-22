@@ -189,6 +189,8 @@ public struct SessionListView: View {
     @State private var showArchived = false
     @State private var selectedModelId: String?
     @State private var showModelPicker = false
+    /// Desktop-controlled alpha gate for the Meta Agent UI, synced via SyncedSettings.
+    @State private var metaAgentEnabled = FeaturePreferences.metaAgentEnabled
 
     private var voiceFocusedSessionId: String? {
         #if os(iOS)
@@ -520,6 +522,14 @@ public struct SessionListView: View {
                 Label("New Workstream", systemImage: "folder.badge.plus")
             }
 
+            if metaAgentEnabled {
+                Button {
+                    createMetaAgent()
+                } label: {
+                    Label("New Meta Agent", systemImage: "point.3.connected.trianglepath.dotted")
+                }
+            }
+
             if !appState.availableModels.isEmpty {
                 Divider()
 
@@ -538,6 +548,9 @@ public struct SessionListView: View {
             }
         }
         .disabled(isCreatingSession)
+        .onReceive(NotificationCenter.default.publisher(for: .init("MetaAgentEnabledSynced"))) { _ in
+            metaAgentEnabled = FeaturePreferences.metaAgentEnabled
+        }
     }
 
     // MARK: - Session List Item View
@@ -795,6 +808,29 @@ public struct SessionListView: View {
             AnalyticsManager.shared.capture("mobile_workstream_created")
         } catch {
             print("Failed to create workstream: \(error)")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            isCreatingSession = false
+        }
+    }
+
+    /// Create a new meta-agent session (can spawn and orchestrate sub-agents).
+    private func createMetaAgent() {
+        guard let sync = appState.syncManager else { return }
+        isCreatingSession = true
+        do {
+            try sync.createSession(
+                projectId: project.id,
+                initialPrompt: nil,
+                provider: ModelPreferences.providerFromModelId(selectedModelId),
+                model: selectedModelId,
+                agentRole: "meta-agent"
+            )
+            AnalyticsManager.shared.capture("mobile_meta_agent_created", properties: [
+                "model": selectedModelId ?? "default"
+            ])
+        } catch {
+            print("Failed to create meta agent: \(error)")
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             isCreatingSession = false

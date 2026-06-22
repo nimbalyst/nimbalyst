@@ -209,6 +209,8 @@ interface EncryptedCreateSessionRequest {
   provider?: string;
   /** Model ID selected by mobile (e.g., "claude-code:opus") */
   model?: string;
+  /** Agent role (e.g., "meta-agent", "standard"). Plaintext - no encryption needed. */
+  agentRole?: string;
   timestamp: number;
 }
 
@@ -2122,6 +2124,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               parentSessionId: message.request.parentSessionId,
               provider: message.request.provider,
               model: message.request.model,
+              agentRole: message.request.agentRole,
               timestamp: message.request.timestamp,
             };
 
@@ -3319,6 +3322,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         parentSessionId: request.parentSessionId,
         provider: request.provider,
         model: request.model,
+        agentRole: request.agentRole,
         timestamp: request.timestamp,
       };
 

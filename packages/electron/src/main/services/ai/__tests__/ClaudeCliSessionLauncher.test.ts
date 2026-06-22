@@ -1,18 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ClaudeCliSessionLauncher, type ClaudeCliSessionLauncherDeps } from '../ClaudeCliSessionLauncher';
-import type { ClaudeCliSpawnConfig } from '../claudeCliSpawnConfig';
 
-type CreateClaudeCliTerminalArgs = [
-  terminalId: string,
-  opts: {
-    cwd: string;
-    spawnConfig: ClaudeCliSpawnConfig;
-    workspacePath?: string;
-    cols?: number;
-    rows?: number;
-    onExit?: (exitCode: number) => void;
-  },
-];
+type CreateClaudeCliTerminal = ClaudeCliSessionLauncherDeps['terminalManager']['createClaudeCliTerminal'];
+type CreateClaudeCliTerminalArgs = Parameters<CreateClaudeCliTerminal>;
 
 /**
  * Launcher orchestration for the genuine `claude` CLI session (NIM-806, Phase 1).
@@ -22,18 +12,20 @@ type CreateClaudeCliTerminalArgs = [
 describe('ClaudeCliSessionLauncher', () => {
   function makeHarness(opts: {
     startObservation?: ClaudeCliSessionLauncherDeps['startObservation'];
-    createClaudeCliTerminal?: ReturnType<typeof vi.fn>;
+    createClaudeCliTerminal?: ReturnType<typeof vi.fn<CreateClaudeCliTerminal>>;
     pathExists?: (p: string) => boolean;
     homedir?: () => string;
   } = {}) {
     const writes: Array<{ file: string; data: string }> = [];
     const createClaudeCliTerminal =
       opts.createClaudeCliTerminal ??
-      vi.fn(async (..._args: CreateClaudeCliTerminalArgs): Promise<void> => {});
+      vi.fn<CreateClaudeCliTerminal>(async (..._args: CreateClaudeCliTerminalArgs): Promise<void> => {});
     const getMcpServersConfig = vi.fn(async (_opts: { sessionId: string; workspacePath: string }) => ({
-      'nimbalyst-mcp': {
+      // The eager core `nimbalyst` server is what the launcher lifts the
+      // /permission host+token from (the legacy `nimbalyst-mcp` is retired).
+      'nimbalyst': {
         type: 'sse',
-        url: `http://127.0.0.1:5123/mcp?workspacePath=%2Fwork&sessionId=${_opts.sessionId}`,
+        url: `http://127.0.0.1:5123/mcp/core?workspacePath=%2Fwork&sessionId=${_opts.sessionId}`,
       },
     }));
 
@@ -73,7 +65,7 @@ describe('ClaudeCliSessionLauncher', () => {
 
     const parsed = JSON.parse(writes[0].data);
     expect(parsed).toHaveProperty('mcpServers');
-    expect(parsed.mcpServers['nimbalyst-mcp'].url).toContain('sessionId=sess-01HABC');
+    expect(parsed.mcpServers['nimbalyst'].url).toContain('sessionId=sess-01HABC');
   });
 
   it('spawns the CLI terminal with the temp mcp-config path and the session id', async () => {
@@ -125,11 +117,11 @@ describe('ClaudeCliSessionLauncher', () => {
     ]);
   });
 
-  it('registers the PreToolUse permission hook (--settings + env) when a hook script + nimbalyst-mcp are present — NIM-806 Phase 4', async () => {
+  it('registers the PreToolUse permission hook (--settings + env) when a hook script + the core server are present — NIM-806 Phase 4', async () => {
     const getMcpServersConfig = vi.fn(async (_opts: { sessionId: string; workspacePath: string }) => ({
-      'nimbalyst-mcp': {
+      'nimbalyst': {
         type: 'sse',
-        url: 'http://127.0.0.1:5123/mcp?sessionId=sess-01HABC',
+        url: 'http://127.0.0.1:5123/mcp/core?sessionId=sess-01HABC',
         headers: { Authorization: 'Bearer secret-token-xyz' },
       },
     }));
@@ -174,9 +166,9 @@ describe('ClaudeCliSessionLauncher', () => {
   // PreToolUse hook (the hook would otherwise still prompt for Bash/Edit/Write).
   function makeHookHarness(getPermissionMode?: (workspacePath: string) => 'ask' | 'allow-all' | 'bypass-all' | null) {
     const getMcpServersConfig = vi.fn(async (_opts: { sessionId: string; workspacePath: string }) => ({
-      'nimbalyst-mcp': {
+      'nimbalyst': {
         type: 'sse',
-        url: 'http://127.0.0.1:5123/mcp?sessionId=sess-01HABC',
+        url: 'http://127.0.0.1:5123/mcp/core?sessionId=sess-01HABC',
         headers: { Authorization: 'Bearer secret-token-xyz' },
       },
     }));
@@ -224,6 +216,80 @@ describe('ClaudeCliSessionLauncher', () => {
     const cfg = createClaudeCliTerminal.mock.calls[0][1].spawnConfig;
     expect(cfg.args).not.toContain('--dangerously-skip-permissions');
     expect(cfg.args).toContain('--settings');
+  });
+
+  // NIM-845: extension Claude-plugins (namespaced slash commands) load via
+  // `--plugin-dir <dir>`. The launcher resolves the dirs from the injected loader
+  // and passes them through — but ONLY when the resolved CLI supports the flag
+  // (cliSupportsPluginDir). On an old CLI the flag would be rejected as unknown
+  // and crash the launch, so they're omitted (silent skip, namespaced commands
+  // simply won't resolve, as before the fix).
+  function makePluginHarness(opts: {
+    loadPluginDirs?: ClaudeCliSessionLauncherDeps['loadPluginDirs'];
+    cliSupportsPluginDir?: ClaudeCliSessionLauncherDeps['cliSupportsPluginDir'];
+  }) {
+    const createClaudeCliTerminal = vi.fn(async (..._args: CreateClaudeCliTerminalArgs): Promise<void> => {});
+    const launcher = new ClaudeCliSessionLauncher({
+      getMcpServersConfig: vi.fn(async (_opts: { sessionId: string; workspacePath: string }) => ({
+        'nimbalyst': { type: 'sse', url: 'http://127.0.0.1:5123/mcp/core' },
+      })),
+      resolveClaudeExecutable: () => '/usr/local/bin/claude',
+      getEnhancedPath: () => '/opt/bin:/usr/bin',
+      terminalManager: { createClaudeCliTerminal },
+      baseEnv: {},
+      tempDir: '/tmp/claude-cli-test',
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async () => undefined),
+      loadPluginDirs: opts.loadPluginDirs,
+      cliSupportsPluginDir: opts.cliSupportsPluginDir,
+    });
+    return { launcher, createClaudeCliTerminal };
+  }
+
+  it('passes loader-returned plugin dirs as --plugin-dir when the CLI supports the flag', async () => {
+    const loadPluginDirs = vi.fn(async () => ['/ext/a/plugin', '/ext/b/plugin']);
+    const cliSupportsPluginDir = vi.fn(() => true);
+    const { launcher, createClaudeCliTerminal } = makePluginHarness({ loadPluginDirs, cliSupportsPluginDir });
+    await launcher.launch(baseInput);
+
+    expect(loadPluginDirs).toHaveBeenCalledWith('/work');
+    expect(cliSupportsPluginDir).toHaveBeenCalledWith('/usr/local/bin/claude');
+    const args = createClaudeCliTerminal.mock.calls[0][1].spawnConfig.args;
+    const i = args.indexOf('--plugin-dir');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe('/ext/a/plugin');
+    expect(args.filter((a) => a === '--plugin-dir')).toHaveLength(2);
+  });
+
+  it('omits --plugin-dir (and does NOT load dirs) when the resolved CLI lacks support', async () => {
+    const loadPluginDirs = vi.fn(async () => ['/ext/a/plugin']);
+    const cliSupportsPluginDir = vi.fn(() => false);
+    const { launcher, createClaudeCliTerminal } = makePluginHarness({ loadPluginDirs, cliSupportsPluginDir });
+    await launcher.launch(baseInput);
+
+    expect(cliSupportsPluginDir).toHaveBeenCalledWith('/usr/local/bin/claude');
+    // No point loading dirs we can't pass — the loader must not run.
+    expect(loadPluginDirs).not.toHaveBeenCalled();
+    expect(createClaudeCliTerminal.mock.calls[0][1].spawnConfig.args).not.toContain('--plugin-dir');
+  });
+
+  it('still launches when the plugin-dir loader throws (best-effort; namespaced commands just stay unresolved)', async () => {
+    const loadPluginDirs = vi.fn(async () => {
+      throw new Error('plugin scan boom');
+    });
+    const { launcher, createClaudeCliTerminal } = makePluginHarness({
+      loadPluginDirs,
+      cliSupportsPluginDir: () => true,
+    });
+    await launcher.launch(baseInput);
+    expect(createClaudeCliTerminal).toHaveBeenCalledTimes(1);
+    expect(createClaudeCliTerminal.mock.calls[0][1].spawnConfig.args).not.toContain('--plugin-dir');
+  });
+
+  it('omits --plugin-dir when no loader is wired (default deps)', async () => {
+    const { launcher, createClaudeCliTerminal } = makeHarness();
+    await launcher.launch(baseInput);
+    expect(createClaudeCliTerminal.mock.calls[0][1].spawnConfig.args).not.toContain('--plugin-dir');
   });
 
   it('never lets ANTHROPIC_API_KEY cross into the CLI env (CLAUDE.md implicit-key rule)', async () => {

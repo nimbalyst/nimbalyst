@@ -109,41 +109,36 @@ The agent can drive the Nimbalyst dev instance directly:
 
 These tools are the difference between "ask the user to inspect X" and "the agent inspects X." Misuse pattern to avoid: drafting "could you run X and paste the output?" — stop and run X yourself. See CLAUDE.md "Always Run Your Own Observation Commands."
 
-### `mcp__nimbalyst-mcp` — in-app actions
+The internal surface is split across several servers on one internal HTTP port; only the eager core loads every session, everything else is deferred and surfaced by ToolSearch on intent. See [INTERNAL_MCP_SERVERS.md](./INTERNAL_MCP_SERVERS.md) for the full topology.
+
+### `mcp__nimbalyst` — eager core (in-app actions)
+
+The only always-loaded internal surface — universal agent↔host glue.
 
 - `AskUserQuestion`, `PromptForUserInput` — durable interactive widgets in the transcript. Use for blocking decisions / multi-field input instead of asking in chat.
 - `developer_git_commit_proposal` — interactive commit widget; preferred over raw `git commit` when the user says "propose a commit" or "commit this".
-- `developer_git_log` — read git history through the in-app log viewer.
 - `display_to_user` — inline charts (bar / line / pie / area / scatter with error bars) and images. Always prefer a chart over a markdown table for numeric data.
 - `capture_editor_screenshot` — show the rendered state of any open file (markdown, mockup, diagram). Use for visual verification.
-- `applyCollabDocEdit`, `readCollabDoc` — collaborative-document editing.
-- `automations_*`, `tracker_*`, `homekit_*`, `voice_agent_*`, `feedback_*`, `social_*`, `reddit_*`, `twitter_*`, `slides_*`, `mindmap_*`, `excalidraw_*`, `threed_*`, `mockuplm_*`, `datamodellm_*`, `namenym_*` — domain-specific tooling.
+- `get_session_edited_files` — list files edited this session (use before a commit proposal).
+- `update_session_meta` — name, tags, phase for the **current** session only. Never use this to update a different session; use `update_session_board` instead.
 
-### `mcp__nimbalyst-session-context` — cross-session context
+### `mcp__nimbalyst-host` — settings, cross-session context, and orchestration (deferred)
 
-- `list_recent_sessions` — find prior work
-- `get_session_summary` — read what another session did (especially for parent / sibling sessions)
-- `get_workstream_overview` / `get_workstream_edited_files` — workstream-level view
-- `update_session_board` — change phase/tags on *another* session by ID
-- `schedule_wakeup` — defer continuation of the current session
+- Settings: AI defaults, theme, completion sound, spellcheck, sync, extension enabled state, workspace trust — all settable via MCP.
+- Cross-session context: `list_recent_sessions`, `get_session_summary` (read what another session did), `get_workstream_overview` / `get_workstream_edited_files`, `update_session_board` (change phase/tags on *another* session by ID), `schedule_wakeup`.
+- Orchestrate other sessions: `spawn_session` / `create_session`, `send_prompt`, `get_session_status` / `get_session_result` / `list_spawned_sessions`, `respond_to_prompt`, `list_worktrees`. Used by any "spawn N parallel reviewers" pattern.
 
-### `mcp__nimbalyst-session-naming` — current-session metadata
+### `mcp__nimbalyst-trackers` — tracker tools (deferred, per-project opt-out)
 
-- `update_session_meta` — name, tags, phase for the **current** session only. Never use this when you need to update a different session; use `update_session_board` instead.
+- `tracker_*` CRUD plus tracker config (`tracker_set_sync_policy`, `tracker_set_issue_key_prefix`). The whole server is omitted when a project turns off **AI Agent Access** in tracker settings.
 
-### `mcp__nimbalyst-meta-agent` — orchestrate other sessions
+### `mcp__nimbalyst-situational` — mode-specific tooling (deferred)
 
-- `spawn_session` / `create_session` — start a new AI session
-- `send_prompt` — send a prompt to a running session
-- `get_session_status` / `get_session_result` / `list_spawned_sessions` — monitor children
-- `respond_to_prompt` — fulfill an interactive prompt on behalf of a child session
-- `list_worktrees` — see what worktrees exist
+- `voice_agent_speak` / `voice_agent_stop`, `readCollabDoc` / `applyCollabDocEdit`, `feedback_*`.
 
-Used by `/review-multiple-contributions`, `/triage-issues` (in follow-up), and any "spawn N parallel reviewers" pattern.
+### `mcp__nimbalyst-<ext>` — extension tools (deferred, one server per extension)
 
-### `mcp__nimbalyst-settings` — settings programmatic access
-
-- AI defaults, theme, completion sound, spellcheck, sync, tracker prefixes, extension enabled state, workspace trust — all settable via MCP.
+- Each active extension contributes its own deferred server: `automations_*`, `homekit_*`, `social_*`, `reddit_*`, `twitter_*`, `slides_*`, `mindmap_*`, `excalidraw_*`, `threed_*`, `mockuplm_*`, `datamodellm_*`, `namenym_*`, etc.
 
 ### Other MCP servers
 
@@ -305,7 +300,7 @@ For isolated agent sessions that need to make speculative changes without pollut
 
 ### Meta-agent
 
-The `mcp__nimbalyst-meta-agent` server lets a session spawn and supervise other sessions. Used for:
+The orchestration tools on `mcp__nimbalyst-host` let a session spawn and supervise other sessions. Used for:
 - Parallel review of multiple PRs (`/review-multiple-contributions`)
 - "Spawn a sibling to verify the fix end-to-end" (the tracker workstream pattern, when used correctly)
 - Long-running background work with status check-ins
@@ -336,9 +331,9 @@ The point isn't "log who changed what" — git already does that. The point is "
 ### Session ↔ tracker linkage
 
 A session can be linked to one or more tracker items via:
-- `mcp__nimbalyst-mcp__tracker_link_session` — bind this session to a tracker
-- `mcp__nimbalyst-mcp__tracker_unlink_session` — undo
-- `mcp__nimbalyst-mcp__tracker_link_file` — bind a specific file to a tracker (e.g. "this bug lives in `TabEditor.tsx`")
+- `mcp__nimbalyst-trackers__tracker_link_session` — bind this session to a tracker
+- `mcp__nimbalyst-trackers__tracker_unlink_session` — undo
+- `mcp__nimbalyst-trackers__tracker_link_file` — bind a specific file to a tracker (e.g. "this bug lives in `TabEditor.tsx`")
 
 The tracker carries the **intent** ("fix the F2 rename data-loss bug, reported by sd-std on Linux"); the session carries the **execution** (turn-by-turn conversation + edits + tests + commits). Both directions are searchable:
 - **From a tracker** — see every session that worked on it, in order; replay the conversation that produced the fix.
@@ -357,7 +352,7 @@ Tracker items are typed records that capture different kinds of intent. The defa
 - `incident` — operational incidents (Stytch JWKS rotation, sync outage, CI breakage). Captures timeline, blast radius, and follow-ups.
 - `github-pr` — pulled-in PRs from upstream (`/pull-prs` populates this).
 
-Custom types via `mcp__nimbalyst-mcp__tracker_define_type` if these don't fit your domain.
+Custom types via `mcp__nimbalyst-trackers__tracker_define_type` if these don't fit your domain.
 
 ### Tracker tools
 
@@ -401,8 +396,8 @@ How the agent shows results back to the user.
 
 ### Interactive prompts
 
-- `mcp__nimbalyst-mcp__AskUserQuestion` — 1–3 multiple-choice questions for branching decisions
-- `mcp__nimbalyst-mcp__PromptForUserInput` — richer structured input (multiSelect with subtitles, reorder, editText, confirm, singleSelect with allowOther)
+- `mcp__nimbalyst__AskUserQuestion` — 1–3 multiple-choice questions for branching decisions
+- `mcp__nimbalyst__PromptForUserInput` — richer structured input (multiSelect with subtitles, reorder, editText, confirm, singleSelect with allowOther)
 
 When the next step is blocked on a user decision, use one of these instead of burying the question in chat. The widget is durable — survives navigation and restarts; chat questions don't.
 

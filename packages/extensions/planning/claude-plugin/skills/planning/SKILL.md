@@ -88,6 +88,7 @@ Defined in `.nimbalyst/trackers/*.yaml`. Examples:
 - **Tracking items**: When user mentions bugs, tasks, ideas, or wants to log something
 - **Progress updates**: When completing work, update plan status and progress
 - **Implementation**: Use /implement to execute a plan with progress tracking
+- **Board cleanup**: Use /session-cleanup to tidy the Sessions board -- fix session phases, mark finished work complete, and flag old sessions to archive
 
 ## File Naming
 

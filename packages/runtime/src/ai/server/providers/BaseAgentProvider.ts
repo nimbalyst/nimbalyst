@@ -15,6 +15,7 @@
 import { BaseAIProvider } from '../AIProvider';
 import { ProviderCapabilities } from '../types';
 import { AISessionsRepository } from '../../../storage/repositories/AISessionsRepository';
+import type { MetaAgentWorkflowPreset } from '../../prompt';
 import {
   ProviderPermissionMixin,
   PermissionDecision,
@@ -27,22 +28,27 @@ import { ProviderSessionManager, ProviderSessionData } from './ProviderSessionMa
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
 
 export abstract class BaseAgentProvider extends BaseAIProvider {
+  // Tools auto-allowed for the meta-agent profile. Child-session orchestration
+  // (meta-agent) + session-context reads live on the deferred `nimbalyst-host`
+  // server; update_session_meta + display glue on the eager core `nimbalyst`.
+  // spawn_session is deliberately omitted (it reparents the child out of the
+  // meta-agent group — see metaAgentServer EXTENSION_META_AGENT_ALLOWED_TOOLS).
   protected static readonly META_AGENT_ALLOWED_TOOLS: string[] = [
-    'mcp__nimbalyst-meta-agent__list_spawned_sessions',
-    'mcp__nimbalyst-meta-agent__list_worktrees',
-    'mcp__nimbalyst-meta-agent__create_session',
-    'mcp__nimbalyst-meta-agent__get_session_status',
-    'mcp__nimbalyst-meta-agent__get_session_result',
-    'mcp__nimbalyst-meta-agent__send_prompt',
-    'mcp__nimbalyst-meta-agent__respond_to_prompt',
-    'mcp__nimbalyst-session-naming__update_session_meta',
-    'mcp__nimbalyst-mcp__capture_editor_screenshot',
-    'mcp__nimbalyst-mcp__display_to_user',
-    'mcp__nimbalyst-mcp__voice_agent_speak',
-    'mcp__nimbalyst-session-context__get_session_summary',
-    'mcp__nimbalyst-session-context__get_workstream_overview',
-    'mcp__nimbalyst-session-context__list_recent_sessions',
-    'mcp__nimbalyst-session-context__get_workstream_edited_files',
+    'mcp__nimbalyst-host__list_spawned_sessions',
+    'mcp__nimbalyst-host__list_worktrees',
+    'mcp__nimbalyst-host__create_session',
+    'mcp__nimbalyst-host__get_session_status',
+    'mcp__nimbalyst-host__get_session_result',
+    'mcp__nimbalyst-host__send_prompt',
+    'mcp__nimbalyst-host__respond_to_prompt',
+    'mcp__nimbalyst-host__get_session_summary',
+    'mcp__nimbalyst-host__get_workstream_overview',
+    'mcp__nimbalyst-host__list_recent_sessions',
+    'mcp__nimbalyst-host__get_workstream_edited_files',
+    'mcp__nimbalyst__update_session_meta',
+    'mcp__nimbalyst__capture_editor_screenshot',
+    'mcp__nimbalyst__display_to_user',
+    'mcp__nimbalyst-situational__voice_agent_speak',
     'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList',
     'TodoRead', 'TodoWrite',
   ];
@@ -287,6 +293,22 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
       return session?.agentRole === 'meta-agent' ? 'meta-agent' : 'standard';
     } catch {
       return 'standard';
+    }
+  }
+
+  protected async getWorkflowPreset(sessionId?: string): Promise<MetaAgentWorkflowPreset> {
+    if (!sessionId) {
+      return 'default';
+    }
+    try {
+      const session = await AISessionsRepository.get(sessionId);
+      const preset = (session?.metadata as Record<string, unknown> | undefined)?.workflowPreset;
+      if (preset === 'implement-review-test' || preset === 'research' || preset === 'default') {
+        return preset;
+      }
+      return 'default';
+    } catch {
+      return 'default';
     }
   }
 

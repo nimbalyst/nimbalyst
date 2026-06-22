@@ -80,6 +80,24 @@ export async function submitClaudeCliPrompt(
       deps.writeToTerminal(input.sessionId, prompt.slice(1));
       await deps.delay(SUBMIT_WRITE_GAP_MS);
     }
+    // NIM-851: writing `/` first opens the claude TUI's slash-command
+    // autocomplete menu, and that menu (a) fuzzy-matches command DESCRIPTIONS
+    // not just names — typing "implement" surfaces `/investigate` ("...before
+    // implementing") and `/session-cleanup` ("...implementing -> validating") —
+    // and (b) hijacks Enter to run the HIGHLIGHTED row instead of the literal
+    // typed text. For a bare command (no args) the menu stays open through
+    // Enter, so a stale/recency-shifted highlight runs the wrong command (real
+    // incident: typed `/implement`, ran `/investigate` with empty args). Type a
+    // trailing space first: it ends the command token and dismisses the menu
+    // (verified on claude 2.1.177), so Enter submits the literal command.
+    // Commands WITH args already closed the menu via their separating space;
+    // bare `/` and `#` memory mode are different UIs and left untouched.
+    const isBareSlashCommand =
+      prompt.startsWith('/') && prompt.length > 1 && !/\s/.test(prompt);
+    if (isBareSlashCommand) {
+      deps.writeToTerminal(input.sessionId, ' ');
+      await deps.delay(SUBMIT_WRITE_GAP_MS);
+    }
     deps.writeToTerminal(input.sessionId, SUBMIT_TERMINATOR);
   } else {
     const ptyText = composeClaudeCliPtySubmission({

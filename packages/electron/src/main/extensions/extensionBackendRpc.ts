@@ -76,6 +76,24 @@ export type HostToBackendMessage =
       id: string;
     }
   | {
+      kind: 'broker-response';
+      /** Correlation id matching the backend's broker-request. */
+      requestId: string;
+      result: unknown;
+    }
+  | {
+      kind: 'broker-error';
+      /** Correlation id matching the backend's broker-request. */
+      requestId: string;
+      error: SerializedError;
+    }
+  | {
+      kind: 'broker-event';
+      /** Async event broadcast from main to the backend (e.g., emitEvent fan-out). */
+      event: string;
+      payload: unknown;
+    }
+  | {
       kind: 'shutdown';
     };
 
@@ -119,7 +137,93 @@ export type BackendToHostMessage =
       level: 'debug' | 'info' | 'warn' | 'error';
       message: string;
       data?: unknown;
+    }
+  | {
+      kind: 'broker-request';
+      /** Backend-generated correlation id. Main echoes this on broker-response. */
+      requestId: string;
+      /** Broker method name (e.g., 'logRaw', 'getApiKey', 'readWorkspaceFile'). */
+      method: BrokerMethodName;
+      /** Method-specific payload. */
+      payload: unknown;
     };
+
+/**
+ * Names of broker methods routed across the runtime boundary. Each maps to a
+ * main-side handler that asserts the appropriate permission (defense in depth)
+ * and performs the actual work.
+ *
+ * Per Q7 in phase-4-sdk-types-proposal: event-style methods (emitEvent,
+ * requestPermission, askUserQuestion) are PROVIDER-PRIVATE. They are NOT
+ * exposed on BackendServices and NOT routed through the broker. Providers
+ * that need them inject their own bridge.
+ */
+export type BrokerMethodName =
+  | 'logRaw'
+  | 'getApiKey'
+  | 'readWorkspaceFile'
+  | 'writeWorkspaceFile'
+  | 'registerMcpTools'
+  | 'toolExecutor'
+  | 'devToolExecutor';
+
+/** Payload shapes for each broker method. Kept here so both sides share one truth. */
+export interface BrokerPayloads {
+  logRaw: {
+    direction: 'inbound' | 'outbound';
+    sessionId: string;
+    content: string;
+    metadata?: Record<string, unknown>;
+  };
+  getApiKey: {
+    providerId: string;
+  };
+  readWorkspaceFile: {
+    path: string;
+  };
+  writeWorkspaceFile: {
+    path: string;
+    content: string;
+  };
+  registerMcpTools: {
+    tools: Array<{
+      name: string;
+      description?: string;
+      inputSchema?: unknown;
+    }>;
+  };
+  toolExecutor: {
+    /** AI session id the tool call belongs to (used to scope spawn_session). */
+    sessionId: string;
+    /** Workspace path; the host normalizes worktree paths to the parent repo. */
+    workspacePath?: string;
+    /** Tool name (may carry the mcp__nimbalyst-host__ prefix). */
+    name: string;
+    /** Parsed tool arguments. */
+    args: Record<string, unknown>;
+  };
+  devToolExecutor: {
+    /** Read-only dev tool name (read_file | list_files | search_files). */
+    name: string;
+    /** Parsed tool arguments. */
+    args: Record<string, unknown>;
+    // NOTE: no workspacePath. The host pins the jail to its bound
+    // ctx.workspacePath; the backend cannot influence the jail root.
+  };
+}
+
+/** Result shapes returned over broker-response for each method. */
+export interface BrokerResults {
+  logRaw: { id: number };
+  getApiKey: { key: string | null };
+  readWorkspaceFile: { content: string };
+  writeWorkspaceFile: { bytesWritten: number };
+  registerMcpTools: { registered: string[] };
+  /** Raw text result the meta-agent tool fn returned. */
+  toolExecutor: { result: string };
+  /** Formatted text result the read-only dev tool produced. */
+  devToolExecutor: { result: string };
+}
 
 export interface SerializedError {
   message: string;

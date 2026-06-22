@@ -1,35 +1,14 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  ErrorCode,
-  McpError,
-} from "@modelcontextprotocol/sdk/types.js";
-import { createServer, IncomingMessage, ServerResponse } from "http";
-import { parse as parseUrl } from "url";
-import { randomUUID } from "crypto";
-import { requireMcpAuth } from "./mcpAuth";
+/**
+ * Session-naming / `update_session_meta` tool surface.
+ *
+ * MCP consolidation: `update_session_meta` is served by the unified internal MCP
+ * HTTP server's eager core (`/mcp/core`, `nimbalyst`). This module exports the
+ * dynamic schema builder + an endpoint-agnostic dispatch fn, and keeps the
+ * setter-injected session-manager fns (the auto-namer also calls them); the
+ * standalone HTTP server it used to run was retired in Phase 7.
+ */
 
-// Store active SSE transports and their metadata
-interface TransportMetadata {
-  transport: SSEServerTransport;
-  aiSessionId: string;
-}
-const activeTransports = new Map<string, TransportMetadata>();
-
-interface StreamableTransportMetadata {
-  transport: StreamableHTTPServerTransport;
-  aiSessionId: string;
-}
-const activeStreamableTransports = new Map<
-  string,
-  StreamableTransportMetadata
->();
-
-// Store the HTTP server instance
-let httpServerInstance: any = null;
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 
 // Store reference to the session manager functions (set once at startup)
 let updateSessionTitleFn:
@@ -110,269 +89,140 @@ export function setGetSessionPhaseFn(
   getSessionPhaseFn = getPhaseFn;
 }
 
-export function cleanupSessionNamingServer() {
-  // Close all active SSE transports
-  for (const [transportId, metadata] of activeTransports.entries()) {
+// ─── Shared tool surface (served by the unified MCP server) ─────────
+//
+// `update_session_meta` rides on the eager core (`nimbalyst`) served by the
+// unified internal HTTP server's `/mcp/core` endpoint. The dispatch + schema
+// builder below are the single implementation; the IPC side effects live in the
+// injected fns above.
+
+/**
+ * Build the `update_session_meta` tool schema, with the `add` description
+ * augmented by the workspace's existing tags (looked up via the injected
+ * `getWorkspaceTagsFn`). Async because the tag lookup is async.
+ */
+export async function buildSessionMetaToolSchemas(aiSessionId: string): Promise<any[]> {
+  let addTagDescription = 'Tags to add to the session. Use for type of work (bug-fix, feature, refactor), area/module (electron, runtime, ios), status, or any relevant category.';
+  if (getWorkspaceTagsFn) {
     try {
-      if (metadata.transport.onclose) {
-        metadata.transport.onclose();
+      const existingTags = await getWorkspaceTagsFn(aiSessionId);
+      if (existingTags.length > 0) {
+        const tagList = existingTags.slice(0, 20).map(t => `${t.name} (${t.count})`).join(', ');
+        addTagDescription += ` Existing tags in this workspace: ${tagList}. Use existing tags for consistency, or create new ones as needed.`;
       }
-      const res = (metadata.transport as any).res;
-      if (res && !res.headersSent) {
-        res.end();
-      }
-    } catch (error) {
-      console.error(
-        `[Session Naming MCP] Error closing transport ${transportId}:`,
-        error
-      );
-    }
-  }
-  activeTransports.clear();
-
-  for (const [
-    streamableTransportId,
-    metadata,
-  ] of activeStreamableTransports.entries()) {
-    try {
-      void metadata.transport.close().catch((error) => {
-        console.error(
-          `[Session Naming MCP] Error closing streamable transport ${streamableTransportId}:`,
-          error
-        );
-      });
-    } catch (error) {
-      console.error(
-        `[Session Naming MCP] Error closing streamable transport ${streamableTransportId}:`,
-        error
-      );
-    }
-  }
-  activeStreamableTransports.clear();
-}
-
-export function shutdownSessionNamingHttpServer(): Promise<void> {
-  return new Promise((resolve) => {
-    if (!httpServerInstance) {
-      resolve();
-      return;
-    }
-
-    let hasResolved = false;
-    const safeResolve = () => {
-      if (!hasResolved) {
-        hasResolved = true;
-        resolve();
-      }
-    };
-
-    try {
-      cleanupSessionNamingServer();
-    } catch (error) {
-      console.error(
-        "[Session Naming MCP] Error cleaning up transports:",
-        error
-      );
-    }
-
-    try {
-      if (
-        httpServerInstance &&
-        typeof httpServerInstance.closeAllConnections === "function"
-      ) {
-        httpServerInstance.closeAllConnections();
-      }
-    } catch (error) {
-      console.error("[Session Naming MCP] Error closing connections:", error);
-    }
-
-    try {
-      if (
-        httpServerInstance &&
-        typeof httpServerInstance.close === "function"
-      ) {
-        httpServerInstance.close((err?: Error) => {
-          if (err) {
-            console.error(
-              "[Session Naming MCP] Error closing HTTP server:",
-              err
-            );
-          }
-          httpServerInstance = null;
-          safeResolve();
-        });
-      } else {
-        httpServerInstance = null;
-        safeResolve();
-      }
-    } catch (error) {
-      console.error("[Session Naming MCP] Error in server close:", error);
-      httpServerInstance = null;
-      safeResolve();
-    }
-
-    // Timeout to ensure we don't hang
-    setTimeout(() => {
-      if (httpServerInstance) {
-        console.log(
-          "[Session Naming MCP] Force destroying HTTP server after timeout"
-        );
-        httpServerInstance = null;
-      }
-      safeResolve();
-    }, 1000);
-  });
-}
-
-export async function startSessionNamingServer(
-  startPort: number = 3457
-): Promise<{ httpServer: any; port: number }> {
-  let port = startPort;
-  let httpServer: any = null;
-  let maxAttempts = 100;
-
-  while (maxAttempts > 0) {
-    try {
-      httpServer = await tryCreateSessionNamingServer(port);
-      console.log(`[Session Naming MCP] Successfully started on port ${port}`);
-      break;
-    } catch (error: any) {
-      if (error.code === "EADDRINUSE") {
-        port++;
-        maxAttempts--;
-      } else {
-        throw error;
-      }
+    } catch {
+      // Ignore - just use default description
     }
   }
 
-  if (!httpServer) {
-    throw new Error(
-      `[Session Naming MCP] Could not find an available port after trying 100 ports starting from ${startPort}`
-    );
-  }
-
-  httpServerInstance = httpServer;
-  return { httpServer, port };
-}
-
-function createSessionNamingMcpServer(aiSessionId: string): Server {
-  // Create a new MCP Server instance for this connection
-  // This allows us to capture the aiSessionId in the closure
-  const server = new Server(
+  return [
     {
-      name: "nimbalyst-session-naming",
-      version: "1.0.0",
-    },
-    {
-      capabilities: {
-        tools: {},
-      },
-    }
-  );
-
-  (server as { onerror?: (error: Error) => void }).onerror = (error: Error) => {
-    console.error("[MCP:nimbalyst-session-naming] Server error:", error);
-  };
-
-  // Register tool handlers with aiSessionId captured in closure
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    // Build dynamic tag description with existing workspace tags
-    let addTagDescription = 'Tags to add to the session. Use for type of work (bug-fix, feature, refactor), area/module (electron, runtime, ios), status, or any relevant category.';
-    if (getWorkspaceTagsFn) {
-      try {
-        const existingTags = await getWorkspaceTagsFn(aiSessionId);
-        if (existingTags.length > 0) {
-          const tagList = existingTags.slice(0, 20).map(t => `${t.name} (${t.count})`).join(', ');
-          addTagDescription += ` Existing tags in this workspace: ${tagList}. Use existing tags for consistency, or create new ones as needed.`;
-        }
-      } catch {
-        // Ignore - just use default description
-      }
-    }
-
-    return {
-      tools: [
-        {
-          name: "update_session_meta",
-          description:
-            "Update session metadata. On the first call, set name, tags, and phase. On subsequent calls, update tags and/or phase. The name CAN be changed on later calls, but you should generally not rename a session once it has been named unless the user explicitly asks for a different name. Always returns the full current session metadata.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              name: {
-                type: "string",
-                description:
-                  'A concise session name (2-5 words) with descriptive part first. Examples: "Authentication bug fix", "Dark mode implementation", "Database layer refactor". Only set this on the first call, or when the user explicitly asks you to rename the session.',
-              },
-              add: {
-                type: "array",
-                items: { type: "string" },
-                description: addTagDescription,
-              },
-              remove: {
-                type: "array",
-                items: { type: "string" },
-                description: "Tags to remove from the session",
-              },
-              phase: {
-                type: "string",
-                enum: ["backlog", "planning", "implementing", "validating", "complete"],
-                description:
-                  'The current phase of work. Controls which kanban column the session appears in. Use "planning" for exploration/design, "implementing" for coding, "validating" for testing/review. IMPORTANT: Never set "complete" without explicit user approval -- use "validating" when work is finished. Only the user decides when work is complete.',
-              },
-            },
+      name: "update_session_meta",
+      description:
+        "Update session metadata. On the first call, set name, tags, and phase. On subsequent calls, update tags and/or phase. The name CAN be changed on later calls, but you should generally not rename a session once it has been named unless the user explicitly asks for a different name. Always returns the full current session metadata.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description:
+              'A concise session name (2-5 words) with descriptive part first. Examples: "Authentication bug fix", "Dark mode implementation", "Database layer refactor". Only set this on the first call, or when the user explicitly asks you to rename the session.',
+          },
+          add: {
+            type: "array",
+            items: { type: "string" },
+            description: addTagDescription,
+          },
+          remove: {
+            type: "array",
+            items: { type: "string" },
+            description: "Tags to remove from the session",
+          },
+          phase: {
+            type: "string",
+            enum: ["backlog", "planning", "implementing", "validating", "complete"],
+            description:
+              'The current phase of work. Controls which kanban column the session appears in. Use "planning" for exploration/design, "implementing" for coding, "validating" for testing/review. IMPORTANT: Never set "complete" without explicit user approval -- use "validating" when work is finished. Only the user decides when work is complete.',
+          },
+          workflowPreset: {
+            type: "string",
+            enum: ["default", "implement-review-test", "research"],
+            description:
+              'The meta-agent workflow mode for this session. "default" is the standard autonomous loop. "implement-review-test" runs an autonomous implement/review/test loop in one worktree. "research" decomposes a research question across child sessions and synthesizes findings. Takes effect on the next turn (the persona is rebuilt each turn).',
           },
         },
-      ],
-    };
-  });
+      },
+    },
+  ];
+}
 
-  // Snapshot the current session metadata state
-  async function snapshotMeta(): Promise<{ name: string | null; tags: string[]; phase: string | null }> {
-    const name = getSessionTitleFn ? await getSessionTitleFn(aiSessionId) : null;
-    const tags: string[] = getSessionTagsFn ? await getSessionTagsFn(aiSessionId) : [];
-    const phase = getSessionPhaseFn ? await getSessionPhaseFn(aiSessionId) : null;
-    return { name, tags, phase };
-  }
+/** Snapshot the current session metadata state (uses the injected getter fns). */
+async function snapshotSessionMeta(aiSessionId: string): Promise<{ name: string | null; tags: string[]; phase: string | null }> {
+  const name = getSessionTitleFn ? await getSessionTitleFn(aiSessionId) : null;
+  const tags: string[] = getSessionTagsFn ? await getSessionTagsFn(aiSessionId) : [];
+  const phase = getSessionPhaseFn ? await getSessionPhaseFn(aiSessionId) : null;
+  return { name, tags, phase };
+}
 
-  // Build structured JSON response with before/after state for the widget
-  function buildMetaResponse(
-    notes: string[],
-    before: { name: string | null; tags: string[]; phase: string | null },
-    after: { name: string | null; tags: string[]; phase: string | null },
-  ): string {
-    // Human-readable summary for the AI
-    const parts = [...notes];
-    parts.push(`Name: ${after.name || '(not set)'}`);
-    parts.push(`Tags: ${after.tags.length > 0 ? after.tags.map(t => `#${t}`).join(', ') : '(none)'}`);
-    parts.push(`Phase: ${after.phase || '(not set)'}`);
-    const summary = parts.join('\n');
+/** Build the structured JSON response with before/after state for the widget. */
+function buildSessionMetaResponse(
+  notes: string[],
+  before: { name: string | null; tags: string[]; phase: string | null },
+  after: { name: string | null; tags: string[]; phase: string | null },
+): string {
+  const parts = [...notes];
+  parts.push(`Name: ${after.name || '(not set)'}`);
+  parts.push(`Tags: ${after.tags.length > 0 ? after.tags.map(t => `#${t}`).join(', ') : '(none)'}`);
+  parts.push(`Phase: ${after.phase || '(not set)'}`);
+  const summary = parts.join('\n');
+  return JSON.stringify({ summary, before, after });
+}
 
-    return JSON.stringify({ summary, before, after });
-  }
+/**
+ * Dispatch `update_session_meta` and return the MCP `{content, isError}` shape.
+ * `name` may carry the `mcp__nimbalyst__` prefix; it is stripped. The injected
+ * fns perform the DB writes + IPC broadcasts (session-updated / title-updated),
+ * so the kanban/UI still updates.
+ */
+export async function dispatchSessionMetaTool(
+  name: string,
+  args: Record<string, any> | undefined,
+  aiSessionId: string,
+): Promise<{ content: Array<{ type: string; text: string }>; isError: boolean }> {
+  const toolName = name.replace(/^mcp__nimbalyst(-session-naming)?__/, "");
 
-  // Tool execution handler - aiSessionId is captured from outer scope
-  server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
-    const { name, arguments: args } = request.params;
-
-    // Strip MCP server prefix if present
-    const toolName = name.replace(/^mcp__nimbalyst-session-naming__/, "");
-
-    try {
+  try {
     if (toolName === "update_session_meta") {
       const sessionName = args?.name as string | undefined;
       const addTags = Array.isArray(args?.add) ? args.add as string[] : typeof args?.add === 'string' ? [args.add] : undefined;
       const removeTags = Array.isArray(args?.remove) ? args.remove as string[] : typeof args?.remove === 'string' ? [args.remove] : undefined;
       const phase = args?.phase as string | undefined;
-
-      // Require at least one parameter
-      if (!sessionName && !addTags?.length && !removeTags?.length && !phase) {
+      const rawWorkflowPreset = args?.workflowPreset;
+      const workflowPreset =
+        rawWorkflowPreset === 'default' ||
+        rawWorkflowPreset === 'implement-review-test' ||
+        rawWorkflowPreset === 'research'
+          ? (rawWorkflowPreset as string)
+          : undefined;
+      if (rawWorkflowPreset !== undefined && workflowPreset === undefined) {
         return {
           content: [
             {
               type: "text",
-              text: 'Error: At least one of "name", "add", "remove", or "phase" must be provided.',
+              text: 'Error: "workflowPreset" must be one of "default", "implement-review-test", "research".',
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Require at least one parameter
+      if (!sessionName && !addTags?.length && !removeTags?.length && !phase && !workflowPreset) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: 'Error: At least one of "name", "add", "remove", "phase", or "workflowPreset" must be provided.',
             },
           ],
           isError: true,
@@ -380,7 +230,7 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
       }
 
       // Capture state before changes for the widget transition display
-      const before = await snapshotMeta();
+      const before = await snapshotSessionMeta(aiSessionId);
       const notes: string[] = [];
 
       // Handle name (write-once)
@@ -461,6 +311,7 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
 
           const metadataUpdate: Record<string, unknown> = { tags: newTags };
           if (phase) metadataUpdate.phase = phase;
+          if (workflowPreset) metadataUpdate.workflowPreset = workflowPreset;
 
           await updateSessionMetadataFn(aiSessionId, metadataUpdate);
 
@@ -479,8 +330,8 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
             isError: true,
           };
         }
-      } else if (phase) {
-        // Phase-only update (no tag changes)
+      } else if (phase || workflowPreset) {
+        // Metadata-only update (no tag changes): phase and/or workflowPreset
         if (!updateSessionMetadataFn) {
           return {
             content: [
@@ -494,15 +345,19 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
         }
 
         try {
-          await updateSessionMetadataFn(aiSessionId, { phase });
-          notes.push(`Set phase: ${phase}`);
+          const metadataUpdate: Record<string, unknown> = {};
+          if (phase) metadataUpdate.phase = phase;
+          if (workflowPreset) metadataUpdate.workflowPreset = workflowPreset;
+          await updateSessionMetadataFn(aiSessionId, metadataUpdate);
+          if (phase) notes.push(`Set phase: ${phase}`);
+          if (workflowPreset) notes.push(`Set workflow preset: ${workflowPreset}`);
         } catch (error) {
-          console.error("[Session Naming MCP] Failed to update phase:", error);
+          console.error("[Session Naming MCP] Failed to update session metadata:", error);
           return {
             content: [
               {
                 type: "text",
-                text: `Error updating phase: ${error instanceof Error ? error.message : "Unknown error"}`,
+                text: `Error updating session metadata: ${error instanceof Error ? error.message : "Unknown error"}`,
               },
             ],
             isError: true,
@@ -511,8 +366,8 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
       }
 
       // Build structured response with before/after for widget
-      const after = await snapshotMeta();
-      const response = buildMetaResponse(notes, before, after);
+      const after = await snapshotSessionMeta(aiSessionId);
+      const response = buildSessionMetaResponse(notes, before, after);
       return {
         content: [{ type: "text", text: response }],
         isError: false,
@@ -520,329 +375,10 @@ function createSessionNamingMcpServer(aiSessionId: string): Server {
     } else {
       throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }
-    } catch (error) {
-      if (error instanceof McpError) throw error;
-      console.error(`[MCP:nimbalyst-session-naming] Tool "${name}" failed:`, error);
-      console.error(`[MCP:nimbalyst-session-naming] Tool args:`, JSON.stringify(args).slice(0, 500));
-      throw error;
-    }
-  });
-
-  return server;
-}
-
-function getMcpSessionIdHeader(req: IncomingMessage): string | undefined {
-  const headerValue = req.headers["mcp-session-id"];
-  if (Array.isArray(headerValue)) {
-    return headerValue[0];
+  } catch (error) {
+    if (error instanceof McpError) throw error;
+    console.error(`[SessionMeta MCP] Tool "${name}" failed:`, error);
+    console.error(`[SessionMeta MCP] Tool args:`, JSON.stringify(args).slice(0, 500));
+    throw error;
   }
-  if (typeof headerValue === "string" && headerValue.length > 0) {
-    return headerValue;
-  }
-  return undefined;
-}
-
-async function readJsonBody(
-  req: IncomingMessage
-): Promise<unknown | undefined> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  if (chunks.length === 0) {
-    return undefined;
-  }
-  const rawBody = Buffer.concat(chunks).toString("utf8").trim();
-  if (!rawBody) {
-    return undefined;
-  }
-  try {
-    return JSON.parse(rawBody);
-  } catch {
-    return undefined;
-  }
-}
-
-function isInitializeMessage(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && 'method' in value && (value as Record<string, unknown>).method === 'initialize';
-}
-
-function isInitializePayload(payload: unknown): boolean {
-  if (!payload) {
-    return false;
-  }
-  if (Array.isArray(payload)) {
-    return payload.some((entry) => isInitializeMessage(entry));
-  }
-  return isInitializeMessage(payload);
-}
-
-async function tryCreateSessionNamingServer(port: number): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const httpServer = createServer(
-      async (req: IncomingMessage, res: ServerResponse) => {
-        const parsedUrl = parseUrl(req.url || "", true);
-        const pathname = parsedUrl.pathname;
-        const mcpSessionIdHeader = getMcpSessionIdHeader(req);
-
-        // Handle CORS preflight.
-        // Issue #146: drop `Access-Control-Allow-Origin: *`; bearer token is
-        // the sole gate. SDK subprocesses don't care about CORS.
-        if (req.method === "OPTIONS") {
-          res.writeHead(200, {
-            "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers":
-              "Authorization, Content-Type, mcp-session-id, mcp-protocol-version",
-          });
-          res.end();
-          return;
-        }
-
-        // Issue #146: every non-OPTIONS request to /mcp must carry the
-        // per-launch bearer token.
-        if (pathname === "/mcp" && !requireMcpAuth(req)) {
-          res.writeHead(401);
-          res.end("Unauthorized");
-          return;
-        }
-
-        // Handle SSE GET request to establish connection
-        if (pathname === "/mcp" && req.method === "GET") {
-          // Streamable HTTP GET (session established, uses Mcp-Session-Id header)
-          if (mcpSessionIdHeader) {
-            const metadata = activeStreamableTransports.get(mcpSessionIdHeader);
-            if (!metadata) {
-              res.writeHead(404);
-              res.end("Streamable session not found");
-              return;
-            }
-
-            try {
-              await metadata.transport.handleRequest(req, res);
-            } catch (error) {
-              console.error(
-                "[Session Naming MCP] Error handling streamable GET request:",
-                error
-              );
-              if (!res.headersSent) {
-                res.writeHead(500);
-                res.end("Internal server error");
-              }
-            }
-            return;
-          }
-
-          // Extract AI session ID from query parameter
-          const aiSessionId = parsedUrl.query.sessionId as string;
-
-          if (!aiSessionId || typeof aiSessionId !== 'string') {
-            res.writeHead(400);
-            res.end("Missing or invalid sessionId parameter");
-            return;
-          }
-
-          if (!updateSessionTitleFn) {
-            res.writeHead(500);
-            res.end("Session naming service not initialized");
-            return;
-          }
-
-          const server = createSessionNamingMcpServer(aiSessionId);
-
-          // Create SSE transport
-          const transport = new SSEServerTransport("/mcp", res);
-          activeTransports.set(transport.sessionId, {
-            transport,
-            aiSessionId,
-          });
-
-
-          // Connect server to transport
-          server
-            .connect(transport)
-            .then(() => {
-              transport.onclose = () => {
-                activeTransports.delete(transport.sessionId);
-              };
-            })
-            .catch((error) => {
-              console.error("[Session Naming MCP] Connection error:", error);
-              activeTransports.delete(transport.sessionId);
-              if (!res.headersSent) {
-                res.writeHead(500);
-                res.end();
-              }
-            });
-        } else if (pathname === "/mcp" && req.method === "POST") {
-          // Legacy SSE POST flow: route to existing SSE transport if found
-          const legacyTransportSessionId = parsedUrl.query.sessionId as
-            | string
-            | undefined;
-
-          // Validate sessionId is a string if provided (could be array if duplicated)
-          if (legacyTransportSessionId !== undefined && typeof legacyTransportSessionId !== 'string') {
-            res.writeHead(400);
-            res.end("Invalid sessionId parameter");
-            return;
-          }
-
-          const legacyMetadata = legacyTransportSessionId
-            ? activeTransports.get(legacyTransportSessionId)
-            : undefined;
-
-          if (legacyMetadata && !mcpSessionIdHeader) {
-            try {
-              await legacyMetadata.transport.handlePostMessage(req, res);
-            } catch (error) {
-              console.error(
-                "[Session Naming MCP] Error handling legacy SSE POST message:",
-                error
-              );
-              if (!res.headersSent) {
-                res.writeHead(500);
-                res.end("Internal server error");
-              }
-            }
-            return;
-          }
-
-          // Streamable HTTP flow (initialize or existing session)
-          const parsedBody = await readJsonBody(req);
-
-          if (
-            !mcpSessionIdHeader &&
-            legacyTransportSessionId &&
-            !isInitializePayload(parsedBody)
-          ) {
-            // Preserve legacy behavior for unknown SSE sessions.
-            res.writeHead(404);
-            res.end("Transport session not found");
-            return;
-          }
-
-          let streamableMetadata: StreamableTransportMetadata | undefined =
-            mcpSessionIdHeader
-              ? activeStreamableTransports.get(mcpSessionIdHeader)
-              : undefined;
-
-          if (mcpSessionIdHeader && !streamableMetadata) {
-            res.writeHead(404);
-            res.end("Streamable session not found");
-            return;
-          }
-
-          if (!streamableMetadata) {
-            if (!isInitializePayload(parsedBody)) {
-              res.writeHead(400);
-              res.end("Missing sessionId");
-              return;
-            }
-
-            const aiSessionId = parsedUrl.query.sessionId as string;
-            if (!aiSessionId || typeof aiSessionId !== 'string') {
-              res.writeHead(400);
-              res.end("Missing or invalid sessionId parameter");
-              return;
-            }
-
-            if (!updateSessionTitleFn) {
-              res.writeHead(500);
-              res.end("Session naming service not initialized");
-              return;
-            }
-
-            const server = createSessionNamingMcpServer(aiSessionId);
-            const transport = new StreamableHTTPServerTransport({
-              sessionIdGenerator: () => randomUUID(),
-              onsessioninitialized: (streamableSessionId) => {
-                activeStreamableTransports.set(streamableSessionId, {
-                  transport,
-                  aiSessionId,
-                });
-              },
-            });
-
-            transport.onclose = () => {
-              const streamableSessionId = transport.sessionId;
-              if (streamableSessionId) {
-                activeStreamableTransports.delete(streamableSessionId);
-              }
-            };
-
-            transport.onerror = (error) => {
-              console.error(
-                "[Session Naming MCP] Streamable transport error:",
-                error
-              );
-            };
-
-            await server.connect(transport);
-            streamableMetadata = { transport, aiSessionId };
-          }
-
-          try {
-            await streamableMetadata.transport.handleRequest(
-              req,
-              res,
-              parsedBody
-            );
-          } catch (error) {
-            console.error(
-              "[Session Naming MCP] Error handling streamable POST request:",
-              error
-            );
-            if (!res.headersSent) {
-              res.writeHead(500);
-              res.end("Internal server error");
-            }
-          }
-        } else if (pathname === "/mcp" && req.method === "DELETE") {
-          // Streamable HTTP session termination
-          if (!mcpSessionIdHeader) {
-            res.writeHead(400);
-            res.end("Missing mcp-session-id header");
-            return;
-          }
-
-          const metadata = activeStreamableTransports.get(mcpSessionIdHeader);
-          if (!metadata) {
-            res.writeHead(404);
-            res.end("Streamable session not found");
-            return;
-          }
-
-          try {
-            await metadata.transport.handleRequest(req, res);
-          } catch (error) {
-            console.error(
-              "[Session Naming MCP] Error handling streamable DELETE request:",
-              error
-            );
-            if (!res.headersSent) {
-              res.writeHead(500);
-              res.end("Internal server error");
-            }
-          }
-        } else {
-          res.writeHead(404);
-          res.end("Not found");
-        }
-      }
-    );
-
-    httpServer.listen(port, "127.0.0.1", (err?: Error) => {
-      if (err) {
-        reject(err);
-      }
-    });
-
-    httpServer.on("listening", () => {
-      httpServer.unref();
-      resolve(httpServer);
-    });
-
-    httpServer.on("error", (err: any) => {
-      reject(err);
-    });
-  });
 }

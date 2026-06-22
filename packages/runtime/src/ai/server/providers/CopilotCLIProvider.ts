@@ -32,6 +32,7 @@ import {
 import { CopilotACPProtocol } from '../protocols/CopilotACPProtocol';
 import { ProtocolEvent, ProtocolSession } from '../protocols/ProtocolInterface';
 import { McpConfigService } from '../services/McpConfigService';
+import { getMcpConfigService, isInternalMcpServerEnabled } from '../services/mcpServerConfig';
 import { MCPServerConfig } from '../../../types/MCPServerConfig';
 import { safeJSONSerialize } from '../../../utils/serialization';
 import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
@@ -109,16 +110,8 @@ export class CopilotCLIProvider extends BaseAgentProvider {
     isResumedSession: boolean;
   } | null = null;
 
-  private static mcpServerPort: number | null = null;
-  private static sessionNamingServerPort: number | null = null;
-  private static extensionDevServerPort: number | null = null;
-  private static sessionContextServerPort: number | null = null;
-  private static metaAgentServerPort: number | null = null;
-  private static settingsServerPort: number | null = null;
-  private static settingsAgentToolsDisabledLoader: (() => boolean) | null = null;
-  // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers (Issue #146)
-  private static mcpAuthToken: string | null = null;
-
+  // Internal MCP-server enablement (ports, kill-switches, extension/tracker
+  // loaders, auth token) lives in the shared `mcpServerConfig` registry now.
   private static mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null = null;
   private static shellEnvironmentLoader: (() => Record<string, string> | null) | null = null;
   private static enhancedPathLoader: (() => string) | null = null;
@@ -129,18 +122,8 @@ export class CopilotCLIProvider extends BaseAgentProvider {
 
     this.protocol = deps?.protocol || new CopilotACPProtocol();
 
-    this.mcpConfigService = new McpConfigService({
-      mcpServerPort: CopilotCLIProvider.mcpServerPort,
-      sessionNamingServerPort: CopilotCLIProvider.sessionNamingServerPort,
-      extensionDevServerPort: CopilotCLIProvider.extensionDevServerPort,
-      superLoopProgressServerPort: null,
-      sessionContextServerPort: CopilotCLIProvider.sessionContextServerPort,
-      metaAgentServerPort: CopilotCLIProvider.metaAgentServerPort,
-      settingsServerPort: CopilotCLIProvider.settingsServerPort,
-      settingsAgentToolsDisabledLoader: CopilotCLIProvider.settingsAgentToolsDisabledLoader,
-      mcpAuthToken: CopilotCLIProvider.mcpAuthToken,
+    this.mcpConfigService = getMcpConfigService({
       mcpConfigLoader: CopilotCLIProvider.mcpConfigLoader,
-      extensionPluginsLoader: null,
       claudeSettingsEnvLoader: null,
       shellEnvironmentLoader: CopilotCLIProvider.shellEnvironmentLoader,
     });
@@ -155,38 +138,8 @@ export class CopilotCLIProvider extends BaseAgentProvider {
   }
 
   // --- Static injection setters (called from electron main process at startup) ---
-
-  public static setMcpServerPort(port: number | null): void {
-    CopilotCLIProvider.mcpServerPort = port;
-  }
-
-  public static setSessionNamingServerPort(port: number | null): void {
-    CopilotCLIProvider.sessionNamingServerPort = port;
-  }
-
-  public static setExtensionDevServerPort(port: number | null): void {
-    CopilotCLIProvider.extensionDevServerPort = port;
-  }
-
-  public static setSessionContextServerPort(port: number | null): void {
-    CopilotCLIProvider.sessionContextServerPort = port;
-  }
-
-  public static setMetaAgentServerPort(port: number | null): void {
-    CopilotCLIProvider.metaAgentServerPort = port;
-  }
-
-  public static setSettingsServerPort(port: number | null): void {
-    CopilotCLIProvider.settingsServerPort = port;
-  }
-
-  public static setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void {
-    CopilotCLIProvider.settingsAgentToolsDisabledLoader = loader;
-  }
-
-  public static setMcpAuthToken(token: string | null): void {
-    CopilotCLIProvider.mcpAuthToken = token;
-  }
+  // Internal MCP-server ports / kill-switches / loaders / auth token are
+  // configured once via `configureMcpServers` (shared registry).
 
   public static setMCPConfigLoader(loader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null): void {
     CopilotCLIProvider.mcpConfigLoader = loader;
@@ -471,7 +424,7 @@ export class CopilotCLIProvider extends BaseAgentProvider {
   }
 
   protected buildSystemPrompt(documentContext?: DocumentContext): string {
-    const hasSessionNaming = CopilotCLIProvider.sessionNamingServerPort !== null;
+    const hasSessionNaming = isInternalMcpServerEnabled();
     const worktreePath = documentContext?.worktreePath;
 
     return buildClaudeCodeSystemPrompt({

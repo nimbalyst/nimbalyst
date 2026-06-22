@@ -40,6 +40,7 @@ import {
 } from '../utils/store';
 import { getEnhancedPath } from '../services/CLIManager';
 import { logger } from '../utils/logger';
+import { getSettingsService, isSettingKey } from '../services/SettingsService';
 import { SessionNamingService } from '../services/SessionNamingService';
 import { SoundNotificationService } from '../services/SoundNotificationService';
 import { autoUpdaterService } from '../services/autoUpdater';
@@ -97,6 +98,41 @@ function getLocalNetworkIP(): string | null {
 }
 
 export function registerSettingsHandlers() {
+    // ============================================================
+    // Flat-key SettingsService (per-key reads/writes + broadcast)
+    //
+    // The renderer hydrates every setting at startup via `settings:getAll`,
+    // mutates via `settings:set`/`delete`, and stays in lockstep across windows
+    // via the `settings:changed` broadcast emitted from SettingsService.notify.
+    // See packages/electron/src/main/services/SettingsService.ts for the
+    // authority model and packages/electron/src/shared/settings/keys.ts for
+    // the key registry.
+    // ============================================================
+    const settingsService = getSettingsService();
+    settingsService.init();
+
+    safeHandle('settings:getAll', () => {
+        return settingsService.getAll();
+    });
+
+    safeHandle('settings:set', (_event, key: string, value: unknown) => {
+        if (!isSettingKey(key)) {
+            // Reject loudly -- a renderer asking for an unknown key is a
+            // registry/key mismatch we want to catch in dev, not paper over.
+            throw new Error(`[settings:set] Unknown setting key: ${key}`);
+        }
+        settingsService.set(key, value as any);
+        return { ok: true };
+    });
+
+    safeHandle('settings:delete', (_event, key: string) => {
+        if (!isSettingKey(key)) {
+            throw new Error(`[settings:delete] Unknown setting key: ${key}`);
+        }
+        settingsService.delete(key);
+        return { ok: true };
+    });
+
     // Generic app settings get/set (for extension storage)
     safeHandle('app-settings:get', (_event, key: string) => {
         return getAppSetting(key);

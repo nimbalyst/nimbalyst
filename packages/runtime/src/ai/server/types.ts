@@ -100,6 +100,22 @@ export interface ToolCall {
   };
 }
 
+/**
+ * OpenAI function-calling shaped tool definition threaded to extension-agent
+ * providers so their tool loops (e.g. gemini-antigravity) can present the host's
+ * meta-agent tools as JSON in the model prompt. Built-in providers ignore this
+ * — they discover the same tools over an SSE MCP server instead. Optional and
+ * additive everywhere it appears so no built-in provider path is affected.
+ */
+export interface AgentToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+}
+
 export interface Message {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
@@ -425,7 +441,12 @@ export interface ProviderSettings {
 }
 
 export interface StreamChunk {
-  type: 'text' | 'tool_call' | 'tool_error' | 'error' | 'complete' | 'stream_edit_start' | 'stream_edit_content' | 'stream_edit_end' | 'pre_edit_snapshot' | 'post_edit_snapshot';
+  // 'context_usage' is a lightweight, mid-turn update that carries ONLY
+  // contextFillTokens so the UI's context indicator can refresh per assistant
+  // step during a long agentic turn (instead of once per turn at 'complete').
+  // It must never carry cumulative input/output usage -- those stay on
+  // 'complete' to avoid double-counting. See NIM-868.
+  type: 'text' | 'tool_call' | 'tool_error' | 'error' | 'complete' | 'context_usage' | 'stream_edit_start' | 'stream_edit_content' | 'stream_edit_end' | 'pre_edit_snapshot' | 'post_edit_snapshot';
   content?: string;
   isSystem?: boolean; // For system messages like slash command output
   toolCall?: {

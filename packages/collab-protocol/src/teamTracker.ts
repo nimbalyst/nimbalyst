@@ -38,6 +38,25 @@ export interface TrackerRoomConfig {
   issueKeyPrefix: string;
 }
 
+/**
+ * One tracker SCHEMA row on the wire (Epic B Phase 3). Mirrors
+ * {@link EncryptedTrackerItemEnvelope} but keyed by the schema TYPE name
+ * instead of an itemId, and with no issue-number allocation. The encrypted
+ * payload is the JSON-serialized TrackerDataModel; the server never reads it.
+ * Tombstones (type deleted / reset to built-in): `encryptedPayload: null`,
+ * `iv` omitted, `deletedAt` populated. Schemas carry their OWN monotonic
+ * syncId cursor, independent of the item cursor.
+ */
+export interface EncryptedTrackerSchemaEnvelope {
+  schemaType: string;
+  syncId: SyncId;
+  encryptedPayload: string | null;
+  iv?: string;
+  updatedAt: number;
+  deletedAt: number | null;
+  orgKeyFingerprint: string | null;
+}
+
 // ============================================================================
 // Client -> Server Messages
 // ============================================================================
@@ -46,7 +65,27 @@ export type TrackerClientMessage =
   | TrackerSyncRequestMessage
   | TrackerMutationRequestMessage
   | TrackerSetConfigMessage
+  | TrackerSchemaSyncRequestMessage
+  | TrackerSchemaMutationRequestMessage
   | TrackerPingMessage;
+
+/** Request the schema delta since a cursor. `sinceSyncId: 0` bootstraps. */
+export interface TrackerSchemaSyncRequestMessage {
+  type: 'trackerSchemaSync';
+  sinceSyncId: SyncId;
+}
+
+/** Upsert (encryptedPayload set) or delete (null = tombstone) one schema. */
+export interface TrackerSchemaMutationRequestMessage {
+  type: 'trackerSchemaMutation';
+  clientMutationId: string;
+  schemaType: string;
+  /** Null for delete (tombstone). */
+  encryptedPayload: string | null;
+  /** Omitted for delete. */
+  iv?: string;
+  orgKeyFingerprint: string | null;
+}
 
 export interface TrackerSyncRequestMessage {
   type: 'trackerSync';
@@ -87,8 +126,36 @@ export type TrackerServerMessage =
   | TrackerDeltaMessage
   | TrackerMutationAckMessage
   | TrackerConfigBroadcastMessage
+  | TrackerSchemaSyncResponseMessage
+  | TrackerSchemaDeltaMessage
+  | TrackerSchemaMutationAckMessage
   | TrackerPongMessage
+  | TrackerRoomMovedMessage
   | TrackerErrorMessage;
+
+export interface TrackerSchemaSyncResponseMessage {
+  type: 'trackerSchemaSyncResponse';
+  schemas: EncryptedTrackerSchemaEnvelope[];
+  cursorSyncId: SyncId;
+  hasMore: boolean;
+}
+
+export interface TrackerSchemaDeltaMessage {
+  type: 'trackerSchemaDelta';
+  schema: EncryptedTrackerSchemaEnvelope;
+}
+
+export interface TrackerSchemaMutationAckMessage {
+  type: 'trackerSchemaMutationAck';
+  clientMutationId: string;
+  accepted: boolean;
+  syncId?: SyncId;
+  schema?: EncryptedTrackerSchemaEnvelope;
+  error?: {
+    code: TrackerMutationRejectCode;
+    message: string;
+  };
+}
 
 export interface TrackerSyncResponseMessage {
   type: 'trackerSyncResponse';
@@ -131,6 +198,20 @@ export interface TrackerConfigBroadcastMessage {
 
 export interface TrackerPongMessage {
   type: 'trackerPong';
+}
+
+/**
+ * Sent when this tracker room has been relocated to another org by the move
+ * engine (Epic H3 P1). The client must tear down its engine for the old room
+ * and re-resolve routing (the project now lives at the new org + routing key).
+ * The old room is frozen read-only; never write to it after receiving this.
+ */
+export interface TrackerRoomMovedMessage {
+  type: 'trackerRoomMoved';
+  /** The destination org the project now lives in. */
+  destOrgId: string;
+  /** The project's new tracker-room routing key under the destination org. */
+  destTeamProjectId: string;
 }
 
 export interface TrackerErrorMessage {

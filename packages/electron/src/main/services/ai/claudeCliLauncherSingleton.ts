@@ -17,13 +17,15 @@ import os from 'os';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { app } from 'electron';
-import { McpConfigService } from '@nimbalyst/runtime/ai/server';
+import { McpConfigService, getMcpConfigService } from '@nimbalyst/runtime/ai/server';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { getTerminalSessionManager } from '../TerminalSessionManager';
 import { getEnhancedPath, getShellEnvironment } from '../CLIManager';
 import { ClaudeCliSessionLauncher } from './ClaudeCliSessionLauncher';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
-import { resolveClaudeExecutablePath } from './claudeExecutableResolver';
+import { resolveClaudeExecutablePath, isClaudeExecutableInstalled } from './claudeExecutableResolver';
+import { resolveClaudeCliSupportsPluginDir } from './claudeCliPluginSupport';
+import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { workspacePathToDir } from '../AttachmentService';
 import { resolveClaudePermissionHookScriptPath } from './claudeCliPermissionHookPath';
 import { getPermissionService } from '../PermissionService';
@@ -33,40 +35,19 @@ import { maybeAutoNameClaudeCliSessionProduction } from './claudeCliSessionAutoN
 import type { ClaudeTurnState } from './claudeCliPidState';
 
 interface ClaudeCliLauncherConfig {
-  mcpServerPort: number | null;
-  sessionNamingServerPort: number | null;
-  extensionDevServerPort: number | null;
-  sessionContextServerPort: number | null;
-  metaAgentServerPort: number | null;
-  settingsServerPort: number | null;
-  settingsAgentToolsDisabledLoader: (() => boolean) | null;
-  mcpAuthToken: string | null;
+  // Internal MCP-server enablement (ports, kill-switches, loaders, auth token)
+  // lives in the shared `mcpServerConfig` registry now; the launcher only owns
+  // its provider-specific `mcpConfigLoader` (user/workspace .mcp.json filter).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, any>>) | null;
 }
 
 const config: ClaudeCliLauncherConfig = {
-  mcpServerPort: null,
-  sessionNamingServerPort: null,
-  extensionDevServerPort: null,
-  sessionContextServerPort: null,
-  metaAgentServerPort: null,
-  settingsServerPort: null,
-  settingsAgentToolsDisabledLoader: null,
-  mcpAuthToken: null,
   mcpConfigLoader: null,
 };
 
 /** Static setters, wired from `index.ts` alongside the CLI providers. */
 export const ClaudeCliLauncherConfig = {
-  setMcpServerPort: (port: number | null) => { config.mcpServerPort = port; },
-  setSessionNamingServerPort: (port: number | null) => { config.sessionNamingServerPort = port; },
-  setExtensionDevServerPort: (port: number | null) => { config.extensionDevServerPort = port; },
-  setSessionContextServerPort: (port: number | null) => { config.sessionContextServerPort = port; },
-  setMetaAgentServerPort: (port: number | null) => { config.metaAgentServerPort = port; },
-  setSettingsServerPort: (port: number | null) => { config.settingsServerPort = port; },
-  setSettingsAgentToolsDisabledLoader: (loader: (() => boolean) | null) => { config.settingsAgentToolsDisabledLoader = loader; },
-  setMcpAuthToken: (token: string | null) => { config.mcpAuthToken = token; },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   setMcpConfigLoader: (loader: ((workspacePath?: string) => Promise<Record<string, any>>) | null) => { config.mcpConfigLoader = loader; },
 };
@@ -87,6 +68,20 @@ function resolveClaudeExecutable(): string {
 }
 
 /**
+ * Whether the genuine `claude` CLI is installed anywhere we could spawn it
+ * (NIM-852). The renderer checks this (via `claude-cli:is-installed`) to show an
+ * install notice instead of spawning a bare `claude` that yields a cryptic
+ * `command not found`. `ensureClaudeCliSession` also short-circuits on it.
+ */
+export function isClaudeCliInstalled(): boolean {
+  return isClaudeExecutableInstalled({
+    homedir: os.homedir(),
+    pathExists: existsSync,
+    enhancedPath: getEnhancedPath(),
+  });
+}
+
+/**
  * Resolve (and create) the workspace's chat-attachments root and return it as the
  * `--add-dir` allow-list for the CLI. Mirrors `AttachmentService`'s storage
  * layout (`<userData>/chat-attachments/<workspaceDir>`) via the shared
@@ -94,6 +89,17 @@ function resolveClaudeExecutable(): string {
  * Returns `undefined` on any failure so a directory-prep error never blocks the
  * CLI launch.
  */
+/**
+ * Whether a `claude-code-cli` session launched right now would be able to load
+ * extension Claude-plugins — i.e. the resolved `claude` accepts `--plugin-dir`
+ * (≥ 2.1.142). The slash-command picker uses this to hide namespaced plugin
+ * commands when the CLI can't run them (NIM-845). Resolves the same executable
+ * the launcher would spawn, so the picker matches actual launch behavior.
+ */
+export function claudeCliSessionSupportsPlugins(): boolean {
+  return resolveClaudeCliSupportsPluginDir(resolveClaudeExecutable());
+}
+
 function prepareAttachmentsAllowDir(workspacePath: string): string[] | undefined {
   try {
     const attachmentsRoot = join(
@@ -113,18 +119,8 @@ function prepareAttachmentsAllowDir(workspacePath: string): string[] | undefined
 }
 
 function buildMcpConfigService(): McpConfigService {
-  return new McpConfigService({
-    mcpServerPort: config.mcpServerPort,
-    sessionNamingServerPort: config.sessionNamingServerPort,
-    extensionDevServerPort: config.extensionDevServerPort,
-    superLoopProgressServerPort: null,
-    sessionContextServerPort: config.sessionContextServerPort,
-    metaAgentServerPort: config.metaAgentServerPort,
-    settingsServerPort: config.settingsServerPort,
-    settingsAgentToolsDisabledLoader: config.settingsAgentToolsDisabledLoader,
-    mcpAuthToken: config.mcpAuthToken,
+  return getMcpConfigService({
     mcpConfigLoader: config.mcpConfigLoader,
-    extensionPluginsLoader: null,
     claudeSettingsEnvLoader: null,
     shellEnvironmentLoader: () => getShellEnvironment(),
   });
@@ -150,6 +146,20 @@ function buildLauncher(): ClaudeCliSessionLauncher {
     // project so trust is shared.
     getPermissionMode: (workspacePath: string) =>
       getPermissionService().getPermissionMode(workspacePath),
+    // NIM-845: load extension Claude-plugins so namespaced slash commands
+    // (`/feedback:bug-report`, …) resolve in CLI sessions. Mirror the SDK path's
+    // loader EXACTLY (`getClaudeProviderPluginPaths`, the same aggregator wired at
+    // index.ts → setExtensionPluginsLoader): native + legacy + CLI-installed AND
+    // GENERATED extension-workflow plugins. The raw `getClaudePluginPaths` omits
+    // the generated ones, so a supported-CLI user would see generated namespaced
+    // commands in the picker that the launched CLI couldn't resolve. We map to the
+    // bare directory paths the CLI's `--plugin-dir` expects. Gated by the
+    // `--version` probe below so old CLIs that reject the flag silently skip it.
+    loadPluginDirs: async (workspacePath: string) =>
+      (await getAgentWorkflowService(workspacePath).getClaudeProviderPluginPaths()).map(
+        (plugin) => plugin.path,
+      ),
+    cliSupportsPluginDir: (executable: string) => resolveClaudeCliSupportsPluginDir(executable),
   });
 }
 
@@ -168,6 +178,8 @@ export interface EnsureClaudeCliSessionResult {
   success: boolean;
   alreadyActive?: boolean;
   error?: string;
+  /** NIM-852: the `claude` CLI isn't installed, so we never spawned. */
+  claudeNotInstalled?: boolean;
 }
 
 const launchInFlight = new Map<string, Promise<EnsureClaudeCliSessionResult>>();
@@ -195,6 +207,17 @@ export async function ensureClaudeCliSession(
   const manager = getTerminalSessionManager();
   if (manager.isTerminalActive(input.sessionId)) {
     return { success: true, alreadyActive: true };
+  }
+
+  // NIM-852: don't spawn a bare `claude` when it isn't installed — that yields a
+  // cryptic `command not found` and strands the session as "running". The
+  // renderer shows an install notice; this is the defense-in-depth short-circuit.
+  if (!isClaudeCliInstalled()) {
+    return {
+      success: false,
+      claudeNotInstalled: true,
+      error: 'Claude Code CLI is not installed',
+    };
   }
 
   const existingLaunch = launchInFlight.get(input.sessionId);

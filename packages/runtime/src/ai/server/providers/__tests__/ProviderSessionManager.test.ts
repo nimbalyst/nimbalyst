@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderSessionManager } from '../ProviderSessionManager';
 
 describe('ProviderSessionManager', () => {
-  let emit: ReturnType<typeof vi.fn>;
+  let emit: ReturnType<typeof vi.fn<(event: string, data: unknown) => boolean>>;
   let manager: ProviderSessionManager;
 
   beforeEach(() => {
-    emit = vi.fn(() => true);
+    emit = vi.fn<(event: string, data: unknown) => boolean>(() => true);
     manager = new ProviderSessionManager({ emit });
   });
 
