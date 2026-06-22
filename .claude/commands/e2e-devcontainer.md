@@ -123,7 +123,7 @@ These directories are gitignored and accessible from both host and container.
 
 ### Showing Results to the User
 
-After tests complete, convert video recordings to GIF and display them inline using `mcp__nimbalyst-mcp__display_to_user`:
+After tests complete, convert video recordings to GIF and display them inline using `mcp__nimbalyst__display_to_user`:
 
 ```bash
 # Convert WebM to GIF using ffmpeg

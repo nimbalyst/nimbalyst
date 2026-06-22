@@ -111,6 +111,11 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'tracker_relationship_index',
       sqlFile: path.join(schemaDir, '0014_tracker_relationship_index.sql'),
     },
+    {
+      version: 15,
+      name: 'collab_local_origins_project_id',
+      sqlFile: path.join(schemaDir, '0015_collab_local_origins_project_id.sql'),
+    },
   ];
 }
 

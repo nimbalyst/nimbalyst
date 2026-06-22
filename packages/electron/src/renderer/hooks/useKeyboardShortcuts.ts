@@ -44,6 +44,13 @@ interface KeyboardShortcutsOptions {
   // Agent mode toggle
   toggleAgentCollapsed: () => void;
 
+  // True when a fullscreen extension panel is covering the content modes.
+  isFullscreenPanelActive: boolean;
+
+  // Clears the active fullscreen extension panel (mirrors the gutter's
+  // onExtensionPanelChange(null) so mode-switch shortcuts actually surface).
+  exitFullscreenPanel: () => void;
+
 }
 
 /**
@@ -67,6 +74,8 @@ export function useKeyboardShortcuts({
   editorModeRef,
   agentModeRef,
   toggleAgentCollapsed,
+  isFullscreenPanelActive,
+  exitFullscreenPanel,
 }: KeyboardShortcutsOptions): void {
   // Terminal panel atoms
   const toggleTerminalPanel = useSetAtom(toggleTerminalPanelAtom);
@@ -98,7 +107,12 @@ export function useKeyboardShortcuts({
         e.stopPropagation();
 
         if (workspaceMode) {
-          if (activeMode === 'files') {
+          if (isFullscreenPanelActive) {
+            // A fullscreen extension panel is covering the modes -- exit it and
+            // surface Files mode rather than toggling an unseen sidebar.
+            exitFullscreenPanel();
+            setActiveMode('files');
+          } else if (activeMode === 'files') {
             editorModeRef.current?.toggleSidebarCollapsed();
           } else {
             setActiveMode('files');
@@ -113,7 +127,10 @@ export function useKeyboardShortcuts({
         e.stopPropagation();
 
         if (workspaceMode) {
-          if (activeMode === 'agent') {
+          if (isFullscreenPanelActive) {
+            exitFullscreenPanel();
+            setActiveMode('agent');
+          } else if (activeMode === 'agent') {
             toggleAgentCollapsed();
           } else {
             setActiveMode('agent');
@@ -137,6 +154,7 @@ export function useKeyboardShortcuts({
       // Cmd+T to switch to Tracker mode
       if (workspaceMode && isAppModifier && !e.shiftKey && !e.altKey && e.key === 't') {
         e.preventDefault();
+        if (isFullscreenPanelActive) exitFullscreenPanel();
         setActiveMode('tracker');
       }
 
@@ -144,6 +162,7 @@ export function useKeyboardShortcuts({
       if (workspaceMode && isAppModifier && !e.shiftKey && !e.altKey && e.key === 'd') {
         e.preventDefault();
         e.stopPropagation();
+        if (isFullscreenPanelActive) exitFullscreenPanel();
         setActiveMode('collab');
       }
       // Cmd+U to switch to PR Review mode (only when the active workspace has a
@@ -153,6 +172,7 @@ export function useKeyboardShortcuts({
         if (prRemote && prRemote.workspacePath === store.get(activeWorkspacePathAtom)) {
           e.preventDefault();
           e.stopPropagation();
+          if (isFullscreenPanelActive) exitFullscreenPanel();
           setActiveMode('pr-review');
         }
       }
@@ -182,7 +202,13 @@ export function useKeyboardShortcuts({
         const setViewMode = (mode: 'list' | 'kanban') => store.set(setViewModeAtom, mode);
         const currentViewMode = store.get(viewModeAtom);
 
-        if (activeMode === 'agent') {
+        if (isFullscreenPanelActive) {
+          // Exit the fullscreen panel and surface the agent kanban view.
+          exitFullscreenPanel();
+          posthog.capture('session_view_mode_switched', { fromMode: currentViewMode, toMode: 'kanban' });
+          setViewMode('kanban');
+          setActiveMode('agent');
+        } else if (activeMode === 'agent') {
           // Toggle kanban on/off
           const newMode = currentViewMode === 'kanban' ? 'list' : 'kanban';
           posthog.capture('session_view_mode_switched', {
@@ -205,6 +231,8 @@ export function useKeyboardShortcuts({
       if (workspaceMode && isAppModifier && e.altKey && e.key === 'w') {
         e.preventDefault();
         e.stopPropagation();
+
+        if (isFullscreenPanelActive) exitFullscreenPanel();
 
         // If in agent mode and ref is available, create worktree directly
         if (activeMode === 'agent' && agentModeRef.current) {
@@ -233,6 +261,7 @@ export function useKeyboardShortcuts({
           if (target) {
             const currentActive = store.get(activeWorkspacePathAtom);
             if (target.path !== currentActive) {
+              if (isFullscreenPanelActive) exitFullscreenPanel();
               store.set(activeWorkspacePathAtom, target.path);
               window.electronAPI?.invoke?.('workspace:set-active', { workspacePath: target.path }).catch(() => {});
             }
@@ -271,5 +300,7 @@ export function useKeyboardShortcuts({
     toggleTerminalPanel,
     closeTerminalPanel,
     developerMode,
+    isFullscreenPanelActive,
+    exitFullscreenPanel,
   ]);
 }

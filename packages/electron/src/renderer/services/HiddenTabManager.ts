@@ -84,6 +84,10 @@ class HiddenTabManager {
         clearTimeout(instance.ttlTimer);
         instance.ttlTimer = null;
       }
+      // Refresh from disk so a reused hidden editor reflects any out-of-band
+      // (agent) write since it was mounted -- otherwise read tools serve a
+      // stale buffer. See NIM-905.
+      await (instance.host as { _refreshFromDisk?: () => Promise<void> })._refreshFromDisk?.();
       // console.log(`${LOG_PREFIX} Reusing existing hidden editor for ${filePath} (refCount: ${instance.refCount})`);
       return;
     }
@@ -321,9 +325,14 @@ class HiddenTabManager {
     const fileName = filePath.split('/').pop() || filePath;
     const electronAPI = (window as any).electronAPI;
 
-    // Track dirty state for auto-save
+    // Track dirty state and the content this hidden editor last loaded/saved.
+    // `lastKnownContent` is the per-hidden-editor conflict baseline (NIM-905):
+    // the content we believe is on disk. NOT the shared DocumentModel's
+    // lastPersistedContent, which the file watcher may advance to an agent's
+    // out-of-band write and thereby mask a divergence.
     let isDirty = false;
     let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastKnownContent: string | null = null;
 
     // Subscribers
     const fileChangeCallbacks: Array<(content: string) => void> = [];
@@ -354,14 +363,56 @@ class HiddenTabManager {
       };
     }
 
-    // For hidden editors, save immediately when dirty.
-    // Delayed auto-save risks data loss if the editor is evicted before the timer fires.
-    const triggerAutoSave = () => {
+    // Read current disk content (text). Returns null on failure.
+    const readDiskContent = async (): Promise<string | null> => {
+      try {
+        const result = await electronAPI.readFileContent(filePath);
+        return result?.success ? (result.content || '') : null;
+      } catch {
+        return null;
+      }
+    };
+
+    // Reload the hidden editor from disk if it diverged from what we last knew.
+    // Hidden editors are read replicas: they must reflect out-of-band (agent)
+    // writes, including ones routed through DocumentModel's diff branch that the
+    // hidden host never observes via onFileChanged. See NIM-905.
+    const refreshFromDisk = async (): Promise<void> => {
+      const diskContent = await readDiskContent();
+      if (diskContent !== null && diskContent !== lastKnownContent) {
+        lastKnownContent = diskContent;
+        for (const cb of fileChangeCallbacks) {
+          try { cb(diskContent); } catch (err) { console.warn(`${LOG_PREFIX} reload callback failed`, err); }
+        }
+      }
+    };
+
+    // Conflict-aware flush -- the ONLY path that writes a hidden editor to disk.
+    // Save-on-dirty is intentionally disarmed (NIM-905): a hidden editor must
+    // never autosave a stale buffer over an out-of-band write. At flush time we
+    // read disk fresh; if it diverged from our baseline an external write landed
+    // and we reload instead of overwriting. Only when disk still matches our
+    // baseline do we let the editor persist its (genuinely mutated) content.
+    const conflictAwareFlush = () => {
       if (autoSaveTimer) clearTimeout(autoSaveTimer);
       // Small debounce to batch rapid consecutive changes (e.g., add_elements batches)
-      autoSaveTimer = setTimeout(() => {
+      autoSaveTimer = setTimeout(async () => {
+        const diskContent = await readDiskContent();
+        if (diskContent !== null && lastKnownContent !== null && diskContent !== lastKnownContent) {
+          // External write landed since we loaded -- do not clobber it; reload.
+          lastKnownContent = diskContent;
+          for (const cb of fileChangeCallbacks) {
+            try { cb(diskContent); } catch (err) { console.warn(`${LOG_PREFIX} reload callback failed`, err); }
+          }
+          return;
+        }
+        // Only persist when the editor actually has pending edits. A read-only
+        // tool leaves the editor clean; flushing its (possibly mid-reload)
+        // buffer would be a needless and potentially clobbering write. This is
+        // the extension-agnostic safety net behind the `readOnly` tool flag.
+        if (!isDirty) return;
         for (const cb of saveRequestCallbacks) {
-          cb();
+          try { await cb(); } catch (err) { console.warn(`${LOG_PREFIX} save request failed`, err); }
         }
       }, 100);
     };
@@ -378,7 +429,10 @@ class HiddenTabManager {
         if (!result || !result.success) {
           throw new Error(result?.error || 'Failed to load file');
         }
-        return result.content || '';
+        const content = result.content || '';
+        // Establish the conflict baseline for this hidden editor.
+        lastKnownContent = content;
+        return content;
       },
 
       async loadBinaryContent(): Promise<ArrayBuffer> {
@@ -412,9 +466,9 @@ class HiddenTabManager {
       setDirty(dirty: boolean): void {
         isDirty = dirty;
         documentModelHandle?.setDirty(dirty);
-        if (dirty) {
-          triggerAutoSave();
-        }
+        // NOTE (NIM-905): deliberately NOT triggering a save here. Save-on-dirty
+        // let a stale hidden buffer clobber an out-of-band write. Hidden editors
+        // persist only via the explicit, conflict-aware post-tool flush.
       },
 
       async saveContent(content: string | ArrayBuffer): Promise<void> {
@@ -425,6 +479,11 @@ class HiddenTabManager {
           await electronAPI.saveFile(content, filePath);
         } else {
           throw new Error('Binary content saving not yet implemented for hidden editors');
+        }
+        // Advance the conflict baseline to what we just wrote so a subsequent
+        // flush doesn't mistake our own save for an external divergence.
+        if (typeof content === 'string') {
+          lastKnownContent = content;
         }
         isDirty = false;
       },
@@ -460,7 +519,7 @@ class HiddenTabManager {
 
       registerEditorAPI(api: unknown | null): void {
         if (api) {
-          registerEditorAPI(filePath, api, triggerAutoSave);
+          registerEditorAPI(filePath, api, conflictAwareFlush);
         } else {
           unregisterEditorAPI(filePath);
         }
@@ -470,6 +529,9 @@ class HiddenTabManager {
         // Hidden editors don't register menu items
       },
     };
+
+    // Internal hook so the manager can force a disk refresh on reuse (NIM-905).
+    (host as { _refreshFromDisk?: () => Promise<void> })._refreshFromDisk = refreshFromDisk;
 
     return host;
   }

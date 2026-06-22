@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAICodexProvider } from '../OpenAICodexProvider';
+import { configureMcpServers } from '../../services/mcpServerConfig';
 import * as codexBinaryPath from '../codex/codexBinaryPath';
 import * as codexSdkLoader from '../codex/codexSdkLoader';
 import { AISessionsRepository } from '../../../../storage/repositories/AISessionsRepository';
@@ -25,9 +26,7 @@ describe('OpenAICodexProvider', () => {
     OpenAICodexProvider.setPermissionPatternChecker(null);
     OpenAICodexProvider.setPermissionPatternSaver(null);
     OpenAICodexProvider.setSecurityLogger(null);
-    OpenAICodexProvider.setMcpServerPort(null);
-    OpenAICodexProvider.setSessionNamingServerPort(null);
-    OpenAICodexProvider.setExtensionDevServerPort(null);
+    configureMcpServers({ mcpServerPort: null, extensionDevServerPort: null });
     OpenAICodexProvider.setMCPConfigLoader(null);
     OpenAICodexProvider.setClaudeSettingsEnvLoader(null);
     OpenAICodexProvider.setShellEnvironmentLoader(null);
@@ -785,9 +784,7 @@ describe('OpenAICodexProvider', () => {
     OpenAICodexProvider.setPermissionPatternChecker(async () => false);
     OpenAICodexProvider.setPermissionPatternSaver(async () => {});
     OpenAICodexProvider.setSecurityLogger(() => {});
-    OpenAICodexProvider.setMcpServerPort(41001);
-    OpenAICodexProvider.setSessionNamingServerPort(41002);
-    OpenAICodexProvider.setExtensionDevServerPort(41003);
+    configureMcpServers({ mcpServerPort: 41001, extensionDevServerPort: 41003 });
     OpenAICodexProvider.setMCPConfigLoader(async () => ({
       custom_stdio: {
         command: 'npx',
@@ -887,8 +884,14 @@ describe('OpenAICodexProvider', () => {
     expect(mcpServers).toBeDefined();
     expect(Object.keys(mcpServers)).toEqual(
       expect.arrayContaining([
-        'nimbalyst-mcp',
-        'nimbalyst-session-naming',
+        // The legacy monolith `nimbalyst-mcp` is retired; every tool now lives on
+        // a split endpoint of the unified server: core (update_session_meta +
+        // glue) / host (settings + session-context + meta-agent) / trackers /
+        // situational, plus the standalone extension-dev server.
+        'nimbalyst',
+        'nimbalyst-host',
+        'nimbalyst-trackers',
+        'nimbalyst-situational',
         'nimbalyst-extension-dev',
         'custom_stdio',
         'customer_io',
@@ -899,10 +902,14 @@ describe('OpenAICodexProvider', () => {
       ])
     );
 
-    expect(mcpServers['nimbalyst-mcp'].url).toContain('http://127.0.0.1:41001/mcp');
-    expect(mcpServers['nimbalyst-mcp'].url).toContain(`workspacePath=${encodeURIComponent(workspacePath)}`);
-    expect(mcpServers['nimbalyst-session-naming'].url).toContain('http://127.0.0.1:41002/mcp');
-    expect(mcpServers['nimbalyst-session-naming'].url).toContain('sessionId=session-mcp');
+    expect(mcpServers['nimbalyst-mcp']).toBeUndefined();
+    // update_session_meta rides on the eager core `nimbalyst` (/mcp/core) on the
+    // unified port (41001).
+    expect(mcpServers['nimbalyst'].url).toContain('http://127.0.0.1:41001/mcp/core');
+    expect(mcpServers['nimbalyst'].url).toContain('sessionId=session-mcp');
+    expect(mcpServers['nimbalyst'].url).toContain(`workspacePath=${encodeURIComponent(workspacePath)}`);
+    expect(mcpServers['nimbalyst-host'].url).toContain('http://127.0.0.1:41001/mcp/host');
+    expect(mcpServers['nimbalyst-situational'].url).toContain('http://127.0.0.1:41001/mcp/situational');
     expect(mcpServers['nimbalyst-extension-dev'].url).toContain('http://127.0.0.1:41003/mcp');
     expect(mcpServers['nimbalyst-extension-dev'].url).toContain(`workspacePath=${encodeURIComponent(workspacePath)}`);
 
@@ -1105,10 +1112,7 @@ describe('OpenAICodexProvider', () => {
       agentRole: 'meta-agent',
     } as any);
 
-    OpenAICodexProvider.setMcpServerPort(41001);
-    OpenAICodexProvider.setSessionNamingServerPort(41002);
-    OpenAICodexProvider.setSessionContextServerPort(41003);
-    OpenAICodexProvider.setMetaAgentServerPort(41004);
+    configureMcpServers({ mcpServerPort: 41001 });
 
     const provider = new OpenAICodexProvider(
       { apiKey: 'test-key' },
@@ -1134,10 +1138,12 @@ describe('OpenAICodexProvider', () => {
 
     expect(startThread).toHaveBeenCalledWith(expect.objectContaining({
       allowedTools: expect.arrayContaining([
-        'mcp__nimbalyst-meta-agent__create_session',
-        'mcp__nimbalyst-meta-agent__get_session_result',
-        'mcp__nimbalyst-session-naming__update_session_meta',
-        'mcp__nimbalyst-session-context__get_workstream_overview',
+        // Meta-agent orchestration + session-context fold onto `nimbalyst-host`;
+        // update_session_meta onto the eager core `nimbalyst`.
+        'mcp__nimbalyst-host__create_session',
+        'mcp__nimbalyst-host__get_session_result',
+        'mcp__nimbalyst__update_session_meta',
+        'mcp__nimbalyst-host__get_workstream_overview',
         'TaskCreate',
         'TodoWrite',
       ]),

@@ -6,7 +6,6 @@
  * file writes with an MCP-based approach that can be verified.
  */
 
-import { ClaudeCodeProvider, OpenAICodexProvider, OpenCodeProvider } from '@nimbalyst/runtime/ai/server';
 import {
   startSuperLoopProgressServer,
   setProgressUpdateFn,
@@ -85,10 +84,9 @@ export class SuperLoopProgressService {
         this.serverPort = port;
         console.log(`[SuperLoopProgressService] MCP server started on port ${port}`);
 
-        // Inject the port into agent providers
-        ClaudeCodeProvider.setSuperLoopProgressServerPort(port);
-        OpenAICodexProvider.setSuperLoopProgressServerPort(port);
-        OpenCodeProvider.setSuperLoopProgressServerPort(port);
+        // NOTE: the super-loop progress server is not registered in the agent MCP
+        // config (it was disabled — leaked into non-super-loop sessions), so there
+        // is no per-provider port to inject. See McpConfigService.
 
         this.started = true;
       } catch (error) {
@@ -112,9 +110,6 @@ export class SuperLoopProgressService {
 
     try {
       await shutdownSuperLoopProgressServer();
-      ClaudeCodeProvider.setSuperLoopProgressServerPort(null);
-      OpenAICodexProvider.setSuperLoopProgressServerPort(null);
-      OpenCodeProvider.setSuperLoopProgressServerPort(null);
       this.serverPort = null;
       this.sessionWorktreePaths.clear();
       this.started = false;

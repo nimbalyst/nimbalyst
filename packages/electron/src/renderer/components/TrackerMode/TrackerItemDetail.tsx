@@ -19,9 +19,10 @@ import type { FieldDefinition } from '@nimbalyst/runtime/plugins/TrackerPlugin/m
 import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordField, isSameIdentity } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import type { TrackerIdentity } from '@nimbalyst/runtime';
 import { TrackerFieldEditor, type TeamMemberOption } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
+import type { RelationshipCandidate } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/RelationshipFieldEditor';
 import { UserAvatar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/UserAvatar';
 import { trackerItemByIdAtom, trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
-import { resolveRelationshipType } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { resolveRelationshipType, isRelationshipField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { refreshSessionListAtom, sessionRegistryAtom, type SessionMeta } from '../../store/atoms/sessions';
 import { buildTrackerDeepLink } from '../../store/atoms/collabDocuments';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
@@ -38,6 +39,8 @@ interface TrackerItemDetailProps {
   onLaunchSession?: (trackerItemId: string) => void;
   onArchive?: (itemId: string, archive: boolean) => void;
   onDelete?: (itemId: string) => void;
+  /** Open another tracker item (relationship pill / backlink click). */
+  onOpenItem?: (itemId: string) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -182,10 +185,13 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   onLaunchSession,
   onArchive,
   onDelete,
+  onOpenItem,
 }) => {
   // Read directly from per-item atom -- only re-renders when THIS item changes,
   // not when any other item in the workspace updates.
   const item = useAtomValue(trackerItemByIdAtom(itemId));
+  // Loaded items, used to build relationship-field typeahead candidates.
+  const itemsMap = useAtomValue(trackerItemsMapAtom);
   const sessionRegistry = useAtomValue(sessionRegistryAtom);
   const refreshSessionList = useSetAtom(refreshSessionListAtom);
 
@@ -882,6 +888,28 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     return { primaryFields: primary, customFields: custom };
   }, [model]);
 
+  /**
+   * Candidate target items for a relationship field's typeahead: every loaded
+   * item except this one, narrowed to the field's allowed target tracker types.
+   */
+  const buildRelationshipCandidates = useCallback((field: FieldDefinition): RelationshipCandidate[] => {
+    const targets = field.targetTrackerTypes;
+    const candidates: RelationshipCandidate[] = [];
+    for (const rec of itemsMap.values()) {
+      if (rec.id === itemId) continue;
+      if (targets && targets !== '*' && !targets.includes(rec.primaryType)) continue;
+      candidates.push({
+        itemId: rec.id,
+        // Resolve the display title via the schema's title role -- custom types
+        // (e.g. customer-contact) store their title under a non-"title" field.
+        title: getRecordTitle(rec) || undefined,
+        issueKey: rec.issueKey || undefined,
+        trackerType: rec.primaryType,
+      });
+    }
+    return candidates;
+  }, [itemsMap, itemId]);
+
   /** Get field value -- use in-progress local state for text fields, atom for select/etc */
   const getFieldValue = useCallback((fieldName: string): any => {
     if (!item) return undefined;
@@ -1211,6 +1239,8 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
                     value={getFieldValue(field.name)}
                     onChange={(value) => handleFieldChange(field, value)}
                     teamMembers={teamMembers}
+                    relationshipCandidates={isRelationshipField(field) ? buildRelationshipCandidates(field) : undefined}
+                    onOpenRelationship={onOpenItem}
                   />
                 ) : (
                   <ReadOnlyField
@@ -1250,6 +1280,8 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
                     value={getFieldValue(field.name)}
                     onChange={(value) => handleFieldChange(field, value)}
                     teamMembers={teamMembers}
+                    relationshipCandidates={isRelationshipField(field) ? buildRelationshipCandidates(field) : undefined}
+                    onOpenRelationship={onOpenItem}
                   />
                 ) : (
                   <ReadOnlyField
@@ -1483,7 +1515,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         )}
 
         {/* Linked From (incoming relationships, Epic C Phase 2) */}
-        <BacklinksSection itemId={item.id} />
+        <BacklinksSection itemId={item.id} onOpenItem={onOpenItem} />
 
         {/* Comments section */}
         {item.source !== 'inline' && item.source !== 'frontmatter' && (
@@ -1647,7 +1679,7 @@ const ReadOnlyField: React.FC<{ field: FieldDefinition; value: any }> = ({ field
  */
 interface Backlink { sourceItemId: string; sourceFieldId: string; relationshipTypeKey?: string | null }
 
-const BacklinksSection: React.FC<{ itemId: string }> = ({ itemId }) => {
+const BacklinksSection: React.FC<{ itemId: string; onOpenItem?: (itemId: string) => void }> = ({ itemId, onOpenItem }) => {
   const [backlinks, setBacklinks] = useState<Backlink[]>([]);
   const itemsMap = useAtomValue(trackerItemsMapAtom);
 
@@ -1671,18 +1703,23 @@ const BacklinksSection: React.FC<{ itemId: string }> = ({ itemId }) => {
       <div className="flex flex-wrap gap-1">
         {backlinks.map((b) => {
           const src = itemsMap.get(b.sourceItemId);
-          const label = src?.issueKey || (src?.fields?.title as string | undefined) || b.sourceItemId;
+          const label = src?.issueKey || (src ? getRecordTitle(src) : undefined) || b.sourceItemId;
+          // Show the inverse direction: if the source links to us via "depends-on",
+          // we are what it "blocks". Falls back to the forward label.
           const rel = resolveRelationshipType(b.relationshipTypeKey ?? undefined);
-          const relLabel = rel?.displayName ?? b.relationshipTypeKey ?? 'links to';
+          const relLabel = rel?.inverseDisplayName ?? rel?.displayName ?? b.relationshipTypeKey ?? 'links to';
           return (
-            <span
+            <button
               key={`${b.sourceItemId}:${b.sourceFieldId}`}
-              className="tracker-backlink-pill inline-flex items-center gap-1 rounded-full bg-nim-tertiary px-2 py-0.5 text-[11px] text-nim"
+              type="button"
+              className="tracker-backlink-pill inline-flex items-center gap-1 rounded-full bg-nim-tertiary px-2 py-0.5 text-[11px] text-nim hover:bg-nim-hover disabled:cursor-default"
               title={`${label} — ${relLabel}`}
+              disabled={!onOpenItem}
+              onClick={() => onOpenItem?.(b.sourceItemId)}
             >
               <span className="text-nim-faint">{relLabel}:</span>
               {label}
-            </span>
+            </button>
           );
         })}
       </div>

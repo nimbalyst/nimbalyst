@@ -1,147 +1,19 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  ErrorCode,
-  McpError,
-} from "@modelcontextprotocol/sdk/types.js";
-import { createServer, IncomingMessage, ServerResponse } from "http";
-import { parse as parseUrl } from "url";
-import { randomUUID } from "crypto";
+/**
+ * Session-context tool surface (`get_session_summary`, `get_workstream_*`,
+ * `list_recent_sessions`, `schedule_wakeup`, `update_session_board`).
+ *
+ * MCP consolidation: these tools are served by the unified internal MCP HTTP
+ * server's `/mcp/host` endpoint (`nimbalyst-host`). This module exports only the
+ * tool schemas + an endpoint-agnostic dispatch fn; the standalone HTTP server it
+ * used to run was retired in Phase 7.
+ */
+
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import {
   AISessionsRepository,
   SessionFilesRepository,
 } from "@nimbalyst/runtime";
 import type { SessionMeta } from "@nimbalyst/runtime";
-import { requireMcpAuth } from "./mcpAuth";
-
-// ─── Transport tracking ─────────────────────────────────────────────
-
-interface TransportMetadata {
-  transport: SSEServerTransport;
-  aiSessionId: string;
-  workspaceId: string;
-}
-const activeTransports = new Map<string, TransportMetadata>();
-
-interface StreamableTransportMetadata {
-  transport: StreamableHTTPServerTransport;
-  aiSessionId: string;
-  workspaceId: string;
-}
-const activeStreamableTransports = new Map<
-  string,
-  StreamableTransportMetadata
->();
-
-let httpServerInstance: any = null;
-
-// ─── Cleanup / shutdown ─────────────────────────────────────────────
-
-export function cleanupSessionContextServer() {
-  for (const [transportId, metadata] of activeTransports.entries()) {
-    try {
-      if (metadata.transport.onclose) {
-        metadata.transport.onclose();
-      }
-      const res = (metadata.transport as any).res;
-      if (res && !res.headersSent) {
-        res.end();
-      }
-    } catch (error) {
-      console.error(
-        `[Session Context MCP] Error closing transport ${transportId}:`,
-        error
-      );
-    }
-  }
-  activeTransports.clear();
-
-  for (const [id, metadata] of activeStreamableTransports.entries()) {
-    try {
-      void metadata.transport.close().catch((error) => {
-        console.error(
-          `[Session Context MCP] Error closing streamable transport ${id}:`,
-          error
-        );
-      });
-    } catch (error) {
-      console.error(
-        `[Session Context MCP] Error closing streamable transport ${id}:`,
-        error
-      );
-    }
-  }
-  activeStreamableTransports.clear();
-}
-
-export function shutdownSessionContextServer(): Promise<void> {
-  return new Promise((resolve) => {
-    if (!httpServerInstance) {
-      resolve();
-      return;
-    }
-
-    let hasResolved = false;
-    const safeResolve = () => {
-      if (!hasResolved) {
-        hasResolved = true;
-        resolve();
-      }
-    };
-
-    try {
-      cleanupSessionContextServer();
-    } catch (error) {
-      console.error(
-        "[Session Context MCP] Error cleaning up transports:",
-        error
-      );
-    }
-
-    try {
-      if (httpServerInstance?.closeAllConnections) {
-        httpServerInstance.closeAllConnections();
-      }
-    } catch (error) {
-      console.error(
-        "[Session Context MCP] Error closing connections:",
-        error
-      );
-    }
-
-    try {
-      if (httpServerInstance?.close) {
-        httpServerInstance.close((err?: Error) => {
-          if (err) {
-            console.error(
-              "[Session Context MCP] Error closing HTTP server:",
-              err
-            );
-          }
-          httpServerInstance = null;
-          safeResolve();
-        });
-      } else {
-        httpServerInstance = null;
-        safeResolve();
-      }
-    } catch (error) {
-      console.error("[Session Context MCP] Error in server close:", error);
-      httpServerInstance = null;
-      safeResolve();
-    }
-
-    setTimeout(() => {
-      if (httpServerInstance) {
-        httpServerInstance = null;
-      }
-      safeResolve();
-    }, 1000);
-  });
-}
 
 // ─── Utilities ──────────────────────────────────────────────────────
 
@@ -713,732 +585,371 @@ async function handleScheduleWakeup(args: {
 
 // ─── MCP server creation ────────────────────────────────────────────
 
-function createSessionContextMcpServer(
-  aiSessionId: string,
-  workspaceId: string
-): Server {
-  const server = new Server(
-    {
-      name: "nimbalyst-session-context",
-      version: "1.0.0",
-    },
-    {
-      capabilities: {
-        tools: {},
+// ─── Shared tool surface (also folded into the unified MCP server) ──
+//
+// MCP consolidation Phase 5: these session-context tools are served BOTH by
+// this standalone server (legacy, until Phase 7 retires the port) AND by the
+// unified internal HTTP server's `/mcp/host` endpoint (`nimbalyst-host`).
+
+/** Tool schemas exposed by the session-context surface. */
+export const SESSION_CONTEXT_TOOL_SCHEMAS = [
+  {
+    name: "get_session_summary",
+    description:
+      "Get a compact summary of an AI session including its title, user prompts, last agent response, and files edited. Use this to understand what happened in a specific session. If no sessionId is provided, summarizes the current session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description:
+            "ID of the session to summarize. If omitted, summarizes the current session. Use list_recent_sessions to find session IDs.",
+        },
       },
-    }
-  );
-
-  (server as { onerror?: (error: Error) => void }).onerror = (error: Error) => {
-    console.error("[MCP:nimbalyst-session-context] Server error:", error);
-  };
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    return {
-      tools: [
-        {
-          name: "get_session_summary",
+      required: [],
+    },
+  },
+  {
+    name: "get_workstream_overview",
+    description:
+      "Get an overview of the current workstream (parent session with child sessions). Shows all child sessions with their titles, message counts, and files edited. Use this to understand the broader context when working in a workstream.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workstreamId: {
+          type: "string",
           description:
-            "Get a compact summary of an AI session including its title, user prompts, last agent response, and files edited. Use this to understand what happened in a specific session. If no sessionId is provided, summarizes the current session.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              sessionId: {
-                type: "string",
-                description:
-                  "ID of the session to summarize. If omitted, summarizes the current session. Use list_recent_sessions to find session IDs.",
-              },
-            },
-            required: [],
-          },
+            "ID of the workstream parent session. If omitted, uses the current session's parent workstream.",
         },
-        {
-          name: "get_workstream_overview",
+      },
+      required: [],
+    },
+  },
+  {
+    name: "list_recent_sessions",
+    description:
+      "List recent AI sessions in the current workspace. Optionally search by title or content. Use this when the user references a previous session or asks about past work (e.g., 'implement the plan from our session about X'). By default, archived sessions are excluded -- pass includeArchived: true to search across archived sessions as well. To find a session by name when the search term appears frequently in conversations, pass searchField: 'title' to restrict matching to session titles only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
           description:
-            "Get an overview of the current workstream (parent session with child sessions). Shows all child sessions with their titles, message counts, and files edited. Use this to understand the broader context when working in a workstream.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              workstreamId: {
-                type: "string",
-                description:
-                  "ID of the workstream parent session. If omitted, uses the current session's parent workstream.",
-              },
-            },
-            required: [],
-          },
+            "Optional search string to filter sessions by title or content.",
         },
-        {
-          name: "list_recent_sessions",
+        searchField: {
+          type: "string",
+          enum: ["title", "content", "both"],
           description:
-            "List recent AI sessions in the current workspace. Optionally search by title or content. Use this when the user references a previous session or asks about past work (e.g., 'implement the plan from our session about X'). By default, archived sessions are excluded -- pass includeArchived: true to search across archived sessions as well. To find a session by name when the search term appears frequently in conversations, pass searchField: 'title' to restrict matching to session titles only.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              query: {
-                type: "string",
-                description:
-                  "Optional search string to filter sessions by title or content.",
-              },
-              searchField: {
-                type: "string",
-                enum: ["title", "content", "both"],
-                description:
-                  "Where to look for the query. 'title' matches only session titles (case-insensitive substring). 'content' and 'both' match titles and conversation content via full-text search. Defaults to 'both'. Ignored if query is empty.",
-              },
-              limit: {
-                type: "number",
-                description:
-                  "Maximum number of results (default 10, max 250).",
-              },
-              offset: {
-                type: "number",
-                description:
-                  "Number of sessions to skip before returning results (default 0). Use with limit for pagination.",
-              },
-              includeArchived: {
-                type: "boolean",
-                description:
-                  "If true, include archived sessions in the results. Defaults to false. Archived sessions are marked with [ARCHIVED] in the output.",
-              },
-            },
-            required: [],
-          },
+            "Where to look for the query. 'title' matches only session titles (case-insensitive substring). 'content' and 'both' match titles and conversation content via full-text search. Defaults to 'both'. Ignored if query is empty.",
         },
-        {
-          name: "get_workstream_edited_files",
+        limit: {
+          type: "number",
           description:
-            "Get all files edited across all sessions in the current workstream. Useful for understanding the full scope of changes or preparing a commit that spans multiple sessions.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              groupBySession: {
-                type: "boolean",
-                description:
-                  "If true, group files by session with titles. If false (default), return a flat deduplicated list.",
-              },
-            },
-            required: [],
-          },
+            "Maximum number of results (default 10, max 250).",
         },
-        {
-          name: "schedule_wakeup",
+        offset: {
+          type: "number",
           description:
-            "Schedule the current session to be re-invoked with a prompt after a delay. " +
-            "Persists across Nimbalyst restarts but only fires while Nimbalyst is running. " +
-            "If the workspace window is closed when the wakeup fires, it waits until the workspace opens. " +
-            "Replaces any existing pending wakeup for this session (one wakeup per session at a time).",
-          inputSchema: {
-            type: "object",
-            properties: {
-              delaySeconds: {
-                type: "number",
-                description:
-                  "Seconds from now until the wakeup fires. Min 60, max 604800 (7 days).",
-              },
-              prompt: {
-                type: "string",
-                description:
-                  "The prompt to send to the session when the wakeup fires.",
-              },
-              reason: {
-                type: "string",
-                description:
-                  "One short sentence explaining why this wakeup was scheduled. Shown to the user in the sessions UI.",
-              },
-            },
-            required: ["delaySeconds", "prompt", "reason"],
-          },
+            "Number of sessions to skip before returning results (default 0). Use with limit for pagination.",
         },
-        {
-          name: "update_session_board",
+        includeArchived: {
+          type: "boolean",
           description:
-            "Update a session's kanban board metadata (phase and/or tags). Phase controls which column the session appears in on the Sessions Board. Tags are free-form strings for categorization. Either field can be provided independently.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              sessionId: {
-                type: "string",
-                description:
-                  "ID of the session to update. Use list_recent_sessions to find session IDs.",
-              },
-              phase: {
-                type: ["string", "null"],
-                enum: [
-                  "backlog",
-                  "planning",
-                  "implementing",
-                  "validating",
-                  "complete",
-                  null,
-                ],
-                description:
-                  "The phase to set. Use null to remove the session from the board. Omit to leave unchanged.",
-              },
-              tags: {
-                type: "array",
-                items: { type: "string" },
-                description:
-                  "Array of tag strings. Pass an empty array to clear tags. Omit to leave unchanged.",
-              },
-            },
-            required: ["sessionId"],
-          },
+            "If true, include archived sessions in the results. Defaults to false. Archived sessions are marked with [ARCHIVED] in the output.",
         },
-      ],
-    };
-  });
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_workstream_edited_files",
+    description:
+      "Get all files edited across all sessions in the current workstream. Useful for understanding the full scope of changes or preparing a commit that spans multiple sessions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        groupBySession: {
+          type: "boolean",
+          description:
+            "If true, group files by session with titles. If false (default), return a flat deduplicated list.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "schedule_wakeup",
+    description:
+      "Schedule the current session to be re-invoked with a prompt after a delay. " +
+      "Persists across Nimbalyst restarts but only fires while Nimbalyst is running. " +
+      "If the workspace window is closed when the wakeup fires, it waits until the workspace opens. " +
+      "Replaces any existing pending wakeup for this session (one wakeup per session at a time).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        delaySeconds: {
+          type: "number",
+          description:
+            "Seconds from now until the wakeup fires. Min 60, max 604800 (7 days).",
+        },
+        prompt: {
+          type: "string",
+          description:
+            "The prompt to send to the session when the wakeup fires.",
+        },
+        reason: {
+          type: "string",
+          description:
+            "One short sentence explaining why this wakeup was scheduled. Shown to the user in the sessions UI.",
+        },
+      },
+      required: ["delaySeconds", "prompt", "reason"],
+    },
+  },
+  {
+    name: "update_session_board",
+    description:
+      "Update a session's kanban board metadata (phase and/or tags). Phase controls which column the session appears in on the Sessions Board. Tags are free-form strings for categorization. Either field can be provided independently.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description:
+            "ID of the session to update. Use list_recent_sessions to find session IDs.",
+        },
+        phase: {
+          type: ["string", "null"],
+          enum: [
+            "backlog",
+            "planning",
+            "implementing",
+            "validating",
+            "complete",
+            null,
+          ],
+          description:
+            "The phase to set. Use null to remove the session from the board. Omit to leave unchanged.",
+        },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Array of tag strings. Pass an empty array to clear tags. Omit to leave unchanged.",
+        },
+      },
+      required: ["sessionId"],
+    },
+  },
+];
 
-  server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
-    const { name, arguments: args } = request.params;
-    const toolName = name.replace(
-      /^mcp__nimbalyst-session-context__/,
-      ""
-    );
+/**
+ * Dispatch a session-context tool call and return the MCP `{content, isError}`
+ * shape. `name` may carry the `mcp__nimbalyst-session-context__` (or `-host`)
+ * prefix; it is stripped. Preserves the `schedule_wakeup` /
+ * `update_session_board` IPC side effects (they live in the handlers below).
+ */
+export async function dispatchSessionContextTool(
+  name: string,
+  args: Record<string, any> | undefined,
+  aiSessionId: string,
+  workspaceId: string,
+): Promise<{ content: Array<{ type: string; text: string }>; isError: boolean }> {
+  const toolName = name.replace(/^mcp__nimbalyst-[a-z-]+__/, "");
 
-    try {
-      switch (toolName) {
-        case "get_session_summary": {
-          const result = await handleGetSessionSummary(
-            args?.sessionId as string | undefined,
-            aiSessionId,
-            workspaceId
-          );
-          return {
-            content: [{ type: "text", text: result }],
-            isError: result.startsWith("Error:"),
-          };
-        }
-
-        case "get_workstream_overview": {
-          const result = await handleGetWorkstreamOverview(
-            args?.workstreamId as string | undefined,
-            aiSessionId,
-            workspaceId
-          );
-          return {
-            content: [{ type: "text", text: result }],
-            isError: result.startsWith("Error:"),
-          };
-        }
-
-        case "list_recent_sessions": {
-          const limit = Math.min(
-            Math.max((args?.limit as number) || 10, 1),
-            250
-          );
-          const offset = Math.max((args?.offset as number) || 0, 0);
-          const includeArchived = Boolean(args?.includeArchived);
-          const rawSearchField = args?.searchField as string | undefined;
-          const searchField: "title" | "content" | "both" =
-            rawSearchField === "title" || rawSearchField === "content"
-              ? rawSearchField
-              : "both";
-          const result = await handleListRecentSessions(
-            args?.query as string | undefined,
-            limit,
-            offset,
-            workspaceId,
-            aiSessionId,
-            includeArchived,
-            searchField
-          );
-          return {
-            content: [{ type: "text", text: result }],
-            isError: false,
-          };
-        }
-
-        case "get_workstream_edited_files": {
-          const result = await handleGetWorkstreamEditedFiles(
-            (args?.groupBySession as boolean) || false,
-            aiSessionId,
-            workspaceId
-          );
-          return {
-            content: [{ type: "text", text: result }],
-            isError: result.startsWith("Error:"),
-          };
-        }
-
-        case "schedule_wakeup": {
-          const delaySeconds = args?.delaySeconds as number | undefined;
-          const prompt = args?.prompt as string | undefined;
-          const reason = args?.reason as string | undefined;
-
-          if (typeof delaySeconds !== 'number' || !Number.isFinite(delaySeconds)) {
-            return {
-              content: [{ type: "text", text: "Error: delaySeconds is required and must be a number" }],
-              isError: true,
-            };
-          }
-          if (delaySeconds < 60 || delaySeconds > 604800) {
-            return {
-              content: [{ type: "text", text: `Error: delaySeconds must be between 60 and 604800 (7 days). Got ${delaySeconds}.` }],
-              isError: true,
-            };
-          }
-          if (typeof prompt !== 'string' || prompt.trim().length === 0) {
-            return {
-              content: [{ type: "text", text: "Error: prompt is required and must be a non-empty string" }],
-              isError: true,
-            };
-          }
-          if (typeof reason !== 'string' || reason.trim().length === 0) {
-            return {
-              content: [{ type: "text", text: "Error: reason is required and must be a non-empty string" }],
-              isError: true,
-            };
-          }
-
-          const result = await handleScheduleWakeup({
-            sessionId: aiSessionId,
-            workspaceId,
-            delaySeconds,
-            prompt: prompt.trim(),
-            reason: reason.trim(),
-          });
-          return {
-            content: [{ type: "text", text: result }],
-            isError: result.startsWith("Error:"),
-          };
-        }
-
-        case "update_session_board": {
-          const sessionId = args?.sessionId as string;
-          const phase = args?.phase as string | null | undefined;
-          const tags = args?.tags as string[] | undefined;
-
-          if (!sessionId) {
-            return {
-              content: [{ type: "text", text: "Error: sessionId is required" }],
-              isError: true,
-            };
-          }
-
-          if (phase === undefined && tags === undefined) {
-            return {
-              content: [{ type: "text", text: "Error: at least one of phase or tags must be provided" }],
-              isError: true,
-            };
-          }
-
-          const validPhases = ["backlog", "planning", "implementing", "validating", "complete"];
-          if (phase !== undefined && phase !== null && !validPhases.includes(phase)) {
-            return {
-              content: [{ type: "text", text: `Error: Invalid phase "${phase}". Valid phases: ${validPhases.join(", ")}` }],
-              isError: true,
-            };
-          }
-
-          if (tags !== undefined && !Array.isArray(tags)) {
-            return {
-              content: [{ type: "text", text: "Error: tags must be an array of strings" }],
-              isError: true,
-            };
-          }
-
-          // Build metadata update with only provided fields
-          const metadataUpdate: Record<string, unknown> = {};
-          if (phase !== undefined) metadataUpdate.phase = phase ?? undefined;
-          if (tags !== undefined) metadataUpdate.tags = tags;
-
-          await AISessionsRepository.updateMetadata(sessionId, {
-            metadata: metadataUpdate,
-          });
-
-          // Notify renderer windows so kanban board updates in real time
-          const rendererUpdate: Record<string, unknown> = {};
-          if (phase !== undefined) rendererUpdate.phase = phase;
-          if (tags !== undefined) rendererUpdate.tags = tags;
-
-          const { BrowserWindow } = await import("electron");
-          BrowserWindow.getAllWindows().forEach((window) => {
-            if (!window.isDestroyed()) {
-              window.webContents.send("sessions:session-updated", sessionId, rendererUpdate);
-            }
-          });
-
-          const session = await AISessionsRepository.get(sessionId);
-          const title = session?.title || sessionId;
-          const parts: string[] = [];
-          if (phase !== undefined) {
-            parts.push(phase ? `phase="${phase}"` : "removed from board");
-          }
-          if (tags !== undefined) {
-            parts.push(tags.length > 0 ? `tags=[${tags.join(", ")}]` : "tags cleared");
-          }
-          return {
-            content: [{ type: "text", text: `Updated "${title}": ${parts.join(", ")}` }],
-            isError: false,
-          };
-        }
-
-        default:
-          throw new McpError(
-            ErrorCode.MethodNotFound,
-            `Unknown tool: ${name}`
-          );
-      }
-    } catch (error) {
-      if (error instanceof McpError) throw error;
-      console.error(`[Session Context MCP] Tool ${toolName} failed:`, error);
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      return {
-        content: [{ type: "text", text: `Error: ${errorMessage}` }],
-        isError: true,
-      };
-    }
-  });
-
-  return server;
-}
-
-// ─── HTTP server ────────────────────────────────────────────────────
-
-function getMcpSessionIdHeader(req: IncomingMessage): string | undefined {
-  const headerValue = req.headers["mcp-session-id"];
-  if (Array.isArray(headerValue)) return headerValue[0];
-  if (typeof headerValue === "string" && headerValue.length > 0)
-    return headerValue;
-  return undefined;
-}
-
-async function readJsonBody(
-  req: IncomingMessage
-): Promise<unknown | undefined> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  if (chunks.length === 0) return undefined;
-  const rawBody = Buffer.concat(chunks).toString("utf8").trim();
-  if (!rawBody) return undefined;
   try {
-    return JSON.parse(rawBody);
-  } catch {
-    return undefined;
-  }
-}
-
-function isInitializeMessage(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && 'method' in value && (value as Record<string, unknown>).method === 'initialize';
-}
-
-function isInitializePayload(payload: unknown): boolean {
-  if (!payload) return false;
-  if (Array.isArray(payload))
-    return payload.some((entry) => isInitializeMessage(entry));
-  return isInitializeMessage(payload);
-}
-
-async function tryCreateSessionContextServer(port: number): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const httpServer = createServer(
-      async (req: IncomingMessage, res: ServerResponse) => {
-        const parsedUrl = parseUrl(req.url || "", true);
-        const pathname = parsedUrl.pathname;
-        const mcpSessionIdHeader = getMcpSessionIdHeader(req);
-
-        // Issue #146: drop `Access-Control-Allow-Origin: *`; bearer token is
-        // the sole gate. SDK subprocesses don't care about CORS.
-        if (req.method === "OPTIONS") {
-          res.writeHead(200, {
-            "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers":
-              "Authorization, Content-Type, mcp-session-id, mcp-protocol-version",
-          });
-          res.end();
-          return;
-        }
-
-        // Issue #146: every non-OPTIONS request to /mcp must carry the
-        // per-launch bearer token.
-        if (pathname === "/mcp" && !requireMcpAuth(req)) {
-          res.writeHead(401);
-          res.end("Unauthorized");
-          return;
-        }
-
-        if (pathname === "/mcp" && req.method === "GET") {
-          if (mcpSessionIdHeader) {
-            const metadata =
-              activeStreamableTransports.get(mcpSessionIdHeader);
-            if (!metadata) {
-              res.writeHead(404);
-              res.end("Streamable session not found");
-              return;
-            }
-            try {
-              await metadata.transport.handleRequest(req, res);
-            } catch (error) {
-              console.error(
-                "[Session Context MCP] Error handling streamable GET:",
-                error
-              );
-              if (!res.headersSent) {
-                res.writeHead(500);
-                res.end("Internal server error");
-              }
-            }
-            return;
-          }
-
-          const aiSessionId = parsedUrl.query.sessionId as string;
-          const workspaceId = parsedUrl.query.workspaceId as string;
-
-          if (!aiSessionId || typeof aiSessionId !== "string") {
-            res.writeHead(400);
-            res.end("Missing or invalid sessionId parameter");
-            return;
-          }
-
-          if (!workspaceId || typeof workspaceId !== "string") {
-            res.writeHead(400);
-            res.end("Missing or invalid workspaceId parameter");
-            return;
-          }
-
-          const server = createSessionContextMcpServer(
-            aiSessionId,
-            workspaceId
-          );
-
-          const transport = new SSEServerTransport("/mcp", res);
-          activeTransports.set(transport.sessionId, {
-            transport,
-            aiSessionId,
-            workspaceId,
-          });
-
-          server
-            .connect(transport)
-            .then(() => {
-              transport.onclose = () => {
-                activeTransports.delete(transport.sessionId);
-              };
-            })
-            .catch((error) => {
-              console.error(
-                "[Session Context MCP] Connection error:",
-                error
-              );
-              activeTransports.delete(transport.sessionId);
-              if (!res.headersSent) {
-                res.writeHead(500);
-                res.end();
-              }
-            });
-        } else if (pathname === "/mcp" && req.method === "POST") {
-          const legacyTransportSessionId = parsedUrl.query.sessionId as
-            | string
-            | undefined;
-
-          if (
-            legacyTransportSessionId !== undefined &&
-            typeof legacyTransportSessionId !== "string"
-          ) {
-            res.writeHead(400);
-            res.end("Invalid sessionId parameter");
-            return;
-          }
-
-          const legacyMetadata = legacyTransportSessionId
-            ? activeTransports.get(legacyTransportSessionId)
-            : undefined;
-
-          if (legacyMetadata && !mcpSessionIdHeader) {
-            try {
-              await legacyMetadata.transport.handlePostMessage(req, res);
-            } catch (error) {
-              console.error(
-                "[Session Context MCP] Error handling legacy SSE POST:",
-                error
-              );
-              if (!res.headersSent) {
-                res.writeHead(500);
-                res.end("Internal server error");
-              }
-            }
-            return;
-          }
-
-          const parsedBody = await readJsonBody(req);
-
-          if (
-            !mcpSessionIdHeader &&
-            legacyTransportSessionId &&
-            !isInitializePayload(parsedBody)
-          ) {
-            res.writeHead(404);
-            res.end("Transport session not found");
-            return;
-          }
-
-          let streamableMetadata: StreamableTransportMetadata | undefined =
-            mcpSessionIdHeader
-              ? activeStreamableTransports.get(mcpSessionIdHeader)
-              : undefined;
-
-          if (mcpSessionIdHeader && !streamableMetadata) {
-            res.writeHead(404);
-            res.end("Streamable session not found");
-            return;
-          }
-
-          if (!streamableMetadata) {
-            if (!isInitializePayload(parsedBody)) {
-              res.writeHead(400);
-              res.end("Missing sessionId");
-              return;
-            }
-
-            const aiSessionId = parsedUrl.query.sessionId as string;
-            const workspaceId = parsedUrl.query.workspaceId as string;
-
-            if (!aiSessionId || typeof aiSessionId !== "string") {
-              res.writeHead(400);
-              res.end("Missing or invalid sessionId parameter");
-              return;
-            }
-
-            if (!workspaceId || typeof workspaceId !== "string") {
-              res.writeHead(400);
-              res.end("Missing or invalid workspaceId parameter");
-              return;
-            }
-
-            const server = createSessionContextMcpServer(
-              aiSessionId,
-              workspaceId
-            );
-            const transport = new StreamableHTTPServerTransport({
-              sessionIdGenerator: () => randomUUID(),
-              onsessioninitialized: (streamableSessionId) => {
-                activeStreamableTransports.set(streamableSessionId, {
-                  transport,
-                  aiSessionId,
-                  workspaceId,
-                });
-              },
-            });
-
-            transport.onclose = () => {
-              const streamableSessionId = transport.sessionId;
-              if (streamableSessionId) {
-                activeStreamableTransports.delete(streamableSessionId);
-              }
-            };
-
-            transport.onerror = (error) => {
-              console.error(
-                "[Session Context MCP] Streamable transport error:",
-                error
-              );
-            };
-
-            await server.connect(transport);
-            streamableMetadata = { transport, aiSessionId, workspaceId };
-          }
-
-          try {
-            await streamableMetadata.transport.handleRequest(
-              req,
-              res,
-              parsedBody
-            );
-          } catch (error) {
-            console.error(
-              "[Session Context MCP] Error handling streamable POST:",
-              error
-            );
-            if (!res.headersSent) {
-              res.writeHead(500);
-              res.end("Internal server error");
-            }
-          }
-        } else if (pathname === "/mcp" && req.method === "DELETE") {
-          if (!mcpSessionIdHeader) {
-            res.writeHead(400);
-            res.end("Missing mcp-session-id header");
-            return;
-          }
-
-          const metadata =
-            activeStreamableTransports.get(mcpSessionIdHeader);
-          if (!metadata) {
-            res.writeHead(404);
-            res.end("Streamable session not found");
-            return;
-          }
-
-          try {
-            await metadata.transport.handleRequest(req, res);
-          } catch (error) {
-            console.error(
-              "[Session Context MCP] Error handling streamable DELETE:",
-              error
-            );
-            if (!res.headersSent) {
-              res.writeHead(500);
-              res.end("Internal server error");
-            }
-          }
-        } else {
-          res.writeHead(404);
-          res.end("Not found");
-        }
+    switch (toolName) {
+      case "get_session_summary": {
+        const result = await handleGetSessionSummary(
+          args?.sessionId as string | undefined,
+          aiSessionId,
+          workspaceId
+        );
+        return {
+          content: [{ type: "text", text: result }],
+          isError: result.startsWith("Error:"),
+        };
       }
-    );
 
-    httpServer.listen(port, "127.0.0.1", (err?: Error) => {
-      if (err) reject(err);
-    });
-
-    httpServer.on("listening", () => {
-      httpServer.unref();
-      resolve(httpServer);
-    });
-
-    httpServer.on("error", (err: any) => {
-      reject(err);
-    });
-  });
-}
-
-// ─── Public API ─────────────────────────────────────────────────────
-
-export async function startSessionContextServer(
-  startPort: number = 3557
-): Promise<{ httpServer: any; port: number }> {
-  let port = startPort;
-  let httpServer: any = null;
-  let maxAttempts = 100;
-
-  while (maxAttempts > 0) {
-    try {
-      httpServer = await tryCreateSessionContextServer(port);
-      console.log(
-        `[Session Context MCP] Successfully started on port ${port}`
-      );
-      break;
-    } catch (error: any) {
-      if (error.code === "EADDRINUSE") {
-        port++;
-        maxAttempts--;
-      } else {
-        throw error;
+      case "get_workstream_overview": {
+        const result = await handleGetWorkstreamOverview(
+          args?.workstreamId as string | undefined,
+          aiSessionId,
+          workspaceId
+        );
+        return {
+          content: [{ type: "text", text: result }],
+          isError: result.startsWith("Error:"),
+        };
       }
+
+      case "list_recent_sessions": {
+        const limit = Math.min(
+          Math.max((args?.limit as number) || 10, 1),
+          250
+        );
+        const offset = Math.max((args?.offset as number) || 0, 0);
+        const includeArchived = Boolean(args?.includeArchived);
+        const rawSearchField = args?.searchField as string | undefined;
+        const searchField: "title" | "content" | "both" =
+          rawSearchField === "title" || rawSearchField === "content"
+            ? rawSearchField
+            : "both";
+        const result = await handleListRecentSessions(
+          args?.query as string | undefined,
+          limit,
+          offset,
+          workspaceId,
+          aiSessionId,
+          includeArchived,
+          searchField
+        );
+        return {
+          content: [{ type: "text", text: result }],
+          isError: false,
+        };
+      }
+
+      case "get_workstream_edited_files": {
+        const result = await handleGetWorkstreamEditedFiles(
+          (args?.groupBySession as boolean) || false,
+          aiSessionId,
+          workspaceId
+        );
+        return {
+          content: [{ type: "text", text: result }],
+          isError: result.startsWith("Error:"),
+        };
+      }
+
+      case "schedule_wakeup": {
+        const delaySeconds = args?.delaySeconds as number | undefined;
+        const prompt = args?.prompt as string | undefined;
+        const reason = args?.reason as string | undefined;
+
+        if (typeof delaySeconds !== 'number' || !Number.isFinite(delaySeconds)) {
+          return {
+            content: [{ type: "text", text: "Error: delaySeconds is required and must be a number" }],
+            isError: true,
+          };
+        }
+        if (delaySeconds < 60 || delaySeconds > 604800) {
+          return {
+            content: [{ type: "text", text: `Error: delaySeconds must be between 60 and 604800 (7 days). Got ${delaySeconds}.` }],
+            isError: true,
+          };
+        }
+        if (typeof prompt !== 'string' || prompt.trim().length === 0) {
+          return {
+            content: [{ type: "text", text: "Error: prompt is required and must be a non-empty string" }],
+            isError: true,
+          };
+        }
+        if (typeof reason !== 'string' || reason.trim().length === 0) {
+          return {
+            content: [{ type: "text", text: "Error: reason is required and must be a non-empty string" }],
+            isError: true,
+          };
+        }
+
+        const result = await handleScheduleWakeup({
+          sessionId: aiSessionId,
+          workspaceId,
+          delaySeconds,
+          prompt: prompt.trim(),
+          reason: reason.trim(),
+        });
+        return {
+          content: [{ type: "text", text: result }],
+          isError: result.startsWith("Error:"),
+        };
+      }
+
+      case "update_session_board": {
+        const sessionId = args?.sessionId as string;
+        const phase = args?.phase as string | null | undefined;
+        const tags = args?.tags as string[] | undefined;
+
+        if (!sessionId) {
+          return {
+            content: [{ type: "text", text: "Error: sessionId is required" }],
+            isError: true,
+          };
+        }
+
+        if (phase === undefined && tags === undefined) {
+          return {
+            content: [{ type: "text", text: "Error: at least one of phase or tags must be provided" }],
+            isError: true,
+          };
+        }
+
+        const validPhases = ["backlog", "planning", "implementing", "validating", "complete"];
+        if (phase !== undefined && phase !== null && !validPhases.includes(phase)) {
+          return {
+            content: [{ type: "text", text: `Error: Invalid phase "${phase}". Valid phases: ${validPhases.join(", ")}` }],
+            isError: true,
+          };
+        }
+
+        if (tags !== undefined && !Array.isArray(tags)) {
+          return {
+            content: [{ type: "text", text: "Error: tags must be an array of strings" }],
+            isError: true,
+          };
+        }
+
+        // Build metadata update with only provided fields
+        const metadataUpdate: Record<string, unknown> = {};
+        if (phase !== undefined) metadataUpdate.phase = phase ?? undefined;
+        if (tags !== undefined) metadataUpdate.tags = tags;
+
+        await AISessionsRepository.updateMetadata(sessionId, {
+          metadata: metadataUpdate,
+        });
+
+        // Notify renderer windows so kanban board updates in real time
+        const rendererUpdate: Record<string, unknown> = {};
+        if (phase !== undefined) rendererUpdate.phase = phase;
+        if (tags !== undefined) rendererUpdate.tags = tags;
+
+        const { BrowserWindow } = await import("electron");
+        BrowserWindow.getAllWindows().forEach((window) => {
+          if (!window.isDestroyed()) {
+            window.webContents.send("sessions:session-updated", sessionId, rendererUpdate);
+          }
+        });
+
+        const session = await AISessionsRepository.get(sessionId);
+        const title = session?.title || sessionId;
+        const parts: string[] = [];
+        if (phase !== undefined) {
+          parts.push(phase ? `phase="${phase}"` : "removed from board");
+        }
+        if (tags !== undefined) {
+          parts.push(tags.length > 0 ? `tags=[${tags.join(", ")}]` : "tags cleared");
+        }
+        return {
+          content: [{ type: "text", text: `Updated "${title}": ${parts.join(", ")}` }],
+          isError: false,
+        };
+      }
+
+      default:
+        throw new McpError(
+          ErrorCode.MethodNotFound,
+          `Unknown tool: ${name}`
+        );
     }
+  } catch (error) {
+    if (error instanceof McpError) throw error;
+    console.error(`[Session Context MCP] Tool ${toolName} failed:`, error);
+    const errorMessage =
+      error instanceof Error ? error.message : String(error);
+    return {
+      content: [{ type: "text", text: `Error: ${errorMessage}` }],
+      isError: true,
+    };
   }
-
-  if (!httpServer) {
-    throw new Error(
-      `[Session Context MCP] Could not find an available port after trying 100 ports starting from ${startPort}`
-    );
-  }
-
-  httpServerInstance = httpServer;
-  return { httpServer, port };
 }

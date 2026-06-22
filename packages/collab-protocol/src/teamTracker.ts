@@ -130,6 +130,7 @@ export type TrackerServerMessage =
   | TrackerSchemaDeltaMessage
   | TrackerSchemaMutationAckMessage
   | TrackerPongMessage
+  | TrackerRoomMovedMessage
   | TrackerErrorMessage;
 
 export interface TrackerSchemaSyncResponseMessage {
@@ -197,6 +198,20 @@ export interface TrackerConfigBroadcastMessage {
 
 export interface TrackerPongMessage {
   type: 'trackerPong';
+}
+
+/**
+ * Sent when this tracker room has been relocated to another org by the move
+ * engine (Epic H3 P1). The client must tear down its engine for the old room
+ * and re-resolve routing (the project now lives at the new org + routing key).
+ * The old room is frozen read-only; never write to it after receiving this.
+ */
+export interface TrackerRoomMovedMessage {
+  type: 'trackerRoomMoved';
+  /** The destination org the project now lives in. */
+  destOrgId: string;
+  /** The project's new tracker-room routing key under the destination org. */
+  destTeamProjectId: string;
 }
 
 export interface TrackerErrorMessage {

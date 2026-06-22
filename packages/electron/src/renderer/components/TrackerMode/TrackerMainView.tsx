@@ -996,6 +996,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onLaunchSession={handleLaunchSession}
               onArchive={handleArchiveItem}
               onDelete={handleDeleteItem}
+              onOpenItem={handleItemSelect}
             />
           </DetailPanelResizable>
         )}

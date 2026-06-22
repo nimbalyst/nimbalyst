@@ -343,6 +343,7 @@ interface ExtensionAITool {
   parameters?: JSONSchema; // legacy alias
   scope?: 'global' | 'editor';
   editorFilePatterns?: string[];
+  readOnly?: boolean; // tool only reads; host skips the post-run save flush
   handler: (
     params: Record<string, unknown>,
     context: AIToolContext

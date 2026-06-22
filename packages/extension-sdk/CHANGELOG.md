@@ -14,6 +14,10 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 
 ## [Unreleased]
 
+### Added
+
+- `ExtensionAITool.readOnly?: boolean` — declares an editor-scoped tool as read-only so the host skips the post-run save flush. Prevents a hidden editor (mounted to serve a tool against a file that isn't open) from overwriting an out-of-band write with a stale buffer. Default (unset) is treated as mutating, so existing tools are unaffected.
+
 ## [0.2.0]
 
 Adds opt-in collaborative editing for custom editors. Backwards-compatible: extensions built against 0.2.0 continue to work on older Nimbalyst hosts -- the collaboration hook detects the absence of `host.collaboration` and reports `isCollaborative: false` so the editor falls back to local-only editing.

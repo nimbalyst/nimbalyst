@@ -369,6 +369,56 @@ function IssueKeyPrefixInput({ value, onChange }: {
 }
 
 // ============================================================================
+// AI Agent Access (per-project tracker-tools opt-out)
+// ============================================================================
+
+/**
+ * Per-project toggle controlling whether the AI agent gets the tracker MCP
+ * tools (`tracker_*`). When off, McpConfigService skips registering the
+ * `nimbalyst-trackers` server for this workspace, so the agent can't read or
+ * mutate trackers here. Takes effect on the next agent session start.
+ */
+function AgentAccessSection({ enabled, onChange }: {
+  enabled: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  return (
+    <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
+      <h4 className="provider-panel-section-title text-[15px] font-semibold mb-2 text-[var(--nim-text)]">
+        AI Agent Access
+      </h4>
+      <p className="text-[13px] leading-relaxed text-[var(--nim-text-muted)] mb-3">
+        Let AI agents read and update trackers in this project. When off, tracker
+        tools are removed from the agent entirely. Applies to new agent sessions.
+      </p>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        onClick={() => onChange(!enabled)}
+        data-testid="tracker-agent-access-toggle"
+        className="inline-flex items-center gap-2.5 cursor-pointer bg-transparent border-none p-0"
+      >
+        <span
+          className={`relative inline-flex w-9 h-5 rounded-full transition-colors duration-150 ${
+            enabled ? 'bg-[var(--nim-primary)]' : 'bg-[var(--nim-bg-tertiary)]'
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-150 ${
+              enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+            }`}
+          />
+        </span>
+        <span className="text-[13px] font-medium text-[var(--nim-text)]">
+          {enabled ? 'Enabled' : 'Disabled'}
+        </span>
+      </button>
+    </div>
+  );
+}
+
+// ============================================================================
 // Admin View
 // ============================================================================
 
@@ -676,6 +726,7 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
   const [isAdmin, setIsAdmin] = useState(false);
   const [issueKeyPrefix, setIssueKeyPrefix] = useState('NIM');
   const [isSyncConnected, setIsSyncConnected] = useState(false);
+  const [agentAccessEnabled, setAgentAccessEnabled] = useState(true);
   const { confirm } = useDialog();
 
   const refreshSchemaOverrides = useCallback(async (models: TrackerDataModel[]) => {
@@ -709,6 +760,7 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
           if (state?.issueKeyPrefix) {
             setIssueKeyPrefix(state.issueKeyPrefix);
           }
+          setAgentAccessEnabled(state?.trackersEnabled ?? true);
         } catch {
           // Workspace state not available
         }
@@ -801,6 +853,15 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
     }
   }, [workspacePath, isSyncConnected]);
 
+  const handleAgentAccessChange = useCallback((enabled: boolean) => {
+    setAgentAccessEnabled(enabled);
+    if (workspacePath) {
+      (window as any).electronAPI.invoke('workspace:update-state', workspacePath, {
+        trackersEnabled: enabled,
+      });
+    }
+  }, [workspacePath]);
+
   const handleSyncModeChange = useCallback(async (type: string, mode: TrackerSyncMode) => {
     const tracker = trackers.find((entry) => entry.model.type === type);
     if (!tracker || tracker.syncMode === mode) {
@@ -892,6 +953,11 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
       </div>
 
       <TrackerStorageInfoBanner />
+
+      <AgentAccessSection
+        enabled={agentAccessEnabled}
+        onChange={handleAgentAccessChange}
+      />
 
       <SchemaDriftWarning workspacePath={workspacePath} />
 

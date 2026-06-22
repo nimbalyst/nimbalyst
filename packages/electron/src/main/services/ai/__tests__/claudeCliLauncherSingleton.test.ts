@@ -28,6 +28,10 @@ describe('claudeCliLauncherSingleton', () => {
       McpConfigService: class {
         getMcpServersConfig = vi.fn(async () => ({}));
       },
+      getMcpConfigService: () => ({
+        getMcpServersConfig: vi.fn(async () => ({})),
+      }),
+      configureMcpServers: vi.fn(),
     }));
     vi.doMock('../../CLIManager', () => ({
       getEnhancedPath: () => '/bin',

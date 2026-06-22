@@ -202,6 +202,52 @@ export async function decryptTrackerSchemaEnvelope(
   return new TextDecoder().decode(plaintext);
 }
 
+// ============================================================================
+// Epic H2 — server-managed pass-through (no client-side crypto)
+// ============================================================================
+//
+// In `server-managed` key custody the server holds the per-team DEK and
+// encrypts team data at rest. The client sends and receives PLAINTEXT in the
+// `encryptedPayload` field (no iv; `orgKeyFingerprint` null). These helpers are
+// the identity replacements for encrypt/decrypt so TrackerSyncEngine can branch
+// on mode without inlining JSON handling. The itemId/schemaType AAD binding is
+// performed server-side in this mode.
+
+/**
+ * Serialize a `TrackerItemPayload` to the plaintext wire form for
+ * server-managed mode. Strips device-local fields exactly like the encrypted
+ * path so they never cross the wire.
+ */
+export function encodeTrackerPayloadPlaintext(payload: TrackerItemPayload): string {
+  return JSON.stringify(stripLocalOnlyFields(payload));
+}
+
+/**
+ * Parse a plaintext server-managed item envelope back into a payload. Throws
+ * (caught per-item by the engine) on malformed JSON or a missing payload.
+ */
+export function decodeTrackerEnvelopePlaintext(
+  envelope: EncryptedTrackerItemEnvelope,
+): TrackerItemPayload {
+  if (envelope.encryptedPayload === null) {
+    throw new Error('decodeTrackerEnvelopePlaintext called on a tombstone (encryptedPayload=null)');
+  }
+  return JSON.parse(envelope.encryptedPayload) as TrackerItemPayload;
+}
+
+/**
+ * Parse a plaintext server-managed schema envelope back into its model JSON
+ * string. The model is already JSON, so this is a presence/typing guard.
+ */
+export function decodeTrackerSchemaEnvelopePlaintext(
+  envelope: EncryptedTrackerSchemaEnvelope,
+): string {
+  if (envelope.encryptedPayload === null) {
+    throw new Error('decodeTrackerSchemaEnvelopePlaintext called on a tombstone (encryptedPayload=null)');
+  }
+  return envelope.encryptedPayload;
+}
+
 /**
  * Compute a short fingerprint of an AES-256-GCM CryptoKey, suitable for
  * the `orgKeyFingerprint` epoch field on the wire envelope. The server

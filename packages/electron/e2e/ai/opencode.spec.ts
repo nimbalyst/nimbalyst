@@ -94,7 +94,7 @@ test('opencode: AskUserQuestion roundtrip and file edit tracking', async () => {
   // for the built-in.
   await submitChatPrompt(
     page,
-    'Call the MCP tool `mcp__nimbalyst-mcp__AskUserQuestion` (NOT the built-in `question` tool) with one question whose header is "Color", question text is "Which do you prefer?", and two options labelled "blue" and "red". After I answer, reply with just the single word I picked. Do not call any other tools.',
+    'Call the MCP tool `mcp__nimbalyst__AskUserQuestion` (NOT the built-in `question` tool) with one question whose header is "Color", question text is "Which do you prefer?", and two options labelled "blue" and "red". After I answer, reply with just the single word I picked. Do not call any other tools.',
   );
 
   // Wait for the AskUserQuestion widget to render in the transcript.

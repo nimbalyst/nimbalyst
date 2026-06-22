@@ -13,21 +13,23 @@ const { execFileMock } = vi.hoisted(() => ({
 }));
 
 // Mock child_process to test command injection prevention
-vi.mock('child_process', () => ({
+vi.mock('node:child_process', () => ({
   execFile: execFileMock,
   default: {
     execFile: execFileMock,
   },
 }));
 
-// Mock promisify to work with our mocked execFile
-vi.mock('util', async () => {
-  const actual = await vi.importActual('util');
+// Mock promisify to work with our mocked execFile.
+// In vitest 4 the imported `execFile` is no longer referentially `===` our
+// local mock, so identify it by name/mock-flag instead of identity.
+vi.mock('node:util', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('util')>();
   return {
     ...actual,
     promisify: (fn: any) => {
-      if (fn === execFileMock) {
-        return vi.fn(async (cmd: string, args: string[]) => {
+      if (fn === execFileMock || fn?._isMockFunction || fn?.name === 'execFile') {
+        return vi.fn(async (_cmd: string, _args: string[]) => {
           // Simulate ripgrep output
           return { stdout: '' };
         });

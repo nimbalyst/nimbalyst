@@ -809,6 +809,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     disconnect: () => ipcRenderer.invoke('tracker-sync:disconnect') as Promise<{ success: boolean }>,
     upsertItem: (item: any) => ipcRenderer.invoke('tracker-sync:upsert-item', { item }) as Promise<{ success: boolean; error?: string }>,
     deleteItem: (itemId: string) => ipcRenderer.invoke('tracker-sync:delete-item', { itemId }) as Promise<{ success: boolean; error?: string }>,
+    // Epic H2 admin action: migrate this workspace's team to server-managed key
+    // custody and re-upload local tracker data as plaintext.
+    migrateToServerManaged: (orgId: string, workspacePath?: string) => ipcRenderer.invoke('tracker-sync:migrate-to-server-managed', { orgId, workspacePath }) as Promise<{ success: boolean; orgId?: string; itemsMarked?: number; schemasMarked?: number; workspacesMarked?: string[]; error?: string }>,
     onStatusChanged: (callback: (status: string) => void) => {
       const handler = (_event: any, status: string) => callback(status);
       ipcRenderer.on('tracker-sync:status-changed', handler);
@@ -1354,6 +1357,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     findForWorkspace: (workspacePath: string) => ipcRenderer.invoke('team:find-for-workspace', workspacePath),
     get: (orgId: string) => ipcRenderer.invoke('team:get', orgId),
     create: (name: string, workspacePath?: string, accountOrgId?: string) => ipcRenderer.invoke('team:create', name, workspacePath, accountOrgId),
+    // Epic H3 P0: add a project to an EXISTING org (distinct from create, which
+    // mints a new org). Returns { projectId, teamProjectId }.
+    addProject: (orgId: string, workspacePath?: string, name?: string) => ipcRenderer.invoke('team:add-project', orgId, workspacePath, name),
+    // Epic H3 P0/A: enumerate every project in an org (member-gated).
+    listProjects: (orgId: string) => ipcRenderer.invoke('team:list-projects', orgId),
+    // Epic H3 P3: move-project wizard. Preview is read-only; move is destructive (admin on both orgs).
+    moveProjectPreview: (srcOrgId: string, projectId: string, destOrgId: string) =>
+      ipcRenderer.invoke('team:move-project-preview', srcOrgId, projectId, destOrgId),
+    moveProject: (srcOrgId: string, projectId: string, destOrgId: string, dropMemberEmails?: string[]) =>
+      ipcRenderer.invoke('team:move-project', srcOrgId, projectId, destOrgId, dropMemberEmails),
+    // Epic H3 P4: merge this org into another (move all projects + roster union + optional delete).
+    mergeOrg: (drainedOrgId: string, survivorOrgId: string, deleteDrained: boolean, dropMemberEmails?: string[]) =>
+      ipcRenderer.invoke('team:merge-org', drainedOrgId, survivorOrgId, deleteDrained, dropMemberEmails),
     acceptInvite: (orgId: string) => ipcRenderer.invoke('team:accept-invite', orgId),
     listMembers: (orgId: string) => ipcRenderer.invoke('team:list-members', orgId),
     invite: (orgId: string, email: string) => ipcRenderer.invoke('team:invite', orgId, email),
@@ -1363,6 +1379,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getGitRemote: (workspacePath: string) => ipcRenderer.invoke('team:get-git-remote', workspacePath),
     ensureOrgKey: (orgId: string) => ipcRenderer.invoke('team:ensure-org-key', orgId),
     getOrgKeyStatus: (orgId: string) => ipcRenderer.invoke('team:get-org-key-status', orgId),
+    // Epic H2: current key-custody mode for the team (legacy-e2e | server-managed).
+    getKeyCustodyStatus: (orgId: string) => ipcRenderer.invoke('team:get-key-custody-status', orgId) as Promise<{ success: boolean; mode?: 'legacy-e2e' | 'server-managed'; dekFingerprint?: string | null; error?: string }>,
     listKeyEnvelopes: (orgId: string) => ipcRenderer.invoke('team:list-key-envelopes', orgId),
     setProjectIdentity: (orgId: string, workspacePath: string) => ipcRenderer.invoke('team:set-project-identity', orgId, workspacePath),
     clearProjectIdentity: (orgId: string) => ipcRenderer.invoke('team:clear-project-identity', orgId),

@@ -2330,6 +2330,17 @@ class PGLiteWorker {
         CREATE INDEX IF NOT EXISTS idx_collab_local_origins_relative_path
           ON collab_local_origins (org_id, relative_path);
       `);
+      // Epic H3 P0: project-scope shared-document bindings. NULL = the org's
+      // primary project (legacy rows), matching the server read-time default.
+      // Holds the server tracker-room routing key (teamProjectId). Mirrors the
+      // SQLite migration 0015_collab_local_origins_project_id.sql.
+      await this.db.exec(`
+        ALTER TABLE collab_local_origins ADD COLUMN IF NOT EXISTS project_id TEXT;
+      `);
+      await this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_collab_local_origins_project_id
+          ON collab_local_origins (project_id);
+      `);
       console.log('[PGLite Worker] collab_local_origins table created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create collab_local_origins table:', error);

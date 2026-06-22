@@ -249,19 +249,44 @@ export class TeamSyncProvider {
   // Public API: Document Index
   // --------------------------------------------------------------------------
 
+  /** Epic H2: true when the server holds the team DEK (no client crypto). */
+  private get serverManaged(): boolean {
+    return this.config.keyCustody === 'server-managed';
+  }
+
+  /** Org key fingerprint to attach to a doc-index write; null in server-managed. */
+  private get wireOrgKeyFingerprint(): string | null {
+    return this.serverManaged ? null : this.config.orgKeyFingerprint;
+  }
+
+  /**
+   * Build the wire title fields. Legacy: AES-256-GCM with the org key.
+   * Server-managed: plaintext title with the empty-string iv sentinel (the
+   * server encrypts at rest with the team DEK).
+   */
+  private async encodeTitleForWire(title: string): Promise<{ encryptedTitle: string; titleIv: string }> {
+    if (this.serverManaged) {
+      return { encryptedTitle: title, titleIv: '' };
+    }
+    return encryptTitle(title, this.config.encryptionKey!);
+  }
+
   async registerDocument(documentId: string, title: string, documentType: string): Promise<void> {
-    const { encryptedTitle, titleIv } = await encryptTitle(title, this.config.encryptionKey);
+    const { encryptedTitle, titleIv } = await this.encodeTitleForWire(title);
     this.send({
       type: 'docIndexRegister', documentId, encryptedTitle, titleIv, documentType,
-      orgKeyFingerprint: this.config.orgKeyFingerprint,
+      // Epic H3 P0/A: attribute the doc to the active project so the server's
+      // project-partitioned doc index (and a future move) can scope it.
+      projectId: this.config.teamProjectId ?? null,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
     });
   }
 
   async updateDocumentTitle(documentId: string, newTitle: string): Promise<void> {
-    const { encryptedTitle, titleIv } = await encryptTitle(newTitle, this.config.encryptionKey);
+    const { encryptedTitle, titleIv } = await this.encodeTitleForWire(newTitle);
     this.send({
       type: 'docIndexUpdate', documentId, encryptedTitle, titleIv,
-      orgKeyFingerprint: this.config.orgKeyFingerprint,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
     });
   }
 
@@ -269,7 +294,7 @@ export class TeamSyncProvider {
     this.localEntries.delete(documentId);
     this.send({
       type: 'docIndexRemove', documentId,
-      orgKeyFingerprint: this.config.orgKeyFingerprint,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
     });
   }
 
@@ -299,6 +324,17 @@ export class TeamSyncProvider {
     payload: InboxEventPayload;
   }): Promise<void> {
     if (params.recipients.length === 0) return;
+    // Inbox fanout delivers an org-key-encrypted blob into each recipient's
+    // (zero-knowledge) PersonalIndexRoom, so it depends on the shared org key.
+    // Server-managed teams have no client-held org key, so cross-lane inbox
+    // fanout is deferred for them (Epic H2 v1 limitation; notifications are a
+    // tracked enterprise follow-up). Skip rather than crash.
+    if (this.serverManaged || !this.config.encryptionKey) {
+      if (this.serverManaged) {
+        console.warn('[TeamSync] inbox fanout skipped: server-managed teams have no client org key (H2 v1 limitation)');
+      }
+      return;
+    }
     // Reuse the org-key AES-GCM string encryptor; fields are generic
     // (ciphertext + iv) regardless of the "title" naming.
     const { encryptedTitle: encryptedPayload, titleIv: iv } = await encryptTitle(
@@ -548,7 +584,10 @@ export class TeamSyncProvider {
   }
 
   private async decryptEntry(encrypted: EncryptedDocIndexEntry): Promise<DocIndexEntry> {
-    const title = await decryptTitle(encrypted.encryptedTitle, encrypted.titleIv, this.config.encryptionKey);
+    // Server-managed: the title arrives as plaintext (the server decrypted it).
+    const title = this.serverManaged
+      ? encrypted.encryptedTitle
+      : await decryptTitle(encrypted.encryptedTitle, encrypted.titleIv, this.config.encryptionKey!);
     return {
       documentId: encrypted.documentId,
       title,

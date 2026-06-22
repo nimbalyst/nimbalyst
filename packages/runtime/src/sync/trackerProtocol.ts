@@ -40,6 +40,7 @@ export type {
   TrackerSchemaDeltaMessage,
   TrackerSchemaMutationAckMessage,
   TrackerPongMessage,
+  TrackerRoomMovedMessage,
   TrackerErrorMessage,
 } from '@nimbalyst/collab-protocol';
 

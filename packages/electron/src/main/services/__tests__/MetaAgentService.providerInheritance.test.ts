@@ -76,19 +76,17 @@ vi.mock('../../utils/store', () => ({ getDefaultAIModel: () => null }));
 vi.mock('../../utils/timestampUtils', () => ({ toMillis: (v: unknown) => v }));
 vi.mock('../WorktreeStore', () => ({ createWorktreeStore: vi.fn() }));
 vi.mock('../GitWorktreeService', () => ({ GitWorktreeService: class {} }));
-// createChildSessionInternal runs an IN_FLIGHT_SPAWN_CAP COUNT(*) query and
-// destructures { rows } from the result, so the worker mock must return a shape
-// with rows (count '0' => under the cap, spawn proceeds).
+// createChildSessionInternal runs a spawn-gate query that selects { in_flight,
+// total }, so the worker mock must return a shape with rows (both '0' => under
+// both the in-flight cap and the lifetime backstop, spawn proceeds).
 vi.mock('../../database/PGLiteDatabaseWorker', () => ({
-  database: { query: vi.fn().mockResolvedValue({ rows: [{ count: '0' }] }) },
+  database: { query: vi.fn().mockResolvedValue({ rows: [{ in_flight: '0', total: '0' }] }) },
 }));
 vi.mock('../../database/initialize', () => ({ getDatabase: () => null }));
 vi.mock('../../file/GitRefWatcher', () => ({ gitRefWatcher: {} }));
 vi.mock('./ai/AIService', () => ({ AIService: class {} }));
 vi.mock('../../mcp/metaAgentServer', () => ({
-  startMetaAgentServer: vi.fn(),
   setMetaAgentToolFns: vi.fn(),
-  shutdownMetaAgentServer: vi.fn(),
 }));
 vi.mock('../metaAgentNotificationSignature', () => ({ computeNotificationSignature: vi.fn() }));
 vi.mock('../metaAgentMessageText', () => ({
@@ -303,27 +301,54 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
   });
 });
 
-describe('MetaAgentService total spawn cap', () => {
+describe('MetaAgentService spawn gates', () => {
   beforeEach(() => {
     vi.mocked(AISessionsRepository.create).mockReset();
     vi.mocked(AISessionsRepository.get).mockReset();
     // Reset the shared worker-query mock back to the under-cap default so other
-    // tests in this file are unaffected by the over-cap override below.
-    vi.mocked(databaseWorker.query).mockResolvedValue({ rows: [{ count: '0' }] } as any);
+    // tests in this file are unaffected by the over-cap overrides below.
+    vi.mocked(databaseWorker.query).mockResolvedValue({ rows: [{ in_flight: '0', total: '0' }] } as any);
   });
 
-  it('throws past the total spawn cap (children counted regardless of status)', async () => {
+  it('throws when the in-flight parallel cap is reached (controllable max-parallel limit)', async () => {
     const service = MetaAgentService.getInstance();
     (service as any).aiService = { queuePromptForSession: vi.fn() };
     vi.mocked(AISessionsRepository.get).mockResolvedValue(CLAUDE_PARENT as any);
-    // 15 total children already spawned by this parent (>= TOTAL_SPAWN_CAP). The
-    // count includes settled children now, so sequential re-spawning from
-    // completion-wakeups is bounded where the old in-flight-only count was not.
-    vi.mocked(databaseWorker.query).mockResolvedValue({ rows: [{ count: '15' }] } as any);
+    // 4 children currently running/waiting (>= MAX_IN_FLIGHT). total is well
+    // under the lifetime backstop, proving this gate fires on parallelism alone.
+    vi.mocked(databaseWorker.query).mockResolvedValue({ rows: [{ in_flight: '4', total: '4' }] } as any);
 
     await expect(
       (service as any).createChildSessionInternal('parent-claude-session', '/workspace/path', {})
-    ).rejects.toThrow(/spawn cap reached/);
+    ).rejects.toThrow(/Too many child sessions running/);
+
+    expect(AISessionsRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('allows spawning past a low total when nothing is in flight (no lifetime cap on settled children)', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(CLAUDE_PARENT as any);
+    // 10 children spawned over this parent's life, but all settled (0 in flight)
+    // and under the lifetime backstop. The old behavior wrongly blocked this.
+    vi.mocked(databaseWorker.query).mockResolvedValue({ rows: [{ in_flight: '0', total: '10' }] } as any);
+
+    await (service as any).createChildSessionInternal('parent-claude-session', '/workspace/path', {});
+
+    expect(AISessionsRepository.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws past the lifetime backstop (runaway protection on total children ever spawned)', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(CLAUDE_PARENT as any);
+    // 50 total children (>= LIFETIME_BACKSTOP), 0 in flight. The backstop still
+    // bounds a sequential re-spawn loop where the in-flight count stays ~0.
+    vi.mocked(databaseWorker.query).mockResolvedValue({ rows: [{ in_flight: '0', total: '50' }] } as any);
+
+    await expect(
+      (service as any).createChildSessionInternal('parent-claude-session', '/workspace/path', {})
+    ).rejects.toThrow(/lifetime spawn backstop reached/);
 
     expect(AISessionsRepository.create).not.toHaveBeenCalled();
   });

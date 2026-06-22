@@ -349,28 +349,37 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
     }
 
     store.set(workspaceHasTeamAtomFamily(workspacePath), true);
-    const { orgId, orgKeyBase64, orgKeyFingerprint, serverUrl, userId, personalOrgId } = result.config;
+    const { orgId, teamProjectId, keyCustody, orgKeyBase64, orgKeyFingerprint, serverUrl, userId, personalOrgId } = result.config;
     store.set(teamOrgIdAtomFamily(workspacePath), orgId);
 
     const { TeamSyncProvider } = await import('@nimbalyst/runtime/sync');
 
-    const keyBytes = Uint8Array.from(atob(orgKeyBase64), c => c.charCodeAt(0));
-    const encryptionKey = await crypto.subtle.importKey(
-      'raw',
-      keyBytes,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt']
-    );
+    // Epic H2: server-managed teams sync doc-index titles as plaintext (the
+    // server encrypts at rest with the team DEK), so there is no org key to
+    // import.
+    const serverManaged = keyCustody === 'server-managed';
+    const encryptionKey = serverManaged
+      ? undefined
+      : await crypto.subtle.importKey(
+          'raw',
+          Uint8Array.from(atob(orgKeyBase64), c => c.charCodeAt(0)),
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
 
     const provider = new TeamSyncProvider({
       serverUrl,
       orgId,
+      // Epic H3 P0/A: tag doc-index registers with the resolved project so the
+      // server's project-partitioned index attributes docs to the right project.
+      teamProjectId,
       userId,
       // Announced to the TeamRoom on connect so inbox-event fanout can reach
       // this member's PersonalIndexRoom. Undefined when personal sync is not
       // yet configured locally.
       personalOrgId,
+      keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
       encryptionKey,
       orgKeyFingerprint,
       getJwt: async () => {

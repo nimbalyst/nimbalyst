@@ -406,6 +406,31 @@ export async function getAvailableExtensionTools(
 }
 
 /**
+ * Distinct short-names of extensions that currently contribute MCP tools for a
+ * workspace (e.g. `['excalidraw', 'slides']`). Each becomes its own deferred
+ * `nimbalyst-<ext>` MCP server (MCP consolidation Phase 3).
+ *
+ * Synchronous (reads the in-memory registry) so it can be called from
+ * `getMcpServersConfig`. Resolves worktree paths to their project path via the
+ * sync cache; an un-cached worktree returns the project's tools only after the
+ * first async resolution elsewhere has warmed the cache.
+ */
+export function getActiveExtensionShortNames(
+  workspacePath: string | undefined
+): string[] {
+  if (!workspacePath) return [];
+  const resolvedPath = resolveExtensionToolsWorkspacePathSync(workspacePath);
+  const tools = extensionToolsByWorkspace.get(resolvedPath) || [];
+  const shortNames = new Set<string>();
+  for (const tool of tools) {
+    const parts = tool.extensionId.split(".");
+    const shortName = parts[parts.length - 1] || tool.extensionId;
+    if (shortName) shortNames.add(shortName);
+  }
+  return Array.from(shortNames);
+}
+
+/**
  * Register workspace mapping for a new connection (fire-and-forget).
  */
 export function registerWorkspaceMappingForConnection(

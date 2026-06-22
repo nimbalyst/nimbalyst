@@ -49,7 +49,7 @@ When running E2E tests for a new feature or bug fix, always show the results vis
      -vf "fps=10,scale=1080:-1:flags=lanczos" -loop 0 \
      e2e_test_output/videos/test-results.gif
    ```
-3. **Display inline** using `mcp__nimbalyst-mcp__display_to_user` with the GIF path
+3. **Display inline** using `mcp__nimbalyst__display_to_user` with the GIF path
 
 This lets the user see the test run directly in the conversation without opening external files.
 

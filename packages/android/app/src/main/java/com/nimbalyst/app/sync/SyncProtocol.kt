@@ -84,6 +84,9 @@ data class RegisterPushTokenMessage(
     val token: String,
     val platform: String,
     val deviceId: String,
+    // Matches the iOS wire contract (RegisterPushTokenMessage.environment); the
+    // collab server routes push delivery by environment.
+    val environment: String = "production",
 )
 
 data class SessionControlMessage(

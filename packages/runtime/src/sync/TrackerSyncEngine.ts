@@ -50,6 +50,7 @@ import type {
   TrackerSchemaSyncResponseMessage,
   TrackerSchemaDeltaMessage,
   TrackerSchemaMutationAckMessage,
+  TrackerRoomMovedMessage,
 } from './trackerProtocol';
 import { SYNC_ID_INITIAL, buildTrackerRoomId } from './trackerProtocol';
 import { appendSyncClientParams } from './syncClientInfo';
@@ -58,6 +59,9 @@ import {
   decryptTrackerEnvelope,
   encryptTrackerSchemaPayload,
   decryptTrackerSchemaEnvelope,
+  encodeTrackerPayloadPlaintext,
+  decodeTrackerEnvelopePlaintext,
+  decodeTrackerSchemaEnvelopePlaintext,
 } from './TrackerEnvelopeCrypto';
 import type { TrackerPersistence, TrackerRowSnapshot } from './trackerPersistence';
 
@@ -127,6 +131,15 @@ export interface TrackerKeyMaterial {
   orgKeyFingerprint: string;
 }
 
+/**
+ * Epic H2 key custody. `legacy-e2e` (default): the client encrypts/decrypts
+ * team data with the org key (zero-knowledge; the server is a dumb relay).
+ * `server-managed`: the server holds the per-team DEK and encrypts at rest, so
+ * the client sends/receives PLAINTEXT (no iv, `orgKeyFingerprint` null) and the
+ * `encryptionKey` is unused.
+ */
+export type TrackerKeyCustodyMode = 'legacy-e2e' | 'server-managed';
+
 export interface TrackerSyncEngineConfig {
   /** WebSocket server URL, e.g. `wss://sync.nimbalyst.com`. */
   serverUrl: string;
@@ -145,8 +158,19 @@ export interface TrackerSyncEngineConfig {
   /** The current user's ID (informational; not used in auth). */
   userId: string;
 
-  /** Current org AES-256-GCM encryption key. */
-  encryptionKey: CryptoKey;
+  /**
+   * Epic H2 key custody mode. Defaults to `legacy-e2e` when omitted (the
+   * historical zero-knowledge path). In `server-managed` the engine runs the
+   * encrypt/decrypt hooks as identity pass-throughs and `encryptionKey` /
+   * `orgKeyFingerprint` are ignored.
+   */
+  keyCustody?: TrackerKeyCustodyMode;
+
+  /**
+   * Current org AES-256-GCM encryption key. Required in `legacy-e2e` mode;
+   * unused (and optional) in `server-managed` mode.
+   */
+  encryptionKey?: CryptoKey;
 
   /**
    * Fingerprint of the encryption key, carried as `orgKeyFingerprint` on
@@ -207,6 +231,14 @@ export interface TrackerSyncEngineConfig {
   onBootstrapError?: (err: unknown) => void;
 
   /**
+   * Epic H3 P1: fires when the server reports this tracker room was relocated
+   * to another org by the move engine. The engine stops (the old room is
+   * frozen/tombstoned); the host re-resolves routing and reconnects the
+   * project to its new org-scoped room.
+   */
+  onRoomMoved?: (dest: { destOrgId: string; destTeamProjectId: string }) => void;
+
+  /**
    * Test seam: override the URL builder. The default appends `?token=...`
    * to a `/sync/<roomId>` path. Tests use this to drive `test_user_id` /
    * `test_org_id` bypass query params (matches the phase-2 harness).
@@ -247,9 +279,13 @@ export class TrackerSyncEngine {
   private connecting = false;
   private suppressReconnect = false;
 
-  /** Current encryption material; mutated on key rotation. */
-  private encryptionKey: CryptoKey;
+  /** Current encryption material; mutated on key rotation. Null in
+   * server-managed mode (the server holds the DEK). */
+  private encryptionKey: CryptoKey | null;
   private orgKeyFingerprint: string | null;
+
+  /** Epic H2 key custody mode (default legacy-e2e). */
+  private readonly keyCustody: TrackerKeyCustodyMode;
 
   /** Reconnect bookkeeping. */
   private reconnectAttempt = 0;
@@ -273,8 +309,16 @@ export class TrackerSyncEngine {
   constructor(config: TrackerSyncEngineConfig) {
     this.config = config;
     this.persistence = config.persistence;
-    this.encryptionKey = config.encryptionKey;
-    this.orgKeyFingerprint = config.orgKeyFingerprint;
+    this.keyCustody = config.keyCustody ?? 'legacy-e2e';
+    this.encryptionKey = config.encryptionKey ?? null;
+    // In server-managed mode the server owns the key epoch; force the
+    // fingerprint null so the engine never asserts a client epoch on the wire.
+    this.orgKeyFingerprint = this.keyCustody === 'server-managed' ? null : config.orgKeyFingerprint;
+  }
+
+  /** Epic H2: true when the server holds the team DEK (no client crypto). */
+  private get serverManaged(): boolean {
+    return this.keyCustody === 'server-managed';
   }
 
   // --------------------------------------------------------------------------
@@ -661,6 +705,9 @@ export class TrackerSyncEngine {
       case 'trackerPong':
         // Keep-alive response; nothing to do.
         break;
+      case 'trackerRoomMoved':
+        this.handleRoomMoved(msg);
+        break;
       case 'trackerError':
         // Server-level error (not tied to a specific mutation). Surface as
         // a status transition; the connection stays open.
@@ -674,6 +721,17 @@ export class TrackerSyncEngine {
         // The schema bootstrap loop owns these via `requestSchemaSync`.
         break;
     }
+  }
+
+  /**
+   * Epic H3 P1: the server reports this room was relocated to another org. The
+   * old room is frozen/tombstoned, so stop reconnecting and hand the
+   * destination to the host, which re-resolves routing (the project now lives
+   * at a new org-scoped room) and spins up a fresh engine pointed there.
+   */
+  private handleRoomMoved(msg: TrackerRoomMovedMessage): void {
+    this.disconnect();
+    this.config.onRoomMoved?.({ destOrgId: msg.destOrgId, destTeamProjectId: msg.destTeamProjectId });
   }
 
   private async handleDelta(msg: TrackerDeltaMessage): Promise<void> {
@@ -810,8 +868,27 @@ export class TrackerSyncEngine {
     const isTombstone = envelope.encryptedPayload === null;
     let payload: TrackerItemPayload | null = null;
     if (!isTombstone) {
+      // Server-managed: the payload is plaintext JSON (the server decrypted it).
+      if (this.serverManaged) {
+        try {
+          payload = decodeTrackerEnvelopePlaintext(envelope);
+        } catch (err) {
+          console.warn('[TrackerSync] failed to parse server-managed item payload; skipping', err);
+          return false;
+        }
+        await this.persistence.applyRemoteItem(envelope, payload);
+        this.config.onItemApplied?.({
+          itemId: envelope.itemId,
+          syncId: envelope.syncId,
+          payload,
+          isTombstone,
+          issueNumber: envelope.issueNumber,
+          issueKey: envelope.issueKey,
+        });
+        return true;
+      }
       try {
-        payload = await decryptTrackerEnvelope(envelope, this.encryptionKey);
+        payload = await decryptTrackerEnvelope(envelope, this.encryptionKey!);
       } catch (err) {
         // OperationError = AES-GCM auth failure. Two causes look the same
         // at this layer:
@@ -856,13 +933,22 @@ export class TrackerSyncEngine {
     const isTombstone = envelope.encryptedPayload === null;
     let model: string | null = null;
     if (!isTombstone) {
-      try {
-        model = await decryptTrackerSchemaEnvelope(envelope, this.encryptionKey);
-      } catch (err) {
-        if (err !== null && typeof err === 'object' && (err as { name?: string }).name === 'OperationError') {
+      if (this.serverManaged) {
+        try {
+          model = decodeTrackerSchemaEnvelopePlaintext(envelope);
+        } catch (err) {
+          console.warn('[TrackerSchemaSync] failed to parse server-managed schema payload; skipping', err);
           return false;
         }
-        throw err;
+      } else {
+        try {
+          model = await decryptTrackerSchemaEnvelope(envelope, this.encryptionKey!);
+        } catch (err) {
+          if (err !== null && typeof err === 'object' && (err as { name?: string }).name === 'OperationError') {
+            return false;
+          }
+          throw err;
+        }
       }
     }
 
@@ -932,7 +1018,9 @@ export class TrackerSyncEngine {
    */
   private async driveTransaction(row: TrackerTransactionRow): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    if (!this.orgKeyFingerprint) return;
+    // Legacy mode declines to upload until a key epoch is known. Server-managed
+    // mode has no client epoch, so it is always ready to send.
+    if (!this.serverManaged && !this.orgKeyFingerprint) return;
 
     const startedAt = Date.now();
     await this.persistence.markTransactionState(row.clientMutationId, 'executing', startedAt);
@@ -950,7 +1038,22 @@ export class TrackerSyncEngine {
       return;
     }
 
-    const enc = await encryptTrackerPayload(row.payload!, this.encryptionKey, row.itemId);
+    // Server-managed: send PLAINTEXT (no iv, null fingerprint); the server
+    // encrypts at rest with the team DEK.
+    if (this.serverManaged) {
+      this.send({
+        type: 'trackerMutation',
+        clientMutationId: row.clientMutationId,
+        itemId: row.itemId,
+        encryptedPayload: encodeTrackerPayloadPlaintext(row.payload!),
+        orgKeyFingerprint: null,
+        ...(row.payload?.issueNumber !== undefined ? { issueNumber: row.payload.issueNumber } : {}),
+        ...(row.payload?.issueKey !== undefined ? { issueKey: row.payload.issueKey } : {}),
+      });
+      return;
+    }
+
+    const enc = await encryptTrackerPayload(row.payload!, this.encryptionKey!, row.itemId);
     this.send({
       type: 'trackerMutation',
       clientMutationId: row.clientMutationId,
@@ -967,7 +1070,7 @@ export class TrackerSyncEngine {
     const hooks = this.config.schemaSync;
     if (!hooks) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    if (!this.orgKeyFingerprint) return;
+    if (!this.serverManaged && !this.orgKeyFingerprint) return;
 
     const pending = await hooks.listUnsynced();
     if (pending.length > 0) {
@@ -987,7 +1090,21 @@ export class TrackerSyncEngine {
         continue;
       }
 
-      const enc = await encryptTrackerSchemaPayload(def.model, this.encryptionKey, def.type);
+      // Server-managed: the model JSON travels as plaintext; the server
+      // encrypts it at rest with the team DEK.
+      if (this.serverManaged) {
+        console.info(`[TrackerSchemaSync] -> mutation (upsert, plaintext) type=${def.type} cmid=${clientMutationId}`);
+        this.send({
+          type: 'trackerSchemaMutation',
+          clientMutationId,
+          schemaType: def.type,
+          encryptedPayload: def.model,
+          orgKeyFingerprint: null,
+        });
+        continue;
+      }
+
+      const enc = await encryptTrackerSchemaPayload(def.model, this.encryptionKey!, def.type);
       console.info(`[TrackerSchemaSync] -> mutation (upsert) type=${def.type} cmid=${clientMutationId}`);
       this.send({
         type: 'trackerSchemaMutation',

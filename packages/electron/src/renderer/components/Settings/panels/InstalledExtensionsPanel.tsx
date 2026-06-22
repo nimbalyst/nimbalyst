@@ -52,7 +52,7 @@ interface ExtensionWithState extends InstalledExtension {
 }
 
 interface InstalledExtensionsPanelProps {
-  scope: 'user' | 'project';
+  scope: 'user' | 'organization' | 'project';
   workspacePath?: string;
 }
 

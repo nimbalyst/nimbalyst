@@ -61,7 +61,7 @@ export interface TrackerNavigationState {
  */
 export interface SettingsHistoryState {
   category: string;
-  scope: 'user' | 'project';
+  scope: 'user' | 'organization' | 'project';
 }
 
 /**

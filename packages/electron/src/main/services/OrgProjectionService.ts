@@ -100,6 +100,37 @@ export async function upsertOrg(db: ProjectionDb, org: OrgInput): Promise<void> 
   }
 }
 
+export interface ProjectInput {
+  /** Server team_project_id; the local projects.id (names the tracker room). */
+  projectId: string;
+  orgId: string;
+  /** Unique within the org. Defaults to a tail of the project id when omitted. */
+  slug?: string | null;
+  gitOriginHash?: string | null;
+}
+
+/**
+ * Upsert one project row (Epic H3 P0: an org can now own many projects). Used
+ * when a second/third project is added to an existing org, distinct from the
+ * primary project that `upsertOrg` mirrors. Idempotent on projects.id.
+ */
+export async function upsertProject(db: ProjectionDb, p: ProjectInput): Promise<void> {
+  const ts = nowIso();
+  // projects has UNIQUE(org_id, slug); fall back to a stable per-project slug so
+  // additional projects never collide with the primary's 'main'.
+  const slug = p.slug && p.slug.trim() ? slugify(p.slug) : `project-${p.projectId.slice(-6)}`;
+  await db.query(
+    `INSERT INTO projects (id, org_id, slug, git_origin_hash, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $5)
+     ON CONFLICT (id) DO UPDATE SET
+       org_id = EXCLUDED.org_id,
+       slug = EXCLUDED.slug,
+       git_origin_hash = EXCLUDED.git_origin_hash,
+       updated_at = EXCLUDED.updated_at`,
+    [p.projectId, p.orgId, slug, p.gitOriginHash ?? null, ts],
+  );
+}
+
 /** Upsert one membership. */
 export async function applyMemberUpserted(db: ProjectionDb, orgId: string, m: MemberInput): Promise<void> {
   const ts = nowIso();

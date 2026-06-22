@@ -9,6 +9,7 @@ import {
   removeRelationshipValue,
   serializeRelationshipValue,
   deriveRelationshipEdges,
+  computeInverseFieldDeltas,
 } from '../trackerRelationships';
 import type { FieldDefinition, TrackerRelationshipValue } from '../TrackerDataModel';
 
@@ -169,5 +170,54 @@ describe('deriveRelationshipEdges', () => {
       dependsOn: [{ itemId: 'a', relationshipTypeKey: 'blocks' }],
     }, defs);
     expect(edges[0].relationshipTypeKey).toBe('blocks');
+  });
+});
+
+describe('computeInverseFieldDeltas (Phase 3)', () => {
+  const def = relField({
+    name: 'dependsOn',
+    relationshipTypeKey: 'depends-on',
+    inverseFieldId: 'blockedBy',
+    inverseRelationshipTypeKey: 'blocks',
+  });
+  const source: { itemId: string; issueKey?: string; trackerType?: string } = {
+    itemId: 'plan-1',
+    issueKey: 'NIM-1',
+    trackerType: 'plan',
+  };
+
+  it('returns no deltas when the field has no inverseFieldId', () => {
+    const noInverse = relField({ inverseFieldId: undefined });
+    expect(computeInverseFieldDeltas(noInverse, source, null, [{ itemId: 'bug-1' }])).toEqual([]);
+  });
+
+  it('emits an add for newly-linked targets, stamping the inverse type + source ref', () => {
+    const deltas = computeInverseFieldDeltas(def, source, null, [{ itemId: 'bug-1' }]);
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0]).toMatchObject({ targetItemId: 'bug-1', inverseFieldId: 'blockedBy', op: 'add' });
+    expect(deltas[0].value).toMatchObject({
+      itemId: 'plan-1',
+      issueKey: 'NIM-1',
+      trackerType: 'plan',
+      relationshipTypeKey: 'blocks',
+      direction: 'out',
+    });
+  });
+
+  it('emits a remove for dropped targets', () => {
+    const deltas = computeInverseFieldDeltas(def, source, [{ itemId: 'bug-1' }], []);
+    expect(deltas).toEqual([
+      expect.objectContaining({ targetItemId: 'bug-1', inverseFieldId: 'blockedBy', op: 'remove' }),
+    ]);
+  });
+
+  it('emits add+remove together when the set changes', () => {
+    const deltas = computeInverseFieldDeltas(def, source, [{ itemId: 'bug-1' }], [{ itemId: 'bug-2' }]);
+    expect(deltas.filter((d) => d.op === 'add').map((d) => d.targetItemId)).toEqual(['bug-2']);
+    expect(deltas.filter((d) => d.op === 'remove').map((d) => d.targetItemId)).toEqual(['bug-1']);
+  });
+
+  it('no-ops when the target set is unchanged', () => {
+    expect(computeInverseFieldDeltas(def, source, [{ itemId: 'bug-1' }], [{ itemId: 'bug-1' }])).toEqual([]);
   });
 });

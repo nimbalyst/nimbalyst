@@ -5,7 +5,7 @@
  *
  * The single load-bearing step is **allocating the Nimbalyst session id BEFORE
  * launch** and injecting the same `sessionId`-bearing MCP URL the in-process
- * Agent-SDK path uses. The CLI then calls `mcp__nimbalyst-mcp__*` tools that hit
+ * Agent-SDK path uses. The CLI then calls `mcp__nimbalyst__*` tools that hit
  * the identical handlers — so commit-proposal / AskUserQuestion widgets render in
  * the correct transcript with no new mechanism (see the plan doc, "How a rich
  * widget reaches the right transcript").
@@ -74,7 +74,7 @@ export interface ClaudeCliSessionLauncherDeps {
   pathExists?: (p: string) => boolean;
   /**
    * Absolute path to the PreToolUse permission hook script (NIM-806 Phase 4).
-   * When set (and the nimbalyst-mcp server is configured), the launcher registers
+   * When set (and the nimbalyst core server is configured), the launcher registers
    * the hook via `--settings` and injects the endpoint URL/token into the CLI env,
    * so built-in tool prompts route to a Nimbalyst widget. Omit → native gate.
    */
@@ -194,12 +194,13 @@ export class ClaudeCliSessionLauncher {
     // NIM-806 Phase 4 (Direction A): register a PreToolUse permission hook (via
     // --settings) that routes built-in tool prompts to a Nimbalyst widget. The
     // hook POSTs to the loopback `/permission` endpoint — same host + bearer as the
-    // nimbalyst-mcp server, so we lift both straight out of the MCP config. Only
-    // when the hook script path is provided AND nimbalyst-mcp is configured — and
+    // unified internal MCP server, so we lift both straight out of the eager core
+    // `nimbalyst` config (the monolithic `nimbalyst-mcp` is retired). Only when
+    // the hook script path is provided AND the core server is configured — and
     // never when we're skipping the gate (the two are mutually exclusive).
     let settingsJson: string | undefined;
     const permissionHookEnv: Record<string, string> = {};
-    const nimbalystMcp = mcpServers['nimbalyst-mcp'] as
+    const nimbalystMcp = mcpServers['nimbalyst'] as
       | { url?: string; headers?: Record<string, string> }
       | undefined;
     if (!dangerouslySkipPermissions && this.deps.permissionHookScriptPath && nimbalystMcp?.url) {

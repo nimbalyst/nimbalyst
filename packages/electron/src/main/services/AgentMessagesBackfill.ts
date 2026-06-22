@@ -46,12 +46,29 @@ interface BackfillChunkRow {
 
 const SELECT_CHUNK_SIZE = 1000;
 
+/**
+ * Pause between chunks so the backfill cedes the shared SQLite worker to any
+ * user-facing queries that arrive mid-run. The worker is FIFO; without a gap,
+ * back-to-back chunk traffic keeps it busy. Even though the pass is now
+ * deferred past first-usable (NIM-899), this keeps it a good citizen if it runs
+ * long. Tests pass 0 to stay fast and deterministic.
+ */
+const DEFAULT_INTER_CHUNK_DELAY_MS = 15;
+
+function delay(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+}
+
 export interface AgentMessagesBackfillOptions {
   /**
    * Optional override of the chunk size used for SELECT/UPDATE batches.
    * Lower values reduce per-iteration latency at the cost of more round-trips.
    */
   chunkSize?: number;
+  /**
+   * Milliseconds to pause between chunks (default 15). Set to 0 in tests.
+   */
+  interChunkDelayMs?: number;
   /**
    * If false, skip the transient-row DELETE pass. Used in tests to isolate
    * the extractor pass from the cleanup pass.
@@ -87,6 +104,19 @@ interface BackfillStats {
 const HISTORICAL_CLEANUP_FLAG_KEY = 'agentMessagesTransientHistoricalCleanupV1' as const;
 
 /**
+ * Electron-store key marking the searchable_text/message_kind backfill drained.
+ * Once set, the extractor pass is skipped entirely on subsequent startups so we
+ * never re-scan ai_agent_messages. Before this gate, the pending-count probe
+ * full-scanned ~1.3M rows (~12s) on every startup -- and because the pass runs
+ * on the shared single-threaded SQLite worker, that scan head-of-line-blocked
+ * the entire startup (sessions:list, tracker-items-list, ai:loadSession all
+ * queued behind it). The live write path sets message_kind at insert time, so
+ * no new NULL rows appear once drained. Bump the suffix to force a re-scan.
+ * NIM-899.
+ */
+const SEARCHABLE_BACKFILL_COMPLETE_FLAG_KEY = 'agentMessagesSearchableBackfillCompleteV1' as const;
+
+/**
  * Run the full maintenance pass. Logs progress; failures are caught and
  * logged so startup is never blocked by a backfill regression.
  */
@@ -100,6 +130,8 @@ export async function runAgentMessagesBackfill(
     historicalTransientsDeleted: 0,
   };
   const deleteTransients = options.deleteTransients !== false;
+  const readFlag = options.flagStore?.get ?? ((k: string) => getAppSetting<boolean>(k));
+  const writeFlag = options.flagStore?.set ?? ((k: string, v: boolean) => setAppSetting<boolean>(k, v));
   // Entry log fires before any await so we can verify the function was even
   // reached. Past observation: on a 1.36M-row DB the function appeared to
   // never run -- no [AgentMessagesBackfill] lines of any kind in the log --
@@ -107,16 +139,30 @@ export async function runAgentMessagesBackfill(
   // unresolved", and "ran to completion with updated=0".
   logger.main.info('[AgentMessagesBackfill] starting');
   const startedAt = Date.now();
-  try {
-    const result = await backfillAndCleanup(
-      db,
-      options.chunkSize ?? SELECT_CHUNK_SIZE,
-      deleteTransients,
-    );
-    stats.searchableTextBackfilled = result.updated;
-    stats.transientsDeleted = result.deleted;
-  } catch (err) {
-    logger.main.error('[AgentMessagesBackfill] backfill failed:', err);
+  const interChunkDelayMs = options.interChunkDelayMs ?? DEFAULT_INTER_CHUNK_DELAY_MS;
+  if (readFlag(SEARCHABLE_BACKFILL_COMPLETE_FLAG_KEY) === true) {
+    // Drained on a previous run -- skip the extractor pass so we never re-scan
+    // ai_agent_messages on the shared SQLite worker at startup. NIM-899.
+    logger.main.info('[AgentMessagesBackfill] searchable/message_kind backfill already complete; skipping scan');
+  } else {
+    try {
+      const result = await backfillAndCleanup(
+        db,
+        options.chunkSize ?? SELECT_CHUNK_SIZE,
+        deleteTransients,
+        interChunkDelayMs,
+      );
+      stats.searchableTextBackfilled = result.updated;
+      stats.transientsDeleted = result.deleted;
+      // Only record completion when the pass drained every NULL row without a
+      // single UPDATE failure -- a failed row stays NULL and must be retried on
+      // the next startup, so we must not flag the backfill done.
+      if (result.drainedClean) {
+        writeFlag(SEARCHABLE_BACKFILL_COMPLETE_FLAG_KEY, true);
+      }
+    } catch (err) {
+      logger.main.error('[AgentMessagesBackfill] backfill failed:', err);
+    }
   }
 
   if (deleteTransients) {
@@ -125,6 +171,7 @@ export async function runAgentMessagesBackfill(
         db,
         options.chunkSize ?? SELECT_CHUNK_SIZE,
         options.flagStore,
+        interChunkDelayMs,
       );
     } catch (err) {
       logger.main.error('[AgentMessagesBackfill] historical transient cleanup failed:', err);
@@ -144,24 +191,19 @@ async function backfillAndCleanup(
   db: StoreDbAdapter,
   chunkSize: number,
   deleteTransients: boolean,
-): Promise<{ updated: number; deleted: number }> {
+  interChunkDelayMs: number,
+): Promise<{ updated: number; deleted: number; drainedClean: boolean }> {
   let updated = 0;
   let deleted = 0;
   let lastId = 0;
+  let totalFailures = 0;
 
-  // Initial pending-count log lets us see how much work the loop intends to
-  // do. On healthy DBs this is small (the new write path sets message_kind
-  // at insert time). On DBs that predate the extractor it can be 1M+, in
-  // which case per-row UPDATEs across the worker IPC are the bottleneck.
-  try {
-    const { rows: pendingRows } = await db.query<{ pending: number }>(
-      `SELECT COUNT(*) AS pending FROM ai_agent_messages WHERE message_kind IS NULL`,
-    );
-    const pending = Number(pendingRows[0]?.pending ?? 0);
-    logger.main.info(`[AgentMessagesBackfill] pending rows: ${pending}`);
-  } catch (err) {
-    logger.main.warn('[AgentMessagesBackfill] pending-count probe failed:', err);
-  }
+  // No upfront COUNT(*) probe here: `WHERE message_kind IS NULL` cannot use the
+  // partial index (idx_ai_agent_messages_user_prompts is `WHERE searchable_text
+  // IS NOT NULL`), so counting full-scanned ~1.3M rows for ~12s on every startup
+  // just to print a log line -- and that scan blocked the whole startup on the
+  // shared SQLite worker. The chunked loop below reveals the same information
+  // via its progress logs and the natural-drain break. NIM-899.
 
   let chunkIdx = 0;
   let lastProgressLogAt = Date.now();
@@ -236,6 +278,7 @@ async function backfillAndCleanup(
       }
     }
     if (perRowFailures > 0) {
+      totalFailures += perRowFailures;
       logger.main.warn(
         `[AgentMessagesBackfill] chunk had ${perRowFailures} UPDATE failures (showed first 3)`,
       );
@@ -264,6 +307,9 @@ async function backfillAndCleanup(
       lastProgressLogAt = now;
     }
     if (rows.length < chunkSize) break;
+    // Cede the shared SQLite worker between chunks so user-facing queries that
+    // arrive mid-run aren't head-of-line-blocked. NIM-899.
+    await delay(interChunkDelayMs);
   }
 
   if (updated > 0) {
@@ -272,7 +318,11 @@ async function backfillAndCleanup(
   if (deleted > 0) {
     logger.main.info(`[AgentMessagesBackfill] deleted ${deleted} transient claude-code rows`);
   }
-  return { updated, deleted };
+  // The while-loop only exits via its natural-drain breaks (empty chunk or a
+  // short final chunk), so reaching here means every NULL row was visited.
+  // `drainedClean` gates the run-once completion flag: a row whose UPDATE
+  // failed stays NULL and must be revisited next startup.
+  return { updated, deleted, drainedClean: totalFailures === 0 };
 }
 
 /**
@@ -291,6 +341,7 @@ async function cleanupAlreadyClassifiedTransients(
   db: StoreDbAdapter,
   chunkSize: number,
   flagStore?: AgentMessagesBackfillOptions['flagStore'],
+  interChunkDelayMs = 0,
 ): Promise<number> {
   const readFlag = flagStore?.get ?? ((k: string) => getAppSetting<boolean>(k));
   const writeFlag = flagStore?.set ?? ((k: string, v: boolean) => setAppSetting<boolean>(k, v));
@@ -334,6 +385,7 @@ async function cleanupAlreadyClassifiedTransients(
 
     lastId = rows[rows.length - 1].id;
     if (rows.length < chunkSize) break;
+    await delay(interChunkDelayMs);
   }
 
   // Set the flag only on clean completion. A mid-scan crash leaves the flag

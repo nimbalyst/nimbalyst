@@ -192,6 +192,71 @@ export interface RelationshipEdge {
   metadata?: Record<string, unknown>;
 }
 
+/** A minimal reference to the source item, stamped onto a target's inverse field. */
+export interface InverseSourceRef {
+  itemId: string;
+  issueKey?: string;
+  title?: string;
+  trackerType?: string;
+}
+
+/** One inverse-field mutation to apply to a target item (Phase 3). */
+export interface InverseFieldDelta {
+  /** The target item whose inverse field changes. */
+  targetItemId: string;
+  /** The field name on the target type that holds the inverse value. */
+  inverseFieldId: string;
+  /** Add (source now links to target) or remove (link was dropped). */
+  op: 'add' | 'remove';
+  /** The value (referencing the SOURCE item) to add/remove on the target. */
+  value: TrackerRelationshipValue;
+}
+
+/**
+ * Compute the inverse-field mutations for ONE relationship field after a source
+ * item's value changed from `prev` to `next` (Phase 3 bidirectional write).
+ *
+ * Returns [] unless the field declares an `inverseFieldId` — only then is the
+ * inverse materialized as a real field on the target. Added targets get an `add`
+ * delta; dropped targets get a `remove`. The stamped value references the source
+ * item and carries the field's `inverseRelationshipTypeKey` so the target pill
+ * reads in the right direction (e.g. source `depends-on` → target `blocks`).
+ *
+ * Pure: the caller persists the result through the synced write path.
+ */
+export function computeInverseFieldDeltas(
+  def: FieldDefinition,
+  source: InverseSourceRef,
+  prev: unknown,
+  next: unknown,
+): InverseFieldDelta[] {
+  if (!def.inverseFieldId) return [];
+  const prevIds = new Set(normalizeRelationshipValue(prev).map((v) => v.itemId));
+  const nextIds = new Set(normalizeRelationshipValue(next).map((v) => v.itemId));
+
+  const value: TrackerRelationshipValue = {
+    itemId: source.itemId,
+    direction: 'out',
+    ...(source.issueKey ? { issueKey: source.issueKey } : {}),
+    ...(source.title ? { title: source.title } : {}),
+    ...(source.trackerType ? { trackerType: source.trackerType } : {}),
+    ...(def.inverseRelationshipTypeKey ? { relationshipTypeKey: def.inverseRelationshipTypeKey } : {}),
+  };
+
+  const deltas: InverseFieldDelta[] = [];
+  for (const targetItemId of nextIds) {
+    if (!prevIds.has(targetItemId)) {
+      deltas.push({ targetItemId, inverseFieldId: def.inverseFieldId, op: 'add', value });
+    }
+  }
+  for (const targetItemId of prevIds) {
+    if (!nextIds.has(targetItemId)) {
+      deltas.push({ targetItemId, inverseFieldId: def.inverseFieldId, op: 'remove', value });
+    }
+  }
+  return deltas;
+}
+
 /**
  * Derive the outgoing relationship edges for one item from its `fields` bag and
  * its schema's field definitions. Pure: the index store persists the result.

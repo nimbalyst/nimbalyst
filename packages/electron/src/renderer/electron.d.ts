@@ -874,7 +874,10 @@ interface ElectronAPI {
         documentId: string;
         title: string;
         documentType?: string;
+        keyCustody?: 'legacy-e2e' | 'server-managed';
         orgKeyBase64: string;
+        /** Legacy org key for reading pre-migration rows in server-managed mode (NIM-878). */
+        legacyOrgKeyBase64?: string;
         orgKeyFingerprint?: string;
         serverUrl: string;
         userId: string;
@@ -1049,6 +1052,8 @@ interface ElectronAPI {
       success: boolean;
       config?: {
         orgId: string;
+        teamProjectId?: string | null;
+        keyCustody?: 'legacy-e2e' | 'server-managed';
         orgKeyBase64: string;
         orgKeyFingerprint: string | null;
         serverUrl: string;

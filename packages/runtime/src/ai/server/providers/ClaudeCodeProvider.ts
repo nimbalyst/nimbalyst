@@ -58,6 +58,7 @@ import { parseBashForFileOps, hasShellChainingOperators, splitOnShellOperators }
 import { ToolPermissionService } from '../permissions/ToolPermissionService';
 import { AgentToolHooks } from '../permissions/AgentToolHooks';
 import { McpConfigService } from '../services/McpConfigService';
+import { getMcpConfigService, isInternalMcpServerEnabled } from '../services/mcpServerConfig';
 import { historyManager } from '../../../../../electron/src/main/HistoryManager';
 import {
   appendLargeAttachmentInstructions,
@@ -298,17 +299,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       });
     }
 
-    // Initialize MCP configuration service
-    this.mcpConfigService = new McpConfigService({
-      mcpServerPort: ClaudeCodeDeps.mcpServerPort,
-      sessionNamingServerPort: ClaudeCodeDeps.sessionNamingServerPort,
-      extensionDevServerPort: ClaudeCodeDeps.extensionDevServerPort,
-      superLoopProgressServerPort: null, // Disabled - was leaking into non-super-loop sessions
-      sessionContextServerPort: ClaudeCodeDeps.sessionContextServerPort,
-      metaAgentServerPort: ClaudeCodeDeps.metaAgentServerPort,
-      settingsServerPort: ClaudeCodeDeps.settingsServerPort,
-      settingsAgentToolsDisabledLoader: ClaudeCodeDeps.settingsAgentToolsDisabledLoader,
-      mcpAuthToken: ClaudeCodeDeps.mcpAuthToken,
+    // Initialize MCP configuration service from the shared registry + the
+    // provider-owned config/env loaders.
+    this.mcpConfigService = getMcpConfigService({
       mcpConfigLoader: ClaudeCodeDeps.mcpConfigLoader,
       claudeSettingsEnvLoader: ClaudeCodeDeps.claudeSettingsEnvLoader,
       shellEnvironmentLoader: ClaudeCodeDeps.shellEnvironmentLoader,
@@ -401,15 +394,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
   static readonly DEFAULT_MODEL = ClaudeCodeDeps.DEFAULT_MODEL;
 
-  public static setMcpServerPort(port: number | null): void { ClaudeCodeDeps.setMcpServerPort(port); }
-  public static setSessionNamingServerPort(port: number | null): void { ClaudeCodeDeps.setSessionNamingServerPort(port); }
-  public static setExtensionDevServerPort(port: number | null): void { ClaudeCodeDeps.setExtensionDevServerPort(port); }
-  public static setSuperLoopProgressServerPort(port: number | null): void { ClaudeCodeDeps.setSuperLoopProgressServerPort(port); }
-  public static setSessionContextServerPort(port: number | null): void { ClaudeCodeDeps.setSessionContextServerPort(port); }
-  public static setMetaAgentServerPort(port: number | null): void { ClaudeCodeDeps.setMetaAgentServerPort(port); }
-  public static setSettingsServerPort(port: number | null): void { ClaudeCodeDeps.setSettingsServerPort(port); }
-  public static setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void { ClaudeCodeDeps.setSettingsAgentToolsDisabledLoader(loader); }
-  public static setMcpAuthToken(token: string | null): void { ClaudeCodeDeps.setMcpAuthToken(token); }
+  // Internal MCP-server ports / kill-switches / loaders / auth token are
+  // configured once via `configureMcpServers` (shared registry), not per-provider.
   public static setMCPConfigLoader(loader: ((workspacePath?: string) => Promise<Record<string, any>>) | null): void { ClaudeCodeDeps.setMCPConfigLoader(loader); }
   public static setExtensionPluginsLoader(loader: ((workspacePath?: string) => Promise<Array<{ type: 'local'; path: string }>>) | null): void { ClaudeCodeDeps.setExtensionPluginsLoader(loader); }
   public static setClaudeCodeSettingsLoader(loader: (() => Promise<{ projectCommandsEnabled: boolean; userCommandsEnabled: boolean }>) | null): void { ClaudeCodeDeps.setClaudeCodeSettingsLoader(loader); }
@@ -996,7 +982,22 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
               case 'usage':
                 usageData = item.usage;
-                if (item.isPerStep) lastAssistantUsage = item.usage;
+                if (item.isPerStep) {
+                  lastAssistantUsage = item.usage;
+                  // Surface context fill live, per assistant step, so the UI's
+                  // context indicator updates throughout a long agentic turn
+                  // instead of only at the `result` chunk (turn end). This is a
+                  // mid-turn snapshot: contextFillTokens ONLY -- cumulative
+                  // input/output usage stays on the `complete` chunk to avoid
+                  // double-counting. See NIM-868.
+                  const stepContextTokens =
+                    (item.usage?.input_tokens || 0)
+                    + (item.usage?.cache_read_input_tokens || 0)
+                    + (item.usage?.cache_creation_input_tokens || 0);
+                  if (stepContextTokens > 0) {
+                    yield { type: 'context_usage', contextFillTokens: stepContextTokens };
+                  }
+                }
                 if (item.modelUsage) modelUsageData = item.modelUsage;
                 break;
 
@@ -3174,7 +3175,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       });
     }
 
-    const hasSessionNaming = ClaudeCodeDeps.sessionNamingServerPort !== null;
+    const hasSessionNaming = isInternalMcpServerEnabled();
     const worktreePath = documentContext?.worktreePath;
     const isVoiceMode = (documentContext as any)?.isVoiceMode;
     const voiceModeCodingAgentPrompt = (documentContext as any)?.voiceModeCodingAgentPrompt;

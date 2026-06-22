@@ -47,6 +47,18 @@ entries merged on top.
 - **Bundling**: Both engines are fully bundled in packaged apps
 - **SQLite write coordination**: A WriteCoordinator serializes writes into a batched lane and chunks background work, avoiding head-of-line blocking that PGLite suffered from
 
+## CRITICAL: Startup maintenance must be deferred and chunked
+
+The SQLite worker is a single thread and processes messages **FIFO and synchronously** — one long query head-of-line-blocks every read/write queued behind it. "Fire it un-awaited so it's off the critical path" is **false** for anything that hits the worker: it still serializes against the queries that load the first window.
+
+Rules for any startup maintenance pass (transcript backfill, transient sweep, FTS rebuild, vacuum, bulk re-index, migrations):
+
+1. **Defer past first-usable.** Schedule it via `runWhenFirstUsable(label, fn)` from `services/startupMaintenanceGate.ts` (resolves on first window painted + idle, with a ceiling fallback). Do **not** run it inline in `RepositoryManager.initialize()` or any other startup path.
+2. **Never issue an unbounded scan.** A `COUNT(*) … WHERE <unindexed>` or any full-table predicate on a large table (`ai_agent_messages` can be >1M rows) will stall the worker for seconds. Gate completion with a persisted flag and use a bounded existence check (`LIMIT 1`) instead of a count.
+3. **Chunk + cede the worker.** Walk in `id`-ranged chunks and pause briefly between chunks (`interChunkDelayMs`) so concurrent user queries interleave. Worker-internal bulk writes (migrator, FTS rebuild) go through `WriteCoordinator.runBackground` instead, which yields between chunks on its own lane.
+
+Past incident (NIM-899): the transcript backfill ran un-awaited at startup with a `COUNT(*) WHERE message_kind IS NULL` probe that full-scanned ~1.3M rows for ~12s, head-of-line-blocking `sessions:list` / `tracker-items-list` / `ai:loadSession` for 30–39s each.
+
 ## Database Tables
 
 - **`ai_sessions`**: AI chat conversations with full message history, document context, and provider configurations

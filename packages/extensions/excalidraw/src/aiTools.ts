@@ -137,6 +137,7 @@ export const aiTools = [
   {
     name: 'get_elements',
     scope: 'global' as const,
+    readOnly: true,
     description: 'Get list of diagram elements with labels and group membership. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,

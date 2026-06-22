@@ -1,5 +1,6 @@
 import type { DocumentContext } from './types';
 import { getPreferredAgentLanguage } from './server/preferredAgentLanguageConfig';
+import { MCP_CORE } from './server/services/mcpTopology';
 
 /**
  * Build session naming instructions section
@@ -19,7 +20,9 @@ function buildSessionNamingSection(
   hasOutOfBandNaming: boolean = false,
   preferredAgentLanguage?: string
 ): string {
-  const toolReference = formatMcpToolReference('nimbalyst-session-naming', 'update_session_meta', style);
+  // update_session_meta folds into the eager core `nimbalyst` server (MCP
+  // consolidation Phase 5).
+  const toolReference = formatMcpToolReference('nimbalyst', 'update_session_meta', style);
 
   const firstTurnSection = hasOutOfBandNaming
     ? `### First turn
@@ -166,11 +169,12 @@ export function buildClaudeCodeSystemPrompt(options: ClaudeCodePromptOptions): s
     planTrackingEnabled = false,
   } = options;
   const effectiveToolReferenceStyle = sessionNamingInstructionStyle ?? toolReferenceStyle;
-  const displayToUserTool = formatMcpToolReference('nimbalyst-mcp', 'display_to_user', effectiveToolReferenceStyle);
-  const captureEditorScreenshotTool = formatMcpToolReference('nimbalyst-mcp', 'capture_editor_screenshot', effectiveToolReferenceStyle);
-  const askUserQuestionTool = formatMcpToolReference('nimbalyst-mcp', 'AskUserQuestion', effectiveToolReferenceStyle);
-  const promptForUserInputTool = formatMcpToolReference('nimbalyst-mcp', 'PromptForUserInput', effectiveToolReferenceStyle);
-  const gitCommitProposalTool = formatMcpToolReference('nimbalyst-mcp', 'developer_git_commit_proposal', effectiveToolReferenceStyle);
+  // These are all core tools, served by the eager `nimbalyst` server.
+  const displayToUserTool = formatMcpToolReference(MCP_CORE, 'display_to_user', effectiveToolReferenceStyle);
+  const captureEditorScreenshotTool = formatMcpToolReference(MCP_CORE, 'capture_editor_screenshot', effectiveToolReferenceStyle);
+  const askUserQuestionTool = formatMcpToolReference(MCP_CORE, 'AskUserQuestion', effectiveToolReferenceStyle);
+  const promptForUserInputTool = formatMcpToolReference(MCP_CORE, 'PromptForUserInput', effectiveToolReferenceStyle);
+  const gitCommitProposalTool = formatMcpToolReference(MCP_CORE, 'developer_git_commit_proposal', effectiveToolReferenceStyle);
 
   let prompt = `The following is an addendum to the above. Anything in the addendum supersedes the above.
 <addendum>
@@ -341,14 +345,16 @@ export function buildMetaAgentSystemPrompt(
   workflowPreset: MetaAgentWorkflowPreset = 'default',
   options?: { provider?: string; model?: string; modelDisplayName?: string }
 ): string {
-  const listSpawnedSessionsTool = formatMcpToolReference('nimbalyst-meta-agent', 'list_spawned_sessions', style);
-  const listWorktreesTool = formatMcpToolReference('nimbalyst-meta-agent', 'list_worktrees', style);
-  const createSessionTool = formatMcpToolReference('nimbalyst-meta-agent', 'create_session', style);
-  const getSessionStatusTool = formatMcpToolReference('nimbalyst-meta-agent', 'get_session_status', style);
-  const getSessionResultTool = formatMcpToolReference('nimbalyst-meta-agent', 'get_session_result', style);
-  const sendPromptTool = formatMcpToolReference('nimbalyst-meta-agent', 'send_prompt', style);
-  const respondToPromptTool = formatMcpToolReference('nimbalyst-meta-agent', 'respond_to_prompt', style);
-  const updateSessionMetaTool = formatMcpToolReference('nimbalyst-session-naming', 'update_session_meta', style);
+  // Meta-agent tools fold onto the deferred `nimbalyst-host` server, and
+  // update_session_meta onto the eager core `nimbalyst` (MCP consolidation Phase 5).
+  const listSpawnedSessionsTool = formatMcpToolReference('nimbalyst-host', 'list_spawned_sessions', style);
+  const listWorktreesTool = formatMcpToolReference('nimbalyst-host', 'list_worktrees', style);
+  const createSessionTool = formatMcpToolReference('nimbalyst-host', 'create_session', style);
+  const getSessionStatusTool = formatMcpToolReference('nimbalyst-host', 'get_session_status', style);
+  const getSessionResultTool = formatMcpToolReference('nimbalyst-host', 'get_session_result', style);
+  const sendPromptTool = formatMcpToolReference('nimbalyst-host', 'send_prompt', style);
+  const respondToPromptTool = formatMcpToolReference('nimbalyst-host', 'respond_to_prompt', style);
+  const updateSessionMetaTool = formatMcpToolReference('nimbalyst', 'update_session_meta', style);
   // Meta-agent self-identity. Built-in providers (claude-code, openai-codex) pass no
   // modelDisplayName, so they keep the original 'running as provider X with model Y'
   // line unchanged. Extension agents (gemini) pass a display name and self-identify by

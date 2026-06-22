@@ -40,8 +40,15 @@ export interface CollabHistoryClientConfig {
   orgId: string;
   /** Document identity. */
   documentId: string;
-  /** AES-256-GCM key shared with the document (same as DocumentSyncConfig.documentKey). */
-  documentKey: CryptoKey;
+  /**
+   * Epic H2 key custody. `legacy-e2e` (default): the client encrypts/decrypts
+   * revision payloads with `documentKey`. `server-managed`: the server encrypts
+   * at rest with the team DEK, so the client sends/receives PLAINTEXT payloads
+   * (base64, iv `''`) and `documentKey` is unused.
+   */
+  keyCustody?: 'legacy-e2e' | 'server-managed';
+  /** AES-256-GCM key shared with the document. Required in legacy-e2e only. */
+  documentKey?: CryptoKey;
 }
 
 export interface CreateRevisionInput {
@@ -92,13 +99,16 @@ export class CollabHistoryClient {
     const url = this.buildRequestUrl(`/sync/${this.roomId}/revisions/${encodeURIComponent(revisionId)}`);
     const response = await this.fetchAuthed(url, { method: 'GET' });
     const body = (await response.json()) as DocRevisionDetailResponse;
-    const plaintext = await decryptRevisionPayload(
-      this.config.documentKey,
-      this.config.orgId,
-      this.config.documentId,
-      body.metadata,
-      body.payload
-    );
+    // Server-managed: the payload is already plaintext (the server decrypted it).
+    const plaintext = this.config.keyCustody === 'server-managed'
+      ? base64ToBytes(body.payload.encryptedSnapshot)
+      : await decryptRevisionPayload(
+          this.config.documentKey!,
+          this.config.orgId,
+          this.config.documentId,
+          body.metadata,
+          body.payload
+        );
     return { metadata: body.metadata, plaintext };
   }
 
@@ -159,11 +169,20 @@ export class CollabHistoryClient {
   }
 
   private async encryptPayload(contentHash: string, plaintext: Uint8Array): Promise<DocRevisionPayload> {
+    // Server-managed: send PLAINTEXT (base64, iv sentinel ''); the server
+    // encrypts at rest with the team DEK.
+    if (this.config.keyCustody === 'server-managed') {
+      return {
+        encryptedSnapshot: bytesToBase64(plaintext),
+        iv: '',
+        encodingVersion: REVISION_ENCODING_VERSION,
+      };
+    }
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const aad = buildRevisionAad(this.config.orgId, this.config.documentId, contentHash);
     const ciphertext = await crypto.subtle.encrypt(
       { name: 'AES-GCM', iv, additionalData: aad as BufferSource },
-      this.config.documentKey,
+      this.config.documentKey!,
       plaintext as BufferSource
     );
     return {

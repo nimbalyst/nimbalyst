@@ -441,7 +441,12 @@ export interface ProviderSettings {
 }
 
 export interface StreamChunk {
-  type: 'text' | 'tool_call' | 'tool_error' | 'error' | 'complete' | 'stream_edit_start' | 'stream_edit_content' | 'stream_edit_end' | 'pre_edit_snapshot' | 'post_edit_snapshot';
+  // 'context_usage' is a lightweight, mid-turn update that carries ONLY
+  // contextFillTokens so the UI's context indicator can refresh per assistant
+  // step during a long agentic turn (instead of once per turn at 'complete').
+  // It must never carry cumulative input/output usage -- those stay on
+  // 'complete' to avoid double-counting. See NIM-868.
+  type: 'text' | 'tool_call' | 'tool_error' | 'error' | 'complete' | 'context_usage' | 'stream_edit_start' | 'stream_edit_content' | 'stream_edit_end' | 'pre_edit_snapshot' | 'post_edit_snapshot';
   content?: string;
   isSystem?: boolean; // For system messages like slash command output
   toolCall?: {

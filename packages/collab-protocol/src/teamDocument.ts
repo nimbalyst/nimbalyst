@@ -81,7 +81,18 @@ export type DocServerMessage =
   | DocUpdateAckMessage
   | DocAwarenessBroadcastMessage
   | KeyEnvelopeMessage
+  | DocRoomMovedMessage
   | DocErrorMessage;
+
+/**
+ * Sent when this document room has been relocated to another org by the move
+ * engine (Epic H3 P1). The doc id is unchanged; only the org changes. The
+ * client must re-resolve which org the document now belongs to and reconnect.
+ */
+export interface DocRoomMovedMessage {
+  type: 'docRoomMoved';
+  destOrgId: string;
+}
 
 /** Response to docSyncRequest with paginated encrypted updates */
 export interface DocSyncResponseMessage {

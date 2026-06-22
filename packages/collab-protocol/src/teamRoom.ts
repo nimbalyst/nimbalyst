@@ -69,6 +69,13 @@ export interface TeamDocIndexRegisterMessage {
   encryptedTitle: string;
   titleIv: string;
   documentType: string;
+  /**
+   * Epic H3 P0: the project this document belongs to (the tracker-room routing
+   * `teamProjectId`). Optional for backward compatibility — when omitted the
+   * server tags the doc with the org's primary project. Lets a project move
+   * answer "which docs travel with this project."
+   */
+  projectId?: string | null;
   orgKeyFingerprint?: string | null;
 }
 
@@ -222,6 +229,12 @@ export interface EncryptedDocIndexEntry {
   createdBy: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Epic H3 P0: the project this document belongs to (tracker-room routing
+   * `teamProjectId`). Null for legacy/pre-H3 rows (treated as the org's
+   * primary project at read time).
+   */
+  projectId?: string | null;
 }
 
 /** Full team state snapshot sent on teamSync */

@@ -863,6 +863,19 @@ export interface ExtensionAITool {
    */
   editorFilePatterns?: string[];
 
+  /**
+   * Declares that this tool only READS the editor/file and never mutates it.
+   *
+   * The host serves editor-scoped tools against non-visible files via a hidden
+   * editor instance. After a tool runs the host flushes that editor to disk so
+   * mutations persist. For a read-only tool that flush is not just unnecessary --
+   * it can overwrite an out-of-band write (e.g. the agent's own Edit) with the
+   * hidden editor's buffer. Set `readOnly: true` so the host skips the flush.
+   *
+   * Default (unset) is treated as mutating, so existing tools keep flushing.
+   */
+  readOnly?: boolean;
+
   /** Handler function */
   handler: (
     params: Record<string, unknown>,

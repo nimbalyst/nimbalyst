@@ -13,10 +13,27 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class NimbalystApplication : Application() {
     val applicationScope: CoroutineScope by lazy {
         CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    }
+
+    // A session id pending in-app navigation, set when the app is opened via a
+    // notification tap / `nimbalyst://session/<id>` deep link. The Compose nav
+    // host observes this and routes to the session, then clears it.
+    private val _pendingSessionNavigation = MutableStateFlow<String?>(null)
+    val pendingSessionNavigation: StateFlow<String?> = _pendingSessionNavigation.asStateFlow()
+
+    fun requestSessionNavigation(sessionId: String) {
+        _pendingSessionNavigation.value = sessionId
+    }
+
+    fun consumeSessionNavigation() {
+        _pendingSessionNavigation.value = null
     }
 
     val database: NimbalystDatabase by lazy {

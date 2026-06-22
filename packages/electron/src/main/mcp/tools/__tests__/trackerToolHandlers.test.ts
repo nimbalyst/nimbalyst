@@ -48,7 +48,7 @@ vi.mock('../../../services/TrackerIdentityService', () => ({
 vi.mock('../../../services/TrackerPolicyService', () => ({
   getEffectiveTrackerSyncPolicy: vi.fn(() => ({ mode: 'local', scope: 'project' })),
   getInitialTrackerSyncStatus: vi.fn(() => 'local'),
-  shouldSyncTrackerPolicy: vi.fn(() => false),
+  shouldSyncTrackerItem: vi.fn(() => false),
 }));
 
 vi.mock('../../../services/TrackerSyncManager', () => ({
@@ -121,7 +121,7 @@ import {
   rowToTrackerItem,
 } from '../trackerToolHandlers';
 import { isTrackerSyncActive } from '../../../services/TrackerSyncManager';
-import { getEffectiveTrackerSyncPolicy, shouldSyncTrackerPolicy } from '../../../services/TrackerPolicyService';
+import { getEffectiveTrackerSyncPolicy, shouldSyncTrackerItem } from '../../../services/TrackerPolicyService';
 
 function makeRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -783,7 +783,7 @@ describe('handleTrackerUpdate description / collab body', () => {
     mockGlobalRegistry.validate.mockReturnValue({ valid: true, errors: [] });
     // Default: non-collab (local) workspace -- description writes proceed.
     vi.mocked(getEffectiveTrackerSyncPolicy).mockReturnValue({ mode: 'local', scope: 'project' });
-    vi.mocked(shouldSyncTrackerPolicy).mockReturnValue(false);
+    vi.mocked(shouldSyncTrackerItem).mockReturnValue(false);
     vi.mocked(isTrackerSyncActive).mockReturnValue(false);
   });
 

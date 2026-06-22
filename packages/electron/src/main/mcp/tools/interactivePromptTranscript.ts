@@ -14,7 +14,7 @@
  * The genuine `claude` CLI is an external process talking to our in-process MCP
  * server over HTTP — it NEVER writes to `ai_agent_messages`. So when the model
  * (forced off the built-in via `--disallowedTools AskUserQuestion`) calls our
- * `mcp__nimbalyst-mcp__AskUserQuestion`, the handler blocks but nothing renders
+ * `mcp__nimbalyst__AskUserQuestion`, the handler blocks but nothing renders
  * a widget, and the CLI hangs. We close that gap by persisting the same
  * `nimbalyst_tool_use` / `nimbalyst_tool_result` rows the SDK path would have
  * produced — keyed by the CLI's `claudecode/toolUseId` (resolved upstream).

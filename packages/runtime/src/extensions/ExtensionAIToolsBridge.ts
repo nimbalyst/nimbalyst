@@ -38,6 +38,8 @@ export interface MCPToolDefinition {
   extensionId: string;
   scope: 'global' | 'editor';
   editorFilePatterns?: string[];
+  /** Read-only tools skip the post-execution hidden-editor flush. See NIM-905. */
+  readOnly?: boolean;
 }
 
 // Callback for notifying about tool changes (set by renderer)
@@ -107,6 +109,7 @@ export function getMCPToolDefinitions(): MCPToolDefinition[] {
         extensionId: extension.manifest.id,
         scope,
         editorFilePatterns,
+        readOnly: tool.readOnly,
       });
     }
   }
@@ -239,7 +242,10 @@ export async function executeExtensionTool(
 
     // Flush save immediately after tool execution to prevent data loss
     // when the user closes the tab before the normal auto-save interval fires.
-    if (resolvedFilePath) {
+    // Skip for read-only tools (NIM-905): they don't mutate the editor, and
+    // flushing a hidden editor's buffer can clobber an out-of-band write (e.g.
+    // the agent's own Edit to the same file).
+    if (resolvedFilePath && !handler.tool.readOnly) {
       flushEditorSave(resolvedFilePath);
     }
 

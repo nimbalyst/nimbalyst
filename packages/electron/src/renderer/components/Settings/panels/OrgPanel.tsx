@@ -43,7 +43,7 @@ interface ResolvedOrg {
 // settings panels); cast once here.
 const api = () => (window as { electronAPI?: any }).electronAPI;
 
-export function OrgPanel({ workspacePath }: { workspacePath?: string }) {
+export function OrgPanel({ workspacePath, orgId: orgScopeId }: { workspacePath?: string; orgId?: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [org, setOrg] = useState<ResolvedOrg | null>(null);
@@ -55,7 +55,7 @@ export function OrgPanel({ workspacePath }: { workspacePath?: string }) {
   const isAdmin = org?.callerRole === 'admin' || org?.callerRole === 'owner';
 
   const load = useCallback(async () => {
-    if (!workspacePath) {
+    if (!workspacePath && !orgScopeId) {
       setLoading(false);
       setOrg(null);
       return;
@@ -63,9 +63,17 @@ export function OrgPanel({ workspacePath }: { workspacePath?: string }) {
     setLoading(true);
     setError(null);
     try {
-      const found = await api()?.team?.findForWorkspace(workspacePath);
-      const team = found?.team;
-      if (!found?.success || !team?.orgId) {
+      // Epic H3 P3: Organization scope keys off the selected org id; otherwise
+      // resolve the org from the active workspace's matched team (legacy).
+      let team: { orgId: string; name: string; teamProjectId?: string | null; role?: string } | null = null;
+      if (orgScopeId) {
+        const listRes = await api()?.team?.list();
+        team = (listRes?.teams || []).find((t: any) => t.orgId === orgScopeId) ?? null;
+      } else {
+        const found = await api()?.team?.findForWorkspace(workspacePath);
+        team = found?.success ? found?.team ?? null : null;
+      }
+      if (!team?.orgId) {
         setOrg(null);
         setMembers([]);
         setGrants(new Map());
@@ -102,7 +110,7 @@ export function OrgPanel({ workspacePath }: { workspacePath?: string }) {
     } finally {
       setLoading(false);
     }
-  }, [workspacePath]);
+  }, [workspacePath, orgScopeId]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -149,6 +157,12 @@ export function OrgPanel({ workspacePath }: { workspacePath?: string }) {
 
   const handleRemove = async (memberId: string) => {
     if (!org) return;
+    const member = members.find((m) => m.memberId === memberId);
+    const label = member?.email || member?.name || 'this member';
+    const confirmed = window.confirm(
+      `Remove ${label} from "${org.name}"? They will lose access to every project in this organization. This cannot be undone (you'd need to re-invite them).`
+    );
+    if (!confirmed) return;
     setBusyMemberId(memberId);
     try {
       await api()?.team?.removeMember(org.orgId, memberId);

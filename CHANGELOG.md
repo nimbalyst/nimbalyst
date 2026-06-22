@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Custom completion sounds — pick your own audio file (MP3, WAV, OGG, M4A, AAC, FLAC) to play when an agent finishes a turn.
 <!-- New features go here -->
 - iOS: create a Meta Agent from the session create menu (alpha-gated to mirror the desktop `meta-agent` feature flag, synced to mobile).
 - New Gemini (Antigravity) marketplace extension, usable as an AI chat and meta-agent provider, with a usage indicator chip. (#558)
@@ -18,15 +19,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New tracker views — a tag board, saved views (filter and group), and kanban columns that follow each type's custom status order.
 - Customize or reset a tracker type's schema from Settings, with a drift warning when the saved schema diverges from its files.
 - Edit and delete your own tracker comments.
+- Share individual plans (and other full-document trackers) with your team: the shared copy keeps its status, lifecycle, and body in sync — including changes made offline — and unsharing removes it for everyone, while unshared items stay private.
+- Control whether AI agents can use your trackers per project, with an "AI Agent Access" toggle in tracker settings.
 
 ### Changed
 - Contextual tips now fill empty AI sessions immediately and on every empty session, instead of after a delay and only once per app launch.
 
 ### Fixed
 - Sign-in now completes on Linux AppImage builds — the `nimbalyst://` URL handler is registered at startup so the OAuth browser callback reopens the app correctly.
+- Startup is fast again after restart: a transcript maintenance pass that could stall the app for tens of seconds on large histories is now deferred until after the first window loads.
+- AI tools for custom editors (diagrams, CAD, etc.) no longer revert a change the agent just wrote to a file that isn't open in a tab.
+- The Themes, Shared Links, and Database settings panels now open instead of snapping back to the first agent provider.
+- A session can now spawn child sessions again after several have finished — the limit is on how many run at once, not a lifetime total.
+- The welcome dialog no longer re-appears on a slow or busy startup after you've already completed onboarding.
+- Restarting the app no longer occasionally loses your open project windows and drops you back on the Workspace Manager.
+- The Claude Code context indicator now updates throughout a turn instead of only at the end, and no longer bounces when sub-agents run.
 - Personal docs sync no longer overwrites newer local edits (or an open editor's unsaved changes) with an older synced copy.
 - "Commit with AI" in a worktree now proposes all uncommitted changes in the worktree, not just the current session's edits.
 - Claude Code CLI sessions now show an install link when the Claude Code CLI isn't installed, instead of a cryptic terminal error.
+- The Claude Code login prompt no longer falsely reports "logged in" when the bundled Claude runtime is missing, and now suggests running /login in a terminal if sign-in keeps failing.
+- Commit with AI (and other in-app git actions) now run hooks with your shell PATH, so husky hooks that call yarn/node no longer fail with "command not found". (#643)
 - Stop the AskUserQuestion widget from crashing when a question is missing its options.
 - Deleting a custom tracker type no longer fails on the SQLite backend.
 - Launching a sibling session from a normal session no longer moves it (and the new session) into the Meta Agent group in the session list.
@@ -34,7 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The tracker detail panel no longer overwrites custom field edits made elsewhere while it's open.
 - Personal and settings sync no longer gets stuck when a stale stored account id blocked the personal sync connection.
 - Tracker table columns for custom fields (such as PR links, author, and number in the GitHub PRs tracker) no longer render blank.
+- AI agents reading a tracker item now see its custom fields (such as a GitHub PR's number and author), which were previously omitted from the item's details.
 - Tracker types shared via team sync now persist across restarts (including synced overrides of built-in types), and synced tracker items no longer silently fail to save on some databases.
+- A session no longer gets stuck showing "awaiting user input" when an interactive prompt is abandoned (e.g. you send a new message instead of answering it).
 
 ### Removed
 <!-- Removed features go here -->

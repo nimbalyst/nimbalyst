@@ -699,6 +699,58 @@ export async function deleteAllEnvelopes(orgId: string, orgScopedJwt: string): P
 }
 
 /**
+ * Epic H2 key-custody mode for a team.
+ *  - `legacy-e2e`: client-side zero-knowledge ECDH envelope model (default).
+ *  - `server-managed`: the server holds the per-team DEK and encrypts at rest;
+ *    the client syncs PLAINTEXT and needs no org key envelope.
+ */
+export type TeamKeyCustodyMode = 'legacy-e2e' | 'server-managed';
+
+export interface TeamKeyStatus {
+  mode: TeamKeyCustodyMode;
+  dekEpoch: number | null;
+  dekFingerprint: string | null;
+}
+
+/**
+ * Fetch a team's key-custody status (Epic H2). The sync managers call this on
+ * team-room open to pick their sync lane: `server-managed` skips the ECDH
+ * unwrap entirely. Falls back to `legacy-e2e` on any error so a transient
+ * failure never silently downgrades a legacy team's encryption.
+ *
+ * TEAM lane only — never call this for personal/mobile rooms (those stay
+ * zero-knowledge and have no team DEK).
+ */
+export async function fetchTeamKeyStatus(orgId: string, orgScopedJwt: string): Promise<TeamKeyStatus> {
+  try {
+    const data = await fetchApi(`/api/teams/${orgId}/key-status`, 'GET', undefined, orgScopedJwt) as {
+      mode?: string; dekEpoch?: number | null; dekFingerprint?: string | null;
+    };
+    const mode: TeamKeyCustodyMode = data.mode === 'server-managed' ? 'server-managed' : 'legacy-e2e';
+    return { mode, dekEpoch: data.dekEpoch ?? null, dekFingerprint: data.dekFingerprint ?? null };
+  } catch (err) {
+    logger.main.warn('[OrgKeyService] fetchTeamKeyStatus failed for', orgId, '-- defaulting to legacy-e2e:', err);
+    return { mode: 'legacy-e2e', dekEpoch: null, dekFingerprint: null };
+  }
+}
+
+/**
+ * Epic H2 migration cutover: flip a team's key custody to `server-managed`
+ * (admin-gated server-side). After this, the server holds the per-team DEK and
+ * encrypts team data at rest; clients sync PLAINTEXT. The caller is responsible
+ * for re-uploading the team's existing (locally-decrypted) data as plaintext so
+ * legacy ciphertext rows are replaced — see `migrateTeamToServerManaged`.
+ */
+export async function setTeamKeyCustodyMode(
+  orgId: string,
+  mode: TeamKeyCustodyMode,
+  orgScopedJwt: string,
+): Promise<void> {
+  await fetchApi(`/api/teams/${orgId}/set-key-custody-mode`, 'POST', { mode }, orgScopedJwt);
+  logger.main.info('[OrgKeyService] Set key custody mode for', orgId, '->', mode);
+}
+
+/**
  * Fetch and unwrap the org key (for non-admin members joining a team).
  *
  * Verifies the envelope's sender against the sender's registered identity
@@ -755,6 +807,19 @@ export function registerOrgKeyHandlers(): void {
   safeHandle('team:get-org-key-status', async (_event, orgId: string) => {
     try {
       return { success: true, hasKey: hasOrgKey(orgId) };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Epic H2: current key-custody mode for a team (legacy-e2e | server-managed).
+  // Drives the Security & encryption section + migration banner.
+  safeHandle('team:get-key-custody-status', async (_event, orgId: string) => {
+    if (!isAuthenticated()) return { success: false, error: 'Not authenticated' };
+    try {
+      const orgJwt = await getOrgScopedJwt(orgId);
+      const status = await fetchTeamKeyStatus(orgId, orgJwt);
+      return { success: true, mode: status.mode, dekFingerprint: status.dekFingerprint };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }

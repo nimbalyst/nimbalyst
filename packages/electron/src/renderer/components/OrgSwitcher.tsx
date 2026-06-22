@@ -21,6 +21,7 @@ import {
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
 import { openSettingsCommandAtom } from '../store/atoms/settingsNavigation';
+import { selectedOrgIdAtom } from '../store/atoms/orgScope';
 
 interface OrgEntry {
   orgId: string;
@@ -41,6 +42,7 @@ function initials(name: string): string {
 export function OrgSwitcher() {
   const activePath = useAtomValue(activeWorkspacePathAtom);
   const openSettings = useSetAtom(openSettingsCommandAtom);
+  const setSelectedOrgId = useSetAtom(selectedOrgIdAtom);
 
   const [orgs, setOrgs] = useState<OrgEntry[]>([]);
   const [activeOrgId, setActiveOrgId] = useState<string | null>(null);
@@ -96,9 +98,14 @@ export function OrgSwitcher() {
   // the personal org and no teams (keeps the rail clean for solo users).
   if (orgs.length <= 1) return null;
 
-  const goToOrgSettings = () => {
+  // Epic H3 P3: org admin lives in the Organization settings scope, keyed to the
+  // chosen org. Personal has no org admin surface, so we skip navigation there.
+  const goToOrgSettings = (orgId?: string) => {
     setOpen(false);
-    openSettings({ category: 'org', scope: 'project', timestamp: Date.now() });
+    const target = orgId ?? activeOrg?.orgId;
+    if (!target || target === 'personal') return;
+    setSelectedOrgId(target);
+    openSettings({ category: 'org', scope: 'organization', timestamp: Date.now() });
   };
 
   return (
@@ -129,7 +136,7 @@ export function OrgSwitcher() {
               <button
                 key={o.orgId}
                 className={`org-switcher-item w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--nim-bg-secondary)] ${o.orgId === activeOrgId ? 'bg-[var(--nim-bg-secondary)]' : ''}`}
-                onClick={goToOrgSettings}
+                onClick={() => goToOrgSettings(o.orgId)}
               >
                 <span className="w-6 h-6 rounded bg-gradient-to-br from-[#60a5fa] to-[#a78bfa] text-white text-[10px] font-semibold flex items-center justify-center shrink-0">
                   {initials(o.name)}
@@ -144,7 +151,7 @@ export function OrgSwitcher() {
             <div className="border-t border-[var(--nim-border)] mt-1 pt-1">
               <button
                 className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-secondary)]"
-                onClick={goToOrgSettings}
+                onClick={() => goToOrgSettings()}
               >
                 <MaterialSymbol icon="settings" size={14} />
                 Manage organization…

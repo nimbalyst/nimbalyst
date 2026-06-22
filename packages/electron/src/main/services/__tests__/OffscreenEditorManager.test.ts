@@ -6,17 +6,19 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 // Mock Electron
 vi.mock('electron', () => {
-  const MockBrowserWindow = vi.fn().mockImplementation(() => ({
-    isDestroyed: () => false,
-    on: vi.fn(),
-    close: vi.fn(),
-    loadURL: vi.fn().mockResolvedValue(undefined),
-    loadFile: vi.fn().mockResolvedValue(undefined),
-    webContents: {
-      send: vi.fn(),
-      executeJavaScript: vi.fn().mockResolvedValue(undefined),
-    },
-  }));
+  const MockBrowserWindow = vi.fn(function () {
+    return {
+      isDestroyed: () => false,
+      on: vi.fn(),
+      close: vi.fn(),
+      loadURL: vi.fn().mockResolvedValue(undefined),
+      loadFile: vi.fn().mockResolvedValue(undefined),
+      webContents: {
+        send: vi.fn(),
+        executeJavaScript: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+  });
   (MockBrowserWindow as any).getAllWindows = vi.fn(() => []);
 
   const app = {

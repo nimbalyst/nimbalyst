@@ -24,6 +24,7 @@ import { createHash } from 'crypto';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { getNormalizedGitRemote } from '../utils/gitUtils';
+import { resolveTeamForRemoteHash } from './teamProjectResolver';
 import { getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
 import {
   getAccounts,
@@ -49,6 +50,7 @@ import {
   applyMemberRoleChanged,
   applyProjectGrant,
   applyProjectRevoke,
+  upsertProject,
   type OrgWithRoster,
   type MemberInput,
   type ProjectionDb,
@@ -111,6 +113,70 @@ interface TeamDetails {
   role: string;
   /** Stytch membership type: active_member, pending_member, or invited_member */
   membershipType?: string;
+  /**
+   * Epic H3 P0/A: the full project registry for this org. The server returns
+   * every project (primary + secondary), each with its own tracker-room routing
+   * key (`teamProjectId`) and `gitRemoteHash`. Used to resolve a workspace whose
+   * git remote matches a SECONDARY project, not just the primary one. May be
+   * absent for snapshots from worker versions predating the registry.
+   */
+  projects?: TeamProjectSummary[];
+}
+
+/**
+ * Epic H3 P0/A: one project in an org's registry. `teamProjectId` names the
+ * project's tracker room (`org:{orgId}:tracker:{teamProjectId}`); `projectId` is
+ * the stable id used for grants / discovery.
+ */
+export interface TeamProjectSummary {
+  projectId: string;
+  teamProjectId: string;
+  gitRemoteHash: string | null;
+  slug: string | null;
+  name: string | null;
+}
+
+/** Epic H3 P3: per-member row in the move wizard's pre-flight preview. */
+export interface MovePreviewMember {
+  email: string | null;
+  projectRole: string;
+  inDest: boolean;     // already a member of the destination org
+  willInvite: boolean; // not in dest -> will be invited as a paid seat
+}
+
+/** Epic H3 P3: move-project pre-flight (read-only). */
+export interface MovePreview {
+  projectId: string;
+  slug: string | null;
+  slugCollision: boolean; // dest already has a project with this slug
+  custodyBlocked: boolean; // either org still legacy-e2e -> route to H2 first
+  members: MovePreviewMember[];
+  seatDelta: number; // # of members who'll be invited (new paid seats)
+}
+
+/** Epic H3 P1/P2: move-project result. */
+export interface MoveResultSummary {
+  projectId: string;
+  destOrgId: string;
+  destTeamProjectId: string;
+  movedDocuments: number;
+  grantsTransferred: number;
+  grantsPending: number;
+  grantsDropped: number;
+  grantsSkipped: number;
+}
+
+/** Epic H3 P4: merge-orgs result. */
+export interface MergeResultSummary {
+  survivorOrgId: string;
+  drainedOrgId: string;
+  movedProjects: Array<{ projectId: string; destTeamProjectId: string }>;
+  rosterElevated: number;
+  rosterToInvite: number;
+  drainedDeleted: boolean;
+  partial: boolean;
+  failedProjectId?: string;
+  error?: string;
 }
 
 interface TeamMember {
@@ -540,19 +606,23 @@ export async function findTeamForWorkspace(workspacePath: string, precomputedRem
 
   try {
     const teams = await listTeams();
-    // Only match teams where the user is an active member -- never auto-join
-    // invited or pending teams without explicit user consent.
-    const activeTeams = teams.filter(t => !t.membershipType || t.membershipType === 'active_member');
-    const match = activeTeams.find(t => t.gitRemoteHash === remoteHash) || null;
+    // Epic H3 P0/A: resolve across ALL projects in each org (primary + secondary),
+    // so a workspace whose remote matches a SECONDARY project routes to that
+    // project's tracker room. The project registry rides along on listTeams
+    // (cached), so this adds no extra fetch. See teamProjectResolver.ts.
+    const match = resolveTeamForRemoteHash(teams, remoteHash);
     if (match) {
-      // logger.main.info('[TeamService] findTeamForWorkspace: matched team:', match.name, 'orgId:', match.orgId, 'for workspace:', workspacePath);
-    } else if (teams.length > 0) {
+      // logger.main.info('[TeamService] findTeamForWorkspace: matched', match.orgId, match.teamProjectId);
+      return match;
+    }
+
+    if (teams.length > 0) {
       // Don't dump the full team list on every miss -- this is on a hot path
       // (called from many sites during workspace init) and the full dump was
       // burning measurable CPU on JSON.stringify alone.
       logger.main.debug('[TeamService] findTeamForWorkspace: no hash match', { remoteHash, teamCount: teams.length });
     }
-    return match;
+    return null;
   } catch (err) {
     logger.main.error('[TeamService] findTeamForWorkspace error:', err);
     return null;
@@ -643,6 +713,112 @@ async function createTeam(name: string, workspacePath?: string, accountOrgId?: s
     createdAt: new Date().toISOString(),
     role: 'admin',
   };
+}
+
+/**
+ * Add a project to an EXISTING org (Epic H3 P0) — distinct from createTeam,
+ * which mints a brand-new Stytch org + primary project. This adds a second
+ * (third, …) project under an org the caller already administers, with no
+ * Stytch round trip: the server DO mints a fresh tracker-room routing key and
+ * the org's existing DEK already covers the new project's data.
+ *
+ * Returns the new project's ids; also mirrors a local `projects` row so the
+ * client projection (migration 0013 tables) reflects the new project.
+ */
+async function addProjectToOrg(
+  orgId: string,
+  workspacePath?: string,
+  name?: string,
+): Promise<{ projectId: string; teamProjectId: string }> {
+  let gitRemoteHash: string | undefined;
+  if (workspacePath) {
+    const remote = await getNormalizedGitRemote(workspacePath);
+    if (remote) {
+      gitRemoteHash = hashGitRemote(remote);
+    }
+  }
+
+  const result = await fetchTeamApi(`/api/teams/${orgId}/projects`, 'POST', {
+    name: name ?? null,
+    gitRemoteHash,
+  }, orgId) as { projectId: string; teamProjectId: string };
+
+  logger.main.info('[TeamService] Project added to org:', orgId, 'project:', result.projectId);
+
+  // Mirror into the local projection so canAccess + UI see the new project
+  // without waiting for a full re-sync. Best-effort (server is authoritative).
+  try {
+    const db = getDatabase() as ProjectionDb | null;
+    if (db) {
+      await upsertProject(db, {
+        projectId: result.teamProjectId,
+        orgId,
+        slug: name,
+        gitOriginHash: gitRemoteHash ?? null,
+      });
+    }
+  } catch (err) {
+    logger.main.warn('[TeamService] Local projection upsert for new project failed (non-fatal):', err);
+  }
+
+  return result;
+}
+
+/**
+ * List every project in an org (Epic H3 P0/A). Member-gated on the server; any
+ * member can read the registry. Used by the UI to enumerate projects in an org
+ * (e.g. an Organization → Projects management surface).
+ */
+async function listProjectsForOrg(orgId: string): Promise<TeamProjectSummary[]> {
+  const result = await fetchTeamApi(`/api/teams/${orgId}/projects`, 'GET', undefined, orgId) as {
+    projects: TeamProjectSummary[];
+  };
+  return result.projects || [];
+}
+
+/** Epic H3 P3: read-only pre-flight for the "Move to another org" wizard.
+ *  Admin on BOTH orgs (server-enforced). */
+async function previewMoveProject(
+  srcOrgId: string, projectId: string, destOrgId: string,
+): Promise<MovePreview> {
+  return await fetchTeamApi(
+    `/api/teams/${srcOrgId}/move-project/preview?projectId=${encodeURIComponent(projectId)}&destOrgId=${encodeURIComponent(destOrgId)}`,
+    'GET', undefined, srcOrgId,
+  ) as MovePreview;
+}
+
+/**
+ * Epic H3 P1/P2: move a project (its trackers + docs + grants) into another org.
+ * Admin on BOTH orgs (server-enforced). `dropMemberEmails` opts individual
+ * members out of the grant transfer (§12 #3). On success the server has flipped
+ * D1 routing; we drop the listTeams cache so the project re-resolves into the
+ * destination org on the next workspace open / sync re-init.
+ */
+async function moveProjectToOrg(
+  srcOrgId: string, projectId: string, destOrgId: string, dropMemberEmails?: string[],
+): Promise<MoveResultSummary> {
+  const result = await fetchTeamApi(`/api/teams/${srcOrgId}/move-project`, 'POST', {
+    projectId, destOrgId, dropMemberEmails,
+  }, srcOrgId) as MoveResultSummary;
+  logger.main.info('[TeamService] Project moved:', projectId, srcOrgId, '->', destOrgId, result);
+  invalidateListTeamsCache();
+  return result;
+}
+
+/**
+ * Epic H3 P4: merge one org into another — move ALL of the drained org's
+ * projects into the survivor, union the rosters, optionally delete the drained
+ * org. Admin on BOTH (server-enforced). Composes the move engine server-side.
+ */
+async function mergeOrg(
+  drainedOrgId: string, survivorOrgId: string, deleteDrained: boolean, dropMemberEmails?: string[],
+): Promise<MergeResultSummary> {
+  const result = await fetchTeamApi(`/api/teams/${drainedOrgId}/merge-into`, 'POST', {
+    survivorOrgId, deleteDrained, dropMemberEmails,
+  }, drainedOrgId) as MergeResultSummary;
+  logger.main.info('[TeamService] Org merged:', drainedOrgId, '->', survivorOrgId, result);
+  invalidateListTeamsCache();
+  return result;
 }
 
 /**
@@ -1402,6 +1578,54 @@ export function registerTeamHandlers(): void {
     try {
       const team = await createTeam(name, workspacePath, accountOrgId);
       return { success: true, team };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  safeHandle('team:add-project', async (_event, orgId: string, workspacePath?: string, name?: string) => {
+    try {
+      const project = await addProjectToOrg(orgId, workspacePath, name);
+      // The new project changes the org's registry; drop the listTeams cache so
+      // findTeamForWorkspace can resolve the new project's room on the next open.
+      invalidateListTeamsCache();
+      return { success: true, project };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  safeHandle('team:list-projects', async (_event, orgId: string) => {
+    try {
+      const projects = await listProjectsForOrg(orgId);
+      return { success: true, projects };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  safeHandle('team:move-project-preview', async (_event, srcOrgId: string, projectId: string, destOrgId: string) => {
+    try {
+      const preview = await previewMoveProject(srcOrgId, projectId, destOrgId);
+      return { success: true, preview };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  safeHandle('team:move-project', async (_event, srcOrgId: string, projectId: string, destOrgId: string, dropMemberEmails?: string[]) => {
+    try {
+      const result = await moveProjectToOrg(srcOrgId, projectId, destOrgId, dropMemberEmails);
+      return { success: true, result };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  safeHandle('team:merge-org', async (_event, drainedOrgId: string, survivorOrgId: string, deleteDrained: boolean, dropMemberEmails?: string[]) => {
+    try {
+      const result = await mergeOrg(drainedOrgId, survivorOrgId, deleteDrained, dropMemberEmails);
+      return { success: true, result };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }

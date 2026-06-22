@@ -270,6 +270,31 @@ Nimbalyst will:
 2. Notify the active editor through file watching
 3. Let the editor reload or reconcile its in-memory state
 
+## Read-Only Tools (`readOnly`)
+
+Editor-scoped tools can run against a file even when it is **not open in a visible tab** — Claude may call your tool against any file in the workspace. To make the editor's imperative API available, the host mounts a hidden instance of your editor on demand. After the tool returns, the host flushes that hidden editor to disk so any mutation it made is persisted.
+
+If your tool only **reads** (it never changes the editor's content), set `readOnly: true`:
+
+```typescript
+{
+  name: 'myext.get_summary',
+  description: 'Summarize the current document. Does not modify it.',
+  scope: 'editor',
+  readOnly: true,
+  inputSchema: { type: 'object', properties: {} },
+  handler: async (_args, context) => {
+    // ...read and return data only...
+  },
+}
+```
+
+Why it matters: the post-run flush is meant to persist *mutations*. For a read-only tool that flush is unnecessary, and if the file was changed out-of-band in the meantime (for example, the agent's own `Edit` to the same file), flushing the hidden editor's now-stale buffer could **overwrite that change**. Declaring `readOnly: true` tells the host to skip the flush entirely.
+
+- Default (unset) is treated as **mutating** — existing tools keep their current behavior.
+- Set `readOnly: true` on every tool that only queries/inspects and never writes.
+- Tools that read disk directly (via `context.extensionContext.services.filesystem.readFile`) rather than through the editor API are inherently up to date and are the most robust way to serve fresh content to the agent.
+
 ## Tool Naming Conventions
 
 Use a prefix for your tools to avoid conflicts:

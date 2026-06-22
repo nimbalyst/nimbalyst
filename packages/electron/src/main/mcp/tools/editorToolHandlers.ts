@@ -99,25 +99,10 @@ export function getEditorToolSchemas(sessionId: string | undefined) {
     },
   ];
 
-  // open_workspace is only available in development mode
-  if (!app.isPackaged) {
-    tools.push({
-      name: "open_workspace",
-      description:
-        "Open a workspace (project directory) in Nimbalyst. This allows switching between different projects or opening additional workspaces. The workspace will open in a new window.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          workspace_path: {
-            type: "string",
-            description:
-              "The absolute path to the workspace directory to open",
-          },
-        },
-        required: ["workspace_path"],
-      },
-    });
-  }
+  // The editor `open_workspace` tool is retired (MCP consolidation): the
+  // collision with the settings `workspace_open` was resolved in favor of
+  // `workspace_open` (on `nimbalyst-host`), which routes through
+  // SettingsControlService (allow-list / audit). See mcpTopology.
 
   if (sessionId) {
     tools.push({
@@ -347,67 +332,6 @@ export async function handleStreamContent(args: any): Promise<McpToolResult> {
     content: [{ type: "text", text: "Error: No window available for target file" }],
     isError: true,
   };
-}
-
-export async function handleOpenWorkspace(args: any): Promise<McpToolResult> {
-  const workspacePathArg = args?.workspace_path as string;
-
-  if (!workspacePathArg || typeof workspacePathArg !== "string") {
-    return {
-      content: [{ type: "text", text: "Error: workspace_path is required and must be a string" }],
-      isError: true,
-    };
-  }
-
-  if (!isAbsolute(workspacePathArg)) {
-    return {
-      content: [{ type: "text", text: `Error: workspace_path must be an absolute path. Got: ${workspacePathArg}` }],
-      isError: true,
-    };
-  }
-
-  if (!existsSync(workspacePathArg)) {
-    return {
-      content: [{ type: "text", text: `Error: Workspace directory does not exist: ${workspacePathArg}` }],
-      isError: true,
-    };
-  }
-
-  try {
-    const { createWindow, findWindowByWorkspace } = await import("../../window/WindowManager");
-
-    // Check if workspace is already open - focus it instead of creating a duplicate
-    const existingWindow = findWindowByWorkspace(workspacePathArg);
-    if (existingWindow && !existingWindow.isDestroyed()) {
-      if (existingWindow.isMinimized()) {
-        existingWindow.restore();
-      }
-      existingWindow.focus();
-      console.log(`[MCP Server] Focused existing workspace window: ${workspacePathArg}`);
-
-      return {
-        content: [{ type: "text", text: `Workspace already open, brought to foreground: ${workspacePathArg}` }],
-        isError: false,
-      };
-    }
-
-    // No existing window - create a new one
-    const newWindow = createWindow(false, true, workspacePathArg);
-    workspaceToWindowMap.set(workspacePathArg, newWindow.id);
-    console.log(`[MCP Server] Opened workspace: ${workspacePathArg}, registered as window ${newWindow.id}`);
-
-    return {
-      content: [{ type: "text", text: `Successfully opened workspace: ${workspacePathArg}` }],
-      isError: false,
-    };
-  } catch (error) {
-    console.error("[MCP Server] Failed to open workspace:", error);
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    return {
-      content: [{ type: "text", text: `Error opening workspace: ${errorMessage}` }],
-      isError: true,
-    };
-  }
 }
 
 export async function handleCaptureEditorScreenshot(

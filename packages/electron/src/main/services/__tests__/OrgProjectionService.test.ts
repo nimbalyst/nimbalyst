@@ -29,6 +29,7 @@ import {
   applyMemberRoleChanged,
   applyProjectGrant,
   applyProjectRevoke,
+  upsertProject,
 } from '../OrgProjectionService';
 import { canAccess } from '../OrgAccessResolver';
 
@@ -138,5 +139,31 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
     const leftover = await db.query<{ c: number }>(
       `SELECT COUNT(*) AS c FROM project_access WHERE user_id = 'newbie'`);
     expect(leftover.rows[0].c).toBe(0);
+  });
+
+  it('H3 P0: upsertProject adds a SECOND project to an org without slug collision', async () => {
+    await backfillProjection(db, [{
+      org: { orgId: 'org-dddddd', name: 'Delta', flavor: 'team', teamProjectId: 'proj-primary', gitOriginHash: 'gh-a' },
+      members: [{ userId: 'owner1', role: 'owner' }],
+    }]);
+
+    // Add a second project under the same org (Epic H3 P0).
+    await upsertProject(db, {
+      projectId: 'proj-second', orgId: 'org-dddddd', slug: 'Second Project', gitOriginHash: 'gh-b',
+    });
+
+    const projects = await db.query<{ id: string; slug: string; git_origin_hash: string }>(
+      `SELECT id, slug, git_origin_hash FROM projects WHERE org_id = 'org-dddddd' ORDER BY id`);
+    expect(projects.rows.length).toBe(2);
+    const byId = new Map(projects.rows.map(r => [r.id, r]));
+    expect(byId.get('proj-primary')!.slug).toBe('main');
+    expect(byId.get('proj-second')!.slug).toBe('second-project');
+    expect(byId.get('proj-second')!.git_origin_hash).toBe('gh-b');
+
+    // A second add without a slug falls back to a project-id-derived unique slug.
+    await upsertProject(db, { projectId: 'proj-third', orgId: 'org-dddddd' });
+    const third = await db.query<{ slug: string }>(
+      `SELECT slug FROM projects WHERE id = 'proj-third'`);
+    expect(third.rows[0].slug).toBe('project-' + 'proj-third'.slice(-6));
   });
 });

@@ -52,6 +52,15 @@ export interface TeamSyncConfig {
   /** B2B organization ID */
   orgId: string;
 
+  /**
+   * Epic H3 P0/A: the active project's tracker-room routing key. Document rooms
+   * are org-scoped (`org:{orgId}:doc:{docId}`), but the doc INDEX is now
+   * project-partitioned on the server, so each `docIndexRegister` carries this
+   * `projectId` to attribute the doc to its project. `null` (or absent) tags the
+   * doc to the org's primary project (legacy behavior).
+   */
+  teamProjectId?: string | null;
+
   /** Current user's ID */
   userId: string;
 
@@ -63,8 +72,19 @@ export interface TeamSyncConfig {
    */
   personalOrgId?: string;
 
-  /** AES-256-GCM key for encrypting/decrypting document titles (org key) */
-  encryptionKey: CryptoKey;
+  /**
+   * Epic H2 key custody. `legacy-e2e` (default): the client encrypts/decrypts
+   * doc-index titles with the org key (zero-knowledge). `server-managed`: the
+   * server holds the per-team DEK and encrypts titles at rest, so the client
+   * sends/receives PLAINTEXT titles and `encryptionKey` is unused.
+   */
+  keyCustody?: 'legacy-e2e' | 'server-managed';
+
+  /**
+   * AES-256-GCM key for encrypting/decrypting document titles (org key).
+   * Required in `legacy-e2e` mode; unused (and optional) in `server-managed`.
+   */
+  encryptionKey?: CryptoKey;
 
   /**
    * Fingerprint of the current org key (`SHA-256(rawKey).slice(0,32)`),

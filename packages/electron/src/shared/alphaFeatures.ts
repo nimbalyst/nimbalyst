@@ -38,12 +38,6 @@ export const ALPHA_FEATURES: readonly AlphaFeatureDefinition[] = [
     icon: 'bolt',
   },
   {
-    tag: 'collaboration',
-    name: 'Collaboration',
-    description: 'Enable team collaboration features including shared trackers and team management.',
-    icon: 'group',
-  },
-  {
     tag: 'meta-agent',
     name: 'Meta Agent',
     description: 'Enable meta-agent sessions that orchestrate and delegate work to child sessions.',

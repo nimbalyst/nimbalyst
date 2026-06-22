@@ -8,8 +8,8 @@ describe('buildClaudeCodeSystemPrompt', () => {
     });
 
     expect(prompt).toContain('## Interactive User Input');
-    expect(prompt).toContain('`AskUserQuestion` (server: `nimbalyst-mcp`)');
-    expect(prompt).toContain('`PromptForUserInput` (server: `nimbalyst-mcp`)');
+    expect(prompt).toContain('`AskUserQuestion` (server: `nimbalyst`)');
+    expect(prompt).toContain('`PromptForUserInput` (server: `nimbalyst`)');
     expect(prompt).toContain('call an interactive tool instead');
     expect(prompt).toContain('Combine multiple questions into one multi-field prompt');
   });
@@ -19,8 +19,9 @@ describe('buildClaudeCodeSystemPrompt', () => {
       toolReferenceStyle: 'claude',
     });
 
-    expect(prompt).toContain('`mcp__nimbalyst-mcp__AskUserQuestion`');
-    expect(prompt).toContain('`mcp__nimbalyst-mcp__PromptForUserInput`');
+    // Core interactive tools now live on the eager `nimbalyst` server (Phase 2).
+    expect(prompt).toContain('`mcp__nimbalyst__AskUserQuestion`');
+    expect(prompt).toContain('`mcp__nimbalyst__PromptForUserInput`');
   });
 
   it('keeps plan-only sessions in planning', () => {

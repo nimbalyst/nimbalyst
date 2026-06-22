@@ -169,7 +169,7 @@ const FORBIDDEN_ENV_KEYS: readonly string[] = ['ANTHROPIC_API_KEY', 'CLAUDECODE'
  * The genuine `claude` CLI ships its own built-in `AskUserQuestion` that renders
  * in the TUI and never routes through MCP — so a Nimbalyst durable-prompt widget
  * can't observe or answer it. Denying it forces the model onto our
- * `mcp__nimbalyst-mcp__AskUserQuestion`, which blocks on IPC and is answered by
+ * `mcp__nimbalyst__AskUserQuestion`, which blocks on IPC and is answered by
  * the widget rendered above the terminal (NIM-806).
  *
  * `ExitPlanMode` is intentionally NOT here: there is no MCP replacement for it
@@ -193,8 +193,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const CLAUDE_CLI_INTERACTIVE_TOOLS_NUDGE = [
   'You are running inside Nimbalyst, a desktop GUI that manages your session.',
   'When you need user input, a decision, or disambiguation, call the',
-  'mcp__nimbalyst-mcp__AskUserQuestion tool (multiple-choice) or the',
-  'mcp__nimbalyst-mcp__PromptForUserInput tool (richer structured input) —',
+  'mcp__nimbalyst__AskUserQuestion tool (multiple-choice) or the',
+  'mcp__nimbalyst__PromptForUserInput tool (richer structured input) —',
   'they render as interactive UI elements the user can click. Do not ask',
   'questions in plain text.',
 ].join(' ');
@@ -205,13 +205,14 @@ const CLAUDE_CLI_INTERACTIVE_TOOLS_NUDGE = [
  * snippet), and it has no out-of-band naming path (the SDK names sessions via
  * the in-process `generateSessionTitle`, which an external process can't reach).
  * So without this nudge a `claude-code-cli` session is never named at all. The
- * `nimbalyst-session-naming` MCP server IS in the CLI's `--mcp-config`, so the
- * tool is callable — the model just has to be told to call it. Condensed from
+ * eager core `nimbalyst` MCP server (which now carries `update_session_meta`,
+ * MCP consolidation Phase 5) IS in the CLI's `--mcp-config`, so the tool is
+ * callable — the model just has to be told to call it. Condensed from
  * `buildSessionNamingSection` in runtime's prompt.ts.
  */
 const CLAUDE_CLI_SESSION_NAMING_NUDGE = [
   'Early in your first turn — as soon as you understand what the user wants —',
-  'call the mcp__nimbalyst-session-naming__update_session_meta tool to name this',
+  'call the mcp__nimbalyst__update_session_meta tool to name this',
   'session. Pass `name` (2-5 words, the descriptive part first, based on what the',
   'user asked for — e.g. "Dark mode implementation"), `add` (2-4 lowercase',
   'hyphenated tags for the type of work and area, e.g. ["bug-fix", "ui"]), and',

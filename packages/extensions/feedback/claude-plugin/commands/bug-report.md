@@ -1,6 +1,6 @@
 ---
 description: Guide the user through filing a bug report on the public Nimbalyst GitHub repo
-allowed-tools: ["mcp__nimbalyst-mcp__feedback_anonymize_text", "mcp__nimbalyst-mcp__feedback_get_environment", "mcp__nimbalyst-mcp__feedback_open_github_issue", "mcp__nimbalyst-extension-dev__get_main_process_logs", "mcp__nimbalyst-extension-dev__get_renderer_debug_logs", "mcp__nimbalyst-extension-dev__get_environment_info"]
+allowed-tools: ["mcp__nimbalyst-situational__feedback_anonymize_text", "mcp__nimbalyst-situational__feedback_get_environment", "mcp__nimbalyst-situational__feedback_open_github_issue", "mcp__nimbalyst-extension-dev__get_main_process_logs", "mcp__nimbalyst-extension-dev__get_renderer_debug_logs", "mcp__nimbalyst-extension-dev__get_environment_info"]
 ---
 
 # Bug Report
@@ -19,9 +19,9 @@ The user opened this session from the in-app feedback button. The first user mes
 1. **Greet briefly and ask what's wrong.** One short sentence — don't over-explain.
 2. **Ask follow-up questions** if the description is vague. You want, at minimum: what they were doing, what they expected, what actually happened, and how often it reproduces. Don't grill them — two or three targeted questions are enough.
 3. **Gather evidence** (only if log gathering is allowed):
-   - Call `mcp__nimbalyst-mcp__feedback_get_environment` to grab app version, OS, and recent error counts.
+   - Call `mcp__nimbalyst-situational__feedback_get_environment` to grab app version, OS, and recent error counts.
    - Call `mcp__nimbalyst-extension-dev__get_main_process_logs` and/or `mcp__nimbalyst-extension-dev__get_renderer_debug_logs` with a tight `lastLines` (50–200) and a `searchTerm` or `logLevel: 'error'` filter when the bug suggests a search term. Do not dump giant log slices.
-4. **Anonymize before showing.** Before you put any log line, path, or environment string into a draft or show it to the user, run it through `mcp__nimbalyst-mcp__feedback_anonymize_text`. After the regex pass, read the output yourself and redact anything else that looks personal or proprietary (workspace nicknames, real names, internal-looking URLs). Replace removed content with `<REDACTED>`.
+4. **Anonymize before showing.** Before you put any log line, path, or environment string into a draft or show it to the user, run it through `mcp__nimbalyst-situational__feedback_anonymize_text`. After the regex pass, read the output yourself and redact anything else that looks personal or proprietary (workspace nicknames, real names, internal-looking URLs). Replace removed content with `<REDACTED>`.
 5. **Show the user the redacted log slice** before it lands in the draft. Let them edit or remove anything.
 6. **Draft the issue body** in this exact structure:
 
@@ -49,7 +49,7 @@ The user opened this session from the in-app feedback button. The first user mes
 ```
 
 7. **Confirm with the user** before posting. Show them the full title and body, ask "Ready to post?"
-8. **Post via the URL builder.** Call `mcp__nimbalyst-mcp__feedback_open_github_issue` with `kind: 'bug'`, the title, and the body. The tool returns `{ ok: true, opened: true }` on success or `{ ok: false, reason: 'too-long', url: '...' }` if the body exceeded the safe URL length.
+8. **Post via the URL builder.** Call `mcp__nimbalyst-situational__feedback_open_github_issue` with `kind: 'bug'`, the title, and the body. The tool returns `{ ok: true, opened: true }` on success or `{ ok: false, reason: 'too-long', url: '...' }` if the body exceeded the safe URL length.
 9. **Handle the too-long case.** If the tool returns `reason: 'too-long'`:
    - Tell the user the report is too long for the auto-fill URL.
    - Show the final body in chat as a fenced code block so they can copy it.

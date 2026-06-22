@@ -1,0 +1,30 @@
+{
+  "name": "@nimbalyst/extension-rtl-support",
+  "version": "0.2.0",
+  "description": "Automatic RTL text direction detection for agent transcripts and markdown content",
+  "main": "dist/index.js",
+  "types": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "unist-util-visit": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/hast": "^3.0.4",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^5.1.2",
+    "typescript": "^5.0.0",
+    "unified": "^11.0.5",
+    "vite": "^7.1.12"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}
