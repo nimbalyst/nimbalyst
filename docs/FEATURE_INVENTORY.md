@@ -68,6 +68,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Collapsible columns
 - Configurable columns
 - Auto-exit kanban when navigating to a session
+- Agent-assisted cleanup (`/session-cleanup` slash command in the Planning extension) — audits sessions, proposes phase corrections and "mark complete" candidates for approval, and flags old sessions to archive
 
 ## Agent Mode
 
@@ -202,14 +203,30 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Hierarchical session navigation (workstream/worktree aware)
 - Mobile voice mode
 
-## Collaboration (E2E Encrypted)
+## Collaboration
+
+> **Encryption posture.** Team collaboration data (trackers, documents, doc-index
+> titles) is **encrypted in transit and at rest, isolated per team, and operated
+> by Nimbalyst**. Two custody modes per team:
+> `legacy-e2e` (client-side zero-knowledge ECDH; the original default) and
+> `server-managed` (Epic H2 — the server holds a per-team KMS-wrapped key and
+> encrypts at rest, enabling web/CLI/cloud-agent access). **Server-managed team
+> data is not zero-knowledge.** **Personal sync** (your desktop ↔ phone: sessions,
+> prompts, drafts, settings, personal index) **stays zero-knowledge** — the server
+> never holds those keys. Customers who require true zero-knowledge for team data
+> run the software on their own infrastructure (self-host).
 
 - Real-time document editing (Lexical + yJS through Cloudflare Workers)
-- E2E encrypted tracker item sync
-- Team trust model with ECDH key exchange and key envelopes
+- Encrypted tracker item sync (zero-knowledge in `legacy-e2e`; server-managed at-rest in H2)
+- Team trust model with ECDH key exchange and key envelopes (legacy-e2e mode)
+- Server-managed per-team encryption keys (Epic H2): KMS-wrapped split-knowledge DEK, admin key-recovery, append-only audit log
 - Stytch B2B org management
 - Team invite / join / role management
 - Personal org + team org separation
+- Multiple projects per organization — add another workspace to an existing org as its own tracker space (sharing the org's roster and encryption)
+- Organization settings scope (User | Organization | Project) keyed off the org switcher — members & roles, projects & access, security & encryption in one org-admin surface
+- Move a project to another organization — relocates its trackers, documents, history, and schemas into the destination, transfers member access by email (auto-invite for members not yet in the destination, with a per-person opt-out and seat-delta preview), and redirects the old location (server-managed orgs only)
+- Merge one organization into another — consolidates every project, unions the rosters (higher role wins), and optionally deletes the drained org
 - Shared document list
 - Key envelope distribution for new members
 - Durable Objects per entity (session, document, tracker, team, index)
@@ -218,13 +235,18 @@ A concise reference of all features in the product. Keep this up to date as feat
 
 ## Tracker System
 
-- Tracker mode (Cmd+T) with kanban and list views
+- Tracker mode (Cmd+T) with list, table, kanban, and tag-board views
+- Kanban columns honor each type's status order from its schema (no hardcoded order)
+- Tag-board view with one column per tag (items appear in every matching column, plus an Untagged column)
+- Saved views: name, save, apply, and delete reusable filter/layout views per workspace
 - Configurable tracker item types (bugs, tasks, architecture docs, decisions, etc.)
 - Tracker sidebar with type counts
 - Item detail panel
-- E2E encrypted sync across team members
+- Encrypted sync across team members (zero-knowledge in `legacy-e2e`; server-managed at-rest in H2)
 - Inline `#type` items in markdown (TrackerPlugin)
+- Tracker schema overrides in Trackers settings -- customize a built-in type into `.nimbalyst/trackers`, edit an existing override, reset back to the built-in default, and resync the local database mirror when schema files drift
 - External-source importers: import GitHub issues (extension-provided) into the tracker as native bug, task, or feature items with a back-link to the source, a "from GitHub" chip, re-snapshot ("pull latest from source") with conservative merge, and a Source filter; agent tools `tracker_importer_list` / `tracker_importer_search` / `tracker_import` / `tracker_resnapshot` / `tracker_get_by_urn`
+- Per-project "AI Agent Access" toggle in tracker settings -- allow or block AI agents from using tracker tools in that project (on by default)
 
 ## Shared Links
 
@@ -273,6 +295,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - MockupLM
 - PDF Viewer
 - Planning
+- Project Graph — navigable whole-project graph of plans, trackers, sessions, commits, and files, with a horizontally scrollable **Timeline mode** (phase-colored lifecycle bars per item; collapse items into per-tag activity lanes)
 - SQLite Browser
 
 ## MCP Servers (Internal)

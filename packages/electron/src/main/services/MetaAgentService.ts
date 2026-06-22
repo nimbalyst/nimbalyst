@@ -2,7 +2,7 @@ import path from 'path';
 import { BrowserWindow } from 'electron';
 import { randomUUID } from 'crypto';
 import { safeHandle } from '../utils/ipcRegistry';
-import { ClaudeCodeProvider, OpenAICodexProvider, OpenAICodexACPProvider, SessionManager } from '@nimbalyst/runtime/ai/server';
+import { SessionManager } from '@nimbalyst/runtime/ai/server';
 import type { AIProviderType } from '@nimbalyst/runtime/ai/server/types';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { AISessionsRepository, AgentMessagesRepository, SessionFilesRepository } from '@nimbalyst/runtime';
@@ -15,14 +15,9 @@ import { database as databaseWorker } from '../database/PGLiteDatabaseWorker';
 import { getDatabase } from '../database/initialize';
 import { gitRefWatcher } from '../file/GitRefWatcher';
 import { AIService } from './ai/AIService';
-import {
-  startMetaAgentServer,
-  setMetaAgentToolFns,
-  shutdownMetaAgentServer,
-} from '../mcp/metaAgentServer';
+import { setMetaAgentToolFns } from '../mcp/metaAgentServer';
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
-import { ClaudeCliLauncherConfig } from './ai/claudeCliLauncherSingleton';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -45,6 +40,10 @@ interface SessionResultData {
   originalPrompt: string | null;
   userPrompts: string[];
   lastResponse: string | null;
+  /** Full final assistant response (large cap), for get_session_result so the
+   *  meta-agent can synthesize from the child's real work, not a 500-char stub.
+   *  The notification preview deliberately uses lastResponse, not this. */
+  fullResponse: string | null;
   recentMessages: Array<{ direction: 'input' | 'output'; text: string }>;
   editedFiles: string[];
   pendingPrompt: PendingInteractivePrompt | null;
@@ -52,6 +51,9 @@ interface SessionResultData {
   createdAt: number;
   updatedAt: number;
   worktreeId?: string | null;
+  /** Capability scope the child was granted (read|write|full). The objective
+   *  record of what the child COULD do; null/full means all tools. */
+  toolScope?: string | null;
 }
 
 interface CreateChildSessionArgs {
@@ -61,6 +63,7 @@ interface CreateChildSessionArgs {
   prompt?: string;
   useWorktree?: boolean;
   worktreeId?: string;
+  toolScope?: string;
 }
 
 function normalizeStoredChildModelIdentifier(
@@ -186,14 +189,10 @@ export class MetaAgentService {
           this.listSpawnedSessionsJson(metaSessionId, workspaceId),
       });
 
-      const result = await startMetaAgentServer();
-      this.serverPort = result.port;
-      console.log(`[MetaAgentService] MCP server started on port ${result.port}`);
-
-      ClaudeCodeProvider.setMetaAgentServerPort(result.port);
-      OpenAICodexProvider.setMetaAgentServerPort(result.port);
-      OpenAICodexACPProvider.setMetaAgentServerPort(result.port);
-      ClaudeCliLauncherConfig.setMetaAgentServerPort(result.port);
+      // MCP consolidation Phase 7: meta-agent tools are served by the unified
+      // server's `/mcp/host` endpoint via `dispatchMetaAgentTool`, which uses the
+      // toolFns injected above. This service no longer starts a standalone HTTP
+      // server.
 
       this.unsubscribeStateListener = getSessionStateManager().subscribe((event) => {
         // NIM-6 follow-up: dedup signatures only describe one turn; clear them
@@ -228,11 +227,8 @@ export class MetaAgentService {
     this.unsubscribeStateListener?.();
     this.unsubscribeStateListener = null;
     this.notificationSignatures.clear();
-    await shutdownMetaAgentServer();
-    ClaudeCodeProvider.setMetaAgentServerPort(null);
-    OpenAICodexProvider.setMetaAgentServerPort(null);
-    OpenAICodexACPProvider.setMetaAgentServerPort(null);
-    ClaudeCliLauncherConfig.setMetaAgentServerPort(null);
+    // No standalone HTTP server to tear down (Phase 7); the injected toolFns are
+    // process-lifetime singletons.
     this.serverPort = null;
     this.started = false;
   }
@@ -282,8 +278,13 @@ export class MetaAgentService {
     const resolved = await this.resolveOrCreateWorkstream(parent, workspaceId);
     const workstreamId = resolved.workstreamId;
 
-    const inheritedWorktreeId =
-      !args.useWorktree && parent.worktreeId ? parent.worktreeId : undefined;
+    // Meta-agent children ALWAYS run in the parent's working directory (the
+    // shared workspace), never a fresh isolated worktree. The parent synthesizes
+    // by reading each child's written deliverable; a child that writes into its
+    // own worktree leaves the parent unable to find the file. So we ignore the
+    // requested useWorktree and inherit the parent's worktree (the main checkout
+    // for a top-level meta-agent).
+    const inheritedWorktreeId = parent.worktreeId ?? undefined;
 
     // Explicit model wins; otherwise inherit caller's model (e.g. keep "opus"
     // on "opus") rather than dropping to the global default.
@@ -295,7 +296,7 @@ export class MetaAgentService {
     const childResult = await this.createChildSessionInternal(parentSessionId, workspaceId, {
       title: args.title,
       prompt: args.autoSubmit ? args.prompt : undefined,
-      useWorktree: !!args.useWorktree,
+      useWorktree: false,
       worktreeId: inheritedWorktreeId,
       model: effectiveModel,
       parentSessionIdOverride: workstreamId,
@@ -372,6 +373,22 @@ export class MetaAgentService {
       throw new Error('useWorktree and worktreeId cannot be combined');
     }
 
+    // Defense-in-depth: a child-completion notification (built in
+    // buildNotificationMessage) starts literally with '[Child Session Update]'.
+    // If such text is ever re-ingested as a spawn prompt/title, the derived
+    // title recurses into '[Child Session Update] Session: "[Child Session
+    // Update]..."'. Refuse outright so an update notification can never become
+    // a new child session.
+    const CHILD_UPDATE_PREFIX = '[Child Session Update]';
+    const promptHead = args.prompt?.trim() ?? '';
+    const titleHead = args.title?.trim() ?? '';
+    if (promptHead.startsWith(CHILD_UPDATE_PREFIX) || titleHead.startsWith(CHILD_UPDATE_PREFIX)) {
+      throw new Error(
+        'Refusing to spawn a child session from a child-completion notification ' +
+        '(prompt/title begins with "[Child Session Update]").'
+      );
+    }
+
     // Inherit the calling session's provider+model as the primary fallback so a
     // non-Claude parent (Gemini, OpenAI-Codex, LM Studio, etc.) spawning a child
     // via the meta-agent tools without an explicit model does NOT silently land
@@ -407,11 +424,23 @@ export class MetaAgentService {
     const explicitModel = normalizeStoredChildModelIdentifier(explicitModelProvider, args.model ?? null);
     const model = explicitModel || defaultModel;
     const parsed = ModelIdentifier.tryParse(model);
-    const provider = (args.provider || parsed?.provider || parentProvider || 'claude-code') as AIProviderType;
-    // When the caller didn't pass an explicit model, prefer the inherited parent
-    // model verbatim (so a gemini-flash-3.5 parent keeps flash-3.5, not whatever
-    // ModelIdentifier.getDefaultModelId returns for that provider).
-    const normalizedModel = explicitModel || parentModel || ModelIdentifier.getDefaultModelId(provider);
+    const provider = (args.provider ||
+      parsed?.provider ||
+      parentProvider ||
+      'claude-code') as AIProviderType;
+    // Provider and model MUST agree. Otherwise a child is persisted with, e.g.,
+    // provider=claude-code + an antigravity-gemini model, gets routed to the
+    // Claude Code provider, is rejected ("requires a claude-code:* identifier"),
+    // and dies with no output. Only reuse the parent model when it actually
+    // belongs to the resolved provider; otherwise use that provider default.
+    const parentModelProvider = parentModel
+      ? (ModelIdentifier.tryParse(parentModel)?.provider ?? parentProvider)
+      : null;
+    const normalizedModel =
+      explicitModel
+      || (parentModel && parentModelProvider === provider ? parentModel : null)
+      || ModelIdentifier.getDefaultModelId(provider);
+
     const callerProvidedTitle = !!args.title?.trim();
     const title = (args.title || this.deriveTitleFromPrompt(args.prompt) || 'Meta Task').trim();
 
@@ -467,6 +496,45 @@ export class MetaAgentService {
       worktreePath = worktree.path;
     }
 
+    // Backstop: cap the TOTAL number of children a single parent can ever spawn.
+    // Without this, a feedback loop can create unbounded children. The prior
+    // in-flight-only count (status running / waiting_for_input) did NOT bound
+    // SEQUENTIAL re-spawning: a completion-wakeup re-drives the parent, a weak
+    // model spawns another child, the child settles in milliseconds, so the
+    // in-flight count stays ~0 and the cap never fires. Counting ALL children
+    // ever created by this parent (regardless of status, non-archived) bounds
+    // that runaway. A normal 3-child spawn is unaffected. Mirrors the
+    // created_by_session_id query in getSpawnedSessions.
+    const TOTAL_SPAWN_CAP = 6;
+    const { rows: totalRows } = await databaseWorker.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM ai_sessions
+       WHERE workspace_id = $1
+         AND created_by_session_id = $2
+         AND (is_archived = FALSE OR is_archived IS NULL)`,
+      [workspaceId, metaSessionId]
+    );
+    const totalCount = Number(totalRows[0]?.count ?? '0');
+    if (totalCount >= TOTAL_SPAWN_CAP) {
+      throw new Error(
+        `Meta-agent spawn cap reached (${TOTAL_SPAWN_CAP} total children spawned by this parent); refusing to spawn more`
+      );
+    }
+
+    // NIM-858: do NOT auto-promote the spawning parent to agent_role='meta-agent'.
+    // The renderer META AGENT group is reserved for genuine meta-agents (created
+    // via the Meta Agent button, which sets agentRole='meta-agent' at create
+    // time) and their children. A standard session that spawns a sibling — via
+    // the Actions-dropdown launch (launchActionSession) or the spawn_session MCP
+    // tool used by /launch-new-session — must stay agentRole='standard' so it and
+    // its sibling render flat (as workstream siblings), not under Meta Agent.
+    //
+    // A prior promotion block here claimed to be "inert" because spawn tools were
+    // gated on agentRole==='meta-agent'. That gating only covers the extension-
+    // agent (Gemini) branch in MessageStreamingHandler; the nimbalyst-meta-agent
+    // MCP server is attached to every built-in session unconditionally
+    // (McpConfigService), and launchActionSession passes a standard parent — so
+    // the block actually fired and wrongly relabeled standard parents.
+
     const sessionId = randomUUID();
     await AISessionsRepository.create({
       id: sessionId,
@@ -484,6 +552,15 @@ export class MetaAgentService {
       // not clobber it via updateTitleIfNotNamed.
       hasBeenNamed: callerProvidedTitle,
     } as any);
+
+    // Read-only tool segregation: persist a restricted capability scope so the
+    // child is granted only the matching dev tools at turn time (an analyze
+    // child physically cannot run_command, so it cannot build or claim to).
+    const childToolScope =
+      args.toolScope === 'read' || args.toolScope === 'write' ? args.toolScope : undefined;
+    if (childToolScope) {
+      await AISessionsRepository.updateMetadata(sessionId, { metadata: { toolScope: childToolScope } });
+    }
 
     const initialPrompt = args.prompt?.trim();
     const shouldBypassExecution = this.shouldBypassChildAgentExecutionForTests();
@@ -845,7 +922,7 @@ export class MetaAgentService {
         createdAt: toMillis(row.created_at)!,
         updatedAt: toMillis(row.updated_at)!,
         worktreeId: row.worktree_id || null,
-      });
+      }, false);
       sessions.push({
         sessionId: data.sessionId,
         title: data.title,
@@ -919,7 +996,7 @@ export class MetaAgentService {
       const metaStatusRow = await this.getSessionStatusRow(metaSession.id, metaSession.workspacePath);
       const metaStatus = (metaStatusRow?.status || 'idle') as SessionStatusValue;
 
-      const result = await this.buildSessionResultData(sessionId, session.workspacePath);
+      const result = await this.buildSessionResultData(sessionId, session.workspacePath, undefined, false);
 
       // NIM-6: real dedup gate. Drop notifications whose semantic content is
       // identical to the last one delivered for this child. The previous code
@@ -940,7 +1017,13 @@ export class MetaAgentService {
       const notification = this.buildNotificationMessage(eventType, result);
       await this.aiService.queuePromptForSession(session.createdBySessionId, notification);
 
-      if (metaStatus === 'idle' || metaStatus === 'interrupted' || metaStatus === 'error') {
+      // Do not auto-re-drive the parent when THIS child settle was an error.
+      // The [Child Session Update] notification above is still queued for
+      // visibility, but re-triggering the parent's queue on every error settle
+      // spins the meta-agent wakeup loop with no backoff (an antigravity 429
+      // child settles instantly into 'error' every cycle). Native children
+      // settle 'session:completed', so this gate is a no-op for them.
+      if (eventType !== 'session:error' && (metaStatus === 'idle' || metaStatus === 'interrupted' || metaStatus === 'error')) {
         await this.aiService.triggerQueuedPromptProcessingForSession(metaSession.id, metaSession.workspacePath);
       }
     } catch (error) {
@@ -976,6 +1059,12 @@ export class MetaAgentService {
       for (const filePath of result.editedFiles) {
         lines.push(`- ${filePath}`);
       }
+    }
+    if (result.toolScope === 'read' || result.toolScope === 'write') {
+      const denied = result.toolScope === 'read' ? 'write_file or run_command' : 'run_command';
+      lines.push(
+        `Tool scope: ${result.toolScope} (this child had NO ${denied}). Any claim it ran, built, or tested anything is false; "Files modified" above is the complete list of files it changed.`,
+      );
     }
     if (result.pendingPrompt) {
       lines.push('');
@@ -1021,7 +1110,10 @@ export class MetaAgentService {
   private async buildSessionResultData(
     sessionId: string,
     workspaceId: string,
-    prefetchedSession?: { title: string; provider: string; model: string | null; status: string; lastActivity: number | null; createdAt: number; updatedAt: number; worktreeId: string | null }
+    prefetchedSession?: { title: string; provider: string; model: string | null; status: string; lastActivity: number | null; createdAt: number; updatedAt: number; worktreeId: string | null },
+    // Skip the heavier full-turn extract when the caller only needs preview
+    // fields (the list and notification paths discard fullResponse).
+    includeFullResponse: boolean = true
   ): Promise<SessionResultData> {
     let sessionTitle: string;
     let sessionProvider: string;
@@ -1031,6 +1123,7 @@ export class MetaAgentService {
     let sessionCreatedAt: number;
     let sessionUpdatedAt: number;
     let sessionWorktreeId: string | null;
+    let sessionToolScope: string | null = null;
 
     if (prefetchedSession) {
       sessionTitle = prefetchedSession.title;
@@ -1055,6 +1148,8 @@ export class MetaAgentService {
       sessionCreatedAt = session.createdAt;
       sessionUpdatedAt = session.updatedAt;
       sessionWorktreeId = session.worktreeId || null;
+      sessionToolScope =
+        ((session.metadata as Record<string, unknown> | undefined)?.toolScope as string | undefined) ?? null;
     }
 
     const messages = await AgentMessagesRepository.list(sessionId, { limit: 500 });
@@ -1080,6 +1175,7 @@ export class MetaAgentService {
       originalPrompt: userPrompts[0] || null,
       userPrompts,
       lastResponse: this.extractLastAgentResponse(messages),
+      fullResponse: includeFullResponse ? this.extractLastAgentTurn(messages, 50000) : null,
       recentMessages,
       editedFiles,
       pendingPrompt,
@@ -1087,6 +1183,7 @@ export class MetaAgentService {
       createdAt: sessionCreatedAt,
       updatedAt: sessionUpdatedAt,
       worktreeId: sessionWorktreeId,
+      toolScope: sessionToolScope,
     };
   }
 
@@ -1304,9 +1401,49 @@ export class MetaAgentService {
     return null;
   }
 
+  /**
+   * The child's full final turn: every output message since the last input
+   * (user) message, joined. extractLastAgentResponse returns only the single
+   * last output message, which decapitates a child whose substance spans
+   * several output messages (tool narration then a final answer). Capped, with
+   * an explicit marker when truncated so the reader knows content was dropped.
+   */
+  private extractLastAgentTurn(
+    messages: Array<{ direction: string; content: string; metadata?: Record<string, unknown> | null }>,
+    maxLength: number = 50000
+  ): string | null {
+    let lastInputIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].direction === 'input') {
+        lastInputIndex = index;
+        break;
+      }
+    }
+    const parts: string[] = [];
+    for (let index = lastInputIndex + 1; index < messages.length; index += 1) {
+      const message = messages[index];
+      if (message.direction !== 'output') continue;
+      const text = extractMessageText(message.content, message.metadata);
+      if (text) parts.push(text);
+    }
+    if (lastInputIndex === -1 || parts.length === 0) {
+      // No input row to anchor the turn (or no output after it): use the single
+      // last output message rather than concatenating output across turns.
+      return this.extractLastAgentResponse(messages, maxLength);
+    }
+    const sep = String.fromCharCode(10) + String.fromCharCode(10);
+    const joined = parts.join(sep);
+    return joined.length > maxLength
+      ? joined.slice(0, maxLength) + sep + '[truncated: turn exceeded ' + maxLength + ' characters]'
+      : joined;
+  }
+
   private extractRecentMessages(
     messages: Array<{ direction: string; content: string; metadata?: Record<string, unknown> | null }>,
-    limit: number
+    limit: number,
+    // Cap each message so a verbose child cannot inline an unbounded block
+    // into the auto-injected [Child Session Update] notification.
+    maxPerMessage: number = 2000
   ): Array<{ direction: 'input' | 'output'; text: string }> {
     const collected: Array<{ direction: 'input' | 'output'; text: string }> = [];
     for (let index = messages.length - 1; index >= 0 && collected.length < limit; index -= 1) {
@@ -1317,7 +1454,7 @@ export class MetaAgentService {
       }
       collected.push({
         direction: message.direction === 'input' ? 'input' : 'output',
-        text,
+        text: text.length > maxPerMessage ? `${text.slice(0, maxPerMessage)}...` : text,
       });
     }
     return collected.reverse();

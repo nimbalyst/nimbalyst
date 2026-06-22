@@ -12,6 +12,9 @@ export type FieldType =
   | 'datetime'
   | 'boolean'
   | 'user'
+  /** First-class link to other tracker item(s). See {@link RelationshipFieldDefinition}. */
+  | 'relationship'
+  /** @deprecated Legacy inert link type; treated as a `relationship` alias. */
   | 'reference'
   | 'url'
   | 'array'
@@ -55,6 +58,46 @@ export interface FieldDefinition {
   // For array
   itemType?: FieldType;
   schema?: FieldDefinition[];
+
+  // For relationship (Epic C). Present when `type === 'relationship'` (or the
+  // legacy `reference` alias). A relationship value is a collection field that
+  // syncs on the metadata socket exactly like `labels` — see
+  // tracker-relationships-design.md.
+  /** Vocabulary/behavior key, e.g. `depends-on`, `blocks`, `relates-to`. */
+  relationshipTypeKey?: string;
+  /** Allowed target tracker types, or `'*'` for any. */
+  targetTrackerTypes?: string[] | '*';
+  /** True = array of targets (add-wins set); false/undefined = single target. */
+  multiValue?: boolean;
+  /** Field id on the target type that holds the inverse value (Phase 3). */
+  inverseFieldId?: string;
+  /** Relationship key of the inverse direction, e.g. `blocks` for `depends-on`. */
+  inverseRelationshipTypeKey?: string;
+  /** The relationship reads the same both directions (e.g. `relates-to`). */
+  symmetric?: boolean;
+  /** Unresolved targets block marking the owning item complete. */
+  preventsCompletion?: boolean;
+  /** Models a parent/child hierarchy edge (cycle-checked in field-aware tools). */
+  childRelationship?: boolean;
+  /** Allow an item to link to itself on this field (default: reject self-links). */
+  allowSelfLink?: boolean;
+}
+
+/**
+ * A single related-item reference stored inside a relationship field's value.
+ *
+ * Carries enough denormalized display data (title, type, issueKey) to render a
+ * pill without a lookup on every paint. `itemId` is the stable identity used for
+ * dedup and the add-wins set semantics.
+ */
+export interface TrackerRelationshipValue {
+  itemId: string;
+  issueKey?: string;
+  title?: string;
+  trackerType?: string;
+  relationshipTypeKey?: string;
+  direction?: 'out';
+  metadata?: Record<string, unknown>;
 }
 
 export interface StatusBarLayoutRow {
@@ -157,12 +200,17 @@ export class TrackerDataModelRegistry {
   private models: Map<string, TrackerDataModel> = new Map();
   /** Track which types are built-in (survive workspace switches) vs workspace-specific */
   private builtinTypes: Set<string> = new Set();
+  /** Original built-in definitions, so a workspace override can be cleared. */
+  private builtinModels: Map<string, TrackerDataModel> = new Map();
   private listeners: Set<() => void> = new Set();
 
   register(model: TrackerDataModel, builtin = false): void {
     const normalized = ensureTagsSupport(model);
     this.models.set(normalized.type, normalized);
-    if (builtin) this.builtinTypes.add(normalized.type);
+    if (builtin) {
+      this.builtinTypes.add(normalized.type);
+      this.builtinModels.set(normalized.type, normalized);
+    }
     this.listeners.forEach(fn => fn());
   }
 
@@ -175,14 +223,39 @@ export class TrackerDataModelRegistry {
   }
 
   /**
+   * Remove one workspace-provided schema. Built-in overrides restore the
+   * original built-in model; custom workspace types are deleted.
+   */
+  clearWorkspaceSchema(type: string): boolean {
+    let changed = false;
+    if (this.builtinTypes.has(type)) {
+      const builtin = this.builtinModels.get(type);
+      if (builtin && this.models.get(type) !== builtin) {
+        this.models.set(type, builtin);
+        changed = true;
+      }
+    } else {
+      changed = this.models.delete(type);
+    }
+    if (changed) this.listeners.forEach(fn => fn());
+    return changed;
+  }
+
+  /**
    * Remove all workspace-specific (non-builtin) schemas.
    * Call this on workspace switch to prevent schemas from workspace A
    * leaking into workspace B.
    */
   clearWorkspaceSchemas(): void {
     let changed = false;
-    for (const type of this.models.keys()) {
-      if (!this.builtinTypes.has(type)) {
+    for (const type of Array.from(this.models.keys())) {
+      if (this.builtinTypes.has(type)) {
+        const builtin = this.builtinModels.get(type);
+        if (builtin && this.models.get(type) !== builtin) {
+          this.models.set(type, builtin);
+          changed = true;
+        }
+      } else {
         this.models.delete(type);
         changed = true;
       }

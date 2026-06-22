@@ -19,17 +19,17 @@ Read the matching command file:
 
 Both commands share these constraints:
 
-1. **The user is the gate.** Never call `mcp__nimbalyst-mcp__feedback_open_github_issue` without explicit user approval of the final title and body.
-2. **Anonymize aggressively.** Run anything that includes file paths, log content, environment strings, or workspace identifiers through `mcp__nimbalyst-mcp__feedback_anonymize_text` first, then read the output and redact anything else that looks sensitive.
+1. **The user is the gate.** Never call `mcp__nimbalyst-situational__feedback_open_github_issue` without explicit user approval of the final title and body.
+2. **Anonymize aggressively.** Run anything that includes file paths, log content, environment strings, or workspace identifiers through `mcp__nimbalyst-situational__feedback_anonymize_text` first, then read the output and redact anything else that looks sensitive.
 3. **Honor the intake flags.** Bug-report sessions include `Log gathering: allowed` or `Log gathering: not allowed`; feature-request sessions may include `UX mockup: requested` or `UX mockup: not requested`. Only bug reports may read logs, and only when log gathering is allowed.
 4. **Handle long reports.** When the drafted body exceeds the URL safe length, the URL builder returns `reason: 'too-long'`. Fall back to: show the body in chat, open a no-body URL, tell the user to paste.
 5. **Target repo and templates.** Bug reports use `bug_report.yml`; feature requests use `feature_request.yml`. Both target `nimbalyst/nimbalyst`. Don't hardcode the URL — let the URL builder handle template selection and field-id routing. The GitHub issue type (Bug / Feature) and `status:needs-triage` label come from the template frontmatter, not from the URL builder.
 
 ## Tools available
 
-- `mcp__nimbalyst-mcp__feedback_anonymize_text(text)` → returns anonymized string
-- `mcp__nimbalyst-mcp__feedback_get_environment()` → app version, OS, recent error counts
-- `mcp__nimbalyst-mcp__feedback_open_github_issue({ kind, title, body })` → opens GitHub new-issue page in browser, returns `{ ok, opened, reason?, url? }`
+- `mcp__nimbalyst-situational__feedback_anonymize_text(text)` → returns anonymized string
+- `mcp__nimbalyst-situational__feedback_get_environment()` → app version, OS, recent error counts
+- `mcp__nimbalyst-situational__feedback_open_github_issue({ kind, title, body })` → opens GitHub new-issue page in browser, returns `{ ok, opened, reason?, url? }`
 - `mcp__nimbalyst-extension-dev__get_main_process_logs({ lastLines, searchTerm, logLevel, component })` → only with consent
 - `mcp__nimbalyst-extension-dev__get_renderer_debug_logs({ lastLines, searchTerm, logLevel })` → only with consent
 

@@ -1,6 +1,6 @@
 ---
 description: Guide the user through filing a feature request on the public Nimbalyst GitHub repo
-allowed-tools: ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "mcp__nimbalyst-mcp__capture_editor_screenshot", "mcp__nimbalyst-mcp__feedback_get_environment", "mcp__nimbalyst-mcp__feedback_open_github_issue"]
+allowed-tools: ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "mcp__nimbalyst__capture_editor_screenshot", "mcp__nimbalyst-situational__feedback_get_environment", "mcp__nimbalyst-situational__feedback_open_github_issue"]
 ---
 
 # Feature Request
@@ -28,10 +28,10 @@ The first user message in this session may contain:
    - Ask only the design questions you need: what screen or flow changes, what must stay the same, and what success looks like.
    - Create a focused `.mockup.html` file in `nimbalyst-local/mockups/` with a descriptive kebab-case name.
    - Keep the mockup narrow. One screen or one flow is usually enough.
-   - After each meaningful iteration, call `mcp__nimbalyst-mcp__capture_editor_screenshot` so the user can review the rendered result.
+   - After each meaningful iteration, call `mcp__nimbalyst__capture_editor_screenshot` so the user can review the rendered result.
    - Iterate with the user until they approve the concept or decide a mockup is no longer useful.
    - If the request turns out not to be UX-related, say so plainly and continue without a mockup.
-5. **Optionally call `mcp__nimbalyst-mcp__feedback_get_environment`** if the request is platform-specific (e.g., a macOS-only ask).
+5. **Optionally call `mcp__nimbalyst-situational__feedback_get_environment`** if the request is platform-specific (e.g., a macOS-only ask).
 6. **Draft the issue body** in this exact structure:
 
 ```markdown
@@ -51,7 +51,7 @@ The first user message in this session may contain:
    If you created a mockup, mention the specific screen or flow it explored in `## Additional context`. Tell the user they should attach the latest mockup screenshot manually in GitHub after the issue form opens.
 
 7. **Confirm with the user** before posting. Show them the full title and body, ask "Ready to post?"
-8. **Post via the URL builder.** Call `mcp__nimbalyst-mcp__feedback_open_github_issue` with `kind: 'feature'`, the title, and the body. Handle the `too-long` case the same way as bug reports: show the body in chat, open the URL with title only, tell the user to paste.
+8. **Post via the URL builder.** Call `mcp__nimbalyst-situational__feedback_open_github_issue` with `kind: 'feature'`, the title, and the body. Handle the `too-long` case the same way as bug reports: show the body in chat, open the URL with title only, tell the user to paste.
 
 ## Rules
 

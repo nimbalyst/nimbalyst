@@ -17,7 +17,7 @@ import {
   buildFullDocumentTrackerId,
 } from '../documentHeader/frontmatterUtils';
 import { getRecordTitle, getRecordStatus, getRecordPriority, getFieldByRole, resolveRoleFieldName } from '../trackerRecordAccessors';
-import { globalRegistry, parseDate } from '../models';
+import { globalRegistry, parseDate, normalizeRelationshipValue } from '../models';
 import {usePostHog} from "posthog-js/react";
 import {
   resolveColumnsForType,
@@ -656,6 +656,24 @@ export function renderCell(
             >
               {strVal.split('-').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
             </span>
+          );
+        }
+
+        case 'relationship': {
+          const links = normalizeRelationshipValue(value);
+          if (links.length === 0) return null;
+          return (
+            <div className="flex flex-wrap gap-0.5">
+              {links.map((l) => (
+                <span
+                  key={l.itemId}
+                  className="relationship-pill inline-block px-1.5 py-0.5 text-[10px] rounded-full bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)]"
+                  title={l.title || l.itemId}
+                >
+                  {l.issueKey || l.title || l.itemId}
+                </span>
+              ))}
+            </div>
           );
         }
 

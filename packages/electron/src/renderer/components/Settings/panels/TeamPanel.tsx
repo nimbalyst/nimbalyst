@@ -1,9 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { useDialogState } from '../../../contexts/DialogContext';
 import { DIALOG_IDS } from '../../../dialogs/registry';
 import type { CreateTeamData } from '../../../dialogs/teamDialogs';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
+import { SecurityEncryptionSection } from './H2EncryptionMigration';
+import { MoveProjectWizard } from './MoveProjectWizard';
+import { MergeOrgWizard } from './MergeOrgWizard';
 
 // ============================================================================
 // Types
@@ -32,6 +35,8 @@ interface TeamData {
   name: string;
   gitRemote: string;
   gitRemoteHash: string | null;
+  /** Epic H3 P0/A: the routing key of the project THIS workspace resolved to. */
+  teamProjectId?: string | null;
   members: TeamMember[];
   callerRole: string;
   membershipType?: string;
@@ -43,8 +48,24 @@ interface PendingInvite {
   membershipType: string;
 }
 
+/** Epic H3 P0/A: one project in the active org's registry. */
+interface OrgProjectSummary {
+  projectId: string;
+  teamProjectId: string;
+  gitRemoteHash: string | null;
+  slug: string | null;
+  name: string | null;
+}
+
 interface TeamPanelProps {
   workspacePath?: string;
+  /**
+   * Epic H3 P3: when rendered in the Organization settings scope, the panel is
+   * keyed to this org (selected in the OrgSwitcher) rather than resolved from the
+   * active workspace's git remote. When unset, it falls back to workspace
+   * resolution (project scope / legacy).
+   */
+  orgId?: string;
 }
 
 const AVATAR_COLORS = ['#60a5fa', '#a78bfa', '#4ade80', '#fbbf24', '#f472b6', '#34d399'];
@@ -164,16 +185,19 @@ function EncryptionCard() {
       <div className="flex items-center gap-2 mb-2">
         <MaterialSymbol icon="lock" size={16} className="text-[var(--nim-success)]" />
         <span className="text-[13px] font-semibold text-[var(--nim-success)]">
-          End-to-End Encryption
+          Encryption &amp; Privacy
         </span>
       </div>
       <p className="m-0 mb-2 text-[12px] text-[var(--nim-text-muted)] leading-relaxed">
-        Team data is encrypted with keys shared via ECDH key exchange. The server never sees your data.
+        Team data (trackers and documents) is encrypted in transit and at rest and
+        isolated per team. Depending on your team&apos;s setup, encryption keys are
+        either held only by members&apos; devices, or managed by Nimbalyst so the
+        team is reachable from the web, CLI, and cloud agents.
       </p>
       <ul className="m-0 pl-5 text-[12px] text-[var(--nim-text)] leading-7">
-        <li>Encryption keys are shared directly between team members</li>
-        <li>Only verified team members can decrypt shared data</li>
-        <li>Removing a member rotates the encryption key</li>
+        <li>Only authorized team members can access shared data</li>
+        <li>Your personal device sync (sessions, drafts, settings) stays zero-knowledge — keys never leave your devices</li>
+        <li>Need true zero-knowledge for team data? Self-hosting is the answer</li>
       </ul>
     </div>
   );
@@ -274,11 +298,17 @@ function MemberFingerprintDetail({ member, fingerprint, onVerify, onRevoke, onRe
 // No Team State
 // ============================================================================
 
-function NoTeamState({ gitRemote, onCreateTeam, loading }: {
+function NoTeamState({ gitRemote, onCreateTeam, loading, adminOrgs, onAddToOrg, addingProject, hasGitRemote }: {
   gitRemote: string;
   onCreateTeam: () => void;
   loading?: boolean;
+  adminOrgs: { orgId: string; name: string }[];
+  onAddToOrg: (orgId: string) => void;
+  addingProject?: boolean;
+  hasGitRemote?: boolean;
 }) {
+  const [selectedOrgId, setSelectedOrgId] = useState<string>('');
+
   return (
     <>
       {/* CTA Card */}
@@ -302,6 +332,53 @@ function NoTeamState({ gitRemote, onCreateTeam, loading }: {
           </button>
         </div>
       </div>
+
+      {/* Epic H3 P0/A: Add this workspace to an EXISTING org as a new project. */}
+      {adminOrgs.length > 0 && (
+        <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
+          <h4 className="provider-panel-section-title text-[15px] font-semibold mb-2 text-[var(--nim-text)]">
+            Add to an existing organization
+          </h4>
+          <p className="text-[12px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">
+            Already have an organization? Add this repo as a new project under it instead of
+            creating a separate team. It joins as its own tracker space, sharing the org&apos;s members and encryption.
+          </p>
+          {!hasGitRemote ? (
+            <div className="flex items-center gap-2 px-3 py-2.5 bg-[var(--nim-bg-secondary)] rounded-md">
+              <MaterialSymbol icon="link_off" size={14} className="text-[var(--nim-text-faint)] shrink-0" />
+              <span className="text-[12px] text-[var(--nim-text-faint)]">
+                This workspace has no git remote, so it can&apos;t be added as a project.
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedOrgId}
+                onChange={(e) => setSelectedOrgId(e.target.value)}
+                disabled={addingProject}
+                className="flex-1 px-3 py-2 text-[12px] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-md text-[var(--nim-text)] cursor-pointer"
+              >
+                <option value="">Select an organization…</option>
+                {adminOrgs.map((o) => (
+                  <option key={o.orgId} value={o.orgId}>{o.name}</option>
+                ))}
+              </select>
+              <button
+                onClick={() => selectedOrgId && onAddToOrg(selectedOrgId)}
+                disabled={!selectedOrgId || addingProject}
+                className={`inline-flex items-center gap-1.5 px-4 py-2 border-none rounded-md text-white text-[12px] font-medium shrink-0 ${
+                  !selectedOrgId || addingProject
+                    ? 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-faint)] cursor-not-allowed'
+                    : 'bg-[var(--nim-primary)] cursor-pointer'
+                }`}
+              >
+                <MaterialSymbol icon="add" size={14} />
+                {addingProject ? 'Adding…' : 'Add Project'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Project Identity */}
       <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
@@ -331,13 +408,17 @@ function NoTeamState({ gitRemote, onCreateTeam, loading }: {
 // Team Exists State
 // ============================================================================
 
-function TeamExistsState({ team, onInvite, onRemoveMember, onDeleteTeam, onLinkProject, onUnlinkProject, isAdmin, localGitRemote, fingerprints, myFingerprint, onVerifyMember, onRevokeTrust, onReshareKey, onUpdateRole }: {
+function TeamExistsState({ team, projects, workspacePath, adminOrgs, onInvite, onRemoveMember, onDeleteTeam, onLinkProject, onUnlinkProject, onProjectMoved, isAdmin, localGitRemote, fingerprints, myFingerprint, onVerifyMember, onRevokeTrust, onReshareKey, onUpdateRole }: {
   team: TeamData;
+  projects: OrgProjectSummary[];
+  workspacePath?: string;
+  adminOrgs: { orgId: string; name: string }[];
   onInvite: (email: string) => void;
   onRemoveMember: (memberId: string) => void;
   onDeleteTeam: () => void;
   onLinkProject: () => void;
   onUnlinkProject: () => void;
+  onProjectMoved: () => void;
   isAdmin: boolean;
   localGitRemote: string;
   fingerprints: Map<string, MemberFingerprint>;
@@ -349,6 +430,15 @@ function TeamExistsState({ team, onInvite, onRemoveMember, onDeleteTeam, onLinkP
 }) {
   const [inviteEmail, setInviteEmail] = useState('');
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
+  // Epic H3 P3: the project currently being moved (opens the move wizard).
+  const [movingProject, setMovingProject] = useState<{ projectId: string; name: string } | null>(null);
+  // Epic H3 P4: whether the merge-org wizard is open.
+  const [merging, setMerging] = useState(false);
+  // Epic H3 P5: target for the move wizard's "Update encryption" deep-link —
+  // the Security & Encryption (H2 custody) section lives in this same panel.
+  const encryptionSectionRef = useRef<HTMLDivElement>(null);
+  const hasOtherAdminOrg = adminOrgs.some(o => o.orgId !== team.orgId);
+  const canMoveProjects = isAdmin && hasOtherAdminOrg;
 
   const handleInvite = () => {
     if (inviteEmail.trim()) {
@@ -422,6 +512,80 @@ function TeamExistsState({ team, onInvite, onRemoveMember, onDeleteTeam, onLinkP
           </div>
         )}
       </div>
+
+      {/* Projects Section (Epic H3 P0/A) -- every project in this org. An org
+          can hold multiple projects, each its own tracker space; this lists them
+          so it's clear which one this workspace is connected to. */}
+      {(projects.length > 1 || canMoveProjects) && (
+        <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
+          <h4 className="provider-panel-section-title text-[15px] font-semibold mb-2 text-[var(--nim-text)] flex items-center justify-between">
+            <span>Projects</span>
+            <span className="text-[11px] font-normal text-[var(--nim-text-faint)]">
+              {projects.length} {projects.length === 1 ? 'project' : 'projects'}
+            </span>
+          </h4>
+          {projects.length > 1 && (
+            <p className="text-[12px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">
+              This organization has multiple projects. Each is its own tracker space; members share the org&apos;s roster and encryption.
+            </p>
+          )}
+          <div className="bg-[var(--nim-bg-secondary)] rounded-lg overflow-hidden">
+            {projects.map((p) => {
+              const isCurrent = !!team.teamProjectId && p.teamProjectId === team.teamProjectId;
+              return (
+                <div
+                  key={p.projectId}
+                  className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-[var(--nim-bg)] last:border-b-0"
+                >
+                  <MaterialSymbol
+                    icon="folder"
+                    size={16}
+                    className={isCurrent ? 'text-[var(--nim-primary)] shrink-0' : 'text-[var(--nim-text-faint)] shrink-0'}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-medium text-[var(--nim-text)] flex items-center gap-1.5">
+                      {p.name || p.slug || 'Untitled project'}
+                      {isCurrent && (
+                        <span className="text-[10px] text-[var(--nim-primary)] font-normal">(this workspace)</span>
+                      )}
+                    </div>
+                    {p.gitRemoteHash && (
+                      <div className="text-[11px] text-[var(--nim-text-faint)] font-mono overflow-hidden text-ellipsis whitespace-nowrap">
+                        {p.gitRemoteHash.slice(0, 12)}…
+                      </div>
+                    )}
+                  </div>
+                  {canMoveProjects && (
+                    <button
+                      className="text-[11px] px-2 py-1 rounded-md text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg)] hover:text-[var(--nim-text)] shrink-0 flex items-center gap-1"
+                      onClick={() => setMovingProject({ projectId: p.projectId, name: p.name || p.slug || 'Untitled project' })}
+                      data-testid={`move-project-trigger-${p.projectId}`}
+                      title="Move this project to another organization"
+                    >
+                      <MaterialSymbol icon="drive_file_move" size={14} />
+                      Move…
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {movingProject && (
+        <MoveProjectWizard
+          srcOrgId={team.orgId}
+          project={movingProject}
+          destCandidates={adminOrgs}
+          onClose={() => setMovingProject(null)}
+          onMoved={() => { onProjectMoved(); }}
+          onUpdateEncryption={() => {
+            // Reveal the H2 "update encryption" migration surface in this panel.
+            encryptionSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+        />
+      )}
 
       {/* Members Section */}
       <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
@@ -565,9 +729,9 @@ function TeamExistsState({ team, onInvite, onRemoveMember, onDeleteTeam, onLinkP
         </div>
       )}
 
-      {/* Encryption Footer */}
-      <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
-        <EncryptionCard />
+      {/* Security & encryption (Epic H2: key custody + migration) */}
+      <div ref={encryptionSectionRef} className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0" data-testid="team-panel-encryption-section">
+        <SecurityEncryptionSection orgId={team.orgId} workspacePath={workspacePath} isAdmin={isAdmin} />
       </div>
 
       {/* Danger Zone */}
@@ -576,13 +740,37 @@ function TeamExistsState({ team, onInvite, onRemoveMember, onDeleteTeam, onLinkP
           <h4 className="provider-panel-section-title text-[13px] font-semibold mb-2 text-[var(--nim-text-muted)]">
             Danger Zone
           </h4>
-          <button
-            onClick={onDeleteTeam}
-            className="px-3.5 py-1.5 text-[12px] bg-transparent border border-[rgba(239,68,68,0.4)] rounded-md text-[var(--nim-error)] cursor-pointer hover:bg-[rgba(239,68,68,0.1)]"
-          >
-            Delete Team
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {hasOtherAdminOrg && (
+              <button
+                onClick={() => setMerging(true)}
+                className="px-3.5 py-1.5 text-[12px] bg-transparent border border-[rgba(239,68,68,0.4)] rounded-md text-[var(--nim-error)] cursor-pointer hover:bg-[rgba(239,68,68,0.1)] flex items-center gap-1"
+                data-testid="merge-org-trigger"
+                title="Move all of this org's projects into another org you administer"
+              >
+                <MaterialSymbol icon="merge" size={14} />
+                Merge into another org…
+              </button>
+            )}
+            <button
+              onClick={onDeleteTeam}
+              className="px-3.5 py-1.5 text-[12px] bg-transparent border border-[rgba(239,68,68,0.4)] rounded-md text-[var(--nim-error)] cursor-pointer hover:bg-[rgba(239,68,68,0.1)]"
+            >
+              Delete Team
+            </button>
+          </div>
         </div>
+      )}
+
+      {merging && (
+        <MergeOrgWizard
+          drainedOrg={{ orgId: team.orgId, name: team.name }}
+          survivorCandidates={adminOrgs}
+          projectCount={projects.length}
+          memberCount={team.members.length}
+          onClose={() => setMerging(false)}
+          onMerged={() => { setMerging(false); onProjectMoved(); }}
+        />
       )}
     </>
   );
@@ -610,7 +798,7 @@ function InvitePendingState({ invite, onAccept, loading, gitRemote }: {
             {invite.name}
           </div>
           <p className="text-[13px] text-[var(--nim-text-muted)] mb-4 leading-relaxed">
-            You have been invited to join this team. Accept to collaborate on shared tracker items and documents with end-to-end encryption.
+            You have been invited to join this team. Accept to collaborate on shared, encrypted tracker items and documents.
           </p>
           <button
             onClick={onAccept}
@@ -653,7 +841,7 @@ function InvitePendingState({ invite, onAccept, loading, gitRemote }: {
 // TeamPanel
 // ============================================================================
 
-export function TeamPanel({ workspacePath }: TeamPanelProps) {
+export function TeamPanel({ workspacePath, orgId: orgScopeId }: TeamPanelProps) {
   const [team, setTeam] = useState<TeamData | null>(null);
   const [pendingInvite, setPendingInvite] = useState<PendingInvite | null>(null);
   const [gitRemote, setGitRemote] = useState<string>('');
@@ -662,6 +850,11 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
   const [initialLoading, setInitialLoading] = useState(true);
   const [fingerprints, setFingerprints] = useState<Map<string, MemberFingerprint>>(new Map());
   const [myFingerprint, setMyFingerprint] = useState<string | null>(null);
+  // Epic H3 P0/A: projects in the active org, and the orgs the user can add
+  // this workspace to as a NEW project (orgs where they are owner/admin).
+  const [projects, setProjects] = useState<OrgProjectSummary[]>([]);
+  const [adminOrgs, setAdminOrgs] = useState<{ orgId: string; name: string }[]>([]);
+  const [addingProject, setAddingProject] = useState(false);
   const [stytchAuth, setStytchAuth] = useState<{
     isAuthenticated: boolean;
     user: { user_id: string; emails: Array<{ email: string }>; name?: { first_name?: string; last_name?: string } } | null;
@@ -701,8 +894,30 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
     });
   }, [workspacePath]);
 
+  // Epic H3 P0/A: load the orgs the user owns/admins, so a personal workspace can
+  // be added to an existing org as a new project (vs only "create a new team").
+  const loadAdminOrgs = useCallback(async () => {
+    try {
+      const result = await (window as any).electronAPI.team.list();
+      if (result.success && Array.isArray(result.teams)) {
+        const orgs = result.teams
+          .filter((t: any) =>
+            (!t.membershipType || t.membershipType === 'active_member') &&
+            (t.role === 'admin' || t.role === 'owner'))
+          .map((t: any) => ({ orgId: t.orgId, name: t.name }));
+        setAdminOrgs(orgs);
+      }
+    } catch {
+      // Non-fatal -- the "add to existing org" option just won't appear.
+    }
+  }, []);
+
+  useEffect(() => {
+    loadAdminOrgs();
+  }, [loadAdminOrgs]);
+
   // Load team data for an orgId: fetch members, envelopes, and fingerprints
-  const loadTeamDetails = useCallback(async (orgId: string, teamName: string, teamGitRemoteHash: string | null) => {
+  const loadTeamDetails = useCallback(async (orgId: string, teamName: string, teamGitRemoteHash: string | null, teamProjectId?: string | null) => {
     const membersResult = await (window as any).electronAPI.team.listMembers(orgId);
     if (!membersResult.success) return;
 
@@ -739,16 +954,47 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
       name: teamName,
       gitRemote: gitRemote || teamGitRemoteHash || '',
       gitRemoteHash: teamGitRemoteHash,
+      teamProjectId: teamProjectId ?? null,
       members,
       callerRole: membersResult.callerRole || 'member',
     });
 
     // Load fingerprints for non-pending members (fire-and-forget, doesn't block UI)
     loadFingerprints(orgId, members, currentUserId);
+
+    // Epic H3 P0/A: list every project in this org (fire-and-forget).
+    (window as any).electronAPI.team.listProjects(orgId).then((res: any) => {
+      if (res?.success && Array.isArray(res.projects)) {
+        setProjects(res.projects);
+      } else {
+        setProjects([]);
+      }
+    }).catch(() => setProjects([]));
   }, [gitRemote]);
 
   // Load team data -- find team matching this workspace's git remote, or fall back to listing all teams
   const loadTeamData = useCallback(async () => {
+    // Epic H3 P3: Organization scope -- key off the selected org id, not the
+    // workspace. Resolve that specific team from the team list and load it.
+    if (orgScopeId) {
+      try {
+        const listResult = await (window as any).electronAPI.team.list();
+        const match = (listResult?.teams || []).find((t: any) => t.orgId === orgScopeId);
+        if (match) {
+          setPendingInvite(null);
+          await loadTeamDetails(match.orgId, match.name, match.gitRemoteHash, match.teamProjectId);
+        } else {
+          setTeam(null);
+        }
+      } catch (err) {
+        console.error('[TeamPanel] org-scope loadTeamData error:', err);
+        setTeam(null);
+      } finally {
+        setInitialLoading(false);
+      }
+      return;
+    }
+
     if (!workspacePath) {
       setInitialLoading(false);
       return;
@@ -776,7 +1022,7 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
 
         // Active team match
         setPendingInvite(null);
-        await loadTeamDetails(matchedTeam.orgId, matchedTeam.name, matchedTeam.gitRemoteHash);
+        await loadTeamDetails(matchedTeam.orgId, matchedTeam.name, matchedTeam.gitRemoteHash, matchedTeam.teamProjectId);
         return;
       }
 
@@ -811,7 +1057,7 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
     } finally {
       setInitialLoading(false);
     }
-  }, [workspacePath, loadTeamDetails]);
+  }, [workspacePath, orgScopeId, loadTeamDetails]);
 
   useEffect(() => {
     loadTeamData();
@@ -929,6 +1175,29 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
     });
   };
 
+  // Epic H3 P0/A: attach the current workspace to an EXISTING org as a new
+  // project (distinct from createTeam, which mints a brand-new org). After the
+  // add, findForWorkspace resolves this workspace to the new project's room, so
+  // reloading flips the panel into the team-exists state.
+  const handleAddToOrg = async (orgId: string) => {
+    if (!workspacePath) return;
+    setAddingProject(true);
+    setError(null);
+    try {
+      const result = await (window as any).electronAPI.team.addProject(orgId, workspacePath);
+      if (result.success) {
+        await loadTeamData();
+        await loadAdminOrgs();
+      } else {
+        setError(result.error || 'Failed to add project to organization');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add project to organization');
+    } finally {
+      setAddingProject(false);
+    }
+  };
+
   const handleInvite = async (email: string) => {
     if (!team) return;
     setError(null);
@@ -963,6 +1232,15 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
 
   const handleRemoveMember = async (memberId: string) => {
     if (!team) return;
+    const member = team.members.find((m) => m.id === memberId);
+    const label = member?.email || member?.name || 'this member';
+    const isPending = member?.trustStatus === 'pending';
+    const confirmed = window.confirm(
+      isPending
+        ? `Revoke the pending invite for ${label}?`
+        : `Remove ${label} from "${team.name}"? They will lose access to this team's shared trackers and documents. This cannot be undone (you'd need to re-invite them).`
+    );
+    if (!confirmed) return;
     setError(null);
     try {
       const result = await (window as any).electronAPI.team.removeMember(team.orgId, memberId);
@@ -1016,6 +1294,10 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
 
   const handleUnlinkProject = async () => {
     if (!team) return;
+    const confirmed = window.confirm(
+      `Stop syncing this project with "${team.name}"? Its trackers and documents will no longer sync to the team. You can re-link it later.`
+    );
+    if (!confirmed) return;
     setError(null);
     try {
       const result = await (window as any).electronAPI.team.clearProjectIdentity(team.orgId);
@@ -1103,7 +1385,7 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
             <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
           </h3>
           <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
-            Create a team to collaborate on shared tracker items and documents with end-to-end encryption.
+            Create a team to collaborate on shared, encrypted tracker items and documents.
           </p>
           <TeamPricingNotice />
         </div>
@@ -1136,7 +1418,7 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
           <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
         </h3>
         <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
-          Create a team to collaborate on shared tracker items and documents with end-to-end encryption.
+          Create a team to collaborate on shared, encrypted tracker items and documents.
         </p>
         <TeamPricingNotice />
         {userEmail && team && (
@@ -1152,12 +1434,20 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
       {team ? (
         <TeamExistsState
           team={team}
+          projects={projects}
+          workspacePath={workspacePath}
+          adminOrgs={adminOrgs}
           onInvite={handleInvite}
           onRemoveMember={handleRemoveMember}
           onDeleteTeam={handleDeleteTeam}
           onLinkProject={handleLinkProject}
           onUnlinkProject={handleUnlinkProject}
-          isAdmin={team.callerRole === 'admin'}
+          onProjectMoved={() => {
+            // The moved project left this org; refresh the registry + candidate orgs.
+            loadAdminOrgs();
+            loadTeamDetails(team.orgId, team.name, team.gitRemoteHash, team.teamProjectId);
+          }}
+          isAdmin={team.callerRole === 'admin' || team.callerRole === 'owner'}
           localGitRemote={gitRemote}
           fingerprints={fingerprints}
           myFingerprint={myFingerprint}
@@ -1178,6 +1468,10 @@ export function TeamPanel({ workspacePath }: TeamPanelProps) {
           gitRemote={gitRemote}
           onCreateTeam={handleCreateTeam}
           loading={loading}
+          adminOrgs={adminOrgs}
+          onAddToOrg={handleAddToOrg}
+          addingProject={addingProject}
+          hasGitRemote={!!gitRemote}
         />
       )}
     </div>

@@ -39,7 +39,7 @@ Use whatever tools are appropriate for the problem. Do not limit yourself to log
   - `mcp__nimbalyst-extension-dev__get_main_process_logs` for main process issues (IPC, file watcher, AI providers, MCP servers, database)
   - `mcp__nimbalyst-extension-dev__get_renderer_debug_logs` for UI/renderer issues
 - **Check the database** via `mcp__nimbalyst-extension-dev__database_query` when state may be wrong (never open PGLite directly - see CLAUDE.md).
-- **Check trackers** via `mcp__nimbalyst-mcp__tracker_list` for prior bugs/decisions on the topic. If a related decision exists, read it - prior reasoning may still apply.
+- **Check trackers** via `mcp__nimbalyst-trackers__tracker_list` for prior bugs/decisions on the topic. If a related decision exists, read it - prior reasoning may still apply.
 - **Check git history** with `git log` / `git blame` when a regression may be involved.
 - **Read relevant design docs** listed in `CLAUDE.md` when the problem touches a documented subsystem (transcripts, IPC, editor state, Jotai, sync, extensions, etc.).
 

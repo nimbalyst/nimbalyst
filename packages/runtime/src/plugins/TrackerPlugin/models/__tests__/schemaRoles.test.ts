@@ -105,6 +105,52 @@ describe('getFieldByRole', () => {
   });
 });
 
+describe('TrackerDataModelRegistry workspace overrides', () => {
+  it('restores a built-in model after clearing workspace overrides', () => {
+    const registry = new TrackerDataModelRegistry();
+    const builtin = makeBugModel();
+    registry.register(builtin, true);
+
+    const override = {
+      ...makeBugModel(),
+      displayName: 'Bug Override',
+      fields: [
+        ...makeBugModel().fields,
+        { name: 'customerImpact', type: 'string' as const },
+      ],
+    };
+    registry.register(override);
+
+    expect(registry.isBuiltin('bug')).toBe(true);
+    expect(registry.get('bug')?.displayName).toBe('Bug Override');
+
+    registry.clearWorkspaceSchemas();
+
+    expect(registry.isBuiltin('bug')).toBe(true);
+    expect(registry.get('bug')?.displayName).toBe('Bug');
+    expect(registry.get('bug')?.fields.some((f) => f.name === 'customerImpact')).toBe(false);
+  });
+
+  it('clears one workspace schema and restores a built-in override', () => {
+    const registry = new TrackerDataModelRegistry();
+    const builtin = makeBugModel();
+    registry.register(builtin, true);
+    registry.register({ ...makeBugModel(), displayName: 'Bug Override' });
+    registry.register({
+      type: 'epic',
+      displayName: 'Epic',
+      fields: [{ name: 'title', type: 'string', required: true }],
+    } as TrackerDataModel);
+
+    expect(registry.clearWorkspaceSchema('epic')).toBe(true);
+    expect(registry.get('epic')).toBeUndefined();
+
+    expect(registry.clearWorkspaceSchema('bug')).toBe(true);
+    expect(registry.get('bug')?.displayName).toBe('Bug');
+    expect(registry.isBuiltin('bug')).toBe(true);
+  });
+});
+
 describe('YAML parser roles', () => {
   it('parses roles from YAML', () => {
     const yaml = `

@@ -565,6 +565,8 @@ export interface CreateSessionRequest {
   provider?: string;
   /** Model ID selected by mobile (e.g., "claude-code:opus"). Falls back to desktop default if omitted. */
   model?: string;
+  /** Agent role (e.g., "meta-agent", "standard"). Falls back to "standard" if omitted. */
+  agentRole?: string;
   /** Timestamp when request was created */
   timestamp: number;
 }
@@ -650,6 +652,8 @@ export interface SyncedSettings {
   availableModels?: SyncedAvailableModel[];
   /** Desktop's default model ID (e.g., "claude-code:opus") */
   defaultModel?: string;
+  /** Whether the desktop "meta-agent" alpha feature is enabled (gates the mobile Meta Agent UI) */
+  metaAgentEnabled?: boolean;
   /** Version for handling future upgrades */
   version: number;
 }

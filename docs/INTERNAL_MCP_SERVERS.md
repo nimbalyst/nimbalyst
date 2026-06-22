@@ -6,38 +6,29 @@ This document explains how Nimbalyst implements internal MCP (Model Context Prot
 
 Nimbalyst runs MCP servers **inside the Electron main process** to provide AI capabilities without requiring external server processes. These servers use HTTP with Server-Sent Events (SSE) transport, listening only on localhost.
 
-### Current Internal MCP Servers
+### Consolidated topology (one port, many endpoints)
 
-1. **Shared MCP Server** (`httpServer.ts`) - Port varies, provides:
-  - `applyDiff` - Apply code replacements to documents
-  - `streamContent` - Stream content to documents
-  - `capture_editor_screenshot` - Capture screenshots of any editor view (mockups, custom editors, markdown, code)
+A **single unified internal HTTP server** (`httpServer.ts`) hosts every first-party endpoint on one port and one bearer token (Issue #146). Each endpoint is its own `config[name]` to the agent (the SDK namespaces tools by config-key, so `mcp__<server>__<tool>`), with its own load policy. The single source of truth for the layout is `packages/runtime/src/ai/server/services/mcpTopology.ts`; registration is in `McpConfigService.getMcpServersConfig`.
 
-2. **Session Naming MCP Server** (`sessionNamingServer.ts`) - Port varies, provides:
-  - `extension_build` - Build extension project (runs `npm run build`)
-  - `extension_install` - Install extension into running Nimbalyst
-  - `extension_reload` - Hot reload extension (rebuild + reinstall)
-  - `extension_uninstall` - Remove extension from running instance
-  - `restart_nimbalyst` - Restart the application
-  - `extension_get_logs` - Get recent logs from renderer console (all sources, not just extensions)
-  - `extension_get_status` - Query extension load status and contributions
-  - `get_main_process_logs` - Read main process log file with filtering
-  - `get_renderer_debug_logs` - Read renderer debug logs (dev mode, persists across sessions)
+Three orthogonal axes (see `mcpTopology.ts`): **server boundary** = the unit of user-meaningful opt-out; **load policy** = eager (`alwaysLoad`) / deferred (surfaced by ToolSearch on intent) / conditional; **transport** = one port, one endpoint path per server.
 
-3. **Extension Development Kit MCP Server** (`extensionDevServer.ts`) - Port varies, provides:
+| Server (config-key) | Endpoint | Load policy | Tools |
+| --- | --- | --- | --- |
+| `nimbalyst` (core) | `/mcp/core` | **eager** | AskUserQuestion, PromptForUserInput, display_to_user, capture_editor_screenshot, get_session_edited_files, developer_git_commit_proposal, developer_git_log, update_session_meta. The only always-loaded surface; carries the long `tool_timeout_sec` (commit-proposal / AskUserQuestion block on user input). |
+| `nimbalyst-host` | `/mcp/host` | deferred | App config (settings_get_overview, appearance_\*, ai_\*, analytics_set_enabled, features_toggle, extension_set_enabled, sync_set_for_project, workspace_create/open/set_trust); session-context (get_session_summary, get_workstream_\*, list_recent_sessions, schedule_wakeup, update_session_board); child-session orchestration (create_session, spawn_session, send_prompt, respond_to_prompt, get_session_status/result, list_spawned_sessions, list_worktrees). The settings tools are dropped for the meta-agent profile and the settings kill-switch (`hostExcludeSettings` flag); session-context + meta-agent stay. |
+| `nimbalyst-trackers` | `/mcp/trackers` | deferred + per-project opt-out | tracker CRUD + config (`tracker_*`). The whole server is omitted when the per-project **Trackers → AI Agent Access** toggle (`trackersEnabled`) is off. |
+| `nimbalyst-situational` | `/mcp/situational` | deferred | voice_agent_speak/stop, readCollabDoc/applyCollabDocEdit, feedback_anonymize_text/get_environment/open_github_issue. |
+| `nimbalyst-<ext>` (one per extension) | `/mcp/ext/<id>` | deferred | Each active extension contributes its own server (`nimbalyst-excalidraw`, `nimbalyst-slides`, …) so the extension long-tail leaves the eager path. Surfaced by ToolSearch on intent — creation flows work with no file open. |
+| `nimbalyst-extension-dev` | `/mcp/extension-dev` | profile-gated, **own port** | Developer-mode tooling (database_query, extension_build/install/reload/uninstall, restart_nimbalyst, get_main_process_logs, get_renderer_debug_logs, renderer_eval, …). Still a standalone HTTP server (`extensionDevServer.ts`). |
 
-4. **Settings Control MCP Server** (`settingsServer.ts`) - Port varies, provides curated tools for an agent to inspect and change Nimbalyst settings:
-  - `settings_get_overview` - Curated, redacted snapshot of app + workspace settings (no secrets)
-  - `workspace_create` / `workspace_open` - Create/open a project workspace
-  - `sync_set_for_project` - Enable/disable session and document sync per project (requires Stytch sign-in)
-  - `appearance_set_theme` / `appearance_set_completion_sound` / `appearance_set_spellcheck`
-  - `analytics_set_enabled`
-  - `ai_set_default_model` / `ai_set_preferred_language`
-  - `features_toggle` - alpha/beta/developer feature flags (alpha and developer require Developer Mode)
-  - `extension_set_enabled`
-  - `tracker_set_sync_policy` / `tracker_set_issue_key_prefix`
+Settings writes route through `SettingsControlService` (allow-list, deny-list for API keys / Stytch creds / share keys, 30-writes/60s rate limit, audit logging). Kill-switch: set `settingsAgentToolsDisabled` in Settings to drop the settings tools from `nimbalyst-host`.
 
-  All writes route through `SettingsControlService` which enforces an allow-list, a deny-list (API keys, Stytch creds, share keys), a per-session rate limit (30 writes / 60s), and audit logging via `logger.store.info`. Kill-switch: set `settingsAgentToolsDisabled` to `true` in Settings to omit this server from the agent's MCP config on the next session start. The server is exposed to standard agents only; the meta-agent profile excludes it.
+> The legacy monolithic `nimbalyst-mcp` server and the standalone `settings` /
+> `session-context` / `meta-agent` / `session-naming` HTTP servers have been
+> **retired** — their tools fold onto the unified endpoints above. The standalone
+> server files still export their tool schemas + a `dispatch*` fn, which the
+> unified `httpServer` imports; `SessionNamingService` / `MetaAgentService` still
+> inject their handler fns but no longer start an HTTP server.
 
 ## Architecture
 

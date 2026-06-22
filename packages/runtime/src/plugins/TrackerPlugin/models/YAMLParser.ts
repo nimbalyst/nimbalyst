@@ -40,12 +40,27 @@ export function parseTrackerYAML(yamlString: string): TrackerDataModel {
       displayInline: field.displayInline !== undefined ? field.displayInline : true,
     };
 
+    if (field.readOnly !== undefined) fieldDef.readOnly = field.readOnly;
+
     // Add type-specific properties
     if (field.minLength !== undefined) fieldDef.minLength = field.minLength;
     if (field.maxLength !== undefined) fieldDef.maxLength = field.maxLength;
     if (field.min !== undefined) fieldDef.min = field.min;
     if (field.max !== undefined) fieldDef.max = field.max;
     if (field.itemType !== undefined) fieldDef.itemType = field.itemType;
+
+    // Relationship-field properties (Epic C / NIM-870). Without these the parsed
+    // FieldDefinition collapses to a single-value link with no target/vocab
+    // enforcement, even though the on-disk schema declared them.
+    if (field.relationshipTypeKey !== undefined) fieldDef.relationshipTypeKey = field.relationshipTypeKey;
+    if (field.targetTrackerTypes !== undefined) fieldDef.targetTrackerTypes = field.targetTrackerTypes;
+    if (field.multiValue !== undefined) fieldDef.multiValue = field.multiValue;
+    if (field.inverseFieldId !== undefined) fieldDef.inverseFieldId = field.inverseFieldId;
+    if (field.inverseRelationshipTypeKey !== undefined) fieldDef.inverseRelationshipTypeKey = field.inverseRelationshipTypeKey;
+    if (field.symmetric !== undefined) fieldDef.symmetric = field.symmetric;
+    if (field.preventsCompletion !== undefined) fieldDef.preventsCompletion = field.preventsCompletion;
+    if (field.childRelationship !== undefined) fieldDef.childRelationship = field.childRelationship;
+    if (field.allowSelfLink !== undefined) fieldDef.allowSelfLink = field.allowSelfLink;
 
     // Parse options for select/multiselect
     if (field.options && Array.isArray(field.options)) {

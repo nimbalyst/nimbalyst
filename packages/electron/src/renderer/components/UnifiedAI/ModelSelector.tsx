@@ -56,6 +56,8 @@ export function ModelSelector({
 }: ModelSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [models, setModels] = useState<Record<string, Model[]>>({});
+  const [providerLabels, setProviderLabels] = useState<Record<string, string>>({});
+  const [providerIcons, setProviderIcons] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const providers = useAtomValue(providersAtom);
   const setWindowMode = useSetAtom(setWindowModeAtom);
@@ -97,6 +99,12 @@ export function ModelSelector({
       const response = await window.electronAPI.aiGetModels();
       if (response.success && response.grouped) {
         setModels(response.grouped);
+        const meta = response as {
+          providerLabels?: Record<string, string>;
+          providerIcons?: Record<string, string>;
+        };
+        if (meta.providerLabels) setProviderLabels(meta.providerLabels);
+        if (meta.providerIcons) setProviderIcons(meta.providerIcons);
       }
     } catch (error) {
       console.error('Failed to load models:', error);
@@ -156,6 +164,9 @@ export function ModelSelector({
   };
 
   const getProviderLabel = (provider: string) => {
+    // Extension-contributed providers carry their manifest displayName from
+    // ai:getModels; prefer it over the prettified-id fallback below.
+    if (providerLabels[provider]) return providerLabels[provider];
     switch (provider) {
       case 'claude': return 'Claude Chat';
       case 'claude-code': return 'Claude Agent (Claude Code Based)';
@@ -166,12 +177,36 @@ export function ModelSelector({
       case 'opencode': return 'OpenCode';
       case 'copilot-cli': return 'GitHub Copilot';
       case 'lmstudio': return 'LMStudio';
-      default: return provider;
+      default: {
+        // Extension-contributed providers carry their contribution id here
+        // (e.g. "antigravity-gemini-agent"). Prettify it for the group header
+        // rather than showing the raw id; the per-model names already come
+        // from the extension manifest.
+        const cleaned = provider.replace(/-agent$/, '').replace(/[-_]+/g, ' ').trim();
+        return cleaned.replace(/\b\w/g, (c) => c.toUpperCase()) || provider;
+      }
     }
   };
 
+  // Built-in chat-model providers are a small closed set. Built-in agent CLIs
+  // are matched by isAgentProvider. Anything left over is an extension-
+  // contributed agent provider id (e.g. antigravity-gemini-agent), which we
+  // group under "Agents" so it surfaces the same way Codex / Claude Code do --
+  // without the renderer needing the main-process AgentProviderRegistry.
+  // Extension providers ship a Material icon name in their manifest; prefer it
+  // so the picker header matches the Agent Providers sidebar. Built-ins fall
+  // back to getProviderIcon.
+  const renderProviderIcon = (provider: string, size: number) => {
+    const ext = providerIcons[provider];
+    if (ext) return <MaterialSymbol icon={ext} size={size} />;
+    return getProviderIcon(provider, { size });
+  };
+
+  const CHAT_MODEL_PROVIDERS = new Set(['claude', 'openai', 'lmstudio']);
   const getProviderType = (provider: string): ProviderType => {
-    return isAgentProvider(provider) ? 'agent' : 'model';
+    if (isAgentProvider(provider)) return 'agent';
+    if (CHAT_MODEL_PROVIDERS.has(provider)) return 'model';
+    return 'agent';
   };
 
   const isProviderSwitchDisabled = (targetProvider: string): boolean => {
@@ -186,7 +221,7 @@ export function ModelSelector({
 
   // Group providers by type (agents vs models)
   const groupedProviders = Object.entries(models).reduce((acc, [provider, providerModels]) => {
-    const isAgent = isAgentProvider(provider);
+    const isAgent = getProviderType(provider) === 'agent';
     const type = isAgent ? 'agents' : 'models';
     if (!acc[type]) acc[type] = {};
     acc[type][provider] = providerModels;
@@ -259,7 +294,7 @@ export function ModelSelector({
                           className="model-selector-provider-header flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-[var(--nim-text-muted)]"
                           data-testid={`model-picker-provider-${provider}`}
                         >
-                          {getProviderIcon(provider, { size: 12 })}
+                          {renderProviderIcon(provider, 12)}
                           <span>{getProviderLabel(provider)}</span>
                           {ALPHA_PROVIDERS.has(provider) && <AlphaBadge size="xs" />}
                         </div>
@@ -305,7 +340,7 @@ export function ModelSelector({
                   {Object.entries(groupedProviders.models).map(([provider, providerModels]) => (
                     <div key={provider} className="model-selector-provider-group mb-1">
                       <div className="model-selector-provider-header flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-[var(--nim-text-muted)]">
-                        {getProviderIcon(provider, { size: 12 })}
+                        {renderProviderIcon(provider, 12)}
                         {getProviderLabel(provider)}
                       </div>
                       {providerModels.map(model => {

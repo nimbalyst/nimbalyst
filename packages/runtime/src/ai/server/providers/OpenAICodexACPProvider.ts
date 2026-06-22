@@ -18,7 +18,7 @@
 import path from 'path';
 import { BaseAgentProvider } from './BaseAgentProvider';
 import { buildUserMessageAddition } from './documentContextUtils';
-import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt } from '../../prompt';
+import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
 import { DEFAULT_MODELS } from '../../modelConstants';
 import { AIToolCall, AIToolResult } from '../../types';
 import {
@@ -36,6 +36,7 @@ import { ProtocolEvent, ProtocolSession } from '../protocols/ProtocolInterface';
 import { ToolPermissionService } from '../permissions/ToolPermissionService';
 import { PermissionMode, TrustChecker, PermissionPatternSaver, PermissionPatternChecker, SecurityLogger } from './ProviderPermissionMixin';
 import { McpConfigService } from '../services/McpConfigService';
+import { getMcpConfigService, isInternalMcpServerEnabled } from '../services/mcpServerConfig';
 import { MCPServerConfig } from '../../../types/MCPServerConfig';
 import { safeJSONSerialize } from '../../../utils/serialization';
 import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
@@ -76,18 +77,9 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
     permissionMode: string | null;
   } | null = null;
 
-  // Static MCP/env injection points (mirror OpenAICodexProvider so the
-  // electron main process can wire both providers from a single setup path).
-  private static mcpServerPort: number | null = null;
-  private static sessionNamingServerPort: number | null = null;
-  private static extensionDevServerPort: number | null = null;
-  private static superLoopProgressServerPort: number | null = null;
-  private static sessionContextServerPort: number | null = null;
-  private static metaAgentServerPort: number | null = null;
-  private static settingsServerPort: number | null = null;
-  private static settingsAgentToolsDisabledLoader: (() => boolean) | null = null;
-  // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers (Issue #146)
-  private static mcpAuthToken: string | null = null;
+  // Internal MCP-server enablement (ports, kill-switches, extension/tracker
+  // loaders, auth token) lives in the shared `mcpServerConfig` registry now.
+  // Only the provider-specific env/config loaders stay per-provider.
   private static mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null = null;
   private static claudeSettingsEnvLoader: (() => Promise<Record<string, string>>) | null = null;
   private static shellEnvironmentLoader: (() => Record<string, string> | null) | null = null;
@@ -139,18 +131,8 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
       });
     }
 
-    this.mcpConfigService = new McpConfigService({
-      mcpServerPort: OpenAICodexACPProvider.mcpServerPort,
-      sessionNamingServerPort: OpenAICodexACPProvider.sessionNamingServerPort,
-      extensionDevServerPort: OpenAICodexACPProvider.extensionDevServerPort,
-      superLoopProgressServerPort: null,
-      sessionContextServerPort: OpenAICodexACPProvider.sessionContextServerPort,
-      metaAgentServerPort: OpenAICodexACPProvider.metaAgentServerPort,
-      settingsServerPort: OpenAICodexACPProvider.settingsServerPort,
-      settingsAgentToolsDisabledLoader: OpenAICodexACPProvider.settingsAgentToolsDisabledLoader,
-      mcpAuthToken: OpenAICodexACPProvider.mcpAuthToken,
+    this.mcpConfigService = getMcpConfigService({
       mcpConfigLoader: OpenAICodexACPProvider.mcpConfigLoader,
-      extensionPluginsLoader: null,
       claudeSettingsEnvLoader: OpenAICodexACPProvider.claudeSettingsEnvLoader,
       shellEnvironmentLoader: OpenAICodexACPProvider.shellEnvironmentLoader,
     });
@@ -209,33 +191,8 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
   public static setSecurityLogger(logger: SecurityLogger | null): void {
     BaseAgentProvider.setSecurityLogger(logger);
   }
-  public static setMcpServerPort(port: number | null): void {
-    OpenAICodexACPProvider.mcpServerPort = port;
-  }
-  public static setSessionNamingServerPort(port: number | null): void {
-    OpenAICodexACPProvider.sessionNamingServerPort = port;
-  }
-  public static setExtensionDevServerPort(port: number | null): void {
-    OpenAICodexACPProvider.extensionDevServerPort = port;
-  }
-  public static setSuperLoopProgressServerPort(port: number | null): void {
-    OpenAICodexACPProvider.superLoopProgressServerPort = port;
-  }
-  public static setSessionContextServerPort(port: number | null): void {
-    OpenAICodexACPProvider.sessionContextServerPort = port;
-  }
-  public static setMetaAgentServerPort(port: number | null): void {
-    OpenAICodexACPProvider.metaAgentServerPort = port;
-  }
-  public static setSettingsServerPort(port: number | null): void {
-    OpenAICodexACPProvider.settingsServerPort = port;
-  }
-  public static setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void {
-    OpenAICodexACPProvider.settingsAgentToolsDisabledLoader = loader;
-  }
-  public static setMcpAuthToken(token: string | null): void {
-    OpenAICodexACPProvider.mcpAuthToken = token;
-  }
+  // Internal MCP-server ports / kill-switches / loaders / auth token are
+  // configured once via `configureMcpServers` (shared registry).
   public static setMCPConfigLoader(loader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null): void {
     OpenAICodexACPProvider.mcpConfigLoader = loader;
   }
@@ -319,7 +276,8 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
 
     const agentRole = await this.getAgentRole(sessionId);
     const isMetaAgent = agentRole === 'meta-agent';
-    const systemPrompt = this.buildSystemPrompt(documentContext, isMetaAgent);
+    const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(sessionId) : 'default';
+    const systemPrompt = this.buildSystemPrompt(documentContext, isMetaAgent, workflowPreset);
     const { userMessageAddition, messageWithContext } = buildUserMessageAddition(message, documentContext);
     const unsupportedAttachmentHints = attachments?.filter(
       (attachment) => attachment.type !== 'image' && attachment.type !== 'document'
@@ -537,15 +495,15 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
     super.destroy();
   }
 
-  protected buildSystemPrompt(documentContext?: DocumentContext, isMetaAgent: boolean = false): string {
+  protected buildSystemPrompt(documentContext?: DocumentContext, isMetaAgent: boolean = false, workflowPreset: MetaAgentWorkflowPreset = 'default'): string {
     if (isMetaAgent) {
-      return buildMetaAgentSystemPrompt('codex', 'default', {
+      return buildMetaAgentSystemPrompt('codex', workflowPreset, {
         provider: 'openai-codex-acp',
         model: this.config?.model ?? undefined,
       });
     }
 
-    const hasSessionNaming = OpenAICodexACPProvider.sessionNamingServerPort !== null;
+    const hasSessionNaming = isInternalMcpServerEnabled();
     const worktreePath = documentContext?.worktreePath;
     const isVoiceMode = (documentContext as any)?.isVoiceMode;
     const voiceModeCodingAgentPrompt = (documentContext as any)?.voiceModeCodingAgentPrompt;

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
+import { getExtensionLoader } from '@nimbalyst/runtime';
 import { store } from '@nimbalyst/runtime/store';
 import { SettingsSidebar, type SettingsCategory } from './SettingsSidebar';
 import { pushNavigationEntryAtom, isRestoringNavigationAtom } from '../../store';
@@ -30,6 +31,7 @@ import { InstalledExtensionsPanel } from './panels/InstalledExtensionsPanel';
 import { PrivilegedExtensionsPanel } from './panels/PrivilegedExtensionsPanel';
 import { ThemesPanel } from './panels/ThemesPanel';
 import { TeamPanel } from './panels/TeamPanel';
+import { OrgPanel } from './panels/OrgPanel';
 import { TrackerConfigPanel } from './panels/TrackerConfigPanel';
 import { GitHubAccountPanel } from './panels/GitHubAccountPanel';
 import { ExtensionMarketplacePanel } from './panels/ExtensionMarketplacePanel';
@@ -46,6 +48,7 @@ import {
   type AIModel,
 } from '../../store/atoms/appSettings';
 import { omitModelsField } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
+import { selectedOrgIdAtom } from '../../store/atoms/orgScope';
 
 // Re-export ProviderConfig for backward compatibility
 export type { ProviderConfig } from '../../store/atoms/appSettings';
@@ -59,7 +62,10 @@ export interface Model {
 
 // Note: The ProviderConfig interface has been moved to appSettings.ts
 
-export type SettingsScope = 'user' | 'project';
+// Epic H3 P3: a third "Organization" scope, keyed to the org selected in the
+// OrgSwitcher (not the active workspace). Org admin (members, encryption, the
+// project registry, consolidation) lives here rather than in Project scope.
+export type SettingsScope = 'user' | 'organization' | 'project';
 
 interface MarketplaceInstallRequest {
   extensionId: string;
@@ -77,6 +83,147 @@ interface SettingsViewProps {
   onMarketplaceInstallRequestHandled?: (token: number) => void;
 }
 
+type ExtAgentItem = {
+  id: string;
+  extensionId: string;
+  name: string;
+  status: string;
+  models?: Array<{ id: string; name: string }>;
+};
+
+/**
+ * Renders an extension-contributed agent provider's own settings panel (e.g. the
+ * Gemini AntigravityAgentSettings component), wired with the same provider props
+ * the built-in panels use plus the backend-module grant flow:
+ *   backendModuleEnabled  <- ext-permissions:is-module-enabled (grant state)
+ *   onEnableBackendModule -> ext-permissions:grant-module (the native-code consent)
+ * Falls back to a static notice when the extension's component is unavailable.
+ */
+const ExtensionAgentSettingsPanel: React.FC<{
+  extEntry: ExtAgentItem;
+  commonProps: Record<string, unknown>;
+  workspacePath?: string;
+  scope: SettingsScope;
+  onOpenInstalledExtensions: () => void;
+}> = ({ extEntry, commonProps, workspacePath, scope, onOpenInstalledExtensions }) => {
+  const loadedExt = getExtensionLoader().getExtension(extEntry.extensionId);
+  const contributions = (loadedExt?.manifest?.contributions ?? {}) as Record<string, unknown>;
+  const aiProviders = contributions.aiAgentProviders as
+    | Array<{ id: string; backendModuleId?: string; settingsPanelComponent?: string }>
+    | undefined;
+  const providerContribution = aiProviders?.find((pr) => pr.id === extEntry.id);
+  const moduleId = providerContribution?.backendModuleId;
+  const componentName = providerContribution?.settingsPanelComponent;
+  const backendModules = contributions.backendModules as
+    | Array<{ id: string; permissions?: string[] }>
+    | undefined;
+  const declaredPermissions = (backendModules?.find((m) => m.id === moduleId)?.permissions ?? []) as string[];
+  const settingsPanelExports = (loadedExt?.module as { settingsPanel?: Record<string, React.ComponentType<Record<string, unknown>>> } | undefined)?.settingsPanel;
+  const ExtPanel = componentName ? settingsPanelExports?.[componentName] : undefined;
+
+  // The permissions bridge lives at electronAPI.extensions.permissions (not
+  // electronAPI.permissions). The existing Privileged Capabilities UI uses the
+  // same path; reading the wrong one leaves perms undefined, which silently
+  // disables both the grant check and the Enable-provider button.
+  const perms = (window.electronAPI as {
+    extensions?: {
+      permissions?: {
+        listEnabledModules?: (workspacePath?: string) => Promise<Array<{ extensionId: string; moduleId: string }>>;
+        isModuleEnabled?: (a: { extensionId: string; moduleId: string; declaredPermissions: string[]; workspacePath?: string }) => Promise<boolean>;
+        grantModule: (a: { extensionId: string; moduleId: string; permissions: string[]; scope: 'workspace' | 'global'; workspacePath?: string }) => Promise<unknown>;
+        onStateChanged?: (cb: (h: { extensionId: string; moduleId: string }) => void) => () => void;
+      };
+    };
+  } | undefined)?.extensions?.permissions;
+
+  const [granted, setGranted] = useState(false);
+  const permsKey = declaredPermissions.join(',');
+
+  const refreshGrant = useCallback(async () => {
+    if (!perms || !moduleId) return;
+    try {
+      // Robust host-truth: listEnabledModules returns every module that has
+      // any grant row (real permission OR the module-enabled sentinel), so it
+      // does not depend on the renderer passing an exact declaredPermissions
+      // set that matches what was granted.
+      let ok = false;
+      if (typeof perms.listEnabledModules === 'function') {
+        const mods = await perms.listEnabledModules(workspacePath);
+        ok = Array.isArray(mods) && mods.some(
+          (m) => m.extensionId === extEntry.extensionId && m.moduleId === moduleId
+        );
+      }
+      if (!ok && typeof perms.isModuleEnabled === 'function') {
+        ok = Boolean(await perms.isModuleEnabled({ extensionId: extEntry.extensionId, moduleId, declaredPermissions, workspacePath }));
+      }
+      setGranted(ok);
+    } catch (err) {
+      console.error('[ext-agent-settings] grant check failed', err);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [perms, moduleId, extEntry.extensionId, workspacePath, permsKey]);
+
+  useEffect(() => { void refreshGrant(); }, [refreshGrant]);
+  useEffect(() => {
+    if (!perms?.onStateChanged) return;
+    return perms.onStateChanged((h) => {
+      if (h.extensionId === extEntry.extensionId && h.moduleId === moduleId) void refreshGrant();
+    });
+  }, [perms, extEntry.extensionId, moduleId, refreshGrant]);
+
+  if (!ExtPanel) {
+    return (
+      <div className="settings-extension-provider-panel">
+        <h2 className="text-lg font-semibold text-[var(--nim-text)] mb-2">{extEntry.name || extEntry.id}</h2>
+        <p className="text-sm text-[var(--nim-text-muted)] mb-4 max-w-[60ch]">
+          This agent provider comes from an installed extension. Choose its models from the model
+          selector in the chat input. To configure or manage the extension, open Installed Extensions.
+        </p>
+        <button
+          type="button"
+          className="px-3 py-1.5 rounded text-xs bg-[var(--nim-bg-secondary)] text-[var(--nim-text)] border border-[var(--nim-border)] hover:bg-[var(--nim-bg-hover)]"
+          onClick={onOpenInstalledExtensions}
+        >
+          Open Installed Extensions
+        </button>
+      </div>
+    );
+  }
+
+  const cfg = (commonProps.config as Record<string, unknown> | undefined) ?? {};
+  const extModels = (extEntry.models ?? []).map((m) => ({ id: m.id, name: m.name, provider: extEntry.id }));
+  return (
+    <ExtPanel
+      {...commonProps}
+      config={{ ...cfg, backendModuleEnabled: granted }}
+      availableModels={extModels}
+      onEnableBackendModule={async () => {
+        if (!perms || !moduleId) {
+          throw new Error(
+            !perms
+              ? 'Permissions bridge unavailable in this host.'
+              : 'Backend module id missing from the extension manifest.'
+          );
+        }
+        try {
+          await perms.grantModule({
+            extensionId: extEntry.extensionId,
+            moduleId,
+            permissions: declaredPermissions,
+            scope: scope === 'project' ? 'workspace' : 'global',
+            workspacePath,
+          });
+        } catch (err) {
+          console.error('[ext-agent-settings] grantModule failed', err);
+          throw err;
+        } finally {
+          await refreshGrant();
+        }
+      }}
+    />
+  );
+};
+
 export function SettingsView({
   workspacePath,
   workspaceName,
@@ -89,8 +236,67 @@ export function SettingsView({
   const posthog = usePostHog();
   const developerMode = useAtomValue(developerModeAtom);
 
-  const [selectedCategory, setSelectedCategory] = useState<SettingsCategory>(initialCategory || 'claude-code');
+  const [selectedCategory, setSelectedCategory] = useState<SettingsCategory | string>(initialCategory || 'claude-code');
+  // Extension-contributed agent providers (id, owning extension, live status,
+  // static model list) so the provider settings page can render the extension's
+  // own panel component (e.g. Gemini Antigravity) wired like a built-in panel.
+  const [extAgentProviders, setExtAgentProviders] = useState<
+    Array<{ id: string; extensionId: string; name: string; status: string; models?: Array<{ id: string; name: string }> }>
+  >([]);
+  const refreshExtAgentProviders = useCallback(() => {
+    const invoke = window.electronAPI?.invoke;
+    if (!invoke) return;
+    invoke('agent-providers:list')
+      .then((res: { success?: boolean; data?: Array<{ id: string; extensionId: string; name: string; status: string; models?: Array<{ id: string; name: string }> }> }) => {
+        if (res?.success && Array.isArray(res.data)) setExtAgentProviders(res.data);
+      })
+      .catch(() => { /* registry unavailable; static fallback panel is used */ });
+  }, []);
+  useEffect(() => { refreshExtAgentProviders(); }, [refreshExtAgentProviders]);
   const [scope, setScope] = useState<SettingsScope>(initialScope || 'user');
+
+  // Epic H3 P3: Organization scope. The selected org is shared with the
+  // OrgSwitcher; the tab is enabled only when the user belongs to a team org.
+  const [selectedOrgId, setSelectedOrgId] = useAtom(selectedOrgIdAtom);
+  const [orgChoices, setOrgChoices] = useState<{ orgId: string; name: string }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await (window as any).electronAPI?.team?.list?.();
+        if (cancelled || !res?.success || !Array.isArray(res.teams)) return;
+        const orgs: { orgId: string; name: string }[] = res.teams
+          .filter((t: { membershipType?: string }) => !t.membershipType || t.membershipType === 'active_member')
+          .map((t: { orgId: string; name: string }) => ({ orgId: t.orgId, name: t.name }));
+        if (cancelled) return;
+        setOrgChoices(orgs);
+        if (orgs.length === 0) return;
+        // Default the Organization scope to the CURRENT PROJECT's org (not just
+        // the first team in the list) so opening settings from a project lands on
+        // that project's org. An existing valid selection (e.g. set by the
+        // OrgSwitcher's "Manage organization…" deep-link) is preserved.
+        let preferred: string | null = null;
+        if (workspacePath) {
+          try {
+            const ws = await (window as any).electronAPI?.team?.findForWorkspace?.(workspacePath);
+            const wsOrgId: string | undefined = ws?.team?.orgId ?? ws?.orgId;
+            if (wsOrgId && orgs.some(o => o.orgId === wsOrgId)) preferred = wsOrgId;
+          } catch { /* fall back to first org */ }
+        }
+        if (cancelled) return;
+        setSelectedOrgId((prev) => (prev && orgs.some(o => o.orgId === prev) ? prev : (preferred ?? orgs[0].orgId)));
+      } catch {
+        /* non-fatal: Organization scope just stays disabled */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [setSelectedOrgId, workspacePath]);
+  const hasTeamOrg = orgChoices.length > 0;
+  // The org the Organization scope operates on: the shared selection if valid,
+  // else the first team org.
+  const effectiveOrgId = (selectedOrgId && orgChoices.some(o => o.orgId === selectedOrgId))
+    ? selectedOrgId
+    : (orgChoices[0]?.orgId ?? null);
 
   // AI Provider settings - using Jotai atoms (Phase 5b)
   const [aiProviderSettings] = useAtom(aiProviderSettingsAtom);
@@ -149,7 +355,11 @@ export function SettingsView({
   const [hasWorkspaceMcpServers, setHasWorkspaceMcpServers] = useState(false);
   const [workspaceMcpServerCount, setWorkspaceMcpServerCount] = useState(0);
 
-  // Valid categories for each scope
+  // Valid categories for each scope.
+  // Epic H3 P3: 'org' (pure org admin) is Organization-scope only. 'team' lives
+  // in BOTH scopes -- workspace-centric setup (create/join) in Project scope, and
+  // org admin in Organization scope. 'tracker-config' stays project-local.
+  const organizationCategories: SettingsCategory[] = ['org', 'team'];
   const projectCategories: SettingsCategory[] = [
     'agent-permissions',
     'team',
@@ -220,12 +430,23 @@ export function SettingsView({
 
   // When scope changes, ensure selected category is valid for that scope
   useEffect(() => {
-    const validCategories = scope === 'project' ? projectCategories : userCategories;
-    if (!validCategories.includes(selectedCategory)) {
+    const validCategories = scope === 'project'
+      ? projectCategories
+      : scope === 'organization'
+        ? organizationCategories
+        : userCategories;
+    // Extension-contributed agent providers (e.g. antigravity-gemini-agent) are
+    // valid selectable categories too; don't bounce the user off them.
+    const isExtensionProvider = extAgentProviders.some((pr) => pr.id === selectedCategory);
+    if (!isExtensionProvider && !validCategories.includes(selectedCategory as SettingsCategory)) {
       // Default to first valid category for the scope
-      setSelectedCategory(scope === 'project' ? 'agent-permissions' : 'claude-code');
+      setSelectedCategory(
+        scope === 'project' ? 'agent-permissions'
+          : scope === 'organization' ? 'org'
+          : 'claude-code',
+      );
     }
-  }, [scope, selectedCategory, developerMode]);
+  }, [scope, selectedCategory, developerMode, extAgentProviders]);
 
   useEffect(() => {
     if (!developerMode && selectedCategory === 'github') {
@@ -279,6 +500,33 @@ export function SettingsView({
       }
     } catch (error) {
       console.error('Failed to fetch initial models:', error);
+    }
+
+    // Re-hydrate extension-contributed agent providers from persisted settings.
+    // The provider atom is seeded once at app startup, which can predate an
+    // extension's enable-on-activate write (e.g. Gemini enabling itself + its
+    // models on first detection). Re-reading here, additively, makes the panel
+    // reflect that write without a restart. Built-in providers are already in
+    // the atom, so this only fills in keys the atom is missing - it never
+    // clobbers an in-flight edit.
+    try {
+      const persisted = await window.electronAPI.aiGetSettings();
+      const providerSettings = (persisted?.providerSettings ?? {}) as Record<string, ProviderConfig>;
+      if (Object.keys(providerSettings).length > 0) {
+        setProviders((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          for (const [key, value] of Object.entries(providerSettings)) {
+            if (!(key in next)) {
+              next[key] = { testStatus: 'idle', ...value, enabled: value.enabled ?? false };
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }
+    } catch (error) {
+      console.error('Failed to re-hydrate extension provider settings:', error);
     }
   };
 
@@ -653,8 +901,12 @@ export function SettingsView({
             workspacePath={workspacePath ?? undefined}
           />
         );
+      case 'org':
+        // Epic H3 P3: in Organization scope, key off the selected org (not the
+        // workspace). Falls back to workspace resolution if no org is selected.
+        return <OrgPanel orgId={scope === 'organization' ? (effectiveOrgId ?? undefined) : undefined} workspacePath={workspacePath ?? undefined} />;
       case 'team':
-        return <TeamPanel workspacePath={workspacePath ?? undefined} />;
+        return <TeamPanel orgId={scope === 'organization' ? (effectiveOrgId ?? undefined) : undefined} workspacePath={workspacePath ?? undefined} />;
       case 'tracker-config':
         return <TrackerConfigPanel workspacePath={workspacePath ?? undefined} />;
       case 'github':
@@ -675,23 +927,62 @@ export function SettingsView({
             onViewInstalled={() => setSelectedCategory('installed-extensions')}
           />
         );
-      default:
-        return null;
+      default: {
+        // An extension-contributed agent provider (e.g. antigravity-gemini-agent)
+        // was selected. Its models are usable from the chat model picker; its
+        // configuration lives in the extension, reachable from Installed Extensions.
+        const providerId = String(selectedCategory);
+        // Render the extension's own provider settings panel (declared via
+        // aiAgentProviders[].settingsPanelComponent), wired with the same props the
+        // built-in panels receive. Falls back to the static notice below when the
+        // component is unavailable.
+        const extEntry = extAgentProviders.find((pr) => pr.id === providerId);
+        if (extEntry) {
+          return (
+            <ExtensionAgentSettingsPanel
+              extEntry={extEntry}
+              commonProps={commonProps as unknown as Record<string, unknown>}
+              workspacePath={workspacePath ?? undefined}
+              scope={scope}
+              onOpenInstalledExtensions={() => setSelectedCategory('installed-extensions')}
+            />
+          );
+        }
+        const label = providerId
+          .replace(/-agent$/, '')
+          .replace(/[-_]+/g, ' ')
+          .replace(/\b\w/g, (c) => c.toUpperCase());
+        return (
+          <div className="settings-extension-provider-panel">
+            <h2 className="text-lg font-semibold text-[var(--nim-text)] mb-2">{label}</h2>
+            <p className="text-sm text-[var(--nim-text-muted)] mb-4 max-w-[60ch]">
+              This agent provider comes from an installed extension. Choose its models from the
+              model selector in the chat input. To configure or manage the extension, open Installed
+              Extensions.
+            </p>
+            <button
+              type="button"
+              className="px-3 py-1.5 rounded text-xs bg-[var(--nim-bg-secondary)] text-[var(--nim-text)] border border-[var(--nim-border)] hover:bg-[var(--nim-bg-hover)]"
+              onClick={() => setSelectedCategory('installed-extensions')}
+            >
+              Open Installed Extensions
+            </button>
+          </div>
+        );
+      }
     }
   };
 
-  // Categories that are only available in project scope
-  const projectOnlyCategories: SettingsCategory[] = ['agent-permissions', 'team', 'tracker-config'];
-
-  // Handle scope changes - preserve selected category when possible
+  // Handle scope changes. When entering Organization scope, make sure a team org
+  // is selected; category validity for the new scope is enforced by the
+  // validation effect above (it keeps the current category when it's valid in the
+  // target scope -- e.g. 'team' carries across Project<->Organization -- and
+  // otherwise bounces to that scope's default).
   const handleScopeChange = (newScope: SettingsScope) => {
     setScope(newScope);
-    // Only change category if current one is not available in the new scope
-    if (newScope === 'user' && projectOnlyCategories.includes(selectedCategory)) {
-      // Switching to user scope from a project-only category
-      setSelectedCategory('claude-code');
+    if (newScope === 'organization' && effectiveOrgId) {
+      setSelectedOrgId(effectiveOrgId);
     }
-    // When switching to project scope, keep the current category (all user categories are available in project scope)
   };
 
   return (
@@ -710,7 +1001,19 @@ export function SettingsView({
               }`}
               onClick={() => handleScopeChange('user')}
             >
-              User
+              Application
+            </button>
+            <button
+              className={`settings-scope-tab settings-scope-tab-organization py-1.5 px-4 rounded-md text-xs font-medium cursor-pointer transition-all duration-150 border-none disabled:opacity-50 disabled:cursor-not-allowed ${
+                scope === 'organization'
+                  ? 'bg-[var(--nim-primary)] text-white shadow-sm'
+                  : 'bg-transparent text-[var(--nim-text-muted)] hover:text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]'
+              }`}
+              onClick={() => handleScopeChange('organization')}
+              disabled={!hasTeamOrg}
+              title={!hasTeamOrg ? 'Join or create a team to access organization settings' : undefined}
+            >
+              Organization
             </button>
             <button
               className={`settings-scope-tab py-1.5 px-4 rounded-md text-xs font-medium cursor-pointer transition-all duration-150 border-none disabled:opacity-50 disabled:cursor-not-allowed ${
@@ -725,11 +1028,16 @@ export function SettingsView({
               Project
             </button>
           </div>
-          <span className="settings-scope-hint text-[13px] text-[var(--nim-text-muted)]">
-            {scope === 'user'
-              ? 'These settings apply to all projects'
-              : `Settings for ${workspaceName || 'this project'}`}
-          </span>
+          {/* Org scope's org picker lives at the top of the sidebar (so "which
+              org am I editing" sits with the org admin nav, not in global
+              chrome). Only User/Project scopes show a hint here. */}
+          {scope !== 'organization' && (
+            <span className="settings-scope-hint text-[13px] text-[var(--nim-text-muted)]">
+              {scope === 'user'
+                ? 'These settings apply to all projects'
+                : `Settings for ${workspaceName || 'this project'}`}
+            </span>
+          )}
         </div>
 
         <span className="flex-1" />
@@ -751,6 +1059,9 @@ export function SettingsView({
           onSelectCategory={setSelectedCategory}
           providerStatus={providerStatus}
           scope={scope}
+          orgChoices={orgChoices}
+          selectedOrgId={effectiveOrgId}
+          onSelectOrg={setSelectedOrgId}
           // releaseChannel now comes from Jotai atom in SettingsSidebar
         />
 

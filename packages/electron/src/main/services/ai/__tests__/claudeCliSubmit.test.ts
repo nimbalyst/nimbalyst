@@ -104,6 +104,7 @@ describe('submitClaudeCliPrompt', () => {
       expect(h.writes).toEqual([
         ['s1', '/'],
         ['s1', 'clear'],
+        ['s1', ' '], // NIM-851: dismiss the autocomplete menu so Enter runs the literal command
         ['s1', '\r'],
       ]);
     });
@@ -117,6 +118,37 @@ describe('submitClaudeCliPrompt', () => {
       expect(h.writes[0]).toEqual(['s1', '#']);
       expect(h.writes[1]).toEqual(['s1', ' remember the build cmd']);
       expect(h.writes[2]).toEqual(['s1', '\r']);
+    });
+
+    it('types a trailing space to dismiss the autocomplete menu before Enter on a bare slash command (NIM-851)', async () => {
+      const h = harness();
+      await submitClaudeCliPrompt({ sessionId: 's1', workspacePath: '/w', prompt: '/implement' }, h.deps);
+      expect(h.writes).toEqual([
+        ['s1', '/'],
+        ['s1', 'implement'],
+        ['s1', ' '],
+        ['s1', '\r'],
+      ]);
+    });
+
+    it('does NOT add a menu-dismiss space when the slash command already has args (menu closed by its own space) (NIM-851)', async () => {
+      const h = harness();
+      await submitClaudeCliPrompt({ sessionId: 's1', workspacePath: '/w', prompt: '/track bug foo' }, h.deps);
+      expect(h.writes).toEqual([
+        ['s1', '/'],
+        ['s1', 'track bug foo'],
+        ['s1', '\r'],
+      ]);
+    });
+
+    it('does NOT add a menu-dismiss space for # memory notes (NIM-851)', async () => {
+      const h = harness();
+      await submitClaudeCliPrompt({ sessionId: 's1', workspacePath: '/w', prompt: '#note' }, h.deps);
+      expect(h.writes).toEqual([
+        ['s1', '#'],
+        ['s1', 'note'],
+        ['s1', '\r'],
+      ]);
     });
 
     it('a bare trigger char still submits (opens the native menu)', async () => {

@@ -160,14 +160,16 @@ export class PermissionEvaluator {
    */
   isInternalMcpTool(toolName: string): boolean {
     const internalMcpTools = [
-      'mcp__nimbalyst-session-naming__update_session_meta',
-      'mcp__nimbalyst-mcp__capture_editor_screenshot',
-      'mcp__nimbalyst-mcp__display_to_user',
-      'mcp__nimbalyst-mcp__voice_agent_speak',
-      'mcp__nimbalyst-mcp__voice_agent_stop',
-      'mcp__nimbalyst-mcp__get_session_edited_files',
-      'mcp__nimbalyst-mcp__developer_git_commit_proposal',
-      'mcp__nimbalyst-mcp__developer_git_log',
+      // Eager core (`nimbalyst`).
+      'mcp__nimbalyst__update_session_meta',
+      'mcp__nimbalyst__capture_editor_screenshot',
+      'mcp__nimbalyst__display_to_user',
+      'mcp__nimbalyst__get_session_edited_files',
+      'mcp__nimbalyst__developer_git_commit_proposal',
+      'mcp__nimbalyst__developer_git_log',
+      // Situational (`nimbalyst-situational`) — voice.
+      'mcp__nimbalyst-situational__voice_agent_speak',
+      'mcp__nimbalyst-situational__voice_agent_stop',
     ];
     return internalMcpTools.includes(toolName);
   }

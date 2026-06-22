@@ -4,7 +4,7 @@ import { MaterialSymbol } from '@nimbalyst/runtime';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import type { TrackerItemType } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { globalRegistry, getRoleField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
-import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordSortOrder, getStatusOptions, getFieldByRole } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
+import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordSortOrder, getFieldByRole, buildKanbanStatusColumns } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { generateKeyBetween } from '@nimbalyst/runtime/utils/fractionalIndex';
 import { UserAvatar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/UserAvatar';
 
@@ -106,52 +106,6 @@ const TYPE_COLORS: Record<string, string> = {
   decision: '#8b5cf6',
   feature: '#10b981',
 };
-
-/**
- * Get status columns for the kanban board.
- * Starts with model-defined statuses, then appends any extra statuses
- * found in the actual items so nothing silently disappears.
- */
-function getStatusColumns(filterType: TrackerItemType | 'all', items: TrackerRecord[]): { value: string; label: string }[] {
-  // Collect model-defined columns using the workflowStatus role
-  const modelColumns: { value: string; label: string }[] = [];
-  const seen = new Set<string>();
-
-  if (filterType !== 'all') {
-    const options = getStatusOptions(filterType);
-    for (const o of options) {
-      if (!seen.has(o.value)) {
-        seen.add(o.value);
-        modelColumns.push({ value: o.value, label: o.label });
-      }
-    }
-  }
-
-  // If no model columns found, use sensible defaults
-  if (modelColumns.length === 0) {
-    for (const col of [
-      { value: 'to-do', label: 'To Do' },
-      { value: 'in-progress', label: 'In Progress' },
-      { value: 'in-review', label: 'In Review' },
-      { value: 'done', label: 'Done' },
-    ]) {
-      seen.add(col.value);
-      modelColumns.push(col);
-    }
-  }
-
-  // Scan actual items for statuses not covered by the model.
-  for (const record of items) {
-    const status = (getRecordStatus(record) || 'to-do').toLowerCase();
-    if (!seen.has(status)) {
-      seen.add(status);
-      const label = status.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-      modelColumns.push({ value: status, label });
-    }
-  }
-
-  return modelColumns;
-}
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   filterType,
@@ -375,7 +329,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   type KanbanSortMode = 'manual' | 'priority' | 'created' | 'updated';
   const [sortMode, setSortMode] = useState<KanbanSortMode>('manual');
 
-  const columns = useMemo(() => getStatusColumns(filterType, allItems), [filterType, allItems]);
+  const columns = useMemo(() => buildKanbanStatusColumns(filterType, allItems), [filterType, allItems]);
 
   const PRIORITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 

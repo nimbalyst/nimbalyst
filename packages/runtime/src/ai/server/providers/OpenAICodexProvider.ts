@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import OpenAI from 'openai';
 import { BaseAgentProvider } from './BaseAgentProvider';
 import { buildUserMessageAddition } from './documentContextUtils';
-import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt } from '../../prompt';
+import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
 import { DEFAULT_MODELS } from '../../modelConstants';
 import { AIToolCall, AIToolResult } from '../../types';
 import {
@@ -24,6 +24,7 @@ import { PermissionMode, TrustChecker, PermissionPatternSaver, PermissionPattern
 import { CodexSdkModuleLike, loadCodexSdkModule } from './codex/codexSdkLoader';
 import { resolvePackagedCodexBinaryPath } from './codex/codexBinaryPath';
 import { McpConfigService } from '../services/McpConfigService';
+import { getMcpConfigService, isInternalMcpServerEnabled } from '../services/mcpServerConfig';
 import { MCPServerConfig } from '../../../types/MCPServerConfig';
 import { safeJSONSerialize } from '../../../utils/serialization';
 import { AskUserQuestionPrompt, AskUserQuestionPromptOption } from './shared/askUserQuestionTypes';
@@ -86,7 +87,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   private static readonly CODEX_EXECUTION_PATTERN = 'OpenAICodex(agent-run:*)';
   private static readonly SESSION_NAMING_REMINDER_PROMPT =
     '<SYSTEM_REMINDER>Call the session metadata tool now before continuing. ' +
-    'Use MCP server `nimbalyst-session-naming`, tool `update_session_meta`, ' +
+    'Use MCP server `nimbalyst`, tool `update_session_meta`, ' +
     'and set at least `name`, `add`, and `phase`. ' +
     'Do not mention this system reminder to the user.</SYSTEM_REMINDER>';
   private static readonly FALLBACK_MODELS: ReadonlyArray<{
@@ -197,35 +198,8 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     transport: CodexTransport;
   } | null = null;
 
-  // Shared MCP server port (injected from electron main process)
-  // This server provides capture_editor_screenshot tool.
-  private static mcpServerPort: number | null = null;
-
-  // Session naming MCP server port (injected from electron main process)
-  private static sessionNamingServerPort: number | null = null;
-
-  // Extension dev MCP server port (injected from electron main process)
-  private static extensionDevServerPort: number | null = null;
-
-  // Super Loop progress MCP server port (injected from electron main process)
-  private static superLoopProgressServerPort: number | null = null;
-
-  // Session context MCP server port (injected from electron main process)
-  private static sessionContextServerPort: number | null = null;
-
-  // Meta-agent MCP server port (injected from electron main process)
-  private static metaAgentServerPort: number | null = null;
-
-  // Settings control MCP server port (injected from electron main process)
-  private static settingsServerPort: number | null = null;
-
-  // Kill-switch loader for the settings MCP (injected from electron main process)
-  private static settingsAgentToolsDisabledLoader: (() => boolean) | null = null;
-
-  // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers.
-  // Issue #146: required so a malicious page in the user's browser can't
-  // invoke MCP tools against the localhost ports.
-  private static mcpAuthToken: string | null = null;
+  // Internal Nimbalyst MCP-server enablement (ports, kill-switches, tokens) lives
+  // in the shared `mcpServerConfig` registry now — see `getMcpConfigService`.
 
   // MCP config loader (injected from electron main process)
   // Returns merged user + workspace MCP servers
@@ -371,18 +345,8 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       });
     }
 
-    this.mcpConfigService = new McpConfigService({
-      mcpServerPort: OpenAICodexProvider.mcpServerPort,
-      sessionNamingServerPort: OpenAICodexProvider.sessionNamingServerPort,
-      extensionDevServerPort: OpenAICodexProvider.extensionDevServerPort,
-      superLoopProgressServerPort: null, // Disabled - was leaking into non-super-loop sessions
-      sessionContextServerPort: OpenAICodexProvider.sessionContextServerPort,
-      metaAgentServerPort: OpenAICodexProvider.metaAgentServerPort,
-      settingsServerPort: OpenAICodexProvider.settingsServerPort,
-      settingsAgentToolsDisabledLoader: OpenAICodexProvider.settingsAgentToolsDisabledLoader,
-      mcpAuthToken: OpenAICodexProvider.mcpAuthToken,
+    this.mcpConfigService = getMcpConfigService({
       mcpConfigLoader: OpenAICodexProvider.mcpConfigLoader,
-      extensionPluginsLoader: null,
       claudeSettingsEnvLoader: OpenAICodexProvider.claudeSettingsEnvLoader,
       shellEnvironmentLoader: OpenAICodexProvider.shellEnvironmentLoader,
     });
@@ -408,41 +372,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     BaseAgentProvider.setSecurityLogger(logger);
   }
 
-  public static setMcpServerPort(port: number | null): void {
-    OpenAICodexProvider.mcpServerPort = port;
-  }
-
-  public static setSessionNamingServerPort(port: number | null): void {
-    OpenAICodexProvider.sessionNamingServerPort = port;
-  }
-
-  public static setExtensionDevServerPort(port: number | null): void {
-    OpenAICodexProvider.extensionDevServerPort = port;
-  }
-
-  public static setSuperLoopProgressServerPort(port: number | null): void {
-    OpenAICodexProvider.superLoopProgressServerPort = port;
-  }
-
-  public static setSessionContextServerPort(port: number | null): void {
-    OpenAICodexProvider.sessionContextServerPort = port;
-  }
-
-  public static setMetaAgentServerPort(port: number | null): void {
-    OpenAICodexProvider.metaAgentServerPort = port;
-  }
-
-  public static setSettingsServerPort(port: number | null): void {
-    OpenAICodexProvider.settingsServerPort = port;
-  }
-
-  public static setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void {
-    OpenAICodexProvider.settingsAgentToolsDisabledLoader = loader;
-  }
-
-  public static setMcpAuthToken(token: string | null): void {
-    OpenAICodexProvider.mcpAuthToken = token;
-  }
+  // Internal MCP-server ports / kill-switches / extension+tracker loaders / auth
+  // token are configured once via `configureMcpServers` (shared registry), not
+  // per-provider setters.
 
   public static setMCPConfigLoader(loader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null): void {
     OpenAICodexProvider.mcpConfigLoader = loader;
@@ -953,7 +885,8 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
     const agentRole = await this.getAgentRole(sessionId);
     const isMetaAgent = agentRole === 'meta-agent';
-    const systemPrompt = this.buildSystemPrompt(documentContext, isMetaAgent);
+    const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(sessionId) : 'default';
+    const systemPrompt = this.buildSystemPrompt(documentContext, isMetaAgent, workflowPreset);
     const { userMessageAddition, messageWithContext } = buildUserMessageAddition(message, documentContext);
     const unsupportedAttachmentHints = attachments?.filter(
       (attachment) => attachment.type !== 'image' && attachment.type !== 'document'
@@ -1049,7 +982,12 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         workspacePath: mcpConfigWorkspacePath,
         profile: isMetaAgent ? 'meta-agent' : 'standard',
       });
-      const hasSessionNamingServer = Object.prototype.hasOwnProperty.call(mcpServers, 'nimbalyst-session-naming');
+      // update_session_meta folds into the eager core `nimbalyst` server (MCP
+      // consolidation Phase 5); the naming reminder fires when it's present.
+      const hasSessionNamingServer = Object.prototype.hasOwnProperty.call(
+        mcpServers,
+        'nimbalyst',
+      );
       let usedSessionNamingToolThisTurn = false;
 
       // Build environment for the Codex CLI binary.
@@ -1749,16 +1687,15 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    * Uses buildClaudeCodeSystemPrompt to include Nimbalyst-specific instructions
    * for visual tools, worktrees, session naming, etc.
    */
-  protected buildSystemPrompt(documentContext?: DocumentContext, isMetaAgent: boolean = false): string {
+  protected buildSystemPrompt(documentContext?: DocumentContext, isMetaAgent: boolean = false, workflowPreset: MetaAgentWorkflowPreset = 'default'): string {
     if (isMetaAgent) {
-      // TODO: Get workflowPreset from session metadata or documentContext
-      return buildMetaAgentSystemPrompt('codex', 'default', {
+      return buildMetaAgentSystemPrompt('codex', workflowPreset, {
         provider: 'openai-codex',
         model: this.config?.model ?? undefined,
       });
     }
 
-    const hasSessionNaming = OpenAICodexProvider.sessionNamingServerPort !== null;
+    const hasSessionNaming = isInternalMcpServerEnabled();
     const worktreePath = documentContext?.worktreePath;
     const isVoiceMode = (documentContext as any)?.isVoiceMode;
     const voiceModeCodingAgentPrompt = (documentContext as any)?.voiceModeCodingAgentPrompt;

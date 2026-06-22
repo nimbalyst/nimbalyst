@@ -37,6 +37,7 @@ import { mergeLabelMaps, normalizeLegacyLabelValues, projectLabelsToValues } fro
 import type { TrackerItem } from '@nimbalyst/runtime';
 import { trackerRecordToItem, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { logger } from '../../utils/logger';
+import { toDbBoolean } from './trackerDbValue';
 
 // ============================================================================
 // Local-only field preservation on UPDATE
@@ -310,7 +311,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
         effectiveIssueKey,
         envelope.syncId,
         payload.bodyVersion ?? 0,
-        item.archived ?? false,
+        toDbBoolean(item.archived),
         item.source || 'native',
         item.sourceRef ?? null,
         item.content != null ? JSON.stringify(item.content) : null,
@@ -412,7 +413,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
         item.issueKey ?? null,
         existingSyncId,
         payload.bodyVersion ?? 0,
-        item.archived ?? false,
+        toDbBoolean(item.archived),
         item.source || 'native',
         item.sourceRef ?? null,
         item.content != null ? JSON.stringify(item.content) : null,

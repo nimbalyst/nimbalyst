@@ -29,6 +29,15 @@ export interface HelpEntry {
  */
 export const HelpContent: Record<string, HelpEntry> = {
   // ============================================================================
+  // Teams - Security & encryption (Epic H2)
+  // ============================================================================
+
+  'h2-security-encryption-section': {
+    title: 'Security & encryption',
+    body: 'Controls how your team\'s shared data is encrypted. End-to-end encrypted teams (desktop & mobile only) can be migrated to server-managed keys to unlock web, CLI, and AI-agent access — encrypted, isolated per team, and audit-logged, but no longer zero-knowledge. Your personal sync always stays end-to-end encrypted. Only owners and admins can migrate.',
+  },
+
+  // ============================================================================
   // Files Mode - File Tree
   // ============================================================================
 

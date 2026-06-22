@@ -29,11 +29,11 @@ Nimbalyst customizes agent behavior through three complementary mechanisms:
     ┌───────┴────────┐              ┌────────────┴──────────┐
     │ Nimbalyst       │              │ Nimbalyst MCP Servers │
     │ addendum        │              │                       │
-    │ (prompt.ts)     │              │ nimbalyst-mcp         │
-    │                 │              │ session-naming        │
-    │                 │              │ session-context       │
-    │                 │              │ extension-dev         │
-    │                 │              │ extension tools       │
+    │ (prompt.ts)     │              │ nimbalyst (core)      │
+    │                 │              │ nimbalyst-host        │
+    │                 │              │ nimbalyst-trackers    │
+    │                 │              │ nimbalyst-situational │
+    │                 │              │ nimbalyst-<ext>       │
     └─────────────────┘              └───────────────────────┘
 ```
 
@@ -77,10 +77,10 @@ Nimbalyst provides visual tools for communicating with users. **Use these proact
 
 You have two tools to show content directly in the conversation. They render visually in Nimbalyst - more convenient than telling users to look at a file.
 
-- `mcp__nimbalyst-mcp__display_to_user` - Show charts and images inline
+- `mcp__nimbalyst__display_to_user` - Show charts and images inline
   - **Charts**: bar, line, pie, area, scatter (with optional error bars)
   - **Images**: Display local screenshots or generated images
-- `mcp__nimbalyst-mcp__capture_editor_screenshot` - Show rendered content of any open file, including diagrams
+- `mcp__nimbalyst__capture_editor_screenshot` - Show rendered content of any open file, including diagrams
 
 **Always prefer charts over text tables** when presenting data. Include error bars (95% CI) when statistical data is available.
 - Use bash with standard tools (awk, bc) or Python to calculate error bars - do NOT attempt to calculate statistics manually
@@ -126,7 +126,7 @@ IMPORTANT: You are working in a git worktree at {worktreePath}. This is an isola
 ```
 ## Git Commits
 
-When asked to commit your work, use the `mcp__nimbalyst-mcp__developer_git_commit_proposal` tool instead of using git commit from the command line. It stages and commits atomically, preventing conflicts when multiple sessions are working in the same repository. You may do other git operations from the command line as usual.
+When asked to commit your work, use the `mcp__nimbalyst__developer_git_commit_proposal` tool instead of using git commit from the command line. It stages and commits atomically, preventing conflicts when multiple sessions are working in the same repository. You may do other git operations from the command line as usual.
 ```
 
 #### Conditional: Session Naming Instructions
@@ -136,15 +136,16 @@ Included when the session naming MCP server is running (i.e., `hasSessionNaming`
 ```
 ## Session Naming and Tagging
 
-You have access to two tools for session organization:
+You have one tool for session organization: `mcp__nimbalyst__update_session_meta`. The first call sets the name, tags, and phase; subsequent calls update tags and/or phase.
 
-### `mcp__nimbalyst-session-naming__name_session` - Name and tag the session
+### `mcp__nimbalyst__update_session_meta` - Name and tag the session
 
-CRITICAL: You MUST call this tool ONCE per conversation, during your first turn. If you see a successful call to this tool earlier in the chat history, do NOT call it again.
+CRITICAL: You MUST call this tool during your first turn to set the session name. The name is assigned only on the first call; later calls update tags and phase.
 
 Parameters:
-- `name` (required): A concise session name (2-5 words)
-- `tags` (optional): Array of tags describing this work
+- `name` (required on the first call): A concise session name (2-5 words)
+- `add` / `remove` (optional): Tags to add or remove
+- `phase` (optional): One of "backlog", "planning", "implementing", "validating", "complete"
 
 Requirements for the session name:
 - 2-5 words long
@@ -180,11 +181,11 @@ Requirements for phase:
 
 Call this tool as soon as you understand what the user wants to accomplish. Usually this means you will call it right away, but for example if the user asks you to 'implement plan.md' you would want to look at plan.md to understand before giving the session a name. You **MUST** call this before the end of your first turn. After it has been called once successfully in a conversation, subsequent calls will return an error. If you see a successful call anywhere in your chat history, you should not call it again.
 
-**IMPORTANT: You must name the session before ending your first turn.** This is a hard requirement - do not finish your first response without calling `mcp__nimbalyst-session-naming__name_session`.
+**IMPORTANT: You must name the session before ending your first turn.** This is a hard requirement - do not finish your first response without calling `mcp__nimbalyst__update_session_meta`.
 
-### `mcp__nimbalyst-session-naming__update_tags` - Update tags and phase during the session
+### Updating tags and phase during the session
 
-Use this to update tags or phase as the session progresses:
+Call `mcp__nimbalyst__update_session_meta` again to update tags or phase as the session progresses:
 - When transitioning from planning to implementation: `{ add: ["implementing"], remove: ["planning"] }` -- but prefer updating the phase instead
 - When work is complete: `{ add: ["complete"], remove: ["implementing"] }`
 - When you discover the task is different than expected: update tags accordingly
@@ -246,61 +247,61 @@ MCP tools are discovered dynamically by the Claude Agent SDK via `ListToolsReque
 
 ### Internal MCP Servers
 
-Nimbalyst runs four internal MCP servers (all SSE transport on localhost):
+Nimbalyst's internal MCP surface is served by a single unified HTTP server on one localhost port, split across endpoint paths — each path is its own SDK config-key, so they are independent servers to the agent with independent load policies. Only the eager core loads every session; everything else is deferred (surfaced by ToolSearch on intent) or conditional. The extension-dev server remains a separate standalone process (profile-gated). See [INTERNAL_MCP_SERVERS.md](./INTERNAL_MCP_SERVERS.md) for the authoritative topology.
 
-| Server | Config Key | Port Source | Purpose |
+| Server (config key) | Endpoint | Load policy | Purpose |
 | --- | --- | --- | --- |
-| nimbalyst-mcp | `nimbalyst-mcp` | `mcpServerPort` | Core editor tools (screenshots, display, git, voice) |
-| nimbalyst-session-naming | `nimbalyst-session-naming` | `sessionNamingServerPort` | Session naming and tagging |
-| nimbalyst-session-context | `nimbalyst-session-context` | `sessionContextServerPort` | Session history and workstream overview |
-| nimbalyst-extension-dev | `nimbalyst-extension-dev` | `extensionDevServerPort` | Extension build/install/reload, logs, DB queries |
+| `nimbalyst` (core) | `/mcp/core` | eager | Universal agent↔host glue (interactive widgets, display, screenshot, git commit, edited-files, session meta) |
+| `nimbalyst-host` | `/mcp/host` | deferred | App settings, cross-session context, child-session orchestration |
+| `nimbalyst-trackers` | `/mcp/trackers` | deferred (per-project opt-out) | Tracker CRUD + tracker config |
+| `nimbalyst-situational` | `/mcp/situational` | deferred | Voice, collab-doc, feedback |
+| `nimbalyst-<ext>` | `/mcp/ext/<id>` | deferred | One server per active extension |
+| `nimbalyst-extension-dev` | (own port) | profile-gated | Extension build/install/reload, logs, DB queries |
 
-These are wired in `McpConfigService.getMcpServersConfig()` (`packages/runtime/src/ai/server/services/McpConfigService.ts`).
+These are wired in `McpConfigService.getMcpServersConfig()` (`packages/runtime/src/ai/server/services/McpConfigService.ts`) from the topology descriptor `mcpTopology.ts`; the unified HTTP server (`packages/electron/src/main/mcp/httpServer.ts`) routes each endpoint to its tool subset.
 
-### nimbalyst-mcp (Core Editor Tools)
+### nimbalyst (eager core)
 
 **Source:** `packages/electron/src/main/mcp/httpServer.ts`
 
 | Tool | Description |
 | --- | --- |
-| `capture_editor_screenshot` | Capture a screenshot of any editor view. Works with all file types including custom editors (Excalidraw, CSV, mockups), markdown, code, etc. |
-| `open_workspace` | (Dev mode only) Open a workspace directory in Nimbalyst. |
-| `display_to_user` | Display visual content inline in the conversation -- charts (bar, line, pie, area, scatter with error bars) or local images. |
-| `voice_agent_speak` | Send a message to the voice agent to be spoken aloud. Communication bridge between coding agent and voice agent. |
-| `voice_agent_stop` | Stop the current voice mode session. |
-| `get_session_edited_files` | Get the list of files edited during this AI session. Used before git commits. |
-| `developer_git_commit_proposal` | Propose files and commit message for a git commit. Presents an interactive widget for user review. |
+| `AskUserQuestion` / `PromptForUserInput` | Durable interactive widgets for blocking decisions / multi-field input. |
+| `capture_editor_screenshot` | Capture a screenshot of any editor view (Excalidraw, CSV, mockups, markdown, code, etc.). |
+| `display_to_user` | Inline charts (bar, line, pie, area, scatter with error bars) or local images. |
+| `get_session_edited_files` | List files edited during this AI session. Used before git commits. |
+| `developer_git_commit_proposal` | Propose files and commit message via an interactive widget. |
+| `update_session_meta` | Set name, tags, and phase for the current session. Dynamic tag description (see below). |
 
-Extension tools are also served from this endpoint dynamically based on workspace and current file.
-
-### nimbalyst-session-naming
-
-**Source:** `packages/electron/src/main/mcp/sessionNamingServer.ts`
-
-| Tool | Description |
-| --- | --- |
-| `name_session` | Set a concise, descriptive name and optional tags for the current AI chat session. Called ONCE per conversation. |
-| `update_tags` | Update tags on this AI session. Used when the nature of work changes. |
-
-The `name_session` tool has a **dynamic tag description** -- it queries the database for existing workspace tags and includes them in the tool description so Claude can reuse them:
+`update_session_meta` has a **dynamic tag description** — it queries the database for existing workspace tags and includes them so the agent reuses them:
 
 ```typescript
 const existingTags = await getWorkspaceTagsFn(aiSessionId);
 const tagList = existingTags.slice(0, 20).map(t => `${t.name} (${t.count})`).join(', ');
-tagDescription += ` Existing tags in this workspace: ${tagList}. Use existing tags for consistency, or create new ones as needed.`;
+addTagDescription += ` Existing tags in this workspace: ${tagList}. Use existing tags for consistency, or create new ones as needed.`;
 ```
 
-### nimbalyst-session-context
+### nimbalyst-host
 
-**Source:** `packages/electron/src/main/mcp/sessionContextServer.ts`
+**Source:** schemas + dispatch in `settingsServer.ts` / `sessionContextServer.ts` / `metaAgentServer.ts`, served via `httpServer.ts`
 
 | Tool | Description |
 | --- | --- |
-| `get_session_summary` | Get a compact summary of an AI session including its title, user prompts, last agent response, and files edited. |
-| `get_workstream_overview` | Get an overview of the current workstream (parent session with child sessions). |
-| `list_recent_sessions` | List recent AI sessions in the current workspace. Optionally search by title or content. |
-| `get_workstream_edited_files` | Get all files edited across all sessions in the current workstream. |
-| `update_session_board` | Update a session's kanban board metadata (phase and/or tags). |
+| `settings_get_overview`, `appearance_*`, `ai_*`, `analytics_set_enabled`, `features_toggle`, `extension_set_enabled`, `sync_set_for_project`, `workspace_create` / `workspace_open` / `workspace_set_trust` | App / workspace settings (no API keys or secrets). |
+| `get_session_summary`, `get_workstream_overview`, `get_workstream_edited_files`, `list_recent_sessions`, `update_session_board`, `schedule_wakeup` | Cross-session context. |
+| `create_session`, `spawn_session`, `send_prompt`, `respond_to_prompt`, `get_session_status`, `get_session_result`, `list_spawned_sessions`, `list_worktrees` | Child-session orchestration. |
+
+### nimbalyst-trackers
+
+**Source:** `packages/electron/src/main/mcp/tools/trackerToolHandlers.ts`, served via `httpServer.ts`
+
+`tracker_*` CRUD plus `tracker_set_sync_policy` / `tracker_set_issue_key_prefix`. The entire server is omitted when a project disables **AI Agent Access** in tracker settings.
+
+### nimbalyst-situational
+
+**Source:** voice / collab-doc / feedback handlers, served via `httpServer.ts`
+
+`voice_agent_speak` / `voice_agent_stop`, `readCollabDoc` / `applyCollabDocEdit`, `feedback_anonymize_text` / `feedback_get_environment` / `feedback_open_github_issue`.
 
 ### nimbalyst-extension-dev
 
@@ -322,7 +323,7 @@ tagDescription += ` Existing tags in this workspace: ${tagList}. Use existing ta
 
 ### Extension-Provided Tools
 
-Extensions can register additional MCP tools via their `manifest.json`. These tools are discovered dynamically and added to the nimbalyst-mcp server response.
+Extensions can register additional MCP tools via their `manifest.json`. Each active extension is exposed as its own deferred `nimbalyst-<id>` server on `/mcp/ext/<id>`, discovered dynamically per workspace.
 
 Example from the Developer Tools extension (`packages/extensions/developer/manifest.json`):
 

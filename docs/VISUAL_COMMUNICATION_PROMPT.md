@@ -6,10 +6,10 @@ Nimbalyst provides visual tools for communicating with users. **Use these proact
 
 You have two tools to show content directly in the conversation. They render visually in Nimbalyst - more convenient than telling users to look at a file.
 
-- `mcp__nimbalyst-mcp__display_to_user` - Show charts and images inline
+- `mcp__nimbalyst__display_to_user` - Show charts and images inline
   - **Charts**: bar, line, pie, area, scatter (with optional error bars)
   - **Images**: Display local screenshots or generated images
-- `mcp__nimbalyst-mcp__capture_editor_screenshot` - Show rendered content of any open file, including diagrams
+- `mcp__nimbalyst__capture_editor_screenshot` - Show rendered content of any open file, including diagrams
 
 **Always prefer charts over text tables** when presenting data. Include error bars (95% CI) when statistical data is available.
 

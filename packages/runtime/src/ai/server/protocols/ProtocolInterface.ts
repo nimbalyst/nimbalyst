@@ -1,249 +1,28 @@
 /**
- * Protocol Interface for Agent SDK Adapters
+ * Protocol Interface - Runtime re-export
  *
- * This interface normalizes the differences between various agent SDKs
- * (Claude Agent SDK, OpenAI Codex SDK) to provide a unified abstraction
- * layer for agent providers.
+ * The protocol contract is now owned by `@nimbalyst/extension-sdk`. This
+ * file remains as a runtime-side re-export so existing imports across
+ * the runtime keep working without source churn.
  *
- * The protocol adapters isolate platform-specific SDK details from the
- * provider implementations, making it easier to:
- * - Add new agent SDKs
- * - Update SDK versions without touching provider logic
- * - Test providers with mock protocols
- * - Share common infrastructure across providers
- */
-
-import type { ChatAttachment } from '../types';
-
-/**
- * MCP server configuration
- */
-export interface MCPServerConfig {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-  [key: string]: unknown;
-}
-
-/**
- * Platform-specific session data for internal use
- */
-export interface RawProtocolSession {
-  [key: string]: unknown;
-}
-
-/**
- * Structured result from tool execution
- */
-export interface ToolResult {
-  success: boolean;
-  result?: unknown;
-  output?: unknown;
-  error?: string | unknown;
-  status?: string;
-  // command_execution specific
-  command?: string;
-  exit_code?: number;
-  // file_change specific
-  changes?: unknown;
-  // web_search specific
-  query?: string;
-  action?: unknown;
-  fileSnapshots?: Record<string, { content: string | null; error?: string; isBinary?: boolean; truncated?: boolean }>;
-}
-
-/**
- * Options for creating or resuming a session
- */
-export interface SessionOptions {
-  /** Working directory path for the session */
-  workspacePath: string;
-
-  /** Model identifier (e.g., 'sonnet', 'gpt-5') */
-  model?: string;
-
-  /** System prompt to initialize the agent */
-  systemPrompt?: string;
-
-  /** Abort signal for cancelling the session */
-  abortSignal?: AbortSignal;
-
-  /** Permission mode for tool approvals ('ask', 'auto', 'plan') */
-  permissionMode?: string;
-
-  /** MCP server configurations */
-  mcpServers?: Record<string, MCPServerConfig>;
-
-  /** Environment variables for the session */
-  env?: Record<string, string>;
-
-  /** Tools to allow (whitelist) */
-  allowedTools?: string[];
-
-  /** Tools to disallow (blacklist) */
-  disallowedTools?: string[];
-
-  /** Platform-specific options that don't fit the common schema */
-  raw?: Record<string, unknown>;
-}
-
-/**
- * Message sent to the agent
- */
-export interface ProtocolMessage {
-  /** Text content of the message */
-  content: string;
-
-  /** Optional attachments (images, PDFs, documents) */
-  attachments?: ChatAttachment[];
-
-  /** Session ID for logging and tracking */
-  sessionId?: string;
-
-  /** AI mode when message was sent ('planning' or 'agent' or 'auto') */
-  mode?: 'planning' | 'agent' | 'auto';
-}
-
-/**
- * Session created or resumed by the protocol
- */
-export interface ProtocolSession {
-  /** Platform-specific session identifier */
-  id: string;
-
-  /** Platform identifier (e.g., 'claude-sdk', 'codex-sdk') */
-  platform: string;
-
-  /** Platform-specific session data (for internal use) */
-  raw?: RawProtocolSession;
-}
-
-/**
- * Event types emitted during message streaming
- */
-export type ProtocolEventType =
-  | 'raw_event'               // Raw SDK event (for persistence/audit)
-  | 'text'                    // Text content chunk
-  | 'reasoning'               // Thinking/reasoning content (not part of final output)
-  | 'tool_call'               // Tool invocation
-  | 'tool_result'             // Tool execution result
-  | 'error'                   // Error occurred
-  | 'complete'                // Stream complete
-  | 'usage'                   // Token usage stats
-  | 'planning_mode_entered'   // Agent entered planning mode
-  | 'planning_mode_exited';   // Agent exited planning mode
-
-/**
- * Event emitted during message streaming
- */
-export interface ProtocolEvent {
-  /** Event type */
-  type: ProtocolEventType;
-
-  /** Text content (for 'text' events) */
-  content?: string;
-
-  /** Tool call data (for 'tool_call' events) */
-  toolCall?: {
-    id?: string;
-    name: string;
-    arguments?: Record<string, any>;
-    result?: ToolResult | string;
-  };
-
-  /** Tool result data (for 'tool_result' events) */
-  toolResult?: {
-    id?: string;
-    name: string;
-    result?: ToolResult | string;
-  };
-
-  /** Error message (for 'error' events) */
-  error?: string;
-
-  /** Token usage (for 'usage' or 'complete' events) */
-  usage?: {
-    input_tokens: number;
-    output_tokens: number;
-    total_tokens: number;
-  };
-
-  /** Current context fill tokens for this turn (provider-reported snapshot) */
-  contextFillTokens?: number;
-
-  /** Maximum context window for the active model */
-  contextWindow?: number;
-
-  /** Additional metadata */
-  metadata?: Record<string, unknown>;
-}
-
-/**
- * Agent Protocol Interface
+ * To change the protocol shape, edit
+ * `packages/extension-sdk/src/agents/AgentProtocol.ts` (the canonical
+ * home of these definitions). The runtime picks the changes up
+ * automatically via this re-export.
  *
- * All agent SDK adapters must implement this interface to provide
- * a consistent abstraction layer for agent providers.
+ * For new code, prefer importing directly from the SDK:
+ *
+ *     import type { AgentProtocol, ProtocolEvent } from '@nimbalyst/extension-sdk/agents';
  */
-export interface AgentProtocol {
-  /**
-   * Platform identifier (e.g., 'claude-sdk', 'codex-sdk')
-   */
-  readonly platform: string;
 
-  /**
-   * Create a new session
-   *
-   * @param options - Session configuration
-   * @returns Protocol session with platform-specific ID
-   */
-  createSession(options: SessionOptions): Promise<ProtocolSession>;
-
-  /**
-   * Resume an existing session
-   *
-   * @param sessionId - Platform-specific session ID to resume
-   * @param options - Session configuration
-   * @returns Protocol session
-   */
-  resumeSession(sessionId: string, options: SessionOptions): Promise<ProtocolSession>;
-
-  /**
-   * Fork an existing session (create a branch)
-   *
-   * Not all platforms support forking. If unsupported, implementations
-   * should either throw an error or create a new session.
-   *
-   * @param sessionId - Platform-specific session ID to fork from
-   * @param options - Session configuration for the fork
-   * @returns New protocol session branched from the source
-   */
-  forkSession(sessionId: string, options: SessionOptions): Promise<ProtocolSession>;
-
-  /**
-   * Send a message and receive streaming events
-   *
-   * @param session - Active protocol session
-   * @param message - Message to send
-   * @returns Async iterable of protocol events
-   */
-  sendMessage(
-    session: ProtocolSession,
-    message: ProtocolMessage
-  ): AsyncIterable<ProtocolEvent>;
-
-  /**
-   * Abort an active session
-   *
-   * @param session - Session to abort
-   */
-  abortSession(session: ProtocolSession): void;
-
-  /**
-   * Clean up session resources
-   *
-   * Called when a session is deleted or no longer needed.
-   *
-   * @param session - Session to clean up
-   */
-  cleanupSession(session: ProtocolSession): void;
-}
+export type {
+  AgentProtocol,
+  ProtocolEvent,
+  ProtocolMessage,
+  ProtocolSession,
+  SessionOptions,
+  ProtocolEventType,
+  ToolResult,
+  MCPServerConfig,
+  RawProtocolSession,
+} from '@nimbalyst/extension-sdk/agents';

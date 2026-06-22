@@ -264,6 +264,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     urlExtraQuery: activeConfig.urlExtraQuery,
     orgId: activeConfig.orgId,
     documentId: activeConfig.documentId,
+    keyCustody: activeConfig.keyCustody,
     documentKey: activeConfig.documentKey,
   }), [activeConfig]);
 
@@ -387,7 +388,10 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
       serverUrl: activeConfig.serverUrl,
       getJwt: activeConfig.getJwt,
       orgId: activeConfig.orgId,
+      keyCustody: activeConfig.keyCustody,
       documentKey: activeConfig.documentKey,
+      // Legacy org key so pre-migration shared-doc rows still decrypt (NIM-878).
+      legacyDocumentKey: activeConfig.legacyDocumentKey,
       orgKeyFingerprint: activeConfig.orgKeyFingerprint,
       userId: activeConfig.userId,
       documentId: activeConfig.documentId,

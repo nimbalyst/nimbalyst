@@ -4,7 +4,7 @@
  * with the CLI and the `ToolPermissionWidget` is unit-testable without a process.
  *
  * Flow: the CLI is launched with
- *   `--permission-prompt-tool mcp__nimbalyst-mcp__request_tool_permission`
+ *   `--permission-prompt-tool request_tool_permission`
  * so that, instead of its native TUI prompt, it calls our MCP tool whenever a
  * built-in tool (Bash/Edit/Write/WebFetch/…) needs approval. The tool is called
  * with `{ tool_name, input }`; it must RETURN a JSON permission result of the

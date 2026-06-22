@@ -26,70 +26,10 @@ export interface ClaudeUsageData {
  */
 export const claudeUsageAtom = atom<ClaudeUsageData | null>(null);
 
-/**
- * Whether the usage indicator is enabled (user preference).
- * Defaults to true - user can disable it in the popover or settings.
- * Persisted via AI settings.
- */
-export const claudeUsageIndicatorEnabledAtom = atom<boolean>(true);
-
-/**
- * Debounce timer for persistence.
- */
-let usageIndicatorPersistTimer: ReturnType<typeof setTimeout> | null = null;
-const USAGE_INDICATOR_PERSIST_DEBOUNCE_MS = 500;
-
-/**
- * Persist usage indicator setting to main process.
- */
-function scheduleUsageIndicatorPersist(enabled: boolean): void {
-  if (usageIndicatorPersistTimer) {
-    clearTimeout(usageIndicatorPersistTimer);
-  }
-  usageIndicatorPersistTimer = setTimeout(async () => {
-    usageIndicatorPersistTimer = null;
-    if (typeof window !== 'undefined' && window.electronAPI) {
-      try {
-        // Send only the changed field -- ai:saveSettings handles partial updates
-        await window.electronAPI.aiSaveSettings({ showUsageIndicator: enabled });
-      } catch (error) {
-        console.error('[claudeUsageAtoms] Failed to save usage indicator setting:', error);
-      }
-    }
-  }, USAGE_INDICATOR_PERSIST_DEBOUNCE_MS);
-}
-
-/**
- * Setter atom for usage indicator enabled state.
- * Updates the atom and persists to IPC.
- */
-export const setClaudeUsageIndicatorEnabledAtom = atom(
-  null,
-  (_get, set, enabled: boolean) => {
-    set(claudeUsageIndicatorEnabledAtom, enabled);
-    scheduleUsageIndicatorPersist(enabled);
-  }
-);
-
-/**
- * Initialize usage indicator setting from IPC.
- * Call this once at app startup.
- */
-export async function initClaudeUsageIndicatorSetting(): Promise<boolean> {
-  if (typeof window === 'undefined' || !window.electronAPI) {
-    return false;
-  }
-
-  try {
-    const settings = await window.electronAPI.aiGetSettings();
-    // Default to true if setting hasn't been explicitly set
-    return settings?.showUsageIndicator ?? true;
-  } catch (error) {
-    console.error('[claudeUsageAtoms] Failed to load usage indicator setting:', error);
-  }
-
-  return true;
-}
+// The usage-indicator enabled toggle now lives in the flat-key SettingsService
+// under `ai.showUsageIndicator`. Read it with `useSetting('ai.showUsageIndicator')`
+// and write it with `useSetSetting('ai.showUsageIndicator')` -- it hydrates
+// before React mounts and stays in lockstep across windows via the broadcast.
 
 /**
  * Derived atom: whether usage data is available to display.

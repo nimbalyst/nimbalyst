@@ -9,6 +9,7 @@ import type { FieldDefinition, UrlFieldValue } from '../models/TrackerDataModel'
 import { CustomSelect } from './CustomSelect';
 import { UserAvatar } from './UserAvatar';
 import { getInitials, stringToColor } from './trackerColumns';
+import { RelationshipFieldEditor, type RelationshipCandidate } from './RelationshipFieldEditor';
 
 /** Team member info for user picker dropdown */
 export interface TeamMemberOption {
@@ -24,6 +25,10 @@ export interface TrackerFieldEditorProps {
   layout?: 'horizontal' | 'vertical';
   /** Team members for user picker dropdowns (when available) */
   teamMembers?: TeamMemberOption[];
+  /** Candidate target items for relationship-field typeahead (when available). */
+  relationshipCandidates?: RelationshipCandidate[];
+  /** Open a related tracker item (relationship pill click). */
+  onOpenRelationship?: (itemId: string) => void;
 }
 
 const labelClasses = "text-[11px] font-medium text-[var(--nim-text-muted)] uppercase tracking-[0.5px]";
@@ -82,6 +87,8 @@ export const TrackerFieldEditor: React.FC<TrackerFieldEditorProps> = ({
   onChange,
   layout = 'vertical',
   teamMembers,
+  relationshipCandidates,
+  onOpenRelationship,
 }) => {
   const fieldId = `field-${field.name}`;
   const label = formatFieldLabel(field.name);
@@ -275,6 +282,22 @@ export const TrackerFieldEditor: React.FC<TrackerFieldEditorProps> = ({
             />
             {label}
           </label>
+        </div>
+      );
+
+    case 'relationship':
+    case 'reference':
+      return (
+        <div className={wrapperClasses}>
+          <label className={labelClasses}>{label}</label>
+          <RelationshipFieldEditor
+            field={field}
+            value={value}
+            onChange={onChange}
+            candidates={relationshipCandidates}
+            onOpenItem={onOpenRelationship}
+            readOnly={field.readOnly}
+          />
         </div>
       );
 

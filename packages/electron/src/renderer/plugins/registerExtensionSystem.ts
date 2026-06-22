@@ -26,6 +26,7 @@ import { initializeExtensionPluginBridge } from '../extensions/ExtensionPluginBr
 import { initializeExtensionDocumentHeaderBridge, syncExtensionDocumentHeaders } from '../extensions/ExtensionDocumentHeaderBridge';
 import { syncExtensionEditors } from '../extensions/ExtensionEditorBridge';
 import { initializeExtensionThemeBridge } from '../extensions/ExtensionThemeBridge';
+import { initializeExtensionAgentProviderSync } from '../store/extensionAgentProviderSync';
 import { hiddenTabManager } from '../services/HiddenTabManager';
 
 // Track workspace path for MCP tool registration
@@ -691,6 +692,11 @@ export async function registerExtensionSystem(): Promise<void> {
 
     // Initialize the AI tools bridge to register extension tools with the tool registry
     initializeExtensionAIToolsBridge();
+
+    // Keep extension-contributed agent provider ids registered with
+    // ModelIdentifier as extensions load / re-scan / unload (not only at
+    // startup), so a provider enabled after launch is recognized immediately.
+    initializeExtensionAgentProviderSync();
 
     // Expose extension tools bridge on window in dev mode for Playwright page.evaluate() access
     if (process.env.NODE_ENV !== 'production') {

@@ -126,6 +126,20 @@ export interface ClaudeCliSpawnInput {
    * entries are skipped; omit for no extra directories.
    */
   additionalDirectories?: string[];
+  /**
+   * Extension Claude-plugin directories to load for this session via
+   * `--plugin-dir <dir>` (NIM-845). Each is a bare plugin directory (one
+   * containing `.claude-plugin/plugin.json` + `commands/`) — the CLI analog of
+   * the Agent SDK's `{ type: 'local', path }`. Loading them is what makes
+   * namespaced slash commands (`/feedback:bug-report`, `/planning:design`, …)
+   * resolve in a `claude-code-cli` session; without them the binary honestly
+   * reports `Unknown command`. The launcher only populates this when the resolved
+   * CLI is new enough to accept `--plugin-dir` (≥ 2.1.142 — see
+   * `claudeCliPluginSupport.ts`); on older CLIs it's omitted (the flag would be
+   * rejected as unknown and crash the launch). Empty/whitespace entries are
+   * skipped; omit for no extension plugins.
+   */
+  pluginDirs?: string[];
   /** Extra CLI args appended verbatim (escape hatch for flags we pass through). */
   extraArgs?: string[];
 }
@@ -155,7 +169,7 @@ const FORBIDDEN_ENV_KEYS: readonly string[] = ['ANTHROPIC_API_KEY', 'CLAUDECODE'
  * The genuine `claude` CLI ships its own built-in `AskUserQuestion` that renders
  * in the TUI and never routes through MCP — so a Nimbalyst durable-prompt widget
  * can't observe or answer it. Denying it forces the model onto our
- * `mcp__nimbalyst-mcp__AskUserQuestion`, which blocks on IPC and is answered by
+ * `mcp__nimbalyst__AskUserQuestion`, which blocks on IPC and is answered by
  * the widget rendered above the terminal (NIM-806).
  *
  * `ExitPlanMode` is intentionally NOT here: there is no MCP replacement for it
@@ -179,8 +193,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const CLAUDE_CLI_INTERACTIVE_TOOLS_NUDGE = [
   'You are running inside Nimbalyst, a desktop GUI that manages your session.',
   'When you need user input, a decision, or disambiguation, call the',
-  'mcp__nimbalyst-mcp__AskUserQuestion tool (multiple-choice) or the',
-  'mcp__nimbalyst-mcp__PromptForUserInput tool (richer structured input) —',
+  'mcp__nimbalyst__AskUserQuestion tool (multiple-choice) or the',
+  'mcp__nimbalyst__PromptForUserInput tool (richer structured input) —',
   'they render as interactive UI elements the user can click. Do not ask',
   'questions in plain text.',
 ].join(' ');
@@ -191,13 +205,14 @@ const CLAUDE_CLI_INTERACTIVE_TOOLS_NUDGE = [
  * snippet), and it has no out-of-band naming path (the SDK names sessions via
  * the in-process `generateSessionTitle`, which an external process can't reach).
  * So without this nudge a `claude-code-cli` session is never named at all. The
- * `nimbalyst-session-naming` MCP server IS in the CLI's `--mcp-config`, so the
- * tool is callable — the model just has to be told to call it. Condensed from
+ * eager core `nimbalyst` MCP server (which now carries `update_session_meta`,
+ * MCP consolidation Phase 5) IS in the CLI's `--mcp-config`, so the tool is
+ * callable — the model just has to be told to call it. Condensed from
  * `buildSessionNamingSection` in runtime's prompt.ts.
  */
 const CLAUDE_CLI_SESSION_NAMING_NUDGE = [
   'Early in your first turn — as soon as you understand what the user wants —',
-  'call the mcp__nimbalyst-session-naming__update_session_meta tool to name this',
+  'call the mcp__nimbalyst__update_session_meta tool to name this',
   'session. Pass `name` (2-5 words, the descriptive part first, based on what the',
   'user asked for — e.g. "Dark mode implementation"), `add` (2-4 lowercase',
   'hyphenated tags for the type of work and area, e.g. ["bug-fix", "ui"]), and',
@@ -222,6 +237,15 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
   }
   if (input.mcpConfigPath) {
     args.push('--mcp-config', input.mcpConfigPath);
+    // NIM-843: pair with --strict-mcp-config so the genuine `claude` binary uses
+    // ONLY this snapshot and does NOT merge its own discovery (~/.claude.json,
+    // project .mcp.json, .claude/settings.json, claude.ai connectors). Without it
+    // the binary loads every server it finds in ~/.claude.json — ignoring the
+    // `disabled` flag Nimbalyst writes — so user-disabled third-party servers leak
+    // into CLI sessions and eat context. The snapshot already carries the enabled
+    // set (filtered by isMCPServerEnabledForProvider), so strict mode gives the
+    // Nimbalyst toggle the same authority over CLI sessions as the SDK path.
+    args.push('--strict-mcp-config');
   }
   if (input.resumeSessionId) {
     args.push('--resume', input.resumeSessionId);
@@ -259,6 +283,18 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
     .filter((d) => d.length > 0);
   if (additionalDirs.length > 0) {
     args.push('--add-dir', ...additionalDirs);
+  }
+  // Load extension Claude-plugins so namespaced slash commands resolve (NIM-845).
+  // `--plugin-dir` is value-bearing (ONE path per flag) and repeatable — emit it
+  // once per directory. It must precede the trailing --allowedTools/--disallowedTools
+  // variadics so its single value isn't swallowed; placed after --add-dir, both
+  // before the variadics. The launcher only passes pluginDirs when the resolved CLI
+  // supports the flag (≥ 2.1.142); older CLIs would reject it as an unknown option.
+  const pluginDirs = (input.pluginDirs ?? [])
+    .map((d) => (typeof d === 'string' ? d.trim() : ''))
+    .filter((d) => d.length > 0);
+  for (const dir of pluginDirs) {
+    args.push('--plugin-dir', dir);
   }
   // Pre-allow our trusted Nimbalyst MCP servers at the server level so the genuine
   // CLI doesn't double-prompt (its built-in TUI permission gate) on top of the

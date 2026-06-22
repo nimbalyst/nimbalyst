@@ -98,7 +98,7 @@ Extensions are built with Vite and installed into the running Nimbalyst app usin
 - Check extension load status: \`extension_get_status\` with \`extensionId: "${extensionId}"\`
 - Main process logs: \`mcp__nimbalyst-extension-dev__get_main_process_logs\` (filter by component: "EXTENSION")
 - Renderer logs: \`mcp__nimbalyst-extension-dev__get_renderer_debug_logs\`
-- Verify the result visually: \`mcp__nimbalyst-mcp__capture_editor_screenshot\`
+- Verify the result visually: \`mcp__nimbalyst__capture_editor_screenshot\`
 
 ### Testing with Playwright
 

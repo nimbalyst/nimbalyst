@@ -34,6 +34,7 @@
 
 import { EventEmitter } from 'events';
 import * as path from 'path';
+import * as fs from 'fs/promises';
 import { app, utilityProcess, UtilityProcess } from 'electron';
 import { Worker } from 'worker_threads';
 import type {
@@ -52,6 +53,7 @@ import {
   shrinkGrantsToDeclared,
   listEffectiveGrants,
   clearAllGrantsForExtension,
+  grantModulePermissions,
 } from './permissionGrantStore';
 import {
   raisePermissionPrompt,
@@ -63,12 +65,53 @@ import { getPermissionUsageTracker } from './permissionUsageTracker';
 import type {
   BackendRuntimeContext,
   BackendToHostMessage,
+  BrokerMethodName,
+  BrokerPayloads,
+  BrokerResults,
   HostToBackendMessage,
   PendingRpc,
   PendingStream,
   SerializedError,
 } from './extensionBackendRpc';
 import { serializeError } from './extensionBackendRpc';
+import { AgentMessagesRepository } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
+import { store as appSettingsStore } from '../utils/store';
+import { dispatchMetaAgentTool } from '../mcp/metaAgentServer';
+import { dispatchDevAgentTool } from '../mcp/devAgentTools';
+
+/**
+ * Authoritative map from broker method name to its required catalog permission.
+ *
+ * The host derives the required permission from the METHOD NAME, never from
+ * anything the backend sends. This is the anti-forge gate: a compromised
+ * backend that forges `method: 'getApiKey'` while only being granted
+ * `nimbalyst-database-write` is denied because the host consults this table,
+ * not the backend's claim.
+ *
+ * Per Q7 of phase-4-sdk-types-proposal: event-style methods (emitEvent,
+ * requestPermission, askUserQuestion) are intentionally absent. They stay
+ * provider-private and never route through this gate.
+ */
+const BROKER_METHOD_PERMISSIONS: {
+  readonly [K in BrokerMethodName]: ExtensionPermissionId;
+} = {
+  logRaw: 'nimbalyst-database-write',
+  getApiKey: 'secrets-read',
+  readWorkspaceFile: 'workspace-files',
+  writeWorkspaceFile: 'workspace-files',
+  registerMcpTools: 'mcp-server-register',
+  // Meta-agent tool dispatch (spawn_session / create_session / ...) reads and
+  // writes the host's session store. The catalog has no dedicated orchestration
+  // permission, so it gates on the high-risk DB-write grant the extension
+  // already declares for logRaw.
+  toolExecutor: 'nimbalyst-database-write',
+  // Read-only dev tools (read_file / list_files / search_files) touch only the
+  // workspace filesystem, so they gate on the minimal low-risk grant - NOT the
+  // high-risk DB-write that orchestration needs. Separate method name keeps the
+  // anti-forge gate honest: the host derives this permission from the method
+  // name, never from the backend-supplied tool name.
+  devToolExecutor: 'workspace-files',
+} as const;
 
 /** Public state of a single module the host is tracking. */
 export type ModuleState =
@@ -283,6 +326,28 @@ export class PrivilegedExtensionHost extends EventEmitter {
         reason: 'A workspace must be open to start privileged modules.',
       });
       return this.snapshot(managed);
+    }
+
+    // Dev convenience: when dev backend modules are explicitly allowed
+    // (NIMBALYST_ALLOW_DEV_BACKEND_MODULES=1 in a non-packaged build), auto-grant
+    // the module's declared permissions. The flag is the developer's explicit
+    // opt-in to trust dev backend modules, so a turn should not hang on a
+    // first-use consent prompt. A packaged build (no flag) still raises the
+    // prompt below. This grant is global so it persists across the dev session.
+    if (
+      process.env.NIMBALYST_ALLOW_DEV_BACKEND_MODULES === '1' &&
+      !app.isPackaged &&
+      declared.length > 0
+    ) {
+      grantModulePermissions({
+        extensionId: args.extensionId,
+        moduleId: args.module.id,
+        permissions: declared,
+        scope: 'global',
+      });
+      logger.main.info(
+        `[PrivilegedExtensionHost] dev auto-grant ${args.extensionId}/${args.module.id}: ${declared.join(', ')}`
+      );
     }
 
     // 2. Diff declared vs. existing grants.
@@ -822,6 +887,31 @@ export class PrivilegedExtensionHost extends EventEmitter {
       });
       await runtime.kill();
       managed.runtime = undefined;
+      return;
+    }
+
+    // Wait for the module to leave the transient 'starting' state (init-ack ->
+    // running, or init-error -> crashed) before returning. Callers like the
+    // extension-agent bridge treat 'starting' as a failure, so returning while
+    // init-ack is still in flight would spuriously reject a module that is
+    // milliseconds from ready. Yielding the event loop lets handleBackendMessage
+    // process the init-ack and flip the state.
+    const initDeadline = Date.now() + 20000;
+    while (managed.state.status === 'starting' && Date.now() < initDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (managed.state.status === 'starting') {
+      logger.main.error(
+        `[PrivilegedExtensionHost] ${logLabel} init timed out (no init-ack within 20s)`
+      );
+      this.setState(managed, {
+        status: 'crashed',
+        exitCode: null,
+        error: serializeError(new Error('Backend module init timed out')),
+        crashedAt: Date.now(),
+      });
+      await managed.runtime?.kill();
+      managed.runtime = undefined;
     }
   }
 
@@ -1041,6 +1131,21 @@ export class PrivilegedExtensionHost extends EventEmitter {
         );
         break;
       }
+      case 'broker-request': {
+        // Defense-in-depth gate. The client-side broker stub in
+        // extensionBackendBootstrap also calls assertPermission synchronously
+        // before postMessage; this check re-asserts it on the trust side of
+        // the runtime boundary so a forged broker-request from a compromised
+        // module is still rejected. The permission required is derived from
+        // the HOST-AUTHORITATIVE table above, never from the backend's claim.
+        //
+        // The actual dispatch is async (DB / fs / settings store); we fire it
+        // as a detached promise so handleBackendMessage stays synchronous.
+        // The response/error is sent back on completion via runtime.send.
+        const { requestId, method, payload } = msg;
+        void this.handleBrokerRequest(managed, ctx, requestId, method, payload, logLabel);
+        break;
+      }
       default: {
         // Exhaustiveness check
         const _exhaust: never = msg;
@@ -1055,6 +1160,211 @@ export class PrivilegedExtensionHost extends EventEmitter {
     if (err.stack) wrapped.stack = err.stack;
     if (err.code) (wrapped as { code?: string }).code = err.code;
     return wrapped;
+  }
+
+  /**
+   * Apply the permission gate then dispatch a broker method, sending the
+   * response or error back to the backend over its runtime channel.
+   * Separated from handleBackendMessage so the message dispatcher stays sync.
+   */
+  private async handleBrokerRequest(
+    managed: ManagedModule,
+    ctx: BackendRuntimeContext,
+    requestId: string,
+    method: BrokerMethodName,
+    payload: unknown,
+    logLabel: string
+  ): Promise<void> {
+    const requiredPermission = BROKER_METHOD_PERMISSIONS[method];
+    const tracker = getPermissionUsageTracker();
+    try {
+      assertPermission({
+        extensionId: managed.args.extensionId,
+        moduleId: managed.args.module.id,
+        permissionId: requiredPermission,
+        workspacePath: managed.args.workspacePath,
+      });
+      tracker.record({
+        extensionId: managed.args.extensionId,
+        moduleId: managed.args.module.id,
+        permissionId: requiredPermission,
+        outcome: 'allowed',
+        method,
+      });
+      const result = await this.dispatchBrokerMethod(method, payload, ctx);
+      managed.runtime?.send({
+        kind: 'broker-response',
+        requestId,
+        result,
+      });
+    } catch (err) {
+      if (err instanceof CapabilityDeniedError) {
+        tracker.record({
+          extensionId: managed.args.extensionId,
+          moduleId: managed.args.module.id,
+          permissionId: requiredPermission,
+          outcome: 'denied',
+          method,
+        });
+      }
+      logger.main.warn(
+        `[PrivilegedExtensionHost] ${logLabel} broker.${method} failed:`,
+        err
+      );
+      managed.runtime?.send({
+        kind: 'broker-error',
+        requestId,
+        error: serializeError(err),
+      });
+    }
+  }
+
+  /**
+   * Per-method broker dispatch. Each branch performs the actual work AFTER the
+   * gate has cleared. Payload typing is method-keyed via BrokerPayloads.
+   *
+   * Workspace boundary enforcement: readWorkspaceFile / writeWorkspaceFile
+   * resolve the requested path against the runtime's workspacePath and reject
+   * anything that escapes it (absolute paths outside the workspace, `..`
+   * traversal).
+   */
+  private async dispatchBrokerMethod(
+    method: BrokerMethodName,
+    rawPayload: unknown,
+    ctx: BackendRuntimeContext
+  ): Promise<BrokerResults[BrokerMethodName]> {
+    switch (method) {
+      case 'logRaw': {
+        const payload = rawPayload as BrokerPayloads['logRaw'];
+        // Per phase-4-sdk-types-proposal §4.3 anti-impersonation guarantee:
+        // the `source` is stamped HOST-SIDE from ctx.extensionId/ctx.moduleId.
+        // The extension cannot supply or override it, so it cannot impersonate
+        // first-party providers (e.g. claude-code) over the broker.
+        const source = `${ctx.extensionId}/${ctx.moduleId}`;
+        const direction = payload.direction === 'inbound' ? 'input' : 'output';
+        await AgentMessagesRepository.create({
+          sessionId: payload.sessionId,
+          source,
+          direction,
+          content: payload.content,
+          metadata: payload.metadata,
+          hidden: false,
+          createdAt: new Date(),
+          searchable: true,
+        });
+        // AgentMessagesRepository.create returns void; the row id is not
+        // exposed by the store contract. Return 0 as a sentinel so the wire
+        // result shape stays { id: number }; callers that need the id should
+        // re-query by (sessionId, providerMessageId) once a real id surface
+        // is added.
+        const result: BrokerResults['logRaw'] = { id: 0 };
+        return result;
+      }
+      case 'getApiKey': {
+        const payload = rawPayload as BrokerPayloads['getApiKey'];
+        // Per CLAUDE.md "Never Use Environment Variables as Implicit API Key
+        // Sources": the broker reads ONLY from the explicit Nimbalyst settings
+        // store. Never falls back to process.env.
+        const apiKeys = appSettingsStore.get('apiKeys') as
+          | Record<string, string>
+          | undefined;
+        const key = apiKeys?.[payload.providerId];
+        const result: BrokerResults['getApiKey'] = {
+          key: typeof key === 'string' && key.length > 0 ? key : null,
+        };
+        return result;
+      }
+      case 'readWorkspaceFile': {
+        const payload = rawPayload as BrokerPayloads['readWorkspaceFile'];
+        const abs = this.resolveWorkspacePath(ctx, payload.path);
+        const content = await fs.readFile(abs, 'utf-8');
+        const result: BrokerResults['readWorkspaceFile'] = { content };
+        return result;
+      }
+      case 'writeWorkspaceFile': {
+        const payload = rawPayload as BrokerPayloads['writeWorkspaceFile'];
+        const abs = this.resolveWorkspacePath(ctx, payload.path);
+        await fs.writeFile(abs, payload.content, 'utf-8');
+        const result: BrokerResults['writeWorkspaceFile'] = {
+          bytesWritten: Buffer.byteLength(payload.content, 'utf-8'),
+        };
+        return result;
+      }
+      case 'registerMcpTools': {
+        const payload = rawPayload as BrokerPayloads['registerMcpTools'];
+        // Stub. McpConfigService integration is the next follow-up. The gate
+        // + wire protocol are functional; the host-side fan-out into the
+        // unified MCP surface is not yet wired here.
+        logger.main.info(
+          `[PrivilegedExtensionHost] broker.registerMcpTools stub: ${ctx.extensionId}/${ctx.moduleId} registering ${payload.tools.length} tool(s)`
+        );
+        const result: BrokerResults['registerMcpTools'] = {
+          registered: payload.tools.map((t) => t.name),
+        };
+        return result;
+      }
+      case 'toolExecutor': {
+        const payload = rawPayload as BrokerPayloads['toolExecutor'];
+        // Scope the tool to the AI session that emitted it (so spawn_session
+        // can find the caller) and the workspace it ran in. dispatchMetaAgentTool
+        // normalizes worktree workspace paths to the parent repo internally.
+        // The workspace falls back to the runtime's bound workspacePath when the
+        // backend didn't supply one.
+        const text = await dispatchMetaAgentTool(
+          payload.name,
+          payload.sessionId,
+          payload.workspacePath ?? ctx.workspacePath,
+          payload.args
+        );
+        const result: BrokerResults['toolExecutor'] = { result: text };
+        return result;
+      }
+      case 'devToolExecutor': {
+        const payload = rawPayload as BrokerPayloads['devToolExecutor'];
+        // Read-only dev tools (read_file / list_files / search_files). The jail
+        // root is the HOST-bound workspace (ctx.workspacePath), NEVER a
+        // backend-supplied path, so a compromised backend cannot read outside
+        // the workspace. ElectronFileSystemService's SafePathValidator blocks
+        // traversal within the call, and reads are size-capped.
+        const text = await dispatchDevAgentTool(
+          payload.name,
+          ctx.workspacePath,
+          payload.args
+        );
+        const result: BrokerResults['devToolExecutor'] = { result: text };
+        return result;
+      }
+      default: {
+        // Exhaustiveness over BrokerMethodName.
+        const _exhaust: never = method;
+        void _exhaust;
+        throw new Error(`unknown broker method: ${String(method)}`);
+      }
+    }
+  }
+
+  /**
+   * Resolve a workspace-relative path against the runtime's workspacePath and
+   * reject anything that escapes the workspace boundary. The `workspace-files`
+   * grant is scoped to within the workspace; an access outside the workspace
+   * is implicitly denied even when the catalog permission has been granted.
+   */
+  private resolveWorkspacePath(ctx: BackendRuntimeContext, relativePath: string): string {
+    const resolved = path.resolve(ctx.workspacePath, relativePath);
+    const workspaceAbs = path.resolve(ctx.workspacePath);
+    const inside =
+      resolved === workspaceAbs ||
+      resolved.startsWith(workspaceAbs + path.sep);
+    if (!inside) {
+      throw new CapabilityDeniedError({
+        reason: 'permission-not-granted',
+        extensionId: ctx.extensionId,
+        moduleId: ctx.moduleId,
+        permissionId: 'workspace-files',
+        detail: `path escapes workspace: ${relativePath}`,
+      });
+    }
+    return resolved;
   }
 }
 

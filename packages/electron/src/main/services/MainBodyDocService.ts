@@ -32,7 +32,7 @@ import { $getRoot } from 'lexical';
 import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
-import { getOrgKey, getOrgKeyFingerprint, fetchAndUnwrapOrgKey } from './OrgKeyService';
+import { getOrgKey, getOrgKeyFingerprint, fetchAndUnwrapOrgKey, fetchTeamKeyStatus } from './OrgKeyService';
 
 const IDLE_TTL_MS = 30_000;
 const MAX_WARM_ENTRIES = 25;
@@ -71,6 +71,16 @@ async function resolveConfig(
   const team = await findTeamForWorkspace(workspacePath);
   if (!team) return null;
 
+  // Determine key custody (NIM-878). Default to legacy-e2e on ANY failure so a
+  // status hiccup can never cause us to send plaintext into a legacy room.
+  let serverManaged = false;
+  try {
+    const orgJwt = await getOrgScopedJwt(team.orgId);
+    serverManaged = (await fetchTeamKeyStatus(team.orgId, orgJwt)).mode === 'server-managed';
+  } catch (err) {
+    logger.main.warn('[MainBodyDocService] key-status fetch failed; assuming legacy-e2e:', err);
+  }
+
   let key = await getOrgKey(team.orgId);
   if (!key) {
     try {
@@ -80,7 +90,10 @@ async function resolveConfig(
       logger.main.warn('[MainBodyDocService] failed to fetch org key envelope:', err);
     }
   }
-  if (!key) return null;
+  // Legacy mode REQUIRES the org key (it encrypts/decrypts with it). Server-
+  // managed mode writes PLAINTEXT, so it can proceed without the key -- the key,
+  // when available, is only used to read PRE-MIGRATION legacy rows.
+  if (!key && !serverManaged) return null;
 
   const fingerprint = getOrgKeyFingerprint(team.orgId);
   const documentId = `tracker-content/${itemId}`;
@@ -89,8 +102,13 @@ async function resolveConfig(
     serverUrl: getCollabSyncWsUrl(),
     getJwt: () => getOrgScopedJwt(team.orgId),
     orgId: team.orgId,
-    documentKey: key,
-    orgKeyFingerprint: fingerprint ?? undefined,
+    // In server-managed mode the body syncs PLAINTEXT (no AES on write); the org
+    // key (if present) is supplied as the LEGACY key so the headless peer can
+    // still read pre-migration ciphertext rows when it loads the room.
+    keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
+    documentKey: serverManaged ? undefined : (key ?? undefined),
+    legacyDocumentKey: serverManaged ? (key ?? undefined) : undefined,
+    orgKeyFingerprint: serverManaged ? undefined : (fingerprint ?? undefined),
     // `userId` is informational; the server treats the JWT sub as
     // authoritative. Empty is fine.
     userId: '',

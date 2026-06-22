@@ -209,6 +209,33 @@ class PGLiteWorker {
           // against, and the closed PR #316 review thread for the
           // 'ambiguous' branch that asks the user instead of guessing.
           const { decideLockIsRunning } = require('./lockStaleness');
+          // Identify the PID holder so a reused PID (the original Nimbalyst died
+          // and the OS handed its PID to another process) is detected as stale
+          // instead of falsely "running". Returns the image name or null; null
+          // makes decideLockIsRunning fail closed (stay 'running').
+          const processIdentityFn = (pid) => {
+            if (!Number.isInteger(pid) || pid <= 0) return null;
+            try {
+              const cp = require('child_process');
+              if (process.platform === 'win32') {
+                const out = cp
+                  .execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+                    timeout: 4000,
+                    windowsHide: true,
+                  })
+                  .toString();
+                const m = out.match(/^"([^"]+)"/m);
+                return m ? m[1] : null;
+              }
+              const out = cp
+                .execSync(`ps -p ${pid} -o comm=`, { timeout: 4000 })
+                .toString()
+                .trim();
+              return out || null;
+            } catch {
+              return null;
+            }
+          };
           let livenessDecision = 'stale';
           let livenessReason = '';
           if (isStaleFromReboot) {
@@ -219,6 +246,7 @@ class PGLiteWorker {
               lockPid,
               lockTimestamp,
               killFn: process.kill.bind(process),
+              processIdentityFn,
             });
             livenessDecision = result.decision;
             livenessReason = result.reason;
@@ -2302,9 +2330,154 @@ class PGLiteWorker {
         CREATE INDEX IF NOT EXISTS idx_collab_local_origins_relative_path
           ON collab_local_origins (org_id, relative_path);
       `);
+      // Epic H3 P0: project-scope shared-document bindings. NULL = the org's
+      // primary project (legacy rows), matching the server read-time default.
+      // Holds the server tracker-room routing key (teamProjectId). Mirrors the
+      // SQLite migration 0015_collab_local_origins_project_id.sql.
+      await this.db.exec(`
+        ALTER TABLE collab_local_origins ADD COLUMN IF NOT EXISTS project_id TEXT;
+      `);
+      await this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_collab_local_origins_project_id
+          ON collab_local_origins (project_id);
+      `);
       console.log('[PGLite Worker] collab_local_origins table created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create collab_local_origins table:', error);
+      throw error;
+    }
+
+    // Migration: durable last-synced baseline for personal docs sync (System A).
+    // Lets the write-time conflict guard detect locally-diverged files across an
+    // app restart, so an older server snapshot can never clobber newer local
+    // content (NIM-853, Layer 3).
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS project_file_sync_baseline (
+          project_id TEXT NOT NULL,
+          sync_id TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          last_synced_mtime BIGINT NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY (project_id, sync_id)
+        );
+      `);
+      console.log('[PGLite Worker] project_file_sync_baseline table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create project_file_sync_baseline table:', error);
+      throw error;
+    }
+
+    // Migration: materialized tracker type definitions (schema version 12).
+    // Makes the database the local source of truth for custom tracker schemas
+    // (previously only YAML files + the in-memory registry), so offline
+    // consumers like the `nim` CLI can resolve a custom type's role->field map.
+    // `model` is JSON TEXT (not JSONB) so it reads identically across backends.
+    // sync_id / sync_status mirror tracker_items for a future schema-sync path.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tracker_type_defs (
+          id          TEXT PRIMARY KEY,
+          workspace   TEXT NOT NULL,
+          type        TEXT NOT NULL,
+          model       TEXT NOT NULL,
+          source      TEXT,
+          updated     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at  TIMESTAMPTZ,
+          sync_id     BIGINT,
+          sync_status TEXT DEFAULT 'local'
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tracker_type_defs_ws_type
+          ON tracker_type_defs (workspace, type);
+      `);
+      console.log('[PGLite Worker] tracker_type_defs table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tracker_type_defs table:', error);
+      throw error;
+    }
+
+    // Migration: org / project / membership model (Epic H1, schema version 13).
+    // Local projection of the server-authoritative per-org TeamRoom DO
+    // (member_roles + project_access). 2-level Org->Project hierarchy; "team" is
+    // the paid org flavor, not an entity. Project roles ship in v1; `guest` org
+    // role is modeled now but not surfaced in v1 UI. Mirror of SQLite migration
+    // 0013_orgs_and_projects.sql -- keep the two in sync.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS orgs (
+          id            TEXT PRIMARY KEY,
+          stytch_org_id TEXT NOT NULL UNIQUE,
+          slug          TEXT NOT NULL UNIQUE,
+          flavor        TEXT NOT NULL,
+          created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS org_members (
+          org_id     TEXT NOT NULL,
+          user_id    TEXT NOT NULL,
+          email      TEXT,
+          role       TEXT NOT NULL DEFAULT 'member',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (org_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS projects (
+          id              TEXT PRIMARY KEY,
+          org_id          TEXT NOT NULL,
+          slug            TEXT NOT NULL,
+          git_origin_hash TEXT,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (org_id, slug)
+        );
+        CREATE TABLE IF NOT EXISTS project_access (
+          project_id   TEXT NOT NULL,
+          user_id      TEXT NOT NULL,
+          project_role TEXT NOT NULL,
+          created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (project_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_org_members_user ON org_members (user_id);
+        CREATE INDEX IF NOT EXISTS idx_projects_org ON projects (org_id);
+        CREATE INDEX IF NOT EXISTS idx_projects_git_origin ON projects (git_origin_hash);
+        CREATE INDEX IF NOT EXISTS idx_project_access_user ON project_access (user_id);
+      `);
+      console.log('[PGLite Worker] orgs/projects tables created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create orgs/projects tables:', error);
+      throw error;
+    }
+
+    // Migration: derived relationship index (Epic C Phase 2, schema version 14).
+    // LOCAL-ONLY projection of relationship FIELD values (which themselves sync
+    // on the metadata socket like labels). Rebuildable from item JSON; never on
+    // the wire (no sync columns). Mirror of SQLite migration
+    // 0014_tracker_relationship_index.sql -- keep the two in sync.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tracker_relationship_index (
+          id                    TEXT PRIMARY KEY,
+          workspace             TEXT NOT NULL,
+          source_item_id        TEXT NOT NULL,
+          source_field_id       TEXT NOT NULL,
+          relationship_type_key TEXT,
+          target_item_id        TEXT NOT NULL,
+          target_tracker_type   TEXT,
+          source_updated_at     TIMESTAMPTZ,
+          metadata              JSONB NOT NULL DEFAULT '{}'::jsonb
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tracker_rel_index_unique
+          ON tracker_relationship_index (workspace, source_item_id, source_field_id, target_item_id);
+        CREATE INDEX IF NOT EXISTS idx_tracker_rel_index_source
+          ON tracker_relationship_index (workspace, source_item_id);
+        CREATE INDEX IF NOT EXISTS idx_tracker_rel_index_target
+          ON tracker_relationship_index (workspace, target_item_id);
+        CREATE INDEX IF NOT EXISTS idx_tracker_rel_index_type
+          ON tracker_relationship_index (workspace, relationship_type_key);
+      `);
+      console.log('[PGLite Worker] tracker_relationship_index table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tracker_relationship_index table:', error);
       throw error;
     }
 

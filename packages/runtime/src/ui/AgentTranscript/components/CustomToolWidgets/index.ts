@@ -129,15 +129,16 @@ import {
  * name and the prefixed variants when the legacy session log might contain
  * either.
  */
+// Keys are bare tool names. `getCustomToolWidget` strips any `mcp__<server>__`
+// prefix before lookup, so a single bare entry renders the tool no matter which
+// server (or historical legacy prefix) it was recorded under — no per-prefix
+// duplicates needed.
 const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
   // Editor screenshot capture tool (works for mockups and all other editor types)
   'capture_editor_screenshot': EditorScreenshotWidget,
-  'mcp__nimbalyst-mcp__capture_editor_screenshot': EditorScreenshotWidget,
 
   // AskUserQuestion tool - displays questions from Claude for user input
   'AskUserQuestion': AskUserQuestionWidget,
-  'mcp__nimbalyst__AskUserQuestion': AskUserQuestionWidget,
-  'mcp__nimbalyst-mcp__AskUserQuestion': AskUserQuestionWidget,
 
   // PromptForUserInput tool - generic structured-input prompt with typed fields
   // (multiSelect, singleSelect, reorder, editText, confirm).
@@ -145,19 +146,14 @@ const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
   // avoid colliding with Codex CLI's built-in `request_user_input` tool which
   // is gated to Plan mode (snake_case match).
   'PromptForUserInput': RequestUserInputWidget,
-  'mcp__nimbalyst__PromptForUserInput': RequestUserInputWidget,
-  'mcp__nimbalyst-mcp__PromptForUserInput': RequestUserInputWidget,
   // Back-compat: any historical sessions that recorded the old name still render.
   'RequestUserInput': RequestUserInputWidget,
-  'mcp__nimbalyst__RequestUserInput': RequestUserInputWidget,
-  'mcp__nimbalyst-mcp__RequestUserInput': RequestUserInputWidget,
 
   // ExitPlanMode tool - interactive confirmation widget for exiting planning mode
   'ExitPlanMode': ExitPlanModeWidget,
 
   // Display to user tool - renders charts and image galleries inline in the transcript
   'display_to_user': VisualDisplayWidget,
-  'mcp__nimbalyst__display_to_user': VisualDisplayWidget,
 
   // Bash tool - terminal-style display for shell commands
   'Bash': BashWidget,
@@ -167,8 +163,6 @@ const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
   'git_commit_proposal': GitCommitConfirmationWidget,
   'developer_git_commit_proposal': GitCommitConfirmationWidget,
   'developer.git_commit_proposal': GitCommitConfirmationWidget,
-  'mcp__nimbalyst-mcp__developer_git_commit_proposal': GitCommitConfirmationWidget,
-  'mcp__nimbalyst-extension-dev__developer_git_commit_proposal': GitCommitConfirmationWidget,
 
   // Tool permission - interactive permission widget for tools requiring approval
   'ToolPermission': ToolPermissionWidget,
@@ -182,16 +176,12 @@ const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
 
   // Super Loop progress update tool - shows progress summary or blocked feedback UI
   'super_loop_progress_update': SuperLoopProgressWidget,
-  'mcp__nimbalyst-super-loop-progress__super_loop_progress_update': SuperLoopProgressWidget,
 
   // Session metadata update tool - shows tag/phase/name transitions
   'update_session_meta': UpdateSessionMetaWidget,
-  'mcp__nimbalyst-session-naming__update_session_meta': UpdateSessionMetaWidget,
   // Legacy tool names (pre-merge) - fallback rendering for old sessions
   'name_session': UpdateSessionMetaWidget,
-  'mcp__nimbalyst-session-naming__name_session': UpdateSessionMetaWidget,
   'update_tags': UpdateSessionMetaWidget,
-  'mcp__nimbalyst-session-naming__update_tags': UpdateSessionMetaWidget,
 
   // Tracker tools - list, get, create, update, link
   'tracker_list': TrackerToolWidget,

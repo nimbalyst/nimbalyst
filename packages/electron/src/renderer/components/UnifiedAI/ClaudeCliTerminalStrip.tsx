@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useAtomValue } from 'jotai';
 import { TerminalPanel } from '../Terminal/TerminalPanel';
+import { windowFocusedAtom } from '../../store/atoms/windowFocus';
 
 export interface ClaudeCliTerminalStripProps {
   sessionId: string;
@@ -32,7 +34,8 @@ export interface ClaudeCliTerminalStripProps {
  * Launch is gated on TWO signals, both required:
  *   1. The strip (or caller-provided drawer root) is on-screen, via an
  *      IntersectionObserver.
- *   2. This window is the foregrounded one, via `document.hasFocus()`.
+ *   2. This window is the OS-focused (key) window, via `windowFocusedAtom` —
+ *      the main process's per-window focus state.
  *
  * IntersectionObserver alone reports "visible" for any window whose DOM is laid
  * out, even one sitting in the background. On restart, every restored window has
@@ -40,9 +43,16 @@ export interface ClaudeCliTerminalStripProps {
  * intersection alone spawned the genuine CLI in ALL windows at once. The CLI
  * fires an upstream request just from being launched, so the simultaneous spawns
  * stampeded the subscription rate/concurrency cap and every turn failed
- * ("The Claude CLI turn failed.", NIM-813). Adding the focus gate means only the
- * foreground window spawns on restart; background windows spawn the moment the
- * user brings them forward (the window `focus` event re-checks the latch).
+ * ("The Claude CLI turn failed.", NIM-813).
+ *
+ * The focus gate originally used `document.hasFocus()`, but that is true for
+ * EVERY window while the app is the active application — it cannot distinguish a
+ * background window from the foreground one, so an app-activation pulse re-spawned
+ * every background session at once and re-created the stampede (NIM-849). We now
+ * gate on `windowFocusedAtom`, fed by main's per-window `browser-window-focus`/
+ * `blur` events, which fire only for the window that actually became key. Only the
+ * truly-focused window spawns; a background window spawns when the user genuinely
+ * brings it forward.
  *
  * `TerminalPanel` latches its own init the first time `isActive`/`panelVisible`
  * are true and stays alive thereafter, so once launched we never flip back.
@@ -57,6 +67,7 @@ export const ClaudeCliTerminalStrip: React.FC<ClaudeCliTerminalStripProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const [launched, setLaunched] = useState(false);
   const onScreenRef = useRef(false);
+  const windowFocused = useAtomValue(windowFocusedAtom);
 
   useEffect(() => {
     if (launched) return;
@@ -67,12 +78,17 @@ export const ClaudeCliTerminalStrip: React.FC<ClaudeCliTerminalStripProps> = ({
     const el = observeRef?.current ?? containerRef.current;
     if (!el) return;
 
-    // Latch only once the strip is on-screen AND this window is foregrounded.
+    // Latch only once the strip is on-screen AND this is the OS-focused window.
     const tryLaunch = () => {
-      if (onScreenRef.current && document.hasFocus()) {
+      if (onScreenRef.current && windowFocused) {
         setLaunched(true);
       }
     };
+
+    // This effect re-runs when `windowFocused` flips true; if the observer has
+    // already reported on-screen (ref persists across runs), launch now. This is
+    // how a background window spawns when the user brings it forward.
+    tryLaunch();
 
     let observer: IntersectionObserver | undefined;
     if (typeof IntersectionObserver === 'undefined') {
@@ -92,15 +108,10 @@ export const ClaudeCliTerminalStrip: React.FC<ClaudeCliTerminalStripProps> = ({
       observer.observe(el);
     }
 
-    // A background window may already be on-screen but unfocused; spawn it when
-    // the user brings it forward.
-    window.addEventListener('focus', tryLaunch);
-
     return () => {
       observer?.disconnect();
-      window.removeEventListener('focus', tryLaunch);
     };
-  }, [launched, observeRef]);
+  }, [launched, observeRef, windowFocused]);
 
   return (
     <div ref={containerRef} style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>

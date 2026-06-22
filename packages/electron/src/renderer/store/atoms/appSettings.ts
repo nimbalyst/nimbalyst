@@ -23,7 +23,8 @@ import { type EffortLevel, DEFAULT_EFFORT_LEVEL, parseEffortLevel } from '@nimba
 import { AlphaFeatureTag, getDefaultAlphaFeatures } from '../../../shared/alphaFeatures';
 import { BetaFeatureTag } from '../../../shared/betaFeatures';
 import { DeveloperFeatureTag, DEVELOPER_FEATURES, getDefaultDeveloperFeatures, enableAllDeveloperFeatures, disableAllDeveloperFeatures, areAllDeveloperFeaturesEnabled } from '../../../shared/developerFeatures';
-import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
+import { normalizeCodexProviderConfig, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
+import { onSettingChanged } from './settingAtomFamily';
 
 // Voice type - all available OpenAI Realtime voices
 export type VoiceId = 'alloy' | 'ash' | 'ballad' | 'coral' | 'echo' | 'sage' | 'shimmer' | 'verse' | 'marin' | 'cedar';
@@ -205,11 +206,15 @@ export async function initVoiceModeSettings(): Promise<VoiceModeSettings> {
 // PHASE 2: Notification Settings
 // ============================================================================
 
-export type CompletionSoundType = 'chime' | 'bell' | 'pop' | 'none';
+export type CompletionSoundType = 'chime' | 'bell' | 'pop' | 'custom' | 'none';
 
 export interface NotificationSettings {
   completionSoundEnabled: boolean;
   completionSoundType: CompletionSoundType;
+  /** Basename of the user-supplied custom sound file (display only), or null. */
+  completionSoundCustomName: string | null;
+  /** Completion sound volume as a percentage of system volume (0-100). */
+  completionSoundVolume: number;
   osNotificationsEnabled: boolean;
   /** Show OS notifications even when app is focused, unless viewing that session */
   notifyWhenFocused: boolean;
@@ -223,6 +228,8 @@ export interface NotificationSettings {
 const defaultNotificationSettings: NotificationSettings = {
   completionSoundEnabled: false,
   completionSoundType: 'chime',
+  completionSoundCustomName: null,
+  completionSoundVolume: 100,
   osNotificationsEnabled: false,
   notifyWhenFocused: false,
   sessionBlockedNotificationsEnabled: true,
@@ -253,6 +260,7 @@ function scheduleNotificationPersist(settings: NotificationSettings): void {
     if (typeof window !== 'undefined' && window.electronAPI) {
       await window.electronAPI.invoke('completion-sound:set-enabled', settings.completionSoundEnabled);
       await window.electronAPI.invoke('completion-sound:set-type', settings.completionSoundType);
+      await window.electronAPI.invoke('completion-sound:set-volume', settings.completionSoundVolume);
       await window.electronAPI.invoke('notifications:set-enabled', settings.osNotificationsEnabled);
       await window.electronAPI.invoke('notifications:set-notify-when-focused', settings.notifyWhenFocused);
       await window.electronAPI.invoke('notifications:set-blocked-enabled', settings.sessionBlockedNotificationsEnabled);
@@ -274,6 +282,13 @@ export const completionSoundEnabledAtom = atom(
  */
 export const completionSoundTypeAtom = atom(
   (get) => get(notificationSettingsAtom).completionSoundType
+);
+
+/**
+ * Completion sound volume (0-100, as a percentage of system volume).
+ */
+export const completionSoundVolumeAtom = atom(
+  (get) => get(notificationSettingsAtom).completionSoundVolume
 );
 
 /**
@@ -323,17 +338,31 @@ export async function initNotificationSettings(): Promise<NotificationSettings> 
   }
 
   try {
-    const [soundEnabled, soundType, osNotifEnabled, notifyFocused, blockedEnabled] = await Promise.all([
+    const [soundEnabled, soundType, customSound, soundVolume, osNotifEnabled, notifyFocused, blockedEnabled] = await Promise.all([
       window.electronAPI.invoke('completion-sound:is-enabled'),
       window.electronAPI.invoke('completion-sound:get-type'),
+      window.electronAPI.invoke('completion-sound:get-custom'),
+      window.electronAPI.invoke('completion-sound:get-volume'),
       window.electronAPI.invoke('notifications:get-enabled'),
       window.electronAPI.invoke('notifications:get-notify-when-focused'),
       window.electronAPI.invoke('notifications:get-blocked-enabled'),
     ]);
 
+    const customName: string | null = customSound?.fileName ?? null;
+    let resolvedType: CompletionSoundType = soundType ?? 'chime';
+    // Reconcile a stuck 'custom' type whose backing file is gone (deleted
+    // out-of-band, or never chosen) back to a built-in sound, and persist it so
+    // the store does not stay diverged. Renderer is the single writer of type.
+    if (resolvedType === 'custom' && !customName) {
+      resolvedType = 'chime';
+      window.electronAPI.invoke('completion-sound:set-type', 'chime').catch(() => {});
+    }
+
     return {
       completionSoundEnabled: soundEnabled ?? false,
-      completionSoundType: soundType ?? 'chime',
+      completionSoundType: resolvedType,
+      completionSoundCustomName: customName,
+      completionSoundVolume: soundVolume ?? 100,
       osNotificationsEnabled: osNotifEnabled ?? false,
       notifyWhenFocused: notifyFocused ?? false,
       sessionBlockedNotificationsEnabled: blockedEnabled ?? true,
@@ -848,6 +877,21 @@ const defaultAIDebugSettings: AIDebugSettings = {
  */
 export const aiDebugSettingsAtom = atom<AIDebugSettings>(defaultAIDebugSettings);
 
+// Mirror cross-window writes for each of the four debug-settings keys into the
+// composite atom so a change in another window propagates here without reload.
+onSettingChanged('ai.showToolCalls', (v) => {
+  store.set(aiDebugSettingsAtom, { ...store.get(aiDebugSettingsAtom), showToolCalls: v });
+});
+onSettingChanged('ai.chatShowToolCalls', (v) => {
+  store.set(aiDebugSettingsAtom, { ...store.get(aiDebugSettingsAtom), chatShowToolCalls: v });
+});
+onSettingChanged('ai.aiDebugLogging', (v) => {
+  store.set(aiDebugSettingsAtom, { ...store.get(aiDebugSettingsAtom), aiDebugLogging: v });
+});
+onSettingChanged('ai.showPromptAdditions', (v) => {
+  store.set(aiDebugSettingsAtom, { ...store.get(aiDebugSettingsAtom), showPromptAdditions: v });
+});
+
 /**
  * Debounce timer for AI debug settings persistence.
  */
@@ -864,18 +908,19 @@ function scheduleAIDebugPersist(settings: AIDebugSettings): void {
   }
   aiDebugPersistTimer = setTimeout(async () => {
     aiDebugPersistTimer = null;
-    if (typeof window !== 'undefined' && window.electronAPI) {
-      // Send only the changed fields -- ai:saveSettings handles partial updates
-      try {
-        await window.electronAPI.aiSaveSettings({
-          showToolCalls: settings.showToolCalls,
-          chatShowToolCalls: settings.chatShowToolCalls,
-          aiDebugLogging: settings.aiDebugLogging,
-          showPromptAdditions: settings.showPromptAdditions,
-        });
-      } catch (error) {
-        console.error('[appSettings] Failed to save AI debug settings:', error);
-      }
+    if (typeof window === 'undefined' || !window.electronAPI?.settingsSet) return;
+    // Each toggle is its own key under `ai.*`; one validated write per field,
+    // broadcast back to every window. No blob payload to clobber.
+    const writes = [
+      window.electronAPI.settingsSet('ai.showToolCalls', settings.showToolCalls),
+      window.electronAPI.settingsSet('ai.chatShowToolCalls', settings.chatShowToolCalls),
+      window.electronAPI.settingsSet('ai.aiDebugLogging', settings.aiDebugLogging),
+      window.electronAPI.settingsSet('ai.showPromptAdditions', settings.showPromptAdditions),
+    ];
+    try {
+      await Promise.all(writes);
+    } catch (error) {
+      console.error('[appSettings] Failed to save AI debug settings:', error);
     }
   }, AI_DEBUG_PERSIST_DEBOUNCE_MS);
 }
@@ -1108,6 +1153,7 @@ const defaultApiKeys: Record<string, string> = {
   'claude-code': '',
   openai: '',
   'openai-codex': '',
+  opencode: '',
   lmstudio_url: 'http://127.0.0.1:8234',
 };
 
@@ -1159,6 +1205,43 @@ function sanitizeProvidersForPersistence(providers: Record<string, ProviderConfi
 }
 
 /**
+ * Structural equality used to compute the *changed* subset when a compatibility
+ * wrapper hands us a full providers / apiKeys object. Handles primitives, plain
+ * objects, and arrays (provider `models`).
+ */
+function valuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => valuesEqual(v, b[i]));
+  }
+  if (typeof a === 'object' && typeof b === 'object') {
+    const ak = Object.keys(a as Record<string, unknown>);
+    const bk = Object.keys(b as Record<string, unknown>);
+    if (ak.length !== bk.length) return false;
+    return ak.every((k) =>
+      valuesEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
+    );
+  }
+  return false;
+}
+
+/**
+ * Return only the keys of `next` whose value differs from `prev`. Keys absent in
+ * `prev` always count as changed. This is what keeps a single toggle from
+ * scheduling a persist for every provider / API key when the caller hands us a
+ * full object (see setAIProviderSettingsAtom).
+ */
+function changedKeys<T>(prev: Record<string, T>, next: Record<string, T>): string[] {
+  const out: string[] = [];
+  for (const key of Object.keys(next)) {
+    if (!(key in prev) || !valuesEqual(prev[key], next[key])) out.push(key);
+  }
+  return out;
+}
+
+/**
  * Schedule a persist of only the changed provider / apiKey slices.
  *
  * Callers pass the providerIds and apiKeyNames they touched. The flush reads
@@ -1196,7 +1279,7 @@ async function flushAIProviderPersist(): Promise<void> {
     return;
   }
 
-  if (typeof window === 'undefined' || !window.electronAPI) {
+  if (typeof window === 'undefined' || !window.electronAPI?.settingsSet) {
     pendingProviderIds.clear();
     pendingApiKeyNames.clear();
     return;
@@ -1209,35 +1292,46 @@ async function flushAIProviderPersist(): Promise<void> {
   pendingProviderIds.clear();
   pendingApiKeyNames.clear();
 
-  const payload: { providerSettings?: Record<string, ProviderConfig>; apiKeys?: Record<string, string> } = {};
+  // Route each provider / apiKey change through its own `settings:set` call so
+  // the wire payload never carries an aggregate that a stale closure could
+  // clobber. This is the structural fix for the NIM-801 / codex-lost class of
+  // bug -- the renderer cannot send a blob anymore, so there is no blob to
+  // accidentally drop fields from.
+  //
+  // Sanitization (stripTransientProviderFields, normalizeCodexProviderConfig)
+  // still happens at the slice level so we never persist UI-only fields like
+  // `testStatus: 'testing'`.
+  const writes: Array<Promise<unknown>> = [];
 
   if (providerIdsToSend.length > 0) {
-    const partialProviders: Record<string, ProviderConfig> = {};
+    const sanitizedProviders: Record<string, ProviderConfig> = {};
     for (const id of providerIdsToSend) {
       const config = snapshot.providers[id];
-      if (config !== undefined) {
-        partialProviders[id] = config;
-      }
+      if (config !== undefined) sanitizedProviders[id] = config;
     }
-    payload.providerSettings = sanitizeProvidersForPersistence(partialProviders);
+    const cleaned = sanitizeProvidersForPersistence(sanitizedProviders);
+    for (const [id, config] of Object.entries(cleaned)) {
+      writes.push(
+        window.electronAPI.settingsSet(`ai.provider.${id}`, config).catch((err) => {
+          console.error(`[appSettings] settingsSet(ai.provider.${id}) failed:`, err);
+        }),
+      );
+    }
   }
 
   if (apiKeyNamesToSend.length > 0) {
-    const partialApiKeys: Record<string, string> = {};
     for (const name of apiKeyNamesToSend) {
       const value = snapshot.apiKeys[name];
-      if (value !== undefined) {
-        partialApiKeys[name] = value;
-      }
+      if (value === undefined) continue;
+      writes.push(
+        window.electronAPI.settingsSet(`ai.apiKey.${name}`, value).catch((err) => {
+          console.error(`[appSettings] settingsSet(ai.apiKey.${name}) failed:`, err);
+        }),
+      );
     }
-    payload.apiKeys = partialApiKeys;
   }
 
-  try {
-    await window.electronAPI.aiSaveSettings(payload);
-  } catch (error) {
-    console.error('[appSettings] Failed to save AI provider settings:', error);
-  }
+  await Promise.all(writes);
 }
 
 /**
@@ -1317,9 +1411,15 @@ export const setAIProviderSettingsAtom = atom(
         : current.availableModels,
     };
     set(aiProviderSettingsAtom, newSettings);
+    // Schedule persistence for ONLY the slices whose value actually changed.
+    // The compatibility wrappers in SettingsView hand us the full providers /
+    // apiKeys object, so using `Object.keys(updates.*)` here would re-persist
+    // every provider on a single toggle -- and a stale window could then replay
+    // unrelated provider / API-key values as a flurry of per-key writes. Diff
+    // against the pre-update snapshot so each change touches exactly one key.
     scheduleAIProviderPersist({
-      providerIds: updates.providers ? Object.keys(updates.providers) : undefined,
-      apiKeyNames: updates.apiKeys ? Object.keys(updates.apiKeys) : undefined,
+      providerIds: updates.providers ? changedKeys(current.providers, updates.providers) : undefined,
+      apiKeyNames: updates.apiKeys ? changedKeys(current.apiKeys, updates.apiKeys) : undefined,
     });
   }
 );
@@ -1399,11 +1499,17 @@ export async function initAIProviderSettings(): Promise<AIProviderSettings> {
   const providers = { ...defaultProviders };
   const apiKeys = { ...defaultApiKeys };
 
-  // Merge loaded provider settings
+  // Merge loaded provider settings. Built-in providers are seeded from
+  // defaultProviders; extension-contributed agent providers (e.g.
+  // antigravity-gemini-agent) are not, so without the else branch their
+  // persisted enabled/models state would be silently dropped at hydration and
+  // their settings panel would always render as disabled.
   if (settings?.providerSettings) {
     Object.entries(settings.providerSettings).forEach(([key, value]: [string, any]) => {
       if (providers[key]) {
         providers[key] = { ...providers[key], ...value };
+      } else {
+        providers[key] = { enabled: false, testStatus: 'idle', ...value };
       }
     });
   }
@@ -1417,11 +1523,68 @@ export async function initAIProviderSettings(): Promise<AIProviderSettings> {
 
   aiProviderInitComplete = true;
 
+  // Subscribe once to the per-key `settings:changed` broadcasts that the new
+  // SettingsService emits on every write. When another window (or our own
+  // settingsSet roundtrip) updates a provider config or API key, mirror the
+  // change into this legacy blob atom so existing UI consumers stay in sync
+  // without having to migrate. Once SettingsView and the AI panels are ported
+  // to `useSetting()` directly this mirroring becomes unnecessary.
+  ensureProviderBroadcastBridge();
+
   return {
     providers: sanitizedProviders,
     apiKeys,
     availableModels: {}, // Models are fetched separately, not persisted
   };
+}
+
+let providerBroadcastBridgeReady = false;
+
+function ensureProviderBroadcastBridge(): void {
+  if (providerBroadcastBridgeReady) return;
+  if (typeof window === 'undefined' || !window.electronAPI?.onSettingsChanged) return;
+  providerBroadcastBridgeReady = true;
+  window.electronAPI.onSettingsChanged(({ key, value }) => {
+    if (typeof key !== 'string') return;
+    if (key.startsWith('ai.provider.')) {
+      const providerId = key.slice('ai.provider.'.length);
+      const current = store.get(aiProviderSettingsAtom);
+      const existing = current.providers[providerId];
+      // Defensive: only act when value is an object; anything else is a
+      // bad broadcast we want to ignore rather than crash on.
+      if (value && typeof value === 'object') {
+        // The broadcast value IS the persisted truth -- replace, don't merge.
+        // SettingsService strips transient (testStatus/testMessage) and
+        // dynamic-model (`models` for openai-codex/copilot-cli) fields before
+        // broadcasting, so a merge with `existing` would re-introduce stale
+        // state that disk doesn't have.
+        //
+        // The one exception: transient UI state (testStatus / testMessage) is
+        // renderer-only and never broadcast. We preserve it from `existing`
+        // so an in-flight "testing..." indicator survives a concurrent
+        // broadcast from this or another window.
+        const next: ProviderConfig = { ...(value as ProviderConfig) };
+        if (existing?.testStatus !== undefined) next.testStatus = existing.testStatus;
+        if (existing?.testMessage !== undefined) next.testMessage = existing.testMessage;
+        store.set(aiProviderSettingsAtom, {
+          ...current,
+          providers: {
+            ...current.providers,
+            [providerId]: next,
+          },
+        });
+      }
+    } else if (key.startsWith('ai.apiKey.')) {
+      const keyName = key.slice('ai.apiKey.'.length);
+      const current = store.get(aiProviderSettingsAtom);
+      if (typeof value === 'string') {
+        store.set(aiProviderSettingsAtom, {
+          ...current,
+          apiKeys: { ...current.apiKeys, [keyName]: value },
+        });
+      }
+    }
+  });
 }
 
 // ============================================================================
@@ -1600,6 +1763,8 @@ export interface WorkspacePermissionsState {
   allowedPatterns: PatternRule[];
   additionalDirectories: AdditionalDirectory[];
   allowedUrlPatterns: AllowedUrlPattern[];
+  /** Issue #628: opt-in classifier for "Allow All" workspaces. */
+  allowAllUsesClassifier: boolean;
   loading: boolean;
   error: string | null;
 }
@@ -1612,6 +1777,7 @@ const defaultWorkspacePermissionsState: WorkspacePermissionsState = {
   allowedPatterns: [],
   additionalDirectories: [],
   allowedUrlPatterns: [],
+  allowAllUsesClassifier: false,
   loading: true,
   error: null,
 };
@@ -1656,6 +1822,7 @@ export async function loadWorkspacePermissions(workspacePath: string): Promise<W
         allowedPatterns: result.allowedPatterns || [],
         additionalDirectories: result.additionalDirectories || [],
         allowedUrlPatterns: result.allowedUrlPatterns || [],
+        allowAllUsesClassifier: result.allowAllUsesClassifier === true,
         loading: false,
         error: null,
       };

@@ -5,7 +5,7 @@
  *
  * The single load-bearing step is **allocating the Nimbalyst session id BEFORE
  * launch** and injecting the same `sessionId`-bearing MCP URL the in-process
- * Agent-SDK path uses. The CLI then calls `mcp__nimbalyst-mcp__*` tools that hit
+ * Agent-SDK path uses. The CLI then calls `mcp__nimbalyst__*` tools that hit
  * the identical handlers — so commit-proposal / AskUserQuestion widgets render in
  * the correct transcript with no new mechanism (see the plan doc, "How a rich
  * widget reaches the right transcript").
@@ -74,7 +74,7 @@ export interface ClaudeCliSessionLauncherDeps {
   pathExists?: (p: string) => boolean;
   /**
    * Absolute path to the PreToolUse permission hook script (NIM-806 Phase 4).
-   * When set (and the nimbalyst-mcp server is configured), the launcher registers
+   * When set (and the nimbalyst core server is configured), the launcher registers
    * the hook via `--settings` and injects the endpoint URL/token into the CLI env,
    * so built-in tool prompts route to a Nimbalyst widget. Omit → native gate.
    */
@@ -90,6 +90,24 @@ export interface ClaudeCliSessionLauncherDeps {
    * `ask` / `null` (untrusted) keep the hook + native gate. Omit to keep the gate.
    */
   getPermissionMode?: (workspacePath: string) => 'ask' | 'allow-all' | 'bypass-all' | null;
+  /**
+   * Load the extension Claude-plugin directories for this workspace (NIM-845).
+   * In production this is `getClaudePluginPaths(wp)` mapped to `.path` — the same
+   * single source of truth the SDK path uses. Each returned dir is a bare plugin
+   * directory passed to the CLI via `--plugin-dir`, which is what makes namespaced
+   * slash commands resolve. Omit → no extension plugins (namespaced commands won't
+   * resolve, as before NIM-845).
+   */
+  loadPluginDirs?: (workspacePath: string) => Promise<string[]>;
+  /**
+   * Report whether the resolved `claude` executable accepts `--plugin-dir`
+   * (NIM-845). In production this is the cached `--version` probe
+   * (`resolveClaudeCliSupportsPluginDir`). Old CLIs (< 2.1.142) reject the flag as
+   * an unknown option and the launch would crash, so when this returns false we
+   * skip loading/passing plugin dirs entirely. Omitted → assume supported (the
+   * loader is the only gate); paired with `loadPluginDirs` in production.
+   */
+  cliSupportsPluginDir?: (executable: string) => boolean;
 }
 
 export interface LaunchClaudeCliSessionInput {
@@ -176,12 +194,13 @@ export class ClaudeCliSessionLauncher {
     // NIM-806 Phase 4 (Direction A): register a PreToolUse permission hook (via
     // --settings) that routes built-in tool prompts to a Nimbalyst widget. The
     // hook POSTs to the loopback `/permission` endpoint — same host + bearer as the
-    // nimbalyst-mcp server, so we lift both straight out of the MCP config. Only
-    // when the hook script path is provided AND nimbalyst-mcp is configured — and
+    // unified internal MCP server, so we lift both straight out of the eager core
+    // `nimbalyst` config (the monolithic `nimbalyst-mcp` is retired). Only when
+    // the hook script path is provided AND the core server is configured — and
     // never when we're skipping the gate (the two are mutually exclusive).
     let settingsJson: string | undefined;
     const permissionHookEnv: Record<string, string> = {};
-    const nimbalystMcp = mcpServers['nimbalyst-mcp'] as
+    const nimbalystMcp = mcpServers['nimbalyst'] as
       | { url?: string; headers?: Record<string, string> }
       | undefined;
     if (!dangerouslySkipPermissions && this.deps.permissionHookScriptPath && nimbalystMcp?.url) {
@@ -223,9 +242,39 @@ export class ClaudeCliSessionLauncher {
           }
         : undefined;
 
+    // 2.6. Resolve the `claude` executable once (reused for the plugin-support
+    // probe and the spawn config below).
+    const claudeExecutable = this.deps.resolveClaudeExecutable();
+
+    // NIM-845: load extension Claude-plugin directories so namespaced slash
+    // commands (`/feedback:bug-report`, …) resolve in this CLI session. Gate on
+    // `--plugin-dir` support FIRST — on an old CLI (< 2.1.142) the flag is an
+    // unknown option and would crash the launch, so we skip loading entirely and
+    // log once (silent to the user; commands stay unresolved as before the fix).
+    let pluginDirs: string[] | undefined;
+    if (this.deps.loadPluginDirs) {
+      const supportsPluginDir = this.deps.cliSupportsPluginDir?.(claudeExecutable) ?? true;
+      if (supportsPluginDir) {
+        try {
+          pluginDirs = (await this.deps.loadPluginDirs(workspacePath)).filter(
+            (dir) => typeof dir === 'string' && dir.trim().length > 0,
+          );
+        } catch (err) {
+          // Best-effort: never block the launch over plugin discovery.
+          console.warn('[ClaudeCliSessionLauncher] failed to load plugin dirs; launching without extension plugins:', err);
+          pluginDirs = undefined;
+        }
+      } else {
+        console.log(
+          `[ClaudeCliSessionLauncher] resolved claude (${claudeExecutable}) lacks --plugin-dir support; ` +
+            'skipping extension plugins (namespaced slash commands will not resolve)',
+        );
+      }
+    }
+
     // 3. Build the spawn config (resolves exec, sets enhanced PATH, strips API key).
     const spawnConfig = buildClaudeCliSpawnConfig({
-      claudeExecutable: this.deps.resolveClaudeExecutable(),
+      claudeExecutable,
       cwd,
       mcpConfigPath,
       model: input.model,
@@ -238,6 +287,7 @@ export class ClaudeCliSessionLauncher {
       settingsJson,
       dangerouslySkipPermissions,
       additionalDirectories: input.additionalDirectories,
+      pluginDirs,
     });
 
     // 4. Spawn the genuine interactive CLI in the terminal strip. Tear the proxy

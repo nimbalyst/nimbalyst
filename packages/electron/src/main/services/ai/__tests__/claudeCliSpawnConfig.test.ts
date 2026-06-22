@@ -27,6 +27,21 @@ describe('buildClaudeCliSpawnConfig', () => {
     expect(cfg.args[cfg.args.indexOf('--model') + 1]).toBe('opus');
   });
 
+  // NIM-843: without --strict-mcp-config the genuine `claude` binary merges its
+  // own MCP discovery (~/.claude.json, project .mcp.json, claude.ai connectors)
+  // on top of our --mcp-config snapshot and ignores the `disabled` flag we write,
+  // so user-disabled third-party servers leak into CLI sessions. Strict mode makes
+  // the binary use ONLY the snapshot (which already carries the enabled set,
+  // filtered by isMCPServerEnabledForProvider).
+  it('passes --strict-mcp-config alongside --mcp-config so the binary uses ONLY our snapshot', () => {
+    const cfg = buildClaudeCliSpawnConfig({ ...base, mcpConfigPath: '/tmp/mcp.json' });
+    expect(cfg.args).toContain('--strict-mcp-config');
+  });
+
+  it('omits --strict-mcp-config when there is no --mcp-config snapshot', () => {
+    expect(buildClaudeCliSpawnConfig(base).args).not.toContain('--strict-mcp-config');
+  });
+
   it('resumes a session with --resume <id>', () => {
     const cfg = buildClaudeCliSpawnConfig({ ...base, resumeSessionId: 'abc-123' });
     expect(cfg.args).toContain('--resume');
@@ -130,8 +145,9 @@ describe('buildClaudeCliSpawnConfig', () => {
     const cfg = buildClaudeCliSpawnConfig(base);
     expect(cfg.args).toContain('--append-system-prompt');
     const nudge = cfg.args[cfg.args.indexOf('--append-system-prompt') + 1] ?? '';
-    expect(nudge).toContain('mcp__nimbalyst-mcp__AskUserQuestion');
-    expect(nudge).toContain('mcp__nimbalyst-mcp__PromptForUserInput');
+    // Core interactive tools now live on the eager `nimbalyst` server (Phase 2).
+    expect(nudge).toContain('mcp__nimbalyst__AskUserQuestion');
+    expect(nudge).toContain('mcp__nimbalyst__PromptForUserInput');
   });
 
   it('nudges the model to name the session via update_session_meta on its first turn', () => {
@@ -141,7 +157,8 @@ describe('buildClaudeCliSpawnConfig', () => {
     // needs to be told to call the tool.
     const cfg = buildClaudeCliSpawnConfig(base);
     const nudge = cfg.args[cfg.args.indexOf('--append-system-prompt') + 1] ?? '';
-    expect(nudge).toContain('mcp__nimbalyst-session-naming__update_session_meta');
+    // update_session_meta folds into the eager core `nimbalyst` server (Phase 5).
+    expect(nudge).toContain('mcp__nimbalyst__update_session_meta');
   });
 
   it('keeps the disallow flag followed by a non-variadic flag so it consumes only AskUserQuestion', () => {
@@ -316,6 +333,51 @@ describe('buildClaudeCliSpawnConfig', () => {
     // --add-dir consumes exactly its one directory, stopping at the next flag
     expect(cfg.args.slice(addDir + 1, allowed)).toEqual(['/data/attachments']);
     // the disallow built-in survived intact (not swallowed by --add-dir)
+    expect(cfg.args[disallowed + 1]).toBe('AskUserQuestion');
+  });
+
+  // NIM-845: extension Claude-plugins (the source of namespaced slash commands
+  // like /feedback:bug-report) load into a claude-code-cli session via one
+  // `--plugin-dir <dir>` per resolved plugin directory — the CLI analog of the
+  // SDK's { type: 'local', path }. Each is value-bearing (a single path), so it
+  // must precede the trailing --allowedTools/--disallowedTools variadics.
+  it('emits --plugin-dir for each plugin directory', () => {
+    const cfg = buildClaudeCliSpawnConfig({
+      ...base,
+      pluginDirs: ['/ext/a/plugin', '/ext/b/plugin'],
+    });
+    const i = cfg.args.indexOf('--plugin-dir');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(cfg.args[i + 1]).toBe('/ext/a/plugin');
+    // repeatable flag — a second --plugin-dir for the second dir
+    const j = cfg.args.indexOf('--plugin-dir', i + 2);
+    expect(j).toBeGreaterThanOrEqual(0);
+    expect(cfg.args[j + 1]).toBe('/ext/b/plugin');
+    // exactly two occurrences
+    expect(cfg.args.filter((a) => a === '--plugin-dir')).toHaveLength(2);
+  });
+
+  it('filters empty/whitespace plugin dirs and omits --plugin-dir when none remain', () => {
+    expect(buildClaudeCliSpawnConfig(base).args).not.toContain('--plugin-dir');
+    expect(buildClaudeCliSpawnConfig({ ...base, pluginDirs: [] }).args).not.toContain('--plugin-dir');
+    expect(
+      buildClaudeCliSpawnConfig({ ...base, pluginDirs: ['', '   '] }).args,
+    ).not.toContain('--plugin-dir');
+  });
+
+  it('places --plugin-dir before the variadics (not swallowed) and does not terminate the disallow built-in', () => {
+    const cfg = buildClaudeCliSpawnConfig({
+      ...base,
+      pluginDirs: ['/ext/a/plugin'],
+      allowedMcpServerNames: ['nimbalyst-mcp'],
+    });
+    const pluginDir = cfg.args.indexOf('--plugin-dir');
+    const allowed = cfg.args.indexOf('--allowedTools');
+    const disallowed = cfg.args.indexOf('--disallowedTools');
+    expect(pluginDir).toBeGreaterThanOrEqual(0);
+    expect(pluginDir).toBeLessThan(allowed);
+    expect(pluginDir).toBeLessThan(disallowed);
+    // the disallow built-in survived intact (not swallowed by an earlier variadic)
     expect(cfg.args[disallowed + 1]).toBe('AskUserQuestion');
   });
 

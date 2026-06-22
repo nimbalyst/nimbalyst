@@ -450,8 +450,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Session state tracking operations
   sessionState: {
-    getActiveSessionIds: () =>
-      ipcRenderer.invoke('ai-session-state:get-active'),
+    getTrackedSessionIds: () =>
+      ipcRenderer.invoke('ai-session-state:get-tracked'),
+    getRunningSessionIds: () =>
+      ipcRenderer.invoke('ai-session-state:get-running'),
     getSessionState: (sessionId: string) =>
       ipcRenderer.invoke('ai-session-state:get-state', sessionId),
     isSessionActive: (sessionId: string) =>
@@ -502,6 +504,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   aiSaveDraftInput: (sessionId: string, draftInput: string, workspacePath?: string) =>
     ipcRenderer.invoke('ai:saveDraftInput', sessionId, draftInput, workspacePath),
   aiDeleteSession: (sessionId: string, workspacePath?: string) => ipcRenderer.invoke('ai:deleteSession', sessionId, workspacePath),
+
+  // Flat-key settings (see shared/settings/keys.ts and main/services/SettingsService.ts).
+  // settingsGetAll seeds every atom at startup; settingsSet is the only write path.
+  // settings:changed is broadcast from main on every mutation.
+  settingsGetAll: () => ipcRenderer.invoke('settings:getAll'),
+  settingsSet: (key: string, value: unknown) => ipcRenderer.invoke('settings:set', key, value),
+  settingsDelete: (key: string) => ipcRenderer.invoke('settings:delete', key),
+  onSettingsChanged: (callback: (payload: { key: string; value: unknown }) => void) => {
+    const handler = (_event: any, payload: { key: string; value: unknown }) => callback(payload);
+    ipcRenderer.on('settings:changed', handler);
+    return () => ipcRenderer.removeListener('settings:changed', handler);
+  },
+
   getAISettings: () => ipcRenderer.invoke('ai:getSettings'),
   saveAISettings: (settings: any) => ipcRenderer.invoke('ai:saveSettings', settings),
   testAIConnection: (provider: 'claude' | 'claude-code' | 'openai' | 'lmstudio') => ipcRenderer.invoke('ai:testConnection', provider),
@@ -794,6 +809,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     disconnect: () => ipcRenderer.invoke('tracker-sync:disconnect') as Promise<{ success: boolean }>,
     upsertItem: (item: any) => ipcRenderer.invoke('tracker-sync:upsert-item', { item }) as Promise<{ success: boolean; error?: string }>,
     deleteItem: (itemId: string) => ipcRenderer.invoke('tracker-sync:delete-item', { itemId }) as Promise<{ success: boolean; error?: string }>,
+    // Epic H2 admin action: migrate this workspace's team to server-managed key
+    // custody and re-upload local tracker data as plaintext.
+    migrateToServerManaged: (orgId: string, workspacePath?: string) => ipcRenderer.invoke('tracker-sync:migrate-to-server-managed', { orgId, workspacePath }) as Promise<{ success: boolean; orgId?: string; itemsMarked?: number; schemasMarked?: number; workspacesMarked?: string[]; error?: string }>,
     onStatusChanged: (callback: (status: string) => void) => {
       const handler = (_event: any, status: string) => callback(status);
       ipcRenderer.on('tracker-sync:status-changed', handler);
@@ -1339,6 +1357,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     findForWorkspace: (workspacePath: string) => ipcRenderer.invoke('team:find-for-workspace', workspacePath),
     get: (orgId: string) => ipcRenderer.invoke('team:get', orgId),
     create: (name: string, workspacePath?: string, accountOrgId?: string) => ipcRenderer.invoke('team:create', name, workspacePath, accountOrgId),
+    // Epic H3 P0: add a project to an EXISTING org (distinct from create, which
+    // mints a new org). Returns { projectId, teamProjectId }.
+    addProject: (orgId: string, workspacePath?: string, name?: string) => ipcRenderer.invoke('team:add-project', orgId, workspacePath, name),
+    // Epic H3 P0/A: enumerate every project in an org (member-gated).
+    listProjects: (orgId: string) => ipcRenderer.invoke('team:list-projects', orgId),
+    // Epic H3 P3: move-project wizard. Preview is read-only; move is destructive (admin on both orgs).
+    moveProjectPreview: (srcOrgId: string, projectId: string, destOrgId: string) =>
+      ipcRenderer.invoke('team:move-project-preview', srcOrgId, projectId, destOrgId),
+    moveProject: (srcOrgId: string, projectId: string, destOrgId: string, dropMemberEmails?: string[]) =>
+      ipcRenderer.invoke('team:move-project', srcOrgId, projectId, destOrgId, dropMemberEmails),
+    // Epic H3 P4: merge this org into another (move all projects + roster union + optional delete).
+    mergeOrg: (drainedOrgId: string, survivorOrgId: string, deleteDrained: boolean, dropMemberEmails?: string[]) =>
+      ipcRenderer.invoke('team:merge-org', drainedOrgId, survivorOrgId, deleteDrained, dropMemberEmails),
     acceptInvite: (orgId: string) => ipcRenderer.invoke('team:accept-invite', orgId),
     listMembers: (orgId: string) => ipcRenderer.invoke('team:list-members', orgId),
     invite: (orgId: string, email: string) => ipcRenderer.invoke('team:invite', orgId, email),
@@ -1348,6 +1379,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getGitRemote: (workspacePath: string) => ipcRenderer.invoke('team:get-git-remote', workspacePath),
     ensureOrgKey: (orgId: string) => ipcRenderer.invoke('team:ensure-org-key', orgId),
     getOrgKeyStatus: (orgId: string) => ipcRenderer.invoke('team:get-org-key-status', orgId),
+    // Epic H2: current key-custody mode for the team (legacy-e2e | server-managed).
+    getKeyCustodyStatus: (orgId: string) => ipcRenderer.invoke('team:get-key-custody-status', orgId) as Promise<{ success: boolean; mode?: 'legacy-e2e' | 'server-managed'; dekFingerprint?: string | null; error?: string }>,
     listKeyEnvelopes: (orgId: string) => ipcRenderer.invoke('team:list-key-envelopes', orgId),
     setProjectIdentity: (orgId: string, workspacePath: string) => ipcRenderer.invoke('team:set-project-identity', orgId, workspacePath),
     clearProjectIdentity: (orgId: string) => ipcRenderer.invoke('team:clear-project-identity', orgId),
@@ -1359,6 +1392,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reshareKey: (orgId: string, memberId: string) => ipcRenderer.invoke('team:reshare-key', orgId, memberId),
     refreshMyKey: (orgId: string) => ipcRenderer.invoke('team:refresh-my-key', orgId),
     autoWrapNewMembers: (orgId: string) => ipcRenderer.invoke('team:auto-wrap-new-members', orgId),
+  },
+
+  // Epic H1: org / project access model. `canAccess` is the single client-side
+  // permission check; `syncProjection` refreshes the local org/member/grant
+  // projection from the server; project-access grant/revoke/list manage the
+  // per-project member set.
+  org: {
+    canAccess: (input: { orgId?: string | null; projectId?: string | null; action: 'view' | 'edit' | 'admin' }) =>
+      ipcRenderer.invoke('org:can-access', input),
+    syncProjection: () => ipcRenderer.invoke('org:sync-projection'),
+    grantProjectAccess: (orgId: string, projectId: string, userId: string, projectRole: string) =>
+      ipcRenderer.invoke('org:grant-project-access', orgId, projectId, userId, projectRole),
+    revokeProjectAccess: (orgId: string, projectId: string, userId: string) =>
+      ipcRenderer.invoke('org:revoke-project-access', orgId, projectId, userId),
+    listProjectAccess: (orgId: string, projectId: string) =>
+      ipcRenderer.invoke('org:list-project-access', orgId, projectId),
+    // Live write-through from TeamSync DO broadcasts into the local projection.
+    applyProjectAccess: (projectId: string, userId: string, projectRole: string | null) =>
+      ipcRenderer.invoke('org:apply-project-access', projectId, userId, projectRole),
+    applyMemberUpserted: (orgId: string, userId: string, email: string | null, role: string) =>
+      ipcRenderer.invoke('org:apply-member-upserted', orgId, userId, email, role),
+    applyMemberRoleChanged: (orgId: string, userId: string, role: string) =>
+      ipcRenderer.invoke('org:apply-member-role-changed', orgId, userId, role),
+    applyMemberRemoved: (orgId: string, userId: string) =>
+      ipcRenderer.invoke('org:apply-member-removed', orgId, userId),
   },
 
   // Extensions API
@@ -1623,6 +1681,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       cols?: number;
       rows?: number;
     }) => ipcRenderer.invoke('claude-cli:ensure-session', payload),
+    // Whether the genuine `claude` CLI is installed (NIM-852). The transcript
+    // checks this for a claude-code-cli session to show an install notice and
+    // skip the spawn, rather than producing a cryptic `command not found`.
+    isClaudeCliInstalled: (): Promise<boolean> =>
+      ipcRenderer.invoke('claude-cli:is-installed'),
     // Submit a claude-code-cli prompt (NIM-806) — composes the PTY line (prompt +
     // inline attachment paths), writes it to the terminal, and logs the clean
     // typed prompt (+ attachment chips) as the transcript user row in the main

@@ -9,13 +9,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+<<<<<<< feature/custom-completion-sounds
+- Custom completion sounds — pick your own audio file (MP3, WAV, OGG, M4A, AAC, FLAC) to play when an agent finishes a turn.
+=======
+<!-- New features go here -->
+- iOS: create a Meta Agent from the session create menu (alpha-gated to mirror the desktop `meta-agent` feature flag, synced to mobile).
+- New Gemini (Antigravity) marketplace extension, usable as an AI chat and meta-agent provider, with a usage indicator chip. (#558)
+- `/session-cleanup` command (Planning extension) tidies your Sessions board: it proposes phase corrections and "mark complete" candidates for your approval, and flags old sessions to archive.
+- `nim`, a companion CLI for trackers: list, create, update, comment on, archive, and import tracker items from the terminal — through a running Nimbalyst, or directly against the database when the app is closed.
+- Link tracker items to one another with relationship fields: typeahead pills in the table and detail panel, plus automatic "Linked from" backlinks.
+- New tracker views — a tag board, saved views (filter and group), and kanban columns that follow each type's custom status order.
+- Customize or reset a tracker type's schema from Settings, with a drift warning when the saved schema diverges from its files.
+- Edit and delete your own tracker comments.
+- Share individual plans (and other full-document trackers) with your team: the shared copy keeps its status, lifecycle, and body in sync — including changes made offline — and unsharing removes it for everyone, while unshared items stay private.
+- Control whether AI agents can use your trackers per project, with an "AI Agent Access" toggle in tracker settings.
+
+### Changed
+- Contextual tips now fill empty AI sessions immediately and on every empty session, instead of after a delay and only once per app launch.
+
+### Fixed
+- Restarting the app no longer occasionally loses your open project windows and drops you back on the Workspace Manager.
+- The Claude Code context indicator now updates throughout a turn instead of only at the end, and no longer bounces when sub-agents run.
+- Personal docs sync no longer overwrites newer local edits (or an open editor's unsaved changes) with an older synced copy.
+- "Commit with AI" in a worktree now proposes all uncommitted changes in the worktree, not just the current session's edits.
+- Claude Code CLI sessions now show an install link when the Claude Code CLI isn't installed, instead of a cryptic terminal error.
+- Stop the AskUserQuestion widget from crashing when a question is missing its options.
+- Deleting a custom tracker type no longer fails on the SQLite backend.
+- Launching a sibling session from a normal session no longer moves it (and the new session) into the Meta Agent group in the session list.
+- Tracker items from one project no longer leak into another project's panel.
+- The tracker detail panel no longer overwrites custom field edits made elsewhere while it's open.
+- Personal and settings sync no longer gets stuck when a stale stored account id blocked the personal sync connection.
+- Tracker table columns for custom fields (such as PR links, author, and number in the GitHub PRs tracker) no longer render blank.
+- AI agents reading a tracker item now see its custom fields (such as a GitHub PR's number and author), which were previously omitted from the item's details.
+- Tracker types shared via team sync now persist across restarts (including synced overrides of built-in types), and synced tracker items no longer silently fail to save on some databases.
+- A session no longer gets stuck showing "awaiting user input" when an interactive prompt is abandoned (e.g. you send a new message instead of answering it).
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.65.4] - 2026-06-15
+
+
+### Added
 <!-- New features go here -->
 
 ### Changed
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
+- Lost-model fallback no longer silently sends paid 1M context; 1M is only used when you explicitly pick a 1M model. (#631)
+- "Allow All" permission mode auto-approves everything again; the Claude Code safety classifier is now opt-in per project. (#628)
+- No more Electron crash when a worktree produces a filesystem-event storm. (#629)
+- Auto-commit retries when another git process briefly holds .git/index.lock, so concurrent sessions commit on the first try.
+- Background Claude Code CLI sessions no longer spawn (and hit rate limits) when the app is reactivated.
+- Claude Code CLI: the "Thinking…" indicator no longer sticks off after you answer a question.
+- Claude Code CLI: a typed slash command no longer runs the autocomplete-highlighted command instead.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.65.3] - 2026-06-15
+
+
+### Added
+<!-- New features go here -->
+>>>>>>> main
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
 <!-- Bug fixes go here -->
+- MCP servers disabled in Settings no longer load in Claude Code CLI sessions (they were leaking in and eating context).
+- Claude Code CLI sessions no longer get stuck showing a "Processing…" spinner after their turn finishes.
+- Namespaced extension slash commands (e.g. /feedback:bug-report) now resolve in Claude Code CLI sessions instead of failing.
+- Generated extension-workflow plugins now load in Claude Code CLI sessions, with broader CLI version support for plugin loading.
 
 ### Removed
 <!-- Removed features go here -->

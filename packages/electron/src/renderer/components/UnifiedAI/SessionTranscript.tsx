@@ -20,6 +20,7 @@ import { store, registerInteractiveWidgetHost, unregisterInteractiveWidgetHost }
 import type { SessionData, ChatAttachment, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
 import { AgentTranscriptPanel } from '@nimbalyst/runtime/ui/AgentTranscript/components/AgentTranscriptPanel';
 import { ClaudeCliTerminalStrip } from './ClaudeCliTerminalStrip';
+import { ClaudeCliNotInstalledNotice } from './ClaudeCliNotInstalledNotice';
 import type { InteractiveWidgetHost, PermissionScope } from '@nimbalyst/runtime/ui/AgentTranscript/components/CustomToolWidgets/InteractiveWidgetHost';
 import type { TodoItem } from '@nimbalyst/runtime/ui/AgentTranscript/types';
 import { isToolLikeMessage } from '@nimbalyst/runtime/ui/AgentTranscript/utils/messageTypeHelpers';
@@ -662,6 +663,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // (the body is display:none when collapsed and would never intersect).
   const cliTerminalDrawerRef = useRef<HTMLDivElement>(null);
   const [cliTerminalResizing, setCliTerminalResizing] = useState(false);
+  // NIM-852: whether the genuine `claude` CLI is installed. null until checked.
+  // When false we render an install notice instead of spawning the terminal strip.
+  const [claudeCliInstalled, setClaudeCliInstalled] = useState<boolean | null>(null);
   const cliResizeStartY = useRef(0);
   const cliResizeStartHeight = useRef(0);
   // Hydrate height + collapsed from session metadata once per session, before the
@@ -933,6 +937,37 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // genuine `claude` process. Mirrors the backend's own "started session" gate
   // (shouldBlockStartedSessionProviderSwitch keys off messages.length > 0).
   const cliSessionCommitted = sessionHasMessages || startedCliSessionId === sessionId;
+
+  // NIM-852: for a claude-code-cli session, detect whether the genuine `claude`
+  // CLI is installed. Re-check when the session commits (a fresh install between
+  // mount and first prompt is then reflected). When not installed we show an
+  // install notice and skip mounting the terminal strip (which would otherwise
+  // spawn a bare `claude` → cryptic `command not found`).
+  useEffect(() => {
+    if (provider !== 'claude-code-cli') {
+      setClaudeCliInstalled(null);
+      return;
+    }
+    // Guard: an older preload (e.g. before an app restart picks up the new IPC)
+    // won't expose this function. Assume installed so we never block a working CLI.
+    const check = window.electronAPI.terminal.isClaudeCliInstalled;
+    if (typeof check !== 'function') {
+      setClaudeCliInstalled(true);
+      return;
+    }
+    let cancelled = false;
+    void check()
+      .then((installed) => {
+        if (!cancelled) setClaudeCliInstalled(installed);
+      })
+      .catch(() => {
+        // On a detection failure, assume installed so we don't block a working CLI.
+        if (!cancelled) setClaudeCliInstalled(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, cliSessionCommitted]);
 
   // ============================================================
   // Confirmation dialogs (ExitPlanMode, AskUserQuestion, ToolPermission)
@@ -2027,7 +2062,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     if (messages.length > 0) return null;
     return (
       <div className="rich-transcript-empty-extras w-full max-w-[640px] flex flex-col items-center gap-6">
-        <InlineTipDisplay />
+        <InlineTipDisplay
+          onInsertPrompt={provider === 'claude-code' ? handleCommandSelect : undefined}
+        />
         {provider === 'claude-code' && (
           <SlashCommandSuggestions
             provider={provider}
@@ -2296,6 +2333,14 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', minHeight: 0 }}
       data-session-id={sessionId}
     >
+      {/* NIM-852: install notice at the top of the transcript when the genuine
+          `claude` CLI isn't installed. Shown in every layout (outside the
+          collapse gate); the raw-terminal drawer below is replaced with the
+          panel variant. */}
+      {provider === 'claude-code-cli' && claudeCliInstalled === false && (
+        <ClaudeCliNotInstalledNotice variant="banner" />
+      )}
+
       {/* Main transcript area - hidden when collapsed.
           claude-code-cli (NIM-806, Phase 3 / B3): the rich transcript renders
           HERE too — proxy-observed assistant turns + user prompts flow into
@@ -2379,7 +2424,23 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
           NOT gated on collapseTranscript (NIM-824): Files layout mode collapses
           the transcript but must keep the terminal reachable — previously the
           whole drawer unmounted and there was no way to get to the TUI. */}
-      {provider === 'claude-code-cli' && cliSessionCommitted && (
+      {provider === 'claude-code-cli' && cliSessionCommitted && claudeCliInstalled === false && (
+        // NIM-852: not installed — render the panel notice in place of the drawer
+        // so the terminal strip never mounts (no spawn / `command not found`).
+        <div
+          className="claude-cli-terminal-drawer claude-cli-terminal-drawer--not-installed"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            flex: '0 0 auto',
+            minHeight: 120,
+            borderTop: '1px solid var(--nim-border)',
+          }}
+        >
+          <ClaudeCliNotInstalledNotice variant="panel" />
+        </div>
+      )}
+      {provider === 'claude-code-cli' && cliSessionCommitted && claudeCliInstalled !== false && (
         <div
           ref={cliTerminalDrawerRef}
           className="claude-cli-terminal-drawer"

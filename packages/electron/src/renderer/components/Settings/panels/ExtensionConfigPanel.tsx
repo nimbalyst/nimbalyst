@@ -4,7 +4,7 @@ import type { ExtensionManifest, ConfigurationProperty } from '@nimbalyst/runtim
 interface ExtensionConfigPanelProps {
   extensionId: string;
   manifest: ExtensionManifest;
-  scope: 'user' | 'project';
+  scope: 'user' | 'organization' | 'project';
   workspacePath?: string;
   onConfigChange?: () => void;
 }

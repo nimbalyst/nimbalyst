@@ -56,6 +56,29 @@ function basePayload(itemId: string, overrides: Partial<TrackerItemPayload> = {}
   };
 }
 
+function schemaModelJson(type = 'epic'): string {
+  return JSON.stringify({
+    type,
+    displayName: 'Epic',
+    description: 'Large cross-project initiative',
+    fields: [
+      { name: 'title', type: 'text', required: true },
+      {
+        name: 'status',
+        type: 'select',
+        options: [
+          { value: 'planned', label: 'Planned' },
+          { value: 'active', label: 'Active' },
+        ],
+      },
+    ],
+    roles: {
+      title: 'title',
+      status: 'status',
+    },
+  });
+}
+
 interface BuiltEngine {
   engine: TrackerSyncEngine;
   persistence: InMemoryTrackerPersistence;
@@ -154,6 +177,62 @@ describe('TrackerSyncEngine (in-memory)', () => {
 
     a.engine.destroy();
     b.engine.destroy();
+  });
+
+  it('syncs custom tracker schemas through outbox, live delta, and late bootstrap', async () => {
+    const server = createFakeServer();
+    const model = schemaModelJson('epic');
+
+    const b = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const bApplied: Array<{ type: string; model: string | null; syncId: number }> = [];
+    b.config.schemaSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => [],
+      applyRemote: async (def) => { bApplied.push(def); },
+    };
+
+    await b.engine.connect();
+    await waitUntil(() => b.engine.getStatus() === 'connected');
+
+    let aPending = [{ type: 'epic', model, deleted: false }];
+    const aApplied: Array<{ type: string; model: string | null; syncId: number }> = [];
+    const a = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    a.config.schemaSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => aPending,
+      applyRemote: async (def) => {
+        aApplied.push(def);
+        aPending = aPending.filter(row => row.type !== def.type);
+      },
+    };
+
+    await a.engine.connect();
+    await waitUntil(() => a.engine.getStatus() === 'connected');
+    await waitUntil(() => bApplied.some(def => def.type === 'epic' && def.model === model));
+
+    expect(server.room.receivedSchemaMutations.map(m => m.schemaType)).toEqual(['epic']);
+    expect(aApplied[0]).toMatchObject({ type: 'epic', model });
+    expect(aPending).toHaveLength(0);
+    expect(bApplied[0]).toMatchObject({ type: 'epic', model });
+    expect(bApplied[0].syncId).toBeGreaterThan(0);
+
+    const c = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const cApplied: Array<{ type: string; model: string | null; syncId: number }> = [];
+    c.config.schemaSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => [],
+      applyRemote: async (def) => { cApplied.push(def); },
+    };
+
+    await c.engine.connect();
+    await waitUntil(() => c.engine.getStatus() === 'connected');
+    await waitUntil(() => cApplied.some(def => def.type === 'epic' && def.model === model));
+
+    expect(cApplied[0].syncId).toBe(bApplied[0].syncId);
+
+    a.engine.destroy();
+    b.engine.destroy();
+    c.engine.destroy();
   });
 
   // ==========================================================================
@@ -847,4 +926,3 @@ describe('TrackerSyncEngine (in-memory)', () => {
     });
   });
 });
-

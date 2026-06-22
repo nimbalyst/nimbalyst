@@ -242,6 +242,89 @@ describe('extractMessageText', () => {
     });
   });
 
+  // Regression coverage for the meta-agent result-capture gap on openai-codex
+  // children: production Codex uses the app-server transport, which persists
+  // notifications as JSON.stringify({ method, params }) with the assistant text
+  // nested under params.item.text (item.type === 'agentMessage'). The previous
+  // extractor only inspected top-level type/item/delta/text, so get_session_result
+  // returned lastResponse: null even though the text was in ai_agent_messages.
+  // Shape source: OpenAICodexProvider.persistence.test.ts:165-174 +
+  // CodexAppServerRawParser.parseItemCompleted (agentMessage -> item.text).
+  describe('Codex app-server transport envelope', () => {
+    it('extracts agentMessage text from item/completed { method, params }', () => {
+      const text = extractMessageText(JSON.stringify({
+        method: 'item/completed',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            type: 'agentMessage',
+            id: 'msg_final',
+            text: 'Commit created via the proposal tool.',
+          },
+        },
+      }));
+      expect(text).toBe('Commit created via the proposal tool.');
+    });
+
+    it('extracts reasoning text from item/completed { method, params }', () => {
+      const text = extractMessageText(JSON.stringify({
+        method: 'item/completed',
+        params: {
+          turnId: 'turn-1',
+          item: {
+            type: 'reasoning',
+            id: 'reason_1',
+            text: 'Considering the diff before applying.',
+          },
+        },
+      }));
+      expect(text).toBe('Considering the diff before applying.');
+    });
+
+    it('extracts agentMessage text from item/updated streaming notification', () => {
+      const text = extractMessageText(JSON.stringify({
+        method: 'item/updated',
+        params: {
+          turnId: 'turn-2',
+          item: {
+            type: 'agentMessage',
+            id: 'msg_stream',
+            text: 'Partial app-server chunk',
+          },
+        },
+      }));
+      expect(text).toBe('Partial app-server chunk');
+    });
+
+    it('returns null for an app-server fileChange tool item (no assistant prose)', () => {
+      const text = extractMessageText(JSON.stringify({
+        method: 'item/completed',
+        params: {
+          turnId: 'turn-1',
+          item: {
+            type: 'fileChange',
+            id: 'fc_1',
+            status: 'completed',
+            changes: [{ path: 'a.ts', kind: { type: 'edit' }, diff: '...' }],
+          },
+        },
+      }));
+      expect(text).toBeNull();
+    });
+
+    it('returns null for an app-server turn/completed notification', () => {
+      const text = extractMessageText(JSON.stringify({
+        method: 'turn/completed',
+        params: {
+          turn: { id: 'turn-1', status: 'completed' },
+          usage: { input_tokens: 100, output_tokens: 50 },
+        },
+      }));
+      expect(text).toBeNull();
+    });
+  });
+
   describe('system reminder filtering', () => {
     it('returns null when metadata.promptType is system_reminder', () => {
       const text = extractMessageText(

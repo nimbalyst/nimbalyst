@@ -117,6 +117,7 @@ export function registerPermissionHandlers(): void {
         permissionMode, // null means not trusted, don't default
         additionalDirectories,
         allowedUrlPatterns,
+        allowAllUsesClassifier: permissionService.getAllowAllUsesClassifier(resolvedPath),
       };
     } catch (error) {
       logger.main.error('[PermissionHandlers] Failed to get workspace permissions:', error);
@@ -269,6 +270,28 @@ export function registerPermissionHandlers(): void {
       return { success: true };
     } catch (error) {
       logger.main.error('[PermissionHandlers] Failed to set permission mode:', error);
+      throw error;
+    }
+  });
+
+  // Toggle the "Allow All" auto-mode classifier opt-in (issue #628)
+  // NOTE: Resolves worktree paths to parent project
+  safeHandle('permissions:setAllowAllUsesClassifier', async (_event, workspacePath: string, enabled: boolean) => {
+    if (!workspacePath) {
+      throw new Error('workspacePath is required');
+    }
+    if (typeof enabled !== 'boolean') {
+      throw new Error('enabled must be a boolean');
+    }
+
+    try {
+      const resolvedPath = await resolveWorkspacePathForPermissions(workspacePath);
+      permissionService.setAllowAllUsesClassifier(resolvedPath, enabled);
+      logger.main.info('[PermissionHandlers] Set allowAllUsesClassifier:', { resolvedPath, enabled });
+      broadcastPermissionChange(resolvedPath);
+      return { success: true };
+    } catch (error) {
+      logger.main.error('[PermissionHandlers] Failed to set allowAllUsesClassifier:', error);
       throw error;
     }
   });

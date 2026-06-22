@@ -25,6 +25,18 @@ const {
 });
 
 vi.mock('electron', () => ({
+  app: {
+    getPath: vi.fn(() => '/tmp'),
+    isPackaged: false,
+    getName: vi.fn(() => 'Nimbalyst'),
+    getVersion: vi.fn(() => '0.0.0-test'),
+    on: vi.fn(),
+    off: vi.fn(),
+    once: vi.fn(),
+    whenReady: vi.fn(() => Promise.resolve()),
+    isReady: vi.fn(() => true),
+    quit: vi.fn(),
+  },
   BrowserWindow: {
     getAllWindows: () => [
       {
@@ -38,12 +50,26 @@ vi.mock('electron', () => ({
 
 vi.mock('../../utils/ipcRegistry', () => ({
   safeHandle: mockSafeHandle,
+  safeOn: vi.fn(),
+  safeOnce: vi.fn(),
 }));
 
 vi.mock('chokidar', () => ({
   default: {
     watch: mockWatch,
   },
+}));
+
+// TrackerSchemaService transitively imports ../../database/initialize (via
+// trackerTypeDefStore -> getDatabase). That module pulls in RepositoryManager
+// and the sync/auth graph, which a neighbor test's leaked mock can deadlock
+// under vitest 4's shared worker module registry -- the dynamic
+// `await import('../TrackerSchemaService')` below would then never resolve and
+// the beforeEach hook times out. Stub getDatabase here so this file owns the
+// state and never depends on that fragile graph. DB writes are best-effort and
+// tolerate a null database, so returning null preserves test intent.
+vi.mock('../../database/initialize', () => ({
+  getDatabase: () => null,
 }));
 
 interface TrackerSchemaServiceModule {

@@ -5,15 +5,15 @@
  */
 
 import React, { useEffect, RefObject } from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import {
   codexUsageAtom,
   codexUsageSessionColorAtom,
   codexUsageWeeklyColorAtom,
   formatResetTime,
-  setCodexUsageIndicatorEnabledAtom,
 } from '../../store/atoms/codexUsageAtoms';
+import { useSetSetting } from '../../hooks/useSetting';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
 
 interface CodexUsagePopoverProps {
@@ -100,7 +100,7 @@ export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
   const usage = useAtomValue(codexUsageAtom);
   const sessionColor = useAtomValue(codexUsageSessionColorAtom);
   const weeklyColor = useAtomValue(codexUsageWeeklyColorAtom);
-  const setUsageIndicatorEnabled = useSetAtom(setCodexUsageIndicatorEnabledAtom);
+  const setUsageIndicatorEnabled = useSetSetting('ai.showCodexUsageIndicator');
   const [isRefreshing, setIsRefreshing] = React.useState(false);
 
   const menu = useFloatingMenu({

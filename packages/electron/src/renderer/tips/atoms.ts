@@ -14,13 +14,6 @@ import { atom } from 'jotai';
 export const activeTipIdAtom = atom<string | null>(null);
 
 /**
- * Whether a tip has already been shown this session.
- * NOT persisted -- resets on every app restart.
- * Enforces the "one tip per app launch" cooldown.
- */
-export const tipShownThisSessionAtom = atom(false);
-
-/**
  * Command atom for requesting a new worktree session from a tip action.
  * AgentMode watches this and performs the actual worktree creation.
  */

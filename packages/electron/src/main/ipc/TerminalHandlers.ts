@@ -6,7 +6,7 @@
  */
 
 import { getTerminalSessionManager } from '../services/TerminalSessionManager';
-import { ensureClaudeCliSession } from '../services/ai/claudeCliLauncherSingleton';
+import { ensureClaudeCliSession, isClaudeCliInstalled } from '../services/ai/claudeCliLauncherSingleton';
 import { submitClaudeCliPromptProduction } from '../services/ai/claudeCliSubmitSingleton';
 import { switchClaudeCliModel } from '../services/ai/claudeCliModelSwitch';
 import type { ClaudeCliDocumentContext } from '../services/ai/claudeCliPromptComposer';
@@ -301,6 +301,15 @@ export function registerTerminalHandlers(): void {
       return ensureClaudeCliSession(payload);
     }
   );
+
+  /**
+   * Whether the genuine `claude` CLI is installed (NIM-852). The renderer calls
+   * this for a claude-code-cli session to show an install notice (and skip the
+   * spawn) instead of producing a cryptic `command not found` in the terminal.
+   */
+  safeHandle('claude-cli:is-installed', async () => {
+    return isClaudeCliInstalled();
+  });
 
   /**
    * Submit a claude-code-cli prompt (NIM-806 — input integration). The genuine

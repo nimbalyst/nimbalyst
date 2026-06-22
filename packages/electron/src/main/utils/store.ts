@@ -16,7 +16,7 @@ import { normalizeCodexProviderConfig, omitModelsField } from '@nimbalyst/runtim
 export type AppTheme = 'dark' | 'light' | 'system' | 'auto' | 'crystal-dark' | string;
 export type { SessionState, SessionWindow } from '../types';
 
-export type CompletionSoundType = 'chime' | 'bell' | 'pop' | 'alert' | 'none';
+export type CompletionSoundType = 'chime' | 'bell' | 'pop' | 'alert' | 'custom' | 'none';
 export type ReleaseChannel = 'stable' | 'alpha';
 export type PreferredTerminalShell = 'auto' | 'pwsh' | 'powershell' | 'git-bash' | 'wsl' | 'cmd';
 export type WorkspaceFileTreeFilter = 'all' | 'markdown' | 'known' | 'git-uncommitted' | 'git-worktree' | 'ai-read' | 'ai-written';
@@ -64,6 +64,11 @@ interface AppStoreSchema {
   // Sound notifications
   completionSoundEnabled?: boolean;
   completionSoundType?: CompletionSoundType;
+  // Absolute path (inside userData/custom-sounds) of the user-supplied
+  // completion sound file, used when completionSoundType === 'custom'.
+  completionSoundCustomPath?: string;
+  // Completion sound volume as a percentage of system volume (0-100).
+  completionSoundVolume?: number;
   // OS notifications
   osNotificationsEnabled?: boolean;
   // Release channel
@@ -372,6 +377,12 @@ export type AgentPermissionMode = 'ask' | 'allow-all' | 'bypass-all' | null;
 export interface AgentPermissions {
   /** Permission mode: null=untrusted, 'ask'=smart permissions, 'allow-all'=auto-approve edits, 'bypass-all'=auto-approve everything */
   permissionMode: AgentPermissionMode;
+  /**
+   * Opt-in (issue #628): when true, "Allow All" (bypass-all) routes agent-mode
+   * Claude Code sessions through the SDK auto-mode classifier instead of
+   * bypassing every operation. Undefined/false = literal allow-all.
+   */
+  allowAllUsesClassifier?: boolean;
 }
 
 export interface AgenticCodingWindowState {
@@ -450,6 +461,10 @@ export interface WorkspaceState {
     updatedAt: number;
   }>;
   trackerSyncPolicies?: Record<string, TrackerSyncModeSetting | TrackerSyncPolicySetting>;
+  // Per-project opt-out for agent tracker tools. When false, McpConfigService
+  // omits the `nimbalyst-trackers` MCP server so the agent gets no tracker_*
+  // tools in this project. Defaults to enabled (undefined === true).
+  trackersEnabled?: boolean;
   // Issue key prefix for tracker items (e.g., "NIM", "APP"). Used for local-only trackers.
   // For synced trackers, the prefix is stored server-side in TrackerRoom metadata.
   issueKeyPrefix?: string;
@@ -1324,6 +1339,36 @@ export function setCompletionSoundType(soundType: CompletionSoundType): void {
   getAppStore().set('completionSoundType', soundType);
 }
 
+export function getCompletionSoundCustomPath(): string | undefined {
+  return getAppStore().get('completionSoundCustomPath');
+}
+
+export function setCompletionSoundCustomPath(soundPath: string | undefined): void {
+  if (soundPath) {
+    getAppStore().set('completionSoundCustomPath', soundPath);
+  } else {
+    getAppStore().delete('completionSoundCustomPath');
+  }
+}
+
+/**
+ * Completion sound volume as a percentage of system volume (0-100).
+ * Defaults to 100 (full volume) so existing users hear no change.
+ */
+export function getCompletionSoundVolume(): number {
+  return clampVolumePercent(getAppStore().get('completionSoundVolume', 100));
+}
+
+export function setCompletionSoundVolume(volumePercent: number): void {
+  getAppStore().set('completionSoundVolume', clampVolumePercent(volumePercent));
+}
+
+/** Clamp an arbitrary input to a valid 0-100 integer percentage. */
+function clampVolumePercent(value: unknown): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? value : 100;
+  return Math.min(100, Math.max(0, Math.round(n)));
+}
+
 // OS Notifications Settings
 export function isOSNotificationsEnabled(): boolean {
   return getAppStore().get('osNotificationsEnabled', true);
@@ -1737,6 +1782,19 @@ export function setSettingsAgentToolsDisabled(disabled: boolean): void {
   getAppStore().set('settingsAgentToolsDisabled', disabled);
 }
 
+// Per-project agent tracker-tools opt-out. The `nimbalyst-trackers` MCP server
+// is on by default; flipping this off makes McpConfigService omit it for this
+// workspace so the agent gets no tracker_* tools. Default true (undefined).
+export function isTrackersAgentToolsEnabled(workspacePath: string): boolean {
+  return getWorkspaceState(workspacePath).trackersEnabled ?? true;
+}
+
+export function setTrackersAgentToolsEnabled(workspacePath: string, enabled: boolean): void {
+  updateWorkspaceState(workspacePath, (state) => {
+    state.trackersEnabled = enabled;
+  });
+}
+
 export function getExtensionConfiguration(extensionId: string): Record<string, unknown> {
   const settings = getExtensionSettings();
   return settings[extensionId]?.configuration ?? {};
@@ -1826,7 +1884,14 @@ export function getAgentPermissions(workspacePath: string): AgentPermissions | u
 
 export function saveAgentPermissions(workspacePath: string, permissions: AgentPermissions): void {
   updateWorkspaceState(workspacePath, (state) => {
-    state.agentPermissions = { permissionMode: permissions.permissionMode };
+    state.agentPermissions = {
+      permissionMode: permissions.permissionMode,
+      // Preserve the "Allow All" classifier opt-in (issue #628). Without this the
+      // field is dropped on every save and the toggle never sticks.
+      ...(permissions.allowAllUsesClassifier !== undefined && {
+        allowAllUsesClassifier: permissions.allowAllUsesClassifier,
+      }),
+    };
   });
 }
 
@@ -1837,7 +1902,14 @@ export function isWorkspaceTrusted(workspacePath: string): boolean {
 
 export function setWorkspaceTrusted(workspacePath: string, trusted: boolean, mode: 'ask' | 'allow-all' | 'bypass-all' = 'ask'): void {
   updateWorkspaceState(workspacePath, (state) => {
-    state.agentPermissions = { permissionMode: trusted ? mode : null };
+    const existing = state.agentPermissions;
+    state.agentPermissions = {
+      permissionMode: trusted ? mode : null,
+      // Preserve the "Allow All" classifier opt-in across trust toggles (issue #628).
+      ...(existing?.allowAllUsesClassifier !== undefined && {
+        allowAllUsesClassifier: existing.allowAllUsesClassifier,
+      }),
+    };
   });
 }
 

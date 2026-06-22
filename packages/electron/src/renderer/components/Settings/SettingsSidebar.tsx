@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAtomValue } from 'jotai';
 import { createPortal } from 'react-dom';
 import { MaterialSymbol, getProviderIcon } from '@nimbalyst/runtime';
-import { useAlphaFeatures } from '../../hooks/useAlphaFeature';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../common/AlphaBadge';
 import { developerModeAtom } from '../../store/atoms/appSettings';
 
@@ -31,6 +30,7 @@ export type SettingsCategory =
   | 'marketplace'
   | 'installed'
   | 'team'
+  | 'org'
   | 'tracker-config'
   | 'github';
 
@@ -41,7 +41,10 @@ interface CategoryGroup {
 }
 
 interface CategoryItem {
-  id: SettingsCategory;
+  // Built-in panels use the strict SettingsCategory union. Extension-contributed
+  // agent providers append entries keyed by their contribution id (a free
+  // string), so the id is widened to accept those.
+  id: SettingsCategory | string;
   name: string;
   icon: React.ReactNode;
   badge?: string | number;
@@ -50,13 +53,18 @@ interface CategoryItem {
   hidden?: boolean;
 }
 
-export type SettingsScope = 'user' | 'project';
+export type SettingsScope = 'user' | 'organization' | 'project';
 
 interface SettingsSidebarProps {
-  selectedCategory: SettingsCategory;
-  onSelectCategory: (category: SettingsCategory) => void;
+  selectedCategory: SettingsCategory | string;
+  onSelectCategory: (category: SettingsCategory | string) => void;
   providerStatus?: Record<string, { enabled: boolean; testStatus?: string }>;
   scope?: SettingsScope;
+  /** Epic H3 P3: org picker for the Organization scope, hosted at the top of the
+   *  sidebar so "which org am I editing" sits with the org admin nav. */
+  orgChoices?: { orgId: string; name: string }[];
+  selectedOrgId?: string | null;
+  onSelectOrg?: (orgId: string) => void;
 }
 
 export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
@@ -64,11 +72,10 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
   onSelectCategory,
   providerStatus = {},
   scope = 'user',
+  orgChoices = [],
+  selectedOrgId = null,
+  onSelectOrg,
 }) => {
-  // Alpha feature flags drive Collaboration group visibility only.
-  // Per-feature panels (Voice Mode, OpenCode, Copilot, Agent Features) are always visible
-  // so users can discover and enable them; the panels themselves gate their controls.
-  const alphaFeatures = useAlphaFeatures(['collaboration']);
   // Database panel exposes the PGLite→SQLite migration. Hidden from non-dev
   // users until we finish internal testing with other devs.
   const developerMode = useAtomValue(developerModeAtom);
@@ -79,6 +86,37 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
     if (status.enabled && status.testStatus === 'error') return 'error';
     return undefined;
   };
+
+  // Extension-contributed agent providers from the main-process
+  // AgentProviderRegistry, so installed agent extensions (e.g. the Gemini
+  // Antigravity extension) appear in this list alongside the built-ins.
+  const [extAgentProviders, setExtAgentProviders] = useState<
+    Array<{ id: string; name: string; icon?: string; status: string }>
+  >([]);
+  useEffect(() => {
+    let cancelled = false;
+    const invoke = window.electronAPI?.invoke;
+    if (!invoke) return;
+    invoke('agent-providers:list')
+      .then((res: { success?: boolean; data?: Array<{ id: string; name: string; icon?: string; status: string }> }) => {
+        if (!cancelled && res?.success && Array.isArray(res.data)) {
+          setExtAgentProviders(res.data);
+        }
+      })
+      .catch(() => {
+        /* registry unavailable; show built-ins only */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const extAgentItems: CategoryItem[] = extAgentProviders.map((p) => ({
+    id: p.id,
+    name: p.name,
+    icon: p.icon ? <MaterialSymbol icon={p.icon} size={16} /> : getProviderIcon(p.id, { size: 16 }),
+    statusDot: p.status === 'active' ? 'success' : p.status === 'denied' ? 'error' : undefined,
+    isAlpha: true,
+  }));
 
   const categoryGroups: CategoryGroup[] = [
     {
@@ -171,6 +209,7 @@ Best for complex coding tasks.`,
           statusDot: getStatusDot('copilot-cli'),
           isAlpha: true,
         },
+        ...extAgentItems,
       ],
     },
     {
@@ -199,6 +238,10 @@ Best for quick edits and tasks that do not require multi-file operations.`,
           icon: getProviderIcon('lmstudio', { size: 16 }),
           statusDot: getStatusDot('lmstudio'),
         },
+        // Extension agent providers (e.g. Gemini) are also surfaced under Chat
+        // Providers per product request; selection routes through the same
+        // extension-agent backend.
+        ...extAgentItems,
       ],
     },
     {
@@ -209,25 +252,39 @@ Best for quick edits and tasks that do not require multi-file operations.`,
           name: 'Agent Permissions',
           icon: <MaterialSymbol icon="shield" size={16} />,
         },
-      ],
-    },
-    ...(alphaFeatures['collaboration'] ? [{
-      title: 'Collaboration',
-      items: [
+        // Tracker config stays project-local. The Team panel stays reachable
+        // here too because it hosts the workspace-centric setup flows (create
+        // team / add this repo to an existing org / "which team does this
+        // workspace sync to").
         {
           id: 'team' as SettingsCategory,
           name: 'Team',
           icon: <MaterialSymbol icon="group" size={16} />,
-          isAlpha: true,
         },
         {
           id: 'tracker-config' as SettingsCategory,
           name: 'Trackers',
           icon: <MaterialSymbol icon="assignment" size={16} />,
-          isAlpha: true,
         },
       ],
-    }] : []),
+    },
+    // Organization scope -- org admin (members, encryption, the project
+    // registry, consolidation) lives here, keyed off the OrgSwitcher.
+    {
+      title: 'Organization',
+      items: [
+        {
+          id: 'org' as SettingsCategory,
+          name: 'Members & Roles',
+          icon: <MaterialSymbol icon="corporate_fare" size={16} />,
+        },
+        {
+          id: 'team' as SettingsCategory,
+          name: 'Security & Projects',
+          icon: <MaterialSymbol icon="group" size={16} />,
+        },
+      ],
+    },
     {
       title: 'GitHub',
       items: [
@@ -271,19 +328,21 @@ Best for quick edits and tasks that do not require multi-file operations.`,
     },
   ];
 
-  // Filter groups based on scope
-  // Project scope: Show Project group, Agent/Chat Providers (for overrides), Extensions
-  // User scope: Show Agent/Chat Providers, Application, Extensions (not Project)
-  const filteredGroups = scope === 'project'
-    ? [
-        categoryGroups.find(g => g.title === 'Project'),
-        categoryGroups.find(g => g.title === 'Collaboration'),
-        categoryGroups.find(g => g.title === 'Agent Providers'),
-        categoryGroups.find(g => g.title === 'Chat Providers'),
-        categoryGroups.find(g => g.title === 'GitHub'),
-        categoryGroups.find(g => g.title === 'Extensions'),
-      ].filter((g): g is CategoryGroup => g != null)
-    : categoryGroups.filter(g => g.title !== 'Project' && g.title !== 'Collaboration');
+  // Filter groups based on scope (Epic H3 P3)
+  // Organization scope: only the Organization group (org admin).
+  // Project scope: Project group, Agent/Chat Providers (for overrides), GitHub, Extensions.
+  // User scope: Agent/Chat Providers, Application, Extensions (not Project, not Organization).
+  const filteredGroups = scope === 'organization'
+    ? [categoryGroups.find(g => g.title === 'Organization')].filter((g): g is CategoryGroup => g != null)
+    : scope === 'project'
+      ? [
+          categoryGroups.find(g => g.title === 'Project'),
+          categoryGroups.find(g => g.title === 'Agent Providers'),
+          categoryGroups.find(g => g.title === 'Chat Providers'),
+          categoryGroups.find(g => g.title === 'GitHub'),
+          categoryGroups.find(g => g.title === 'Extensions'),
+        ].filter((g): g is CategoryGroup => g != null)
+      : categoryGroups.filter(g => g.title !== 'Project' && g.title !== 'Organization');
 
   const [tooltip, setTooltip] = useState<{ text: string; top: number; left: number } | null>(null);
 
@@ -303,6 +362,27 @@ Best for quick edits and tasks that do not require multi-file operations.`,
   return (
     <div className="settings-sidebar w-[240px] shrink-0 border-r border-[var(--nim-border)] bg-[var(--nim-bg)] overflow-y-auto">
       <div className="settings-sidebar-content p-3">
+        {/* Epic H3 P3: Organization picker — the org these settings apply to.
+            Lives here (not in the global header) so it reads as part of the org
+            admin surface, directly above Members & Roles / Security & Projects. */}
+        {scope === 'organization' && orgChoices.length > 0 && (
+          <div className="settings-sidebar-org-picker mb-4" data-testid="settings-org-picker">
+            <label className="block px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--nim-text-muted)]">
+              Organization
+            </label>
+            <select
+              value={selectedOrgId ?? ''}
+              onChange={(e) => onSelectOrg?.(e.target.value)}
+              className="settings-org-select w-full text-[13px] bg-[var(--nim-bg-tertiary)] border border-[var(--nim-border)] rounded-md px-2 py-1.5 text-[var(--nim-text)] cursor-pointer"
+              title="Organization these settings apply to"
+              data-testid="settings-org-select"
+            >
+              {orgChoices.map((o) => (
+                <option key={o.orgId} value={o.orgId}>{o.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
         {filteredGroups.map((group) => (
           <div key={group.title} className="settings-sidebar-group mb-4">
             <div className="settings-sidebar-group-title flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--nim-text-muted)]">

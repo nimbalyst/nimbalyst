@@ -17,7 +17,7 @@ On this machine, those Gradle tasks passed when `JAVA_HOME` was set to `/Users/g
 ## Expected Next Additions
 
 - Room migration tests
-- WebSocket sync integration tests
+- WebSocket sync integration tests (scaffolded and gated — see "Sync verification (gated)" below)
 - emulator smoke tests for the native shell and transcript host
 - emulator verification for `nimbalyst://pair` and `nimbalyst://auth/callback` deep links
 - emulator verification for queued prompt submission and queue clearing
@@ -28,6 +28,83 @@ On this machine, those Gradle tasks passed when `JAVA_HOME` was set to `/Users/g
 - emulator verification for desktop settings/model sync display
 - device verification for notification permission flow and FCM token registration once Firebase config is installed
 - worker-env verification for FCM service-account secrets before Android push delivery
+
+## Sync verification (gated)
+
+`app/src/test/java/com/nimbalyst/app/sync/SyncCollabIntegrationTest.kt` drives the
+real `SyncManager` public API (index-room join + snapshot, session-room join,
+queued-prompt submit, session-control round-trip) against a LIVE
+`nimbalyst-collab` Durable-Object sync server.
+
+These are plain JVM (Robolectric) tests, not instrumented tests, so the gating
+can read host environment variables and check for the sibling collab-server
+checkout. They mirror the electron collab specs' `RUN_COLLAB_TESTS=1` /
+`COLLAB_SERVER_PATH` model (see `.github/workflows/ci.yml`, the
+`tracker-sync-collab.spec.ts` / `tracker-content-collab.spec.ts` gate).
+
+By default the `nimbalyst-collab` repo is NOT checked out next to this monorepo,
+so every test in that class is reported as **SKIPPED** (via JUnit `assumeTrue`)
+and CI stays green. A test runs only when BOTH:
+
+1. `RUN_COLLAB_TESTS=1` is set, AND
+2. the collab-server directory exists — `COLLAB_SERVER_PATH` if set, otherwise
+   the sibling default `../nimbalyst-collab` (relative to the monorepo root).
+
+### Local run recipe
+
+1. Check out `nimbalyst-collab` as a sibling of this repo and install it:
+
+   ```bash
+   git clone <nimbalyst-collab-url> ../nimbalyst-collab
+   cd ../nimbalyst-collab && npm install
+   ```
+
+   (Use `COLLAB_SERVER_PATH` to point at a checkout elsewhere; an absolute path
+   is used as-is, a relative one resolves from the monorepo root.)
+
+2. Start the collab dev server (in the `nimbalyst-collab` checkout). Note its
+   WebSocket URL/port and set `COLLAB_WS_URL` to match. The harness default is
+   `ws://127.0.0.1:8787`, a placeholder — adjust it to the actual dev-server
+   port.
+
+3. Provide the live credentials the future harness wires up — the same paired,
+   authenticated shape the desktop hands the mobile app:
+
+   | Env var | Purpose |
+   | --- | --- |
+   | `RUN_COLLAB_TESTS` | Must be `1` to un-skip the class. |
+   | `COLLAB_SERVER_PATH` | Optional override for the sibling repo path (default `../nimbalyst-collab`). |
+   | `COLLAB_WS_URL` | Collab server WebSocket base URL (default `ws://127.0.0.1:8787`). |
+   | `COLLAB_AUTH_JWT` | Valid team-scoped session JWT the room auth accepts. |
+   | `COLLAB_SESSION_TOKEN` | Stytch session token used for JWT refresh. |
+   | `COLLAB_ENCRYPTION_SEED` | E2E encryption seed (must match the desktop's so payloads decrypt). |
+   | `COLLAB_AUTH_USER_ID` | Auth/crypto user id (JWT `sub`); also derives the AES key and routing. |
+   | `COLLAB_ORG_ID` | Org id used to build the room id (`org:<org>:user:<user>:index`). |
+
+4. Run just the gated class:
+
+   ```bash
+   cd packages/android
+   RUN_COLLAB_TESTS=1 \
+   COLLAB_WS_URL=ws://127.0.0.1:8787 \
+   COLLAB_AUTH_JWT=... COLLAB_SESSION_TOKEN=... COLLAB_ENCRYPTION_SEED=... \
+   COLLAB_AUTH_USER_ID=... COLLAB_ORG_ID=... \
+   ./gradlew :app:testDebugUnitTest --tests 'com.nimbalyst.app.sync.SyncCollabIntegrationTest'
+   ```
+
+When un-gated, the tests await real `SyncManager` state transitions inside a
+timeout: if the server is unreachable or rejects the credentials, the await
+times out and the test FAILS loudly rather than passing vacuously. The
+live-round-trip assertions are intentionally minimal/TODO-marked scaffolding —
+the join/submit calls are real, and the deeper assertions (decrypted snapshot
+contents, desktop-side echo) are to be fleshed out against a live server.
+
+Known potential hurdle for the live run: `PairingStore` uses
+`EncryptedSharedPreferences` + the Android Keystore. If Robolectric cannot
+initialize the Keystore in your environment, `setUp` will fail at
+`PairingStore(context)` (a setup failure unrelated to sync). If that happens,
+register a Keystore shadow (or stand up a test-only pairing store) — this only
+affects the un-gated live run, never the default skipped CI path.
 
 ## Manual Smoke Check
 

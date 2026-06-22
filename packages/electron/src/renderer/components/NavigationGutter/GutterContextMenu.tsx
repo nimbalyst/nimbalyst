@@ -18,6 +18,7 @@ const BUTTON_META: Record<HideableGutterButton, { label: string; icon: string }>
   'feedback':       { label: 'Feedback',       icon: 'feedback' },
   'claude-usage':   { label: 'Claude Usage',   icon: 'speed' },
   'codex-usage':    { label: 'Codex Usage',    icon: 'speed' },
+  'gemini-usage':   { label: 'Gemini Usage',   icon: 'gemini' },
   'extension-dev':  { label: 'Extension Dev',  icon: 'extension' },
 };
 

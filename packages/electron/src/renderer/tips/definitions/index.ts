@@ -20,6 +20,7 @@ import { mobileKeepAwakeTip } from './mobile-keep-awake';
 import { mobilePairedTip } from './mobile-paired';
 import { mockupDiscoverTip } from './mockup-discover';
 import { quickOpenTip } from './quick-open';
+import { sessionCleanupTip } from './session-cleanup';
 import { sessionSharedTip } from './session-shared';
 import { spreadsheetDiscoverTip } from './spreadsheet-discover';
 import { themeExploreTip } from './theme-explore';
@@ -52,4 +53,5 @@ export const tips: TipDefinition[] = [
   wakeupTip,
   actionPromptsTip,
   lightningInterruptTip,
+  sessionCleanupTip,
 ];

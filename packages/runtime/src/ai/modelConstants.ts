@@ -297,6 +297,23 @@ export const CLAUDE_CODE_VARIANTS_WITH_1M: readonly ClaudeCodeVariant[] = [
   'opus-4-6',
 ];
 
+/**
+ * Safe silent fallback for the Claude Agent providers (#631 / NIM-848).
+ *
+ * Billing safety: 1M context is a PAID add-on, derived purely from a `-1m`
+ * model string (which becomes `model[1m]` and triggers the SDK's 1M beta).
+ * Whenever a session's model is unexpectedly empty/lost, resolution must fall
+ * back to a STANDARD 200k model — never a `-1m` variant — so we never silently
+ * bill the user for 1M context they didn't choose. `claude-code:opus` (plain
+ * Opus) windows at 200k client-side; no `[1m]` suffix is emitted.
+ *
+ * This is intentionally distinct from the user-facing default
+ * (`DEFAULT_MODELS['claude-code']`, currently `opus-1m`): new installs may
+ * still default to the 1M tier as a visible, deliberate choice, but the
+ * INVISIBLE fallback must never be a paid model.
+ */
+export const CLAUDE_CODE_SAFE_FALLBACK_MODEL = 'claude-code:opus' as const;
+
 export const DEFAULT_MODELS = {
   claude: 'claude:claude-opus-4-8',
   openai: 'openai:gpt-5.5',

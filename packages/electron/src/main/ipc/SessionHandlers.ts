@@ -1358,7 +1358,8 @@ export async function registerSessionHandlers() {
                                     item: {
                                         id: codexLookupId.itemId,
                                         type: 'mcp_tool_call',
-                                        server: 'nimbalyst-mcp',
+                                        // git_commit_proposal is served by the eager core `nimbalyst`.
+                                        server: 'nimbalyst',
                                         tool: 'developer_git_commit_proposal',
                                         result: {
                                             action: response.action,

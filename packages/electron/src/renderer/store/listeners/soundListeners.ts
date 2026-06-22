@@ -8,7 +8,9 @@
  * Call initSoundListeners() once at app startup.
  */
 
+import { store } from '@nimbalyst/runtime/store';
 import { getSoundPlayer } from '../../services/SoundPlayer';
+import { notificationSettingsAtom } from '../atoms/appSettings';
 
 let initialized = false;
 
@@ -20,8 +22,10 @@ export function initSoundListeners(): () => void {
 
   const cleanups: Array<() => void> = [];
 
-  const u1 = window.electronAPI?.on?.('play-completion-sound', (soundType: string) => {
-    getSoundPlayer().playSound(soundType as any).catch((err: unknown) => {
+  const u1 = window.electronAPI?.on?.('play-completion-sound', (soundType: string, volumePercent?: number) => {
+    // volumePercent is 0-100 from the main process; convert to a 0-1 gain multiplier.
+    const volume = typeof volumePercent === 'number' ? volumePercent / 100 : 1;
+    getSoundPlayer().playSound(soundType as any, volume).catch((err: unknown) => {
       console.error('Failed to play completion sound:', err);
     });
   });
@@ -33,6 +37,13 @@ export function initSoundListeners(): () => void {
     });
   });
   if (typeof u2 === 'function') cleanups.push(u2);
+
+  // Keep the custom-sound name in sync when another window changes it.
+  const u3 = window.electronAPI?.on?.('completion-sound:custom-changed', (payload: { fileName: string | null }) => {
+    const fileName = payload?.fileName ?? null;
+    store.set(notificationSettingsAtom, (prev) => ({ ...prev, completionSoundCustomName: fileName }));
+  });
+  if (typeof u3 === 'function') cleanups.push(u3);
 
   return () => {
     initialized = false;

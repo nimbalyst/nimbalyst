@@ -135,18 +135,19 @@ describe('resolveImmediateToolDecision', () => {
   // Promise never resolved, and the SDK surfaced "user cancelled MCP tool
   // call" so the kanban board appeared broken.
   describe('tracker MCP tools are in INTERNAL_MCP_TOOLS allowlist (#236)', () => {
+    // Tracker CRUD lives on the deferred `nimbalyst-trackers` server.
     const expectedTrackerTools = [
-      'mcp__nimbalyst-mcp__tracker_list',
-      'mcp__nimbalyst-mcp__tracker_get',
-      'mcp__nimbalyst-mcp__tracker_list_types',
-      'mcp__nimbalyst-mcp__tracker_create',
-      'mcp__nimbalyst-mcp__tracker_update',
-      'mcp__nimbalyst-mcp__tracker_link_session',
-      'mcp__nimbalyst-mcp__tracker_unlink_session',
-      'mcp__nimbalyst-mcp__tracker_link_file',
-      'mcp__nimbalyst-mcp__tracker_add_comment',
-      'mcp__nimbalyst-mcp__tracker_define_type',
-      'mcp__nimbalyst-mcp__tracker_delete_type',
+      'mcp__nimbalyst-trackers__tracker_list',
+      'mcp__nimbalyst-trackers__tracker_get',
+      'mcp__nimbalyst-trackers__tracker_list_types',
+      'mcp__nimbalyst-trackers__tracker_create',
+      'mcp__nimbalyst-trackers__tracker_update',
+      'mcp__nimbalyst-trackers__tracker_link_session',
+      'mcp__nimbalyst-trackers__tracker_unlink_session',
+      'mcp__nimbalyst-trackers__tracker_link_file',
+      'mcp__nimbalyst-trackers__tracker_add_comment',
+      'mcp__nimbalyst-trackers__tracker_define_type',
+      'mcp__nimbalyst-trackers__tracker_delete_type',
     ];
 
     for (const toolName of expectedTrackerTools) {
@@ -205,12 +206,12 @@ describe('resolveImmediateToolDecision', () => {
       expect(result).toBeNull();
     });
 
-    it('still auto-allows the prior internal tools (regression guard)', async () => {
-      // Make sure adding the tracker entries did not remove or break the
-      // existing internal tools.
-      expect(INTERNAL_MCP_TOOLS).toContain('mcp__nimbalyst-session-naming__update_session_meta');
-      expect(INTERNAL_MCP_TOOLS).toContain('mcp__nimbalyst-mcp__display_to_user');
-      expect(INTERNAL_MCP_TOOLS).toContain('mcp__nimbalyst-mcp__capture_editor_screenshot');
+    it('still auto-allows the core internal tools (regression guard)', async () => {
+      // Make sure the tracker entries did not remove or break the core internal
+      // tools (now on the eager `nimbalyst` server).
+      expect(INTERNAL_MCP_TOOLS).toContain('mcp__nimbalyst__update_session_meta');
+      expect(INTERNAL_MCP_TOOLS).toContain('mcp__nimbalyst__display_to_user');
+      expect(INTERNAL_MCP_TOOLS).toContain('mcp__nimbalyst__capture_editor_screenshot');
     });
   });
 

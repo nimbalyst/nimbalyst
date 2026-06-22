@@ -44,6 +44,10 @@ We track these separately in `ClaudeCodeProvider.ts`:
 - **`usageData`** -- general usage tracking, gets overwritten by cumulative `result.usage` at the end of a turn
 - **`lastAssistantUsage`** -- only set from `assistant` chunks, never overwritten by the result chunk. This is what we use for context fill.
 
+## Live (Mid-Turn) Updates
+
+Context fill is surfaced **per assistant step**, not just at turn end. Every `assistant` chunk carries per-step `usage`; the provider emits a lightweight `context_usage` StreamChunk (carrying `contextFillTokens` only) for each one, and `MessageStreamingHandler` updates **only** `currentContext` from it and fires `ai:tokenUsageUpdated`. Cumulative input/output counters stay on the `complete` chunk so the live updates can't double-count. Without this, a long agentic turn (many tool calls over minutes) shows no indicator movement until the final `result` chunk. See NIM-868.
+
 References:
 - [Claude Agent SDK cost tracking docs](https://platform.claude.com/docs/en/agent-sdk/cost-tracking)
 - [GitHub issue #66](https://github.com/anthropics/claude-agent-sdk-typescript/issues/66) on cumulative vs per-step usage
@@ -72,7 +76,9 @@ The next real user message will produce a fresh `assistant` response with accura
 
 ## Subagents (Task Tool)
 
-Subagents run as **separate SDK conversations** with their own session IDs. Their `assistant` chunks are logged by `TeammateManager`, not the main streaming loop. Only the parent session's assistant messages set `lastAssistantUsage`, so subagent usage never contaminates the parent's context fill calculation.
+Subagents run as **separate SDK conversations** with their own session IDs, but the SDK relays their `assistant` chunks back through the **same** iterator, tagged with `parent_tool_use_id`. A subagent's context is much smaller than the lead's, so if its per-step usage reached the context-fill calc the live indicator would bounce between the lead's large context and the subagent's small one (NIM-868).
+
+`ClaudeCodeTranscriptAdapter` therefore **skips per-step `usage` items when `parent_tool_use_id` is set** -- the same guard the `session_id` capture uses. Only the parent session's assistant messages set `lastAssistantUsage` / emit `context_usage`, so subagent usage never contaminates the parent's context fill.
 
 After a subagent completes, its tool_result is added to the parent's conversation. The parent's next `assistant` message correctly reflects the enlarged context (including the subagent result).
 

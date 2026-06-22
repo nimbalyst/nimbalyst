@@ -23,6 +23,7 @@ import {
   type VirtualElement,
 } from '@floating-ui/react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import { OrgSwitcher } from './OrgSwitcher';
 import {
   multiProjectModeAtom,
   openProjectsAtom,
@@ -403,6 +404,8 @@ export function ProjectRail() {
 
   return (
     <nav className="project-rail" data-testid="project-rail" aria-label="Open projects">
+      {/* Epic H1: org switcher sits above the project switcher. */}
+      <OrgSwitcher />
       {openProjects.map((project) => {
         const activity = activitySummary.get(project.path);
         return (

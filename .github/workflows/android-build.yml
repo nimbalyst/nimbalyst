@@ -1,0 +1,144 @@
+# Android Build
+#
+# Builds the Android app's signed release APK on Linux CI.
+#
+# Signing is OPTIONAL. The release keystore is decoded from a base64 GitHub
+# secret only when that secret is present; with no secret the build still runs
+# and produces an UNSIGNED release APK (build.gradle.kts sets
+# hasReleaseKeystore = false when the keystore file is absent). This keeps
+# forks and secret-less PRs green.
+#
+# Google Play publishing is intentionally OUT OF SCOPE here. This workflow only
+# builds, unit-tests, asserts the bundled transcript, and uploads the APK as an
+# artifact.
+
+name: Android Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/android/**'
+      - 'packages/runtime/**'
+      - '.github/workflows/android-build.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/android/**'
+      - 'packages/runtime/**'
+      - '.github/workflows/android-build.yml'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  android-build:
+    name: Android Build
+    runs-on: ubuntu-latest
+
+    # Surface the optional signing secret as a job-level env var. GitHub does
+    # not allow `secrets` in a step `if:`, but a job-level `env` IS available in
+    # step-level `if:`, so the decode step below guards on `env.ANDROID_KEYSTORE_BASE64`.
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform and build-tools
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Build transcript bundle
+        run: npm run android:build:transcript
+
+      - name: Verify transcript bundle exists
+        run: |
+          if [ ! -f "packages/android/dist-transcript/transcript.html" ]; then
+            echo "Error: transcript.html not found in packages/android/dist-transcript/"
+            exit 1
+          fi
+          if [ ! -d "packages/android/dist-transcript/assets" ]; then
+            echo "Error: assets folder not found in packages/android/dist-transcript/"
+            exit 1
+          fi
+          echo "Transcript bundle built successfully"
+          du -sh packages/android/dist-transcript
+          du -sh packages/android/dist-transcript/assets
+
+      # Optional: decode the release keystore only when the secret is present.
+      # `env.ANDROID_KEYSTORE_BASE64` resolves from the job-level env above; an
+      # absent secret yields an empty string and this step is skipped.
+      - name: Decode release keystore
+        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > packages/android/app/ci-release.keystore
+          echo "Decoded release keystore"
+
+      # The transcript bundle (built above) MUST exist before assembleRelease:
+      # preBuild -> syncTranscriptAssets throws if packages/android/dist-transcript
+      # is missing. This single step always runs (signed when the keystore was
+      # decoded, unsigned otherwise), so secret-less builds stay green.
+      - name: Run unit tests and assemble release
+        working-directory: packages/android
+        env:
+          NIMBALYST_ANDROID_KEYSTORE: ${{ github.workspace }}/packages/android/app/ci-release.keystore
+          NIMBALYST_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          NIMBALYST_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          NIMBALYST_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease
+
+      # When a keystore secret was supplied, prove the release APK is actually
+      # signed. Without this a future signing regression (renamed secret, wrong
+      # env var) would silently ship an unsigned APK while the job stays green.
+      - name: Verify release APK is signed
+        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          APK_PATH=$(find packages/android/app/build/outputs/apk/release -name "*.apk" -type f | head -n 1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -n 1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "Error: apksigner not found in build-tools"
+            exit 1
+          fi
+          "$APKSIGNER" verify --verbose "$APK_PATH"
+          echo "Release APK signature verified"
+
+      - name: Verify transcript bundle in APK
+        run: |
+          APK_PATH=$(find packages/android/app/build/outputs/apk/release -name "*.apk" -type f | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: Could not find built release APK"
+            exit 1
+          fi
+          echo "Inspecting APK: $APK_PATH"
+          if ! unzip -l "$APK_PATH" | grep -q "assets/transcript-dist/transcript.html"; then
+            echo "Error: assets/transcript-dist/transcript.html not found inside APK"
+            unzip -l "$APK_PATH"
+            exit 1
+          fi
+          echo "Transcript bundle successfully included in APK"
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-apk
+          path: packages/android/app/build/outputs/apk/release/*.apk

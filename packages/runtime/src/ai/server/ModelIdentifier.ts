@@ -31,6 +31,35 @@ export class ModelIdentifier {
   }
 
   /**
+   * Provider ids contributed by installed extensions (e.g.
+   * "antigravity-gemini-agent"). These are not part of the static
+   * AI_PROVIDER_TYPES union but are valid at runtime once an extension
+   * registers them. Populated per-process: main from the AgentProviderRegistry
+   * at extension load, renderer from agent-providers:list at app init. Without
+   * this, tryParse() returns null for an extension model id and provider
+   * derivation falls back to claude-code.
+   */
+  private static EXTENSION_PROVIDERS = new Set<string>();
+
+  static registerExtensionProvider(id: string): void {
+    if (id) ModelIdentifier.EXTENSION_PROVIDERS.add(id);
+  }
+
+  /**
+   * Replace the entire set of known extension provider ids. Use this when the
+   * installed/enabled extension set changes (load, re-scan, disable) so the set
+   * tracks reality: ids gone from `ids` stop resolving, which lets a stale
+   * model id whose provider was removed be detected via `tryParse(...) === null`.
+   */
+  static setExtensionProviders(ids: string[]): void {
+    ModelIdentifier.EXTENSION_PROVIDERS = new Set(ids.filter(Boolean));
+  }
+
+  static isExtensionProvider(id: string): boolean {
+    return ModelIdentifier.EXTENSION_PROVIDERS.has(id);
+  }
+
+  /**
    * The canonical string format: "provider:model"
    * Use this for storage and UI display.
    */
@@ -114,9 +143,20 @@ export class ModelIdentifier {
    * Validates that the combination is valid.
    */
   static create(provider: AIProviderType, model: string): ModelIdentifier {
-    // Validate provider
-    if (!AI_PROVIDER_TYPES.includes(provider)) {
+    // Validate provider. Extension-contributed providers are valid at runtime
+    // once registered via registerExtensionProvider, even though they are not
+    // in the static AI_PROVIDER_TYPES union.
+    if (!AI_PROVIDER_TYPES.includes(provider) && !ModelIdentifier.EXTENSION_PROVIDERS.has(provider)) {
       throw new Error(`Invalid provider: ${provider}`);
+    }
+
+    // Extension providers accept any model id; skip the built-in model
+    // validation below and construct directly.
+    if (!AI_PROVIDER_TYPES.includes(provider)) {
+      if (!model) {
+        throw new Error(`Model is required for provider: ${provider}`);
+      }
+      return new ModelIdentifier(provider, model);
     }
 
     // Validate model for provider
