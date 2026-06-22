@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Personal docs sync no longer overwrites newer local edits (or an open editor's unsaved changes) with an older synced copy.
 - "Commit with AI" in a worktree now proposes all uncommitted changes in the worktree, not just the current session's edits.
 - Claude Code CLI sessions now show an install link when the Claude Code CLI isn't installed, instead of a cryptic terminal error.
+- Commit with AI (and other in-app git actions) now run hooks with your shell PATH, so husky hooks that call yarn/node no longer fail with "command not found". (#643)
 - Stop the AskUserQuestion widget from crashing when a question is missing its options.
 - Deleting a custom tracker type no longer fails on the SQLite backend.
 - Launching a sibling session from a normal session no longer moves it (and the new session) into the Meta Agent group in the session list.

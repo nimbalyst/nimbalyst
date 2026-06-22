@@ -11,6 +11,7 @@ import { existsSync } from 'fs';
 import { dirname, join, relative, isAbsolute, resolve } from 'path';
 import { gitOperationLock } from '../services/GitOperationLock';
 import { executeGitCommit } from '../services/GitCommitService';
+import { getGitSubprocessEnv, simpleGitWithHookEnv } from '../services/gitEnv';
 import { safeHandle } from '../utils/ipcRegistry';
 import { findGitRootForFile } from '../services/GitStatusService';
 import { isFileInWorkspaceOrWorktree } from '../utils/workspaceDetection';
@@ -285,7 +286,7 @@ export function registerGitHandlers(): void {
 
       return gitOperationLock.withLock(workspacePath, 'git:push', async () => {
         try {
-          const git: SimpleGit = simpleGit(workspacePath);
+          const git: SimpleGit = simpleGitWithHookEnv(workspacePath);
           const status = await git.status();
           const branch = normalizeCurrentBranch(status.current);
           if (!branch || branch === 'HEAD') {
@@ -326,7 +327,7 @@ export function registerGitHandlers(): void {
 
       return gitOperationLock.withLock(workspacePath, 'git:pull', async () => {
         try {
-          const git: SimpleGit = simpleGit(workspacePath);
+          const git: SimpleGit = simpleGitWithHookEnv(workspacePath);
           const status = await git.status();
           const branch = normalizeCurrentBranch(status.current);
           if (!branch || branch === 'HEAD') {
@@ -393,7 +394,7 @@ export function registerGitHandlers(): void {
 
       return gitOperationLock.withLock(workspacePath, 'git:rebase', async () => {
         try {
-          const git: SimpleGit = simpleGit(workspacePath);
+          const git: SimpleGit = simpleGitWithHookEnv(workspacePath);
 
           if (options.action === 'continue') {
             await git.rebase(['--continue']);
@@ -469,7 +470,7 @@ export function registerGitHandlers(): void {
       if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
 
       try {
-        const git: SimpleGit = simpleGit(workspacePath);
+        const git: SimpleGit = simpleGitWithHookEnv(workspacePath);
         const status = await git.status();
         const targetBranch = branch || normalizeCurrentBranch(status.current);
         if (!targetBranch || targetBranch === 'HEAD') {
@@ -524,7 +525,7 @@ export function registerGitHandlers(): void {
 
       return gitOperationLock.withLock(workspacePath, 'git:cherry-pick', async () => {
         try {
-          const git: SimpleGit = simpleGit(workspacePath);
+          const git: SimpleGit = simpleGitWithHookEnv(workspacePath);
           await git.raw(['cherry-pick', hash]);
           return { success: true };
         } catch (error) {
@@ -980,6 +981,7 @@ export function registerGitHandlers(): void {
     ): Promise<{ success: boolean; commitHash?: string; commitDate?: string; error?: string }> => {
       return executeGitCommit(workspacePath, message, filesToStage, {
         logContext: '[git:commit]',
+        env: getGitSubprocessEnv(),
       });
     }
   );

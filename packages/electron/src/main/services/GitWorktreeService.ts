@@ -13,6 +13,7 @@
  */
 
 import simpleGit, { SimpleGit } from 'simple-git';
+import { simpleGitWithHookEnv } from './gitEnv';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ulid } from 'ulid';
@@ -1356,7 +1357,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
   private async commitChangesImpl(worktreePath: string, message: string, files?: string[]): Promise<CommitInfo> {
     logger.info('Committing changes', { worktreePath, message, fileCount: files?.length });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = simpleGitWithHookEnv(worktreePath);
 
     try {
       // CRITICAL: Check git state before committing
@@ -1449,8 +1450,8 @@ ${newLines.map(line => '+' + line).join('\n')}`;
   private async mergeToMainImpl(worktreePath: string, mainRepoPath: string): Promise<MergeResult> {
     logger.info('Merging worktree to main', { worktreePath, mainRepoPath });
 
-    const worktreeGit: SimpleGit = simpleGit(worktreePath);
-    const mainGit: SimpleGit = simpleGit(mainRepoPath);
+    const worktreeGit: SimpleGit = simpleGitWithHookEnv(worktreePath);
+    const mainGit: SimpleGit = simpleGitWithHookEnv(mainRepoPath);
 
     try {
       // CRITICAL: Check git state before any operations
@@ -1961,7 +1962,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
   }> {
     logger.info('Rebasing worktree from base branch', { worktreePath, baseBranch });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = simpleGitWithHookEnv(worktreePath);
 
     try {
       // CRITICAL: Check git state before any operations
@@ -2379,7 +2380,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
   private async squashCommitsImpl(worktreePath: string, commitHashes: string[], message: string): Promise<string> {
     logger.info('Squashing commits', { worktreePath, commitCount: commitHashes.length });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = simpleGitWithHookEnv(worktreePath);
 
     // Create backup branch name with timestamp
     const backupBranchName = `backup-before-squash-${Date.now()}`;

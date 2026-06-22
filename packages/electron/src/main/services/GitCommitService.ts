@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import { isAbsolute, join, relative } from 'path';
 import simpleGit, { SimpleGit } from 'simple-git';
 import { gitOperationLock } from './GitOperationLock';
+import { GIT_INHERITED_ENV_UNSAFE } from './gitInheritedEnvUnsafe';
 
 export interface GitCommitExecutionResult {
   success: boolean;
@@ -75,6 +76,13 @@ export async function executeGitCommit(
     logContext?: string;
     /** Tuning for index.lock contention backoff. Defaults to 5 retries from 100ms. */
     lockRetry?: { maxRetries?: number; baseDelayMs?: number };
+    /**
+     * Environment for the git subprocess (and any hooks it runs). Production callers
+     * pass an enhanced env (see getGitSubprocessEnv) so husky hooks invoking nvm/Homebrew
+     * binaries like `yarn` resolve, since GUI-launched apps don't inherit the shell PATH.
+     * When omitted, git inherits process.env as usual.
+     */
+    env?: Record<string, string>;
   }
 ): Promise<GitCommitExecutionResult> {
   const logContext = options?.logContext || '[git:commit]';
@@ -104,7 +112,9 @@ export async function executeGitCommit(
         await delay(backoffMs);
       }
       try {
-        const git: SimpleGit = simpleGit(workspacePath);
+        const git: SimpleGit = options?.env
+          ? simpleGit(workspacePath, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(options.env)
+          : simpleGit(workspacePath);
         const repoHasCommits = await hasCommits(git);
         // log.info(`${logContext} Starting commit in ${workspacePath} with ${filesToStage?.length || 0} files (hasCommits: ${repoHasCommits})`);
 
