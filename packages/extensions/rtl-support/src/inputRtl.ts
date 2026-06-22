@@ -11,14 +11,20 @@ import { detectDirection } from './detection';
 import type { RtlSettings } from './settings';
 import { debug } from './debug';
 
-/** Selectors for Nimbalyst composer input fields */
-const INPUT_SELECTORS = [
+/**
+ * Selectors for Nimbalyst composer input fields, combined into a single
+ * comma-separated selector so each DOM mutation costs one matches() +
+ * one querySelectorAll() rather than five. The observer watches document.body
+ * (composers mount/unmount), so this fires on every app-wide mutation,
+ * including token streaming — keeping the per-fire cost low matters.
+ */
+const INPUT_SELECTOR = [
   'textarea',
   'input[type="text"]',
   'input[type="search"]',
   '[contenteditable="true"]',
   '[role="textbox"]',
-];
+].join(',');
 
 let observer: MutationObserver | null = null;
 let activeInputs: Set<HTMLElement> = new Set();
@@ -52,13 +58,31 @@ function attachInputListeners(el: HTMLElement): void {
   debug('attached input listener', el.tagName);
 }
 
+function detachInputListeners(el: HTMLElement): void {
+  if (!activeInputs.has(el)) return;
+  activeInputs.delete(el);
+  el.removeEventListener('input', handleInput);
+  debug('detached input listener', el.tagName);
+}
+
 function scanForInputs(root: HTMLElement): void {
-  for (const selector of INPUT_SELECTORS) {
-    try {
-      if (root.matches(selector)) attachInputListeners(root);
-      root.querySelectorAll<HTMLElement>(selector).forEach(attachInputListeners);
-    } catch {
-      // ignore bad selector
+  try {
+    if (root.matches(INPUT_SELECTOR)) attachInputListeners(root);
+    root.querySelectorAll<HTMLElement>(INPUT_SELECTOR).forEach(attachInputListeners);
+  } catch {
+    // ignore bad selector
+  }
+}
+
+/**
+ * Drop input listeners for a removed subtree. Without this, an input that is
+ * unmounted and recreated mid-session (e.g. the composer remounting) stays in
+ * activeInputs as a strong reference with its listener bound until deactivate.
+ */
+function detachRemovedInputs(removed: HTMLElement): void {
+  for (const el of activeInputs) {
+    if (removed === el || removed.contains(el)) {
+      detachInputListeners(el);
     }
   }
 }
@@ -67,6 +91,9 @@ function scanForInputs(root: HTMLElement): void {
  * Start applying RTL to input fields.
  */
 export function startInputRtl(root: HTMLElement, settings: RtlSettings): void {
+  // Guard against a double-activate orphaning the previous observer/listeners.
+  stopInputRtl();
+
   currentSettings = settings;
   if (!settings.enabled || !settings.inputRtl) {
     debug('input RTL disabled');
@@ -76,13 +103,18 @@ export function startInputRtl(root: HTMLElement, settings: RtlSettings): void {
   // Initial scan
   scanForInputs(root);
 
-  // Watch for new inputs (e.g. when composer mounts)
+  // Watch for inputs mounting/unmounting (e.g. when the composer remounts)
   observer = new MutationObserver((mutations) => {
     if (!currentSettings?.inputRtl) return;
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
         if (node.nodeType === Node.ELEMENT_NODE) {
           scanForInputs(node as HTMLElement);
+        }
+      }
+      for (const node of mutation.removedNodes) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          detachRemovedInputs(node as HTMLElement);
         }
       }
     }
