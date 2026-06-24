@@ -328,6 +328,18 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
   merged.TERM = 'xterm-256color';
   merged.COLORTERM = 'truecolor';
   merged.LANG = merged.LANG || 'en_US.UTF-8';
+  // Defer MCP tool descriptions out of the upfront context, matching the Agent
+  // SDK path (sdkOptionsBuilder.ts sets the same `auto:2`). Without this the
+  // genuine CLI loads EVERY enabled server's full tool schema into the system
+  // prompt on turn 1: with Nimbalyst's core MCP servers in the `--mcp-config`
+  // snapshot that is ~30K+ tokens of "MCP tools" baseline (observed via
+  // `/context`) — whereas the SDK session shows the same servers as deferred
+  // (~800 active). `auto:N` defers a server's tools when their descriptions
+  // exceed N% of the context window; `auto:2` is ~20K on 1M / ~4K on 200K.
+  // Set as a default the user can still override via their own shell/`baseEnv`.
+  if (merged.ENABLE_TOOL_SEARCH == null) {
+    merged.ENABLE_TOOL_SEARCH = 'auto:2';
+  }
   if (input.extraEnv) {
     Object.assign(merged, input.extraEnv);
   }
