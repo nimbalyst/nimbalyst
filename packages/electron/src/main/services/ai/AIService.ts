@@ -123,6 +123,8 @@ import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWor
 
 const execFileAsync = promisify(execFile);
 const MOBILE_TRANSCRIPT_TAIL_LOAD_PUBLISH_MIN_INTERVAL_MS = 5_000;
+const MOBILE_TRANSCRIPT_TAIL_SYNC_MAX_CHARS = 260_000;
+const MOBILE_TRANSCRIPT_TAIL_LOAD_PUBLISH_LIMITS = [350, 250, 175, 125, 80, 50, 25] as const;
 
 export class AIService {
   private sessionManager: SessionManager;
@@ -247,8 +249,9 @@ export class AIService {
     if (!syncProvider?.pushChange) return;
 
     void (async () => {
-      const mobileTranscriptTailJson = await getMobileTranscriptTailJson(session.id, 350);
-      if (!mobileTranscriptTailJson) return;
+      const mobileTranscriptTail = await this.buildMobileTranscriptTailJsonForSync(session.id);
+      if (!mobileTranscriptTail) return;
+      const { json: mobileTranscriptTailJson, rawMessageLimit } = mobileTranscriptTail;
 
       await Promise.resolve(syncProvider.pushChange(session.id, {
         type: 'metadata_updated',
@@ -261,6 +264,7 @@ export class AIService {
       logger.main.info('[AIService] Published mobile transcript tail for partial session:', {
         sessionId: session.id,
         tailChars: mobileTranscriptTailJson.length,
+        rawMessageLimit,
       });
     })().catch((error) => {
       this.mobileTranscriptTailLoadPublishes.delete(session.id);
@@ -269,6 +273,44 @@ export class AIService {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  }
+
+  private async buildMobileTranscriptTailJsonForSync(
+    sessionId: string
+  ): Promise<{ json: string; rawMessageLimit: number } | null> {
+    let lastTooLarge: { rawMessageLimit: number; tailChars: number } | null = null;
+
+    for (const rawMessageLimit of MOBILE_TRANSCRIPT_TAIL_LOAD_PUBLISH_LIMITS) {
+      const json = await getMobileTranscriptTailJson(sessionId, rawMessageLimit);
+      if (!json) return null;
+
+      if (json.length <= MOBILE_TRANSCRIPT_TAIL_SYNC_MAX_CHARS) {
+        if (lastTooLarge) {
+          logger.main.info('[AIService] Shrunk mobile transcript tail for sync:', {
+            sessionId,
+            rawMessageLimit,
+            tailChars: json.length,
+            previousRawMessageLimit: lastTooLarge.rawMessageLimit,
+            previousTailChars: lastTooLarge.tailChars,
+            maxChars: MOBILE_TRANSCRIPT_TAIL_SYNC_MAX_CHARS,
+          });
+        }
+        return { json, rawMessageLimit };
+      }
+
+      lastTooLarge = { rawMessageLimit, tailChars: json.length };
+    }
+
+    if (lastTooLarge) {
+      logger.main.warn('[AIService] Skipping mobile transcript tail publish; tail exceeds sync metadata limit:', {
+        sessionId,
+        smallestRawMessageLimit: lastTooLarge.rawMessageLimit,
+        smallestTailChars: lastTooLarge.tailChars,
+        maxChars: MOBILE_TRANSCRIPT_TAIL_SYNC_MAX_CHARS,
+      });
+    }
+
+    return null;
   }
 
   public async queuePromptForSession(
