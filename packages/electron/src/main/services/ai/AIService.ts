@@ -83,7 +83,7 @@ import { DocumentContextService, type RawDocumentContext, type PreparedDocumentC
 import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
 import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/workspaceDetection';
-import { getDesktopTranscriptHistoryPage } from '../../utils/transcriptHelpers';
+import { getDesktopTranscriptHistoryPage, getMobileTranscriptTailJson } from '../../utils/transcriptHelpers';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import { setSessionPendingPrompt } from './pendingPromptPersistence';
@@ -122,6 +122,7 @@ import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claud
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 
 const execFileAsync = promisify(execFile);
+const MOBILE_TRANSCRIPT_TAIL_LOAD_PUBLISH_MIN_INTERVAL_MS = 5_000;
 
 export class AIService {
   private sessionManager: SessionManager;
@@ -156,6 +157,11 @@ export class AIService {
   // Track mobile session creation requests to prevent duplicate processing
   // (can happen if the same request is delivered multiple times)
   private processingMobileSessionRequests = new Set<string>();
+
+  // Partial transcripts are too large for session-room message sync; publish a
+  // compact mobile tail when desktop has just loaded one, but do not regenerate
+  // the projected tail on every renderer reload while a stream is active.
+  private mobileTranscriptTailLoadPublishes = new Map<string, number>();
 
   // Service for preparing document context (transition detection, diff computation, etc.)
   private documentContextService = new DocumentContextService();
@@ -223,6 +229,46 @@ export class AIService {
     if (cleaned > 0) {
       console.log(`[AIService] Cleaned ${cleaned} empty messages from existing sessions on startup`);
     }
+  }
+
+  private publishMobileTranscriptTailForPartialSession(
+    session: SessionData & { transcriptPage?: { isPartial?: boolean } }
+  ): void {
+    if (!session.transcriptPage?.isPartial) return;
+
+    const now = Date.now();
+    const lastPublishedAt = this.mobileTranscriptTailLoadPublishes.get(session.id) ?? 0;
+    if (now - lastPublishedAt < MOBILE_TRANSCRIPT_TAIL_LOAD_PUBLISH_MIN_INTERVAL_MS) {
+      return;
+    }
+    this.mobileTranscriptTailLoadPublishes.set(session.id, now);
+
+    const syncProvider = getSyncProvider();
+    if (!syncProvider?.pushChange) return;
+
+    void (async () => {
+      const mobileTranscriptTailJson = await getMobileTranscriptTailJson(session.id, 350);
+      if (!mobileTranscriptTailJson) return;
+
+      await Promise.resolve(syncProvider.pushChange(session.id, {
+        type: 'metadata_updated',
+        metadata: {
+          mobileTranscriptTailJson,
+          mobileTranscriptTailUpdatedAt: Date.now(),
+        },
+      }));
+
+      logger.main.info('[AIService] Published mobile transcript tail for partial session:', {
+        sessionId: session.id,
+        tailChars: mobileTranscriptTailJson.length,
+      });
+    })().catch((error) => {
+      this.mobileTranscriptTailLoadPublishes.delete(session.id);
+      logger.main.warn('[AIService] Failed to publish mobile transcript tail for partial session:', {
+        sessionId: session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 
   public async queuePromptForSession(
@@ -2147,6 +2193,7 @@ export class AIService {
           } : null,
         })}`);
       }
+      this.publishMobileTranscriptTailForPartialSession(session);
 
       // Restore document context state from persisted data (if available)
       // This enables transition detection across app restarts
