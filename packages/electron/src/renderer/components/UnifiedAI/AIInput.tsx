@@ -85,6 +85,9 @@ interface AIInputProps {
   effortLevel?: EffortLevel;
   onEffortLevelChange?: (level: EffortLevel) => void;
   showEffortLevel?: boolean;
+  codexFastModeEnabled?: boolean;
+  onCodexFastModeChange?: (enabled: boolean) => void;
+  showCodexFastMode?: boolean;
 
   // Token usage display support (for Claude Code)
   tokenUsage?: {
@@ -164,6 +167,9 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     effortLevel,
     onEffortLevelChange,
     showEffortLevel,
+    codexFastModeEnabled = false,
+    onCodexFastModeChange,
+    showCodexFastMode = false,
     tokenUsage,
     provider,
     onQueue,
@@ -1271,7 +1277,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         />
 
         {/* Inline controls row - hidden in memory mode */}
-        {!isMemoryMode && (onModeChange || onModelChange || readOnlyModel || workspacePath || (tokenUsage && provider === 'claude-code')) && (
+        {!isMemoryMode && (onModeChange || onModelChange || readOnlyModel || showCodexFastMode || workspacePath || (tokenUsage && provider === 'claude-code')) && (
           <div style={{
             display: 'flex',
             alignItems: 'center',
@@ -1298,6 +1304,22 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
                 level={effortLevel}
                 onLevelChange={onEffortLevelChange}
               />
+            )}
+            {showCodexFastMode && onCodexFastModeChange && (
+              <button
+                type="button"
+                data-testid="codex-fast-mode-toggle"
+                aria-pressed={codexFastModeEnabled}
+                title="Toggle Codex Fast mode for this session. Fast mode can use more credits."
+                onClick={() => onCodexFastModeChange(!codexFastModeEnabled)}
+                className={`flex items-center gap-1 px-2 py-[3px] rounded-xl text-[11px] font-medium cursor-pointer transition-all duration-200 outline-none whitespace-nowrap border hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)] ${
+                  codexFastModeEnabled
+                    ? 'bg-[var(--nim-primary)] text-white border-[var(--nim-primary)]'
+                    : 'bg-[var(--nim-bg-secondary)] text-[var(--nim-text-muted)] border-[var(--nim-border)]'
+                }`}
+              >
+                Fast
+              </button>
             )}
             {workspacePath && (
               <HelpTooltip testId="action-prompts-dropdown">

@@ -53,6 +53,7 @@ function createMockSdkModule(sseEvents: OpenCodeSSEEvent[]) {
   const createFn = vi.fn(async () => ({ data: { id: 'oc-session-1' } }));
   const listFn = vi.fn(async () => ({ data: [] }));
   const abortFn = vi.fn(async () => ({}));
+  const postPermissionFn = vi.fn(async () => ({}));
   const subscribeFn = vi.fn(async () => ({
     stream: createAsyncEventStream(sseEvents),
   }));
@@ -60,6 +61,7 @@ function createMockSdkModule(sseEvents: OpenCodeSSEEvent[]) {
   const mcpAddFn = vi.fn(async () => ({}));
 
   const mockClient: OpenCodeClientLike = {
+    postSessionIdPermissionsPermissionId: postPermissionFn,
     session: {
       create: createFn,
       list: listFn,
@@ -81,7 +83,7 @@ function createMockSdkModule(sseEvents: OpenCodeSSEEvent[]) {
     createOpencodeClient: () => mockClient,
   });
 
-  return { loadSdkModule, mockClient, promptFn, createFn, subscribeFn };
+  return { loadSdkModule, mockClient, promptFn, createFn, subscribeFn, postPermissionFn };
 }
 
 describe('OpenCodeSDKProtocol', () => {
@@ -126,6 +128,204 @@ describe('OpenCodeSDKProtocol', () => {
     }
 
     expect(emitted.some((e) => e.type === 'text' && e.content === 'hello opencode')).toBe(true);
+  });
+
+  it('parses versioned OpenCode SSE event names', async () => {
+    const sseEvents: OpenCodeSSEEvent[] = [
+      {
+        type: 'message.updated.1',
+        properties: {
+          sessionID: 'oc-session-1',
+          info: { id: 'm1', sessionID: 'oc-session-1', role: 'assistant' },
+        },
+      },
+      {
+        type: 'message.part.updated.1',
+        properties: {
+          sessionID: 'oc-session-1',
+          part: {
+            type: 'tool',
+            id: 'p-tool',
+            sessionID: 'oc-session-1',
+            messageID: 'm1',
+            callID: 'call-1',
+            tool: 'grep',
+            state: { status: 'running', input: { pattern: 'fugu', path: '/tmp' } },
+          },
+        },
+      },
+      {
+        type: 'message.part.delta.1',
+        properties: {
+          sessionID: 'oc-session-1',
+          messageID: 'm1',
+          partID: 'p-text',
+          field: 'text',
+          delta: 'visible response',
+        },
+      },
+      { type: 'session.idle.1', properties: { sessionID: 'oc-session-1' } },
+    ];
+
+    const { loadSdkModule } = createMockSdkModule(sseEvents);
+    const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+    const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+    const emitted: any[] = [];
+
+    for await (const event of protocol.sendMessage(session, { content: 'test' })) {
+      emitted.push(event);
+    }
+
+    const toolCall = emitted.find((e) => e.type === 'tool_call' && e.toolCall?.id === 'call-1');
+    expect(toolCall?.toolCall?.arguments).toEqual({ pattern: 'fugu', path: '/tmp' });
+    expect(emitted.some((e) => e.type === 'text' && e.content === 'visible response')).toBe(true);
+    expect(emitted.some((e) => e.type === 'complete')).toBe(true);
+  });
+
+  it('does not emit user prompt snapshots as assistant text', async () => {
+    const sseEvents: OpenCodeSSEEvent[] = [
+      { type: 'message.updated', properties: { info: { id: 'm-user', role: 'user', sessionID: 'oc-session-1' } } },
+      {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            type: 'text',
+            text: 'this is the user prompt',
+            sessionID: 'oc-session-1',
+            messageID: 'm-user',
+            id: 'p-user',
+          },
+        },
+      },
+      { type: 'session.idle', properties: { sessionID: 'oc-session-1' } },
+    ];
+
+    const { loadSdkModule } = createMockSdkModule(sseEvents);
+    const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+    const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+    const emitted: any[] = [];
+
+    for await (const event of protocol.sendMessage(session, { content: 'test' })) {
+      emitted.push(event);
+    }
+
+    expect(emitted.filter((e) => e.type === 'text')).toHaveLength(0);
+  });
+
+  it('does not re-emit a final full-text snapshot after deltas', async () => {
+    const sseEvents: OpenCodeSSEEvent[] = [
+      { type: 'message.updated', properties: { info: { id: 'm-assistant', role: 'assistant', sessionID: 'oc-session-1' } } },
+      {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            type: 'text',
+            text: '',
+            sessionID: 'oc-session-1',
+            messageID: 'm-assistant',
+            id: 'p-text',
+          },
+        },
+      },
+      {
+        type: 'message.part.delta',
+        properties: {
+          sessionID: 'oc-session-1',
+          messageID: 'm-assistant',
+          partID: 'p-text',
+          field: 'text',
+          delta: 'O',
+        },
+      },
+      {
+        type: 'message.part.delta',
+        properties: {
+          sessionID: 'oc-session-1',
+          messageID: 'm-assistant',
+          partID: 'p-text',
+          field: 'text',
+          delta: 'K',
+        },
+      },
+      {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            type: 'text',
+            text: 'OK',
+            sessionID: 'oc-session-1',
+            messageID: 'm-assistant',
+            id: 'p-text',
+          },
+        },
+      },
+      { type: 'session.idle', properties: { sessionID: 'oc-session-1' } },
+    ];
+
+    const { loadSdkModule } = createMockSdkModule(sseEvents);
+    const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+    const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+    const emitted: any[] = [];
+
+    for await (const event of protocol.sendMessage(session, { content: 'test' })) {
+      emitted.push(event);
+    }
+
+    expect(emitted.filter((e) => e.type === 'text').map((e) => e.content)).toEqual(['O', 'K']);
+  });
+
+  it('turns assistant full-text snapshots into append-only chunks', async () => {
+    const sseEvents: OpenCodeSSEEvent[] = [
+      { type: 'message.updated', properties: { info: { id: 'm-assistant', role: 'assistant', sessionID: 'oc-session-1' } } },
+      {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            type: 'text',
+            text: 'Hello',
+            sessionID: 'oc-session-1',
+            messageID: 'm-assistant',
+            id: 'p-text',
+          },
+        },
+      },
+      {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            type: 'text',
+            text: 'Hello world',
+            sessionID: 'oc-session-1',
+            messageID: 'm-assistant',
+            id: 'p-text',
+          },
+        },
+      },
+      {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            type: 'text',
+            text: 'Hello world',
+            sessionID: 'oc-session-1',
+            messageID: 'm-assistant',
+            id: 'p-text',
+          },
+        },
+      },
+      { type: 'session.idle', properties: { sessionID: 'oc-session-1' } },
+    ];
+
+    const { loadSdkModule } = createMockSdkModule(sseEvents);
+    const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+    const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+    const emitted: any[] = [];
+
+    for await (const event of protocol.sendMessage(session, { content: 'test' })) {
+      emitted.push(event);
+    }
+
+    expect(emitted.filter((e) => e.type === 'text').map((e) => e.content)).toEqual(['Hello', ' world']);
   });
 
   it('parses reasoning part', async () => {
@@ -236,6 +436,156 @@ describe('OpenCodeSDKProtocol', () => {
     expect(toolResult.toolResult.result.error).toBe('Permission denied');
   });
 
+  it('parses OpenCode permission requests as ToolPermission calls', async () => {
+    const sseEvents: OpenCodeSSEEvent[] = [
+      {
+        type: 'permission.updated',
+        properties: {
+          sessionID: 'oc-session-1',
+          id: 'perm-1',
+          type: 'external_directory',
+          title: 'Access external directory',
+          pattern: ['/tmp/*'],
+        },
+      },
+      { type: 'session.idle', properties: { sessionID: 'oc-session-1' } },
+    ];
+
+    const { loadSdkModule } = createMockSdkModule(sseEvents);
+    const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+    const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+    const emitted: any[] = [];
+
+    for await (const event of protocol.sendMessage(session, { content: 'test' })) {
+      emitted.push(event);
+    }
+
+    const permissionCall = emitted.find((e) => e.type === 'tool_call' && e.toolCall?.name === 'ToolPermission');
+    expect(permissionCall).toBeDefined();
+    expect(permissionCall.toolCall.id).toBe('perm-1');
+    expect(permissionCall.toolCall.arguments.requestId).toBe('perm-1');
+    expect(permissionCall.toolCall.arguments.openCodePermissionType).toBe('external_directory');
+    expect(permissionCall.toolCall.arguments.openCodePermissionPattern).toEqual(['/tmp/*']);
+    expect(permissionCall.metadata).toMatchObject({
+      openCodePermissionRequest: true,
+      permissionId: 'perm-1',
+    });
+  });
+
+  it('parses OpenCode v2 permission.asked requests as ToolPermission calls', async () => {
+    const sseEvents: OpenCodeSSEEvent[] = [
+      {
+        type: 'permission.asked',
+        properties: {
+          sessionID: 'oc-session-1',
+          id: 'perm-v2',
+          permission: 'external_directory',
+          patterns: ['/mnt/traderbot-nvme/*', '/home/reyn/trader_local_archive/*'],
+          metadata: {},
+          always: [],
+        },
+      },
+      { type: 'session.idle', properties: { sessionID: 'oc-session-1' } },
+    ];
+
+    const { loadSdkModule } = createMockSdkModule(sseEvents);
+    const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+    const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+    const emitted: any[] = [];
+
+    for await (const event of protocol.sendMessage(session, { content: 'test' })) {
+      emitted.push(event);
+    }
+
+    const permissionCall = emitted.find((e) => e.type === 'tool_call' && e.toolCall?.name === 'ToolPermission');
+    expect(permissionCall).toBeDefined();
+    expect(permissionCall.toolCall.id).toBe('perm-v2');
+    expect(permissionCall.toolCall.arguments.requestId).toBe('perm-v2');
+    expect(permissionCall.toolCall.arguments.openCodePermissionType).toBe('external_directory');
+    expect(permissionCall.toolCall.arguments.openCodePermissionPattern).toEqual([
+      '/mnt/traderbot-nvme/*',
+      '/home/reyn/trader_local_archive/*',
+    ]);
+  });
+
+  it('parses OpenCode permission replies as ToolPermission results', async () => {
+    const sseEvents: OpenCodeSSEEvent[] = [
+      {
+        type: 'permission.replied',
+        properties: {
+          sessionID: 'oc-session-1',
+          permissionID: 'perm-1',
+          response: 'always',
+        },
+      },
+      { type: 'session.idle', properties: { sessionID: 'oc-session-1' } },
+    ];
+
+    const { loadSdkModule } = createMockSdkModule(sseEvents);
+    const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+    const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+    const emitted: any[] = [];
+
+    for await (const event of protocol.sendMessage(session, { content: 'test' })) {
+      emitted.push(event);
+    }
+
+    const permissionResult = emitted.find((e) => e.type === 'tool_result' && e.toolResult?.name === 'ToolPermission');
+    expect(permissionResult).toBeDefined();
+    expect(permissionResult.toolResult.id).toBe('perm-1');
+    expect(permissionResult.toolResult.result.success).toBe(true);
+    expect(JSON.parse(permissionResult.toolResult.result.result)).toEqual({
+      decision: 'allow',
+      scope: 'always',
+    });
+  });
+
+  it('parses OpenCode v2 permission replies as ToolPermission results', async () => {
+    const sseEvents: OpenCodeSSEEvent[] = [
+      {
+        type: 'permission.replied',
+        properties: {
+          sessionID: 'oc-session-1',
+          requestID: 'perm-v2',
+          reply: 'once',
+        },
+      },
+      { type: 'session.idle', properties: { sessionID: 'oc-session-1' } },
+    ];
+
+    const { loadSdkModule } = createMockSdkModule(sseEvents);
+    const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+    const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+    const emitted: any[] = [];
+
+    for await (const event of protocol.sendMessage(session, { content: 'test' })) {
+      emitted.push(event);
+    }
+
+    const permissionResult = emitted.find((e) => e.type === 'tool_result' && e.toolResult?.name === 'ToolPermission');
+    expect(permissionResult).toBeDefined();
+    expect(permissionResult.toolResult.id).toBe('perm-v2');
+    expect(permissionResult.toolResult.result.success).toBe(true);
+    expect(JSON.parse(permissionResult.toolResult.result.result)).toEqual({
+      decision: 'allow',
+      scope: 'once',
+    });
+  });
+
+  it('responds to OpenCode permission requests via the SDK endpoint', async () => {
+    const { loadSdkModule, postPermissionFn } = createMockSdkModule([]);
+    const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+    const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+
+    await protocol.respondToPermission(session, 'perm-1', 'once');
+
+    expect(postPermissionFn).toHaveBeenCalledWith({
+      path: { id: 'oc-session-1', permissionID: 'perm-1' },
+      query: { directory: '/tmp/test' },
+      body: { response: 'once' },
+    });
+  });
+
   it('parses file.edited with file property', async () => {
     const sseEvents: OpenCodeSSEEvent[] = [
       { type: 'file.edited', properties: { file: '/bar.ts' } },
@@ -275,6 +625,86 @@ describe('OpenCodeSDKProtocol', () => {
     expect(completeEvent).toBeDefined();
     const eventsAfterComplete = emitted.slice(emitted.indexOf(completeEvent) + 1);
     expect(eventsAfterComplete).toHaveLength(0);
+  });
+
+  it('attaches usage from message.updated info to the idle completion event', async () => {
+    const sseEvents: OpenCodeSSEEvent[] = [
+      {
+        type: 'message.updated',
+        properties: {
+          sessionID: 'oc-session-1',
+          info: {
+            id: 'm-assistant',
+            role: 'assistant',
+            sessionID: 'oc-session-1',
+            usage: {
+              input_tokens: 120,
+              output_tokens: 80,
+              total_tokens: 200,
+            },
+            model_context_window: 1_000_000,
+          },
+        },
+      },
+      { type: 'session.idle', properties: { sessionID: 'oc-session-1' } },
+    ];
+
+    const { loadSdkModule } = createMockSdkModule(sseEvents);
+    const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+    const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+    const emitted: any[] = [];
+
+    for await (const event of protocol.sendMessage(session, { content: 'test' })) {
+      emitted.push(event);
+    }
+
+    const completeEvent = emitted.find((e) => e.type === 'complete');
+    expect(completeEvent?.usage).toEqual({
+      input_tokens: 120,
+      output_tokens: 80,
+      total_tokens: 200,
+    });
+    expect(completeEvent?.contextFillTokens).toBe(200);
+    expect(completeEvent?.contextWindow).toBe(1_000_000);
+  });
+
+  it('attaches usage from message.part.updated to the idle completion event', async () => {
+    const sseEvents: OpenCodeSSEEvent[] = [
+      {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            type: 'text',
+            text: 'done',
+            sessionID: 'oc-session-1',
+            messageID: 'm1',
+            id: 'p1',
+            usage: {
+              prompt_tokens: 12,
+              completion_tokens: 5,
+              total_tokens: 17,
+            },
+          },
+        },
+      },
+      { type: 'session.idle', properties: { sessionID: 'oc-session-1' } },
+    ];
+
+    const { loadSdkModule } = createMockSdkModule(sseEvents);
+    const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+    const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+    const emitted: any[] = [];
+
+    for await (const event of protocol.sendMessage(session, { content: 'test' })) {
+      emitted.push(event);
+    }
+
+    const completeEvent = emitted.find((e) => e.type === 'complete');
+    expect(completeEvent?.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 5,
+      total_tokens: 17,
+    });
   });
 
   it('parses session.error with error object', async () => {

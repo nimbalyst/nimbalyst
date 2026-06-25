@@ -172,6 +172,43 @@ describe('CodexSDKProtocol', () => {
     expect('additionalDirectories' in passedOptions).toBe(false);
   });
 
+  it('passes Codex config overrides to the SDK constructor for Fast mode', async () => {
+    let codexConstructorOptions: Record<string, unknown> | undefined;
+    const startThread = vi.fn((_options?: Record<string, unknown>) => ({
+      id: 'thread-fast-mode',
+      runStreamed: vi.fn(),
+    }));
+
+    const protocol = new CodexSDKProtocol(
+      'test-key',
+      async () =>
+        ({
+          Codex: class {
+            constructor(options?: Record<string, unknown>) {
+              codexConstructorOptions = options;
+            }
+            startThread = startThread;
+            resumeThread = vi.fn();
+          },
+        }) as any
+    );
+
+    await protocol.createSession({
+      workspacePath: '/projects/main',
+      raw: {
+        codexConfigOverrides: {
+          service_tier: 'fast',
+          features: { fast_mode: true },
+        },
+      },
+    } as any);
+
+    expect(codexConstructorOptions?.config).toEqual({
+      service_tier: 'fast',
+      features: { fast_mode: true },
+    });
+  });
+
   it('passes image attachments as structured local_image inputs', async () => {
     const runStreamed = vi.fn(async () => ({
       events: createAsyncEventStream([

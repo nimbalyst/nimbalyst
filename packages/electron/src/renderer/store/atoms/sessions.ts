@@ -17,8 +17,13 @@
 import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
-import { ModelIdentifier, type ChatAttachment, type SessionData, type TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
+import { ModelIdentifier, type ChatAttachment, type SessionData, type TranscriptPageInfo, type TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
 import type { SessionMeta } from '@nimbalyst/runtime';
+import {
+  isRawAnchoredViewMessageId,
+  stabilizedRawPageViewMessageIdBase,
+} from '@nimbalyst/runtime/ai/server/transcript';
+import { transcriptMessageFingerprint } from '../transcriptMessageFingerprint';
 import deepEqual from 'fast-deep-equal';
 import { workstreamStateAtom, setWorkstreamActiveChildAtom } from './workstreamState';
 import { aiInputHistoryAtom } from './aiInputUndo';
@@ -853,6 +858,13 @@ export const sessionEffortLevelRawAtom = atomFamily((sessionId: string) =>
   })
 );
 
+export const sessionCodexFastModeRawAtom = atomFamily((sessionId: string) =>
+  atom((get) => {
+    const metadata = get(sessionStoreAtom(sessionId))?.metadata as Record<string, unknown> | undefined;
+    return metadata?.codexFastModeEnabled ?? null;
+  })
+);
+
 // ============================================================
 // Hierarchical session support (workstreams)
 // These atoms enable parent-child session relationships for grouping
@@ -1630,6 +1642,7 @@ export const loadSessionDataAtom = atom(
     const loadPromise = (async () => {
     try {
       const sessionData = await window.electronAPI.aiLoadSession(sessionId, workspacePath);
+      logTranscriptState('loadSessionDataAtom result', sessionId, sessionData);
       if (sessionData) {
         // Validate model field (for debugging)
         const model = sessionData.model;
@@ -1639,6 +1652,7 @@ export const loadSessionDataAtom = atom(
 
         // Set sessionStoreAtom - derived atoms (mode, model, archived) will automatically sync
         set(sessionStoreAtom(sessionId), sessionData);
+        logTranscriptState('loadSessionDataAtom committed', sessionId, sessionData);
 
         // Initialize draft input if session has saved draft
         if (sessionData.draftInput) {
@@ -1701,6 +1715,34 @@ export const updateSessionDataAtom = atom(
  */
 const pendingReloads = new Map<string, { version: number; aborted: boolean }>();
 
+function logTranscriptState(
+  event: string,
+  sessionId: string,
+  sessionData: SessionData | null | undefined,
+  extra: Record<string, unknown> = {},
+): void {
+  const page = sessionData?.transcriptPage;
+  if (!page?.isPartial && sessionId !== 'c0287ccb-1d8a-4b58-9066-0b0658c73568') {
+    return;
+  }
+
+  console.log('[sessions] ' + event + ' ' + JSON.stringify({
+    sessionId,
+    messageCount: sessionData?.messages?.length ?? 0,
+    provider: sessionData?.provider,
+    model: sessionData?.model,
+    page: page ? {
+      isPartial: page.isPartial,
+      hasMoreBefore: page.hasMoreBefore,
+      rawStartId: page.rawStartId,
+      rawEndId: page.rawEndId,
+      rawMessageCount: page.rawMessageCount,
+      totalRawMessageCount: page.totalRawMessageCount,
+    } : null,
+    ...extra,
+  }));
+}
+
 function preserveEquivalentArrayRef<T>(current: T[] | undefined, next: T[] | undefined): T[] | undefined {
   if (!current || !next) return next;
   if (current === next) return current;
@@ -1730,22 +1772,116 @@ function preserveEquivalentValue<T>(current: T | undefined, next: T | undefined)
   return deepEqual(current, next) ? current : next;
 }
 
+const OPTIMISTIC_REPLACEMENT_CLOCK_SKEW_MS = 1000;
+const OPTIMISTIC_REPLACEMENT_WINDOW_MS = 120_000;
+
+function safeMessageTimeMs(value: Date | string | number | unknown): number {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string') {
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function hasPersistedReplacement(
+  optimistic: TranscriptViewMessage,
+  dbMessages: TranscriptViewMessage[],
+): boolean {
+  const optimisticAt = safeMessageTimeMs(optimistic.createdAt);
+  if (optimisticAt <= 0) return false;
+
+  return dbMessages.some((db) => {
+    if (db.type !== optimistic.type || db.text !== optimistic.text) return false;
+
+    const dbAt = safeMessageTimeMs(db.createdAt);
+    if (dbAt <= 0) return false;
+
+    const delta = dbAt - optimisticAt;
+    return delta >= -OPTIMISTIC_REPLACEMENT_CLOCK_SKEW_MS &&
+      delta <= OPTIMISTIC_REPLACEMENT_WINDOW_MS;
+  });
+}
+
+export function shouldPreserveOptimisticMessage(
+  optimistic: TranscriptViewMessage,
+  dbMessages: TranscriptViewMessage[],
+): boolean {
+  if (optimistic.id >= 0) return false;
+  return !hasPersistedReplacement(optimistic, dbMessages);
+}
+
+function transcriptHistoryMergeKey(message: TranscriptViewMessage): string {
+  return [
+    safeMessageTimeMs(message.createdAt),
+    message.type,
+    message.text ?? '',
+    message.toolCall?.providerToolCallId ?? '',
+    message.toolCall?.toolName ?? '',
+    message.subagentId ?? '',
+  ].join('\u001f');
+}
+
+function preservePagedTranscriptHistory(current: SessionData, next: SessionData): SessionData {
+  const currentPage = current.transcriptPage;
+  const nextPage = next.transcriptPage;
+  if (!currentPage?.isPartial || !nextPage?.isPartial) return next;
+  if (currentPage.rawStartId == null || nextPage.rawStartId == null) return next;
+  if (currentPage.rawStartId >= nextPage.rawStartId) return next;
+
+  const nextIds = new Set(
+    next.messages
+      .map(message => message.id)
+      .filter((id): id is number => Number.isFinite(id))
+  );
+  const nextKeys = new Set(next.messages.map(transcriptHistoryMergeKey));
+  const preservedOlderMessages = current.messages.filter((message) => {
+    if (Number.isFinite(message.id) && nextIds.has(message.id)) return false;
+    const key = transcriptHistoryMergeKey(message);
+    if (nextKeys.has(key)) return false;
+    nextIds.add(message.id);
+    nextKeys.add(key);
+    return true;
+  });
+
+  if (preservedOlderMessages.length === 0) return next;
+
+  const transcriptPage: TranscriptPageInfo = {
+    ...nextPage,
+    rawStartId: currentPage.rawStartId,
+    hasMoreBefore: currentPage.hasMoreBefore,
+    rawMessageCount: Math.max(nextPage.rawMessageCount, currentPage.rawMessageCount),
+    totalRawMessageCount: Math.max(
+      nextPage.totalRawMessageCount ?? 0,
+      currentPage.totalRawMessageCount ?? 0,
+    ) || nextPage.totalRawMessageCount || currentPage.totalRawMessageCount,
+  };
+
+  return {
+    ...next,
+    messages: [...preservedOlderMessages, ...next.messages],
+    transcriptPage,
+  };
+}
+
 export function preserveReloadIdentity(current: SessionData, next: SessionData): SessionData {
-  const normalizedMessages = preserveEquivalentArrayRef(current.messages, next.messages);
+  const nextWithHistory = preservePagedTranscriptHistory(current, next);
+  const normalizedMessages = preserveEquivalentArrayRef(current.messages, nextWithHistory.messages);
   const currentTeammates = Array.isArray(current.metadata?.currentTeammates)
     ? current.metadata.currentTeammates
     : undefined;
-  const nextTeammates = Array.isArray(next.metadata?.currentTeammates)
-    ? next.metadata.currentTeammates
+  const nextTeammates = Array.isArray(nextWithHistory.metadata?.currentTeammates)
+    ? nextWithHistory.metadata.currentTeammates
     : undefined;
   const currentTodos = Array.isArray(current.metadata?.currentTodos)
     ? current.metadata.currentTodos
     : undefined;
-  const nextTodos = Array.isArray(next.metadata?.currentTodos)
-    ? next.metadata.currentTodos
+  const nextTodos = Array.isArray(nextWithHistory.metadata?.currentTodos)
+    ? nextWithHistory.metadata.currentTodos
     : undefined;
 
-  let metadata = next.metadata;
+  let metadata = nextWithHistory.metadata;
   if (currentTeammates && nextTeammates && deepEqual(currentTeammates, nextTeammates)) {
     metadata = {
       ...(metadata ?? {}),
@@ -1759,13 +1895,13 @@ export function preserveReloadIdentity(current: SessionData, next: SessionData):
     };
   }
 
-  const tokenUsage = preserveEquivalentValue(current.tokenUsage, next.tokenUsage);
+  const tokenUsage = preserveEquivalentValue(current.tokenUsage, nextWithHistory.tokenUsage);
 
   return {
-    ...next,
-    messages: normalizedMessages ?? next.messages,
-    ...(tokenUsage !== next.tokenUsage ? { tokenUsage } : {}),
-    ...(metadata !== next.metadata ? { metadata } : {}),
+    ...nextWithHistory,
+    messages: normalizedMessages ?? nextWithHistory.messages,
+    ...(tokenUsage !== nextWithHistory.tokenUsage ? { tokenUsage } : {}),
+    ...(metadata !== nextWithHistory.metadata ? { metadata } : {}),
   };
 }
 
@@ -1797,6 +1933,9 @@ export const reloadSessionDataAtom = atom(
 
     try {
       const sessionData = await window.electronAPI.aiLoadSession(sessionId, workspacePath);
+      logTranscriptState('reloadSessionDataAtom result', sessionId, sessionData, {
+        version: currentVersion,
+      });
 
       // Check if this reload was superseded by a newer one
       if (thisReload.aborted) {
@@ -1814,28 +1953,20 @@ export const reloadSessionDataAtom = atom(
         if (current) {
           const dbMessages = sessionData.messages || [];
           const localMessages = current.messages || [];
+          logTranscriptState('reloadSessionDataAtom current-before-merge', sessionId, current, {
+            version: currentVersion,
+            dbMessageCount: dbMessages.length,
+            localMessageCount: localMessages.length,
+          });
 
-          // Collect optimistic messages (negative IDs) that aren't yet in the DB.
-          // These were added locally before the provider persisted them.
-          // Drop any optimistic message whose type+text matches a DB message
-          // with a similar timestamp (within 5s tolerance). The timestamp check
-          // avoids premature eviction when a user sends two identical messages
-          // (e.g. "yes" twice). Use safe getTime() in case createdAt is a string
-          // after IPC serialization rather than a Date object.
-          const safeGetTime = (d: Date | string | unknown): number => {
-            if (d instanceof Date) return d.getTime();
-            if (typeof d === 'string') return new Date(d).getTime();
-            return 0;
-          };
-          const optimisticMessages = localMessages.filter(
-            (m: TranscriptViewMessage) =>
-              m.id < 0 &&
-              !dbMessages.some(
-                (db: TranscriptViewMessage) =>
-                  db.type === m.type &&
-                  db.text === m.text &&
-                  Math.abs(safeGetTime(db.createdAt) - safeGetTime(m.createdAt)) < 5000
-              )
+          // Collect optimistic messages (negative IDs) that are not yet in the DB.
+          // The provider can take more than a few seconds to persist the canonical
+          // input row on very large sessions, so use a forward-looking window rather
+          // than a tight absolute timestamp match. Requiring the DB row to be at or
+          // after the optimistic timestamp still preserves legitimate repeated
+          // prompts like two separate "yes" messages.
+          const optimisticMessages = localMessages.filter((m: TranscriptViewMessage) =>
+            shouldPreserveOptimisticMessage(m, dbMessages)
           );
 
           if (optimisticMessages.length > 0) {
@@ -1846,6 +1977,37 @@ export const reloadSessionDataAtom = atom(
             sessionData.messages = [...dbMessages, ...optimisticMessages];
           } else {
             sessionData.messages = dbMessages;
+          }
+
+          // Partial-tail sessions: the fresh load returns only the latest
+          // raw tail. Preserve already-loaded older history (scroll-back
+          // pages and rows that slid out of the tail window), otherwise
+          // every throttled reload during streaming discards it and yanks
+          // the scroll anchor. Raw-anchored ids identify page/tail
+          // messages; live-projected messages never qualify.
+          const freshPage = sessionData.transcriptPage;
+          if (freshPage?.isPartial && typeof freshPage.rawStartId === 'number') {
+            const freshIdBase = stabilizedRawPageViewMessageIdBase(freshPage.rawStartId);
+            const freshFingerprints = new Set(dbMessages.map(transcriptMessageFingerprint));
+            const olderMessages = localMessages.filter((m: TranscriptViewMessage) =>
+              isRawAnchoredViewMessageId(m.id) &&
+              m.id < freshIdBase &&
+              !freshFingerprints.has(transcriptMessageFingerprint(m))
+            );
+            if (olderMessages.length > 0) {
+              sessionData.messages = [...olderMessages, ...sessionData.messages];
+              const currentPage = current.transcriptPage;
+              const oldestRawStartId = currentPage?.rawStartId != null
+                ? Math.min(currentPage.rawStartId, freshPage.rawStartId)
+                : freshPage.rawStartId;
+              sessionData.transcriptPage = {
+                ...freshPage,
+                rawStartId: oldestRawStartId,
+                hasMoreBefore: oldestRawStartId < freshPage.rawStartId
+                  ? (currentPage?.hasMoreBefore ?? freshPage.hasMoreBefore)
+                  : freshPage.hasMoreBefore,
+              };
+            }
           }
 
           // Preserve read state
@@ -1866,6 +2028,9 @@ export const reloadSessionDataAtom = atom(
           if (!thisReload.aborted) {
             // console.log(`[TRANSCRIPT-DEBUG] reloadSessionDataAtom: setting ${sessionData.messages?.length ?? 0} messages from DB for session ${sessionId}`);
             set(sessionStoreAtom(sessionId), normalizedSessionData);
+            logTranscriptState('reloadSessionDataAtom committed', sessionId, normalizedSessionData, {
+              version: currentVersion,
+            });
             // Note: sessionModeAtom, sessionModelAtom, and sessionArchivedAtom are derived from sessionStoreAtom,
             // so they automatically stay in sync when sessionStoreAtom is updated
           }
@@ -2114,7 +2279,12 @@ export const refreshSessionListAtom = atom(
           // atom (e.g. from a missed resolve event after a renderer reload)
           // gets corrected on the next session-list refresh. Persisted by
           // main-process setSessionPendingPrompt on every prompt open/resolve.
-          set(sessionHasPendingInteractivePromptAtom(s.id), !!s.hasPendingInteractivePrompt);
+          const hasPendingInteractivePrompt = !!s.hasPendingInteractivePrompt;
+          set(sessionHasPendingInteractivePromptAtom(s.id), hasPendingInteractivePrompt);
+          if (!hasPendingInteractivePrompt) {
+            set(sessionPendingPromptsAtom(s.id), []);
+            set(sessionPendingPromptAtom(s.id), false);
+          }
         }
 
         set(sessionRegistryAtom, registry);

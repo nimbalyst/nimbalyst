@@ -571,28 +571,60 @@ export function createWindow(
         });
 
         // Handle renderer process crashes
+        const rendererReloadTimes: number[] = [];
         window.webContents.on('render-process-gone', (event, details) => {
-            console.error('[MAIN] Renderer process gone:', details);
-            if (!window.isDestroyed()) {
-                // Reload the window
-                window.reload();
+            console.error('[MAIN] Renderer process gone:', JSON.stringify(details));
+            if (isQuitting || window.isDestroyed()) {
+                return;
             }
+            // Never reload synchronously inside this event: doing so during a
+            // clean-exit swap fatally CHECKs the main process (int3 trap,
+            // 2026-06-10). But spontaneous clean-exits also strand the window
+            // with a disposed frame (2026-06-11), so defer and reload whenever
+            // the frame is still dead by then.
+            setTimeout(() => {
+                if (isQuitting || window.isDestroyed()) {
+                    return;
+                }
+                try {
+                    // A live frame means a new renderer already attached
+                    // (normal process swap); accessing a disposed one throws.
+                    void window.webContents.mainFrame.url;
+                    return;
+                } catch {
+                    // Frame is dead; fall through to recovery.
+                }
+                const now = Date.now();
+                while (rendererReloadTimes.length > 0 && now - rendererReloadTimes[0] > 5 * 60_000) {
+                    rendererReloadTimes.shift();
+                }
+                if (rendererReloadTimes.length >= 3) {
+                    console.error('[MAIN] Renderer crash loop detected; leaving window unloaded');
+                    return;
+                }
+                rendererReloadTimes.push(now);
+                console.error('[MAIN] Reloading window after renderer loss:', JSON.stringify(details));
+                window.reload();
+            }, 1000);
         });
 
         // Handle unresponsive renderer
         window.webContents.on('unresponsive', () => {
             console.warn('[MAIN] Window became unresponsive');
-            const choice = dialog.showMessageBoxSync(window, {
+            // Must stay non-blocking: showMessageBoxSync freezes the main
+            // process (and all sync/sessions) until someone clicks, which on
+            // an unattended machine means forever.
+            dialog.showMessageBox(window, {
                 type: 'warning',
                 buttons: ['Reload', 'Keep Waiting'],
                 defaultId: 0,
                 message: 'The window is not responding',
                 detail: 'Would you like to reload the window?'
-            });
-
-            if (choice === 0 && !window.isDestroyed()) {
-                window.reload();
-            }
+            }).then(({ response }) => {
+                if (response === 0 && !window.isDestroyed()) {
+                    window.reload();
+                }
+            }).catch(() => { /* window closed before answer */ });
         });
 
         // Handle responsive again

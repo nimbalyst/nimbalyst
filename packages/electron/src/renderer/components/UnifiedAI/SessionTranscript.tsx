@@ -17,7 +17,7 @@
 import React, { useCallback, useRef, useImperativeHandle, forwardRef, useEffect, useState, useMemo } from 'react';
 import { useAtom, useSetAtom, useAtomValue } from 'jotai';
 import { store, registerInteractiveWidgetHost, unregisterInteractiveWidgetHost } from '@nimbalyst/runtime/store';
-import type { SessionData, ChatAttachment, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
+import type { SessionData, ChatAttachment, TranscriptViewMessage, TranscriptPageInfo } from '@nimbalyst/runtime/ai/server/types';
 import { AgentTranscriptPanel } from '@nimbalyst/runtime/ui/AgentTranscript/components/AgentTranscriptPanel';
 import { ClaudeCliTerminalStrip } from './ClaudeCliTerminalStrip';
 import { ClaudeCliNotInstalledNotice } from './ClaudeCliNotInstalledNotice';
@@ -33,6 +33,8 @@ import { useDialog } from '../../contexts/DialogContext';
 import { FileGutter } from '../AIChat/FileGutter';
 import { recordClaudeActivity } from '../../store/listeners/claudeUsageListeners';
 import { recordCodexActivity } from '../../store/listeners/codexUsageListeners';
+import { recordFuguActivity } from '../../store/listeners/fuguUsageListeners';
+import { transcriptMessageFingerprint } from '../../store/transcriptMessageFingerprint';
 import { PendingReviewBanner } from '../AIChat/PendingReviewBanner';
 import { WakeupBanner } from '../AIChat/WakeupBanner';
 import type { AIMode } from './ModeTag';
@@ -59,6 +61,7 @@ import {
   sessionWorktreePathAtom,
   sessionDocumentContextAtom,
   sessionEffortLevelRawAtom,
+  sessionCodexFastModeRawAtom,
   sessionLoadingAtom,
   sessionModeAtom,
   sessionModelAtom,
@@ -103,7 +106,7 @@ import {
 } from '../../store/atoms/terminals';
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
-import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom } from '../../store/atoms/appSettings';
+import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom, getProviderConfigAtom } from '../../store/atoms/appSettings';
 import { supportsEffortLevel, parseEffortLevel, type EffortLevel } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
@@ -175,6 +178,43 @@ function makeOptimisticError(text: string, extra?: Partial<TranscriptViewMessage
   };
 }
 
+interface DesktopTranscriptHistoryPage {
+  version: 1;
+  sessionId: string;
+  beforeRawMessageId: number | null;
+  rawStartId: number | null;
+  rawEndId: number | null;
+  rawMessageCount: number;
+  projectedMessageCount: number;
+  hasMoreBefore: boolean;
+  messages: TranscriptViewMessage[];
+}
+
+function mergeOlderTranscriptMessages(
+  olderMessages: TranscriptViewMessage[],
+  currentMessages: TranscriptViewMessage[],
+): TranscriptViewMessage[] {
+  if (olderMessages.length === 0) return currentMessages;
+
+  const currentIds = new Set(
+    currentMessages
+      .map(message => message.id)
+      .filter((id): id is number => Number.isFinite(id))
+  );
+  const currentFingerprints = new Set(currentMessages.map(transcriptMessageFingerprint));
+  const uniqueOlder = olderMessages.filter((message) => {
+    if (Number.isFinite(message.id) && currentIds.has(message.id)) return false;
+    const fingerprint = transcriptMessageFingerprint(message);
+    if (currentFingerprints.has(fingerprint)) return false;
+    currentIds.add(message.id);
+    currentFingerprints.add(fingerprint);
+    return true;
+  });
+
+  if (uniqueOlder.length === 0) return currentMessages;
+  return [...uniqueOlder, ...currentMessages];
+}
+
 function summarizeTeammates(
   teammates: Array<{ agentId: string; status: 'running' | 'completed' | 'errored' | 'idle' }> | undefined
 ): string {
@@ -207,6 +247,12 @@ interface Todo {
   status: 'pending' | 'in_progress' | 'completed';
   content: string;
   activeForm: string;
+}
+
+function isFuguSession(provider: string | null | undefined, model: string | null | undefined): boolean {
+  if (provider !== 'opencode') return false;
+  const normalized = (model || '').toLowerCase();
+  return normalized.includes('fugu') || normalized.includes('sakana');
 }
 
 export interface SessionTranscriptRef {
@@ -463,9 +509,11 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionWorktreePath = useAtomValue(sessionWorktreePathAtom(sessionId));
   const sessionDocumentContext = useAtomValue(sessionDocumentContextAtom(sessionId));
   const rawEffortLevel = useAtomValue(sessionEffortLevelRawAtom(sessionId));
+  const rawCodexFastModeEnabled = useAtomValue(sessionCodexFastModeRawAtom(sessionId));
   const loadSessionData = useSetAtom(loadSessionDataAtom);
   const reloadSessionData = useSetAtom(reloadSessionDataAtom);
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
+  const [isLoadingOlderTranscript, setIsLoadingOlderTranscript] = useState(false);
 
   // Child session creation for "start new session" option
   const createChildSession = useSetAtom(createChildSessionAtom);
@@ -474,6 +522,8 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionParentId = useAtomValue(sessionParentIdAtom(sessionId));
   const defaultModel = useAtomValue(defaultAgentModelAtom);
   const defaultEffortLevel = useAtomValue(defaultEffortLevelAtom);
+  const codexProviderConfigAtom = useMemo(() => getProviderConfigAtom('openai-codex'), []);
+  const codexProviderConfig = useAtomValue(codexProviderConfigAtom);
 
   const sessionData = useMemo(() => {
     if (!hasSessionData) return null;
@@ -506,6 +556,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       metadata: {
         ...safeMetadata,
         effortLevel: rawEffortLevel ?? (safeMetadata as Record<string, unknown> | undefined)?.effortLevel ?? null,
+        codexFastModeEnabled: rawCodexFastModeEnabled ?? (safeMetadata as Record<string, unknown> | undefined)?.codexFastModeEnabled ?? null,
         sessionStatus,
         currentTeammates: metadataTeammates,
         currentTodos,
@@ -521,16 +572,84 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     sessionDocumentContext,
     sessionWorktreePath,
     rawEffortLevel,
+    rawCodexFastModeEnabled,
     sessionStatus,
     metadataTeammates,
     currentTodos,
   ]);
+
+  const handleLoadOlderTranscript = useCallback(async () => {
+    if (isLoadingOlderTranscript) return;
+
+    const current = store.get(sessionStoreAtom(sessionId));
+    const pageInfo = current?.transcriptPage;
+    if (!pageInfo?.isPartial || !pageInfo.hasMoreBefore || pageInfo.rawStartId == null) {
+      return;
+    }
+
+    setIsLoadingOlderTranscript(true);
+    try {
+      const page = await window.electronAPI.invoke('ai:loadTranscriptPage', sessionId, {
+        beforeRawMessageId: pageInfo.rawStartId,
+        count: 700,
+      }) as DesktopTranscriptHistoryPage | null;
+
+      const latest = store.get(sessionStoreAtom(sessionId));
+      if (!latest) return;
+
+      const latestPageInfo = latest.transcriptPage ?? pageInfo;
+      if (!page || page.messages.length === 0) {
+        updateSessionStore({
+          sessionId,
+          updates: {
+            transcriptPage: {
+              ...latestPageInfo,
+              hasMoreBefore: false,
+            } satisfies TranscriptPageInfo,
+          },
+        });
+        return;
+      }
+
+      updateSessionStore({
+        sessionId,
+        updates: {
+          messages: mergeOlderTranscriptMessages(page.messages, latest.messages ?? []),
+          transcriptPage: {
+            ...latestPageInfo,
+            isPartial: true,
+            hasMoreBefore: page.hasMoreBefore,
+            rawStartId: page.rawStartId ?? latestPageInfo.rawStartId,
+            rawEndId: latestPageInfo.rawEndId ?? page.rawEndId,
+            rawMessageCount: (latestPageInfo.rawMessageCount ?? 0) + page.rawMessageCount,
+            totalRawMessageCount: latestPageInfo.totalRawMessageCount,
+          } satisfies TranscriptPageInfo,
+        },
+      });
+    } catch (error) {
+      console.error('[SessionTranscript] Failed to load older transcript page:', error);
+    } finally {
+      setIsLoadingOlderTranscript(false);
+    }
+  }, [isLoadingOlderTranscript, sessionId, updateSessionStore]);
 
   // Effort level: read from session metadata, fall back to global default
   const showEffortLevel = useMemo(() => supportsEffortLevel(currentModel), [currentModel]);
   const effortLevel = useMemo(() => {
     return rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel;
   }, [rawEffortLevel, defaultEffortLevel]);
+
+  const showCodexFastMode = useMemo(() => {
+    const model = currentModel ?? '';
+    return provider === 'openai-codex' || model === 'openai-codex' || model.startsWith('openai-codex:');
+  }, [provider, currentModel]);
+
+  const codexFastModeEnabled = useMemo(() => {
+    if (typeof rawCodexFastModeEnabled === 'boolean') {
+      return rawCodexFastModeEnabled;
+    }
+    return (codexProviderConfig as { fastModeEnabled?: boolean } | undefined)?.fastModeEnabled === true;
+  }, [rawCodexFastModeEnabled, codexProviderConfig]);
 
   // Memoize the teammate list passed to AgentTranscriptPanel so its memo
   // comparison doesn't see a new array reference on every keystroke. Without
@@ -798,13 +917,19 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     if (!sessionId || !workspacePath) return;
     if (!hasSessionData) {
       loadSessionData({ sessionId, workspacePath });
+    } else if (messages.length === 0) {
+      // Session list/restore code seeds lightweight placeholder sessionStore
+      // entries with an empty message array. Do not let a running session keep
+      // that placeholder mounted forever; hydrate the real transcript even
+      // while the agent is processing.
+      reloadSessionData({ sessionId, workspacePath });
     } else if (!isProcessing) {
       // Session data exists but session is idle/completed -- reload from DB
       // to pick up any messages that arrived after the cached snapshot
       // (e.g., the user navigated away during streaming and came back after completion)
       reloadSessionData({ sessionId, workspacePath });
     }
-  }, [sessionId, workspacePath, hasSessionData, isProcessing, loadSessionData, reloadSessionData]);
+  }, [sessionId, workspacePath, hasSessionData, messages.length, isProcessing, loadSessionData, reloadSessionData]);
 
   // Ensure centralized file/pending atoms are initialized for this session in Files mode.
   useEffect(() => {
@@ -1286,13 +1411,22 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         inputType: 'user' as const,
       };
 
+      if (provider === 'openai-codex') {
+        void recordCodexActivity();
+      }
+      if (isFuguSession(provider, currentModel)) {
+        void recordFuguActivity();
+      }
+
       await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
 
       // Record activity for usage tracking (wake up polling if sleeping)
       if (provider?.startsWith('claude')) {
         recordClaudeActivity();
       } else if (provider === 'openai-codex') {
-        recordCodexActivity();
+        void recordCodexActivity();
+      } else if (isFuguSession(provider, currentModel)) {
+        void recordFuguActivity();
       }
     } catch (error) {
       console.error('[SessionTranscript] Failed to send message:', error);
@@ -1308,7 +1442,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       });
       setIsProcessing(false);
     }
-  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity]);
+  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, currentModel, recordClaudeActivity]);
 
   // Launch a sibling session from a `launch: new-session` action prompt.
   // Builds the originating-session mention prefix here (in the renderer) so the
@@ -1546,6 +1680,16 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       previous_level: previousLevel,
     });
   }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog]);
+
+  const handleCodexFastModeChange = useCallback(async (enabled: boolean) => {
+    const previousValue = codexFastModeEnabled;
+    await updateSessionMetadataField(sessionId, 'codexFastModeEnabled', enabled, null, updateSessionStore);
+    posthog?.capture('codex_fast_mode_changed', {
+      enabled,
+      previous_enabled: previousValue,
+      scope: 'session',
+    });
+  }, [sessionId, updateSessionStore, codexFastModeEnabled, posthog]);
 
   const handleCommandSelect = useCallback((command: string) => {
     setDraftInput(command);
@@ -2398,6 +2542,8 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             onGroupByDirectoryChange={setGroupByDirectory}
             onOpenInExternalEditor={hasExternalEditor ? handleOpenInExternalEditor : undefined}
             externalEditorName={externalEditorName}
+            onLoadOlderTranscript={handleLoadOlderTranscript}
+            isLoadingOlderTranscript={isLoadingOlderTranscript}
             onCompact={handleCompact}
             promptAdditions={showPromptAdditions ? promptAdditions : null}
             currentTeammates={transcriptTeammates}
@@ -2597,6 +2743,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         effortLevel={effortLevel}
         onEffortLevelChange={handleEffortLevelChange}
         showEffortLevel={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showEffortLevel}
+        codexFastModeEnabled={codexFastModeEnabled}
+        onCodexFastModeChange={handleCodexFastModeChange}
+        showCodexFastMode={showCodexFastMode}
         tokenUsage={tokenUsage}
         provider={provider}
         onQueue={handleQueue}

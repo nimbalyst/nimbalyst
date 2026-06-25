@@ -65,6 +65,8 @@ class WebSocketClient(
     private var reconnectJob: Job? = null
     private var isIntentionallyClosed = false
     private var connectionParams: ConnectionParams? = null
+    @Volatile
+    private var connectionGeneration: Long = 0
 
     @Volatile
     var isConnected: Boolean = false
@@ -83,6 +85,7 @@ class WebSocketClient(
 
     fun disconnect() {
         isIntentionallyClosed = true
+        bumpConnectionGeneration()
         reconnectJob?.cancel()
         reconnectJob = null
         currentWebSocket?.close(1000, "client disconnect")
@@ -94,6 +97,7 @@ class WebSocketClient(
 
     private fun connectInternal() {
         val params = connectionParams ?: return
+        val generation = bumpConnectionGeneration()
         reconnectJob?.cancel()
         currentWebSocket?.cancel()
         currentWebSocket = null
@@ -108,22 +112,26 @@ class WebSocketClient(
 
         currentWebSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (!isCurrentConnection(webSocket, generation)) return
                 Log.d(TAG, "WebSocket onOpen: ${response.code}")
                 reconnectJob?.cancel()
                 updateConnection(true)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (!isCurrentConnection(webSocket, generation)) return
                 onTextMessage?.invoke(text)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                if (!isCurrentConnection(webSocket, generation)) return
                 Log.d(TAG, "WebSocket onClosing: code=$code reason=$reason")
                 webSocket.close(code, reason)
                 updateConnection(false)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (!isCurrentConnection(webSocket, generation)) return
                 Log.d(TAG, "WebSocket onClosed: code=$code reason=$reason")
                 updateConnection(false)
                 if (!isIntentionallyClosed) {
@@ -132,6 +140,7 @@ class WebSocketClient(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (!isCurrentConnection(webSocket, generation)) return
                 Log.e(TAG, "WebSocket onFailure: ${t.message}, response=${response?.code}", t)
                 updateConnection(false)
                 val httpCode = response?.code
@@ -158,6 +167,16 @@ class WebSocketClient(
                 connectInternal()
             }
         }
+    }
+
+    @Synchronized
+    private fun bumpConnectionGeneration(): Long {
+        connectionGeneration += 1
+        return connectionGeneration
+    }
+
+    private fun isCurrentConnection(webSocket: WebSocket, generation: Long): Boolean {
+        return generation == connectionGeneration && currentWebSocket == webSocket
     }
 
     private fun buildWebSocketUrl(params: ConnectionParams): String {

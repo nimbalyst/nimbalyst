@@ -689,7 +689,7 @@ async function tryCreateServer(port: number): Promise<any> {
             return;
           }
           const body = (await readJsonBody(req)) as
-            | { sessionId?: string; toolName?: string; toolInput?: unknown; cwd?: string }
+            | { sessionId?: string; toolName?: string; toolInput?: unknown; workspacePath?: string; cwd?: string }
             | undefined;
           const permSessionId = body?.sessionId;
           const permToolName = body?.toolName;
@@ -703,7 +703,7 @@ async function tryCreateServer(port: number): Promise<any> {
             const result = await handleToolPermission(
               { tool_name: permToolName, input: body?.toolInput ?? {} },
               permSessionId,
-              body?.cwd,
+              body?.workspacePath || body?.cwd,
               {},
             );
             let decision: "allow" | "deny" = "deny";

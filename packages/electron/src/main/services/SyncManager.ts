@@ -33,6 +33,10 @@ import { setSleepPreventionMode, setSyncConnected, shutdownSleepPrevention, type
 import { reconnectAllTrackerSyncs } from './TrackerSyncManager';
 import { BrowserWindow } from 'electron';
 import { timeStartupPhase } from '../utils/startupTiming';
+import { getMobileTranscriptTailJson } from '../utils/transcriptHelpers';
+import { claudeUsageService, onClaudeUsageUpdate } from './ClaudeUsageService';
+import { codexUsageService, onCodexUsageUpdate } from './CodexUsageService';
+import { fuguUsageService, onFuguUsageUpdate } from './FuguUsageService';
 
 function loadSyncModule() {
   return syncModule;
@@ -97,6 +101,12 @@ const MIN_INCREMENTAL_SYNC_INTERVAL = 5000; // 5 seconds minimum between syncs
 // Sessions older than this that are missing from the server were TTL-expired;
 // re-uploading them is wasteful because they'll just be expired again.
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+const ACTIVE_AGENT_STATUS_KINDS = new Set(['thinking', 'responding', 'tool', 'editing']);
+
+function hasActiveSyncedAgentStatus(session: { agentStatus?: { kind?: string } | null }): boolean {
+  return !!session.agentStatus?.kind && ACTIVE_AGENT_STATUS_KINDS.has(session.agentStatus.kind.toLowerCase());
+}
 
 // Event emitter for sync status changes
 type SyncStatusListener = (status: { connected: boolean; syncing: boolean; error: string | null }) => void;
@@ -541,6 +551,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         return freshJwt;
       },
       encryptionKey,
+      getMobileTranscriptTailJson,
       // Use callback for dynamic presence updates (called every 30s)
       getDeviceInfo: () => getDeviceInfo(stytchUserId),
     });
@@ -752,19 +763,19 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
             getMessagesForSync: getSessionMessagesForSyncBatch,
           });
         }
-        // Clear stale isExecuting flags: on startup, no sessions are running yet.
+        // Clear stale execution/status flags: on startup, no sessions are running yet.
         // If the app crashed or the WebSocket disconnected before isExecuting:false
-        // was pushed, the server retains the stale flag permanently.
-        // Clear the local cache and re-sync affected sessions to push isExecuting:false.
-        const staleExecutingSessions = serverIndex.sessions.filter(s => s.isExecuting);
+        // or a terminal agentStatus was pushed, the server retains stale mobile UI state.
+        // Clear the local cache and re-sync affected sessions to push idle state.
+        const staleExecutingSessions = serverIndex.sessions.filter(s => s.isExecuting || hasActiveSyncedAgentStatus(s));
         if (staleExecutingSessions.length > 0) {
-          logger.main.info(`[SyncManager] Clearing stale isExecuting for ${staleExecutingSessions.length} sessions`);
-          // Clear isExecuting in the provider's local cache so syncSessionsToIndex
-          // builds entries with isExecuting:false
+          logger.main.info(`[SyncManager] Clearing stale execution status for ${staleExecutingSessions.length} sessions`);
+          // Clear execution/status in the provider's local cache so syncSessionsToIndex
+          // builds entries with isExecuting:false and agentStatus:idle.
           if (provider.clearAllExecutingState) {
             provider.clearAllExecutingState();
           }
-          // Re-sync these sessions to push the cleared flag to the server
+          // Re-sync these sessions to push the cleared state to the server.
           const staleLocalSessions = staleExecutingSessions
             .map(s => allLocalSessions.find(ls => ls.id === s.sessionId))
             .filter((s): s is NonNullable<typeof s> => s != null);
@@ -782,6 +793,9 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         lastIncrementalSyncAt = Date.now();
       }
     }, 2000); // Wait for index connection
+
+    // Push refreshed plan-usage to mobile whenever the usage trackers update.
+    registerUsageSettingsSync();
 
     // Sync current OpenAI API key to mobile (in case mobile connects after key was set)
     setTimeout(async () => {
@@ -1237,6 +1251,64 @@ async function getAvailableModelsForMobile(): Promise<{ models: Array<{ id: stri
  *
  * @param openaiApiKey The OpenAI API key to sync
  */
+function buildUsageSnapshotForMobile(): import('@nimbalyst/runtime/sync').SyncedUsageSnapshot | undefined {
+  const claude = claudeUsageService.getCached();
+  const codex = codexUsageService.getCached();
+  const fugu = fuguUsageService.getCached();
+  if (!claude && !codex && !fugu) return undefined;
+  return {
+    claude: claude ? {
+      fiveHour: claude.fiveHour,
+      sevenDay: claude.sevenDay,
+      sevenDayOpus: claude.sevenDayOpus,
+      lastUpdated: claude.lastUpdated,
+    } : undefined,
+    codex: codex ? {
+      fiveHour: codex.fiveHour,
+      sevenDay: codex.sevenDay,
+      credits: codex.credits,
+      limitsAvailable: codex.limitsAvailable,
+      lastUpdated: codex.lastUpdated,
+    } : undefined,
+    fugu: fugu ? {
+      fiveHour: fugu.fiveHour,
+      sevenDay: fugu.sevenDay,
+      tokenUsage: fugu.tokenUsage,
+      limitsAvailable: fugu.limitsAvailable,
+      accountUsageConfigured: fugu.accountUsageConfigured,
+      accountUsageError: fugu.accountUsageError,
+      lastUpdated: fugu.lastUpdated,
+    } : undefined,
+  };
+}
+
+// Usage refreshes are frequent during active turns; coalesce pushes so mobile
+// gets at most one settings broadcast per window.
+let usageSyncTimer: NodeJS.Timeout | null = null;
+function scheduleUsageSettingsSync(): void {
+  if (usageSyncTimer) return;
+  usageSyncTimer = setTimeout(async () => {
+    usageSyncTimer = null;
+    try {
+      const Store = (await import('electron-store')).default;
+      const aiStore = new Store({ name: 'ai-settings' });
+      const apiKeys = aiStore.get('apiKeys', {}) as Record<string, string>;
+      await syncSettingsToMobile(apiKeys['openai']);
+    } catch (error) {
+      logger.main.warn('[SyncManager] Failed to sync usage to mobile:', error);
+    }
+  }, 10_000);
+}
+
+let usageListenersRegistered = false;
+export function registerUsageSettingsSync(): void {
+  if (usageListenersRegistered) return;
+  usageListenersRegistered = true;
+  onClaudeUsageUpdate(() => scheduleUsageSettingsSync());
+  onCodexUsageUpdate(() => scheduleUsageSettingsSync());
+  onFuguUsageUpdate(() => scheduleUsageSettingsSync());
+}
+
 export async function syncSettingsToMobile(openaiApiKey?: string): Promise<void> {
   const provider = state.provider;
   if (!provider) {
@@ -1272,6 +1344,7 @@ export async function syncSettingsToMobile(openaiApiKey?: string): Promise<void>
       } : undefined,
       availableModels,
       defaultModel,
+      usage: buildUsageSnapshotForMobile(),
       metaAgentEnabled,
       version: settingsVersion,
     });

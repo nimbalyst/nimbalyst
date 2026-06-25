@@ -102,6 +102,12 @@ data class SessionControlPayload(
     val sentBy: String = "mobile",
 )
 
+data class SessionControlBroadcast(
+    val type: String,
+    val message: SessionControlPayload,
+    val fromConnectionId: String? = null,
+)
+
 data class IndexSyncResponse(
     val type: String,
     val sessions: List<ServerSessionEntry> = emptyList(),
@@ -151,15 +157,31 @@ data class ServerSessionEntry(
 data class ClientMetadata(
     val currentContext: ContextInfo? = null,
     val hasPendingPrompt: Boolean? = null,
+    val agentStatus: AgentStatus? = null,
     val phase: String? = null,
     val tags: List<String>? = null,
     val draftInput: String? = null,
     val draftUpdatedAt: Long? = null,
+    // Compact pre-projected transcript tail the desktop publishes for oversized
+    // sessions whose per-message sync was disabled (message_limit_exceeded).
+    val mobileTranscriptTailJson: String? = null,
+    val mobileTranscriptTailUpdatedAt: Long? = null,
+    // Latest cursor-based history page requested by this mobile client.
+    val mobileTranscriptHistoryPageJson: String? = null,
+    val mobileTranscriptHistoryPageUpdatedAt: Long? = null,
 )
 
 data class ContextInfo(
     val tokens: Int,
     val contextWindow: Int,
+)
+
+data class AgentStatus(
+    val kind: String? = null,
+    val label: String? = null,
+    val detail: String? = null,
+    val toolName: String? = null,
+    val updatedAt: Long? = null,
 )
 
 data class IndexBroadcast(
@@ -193,6 +215,14 @@ data class CreateSessionResponse(
     val error: String? = null,
 )
 
+data class CreateProjectResponse(
+    val requestId: String,
+    val success: Boolean,
+    val projectId: String? = null,
+    val name: String? = null,
+    val error: String? = null,
+)
+
 data class EncryptedSettingsPayload(
     val encryptedSettings: String,
     val settingsIv: String,
@@ -211,6 +241,7 @@ data class SyncedSettings(
     val openaiApiKey: String? = null,
     val availableModels: List<SyncedAvailableModel>? = null,
     val defaultModel: String? = null,
+    val usage: SyncedUsageSnapshot? = null,
     val version: Int,
 )
 
@@ -218,6 +249,44 @@ data class SyncedAvailableModel(
     val id: String,
     val name: String,
     val provider: String,
+)
+
+/** One rate-limit window of a provider plan (utilization is 0-100). */
+data class SyncedUsageWindow(
+    val utilization: Double = 0.0,
+    val resetsAt: String? = null,
+)
+
+data class SyncedUsageCredits(
+    val hasCredits: Boolean = false,
+    val unlimited: Boolean = false,
+    val balance: Double? = null,
+)
+
+data class SyncedTokenUsage(
+    val inputTokens: Long? = null,
+    val outputTokens: Long? = null,
+    val totalTokens: Long? = null,
+    val sessionCount: Int? = null,
+    val lastSessionUpdatedAt: Long? = null,
+)
+
+data class SyncedProviderUsage(
+    val fiveHour: SyncedUsageWindow? = null,
+    val sevenDay: SyncedUsageWindow? = null,
+    val sevenDayOpus: SyncedUsageWindow? = null,
+    val credits: SyncedUsageCredits? = null,
+    val tokenUsage: SyncedTokenUsage? = null,
+    val limitsAvailable: Boolean? = null,
+    val accountUsageConfigured: Boolean? = null,
+    val accountUsageError: String? = null,
+    val lastUpdated: Long? = null,
+)
+
+data class SyncedUsageSnapshot(
+    val claude: SyncedProviderUsage? = null,
+    val codex: SyncedProviderUsage? = null,
+    val fugu: SyncedProviderUsage? = null,
 )
 
 data class DevicesListMessage(

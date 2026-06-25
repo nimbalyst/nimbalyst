@@ -49,6 +49,8 @@ export type {
   SessionControlMessage,
   SyncedSettings,
   SyncedAvailableModel,
+  SyncedUsageSnapshot,
+  SyncedUsageWindow,
 } from './types';
 
 export { createCollabV3Sync } from './CollabV3Sync';

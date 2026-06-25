@@ -43,7 +43,7 @@ export type Scheduler = (cb: () => void) => void;
 interface SessionState {
   /** Live canonical events keyed by id for O(1) lookup. */
   eventsById: Map<number, TranscriptEvent>;
-  /** Last published merged messages array (DB messages + live messages, sorted by id). */
+  /** Last published merged messages array (DB messages, then live messages). */
   currentMessages: TranscriptViewMessage[];
   /** Index of each event id in `currentMessages`, for O(1) in-place patches. */
   messageIndexById: Map<number, number>;
@@ -173,24 +173,43 @@ export class TranscriptStreamAccumulator {
     const liveMessages = liveViewModel.messages;
     const dbMessages = this.opts.readDbMessages(sessionId);
 
-    const liveIds = new Set(liveMessages.map((m) => m.id));
     const hasLiveUserMessage = liveMessages.some((m) => m.type === 'user_message');
+
+    // DB view-message ids and live event ids come from different id spaces
+    // when the session loads as a partial raw tail (raw-anchored stabilized
+    // ids vs in-memory event sequence ids), so the two sets must never be
+    // ordered or deduped against each other by id. Instead: the live set
+    // owns the transcript from its first event's timestamp onward, and DB
+    // rows own everything strictly before. DB copies of live messages
+    // (pulled in by reloads mid-turn) carry the same raw timestamps, so the
+    // cut drops them in favor of the live versions.
+    let liveStartMs = Infinity;
+    for (const m of liveMessages) {
+      const ms = toEpochMs(m.createdAt);
+      if (Number.isFinite(ms) && ms < liveStartMs) liveStartMs = ms;
+    }
 
     const merged: TranscriptViewMessage[] = [];
     for (const m of dbMessages) {
-      if (liveIds.has(m.id)) continue;
       // Drop optimistic messages (negative ids) once a real user_message
       // is in the live set -- the real version replaces the optimistic
       // copy we'd otherwise duplicate.
-      if (m.id < 0 && hasLiveUserMessage) continue;
+      if (m.id < 0) {
+        if (!hasLiveUserMessage) merged.push(m);
+        continue;
+      }
+      if (toEpochMs(m.createdAt) >= liveStartMs) continue;
       merged.push(m);
     }
+    const liveOffset = merged.length;
     for (const m of liveMessages) merged.push(m);
-    merged.sort((a, b) => a.id - b.id);
 
     state.currentMessages = merged;
+    // Index only the live span: in-place text patches target live event
+    // ids, and a DB row whose id happens to collide numerically with a
+    // live event id must never receive the patch.
     state.messageIndexById = new Map();
-    for (let i = 0; i < merged.length; i++) {
+    for (let i = liveOffset; i < merged.length; i++) {
       state.messageIndexById.set(merged[i].id, i);
     }
   }
@@ -220,6 +239,13 @@ export class TranscriptStreamAccumulator {
 
     return true;
   }
+}
+
+function toEpochMs(value: Date | string | number | null | undefined): number {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return new Date(value).getTime();
+  return NaN;
 }
 
 /**

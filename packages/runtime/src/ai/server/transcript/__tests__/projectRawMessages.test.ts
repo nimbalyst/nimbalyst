@@ -87,6 +87,385 @@ describe('projectRawMessagesToViewMessages', () => {
     });
   });
 
+  describe('OpenCode provider', () => {
+    it('projects versioned OpenCode text and tool events', async () => {
+      const messages: RawMessage[] = [
+        raw({
+          id: 1,
+          source: 'opencode',
+          direction: 'input',
+          content: JSON.stringify({ prompt: 'Run the Fugu check' }),
+        }),
+        raw({
+          id: 2,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'message.updated.1',
+            properties: {
+              sessionID: SESSION_ID,
+              info: { id: 'm-assistant', sessionID: SESSION_ID, role: 'assistant' },
+            },
+          }),
+        }),
+        raw({
+          id: 3,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'message.part.updated.1',
+            properties: {
+              sessionID: SESSION_ID,
+              part: {
+                id: 'p-tool',
+                sessionID: SESSION_ID,
+                messageID: 'm-assistant',
+                type: 'tool',
+                callID: 'call-1',
+                tool: 'grep',
+                state: {
+                  status: 'running',
+                  input: { pattern: 'fugu', path: '/tmp' },
+                },
+              },
+            },
+          }),
+        }),
+        raw({
+          id: 4,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'message.part.delta.1',
+            properties: {
+              sessionID: SESSION_ID,
+              messageID: 'm-assistant',
+              partID: 'p-text',
+              field: 'text',
+              delta: 'visible fugu response',
+            },
+          }),
+        }),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'opencode');
+
+      expect(vms.find((m) => m.type === 'assistant_message')?.text).toBe('visible fugu response');
+      const toolCall = vms.find((m) => m.type === 'tool_call');
+      expect(toolCall?.toolCall?.toolName).toBe('grep');
+      expect(toolCall?.toolCall?.arguments).toEqual({ pattern: 'fugu', path: '/tmp' });
+    });
+
+    it('projects OpenCode assistant text snapshots when deltas are not present', async () => {
+      const messages: RawMessage[] = [
+        raw({
+          id: 1,
+          source: 'opencode',
+          direction: 'input',
+          content: JSON.stringify({ prompt: 'Run the Fugu check' }),
+        }),
+        raw({
+          id: 2,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'message.updated.1',
+            properties: {
+              sessionID: SESSION_ID,
+              info: { id: 'm-assistant', sessionID: SESSION_ID, role: 'assistant' },
+            },
+          }),
+        }),
+        raw({
+          id: 3,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'message.part.updated.1',
+            properties: {
+              sessionID: SESSION_ID,
+              part: {
+                id: 'p-text',
+                sessionID: SESSION_ID,
+                messageID: 'm-assistant',
+                type: 'text',
+                text: 'visible from snapshot',
+              },
+            },
+          }),
+        }),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'opencode');
+
+      expect(vms.find((m) => m.type === 'assistant_message')?.text).toBe('visible from snapshot');
+    });
+
+    it('projects OpenCode append-only snapshots without duplicating repeated full text', async () => {
+      const messages: RawMessage[] = [
+        raw({
+          id: 1,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'message.updated.1',
+            properties: {
+              sessionID: SESSION_ID,
+              info: { id: 'm-assistant', sessionID: SESSION_ID, role: 'assistant' },
+            },
+          }),
+        }),
+        raw({
+          id: 2,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'message.part.updated.1',
+            properties: {
+              sessionID: SESSION_ID,
+              part: {
+                id: 'p-text',
+                sessionID: SESSION_ID,
+                messageID: 'm-assistant',
+                type: 'text',
+                text: 'Hello',
+              },
+            },
+          }),
+        }),
+        raw({
+          id: 3,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'message.part.updated.1',
+            properties: {
+              sessionID: SESSION_ID,
+              part: {
+                id: 'p-text',
+                sessionID: SESSION_ID,
+                messageID: 'm-assistant',
+                type: 'text',
+                text: 'Hello world',
+              },
+            },
+          }),
+        }),
+        raw({
+          id: 4,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'message.part.updated.1',
+            properties: {
+              sessionID: SESSION_ID,
+              part: {
+                id: 'p-text',
+                sessionID: SESSION_ID,
+                messageID: 'm-assistant',
+                type: 'text',
+                text: 'Hello world',
+              },
+            },
+          }),
+        }),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'opencode');
+
+      expect(vms.find((m) => m.type === 'assistant_message')?.text).toBe('Hello world');
+    });
+
+    it('does not project OpenCode user prompt snapshots as assistant output', async () => {
+      const messages: RawMessage[] = [
+        raw({
+          id: 1,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'message.updated.1',
+            properties: {
+              sessionID: SESSION_ID,
+              info: { id: 'm-user', sessionID: SESSION_ID, role: 'user' },
+            },
+          }),
+        }),
+        raw({
+          id: 2,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'message.part.updated.1',
+            properties: {
+              sessionID: SESSION_ID,
+              part: {
+                id: 'p-user',
+                sessionID: SESSION_ID,
+                messageID: 'm-user',
+                type: 'text',
+                text: 'this is the user prompt',
+              },
+            },
+          }),
+        }),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'opencode');
+
+      expect(vms.some((m) => m.type === 'assistant_message')).toBe(false);
+    });
+
+    it('projects OpenCode permission requests as ToolPermission cards', async () => {
+      const messages: RawMessage[] = [
+        raw({
+          id: 1,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'permission.updated',
+            properties: {
+              sessionID: SESSION_ID,
+              id: 'perm-1',
+              type: 'external_directory',
+              title: 'Access external directory',
+              pattern: ['/tmp/*'],
+            },
+          }),
+        }),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'opencode');
+
+      const toolCall = vms.find((m) => m.type === 'tool_call');
+      expect(toolCall?.toolCall?.toolName).toBe('ToolPermission');
+      expect(toolCall?.toolCall?.providerToolCallId).toBe('perm-1');
+      expect(toolCall?.toolCall?.arguments).toMatchObject({
+        requestId: 'perm-1',
+        toolName: 'OpenCode',
+        openCodePermissionType: 'external_directory',
+        openCodePermissionPattern: ['/tmp/*'],
+      });
+    });
+
+    it('projects OpenCode v2 permission.asked requests as ToolPermission cards', async () => {
+      const messages: RawMessage[] = [
+        raw({
+          id: 1,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'permission.asked',
+            properties: {
+              sessionID: SESSION_ID,
+              id: 'perm-v2',
+              permission: 'external_directory',
+              patterns: ['/mnt/traderbot-nvme/*', '/home/reyn/trader_local_archive/*'],
+              metadata: {},
+              always: [],
+            },
+          }),
+        }),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'opencode');
+
+      const toolCall = vms.find((m) => m.type === 'tool_call');
+      expect(toolCall?.toolCall?.toolName).toBe('ToolPermission');
+      expect(toolCall?.toolCall?.providerToolCallId).toBe('perm-v2');
+      expect(toolCall?.toolCall?.arguments).toMatchObject({
+        requestId: 'perm-v2',
+        toolName: 'OpenCode',
+        openCodePermissionType: 'external_directory',
+        openCodePermissionPattern: ['/mnt/traderbot-nvme/*', '/home/reyn/trader_local_archive/*'],
+      });
+    });
+
+    it('projects OpenCode permission replies onto the ToolPermission card', async () => {
+      const messages: RawMessage[] = [
+        raw({
+          id: 1,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'permission.updated',
+            properties: {
+              sessionID: SESSION_ID,
+              id: 'perm-1',
+              type: 'external_directory',
+              title: 'Access external directory',
+              pattern: ['/tmp/*'],
+            },
+          }),
+        }),
+        raw({
+          id: 2,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'permission.replied',
+            properties: {
+              sessionID: SESSION_ID,
+              permissionID: 'perm-1',
+              response: 'always',
+            },
+          }),
+        }),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'opencode');
+
+      const toolCall = vms.find((m) => m.type === 'tool_call');
+      expect(toolCall?.toolCall?.status).toBe('completed');
+      expect(JSON.parse(toolCall?.toolCall?.result as string)).toEqual({
+        decision: 'allow',
+        scope: 'always',
+      });
+    });
+
+    it('projects OpenCode permission responses persisted by Nimbalyst', async () => {
+      const messages: RawMessage[] = [
+        raw({
+          id: 1,
+          source: 'opencode',
+          hidden: true,
+          content: JSON.stringify({
+            type: 'permission.updated',
+            properties: {
+              sessionID: SESSION_ID,
+              id: 'perm-1',
+              type: 'external_directory',
+              title: 'Access external directory',
+              pattern: ['/tmp/*'],
+            },
+          }),
+        }),
+        raw({
+          id: 2,
+          source: 'opencode',
+          content: JSON.stringify({
+            type: 'nimbalyst_tool_result',
+            tool_use_id: 'perm-1',
+            result: JSON.stringify({
+              decision: 'allow',
+              scope: 'once',
+              respondedBy: 'desktop',
+            }),
+          }),
+        }),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'opencode');
+
+      const toolCall = vms.find((m) => m.type === 'tool_call');
+      expect(toolCall?.toolCall?.status).toBe('completed');
+      expect(JSON.parse(toolCall?.toolCall?.result as string)).toMatchObject({
+        decision: 'allow',
+        scope: 'once',
+        respondedBy: 'desktop',
+      });
+    });
+  });
+
   describe('Codex item ID reuse across turns', () => {
     // Regression: Codex resets item IDs (item_1, item_2, ...) per turn within
     // a single session. The mobile path runs all messages through the parser

@@ -84,6 +84,10 @@ interface AgentTranscriptPanelProps {
   onOpenInExternalEditor?: (filePath: string) => void;
   /** Optional: Display name for external editor (e.g., "VS Code") */
   externalEditorName?: string;
+  /** Optional: Load the next older transcript page for partial desktop transcripts */
+  onLoadOlderTranscript?: () => Promise<void>;
+  /** Whether an older transcript page is currently loading */
+  isLoadingOlderTranscript?: boolean;
   /** Optional: Callback to trigger /compact command */
   onCompact?: () => void;
   /** Optional: Prompt additions for debugging (system prompt, user message, and attachments) */
@@ -104,6 +108,10 @@ interface AgentTranscriptPanelProps {
   currentTeammates?: Array<{ agentId: string; status: 'running' | 'completed' | 'errored' | 'idle' }>;
   /** Optional: noun used in waiting text when teammates/workers are still running */
   waitingForNoun?: string;
+  /** Optional: exact text for the bottom transcript activity indicator */
+  waitingTextOverride?: string;
+  /** Optional: action rendered inline with the bottom transcript activity indicator */
+  waitingAction?: React.ReactNode;
   /** Current session phase for the kanban board */
   currentPhase?: string | null;
   /** Available phase columns for the kanban board picker */
@@ -143,6 +151,8 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   onGroupByDirectoryChange,
   onOpenInExternalEditor,
   externalEditorName,
+  onLoadOlderTranscript,
+  isLoadingOlderTranscript,
   onCompact,
   promptAdditions,
   appStartTime,
@@ -150,6 +160,8 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   canEmbedFile,
   currentTeammates,
   waitingForNoun,
+  waitingTextOverride,
+  waitingAction,
   currentPhase,
   phaseColumns,
   onSetPhase,
@@ -386,9 +398,14 @@ const AgentTranscriptPanelComponent = React.forwardRef<
           promptAdditions={promptAdditions}
           currentTeammates={currentTeammates ?? sessionData.metadata?.currentTeammates as Array<{ agentId: string; status: 'running' | 'completed' | 'errored' | 'idle' }> | undefined}
           waitingForNoun={waitingForNoun}
+          waitingTextOverride={waitingTextOverride}
+          waitingAction={waitingAction}
           appStartTime={appStartTime}
           renderEmbeddedFile={renderEmbeddedFile}
           canEmbedFile={canEmbedFile}
+          transcriptPageInfo={sessionData.transcriptPage}
+          onLoadOlderTranscript={onLoadOlderTranscript}
+          isLoadingOlderTranscript={isLoadingOlderTranscript}
           onSearchBarVisibilityChange={setSearchBarVisible}
         />
 
@@ -531,6 +548,13 @@ export const AgentTranscriptPanel = React.memo(
       });
       return false;
     }
+    if (prevProps.waitingTextOverride !== nextProps.waitingTextOverride) {
+      logPanelMemoDiff(nextProps.sessionId, 'waitingTextOverride', {
+        prev: prevProps.waitingTextOverride,
+        next: nextProps.waitingTextOverride,
+      });
+      return false;
+    }
 
     // Archived state changed - must re-render
     if (prevProps.isArchived !== nextProps.isArchived) {
@@ -548,6 +572,17 @@ export const AgentTranscriptPanel = React.memo(
     }
     if (prevProps.showFloatingActions !== nextProps.showFloatingActions) {
       logPanelMemoDiff(nextProps.sessionId, 'showFloatingActions');
+      return false;
+    }
+    if (prevProps.isLoadingOlderTranscript !== nextProps.isLoadingOlderTranscript) {
+      logPanelMemoDiff(nextProps.sessionId, 'isLoadingOlderTranscript', {
+        prev: prevProps.isLoadingOlderTranscript,
+        next: nextProps.isLoadingOlderTranscript,
+      });
+      return false;
+    }
+    if (prevProps.onLoadOlderTranscript !== nextProps.onLoadOlderTranscript) {
+      logPanelMemoDiff(nextProps.sessionId, 'onLoadOlderTranscript');
       return false;
     }
 

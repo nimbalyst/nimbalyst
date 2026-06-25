@@ -17,6 +17,7 @@
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 
 import { SettingsControlService } from "../services/SettingsControlService";
+import { restartNimbalystSafely } from "../services/SafeRestartService";
 
 // ─── Tool descriptors ───────────────────────────────────────────────
 
@@ -25,6 +26,16 @@ const TOOLS = [
     name: "settings_get_overview",
     description:
       "Return a curated, redacted snapshot of Nimbalyst settings (app-level + current workspace). NEVER includes API keys, auth tokens, or secrets. Includes Stytch auth state booleans so you can tell whether sync prerequisites are met. Use this before changing anything so you can show the user what's currently set.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "restart_nimbalyst",
+    description:
+      "Safely restart Nimbalyst. Only use this when the user explicitly asks to restart or test restart behavior. If AI sessions are running, streaming, or waiting for input, reloads the desktop UI without relaunching the main process so active work continues; otherwise performs a full app relaunch.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -254,6 +265,9 @@ export async function dispatchSettingsTool(
     switch (toolName) {
       case "settings_get_overview":
         return respond({ ok: true, after: svc.getOverview(workspaceId) });
+
+      case "restart_nimbalyst":
+        return respond(await restartNimbalystSafely("settings-mcp"));
 
       case "workspace_create":
         return respond(

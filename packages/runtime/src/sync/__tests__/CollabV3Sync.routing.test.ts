@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { isIndexClientMetadataOnlyUpdateForTest } from '../CollabV3Sync';
+import {
+  isIndexClientMetadataOnlyUpdateForTest,
+  pruneClientMetadataForSyncForTest,
+} from '../CollabV3Sync';
 import type { SyncedSessionMetadata } from '../types';
 
 // Routing predicate guards against the v0.63.0 regression where metadata-only
@@ -33,6 +36,14 @@ describe('isIndexClientMetadataOnlyUpdate routing predicate', () => {
       ).toBe(false);
     });
 
+    it('routes { agentStatus } through indexUpdate', () => {
+      expect(
+        isIndexClientMetadataOnlyUpdateForTest(
+          m({ agentStatus: { kind: 'thinking', label: 'Thinking...', updatedAt: 123 } }),
+        ),
+      ).toBe(false);
+    });
+
     it('routes { phase } through indexUpdate', () => {
       expect(
         isIndexClientMetadataOnlyUpdateForTest(m({ phase: 'validating' } as Partial<SyncedSessionMetadata>)),
@@ -50,17 +61,17 @@ describe('isIndexClientMetadataOnlyUpdate routing predicate', () => {
         isIndexClientMetadataOnlyUpdateForTest(m({ lastReadAt: 123 } as Partial<SyncedSessionMetadata>)),
       ).toBe(false);
     });
-  });
 
-  describe('stays on patch fast-path (Group A)', () => {
-    it('routes { draftInput, draftUpdatedAt } through the patch path', () => {
+    it('does not route { draftInput, draftUpdatedAt } through the patch path', () => {
       expect(
         isIndexClientMetadataOnlyUpdateForTest(
           m({ draftInput: 'hello', draftUpdatedAt: 123 } as Partial<SyncedSessionMetadata>),
         ),
-      ).toBe(true);
+      ).toBe(false);
     });
+  });
 
+  describe('stays on patch fast-path (Group A)', () => {
     it('routes { hasBeenNamed } through the patch path', () => {
       expect(
         isIndexClientMetadataOnlyUpdateForTest(
@@ -94,5 +105,39 @@ describe('isIndexClientMetadataOnlyUpdate routing predicate', () => {
     it('refuses the patch path when given an empty update', () => {
       expect(isIndexClientMetadataOnlyUpdateForTest(m({}))).toBe(false);
     });
+  });
+});
+
+describe('client metadata transcript payload pruning', () => {
+  it('keeps a requested history page and drops the tail when combined metadata is too large', () => {
+    const metadata = pruneClientMetadataForSyncForTest(
+      {
+        mobileTranscriptTailJson: 't'.repeat(200_000),
+        mobileTranscriptTailUpdatedAt: 1,
+        mobileTranscriptHistoryPageJson: 'h'.repeat(200_000),
+        mobileTranscriptHistoryPageUpdatedAt: 2,
+      },
+      'test',
+    );
+
+    expect(metadata.mobileTranscriptHistoryPageJson).toBeDefined();
+    expect(metadata.mobileTranscriptHistoryPageUpdatedAt).toBe(2);
+    expect(metadata.mobileTranscriptTailJson).toBeUndefined();
+    expect(metadata.mobileTranscriptTailUpdatedAt).toBeUndefined();
+  });
+
+  it('drops a single oversized history page instead of sending it to CollabV3', () => {
+    const metadata = pruneClientMetadataForSyncForTest(
+      {
+        mobileTranscriptHistoryPageJson: 'h'.repeat(300_000),
+        mobileTranscriptHistoryPageUpdatedAt: 2,
+        agentStatus: { kind: 'idle', label: 'Idle', updatedAt: 3 },
+      },
+      'test',
+    );
+
+    expect(metadata.mobileTranscriptHistoryPageJson).toBeUndefined();
+    expect(metadata.mobileTranscriptHistoryPageUpdatedAt).toBeUndefined();
+    expect(metadata.agentStatus?.kind).toBe('idle');
   });
 });

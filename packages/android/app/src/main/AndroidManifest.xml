@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:name=".NimbalystApplication"
@@ -17,6 +19,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.NimbalystAndroid">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -49,6 +52,15 @@
                  NimbalystFirebaseMessagingService). No BROWSABLE intent-filter is
                  declared for it, which would needlessly let any web page invoke it. -->
         </activity>
+
+        <service
+            android:name=".sync.SyncForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Maintains the encrypted sync WebSocket to the paired desktop while the app is backgrounded." />
+        </service>
 
         <service
             android:name=".notifications.NimbalystFirebaseMessagingService"

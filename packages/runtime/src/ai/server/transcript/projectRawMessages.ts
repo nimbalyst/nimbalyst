@@ -90,6 +90,37 @@ export async function rawMessagesToCanonicalEvents(
 }
 
 /**
+ * Raw-anchored view-message ids live in their own range, far above any
+ * canonical/live transcript event id, so consumers can tell the two id
+ * spaces apart structurally. Live event ids and raw-anchored page ids must
+ * never be ordered or deduped against each other by value (see
+ * transcriptStreamAccumulator and reloadSessionDataAtom).
+ */
+export const RAW_ANCHORED_VIEW_MESSAGE_ID_OFFSET = 1_000_000_000_000;
+
+export function stabilizedRawPageViewMessageIdBase(rawStartId: number): number {
+  return RAW_ANCHORED_VIEW_MESSAGE_ID_OFFSET + Math.max(1, Math.floor(rawStartId)) * 10_000;
+}
+
+export function isRawAnchoredViewMessageId(id: number): boolean {
+  return Number.isFinite(id) && id >= RAW_ANCHORED_VIEW_MESSAGE_ID_OFFSET;
+}
+
+export function stabilizeRawPageViewMessageIds(
+  messages: TranscriptViewMessage[],
+  rawStartId: number | null | undefined,
+): TranscriptViewMessage[] {
+  if (!Number.isFinite(rawStartId)) return messages;
+
+  const idBase = stabilizedRawPageViewMessageIdBase(rawStartId as number);
+
+  return messages.map((message, index) => ({
+    ...message,
+    id: idBase + index + 1,
+  }));
+}
+
+/**
  * Parse raw messages and project them to the view model the transcript
  * renderer consumes. Client-side equivalent of desktop's
  * TranscriptProjector.project(events) pipeline.

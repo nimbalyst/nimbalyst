@@ -16,8 +16,12 @@ data class PairingCredentials(
     val routingUserId: String?
         get() = personalUserId ?: authUserId ?: pairedUserId
 
+    // Encryption key salt must use the personal-org member ID (personalUserId),
+    // matching desktop (`nimbalyst:${personalUserId}`) and iOS (`personalUserId ?? authUserId`).
+    // After a team session exchange the JWT sub / authUserId becomes the team member ID,
+    // which derives a different key and silently breaks decryption of all newer data.
     val cryptoUserId: String?
-        get() = authUserId
+        get() = personalUserId ?: authUserId
 
     val routingOrgId: String?
         get() = personalOrgId ?: orgId

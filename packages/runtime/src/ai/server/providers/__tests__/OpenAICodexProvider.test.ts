@@ -1089,6 +1089,63 @@ describe('OpenAICodexProvider', () => {
     });
   });
 
+  it('adds Codex Fast mode config overrides when serviceTier is fast', async () => {
+    let codexConstructorOptions: Record<string, any> | undefined;
+
+    const runStreamed = vi.fn(async () => ({
+      threadId: 'thread-fast-mode',
+      events: createAsyncEventStream([
+        {
+          type: 'item.completed',
+          item: {
+            type: 'agent_message',
+            text: 'fast mode configured',
+          },
+        },
+      ]),
+    }));
+
+    const provider = new OpenAICodexProvider(
+      { apiKey: 'test-key' },
+      {
+        loadSdkModule: async () =>
+          ({
+            Codex: class {
+              constructor(options?: Record<string, unknown>) {
+                codexConstructorOptions = options as Record<string, any>;
+              }
+              startThread() {
+                return {
+                  id: 'thread-fast-mode',
+                  runStreamed,
+                };
+              }
+              resumeThread() {
+                return {
+                  id: 'thread-fast-mode',
+                  runStreamed,
+                };
+              }
+            },
+          }) as any,
+      }
+    );
+
+    await provider.initialize({
+      apiKey: 'test-key',
+      model: 'openai-codex:gpt-5.5',
+      serviceTier: 'fast',
+    });
+
+    for await (const _chunk of provider.sendMessage('use fast mode', undefined, 'session-fast-mode', [], process.cwd())) {
+      // drain
+    }
+
+    expect(codexConstructorOptions?.config?.service_tier).toBe('fast');
+    expect(codexConstructorOptions?.config?.features).toEqual({ fast_mode: true });
+    expect(codexConstructorOptions?.config?.show_raw_agent_reasoning).toBe(true);
+  });
+
   it('allows internal MCP tools for meta-agent Codex sessions', async () => {
     const runStreamed = vi.fn(async () => ({
       threadId: 'thread-meta-agent',

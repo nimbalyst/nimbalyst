@@ -31,7 +31,17 @@ function scheduleIndexSync() {
 export function createSyncedAgentMessagesStore(
   baseStore: AgentMessagesStore
 ): AgentMessagesStore {
+  const warnedFallbacks = new Set<string>();
+  const warnFallbackOnce = (capability: string, detail: string) => {
+    const key = `${capability}:${detail}`;
+    if (warnedFallbacks.has(key)) return;
+    warnedFallbacks.add(key);
+    logger.main.warn(`[SyncedAgentMessagesStore] Base store does not implement ${capability}; ${detail}`);
+  };
+
   return {
+    hasAccurateMessageCounts: baseStore.hasAccurateMessageCounts === true,
+
     async create(message: CreateAgentMessageInput): Promise<void> {
       // message.createdAt MUST be set by the caller (AIProvider)
       // This ensures the same timestamp is used everywhere
@@ -122,6 +132,54 @@ export function createSyncedAgentMessagesStore(
 
     async list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]> {
       return baseStore.list(sessionId, options);
+    },
+
+    async listTail(sessionId: string, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]> {
+      if (baseStore.listTail) {
+        return baseStore.listTail(sessionId, limit, options);
+      }
+
+      warnFallbackOnce('listTail', 'falling back to count-plus-offset pagination');
+      let total = 0;
+      if (baseStore.getMessageCounts) {
+        const counts = await baseStore.getMessageCounts([sessionId]);
+        total = counts.get(sessionId) ?? 0;
+      } else {
+        const messages = await baseStore.list(sessionId);
+        total = messages.length;
+      }
+      const boundedLimit = Math.max(1, limit);
+      const offset = Math.max(0, total - boundedLimit);
+      return baseStore.list(sessionId, { limit: boundedLimit, offset, includeHidden: options?.includeHidden });
+    },
+
+    async listBefore(sessionId: string, beforeId: number | null | undefined, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]> {
+      if (baseStore.listBefore) {
+        return baseStore.listBefore(sessionId, beforeId, limit, options);
+      }
+      if (beforeId == null) {
+        if (baseStore.listTail) {
+          return baseStore.listTail(sessionId, limit, options);
+        }
+
+        let total = 0;
+        if (baseStore.getMessageCounts) {
+          const counts = await baseStore.getMessageCounts([sessionId]);
+          total = counts.get(sessionId) ?? 0;
+        } else {
+          const messages = await baseStore.list(sessionId);
+          total = messages.length;
+        }
+        const boundedLimit = Math.max(1, limit);
+        const offset = Math.max(0, total - boundedLimit);
+        return baseStore.list(sessionId, { limit: boundedLimit, offset, includeHidden: options?.includeHidden });
+      }
+
+      warnFallbackOnce('listBefore', 'falling back to a capped 50000-row in-memory filter');
+      const messages = await baseStore.list(sessionId, { limit: 50000, includeHidden: options?.includeHidden });
+      return messages
+        .filter((message) => Number(message.id ?? 0) < beforeId)
+        .slice(-Math.max(1, limit));
     },
 
     async getMessageCounts(sessionIds: string[]): Promise<Map<string, number>> {

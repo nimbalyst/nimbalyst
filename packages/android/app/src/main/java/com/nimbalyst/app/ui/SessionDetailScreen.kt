@@ -9,12 +9,18 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
@@ -34,7 +40,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -42,18 +47,33 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.google.gson.JsonObject
 import com.nimbalyst.app.NimbalystApplication
 import com.nimbalyst.app.analytics.AnalyticsManager
 import com.nimbalyst.app.attachments.PendingAttachment
+import com.nimbalyst.app.data.MessageEntity
 import com.nimbalyst.app.transcript.TranscriptWebView
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private const val DRAFT_DEBOUNCE_MS = 500L
 private const val DELIVERY_TIMEOUT_MS = 10_000L
+private const val LOCAL_ECHO_DELIVERY_GRACE_MS = 30_000L
+private const val RAW_MESSAGES_BEFORE_PROJECTED_TAIL = 5_000
+
+internal fun shouldUseProjectedTranscriptTail(
+    rawMessageCount: Int,
+    transcriptTailJson: String?
+): Boolean {
+    if (transcriptTailJson.isNullOrBlank()) return false
+    return rawMessageCount == 0 || rawMessageCount > RAW_MESSAGES_BEFORE_PROJECTED_TAIL
+}
+
+private fun MessageEntity.isLocalEchoMessage(): Boolean =
+    metadataJson?.contains("\"localEcho\":true") == true
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -68,10 +88,6 @@ fun SessionDetailScreen(
     var promptStatus by remember { mutableStateOf<String?>(null) }
     var isSendingPrompt by remember { mutableStateOf(false) }
     var pendingAttachments by remember { mutableStateOf<List<PendingAttachment>>(emptyList()) }
-    // Draft sync state
-    var isApplyingRemoteDraft by remember { mutableStateOf(false) }
-    var lastSubmitAt by remember { mutableLongStateOf(0L) }
-    var draftDebounceJob by remember { mutableStateOf<Job?>(null) }
     // Delivery timeout state
     var deliveryWarning by remember { mutableStateOf<String?>(null) }
     var deliveryTimeoutJob by remember { mutableStateOf<Job?>(null) }
@@ -100,12 +116,56 @@ fun SessionDetailScreen(
         }
     }
 
-    val sessions by app.repository.observeActiveSessions().collectAsState(initial = emptyList())
-    val session = sessions.firstOrNull { it.id == sessionId }
+    val session by app.repository.observeSession(sessionId).collectAsState(initial = null)
     val messages by app.repository.observeMessagesForSession(sessionId)
         .collectAsState(initial = emptyList())
     val queuedPrompts by app.repository.observeQueuedPromptsForSession(sessionId)
         .collectAsState(initial = emptyList())
+    // Desktop-published transcript tail for oversized sessions whose per-message
+    // sync was disabled by the server; rendered in place of the (stale/empty) messages.
+    val transcriptTails by app.syncManager.transcriptTails.collectAsState()
+    val transcriptTail = transcriptTails[sessionId]
+    val transcriptHistoryPages by app.syncManager.transcriptHistoryPages.collectAsState()
+    val transcriptHistoryPage = transcriptHistoryPages[sessionId]
+    val rawMessagesTooLargeForWebView = messages.size > RAW_MESSAGES_BEFORE_PROJECTED_TAIL
+    val useProjectedTranscriptTail = shouldUseProjectedTranscriptTail(
+        rawMessageCount = messages.size,
+        transcriptTailJson = transcriptTail
+    )
+    // Latest page to push into the WebView, fed from both the sync flow and
+    // the local page cache. The nonce forces a recomposition (and so a WebView
+    // re-push) even when the same cached page is served twice, e.g. after the
+    // transcript resets to the tail and the user scrolls back up.
+    var latestHistoryPage by remember(sessionId) { mutableStateOf<Pair<Long, String>?>(null) }
+    LaunchedEffect(sessionId, transcriptHistoryPage) {
+        if (!transcriptHistoryPage.isNullOrBlank()) {
+            latestHistoryPage = System.nanoTime() to transcriptHistoryPage
+        }
+    }
+
+    // Sessions with neither synced messages nor projected transcript content
+    // would otherwise render an empty transcript. Show a clear hint instead,
+    // after a short grace period so it never flashes on load.
+    val hasNoContent = (messages.isEmpty() || rawMessagesTooLargeForWebView) &&
+        transcriptTail.isNullOrBlank() &&
+        transcriptHistoryPage.isNullOrBlank()
+    var showEmptyHint by remember(sessionId) { mutableStateOf(false) }
+    var requestedInitialHistoryPage by remember(sessionId) { mutableStateOf(false) }
+    LaunchedEffect(sessionId, hasNoContent) {
+        showEmptyHint = false
+        if (hasNoContent) {
+            if (!requestedInitialHistoryPage) {
+                requestedInitialHistoryPage = true
+                app.syncManager.requestTranscriptHistoryPage(
+                    sessionId = sessionId,
+                    beforeRawMessageId = null,
+                    count = 400
+                )
+            }
+            delay(2500)
+            showEmptyHint = true
+        }
+    }
 
     LaunchedEffect(sessionId) {
         AnalyticsManager.capture("mobile_session_viewed")
@@ -114,7 +174,6 @@ fun SessionDetailScreen(
 
     DisposableEffect(sessionId) {
         onDispose {
-            draftDebounceJob?.cancel()
             deliveryTimeoutJob?.cancel()
             app.syncManager.leaveSessionRoom()
         }
@@ -125,32 +184,9 @@ fun SessionDetailScreen(
         app.repository.markSessionRead(sessionId, readAt)
     }
 
-    // Seed compose text from synced draft on enter
-    LaunchedEffect(sessionId) {
-        val existingDraft = app.repository.getSession(sessionId)?.draftInput
-        if (draftPrompt.isEmpty() && !existingDraft.isNullOrBlank()) {
-            isApplyingRemoteDraft = true
-            draftPrompt = existingDraft
-            isApplyingRemoteDraft = false
-        }
-    }
-
-    // Apply incoming remote draft updates
-    LaunchedEffect(session?.draftInput, session?.draftUpdatedAt) {
-        val remoteDraft = session?.draftInput ?: ""
-        if (remoteDraft == draftPrompt) return@LaunchedEffect
-        // Reject stale drafts that predate our last submit
-        val remoteTs = session?.draftUpdatedAt ?: 0L
-        if (remoteDraft.isNotEmpty() && remoteTs <= lastSubmitAt) return@LaunchedEffect
-
-        isApplyingRemoteDraft = true
-        draftPrompt = remoteDraft
-        isApplyingRemoteDraft = false
-    }
-
     // Cancel delivery timeout when desktop starts executing
-    LaunchedEffect(session?.isExecuting) {
-        if (session?.isExecuting == true) {
+    LaunchedEffect(session?.isExecuting, session?.agentStatusUpdatedAt) {
+        if (session?.effectiveIsExecuting() == true) {
             deliveryTimeoutJob?.cancel()
             deliveryTimeoutJob = null
             deliveryWarning = null
@@ -158,15 +194,23 @@ fun SessionDetailScreen(
     }
 
     val sessionTitle = session?.titleDecrypted ?: "Untitled session"
+    val activeQueuedPromptIds = remember(queuedPrompts) { queuedPrompts.map { it.id } }
+    val currentAgentStatusKind = session?.effectiveAgentStatusKind()
+    val currentAgentStatusLabel = session?.effectiveAgentStatusLabel()
+    val currentAgentStatusDetail = session?.effectiveAgentStatusDetail()
+    val currentIsExecuting = session?.effectiveIsExecuting() == true
+
+    LaunchedEffect(sessionId, activeQueuedPromptIds, messages.lastOrNull()?.id) {
+        val pruneBefore = System.currentTimeMillis() - LOCAL_ECHO_DELIVERY_GRACE_MS
+        app.repository.pruneLocalSubmittedPrompts(
+            sessionId = sessionId,
+            activePromptIds = activeQueuedPromptIds,
+            createdBefore = pruneBefore
+        )
+    }
 
     val submitPrompt = { promptText: String, attachments: List<PendingAttachment> ->
         coroutineScope.launch {
-            // Clear draft immediately before sending to prevent stale echo
-            draftDebounceJob?.cancel()
-            draftDebounceJob = null
-            lastSubmitAt = System.currentTimeMillis()
-            launch { app.syncManager.updateDraftInput(sessionId, "") }
-
             isSendingPrompt = true
             AnalyticsManager.capture(
                 "mobile_ai_message_sent",
@@ -178,18 +222,19 @@ fun SessionDetailScreen(
             val result = app.syncManager.sendPrompt(
                 sessionId = sessionId,
                 text = promptText,
-                attachments = attachments
+                attachments = attachments,
+                recordLocalEcho = useProjectedTranscriptTail || rawMessagesTooLargeForWebView
             )
             result.onSuccess {
                 draftPrompt = ""
                 pendingAttachments = emptyList()
-                promptStatus = "Prompt queued on desktop."
+                promptStatus = "Sent to desktop."
 
                 // Start delivery timeout -- warn if desktop doesn't start executing within 10s
                 deliveryTimeoutJob?.cancel()
                 deliveryTimeoutJob = launch {
                     delay(DELIVERY_TIMEOUT_MS)
-                    if (session?.isExecuting != true) {
+                    if (session?.effectiveIsExecuting() != true) {
                         deliveryWarning = "Your prompt was sent but the desktop hasn't started processing it. Make sure the desktop app is running and connected."
                     }
                 }
@@ -224,15 +269,16 @@ fun SessionDetailScreen(
         TopAppBar(
             title = {
                 Column {
+                    val currentSession = session
                     Text(
                         text = sessionTitle,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.titleMedium
                     )
-                    if (session != null) {
+                    if (currentSession != null) {
                         Text(
-                            text = "${session.provider ?: "unknown"} -- ${session.mode ?: "agent"}",
+                            text = "${currentSession.provider ?: "unknown"} -- ${currentSession.mode ?: "agent"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -246,48 +292,112 @@ fun SessionDetailScreen(
             }
         )
 
-        TranscriptWebView(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            sessionId = sessionId,
-            sessionTitle = sessionTitle,
-            provider = session?.provider ?: "unknown",
-            model = session?.model ?: "unknown",
-            mode = session?.mode ?: "agent",
-            messages = messages,
-            onPromptSubmitted = { text -> submitPrompt(text, emptyList()) },
-            onInteractiveResponse = { bridgeMessage ->
-                coroutineScope.launch {
-                    val promptId = bridgeMessage.promptId
-                        ?: bridgeMessage.requestId
-                        ?: bridgeMessage.questionId
-                        ?: bridgeMessage.proposalId
-                        ?: ""
-                    val action = bridgeMessage.action
-                    if (promptId.isBlank() || action.isNullOrBlank()) {
-                        promptStatus = "Transcript sent an invalid interactive response."
-                    } else {
-                        val result = app.syncManager.handleInteractiveResponse(
-                            sessionId = sessionId,
-                            action = action,
-                            promptId = promptId,
-                            body = bridgeMessage.raw
-                        )
+        if (hasNoContent && showEmptyHint) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "This session isn't synced from your desktop.\n\nVery large sessions sync only a recent-history preview — if it's missing, open the session on your desktop to refresh it.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+        } else {
+            TranscriptWebView(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                sessionId = sessionId,
+                sessionTitle = sessionTitle,
+                provider = session?.provider ?: "unknown",
+                model = session?.model ?: "unknown",
+                mode = session?.mode ?: "agent",
+                isExecuting = currentIsExecuting,
+                agentStatusKind = currentAgentStatusKind,
+                agentStatusLabel = currentAgentStatusLabel,
+                agentStatusDetail = currentAgentStatusDetail,
+                // Oversized sessions render the projected tail to avoid
+                // serializing very large raw-message batches. For normal-sized
+                // sessions, prefer local raw projection so Android can recover
+                // when an older desktop build published a stale or incomplete tail.
+                messages = if (useProjectedTranscriptTail || rawMessagesTooLargeForWebView) {
+                    messages.filter { it.isLocalEchoMessage() }
+                } else {
+                    messages
+                },
+                transcriptTailJson = if (useProjectedTranscriptTail) transcriptTail else null,
+                transcriptHistoryPageJson = latestHistoryPage?.second,
+                onPromptSubmitted = { text -> submitPrompt(text, emptyList()) },
+                onCancelSession = {
+                    coroutineScope.launch {
+                        val result = app.syncManager.cancelSession(sessionId)
                         result.onSuccess {
-                            promptStatus = "Interactive response sent to desktop."
+                            promptStatus = "Stop requested."
                         }.onFailure { error ->
-                            promptStatus = error.message ?: "Failed to send interactive response."
+                            promptStatus = error.message ?: "Failed to stop session."
+                        }
+                    }
+                },
+                onInteractiveResponse = { bridgeMessage ->
+                    coroutineScope.launch {
+                        val promptId = bridgeMessage.promptId
+                            ?: bridgeMessage.requestId
+                            ?: bridgeMessage.questionId
+                            ?: bridgeMessage.proposalId
+                            ?: ""
+                        val action = bridgeMessage.action
+                        if (promptId.isBlank() || action.isNullOrBlank()) {
+                            promptStatus = "Transcript sent an invalid interactive response."
+                        } else {
+                            val result = app.syncManager.handleInteractiveResponse(
+                                sessionId = sessionId,
+                                action = action,
+                                promptId = promptId,
+                                body = bridgeMessage.raw
+                            )
+                            result.onSuccess {
+                                promptStatus = "Interactive response sent to desktop."
+                            }.onFailure { error ->
+                                promptStatus = error.message ?: "Failed to send interactive response."
+                            }
+                        }
+                    }
+                },
+                onLoadOlderHistory = { beforeRawMessageId, count ->
+                    coroutineScope.launch {
+                        // Concrete-cursor pages are immutable; serve from the
+                        // local cache when available and skip the desktop
+                        // round trip entirely.
+                        val cached = beforeRawMessageId?.let {
+                            app.repository.getCachedTranscriptPage(sessionId, it)
+                        }
+                        if (cached != null) {
+                            latestHistoryPage = System.nanoTime() to cached.pageJson
+                        } else {
+                            app.syncManager.requestTranscriptHistoryPage(
+                                sessionId = sessionId,
+                                beforeRawMessageId = beforeRawMessageId,
+                                count = count ?: 400
+                            ).onFailure { error ->
+                                promptStatus = error.message ?: "Failed to request older history."
+                            }
                         }
                     }
                 }
-            }
-        )
+            )
+        }
 
-        // Compose bar
+        // Compose bar. Pad for the navigation bar (edge-to-edge) and the IME so the
+        // Send / Photo / Camera buttons are never hidden behind the system nav bar or keyboard.
         Card(
             modifier = Modifier
                 .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
                 .padding(8.dp)
         ) {
             Column(
@@ -295,25 +405,107 @@ fun SessionDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (queuedPrompts.isNotEmpty()) {
-                    Text(
-                        text = "${queuedPrompts.size} prompt${if (queuedPrompts.size > 1) "s" else ""} queued",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "${queuedPrompts.size} prompt${if (queuedPrompts.size > 1) "s" else ""} queued on desktop",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        queuedPrompts.forEachIndexed { index, queuedPrompt ->
+                            val queuedText = queuedPrompt.promptTextDecrypted ?: "Queued prompt"
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Column(
+                                    modifier = Modifier.padding(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "${index + 1}. $queuedText",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 3,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                coroutineScope.launch {
+                                                    val payload = JsonObject().apply {
+                                                        addProperty("promptId", queuedPrompt.id)
+                                                    }
+                                                    val result = app.syncManager.sendSessionControlMessage(
+                                                        sessionId = sessionId,
+                                                        messageType = "send_queued_prompt_now",
+                                                        payload = payload
+                                                    )
+                                                    promptStatus = result.fold(
+                                                        onSuccess = { "Send-now requested." },
+                                                        onFailure = { it.message ?: "Failed to request send-now." }
+                                                    )
+                                                }
+                                            }
+                                        ) {
+                                            Text("Send now")
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                coroutineScope.launch {
+                                                    val payload = JsonObject().apply {
+                                                        addProperty("promptId", queuedPrompt.id)
+                                                    }
+                                                    val result = app.syncManager.sendSessionControlMessage(
+                                                        sessionId = sessionId,
+                                                        messageType = "delete_queued_prompt",
+                                                        payload = payload
+                                                    )
+                                                    result.onSuccess {
+                                                        draftPrompt = if (draftPrompt.isBlank()) {
+                                                            queuedText
+                                                        } else {
+                                                            "${draftPrompt.trim()}\n\n$queuedText"
+                                                        }
+                                                        promptStatus = "Queued prompt moved to textbox."
+                                                    }.onFailure { error ->
+                                                        promptStatus = error.message ?: "Failed to edit queued prompt."
+                                                    }
+                                                }
+                                            }
+                                        ) {
+                                            Text("Edit")
+                                        }
+                                        TextButton(
+                                            onClick = {
+                                                coroutineScope.launch {
+                                                    val payload = JsonObject().apply {
+                                                        addProperty("promptId", queuedPrompt.id)
+                                                    }
+                                                    val result = app.syncManager.sendSessionControlMessage(
+                                                        sessionId = sessionId,
+                                                        messageType = "delete_queued_prompt",
+                                                        payload = payload
+                                                    )
+                                                    promptStatus = result.fold(
+                                                        onSuccess = { "Queued prompt cancelled." },
+                                                        onFailure = { it.message ?: "Failed to cancel queued prompt." }
+                                                    )
+                                                }
+                                            }
+                                        ) {
+                                            Text("Cancel")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 OutlinedTextField(
                     value = draftPrompt,
                     onValueChange = { newText ->
                         draftPrompt = newText
-                        // Debounced draft sync push (skip if applying remote draft)
-                        if (!isApplyingRemoteDraft) {
-                            draftDebounceJob?.cancel()
-                            draftDebounceJob = coroutineScope.launch {
-                                delay(DRAFT_DEBOUNCE_MS)
-                                app.syncManager.updateDraftInput(sessionId, newText)
-                            }
-                        }
                     },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !isSendingPrompt,

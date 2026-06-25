@@ -200,7 +200,6 @@ packages/electron/e2e/walkthroughs/screenshots/
 packages/ios/screenshots/
 
 # Auto-generated platform artifacts
-packages/android/app/schemas/
 packages/marketplace/.wrangler/
 
 # Scratch/working directories at repo root (not source)

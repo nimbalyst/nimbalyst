@@ -15,6 +15,9 @@ export const SYNC_RELEVANT_FIELDS = {
    * Top-level columns on `ai_sessions` that map 1:1 to fields on the
    * SyncedSessionMetadata wire shape. Anything listed here is forwarded
    * when present in the updateMetadata payload (and from create()).
+   *
+   * Do not include draftInput / draftUpdatedAt here. Draft text is intentionally
+   * device-local so typing on desktop cannot overwrite or lag the Android input.
    */
   columns: [
     'title',
@@ -27,7 +30,6 @@ export const SYNC_RELEVANT_FIELDS = {
     'sessionType',
     'parentSessionId',
     'worktreeId',
-    'draftInput',
   ] as const,
 
   /**
@@ -48,8 +50,8 @@ export const SYNC_RELEVANT_FIELDS = {
   /**
    * Subset of `columns` whose changes represent meaningful content activity
    * and so should bump `updatedAt` (driving sort order on iOS). Pins,
-   * archives, drafts, reparents, etc. deliberately do NOT bump this — that
-   * would cause the row to jump to the top of the list on every device.
+   * archives, reparents, etc. deliberately do NOT bump this — that would
+   * cause the row to jump to the top of the list on every device.
    */
   sortRelevantColumns: ['title', 'mode', 'isArchived', 'provider', 'model'] as const,
 } as const;

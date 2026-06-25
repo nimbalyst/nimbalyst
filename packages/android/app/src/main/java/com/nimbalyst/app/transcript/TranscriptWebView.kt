@@ -30,9 +30,17 @@ fun TranscriptWebView(
     provider: String,
     model: String,
     mode: String,
+    isExecuting: Boolean = false,
+    agentStatusKind: String? = null,
+    agentStatusLabel: String? = null,
+    agentStatusDetail: String? = null,
     messages: List<MessageEntity>,
+    transcriptTailJson: String? = null,
+    transcriptHistoryPageJson: String? = null,
     onPromptSubmitted: (String) -> Unit = {},
     onInteractiveResponse: (TranscriptBridgeMessage) -> Unit = {},
+    onCancelSession: () -> Unit = {},
+    onLoadOlderHistory: (Long?, Int?) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
 
@@ -61,30 +69,63 @@ fun TranscriptWebView(
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                         return request.url?.scheme != "file"
                     }
+
+                    override fun onPageFinished(view: WebView, url: String?) {
+                        super.onPageFinished(view, url)
+                        if (url == TRANSCRIPT_ASSET_URL) {
+                            view.pushSessionPayload(
+                                sessionId = sessionId,
+                                sessionTitle = sessionTitle,
+                                provider = provider,
+                                model = model,
+                                mode = mode,
+                                isExecuting = isExecuting,
+                                agentStatusKind = agentStatusKind,
+                                agentStatusLabel = agentStatusLabel,
+                                agentStatusDetail = agentStatusDetail,
+                                messages = messages,
+                                viewMessagesJson = transcriptTailJson,
+                                historyPageJson = transcriptHistoryPageJson
+                            )
+                        }
+                    }
                 }
+                removeJavascriptInterface("AndroidBridge")
                 addJavascriptInterface(
                     TranscriptBridge { message ->
                         when (message.type) {
                             "prompt" -> message.text?.let(onPromptSubmitted)
                             "interactive_response" -> onInteractiveResponse(message)
+                            "cancel_session" -> onCancelSession()
+                            "load_older_history" -> onLoadOlderHistory(message.beforeRawMessageId, message.count)
                         }
                     },
                     "AndroidBridge"
                 )
-                // Try to push payload immediately. If window.nimbalyst doesn't
-                // exist yet (React still mounting), this is a no-op due to ?. operator.
-                // The update block will retry when messages Flow emits real data.
-                // Also schedule retries in case the Flow doesn't re-emit.
+                // Pooled WebViews load the transcript during warmup, before this
+                // session-scoped bridge exists. Reload so AndroidBridge is injected
+                // into the page that handles interactive widgets.
+                loadUrl(TRANSCRIPT_ASSET_URL)
+
+                // Try to push payload immediately. If React is still mounting, this
+                // is a no-op. onPageFinished, the update block, and retries will
+                // push again.
                 pushSessionPayload(
                     sessionId = sessionId,
                     sessionTitle = sessionTitle,
                     provider = provider,
                     model = model,
                     mode = mode,
-                    messages = messages
+                    isExecuting = isExecuting,
+                    agentStatusKind = agentStatusKind,
+                    agentStatusLabel = agentStatusLabel,
+                    agentStatusDetail = agentStatusDetail,
+                    messages = messages,
+                    viewMessagesJson = transcriptTailJson,
+                    historyPageJson = transcriptHistoryPageJson
                 )
                 scheduleRetry(retryHandler, pendingRetry, this,
-                    sessionId, sessionTitle, provider, model, mode, messages)
+                    sessionId, sessionTitle, provider, model, mode, isExecuting, agentStatusKind, agentStatusLabel, agentStatusDetail, messages, transcriptTailJson, transcriptHistoryPageJson)
             }
         },
         update = { wv ->
@@ -98,14 +139,22 @@ fun TranscriptWebView(
                 provider = provider,
                 model = model,
                 mode = mode,
-                messages = messages
+                isExecuting = isExecuting,
+                agentStatusKind = agentStatusKind,
+                agentStatusLabel = agentStatusLabel,
+                agentStatusDetail = agentStatusDetail,
+                messages = messages,
+                viewMessagesJson = transcriptTailJson,
+                historyPageJson = transcriptHistoryPageJson
             )
             // Schedule a retry in case React hasn't mounted yet
             scheduleRetry(retryHandler, pendingRetry, wv,
-                sessionId, sessionTitle, provider, model, mode, messages)
+                sessionId, sessionTitle, provider, model, mode, isExecuting, agentStatusKind, agentStatusLabel, agentStatusDetail, messages, transcriptTailJson, transcriptHistoryPageJson)
         }
     )
 }
+
+private const val TRANSCRIPT_ASSET_URL = "file:///android_asset/transcript-dist/transcript.html"
 
 private fun scheduleRetry(
     handler: Handler,
@@ -116,12 +165,31 @@ private fun scheduleRetry(
     provider: String,
     model: String,
     mode: String,
-    messages: List<MessageEntity>
+    isExecuting: Boolean,
+    agentStatusKind: String?,
+    agentStatusLabel: String?,
+    agentStatusDetail: String?,
+    messages: List<MessageEntity>,
+    viewMessagesJson: String?,
+    historyPageJson: String?
 ) {
     // Retry at 200ms, 500ms, 1000ms to cover React mount timing
     for (delayMs in listOf(200L, 500L, 1000L)) {
         val retry = Runnable {
-            webView.pushSessionPayload(sessionId, sessionTitle, provider, model, mode, messages)
+            webView.pushSessionPayload(
+                sessionId,
+                sessionTitle,
+                provider,
+                model,
+                mode,
+                isExecuting,
+                agentStatusKind,
+                agentStatusLabel,
+                agentStatusDetail,
+                messages,
+                viewMessagesJson,
+                historyPageJson
+            )
         }
         pendingRetries.add(retry)
         handler.postDelayed(retry, delayMs)
@@ -134,7 +202,13 @@ private fun WebView.pushSessionPayload(
     provider: String,
     model: String,
     mode: String,
-    messages: List<MessageEntity>
+    isExecuting: Boolean,
+    agentStatusKind: String?,
+    agentStatusLabel: String?,
+    agentStatusDetail: String?,
+    messages: List<MessageEntity>,
+    viewMessagesJson: String?,
+    historyPageJson: String?
 ) {
     val payload = TranscriptPayloadBuilder.buildSessionPayload(
         sessionId = sessionId,
@@ -142,17 +216,32 @@ private fun WebView.pushSessionPayload(
         provider = provider,
         model = model,
         mode = mode,
-        messages = messages
+        isExecuting = isExecuting,
+        agentStatusKind = agentStatusKind,
+        agentStatusLabel = agentStatusLabel,
+        agentStatusDetail = agentStatusDetail,
+        messages = messages,
+        viewMessagesJson = viewMessagesJson,
+        historyPageJson = historyPageJson
     )
-    val msgCount = messages.size
-    // Log diagnostic info, then attempt to load the session
+    val payloadHash = payload.hashCode().toString()
+    // Log diagnostic info, then attempt to load the session.
     val script = """
         (function() {
             var hasNimbalyst = typeof window.nimbalyst !== 'undefined';
-            console.log('[TranscriptWebView] pushPayload: nimbalyst=' + hasNimbalyst + ' messages=$msgCount');
+            var payloadHash = ${gsonString(payloadHash)};
+            var payload = $payload;
+            var messageCount = Array.isArray(payload.messages) ? payload.messages.length : 0;
+            var viewMessageCount = Array.isArray(payload.viewMessages) ? payload.viewMessages.length : 0;
+            var historyMessageCount = payload.historyPage && Array.isArray(payload.historyPage.messages) ? payload.historyPage.messages.length : 0;
+            console.log('[TranscriptWebView] pushPayload: nimbalyst=' + hasNimbalyst + ' messages=' + messageCount + ' viewMessages=' + viewMessageCount + ' historyMessages=' + historyMessageCount);
             if (hasNimbalyst) {
+                if (window.__nimbalystLastPayloadHash === payloadHash) {
+                    return;
+                }
                 try {
-                    window.nimbalyst.loadSession($payload);
+                    window.nimbalyst.loadSession(payload);
+                    window.__nimbalystLastPayloadHash = payloadHash;
                     console.log('[TranscriptWebView] loadSession succeeded');
                 } catch(e) {
                     console.error('[TranscriptWebView] loadSession error: ' + e.message);
@@ -162,6 +251,9 @@ private fun WebView.pushSessionPayload(
     """.trimIndent()
     evaluateJavascript(script, null)
 }
+
+private fun gsonString(value: String): String =
+    com.google.gson.Gson().toJson(value)
 
 @Composable
 private fun MissingTranscriptAssets(

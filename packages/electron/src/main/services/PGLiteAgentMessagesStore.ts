@@ -22,6 +22,8 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
   };
 
   return {
+    hasAccurateMessageCounts: true,
+
     async create(message: CreateAgentMessageInput): Promise<void> {
       await ensureReady();
 
@@ -199,6 +201,117 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
           providerMessageId: row.provider_message_id ?? undefined,
         };
       });
+    },
+
+    async listTail(sessionId: string, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]> {
+      await ensureReady();
+
+      const boundedLimit = Math.max(1, Math.min(limit, 50000));
+      const includeHidden = options?.includeHidden ?? false;
+
+      const { rows } = await db.query<any>(
+        `SELECT id, session_id, created_at, source, direction, content, metadata, hidden, provider_message_id
+         FROM (
+           SELECT id, session_id, created_at, source, direction, content, metadata, hidden, provider_message_id
+           FROM ai_agent_messages
+           WHERE session_id = $1${includeHidden ? '' : ' AND hidden = FALSE'}
+           ORDER BY id DESC
+           LIMIT $2
+         ) tail
+         ORDER BY id ASC`,
+        [sessionId, boundedLimit],
+      );
+
+      return rows.map(row => {
+        let metadata = row.metadata;
+        if (typeof metadata === 'string') {
+          try {
+            metadata = JSON.parse(metadata);
+          } catch {
+            // Keep as string if parsing fails
+          }
+        }
+
+        return {
+          id: Number(row.id),
+          sessionId: row.session_id,
+          createdAt: row.created_at ? new Date(row.created_at) : undefined,
+          source: row.source,
+          direction: row.direction,
+          content: row.content,
+          metadata: metadata ?? undefined,
+          hidden: row.hidden ?? false,
+          providerMessageId: row.provider_message_id ?? undefined,
+        };
+      });
+    },
+
+    async listBefore(sessionId: string, beforeId: number | null | undefined, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]> {
+      await ensureReady();
+
+      const boundedLimit = Math.max(1, Math.min(limit, 50000));
+      const includeHidden = options?.includeHidden ?? false;
+      const hasCursor = beforeId != null && Number.isFinite(beforeId);
+      const cursorClause = hasCursor ? ' AND id < $2' : '';
+      const limitParam = hasCursor ? '$3' : '$2';
+      const params = hasCursor
+        ? [sessionId, Math.floor(beforeId as number), boundedLimit]
+        : [sessionId, boundedLimit];
+
+      const { rows } = await db.query<any>(
+        `SELECT id, session_id, created_at, source, direction, content, metadata, hidden, provider_message_id
+         FROM (
+           SELECT id, session_id, created_at, source, direction, content, metadata, hidden, provider_message_id
+           FROM ai_agent_messages
+           WHERE session_id = $1${includeHidden ? '' : ' AND hidden = FALSE'}${cursorClause}
+           ORDER BY id DESC
+           LIMIT ${limitParam}
+         ) page
+         ORDER BY id ASC`,
+        params,
+      );
+
+      return rows.map(row => {
+        let metadata = row.metadata;
+        if (typeof metadata === 'string') {
+          try {
+            metadata = JSON.parse(metadata);
+          } catch {
+            // Keep as string if parsing fails
+          }
+        }
+
+        return {
+          id: Number(row.id),
+          sessionId: row.session_id,
+          createdAt: row.created_at ? new Date(row.created_at) : undefined,
+          source: row.source,
+          direction: row.direction,
+          content: row.content,
+          metadata: metadata ?? undefined,
+          hidden: row.hidden ?? false,
+          providerMessageId: row.provider_message_id ?? undefined,
+        };
+      });
+    },
+
+    async getMessageCounts(sessionIds: string[]): Promise<Map<string, number>> {
+      await ensureReady();
+
+      if (sessionIds.length === 0) return new Map();
+
+      const { rows } = await db.query<{ session_id: string; count: string | number }>(
+        `SELECT session_id, COUNT(*) AS count
+         FROM ai_agent_messages
+         WHERE session_id = ANY($1::text[]) AND hidden = FALSE
+         GROUP BY session_id`,
+        [sessionIds],
+      );
+
+      const counts = new Map<string, number>();
+      for (const sessionId of sessionIds) counts.set(sessionId, 0);
+      for (const row of rows) counts.set(row.session_id, Number(row.count) || 0);
+      return counts;
     },
   };
 }

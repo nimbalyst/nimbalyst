@@ -28,13 +28,15 @@ export function createRawMessageStoreAdapter(): IRawMessageStore {
         sql = `SELECT id, session_id, source, direction, content, created_at, metadata, hidden
                FROM ai_agent_messages
                WHERE session_id = $1 AND id > $2
-               ORDER BY id ASC`;
+               ORDER BY id ASC
+               LIMIT 5001`;
         params = [sessionId, afterId];
       } else {
         sql = `SELECT id, session_id, source, direction, content, created_at, metadata, hidden
                FROM ai_agent_messages
                WHERE session_id = $1
-               ORDER BY id ASC`;
+               ORDER BY id ASC
+               LIMIT 5001`;
         params = [sessionId];
       }
 
@@ -64,4 +66,3 @@ export function createRawMessageStoreAdapter(): IRawMessageStore {
     },
   };
 }
-

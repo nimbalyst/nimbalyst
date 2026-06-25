@@ -64,6 +64,17 @@ describe('filterRateLimitsByExpiry', () => {
     expect(out!.secondary).toBeNull();
   });
 
+  it('keeps a secondary-only active window when primary is absent', () => {
+    const input = {
+      primary: null,
+      secondary: secondary(18, NOW_SECONDS + SEVEN_DAYS),
+    };
+    const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
+    expect(out).not.toBeNull();
+    expect(out!.primary).toBeNull();
+    expect(out!.secondary?.used_percent).toBe(18);
+  });
+
   it('AnisminC #120 scenario: returns null when primary is stale and there is no secondary', () => {
     // Reporter's stuck-91% case. Recent JSONL line had primary used_percent=91
     // with a resets_at that has since passed; no secondary block at all.

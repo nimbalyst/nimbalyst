@@ -28,6 +28,7 @@ import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStat
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { resolveCodexServiceTier } from '@nimbalyst/runtime/ai/server/codexFastMode';
 import type { SessionStore } from '@nimbalyst/runtime';
 import {
   ModelIdentifier,
@@ -82,8 +83,10 @@ import { DocumentContextService, type RawDocumentContext, type PreparedDocumentC
 import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
 import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/workspaceDetection';
+import { getDesktopTranscriptHistoryPage, getMobileTranscriptTailJson } from '../../utils/transcriptHelpers';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
+import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -119,6 +122,9 @@ import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claud
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 
 const execFileAsync = promisify(execFile);
+const MOBILE_TRANSCRIPT_TAIL_LOAD_PUBLISH_MIN_INTERVAL_MS = 5_000;
+const MOBILE_TRANSCRIPT_TAIL_SYNC_MAX_CHARS = 260_000;
+const MOBILE_TRANSCRIPT_TAIL_LOAD_PUBLISH_LIMITS = [350, 250, 175, 125, 80, 50, 25] as const;
 
 export class AIService {
   private sessionManager: SessionManager;
@@ -153,6 +159,11 @@ export class AIService {
   // Track mobile session creation requests to prevent duplicate processing
   // (can happen if the same request is delivered multiple times)
   private processingMobileSessionRequests = new Set<string>();
+
+  // Partial transcripts are too large for session-room message sync; publish a
+  // compact mobile tail when desktop has just loaded one, but do not regenerate
+  // the projected tail on every renderer reload while a stream is active.
+  private mobileTranscriptTailLoadPublishes = new Map<string, number>();
 
   // Service for preparing document context (transition detection, diff computation, etc.)
   private documentContextService = new DocumentContextService();
@@ -222,6 +233,86 @@ export class AIService {
     }
   }
 
+  private publishMobileTranscriptTailForPartialSession(
+    session: SessionData & { transcriptPage?: { isPartial?: boolean } }
+  ): void {
+    if (!session.transcriptPage?.isPartial) return;
+
+    const now = Date.now();
+    const lastPublishedAt = this.mobileTranscriptTailLoadPublishes.get(session.id) ?? 0;
+    if (now - lastPublishedAt < MOBILE_TRANSCRIPT_TAIL_LOAD_PUBLISH_MIN_INTERVAL_MS) {
+      return;
+    }
+    this.mobileTranscriptTailLoadPublishes.set(session.id, now);
+
+    const syncProvider = getSyncProvider();
+    if (!syncProvider?.pushChange) return;
+
+    void (async () => {
+      const mobileTranscriptTail = await this.buildMobileTranscriptTailJsonForSync(session.id);
+      if (!mobileTranscriptTail) return;
+      const { json: mobileTranscriptTailJson, rawMessageLimit } = mobileTranscriptTail;
+
+      await Promise.resolve(syncProvider.pushChange(session.id, {
+        type: 'metadata_updated',
+        metadata: {
+          mobileTranscriptTailJson,
+          mobileTranscriptTailUpdatedAt: Date.now(),
+        },
+      }));
+
+      logger.main.info('[AIService] Published mobile transcript tail for partial session:', {
+        sessionId: session.id,
+        tailChars: mobileTranscriptTailJson.length,
+        rawMessageLimit,
+      });
+    })().catch((error) => {
+      this.mobileTranscriptTailLoadPublishes.delete(session.id);
+      logger.main.warn('[AIService] Failed to publish mobile transcript tail for partial session:', {
+        sessionId: session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  private async buildMobileTranscriptTailJsonForSync(
+    sessionId: string
+  ): Promise<{ json: string; rawMessageLimit: number } | null> {
+    let lastTooLarge: { rawMessageLimit: number; tailChars: number } | null = null;
+
+    for (const rawMessageLimit of MOBILE_TRANSCRIPT_TAIL_LOAD_PUBLISH_LIMITS) {
+      const json = await getMobileTranscriptTailJson(sessionId, rawMessageLimit);
+      if (!json) return null;
+
+      if (json.length <= MOBILE_TRANSCRIPT_TAIL_SYNC_MAX_CHARS) {
+        if (lastTooLarge) {
+          logger.main.info('[AIService] Shrunk mobile transcript tail for sync:', {
+            sessionId,
+            rawMessageLimit,
+            tailChars: json.length,
+            previousRawMessageLimit: lastTooLarge.rawMessageLimit,
+            previousTailChars: lastTooLarge.tailChars,
+            maxChars: MOBILE_TRANSCRIPT_TAIL_SYNC_MAX_CHARS,
+          });
+        }
+        return { json, rawMessageLimit };
+      }
+
+      lastTooLarge = { rawMessageLimit, tailChars: json.length };
+    }
+
+    if (lastTooLarge) {
+      logger.main.warn('[AIService] Skipping mobile transcript tail publish; tail exceeds sync metadata limit:', {
+        sessionId,
+        smallestRawMessageLimit: lastTooLarge.rawMessageLimit,
+        smallestTailChars: lastTooLarge.tailChars,
+        maxChars: MOBILE_TRANSCRIPT_TAIL_SYNC_MAX_CHARS,
+      });
+    }
+
+    return null;
+  }
+
   public async queuePromptForSession(
     sessionId: string,
     prompt: string,
@@ -238,6 +329,7 @@ export class AIService {
       attachments,
       documentContext,
     });
+    await this.publishQueuedPromptState(sessionId);
     return { id: created.id, prompt: created.prompt, createdAt: created.createdAt };
   }
 
@@ -247,6 +339,28 @@ export class AIService {
       return false;
     }
     return this.processQueuedPrompt(sessionId, workspacePath, targetWindow);
+  }
+
+  private notifyInteractivePromptResolved(
+    sessionId: string,
+    promptId: string,
+    promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request',
+    response: any,
+  ): void {
+    const windows = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed());
+    for (const win of windows) {
+      if (promptType === 'permission_request') {
+        win.webContents.send('ai:toolPermissionResolved', { sessionId, requestId: promptId });
+      } else if (promptType === 'ask_user_question_request') {
+        win.webContents.send('ai:askUserQuestionAnswered', { sessionId, questionId: promptId });
+      } else {
+        win.webContents.send('ai:exitPlanModeResolved', {
+          sessionId,
+          requestId: promptId,
+          approved: !!response?.approved,
+        });
+      }
+    }
   }
 
   public async respondToInteractivePrompt(params: {
@@ -300,11 +414,17 @@ export class AIService {
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false]
     );
+    await setSessionPendingPrompt(sessionId, false);
+    TrayManager.getInstance().onPromptResolved(sessionId);
+    this.notifyInteractivePromptResolved(sessionId, promptId, promptType, response);
 
     if (promptType === 'permission_request') {
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
       if (!provider) {
-        return { success: false, error: 'Provider not found' };
+        logger.main.warn(
+          `[AIService] Provider not found for permission response; response persisted and prompt cleared. Session: ${sessionId}, promptId: ${promptId}`
+        );
+        return { success: true };
       }
       if (typeof (provider as any).resolveToolPermission !== 'function') {
         return { success: false, error: 'Provider does not support tool permission responses' };
@@ -361,7 +481,13 @@ export class AIService {
 
     const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
     if (!provider) {
-      return { success: false, error: 'Provider not found' };
+      logger.main.warn(
+        `[AIService] Provider not found for ExitPlanMode response; response persisted and prompt cleared. Session: ${sessionId}, promptId: ${promptId}`
+      );
+      if (response.approved) {
+        await AISessionsRepository.updateMetadata(sessionId, { mode: 'agent' });
+      }
+      return { success: true };
     }
 
     if (typeof (provider as any).resolveExitPlanModeConfirmation !== 'function') {
@@ -376,44 +502,80 @@ export class AIService {
   }
 
   /**
-   * Append any claude-code variants that were added after this user's
-   * `providerSettings['claude-code'].models` list was first persisted. Without
-   * this, `ai:getModels` filters out newly-introduced variants (e.g. the
-   * `opus-4-6` pinned variant) because they aren't in the saved list and
-   * there's no UI in ClaudeCodePanel to re-enable them.
+   * Append any Claude Code variants that were added after this user's
+   * `providerSettings[*].models` list was first persisted. Without this,
+   * `ai:getModels` filters out newly-introduced variants (e.g. pinned Opus
+   * variants or Fable) because they aren't in the saved list and there's no UI
+   * in ClaudeCodePanel to re-enable them.
    *
    * Each variant gets its own migration key so we can introduce new pinned
    * variants incrementally without re-running prior insertions.
    */
   private migrateClaudeCodeModelList(): void {
-    this.migrateClaudeCodeVariantInsertion(
+    this.migrateClaudeCodeModelInsertion(
       'migrations.claudeCodeOpus46Added',
+      'claude-code',
       'claude-code:opus-4-6',
       'claude-code:opus',
     );
-    this.migrateClaudeCodeVariantInsertion(
+    this.migrateClaudeCodeModelInsertion(
       'migrations.claudeCodeOpus47Added',
+      'claude-code',
       'claude-code:opus-4-7',
       'claude-code:opus',
     );
+    this.migrateClaudeCodeModelInsertion(
+      'migrations.claudeCodeFableCanonicalAdded',
+      'claude-code',
+      'claude-code:fable',
+      'claude-code:opus',
+      ['claude-code:fable-5', 'claude-code:fable-1m'],
+    );
+    this.migrateClaudeCodeModelInsertion(
+      'migrations.claudeCodeCliFableCanonicalAdded',
+      'claude-code-cli',
+      'claude-code-cli:fable',
+      'claude-code-cli:opus',
+      ['claude-code-cli:fable-5', 'claude-code-cli:fable-1m'],
+    );
+    this.migrateClaudeCodeModelInsertion(
+      'migrations.claudeCodeFableOneMillionCanonicalized',
+      'claude-code',
+      'claude-code:fable',
+      'claude-code:opus',
+      ['claude-code:fable-1m', 'claude-code:fable-5'],
+    );
+    this.migrateClaudeCodeModelInsertion(
+      'migrations.claudeCodeCliFableOneMillionCanonicalized',
+      'claude-code-cli',
+      'claude-code-cli:fable',
+      'claude-code-cli:opus',
+      ['claude-code-cli:fable-1m', 'claude-code-cli:fable-5'],
+    );
   }
 
-  private migrateClaudeCodeVariantInsertion(
+  private migrateClaudeCodeModelInsertion(
     migrationKey: string,
-    variantId: string,
+    providerId: 'claude-code' | 'claude-code-cli',
+    modelId: string,
     insertAfterId: string,
+    legacyIds: string[] = [],
   ): void {
     if (this.settingsStore!.get(migrationKey)) return;
     const providerSettings = this.settingsStore!.get('providerSettings', {}) as any;
-    const claudeCode = providerSettings?.['claude-code'];
-    if (claudeCode && Array.isArray(claudeCode.models) && !claudeCode.models.includes(variantId)) {
-      const anchorIndex = claudeCode.models.indexOf(insertAfterId);
-      const insertAt = anchorIndex >= 0 ? anchorIndex + 1 : claudeCode.models.length;
-      claudeCode.models = [
-        ...claudeCode.models.slice(0, insertAt),
-        variantId,
-        ...claudeCode.models.slice(insertAt),
-      ];
+    const providerConfig = providerSettings?.[providerId];
+    if (providerConfig && Array.isArray(providerConfig.models)) {
+      let models = providerConfig.models.filter((id: string) => !legacyIds.includes(id));
+      if (!models.includes(modelId)) {
+        const anchorIndex = models.indexOf(insertAfterId);
+        const insertAt = anchorIndex >= 0 ? anchorIndex + 1 : models.length;
+        models = [
+          ...models.slice(0, insertAt),
+          modelId,
+          ...models.slice(insertAt),
+        ];
+      }
+      providerConfig.models = models;
       this.settingsStore!.set('providerSettings', providerSettings);
     }
     this.settingsStore!.set(migrationKey, true);
@@ -443,7 +605,7 @@ export class AIService {
                 enabled: true,
                 testStatus: "idle",
                 installStatus: "not-installed",
-                models: ["claude-code:opus", "claude-code:opus-4-7", "claude-code:opus-4-6", "claude-code:sonnet", "claude-code:haiku"]
+                models: ["claude-code:fable", "claude-code:opus", "claude-code:opus-4-7", "claude-code:opus-4-6", "claude-code:sonnet", "claude-code:haiku"]
               },
               openai: {
                 enabled: false,
@@ -605,6 +767,51 @@ export class AIService {
   private lastSyncProvider: import('@nimbalyst/runtime/sync').SyncProvider | null = null;
   private syncStatusUnsubscribe: (() => void) | null = null;
 
+  private async publishQueuedPromptState(sessionId: string): Promise<void> {
+    const syncProvider = getSyncProvider();
+    if (!syncProvider) return;
+
+    try {
+      const { getQueuedPromptsStore } = await import('../RepositoryManager');
+      const pending = await getQueuedPromptsStore().listPending(sessionId);
+      const metadata: Record<string, unknown> = {
+        queuedPrompts: pending.map((prompt) => ({
+          id: prompt.id,
+          prompt: prompt.prompt,
+          timestamp: prompt.createdAt,
+          attachments: prompt.attachments,
+        })),
+      };
+      if (pending.length > 0) {
+        metadata.agentStatus = {
+          kind: 'queued',
+          label: pending.length === 1 ? '1 prompt queued on desktop' : `${pending.length} prompts queued on desktop`,
+          updatedAt: Date.now(),
+        };
+      } else {
+        const sessionState = getSessionStateManager().getSessionState(sessionId);
+        const isActivelyProcessing =
+          this.sessionsProcessingQueue.has(sessionId) ||
+          sessionState?.status === 'running' ||
+          sessionState?.status === 'waiting_for_input';
+        if (!isActivelyProcessing) {
+          metadata.isExecuting = false;
+          metadata.agentStatus = {
+            kind: 'idle',
+            label: 'Idle',
+            updatedAt: Date.now(),
+          };
+        }
+      }
+      await Promise.resolve(syncProvider.pushChange(sessionId, {
+        type: 'metadata_updated',
+        metadata: metadata as any,
+      }));
+    } catch (error) {
+      logger.main.warn('[AIService] Failed to publish queued prompt state:', error);
+    }
+  }
+
   private async continueQueuedPromptChain(
     sessionId: string,
     workspacePath: string,
@@ -621,6 +828,13 @@ export class AIService {
     const pendingPrompts = await queueStore.listPending(sessionId);
 
     if (pendingPrompts.length === 0) {
+      logger.main.info(`[AIService] ${source}: ending queued session ${sessionId}`);
+      await this.publishQueuedPromptState(sessionId);
+      try {
+        getSessionStateManager().endSession(sessionId);
+      } catch (error) {
+        logger.main.warn(`[AIService] ${source}: failed to end queued session ${sessionId}:`, error);
+      }
       return;
     }
 
@@ -669,6 +883,7 @@ export class AIService {
       logError: (message, error) => logger.main.error(message, error),
       logInfo: (message) => logger.main.info(message),
       onAfterSettled: async () => {
+        await this.publishQueuedPromptState(sessionId);
         try {
           const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
           const childSession = await AISessionsRepository.get(sessionId);
@@ -727,6 +942,7 @@ export class AIService {
           sessionId: claimedSessionId,
           promptId,
         });
+        void this.publishQueuedPromptState(claimedSessionId);
       },
       processingSet: this.sessionsProcessingQueue,
       queueStore,
@@ -868,23 +1084,6 @@ export class AIService {
                     });
                   }
 
-                  // Forward draftInput from remote device
-                  if (entry.draftInput !== undefined) {
-                    // logger.main.info('[AIService] Forwarding draftInput to renderer:', { sessionId, draftInput: entry.draftInput });
-                    targetWindow.webContents.send('sessions:sync-draft-input', {
-                      sessionId,
-                      draftInput: entry.draftInput ?? '',
-                      draftUpdatedAt: entry.draftUpdatedAt,
-                    });
-                  }
-                } else {
-                  if (entry.draftInput !== undefined) {
-                    // logger.main.info('[AIService] DEBUG: draftInput present but no targetWindow for projectId:', cachedEntry.projectId);
-                  }
-                }
-              } else {
-                if (entry.draftInput !== undefined) {
-                  // logger.main.info('[AIService] DEBUG: draftInput present but no projectId in cachedEntry for session:', sessionId);
                 }
               }
             }
@@ -902,6 +1101,7 @@ export class AIService {
                 const { getQueuedPromptsStore } = await import('../RepositoryManager');
                 const queueStore = getQueuedPromptsStore();
 
+                let acceptedPromptsCount = 0;
                 let newPromptsCount = 0;
                 for (const prompt of entry.queuedPrompts) {
                   // Skip prompts that were created locally (echoed back via Y.js sync)
@@ -910,6 +1110,8 @@ export class AIService {
                     // logger.main.info(`[AIService] Prompt ${prompt.id} is a local prompt echoed via sync, skipping`);
                     continue;
                   }
+
+                  acceptedPromptsCount++;
 
                   // Check if prompt already exists
                   const existing = await queueStore.get(prompt.id);
@@ -928,12 +1130,16 @@ export class AIService {
                   newPromptsCount++;
                 }
 
-                if (newPromptsCount === 0) {
-                  // logger.main.info('[AIService] No new prompts to process, all already exist');
+                if (acceptedPromptsCount === 0) {
+                  // logger.main.info('[AIService] No mobile prompts to process');
                   return;
                 }
 
-                logger.main.info(`[AIService] Inserted ${newPromptsCount} new prompts into queued_prompts table`);
+                await this.publishQueuedPromptState(sessionId);
+
+                logger.main.info(
+                  `[AIService] Accepted ${acceptedPromptsCount} mobile prompt(s), inserted ${newPromptsCount} new prompt(s) into queued_prompts table`
+                );
 
                 // Load session to get its workspacePath for window routing
                 // Use repository directly since we just need metadata, not full session load
@@ -978,14 +1184,20 @@ export class AIService {
                     // logger.main.info('[AIService] Notifying window to process queue for workspace:', session.workspacePath);
                     targetWindow.webContents.send('ai:queuedPromptsReceived', {
                       sessionId,
-                      promptCount: newPromptsCount,
+                      promptCount: newPromptsCount || acceptedPromptsCount,
                       workspacePath: session.workspacePath  // Include for renderer-side filtering
                     });
 
-                    // Directly trigger queue processing from main process
-                    // This ensures mobile messages are processed even when the session isn't open in the UI
-                    // logger.main.info('[AIService] Triggering queue processing for mobile prompt');
-                    this.processQueuedPrompt(sessionId, session.workspacePath, targetWindow);
+                    const sessionState = getSessionStateManager().getSessionState(sessionId);
+                    const status = sessionState?.status ?? 'idle';
+                    if (status === 'idle' || status === 'error') {
+                      // Directly trigger queue processing from main process when idle.
+                      this.processQueuedPrompt(sessionId, session.workspacePath, targetWindow);
+                    } else {
+                      logger.main.info(
+                        `[AIService] Mobile prompt queued for busy session ${sessionId}; waiting for completion or send-now`
+                      );
+                    }
                   } else {
                     logger.main.warn('[AIService] No window found and workspace path does not exist:', session.workspacePath);
                   }
@@ -1107,10 +1319,26 @@ export class AIService {
               }
             }
 
-            // Create the session using the SessionManager
-            // Use mobile's provider/model selection if provided, otherwise fall back to desktop defaults
-            const resolvedProvider = (request.provider || 'claude-code') as import('@nimbalyst/runtime/ai/server/types').AIProviderType;
-            const resolvedModel = request.model || getDefaultAIModel() || 'claude-code:opus-1m';
+            // Create the session using the SessionManager. Provider-prefixed
+            // model IDs (for example opencode:sakana/fugu-ultra) are the
+            // source of truth; otherwise mobile creation can pair an OpenCode
+            // default model with the Claude provider and fail.
+            const desktopDefaultModel = getDefaultAIModel() || 'claude-code:opus-1m';
+            const requestedModel = request.model?.trim();
+            const requestedProvider = request.provider as AIProviderType | undefined;
+            const parsedRequestedModel = requestedModel ? ModelIdentifier.tryParse(requestedModel) : null;
+            const parsedDefaultModel = ModelIdentifier.tryParse(desktopDefaultModel);
+            const resolvedProvider = (
+              parsedRequestedModel?.provider ||
+              requestedProvider ||
+              parsedDefaultModel?.provider ||
+              'claude-code'
+            ) as AIProviderType;
+            const resolvedModel = requestedModel || (
+              requestedProvider && parsedDefaultModel?.provider !== requestedProvider
+                ? ModelIdentifier.getDefaultModelId(requestedProvider)
+                : desktopDefaultModel
+            );
             const resolvedSessionType = (request.sessionType || 'session') as import('@nimbalyst/runtime/ai/server/types').SessionType;
             const resolvedAgentRole = (request.agentRole || 'standard') as import('@nimbalyst/runtime/ai/server/types').AgentRole;
             const session = await this.sessionManager.createSession(
@@ -1195,6 +1423,7 @@ export class AIService {
                 sessionId: session.id,
                 prompt: request.initialPrompt
               });
+              await this.publishQueuedPromptState(session.id);
 
               // logger.main.info('[AIService] Queued initial prompt from mobile:', {
               //   sessionId: session.id,
@@ -1351,6 +1580,46 @@ export class AIService {
       initMobileSessionControlHandler(syncProvider, findWindowByWorkspace, {
         triggerQueuedPromptProcessing: (sessionId, workspacePath) =>
           this.triggerQueuedPromptProcessingForSession(sessionId, workspacePath),
+        deleteQueuedPrompt: async (sessionId, promptId) => {
+          const { getQueuedPromptsStore } = await import('../RepositoryManager');
+          const queueStore = getQueuedPromptsStore();
+          const prompt = await queueStore.get(promptId);
+          if (!prompt || prompt.sessionId !== sessionId || prompt.status !== 'pending') {
+            await this.publishQueuedPromptState(sessionId);
+            return false;
+          }
+          await queueStore.delete(promptId);
+          await this.publishQueuedPromptState(sessionId);
+          return true;
+        },
+        sendQueuedPromptNow: async (sessionId) => {
+          const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+          const session = await AISessionsRepository.get(sessionId);
+          if (!session?.workspacePath) {
+            await this.publishQueuedPromptState(sessionId);
+            return false;
+          }
+
+          const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+          if (provider) {
+            this.sessionsProcessingQueue.delete(sessionId);
+            try {
+              const { getQueuedPromptsStore } = await import('../RepositoryManager');
+              const { completed, rolledBack } = await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
+              if (completed > 0 || rolledBack > 0) {
+                logger.main.info(
+                  `[AIService] mobile send-now: swept session ${sessionId} -- ${completed} delivered marked completed, ${rolledBack} undelivered rolled back`
+                );
+              }
+            } catch (sweepErr) {
+              logger.main.error('[AIService] mobile send-now: sweepExecutingForSession failed:', sweepErr);
+            }
+            await provider.interruptCurrentTurn();
+          }
+
+          await this.publishQueuedPromptState(sessionId);
+          return this.triggerQueuedPromptProcessingForSession(sessionId, session.workspacePath);
+        },
         rollbackExecutingPrompts: async (sessionId) => {
           // Use the delivery-aware sweep so that a mobile-initiated cancel
           // doesn't re-deliver a prompt that already landed in the
@@ -1358,6 +1627,7 @@ export class AIService {
           // back to pending (matches the prior contract).
           const { getQueuedPromptsStore } = await import('../RepositoryManager');
           const { rolledBack } = await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
+          await this.publishQueuedPromptState(sessionId);
           return rolledBack;
         },
       });
@@ -1880,6 +2150,14 @@ export class AIService {
         if (effortLevel) {
           initConfig.effortLevel = effortLevel;
         }
+        const providerSettings = this.getNormalizedProviderSettings() as any;
+        const serviceTier = resolveCodexServiceTier(
+          (session.metadata as any)?.codexFastModeEnabled,
+          providerSettings?.['openai-codex']?.fastModeEnabled
+        );
+        if (serviceTier) {
+          initConfig.serviceTier = serviceTier;
+        }
       }
 
       await providerInstance.initialize(initConfig);
@@ -1940,6 +2218,24 @@ export class AIService {
       }
 
       session.messages = await enrichTranscriptMessagesWithToolCallDiffs(session.id, session.messages);
+      const transcriptPage = session.transcriptPage;
+      if (session.id === 'c0287ccb-1d8a-4b58-9066-0b0658c73568' || transcriptPage?.isPartial || session.messages.length === 0) {
+        logger.main.info(`[AIService] ai:loadSession result ${JSON.stringify({
+          sessionId: session.id,
+          provider: session.provider,
+          messageCount: session.messages.length,
+          loadMs: Math.round(loadTime),
+          transcriptPage: transcriptPage ? {
+            isPartial: transcriptPage.isPartial,
+            hasMoreBefore: transcriptPage.hasMoreBefore,
+            rawStartId: transcriptPage.rawStartId,
+            rawEndId: transcriptPage.rawEndId,
+            rawMessageCount: transcriptPage.rawMessageCount,
+            totalRawMessageCount: transcriptPage.totalRawMessageCount,
+          } : null,
+        })}`);
+      }
+      this.publishMobileTranscriptTailForPartialSession(session);
 
       // Restore document context state from persisted data (if available)
       // This enables transition detection across app restarts
@@ -1973,6 +2269,20 @@ export class AIService {
       } finally {
         loadSessionInFlight.delete(sessionId);
       }
+    });
+
+    safeHandle('ai:loadTranscriptPage', async (
+      _event,
+      sessionId: string,
+      request?: { beforeRawMessageId?: number | null; count?: number },
+    ) => {
+      const page = await getDesktopTranscriptHistoryPage(sessionId, request ?? {});
+      if (!page) return null;
+
+      return {
+        ...page,
+        messages: await enrichTranscriptMessagesWithToolCallDiffs(sessionId, page.messages),
+      };
     });
 
     // Clear session
@@ -2055,6 +2365,7 @@ export class AIService {
 
       if (claimed) {
         logger.main.info(`[AIService] claimQueuedPrompt: claimed ${promptId} for session ${sessionId}`);
+        await this.publishQueuedPromptState(sessionId);
         // Return in the format expected by the renderer
         return {
           id: claimed.id,
@@ -2076,8 +2387,12 @@ export class AIService {
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
+      const prompt = await queueStore.get(promptId);
       await queueStore.complete(promptId);
       logger.main.info(`[AIService] completeQueuedPrompt: ${promptId}`);
+      if (prompt?.sessionId) {
+        await this.publishQueuedPromptState(prompt.sessionId);
+      }
     });
 
     // Mark a queued prompt as failed
@@ -2088,8 +2403,12 @@ export class AIService {
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
+      const prompt = await queueStore.get(promptId);
       await queueStore.fail(promptId, errorMessage);
       logger.main.info(`[AIService] failQueuedPrompt: ${promptId} - ${errorMessage}`);
+      if (prompt?.sessionId) {
+        await this.publishQueuedPromptState(prompt.sessionId);
+      }
     });
 
     // List pending prompts for a session
@@ -2133,6 +2452,7 @@ export class AIService {
       });
 
       logger.main.info(`[AIService] createQueuedPrompt: created ${promptId} for session ${sessionId}`);
+      await this.publishQueuedPromptState(sessionId);
 
       // Look up the session once (lightweight — no message log) for both the
       // analytics event and the claude-code-cli idle-flush kick below.
@@ -2167,36 +2487,54 @@ export class AIService {
         promptCount: 1
       });
 
-      // claude-code-cli (NIM-806): the CLI queue normally drains on the PID
-      // watcher's running->idle transition. But a prompt queued while the CLI is
-      // ALREADY idle (e.g. smart-commit on a session sitting at its prompt) has no
-      // transition to ride, so it would sit forever. If the terminal is live and
-      // the session is idle right now, kick a flush directly. The flush singleton's
-      // in-flight guard + DB claim make this safe against a concurrent transition
-      // flush; if the CLI is mid-turn (running/waiting), we skip and let the next
-      // idle transition drain it.
-      //
-      // NIM-821: idleness is decided from the LIVE PID file, not just
-      // SessionStateManager's snapshot — the snapshot is updated asynchronously
-      // from the PID watcher, and a prompt queued inside that gap (PID already
-      // idle, state still 'running') skipped the kick with no future idle
-      // transition ever coming. Either signal saying idle kicks the flush; the
-      // claim is race-safe, so erring toward flushing is fine.
-      if (queuedSession?.provider === 'claude-code-cli') {
-        const terminalManager = getTerminalSessionManager();
-        const state = getSessionStateManager().getSessionState(sessionId);
-        const workspacePath = queuedSession.workspacePath ?? state?.workspacePath;
-        if (terminalManager.isTerminalActive(sessionId) && workspacePath) {
-          if (state?.status === 'idle') {
-            void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
-          } else {
-            void terminalManager.getClaudeCliLiveTurnState(sessionId).then((live) => {
-              if (live === 'idle') {
-                void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
-              }
-            }).catch(() => {});
+      try {
+        const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+        const session = await AISessionsRepository.get(sessionId);
+        const targetWindow = BrowserWindow.fromWebContents(event.sender) || undefined;
+        const sessionState = getSessionStateManager().getSessionState(sessionId);
+        const status = sessionState?.status ?? 'idle';
+        const workspacePath = session?.workspacePath ?? queuedSession?.workspacePath ?? sessionState?.workspacePath;
+
+        // claude-code-cli (NIM-806): the CLI queue normally drains on the PID
+        // watcher's running->idle transition. But a prompt queued while the CLI is
+        // ALREADY idle (e.g. smart-commit on a session sitting at its prompt) has no
+        // transition to ride, so it would sit forever. If the terminal is live and
+        // the session is idle right now, kick a flush directly. The flush singleton's
+        // in-flight guard + DB claim make this safe against a concurrent transition
+        // flush; if the CLI is mid-turn (running/waiting), we skip and let the next
+        // idle transition drain it.
+        //
+        // NIM-821: idleness is decided from the LIVE PID file, not just
+        // SessionStateManager's snapshot — the snapshot is updated asynchronously
+        // from the PID watcher, and a prompt queued inside that gap (PID already
+        // idle, state still 'running') skipped the kick with no future idle
+        // transition ever coming. Either signal saying idle kicks the flush; the
+        // claim is race-safe, so erring toward flushing is fine.
+        if (queuedSession?.provider === 'claude-code-cli') {
+          const terminalManager = getTerminalSessionManager();
+          if (terminalManager.isTerminalActive(sessionId) && workspacePath) {
+            if (status === 'idle') {
+              void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
+            } else {
+              void terminalManager.getClaudeCliLiveTurnState(sessionId).then((live) => {
+                if (live === 'idle') {
+                  void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
+                }
+              }).catch(() => {});
+            }
           }
+        } else if (
+          workspacePath &&
+          targetWindow &&
+          !targetWindow.isDestroyed() &&
+          (status === 'idle' || status === 'error')
+        ) {
+          void this.processQueuedPrompt(sessionId, workspacePath, targetWindow).catch((error) => {
+            logger.main.error('[AIService] createQueuedPrompt: failed to trigger local queue processing:', error);
+          });
         }
+      } catch (error) {
+        logger.main.warn('[AIService] createQueuedPrompt: failed to inspect local queue trigger state:', error);
       }
 
       return {
@@ -2215,8 +2553,12 @@ export class AIService {
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
+      const prompt = await queueStore.get(promptId);
       await queueStore.delete(promptId);
       logger.main.info(`[AIService] deleteQueuedPrompt: deleted ${promptId}`);
+      if (prompt?.sessionId) {
+        await this.publishQueuedPromptState(prompt.sessionId);
+      }
       return { success: true };
     });
 
@@ -2830,6 +3172,7 @@ export class AIService {
       const showUsageIndicator = this.getSettingsStore().get('showUsageIndicator', true) as boolean;
       const showCodexUsageIndicator = this.getSettingsStore().get('showCodexUsageIndicator', true) as boolean;
       const showGeminiUsageIndicator = this.getSettingsStore().get('showGeminiUsageIndicator', true) as boolean;
+      const showFuguUsageIndicator = this.getSettingsStore().get('showFuguUsageIndicator', true) as boolean;
       const customClaudeCodePath = this.getSettingsStore().get('customClaudeCodePath', '') as string;
       const autoCommitEnabled = this.getSettingsStore().get('autoCommitEnabled', false) as boolean;
       const trackerAutomation = this.getSettingsStore().get('trackerAutomation', {
@@ -2854,6 +3197,7 @@ export class AIService {
         showUsageIndicator,
         showCodexUsageIndicator,
         showGeminiUsageIndicator,
+        showFuguUsageIndicator,
         customClaudeCodePath,
         autoCommitEnabled,
         trackerAutomation,
@@ -2948,6 +3292,7 @@ export class AIService {
       if (settings.showUsageIndicator !== undefined)       safeSet('ai.showUsageIndicator', settings.showUsageIndicator);
       if (settings.showCodexUsageIndicator !== undefined)  safeSet('ai.showCodexUsageIndicator', settings.showCodexUsageIndicator);
       if (settings.showGeminiUsageIndicator !== undefined) safeSet('ai.showGeminiUsageIndicator', settings.showGeminiUsageIndicator);
+      if (settings.showFuguUsageIndicator !== undefined)   safeSet('ai.showFuguUsageIndicator', settings.showFuguUsageIndicator);
 
       if (settings.trackerAutomation !== undefined && typeof settings.trackerAutomation === 'object') {
         // Merge with current for partial updates (callers may send just the
@@ -3415,9 +3760,9 @@ export class AIService {
           if (model.provider === 'claude-code' && provider.models.includes('claude-code')) {
             return true;
           }
-          // For Claude Code: if base model is selected, also include 1M variants
+          // For Claude Code providers: if base model is selected, also include 1M variants
           // e.g., if 'claude-code:sonnet' is selected, also include 'claude-code:sonnet-1m'
-          if (model.provider === 'claude-code' && model.id.includes('-1m')) {
+          if ((model.provider === 'claude-code' || model.provider === 'claude-code-cli') && model.id.includes('-1m')) {
             const baseModelId = model.id.replace(/-1m$/, '');
             if (provider.models.includes(baseModelId)) {
               return true;

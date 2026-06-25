@@ -31,6 +31,7 @@ const https = require('https');
 
 const ENDPOINT = process.env.NIMBALYST_PERMISSION_URL || '';
 const TOKEN = process.env.NIMBALYST_PERMISSION_TOKEN || '';
+const WORKSPACE_PATH = process.env.NIMBALYST_WORKSPACE_PATH || '';
 // Stay just under the CLI's hook timeout so we lose the race to the CLI, not the
 // other way around (a clean "ask" fallback beats an ambiguous kill).
 const REQUEST_TIMEOUT_MS = Number(process.env.NIMBALYST_PERMISSION_TIMEOUT_MS || 590000);
@@ -137,6 +138,7 @@ function postPermission(payload) {
     sessionId: input.session_id || input.sessionId || '',
     toolName: input.tool_name || input.toolName || '',
     toolInput: input.tool_input || input.toolInput || {},
+    workspacePath: WORKSPACE_PATH,
     cwd: input.cwd || '',
   };
 

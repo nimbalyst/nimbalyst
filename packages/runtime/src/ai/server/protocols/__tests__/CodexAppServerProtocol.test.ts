@@ -272,6 +272,32 @@ describe('CodexAppServerProtocol', () => {
     protocol.cleanupSession(session);
   });
 
+  it('passes Fast mode service tier through thread/start params and config', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({
+      workspacePath: '/tmp/ws',
+      raw: {
+        serviceTier: 'fast',
+        codexConfigOverrides: {
+          service_tier: 'fast',
+          features: { fast_mode: true },
+        },
+      },
+    } as never);
+
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    const params = startReq.params as { serviceTier?: string | null; config?: Record<string, unknown> };
+    expect(params.serviceTier).toBe('fast');
+    expect(params.config?.service_tier).toBe('fast');
+    expect(params.config?.features).toEqual({ fast_mode: true });
+
+    child.emitLine({ id: startReq.id, result: { thread: { id: 't-fast' } } });
+    const session = await sessionPromise;
+    protocol.cleanupSession(session);
+  });
+
   it('resumes an existing thread via thread/resume', async () => {
     const protocol = new CodexAppServerProtocol();
     const sessionPromise = protocol.resumeSession('existing-thread-id', { workspacePath: '/tmp/ws' });

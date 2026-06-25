@@ -353,19 +353,44 @@ function setupSyncSubscription(stateManager: ReturnType<typeof getSessionStateMa
 
     const unsubscribe = stateManager.subscribe((event: SessionStateEvent) => {
       // Sync execution state changes to mobile
-      if (event.type === 'session:started' || event.type === 'session:completed' || event.type === 'session:interrupted') {
-        const isExecuting = event.type === 'session:started';
+      if (
+        event.type === 'session:started' ||
+        event.type === 'session:streaming' ||
+        event.type === 'session:waiting' ||
+        event.type === 'session:completed' ||
+        event.type === 'session:interrupted'
+      ) {
+        const isExecuting = event.type === 'session:started' || event.type === 'session:streaming';
         const sessionId = event.sessionId;
 
         console.log('[SessionStateHandlers] Syncing execution state:', { sessionId, isExecuting });
 
         // Push metadata update with isExecuting state
+        const now = Date.now();
+        const agentStatus = event.type === 'session:waiting'
+          ? { kind: 'waiting', label: 'Waiting for your response', updatedAt: now }
+          : isExecuting
+            ? {
+                kind: event.type === 'session:streaming' ? 'responding' : 'thinking',
+                label: event.type === 'session:streaming' ? 'Responding...' : 'Thinking...',
+                updatedAt: now,
+              }
+            : {
+                kind: event.type === 'session:interrupted' ? 'idle' : 'complete',
+                label: event.type === 'session:interrupted' ? 'Interrupted' : 'Done',
+                updatedAt: now,
+              };
+        const metadata: Record<string, unknown> = {
+          isExecuting,
+          agentStatus,
+          updatedAt: now,
+        };
+        if (event.type === 'session:waiting') {
+          metadata.hasPendingPrompt = true;
+        }
         syncProvider.pushChange(sessionId, {
           type: 'metadata_updated',
-          metadata: {
-            isExecuting,
-            updatedAt: Date.now(),
-          },
+          metadata: metadata as any,
         });
       }
     });

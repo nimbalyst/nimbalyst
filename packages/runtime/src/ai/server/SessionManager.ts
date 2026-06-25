@@ -22,7 +22,14 @@ import {
   ModelIdentifier,
   shouldBlockStartedSessionProviderSwitch,
   AgentRole,
+  AgentMessage,
+  TranscriptPageInfo,
 } from './types';
+import {
+  projectRawMessagesToViewMessages,
+  stabilizeRawPageViewMessageIds,
+} from './transcript/projectRawMessages';
+import type { RawMessage } from './transcript/TranscriptTransformer';
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
 import type { SessionData as ChatSession } from './types';
 import { parseContextUsageMessage } from './utils/contextUsage';
@@ -43,6 +50,64 @@ interface TaskToolInput {
   team_name?: string;
   mode?: string;
   [key: string]: unknown;
+}
+
+const DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT = 5_000;
+const DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT = 350;
+const DESKTOP_EMPTY_TAIL_FALLBACK_RAW_MESSAGE_LIMIT = 2_000;
+const DESKTOP_TOKEN_USAGE_RAW_MESSAGE_LIMIT = 1_000;
+
+function agentMessageToRawMessage(message: AgentMessage): RawMessage {
+  const numericId = Number(message.id);
+
+  return {
+    id: Number.isFinite(numericId) && numericId > 0 ? numericId : -1,
+    sessionId: message.sessionId,
+    source: message.source,
+    direction: message.direction,
+    content: message.content,
+    createdAt: message.createdAt ?? new Date(),
+    metadata: message.metadata,
+    hidden: message.hidden ?? false,
+  };
+}
+
+async function getAgentMessageCount(sessionId: string): Promise<number> {
+  const counts = await AgentMessagesRepository.getMessageCounts([sessionId]);
+  const reportedCount = counts.get(sessionId) ?? 0;
+
+  if (reportedCount > DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT) {
+    return reportedCount;
+  }
+
+  // Some packaged/runtime store combinations can fail to expose an accurate
+  // COUNT path. Probe only enough rows to decide whether the canonical full
+  // transcript path is safe; never read the entire session just to count it.
+  const probe = await AgentMessagesRepository.list(sessionId, {
+    limit: DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT + 1,
+    includeHidden: true,
+  });
+  return Math.max(reportedCount, probe.length);
+}
+
+async function listTailAgentMessages(
+  sessionId: string,
+  count: number,
+): Promise<AgentMessage[]> {
+  const limit = Math.max(1, count);
+  // Tail projection needs provider protocol rows too. Newer Codex/OpenCode
+  // transports store those as hidden raw rows, so filtering them out makes
+  // large-session tail loading jump back to old visible-only messages.
+  return AgentMessagesRepository.listTail(sessionId, limit, { includeHidden: true });
+}
+
+async function listAgentMessagesBefore(
+  sessionId: string,
+  beforeRawMessageId: number | null | undefined,
+  count: number,
+): Promise<AgentMessage[]> {
+  const limit = Math.max(1, count);
+  return AgentMessagesRepository.listBefore(sessionId, beforeRawMessageId, limit, { includeHidden: true });
 }
 
 function toTimestampMillis(value: unknown): number {
@@ -1052,19 +1117,43 @@ export class SessionManager {
       return null;
     }
 
-    // Load transcript from canonical ai_transcript_events table
-    // These are already TranscriptViewMessage[] -- do NOT pass through
-    // viewMessageFromServerMessage (which expects the old Message format).
-    const uiMessages = await this.loadCanonicalTranscript(sessionId, session.provider);
+    const rawMessageCount = await getAgentMessageCount(sessionId);
+
+    // Huge sessions cannot safely project the whole raw log on desktop open.
+    // Load a bounded raw tail directly only past the safe full-load threshold,
+    // with page metadata so the renderer can fetch older slices on demand.
+    //
+    // Smaller sessions must use the canonical transcript path. Providers such
+    // as OpenCode intentionally store their raw SSE events as hidden rows; the
+    // canonical transformer turns those hidden raw rows into visible transcript
+    // messages. Tail-loading only non-hidden raw rows makes those sessions look
+    // blank even though the transcript data exists.
+    const shouldTailLoadTranscript = rawMessageCount > DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT;
+    const transcriptLoad = shouldTailLoadTranscript
+      ? await this.loadRawTailTranscriptPage(sessionId, session.provider, rawMessageCount)
+      : {
+        messages: await this.loadCanonicalTranscript(sessionId, session.provider),
+        pageInfo: {
+          isPartial: false,
+          hasMoreBefore: false,
+          rawStartId: null,
+          rawEndId: null,
+          rawMessageCount,
+          totalRawMessageCount: rawMessageCount,
+        } satisfies TranscriptPageInfo,
+      };
 
     // Build session data, then overwrite messages with the already-projected ones
     const sessionData = sessionDataFromChatSession(session, workspace);
-    sessionData.messages = uiMessages;
+    sessionData.messages = transcriptLoad.messages;
+    sessionData.transcriptPage = transcriptLoad.pageInfo;
 
-    // Fallback: If no tokenUsage in metadata, try parsing from /context responses
-    // This provides backwards compatibility for sessions created before tokenUsage was stored in metadata
+    // Fallback: If no tokenUsage in metadata, try parsing from recent /context
+    // responses only. Scanning every raw row has crashed large sessions.
     if (!sessionData.tokenUsage) {
-      const agentMessages = await AgentMessagesRepository.list(sessionId);
+      const agentMessages = rawMessageCount > DESKTOP_TOKEN_USAGE_RAW_MESSAGE_LIMIT
+        ? await listTailAgentMessages(sessionId, DESKTOP_TOKEN_USAGE_RAW_MESSAGE_LIMIT)
+        : await AgentMessagesRepository.list(sessionId);
       for (let i = agentMessages.length - 1; i >= 0; i--) {
         const msg = agentMessages[i];
         if (msg.direction === 'output' && msg.content?.includes('## Context Usage')) {
@@ -1099,6 +1188,67 @@ export class SessionManager {
     }
 
     return TranscriptMigrationRepository.getService().getViewMessages(sessionId, provider);
+  }
+
+  private async loadRawTailTranscriptPage(
+    sessionId: string,
+    provider: string,
+    totalRawMessageCount: number,
+  ): Promise<{ messages: TranscriptViewMessage[]; pageInfo: TranscriptPageInfo }> {
+    let rawTail = await listTailAgentMessages(
+      sessionId,
+      DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT,
+    );
+    let projected = await projectRawMessagesToViewMessages(rawTail.map(agentMessageToRawMessage), provider);
+
+    if (
+      rawTail.length > 0 &&
+      projected.length === 0 &&
+      totalRawMessageCount > DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT
+    ) {
+      const fallbackLimit = Math.min(
+        DESKTOP_EMPTY_TAIL_FALLBACK_RAW_MESSAGE_LIMIT,
+        totalRawMessageCount,
+      );
+      rawTail = await listTailAgentMessages(sessionId, fallbackLimit);
+      projected = await projectRawMessagesToViewMessages(rawTail.map(agentMessageToRawMessage), provider);
+      console.warn('[SessionManager] Empty projected transcript tail; retried with wider bounded tail ' + JSON.stringify({
+        sessionId,
+        provider,
+        initialRawMessageLimit: DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT,
+        fallbackRawMessageLimit: fallbackLimit,
+        fallbackRawMessageCount: rawTail.length,
+        projectedMessageCount: projected.length,
+        totalRawMessageCount,
+      }));
+    } else {
+      console.log('[SessionManager] Loaded bounded transcript tail ' + JSON.stringify({
+        sessionId,
+        provider,
+        rawMessageLimit: DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT,
+        rawMessageCount: rawTail.length,
+        projectedMessageCount: projected.length,
+        totalRawMessageCount,
+      }));
+    }
+
+    const rawStartId = rawTail[0]?.id != null ? Number(rawTail[0].id) : null;
+    const rawEndId = rawTail[rawTail.length - 1]?.id != null ? Number(rawTail[rawTail.length - 1].id) : null;
+    const hasMoreBefore = rawStartId != null
+      ? (await listAgentMessagesBefore(sessionId, rawStartId, 1)).length > 0
+      : false;
+
+    return {
+      messages: stabilizeRawPageViewMessageIds(projected, rawStartId),
+      pageInfo: {
+        isPartial: true,
+        hasMoreBefore,
+        rawStartId,
+        rawEndId,
+        rawMessageCount: rawTail.length,
+        totalRawMessageCount,
+      },
+    };
   }
 
   async getSessions(workspacePath?: string): Promise<SessionData[]> {

@@ -33,6 +33,7 @@ import { MCPServerConfig } from '../../../types/MCPServerConfig';
 import { safeJSONSerialize } from '../../../utils/serialization';
 import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
 import { TranscriptMigrationRepository } from '../../../storage/repositories/TranscriptMigrationRepository';
+import type { PermissionDecision } from './ProviderPermissionMixin';
 
 interface OpenCodeProviderDeps {
   protocol?: OpenCodeSDKProtocol;
@@ -335,6 +336,13 @@ export class OpenCodeProvider extends BaseAgentProvider {
         existingSessionId
       });
 
+      // Persist the provider session as soon as OpenCode creates/resumes it.
+      // Waiting until stream completion loses the mapping when a turn blocks on
+      // permission approval, crashes, or is interrupted before `session.idle`.
+      if (sessionId && session.id) {
+        this.sessions.captureSessionId(sessionId, session.id);
+      }
+
       // Create transcript adapter as event parser (returns ParsedItems for the streaming loop).
       // Canonical events are written by the TranscriptTransformer from raw ai_agent_messages.
       const transcriptAdapter = new AgentProtocolTranscriptAdapter(null, sessionId ?? '');
@@ -375,9 +383,60 @@ export class OpenCodeProvider extends BaseAgentProvider {
             // still streaming. Without this, canonical events (and the
             // widgets that render off them -- AskUserQuestion etc.) only
             // appear after a session reload, which may not happen until the
-            // turn completes.
-            await this.processTranscriptMessages(sessionId);
+            // turn completes. Permission requests are deferred until the
+            // protocol tool_call branch below has registered the pending
+            // request, otherwise a fast click can arrive before the provider
+            // has anything to resolve.
+            if (sseEventType !== 'permission.updated') {
+              await this.processTranscriptMessages(sessionId);
+            }
           }
+        }
+
+        if (sessionId && this.isOpenCodePermissionRequest(event)) {
+          const permissionId = String(event.metadata?.permissionId ?? event.toolCall?.id ?? '');
+          if (!permissionId) {
+            yield { type: 'error', error: '[OpenCodeProvider] OpenCode permission request was missing a permission id' };
+            return;
+          }
+
+          try {
+            const automaticDecision = this.getAutomaticOpenCodePermissionDecision(event, workspacePath);
+            const decisionPromise = automaticDecision
+              ? Promise.resolve(automaticDecision)
+              : this.waitForOpenCodePermissionDecision(
+                  event,
+                  sessionId,
+                  workspacePath,
+                  abortController.signal,
+                );
+
+            if (!automaticDecision) {
+              await this.processTranscriptMessages(sessionId);
+            }
+
+            const decision = await decisionPromise;
+            await this.protocol.respondToPermission(
+              session,
+              permissionId,
+              mapOpenCodePermissionDecision(decision),
+            );
+            if (automaticDecision) {
+              await this.logAgentMessageBestEffort(
+                sessionId,
+                'output',
+                this.createPermissionResultMessage(permissionId, automaticDecision, 'desktop'),
+              );
+            }
+            await this.processTranscriptMessages(sessionId);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (!abortController.signal.aborted) {
+              yield { type: 'error', error: `[OpenCodeProvider] Failed to answer OpenCode permission request: ${message}` };
+            }
+            return;
+          }
+          continue;
         }
 
         for (const item of transcriptAdapter.processEvent(event)) {
@@ -429,19 +488,6 @@ export class OpenCodeProvider extends BaseAgentProvider {
         }
       }
 
-      // Capture session ID after stream completes
-      if (sessionId && session.id) {
-        if (session.id !== existingSessionId) {
-          console.log('[OPENCODE] Saving provider session ID:', {
-            nimbalystSessionId: sessionId,
-            openCodeSessionId: session.id,
-          });
-          this.sessions.setProviderSessionData(sessionId, {
-            providerSessionId: session.id,
-          });
-        }
-      }
-
       // No end-of-turn fullText write: canonical events derived from the
       // stored raw SSE events (via OpenCodeRawParser) are the source of truth
       // for transcript content. The fullText accumulator is kept only for
@@ -478,4 +524,106 @@ export class OpenCodeProvider extends BaseAgentProvider {
       // Best effort -- the next call (or end-of-turn ensureUpToDate) catches up.
     }
   }
+
+  private isOpenCodePermissionRequest(event: unknown): event is {
+    type: 'tool_call';
+    toolCall?: { id?: string; arguments?: Record<string, unknown> };
+    metadata?: { openCodePermissionRequest?: boolean; permissionId?: string };
+  } {
+    return !!event
+      && typeof event === 'object'
+      && (event as any).type === 'tool_call'
+      && (event as any).metadata?.openCodePermissionRequest === true;
+  }
+
+  private async waitForOpenCodePermissionDecision(
+    event: {
+      toolCall?: { id?: string; arguments?: Record<string, unknown> };
+      metadata?: { permissionId?: string };
+    },
+    sessionId: string,
+    workspacePath: string,
+    signal: AbortSignal,
+  ): Promise<PermissionDecision> {
+    const requestId = String(event.metadata?.permissionId ?? event.toolCall?.id ?? '');
+    if (!requestId) {
+      throw new Error('OpenCode permission request was missing requestId');
+    }
+
+    const args = event.toolCall?.arguments ?? {};
+    const responsePromise = new Promise<PermissionDecision>((resolve, reject) => {
+      this.permissions.pendingToolPermissions.set(requestId, {
+        resolve,
+        reject,
+        request: {
+          id: requestId,
+          toolName: args.toolName ?? 'OpenCode',
+          rawCommand: args.rawCommand ?? '',
+          pattern: args.pattern ?? 'OpenCodePermission',
+          workspacePath,
+          openCodePermission: true,
+        },
+      });
+
+      signal.addEventListener('abort', () => {
+        this.permissions.pendingToolPermissions.delete(requestId);
+        reject(new Error('Request aborted'));
+      }, { once: true });
+    });
+
+    this.pollForPermissionResponse(sessionId, requestId, signal).catch((error) => {
+      console.warn('[OpenCodeProvider] Permission response polling failed:', error);
+    });
+
+    return responsePromise;
+  }
+
+  private getAutomaticOpenCodePermissionDecision(
+    event: {
+      toolCall?: { arguments?: Record<string, unknown> };
+    },
+    workspacePath: string,
+  ): PermissionDecision | null {
+    if (!OpenCodeProvider.trustChecker) return null;
+
+    const trustStatus = OpenCodeProvider.trustChecker(workspacePath);
+    if (!trustStatus.trusted) {
+      throw new Error('Workspace is not trusted. Please trust the workspace to use Fugu/OpenCode tools.');
+    }
+
+    if (trustStatus.mode === 'bypass-all') {
+      return { decision: 'allow', scope: 'once' };
+    }
+
+    if (trustStatus.mode !== 'allow-all') {
+      return null;
+    }
+
+    const args = event.toolCall?.arguments ?? {};
+    const permissionType = String(args.openCodePermissionType ?? '').toLowerCase();
+    if (isOpenCodePermissionAllowedByAllowAll(permissionType)) {
+      return { decision: 'allow', scope: 'once' };
+    }
+
+    return null;
+  }
+}
+
+function mapOpenCodePermissionDecision(decision: PermissionDecision): 'once' | 'always' | 'reject' {
+  if (decision.decision === 'deny') return 'reject';
+  if (decision.scope === 'once') return 'once';
+  return 'always';
+}
+
+function isOpenCodePermissionAllowedByAllowAll(permissionType: string): boolean {
+  if (!permissionType) return false;
+
+  // Nimbalyst's "allow-all" is file/read/edit oriented. Keep shell and network
+  // capability prompts visible unless the project is in explicit bypass-all.
+  const stillPromptedFragments = ['bash', 'shell', 'command', 'network', 'web', 'fetch', 'http'];
+  if (stillPromptedFragments.some((fragment) => permissionType.includes(fragment))) {
+    return false;
+  }
+
+  return true;
 }

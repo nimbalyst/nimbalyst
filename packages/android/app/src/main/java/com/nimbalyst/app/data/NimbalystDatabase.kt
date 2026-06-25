@@ -3,6 +3,7 @@ package com.nimbalyst.app.data
 import android.content.ContentValues
 import android.content.Context
 import androidx.room.Database
+import androidx.room.migration.Migration
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
@@ -15,8 +16,9 @@ import org.json.JSONObject
         MessageEntity::class,
         QueuedPromptEntity::class,
         SyncStateEntity::class,
+        TranscriptPageEntity::class,
     ],
-    version = 1,
+    version = 4,
     exportSchema = true
 )
 abstract class NimbalystDatabase : RoomDatabase() {
@@ -25,6 +27,7 @@ abstract class NimbalystDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun queuedPromptDao(): QueuedPromptDao
     abstract fun syncStateDao(): SyncStateDao
+    abstract fun transcriptPageDao(): TranscriptPageDao
 
     companion object {
         @Volatile
@@ -37,9 +40,7 @@ abstract class NimbalystDatabase : RoomDatabase() {
                     NimbalystDatabase::class.java,
                     "nimbalyst-android.db"
                 )
-                    // Add explicit migrations here as schema evolves (e.g., .addMigrations(MIGRATION_1_2))
-                    // Only fall back to destructive migration if no migration path exists (pre-release safety net)
-                    .fallbackToDestructiveMigration()
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .addCallback(object : Callback() {
                         override fun onCreate(db: SupportSQLiteDatabase) {
                             super.onCreate(db)
@@ -105,6 +106,10 @@ abstract class NimbalystDatabase : RoomDatabase() {
                         put("isArchived", 0)
                         put("isPinned", 0)
                         put("isExecuting", if (session.isExecuting) 1 else 0)
+                        put("agentStatusKind", session.agentStatusKind)
+                        put("agentStatusLabel", session.agentStatusLabel)
+                        put("agentStatusDetail", session.agentStatusDetail)
+                        put("agentStatusUpdatedAt", session.agentStatusUpdatedAt)
                         put("hasQueuedPrompts", 0)
                         put("createdAt", session.createdAt)
                         put("updatedAt", session.updatedAt)
@@ -131,6 +136,40 @@ abstract class NimbalystDatabase : RoomDatabase() {
                         put("createdAt", message.createdAt)
                     }
                 )
+            }
+        }
+
+        internal val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sessions ADD COLUMN agentStatusKind TEXT")
+                db.execSQL("ALTER TABLE sessions ADD COLUMN agentStatusLabel TEXT")
+                db.execSQL("ALTER TABLE sessions ADD COLUMN agentStatusDetail TEXT")
+                db.execSQL("ALTER TABLE sessions ADD COLUMN agentStatusUpdatedAt INTEGER")
+            }
+        }
+
+        internal val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS transcript_pages (
+                        sessionId TEXT NOT NULL,
+                        cursorKey INTEGER NOT NULL,
+                        rawStartId INTEGER,
+                        rawEndId INTEGER,
+                        hasMoreBefore INTEGER NOT NULL,
+                        pageJson TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(sessionId, cursorKey)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DELETE FROM queued_prompts WHERE source IS NULL")
             }
         }
 

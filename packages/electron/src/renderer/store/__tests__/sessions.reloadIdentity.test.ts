@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SessionData, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
-import { preserveReloadIdentity } from '../atoms/sessions';
+import { preserveReloadIdentity, shouldPreserveOptimisticMessage } from '../atoms/sessions';
 
 function makeMessage(id: number, text: string): TranscriptViewMessage {
   return {
@@ -8,6 +8,17 @@ function makeMessage(id: number, text: string): TranscriptViewMessage {
     sequence: id,
     createdAt: new Date(0),
     type: 'assistant_message',
+    text,
+    subagentId: null,
+  };
+}
+
+function makeUserMessage(id: number, text: string, createdAt: Date): TranscriptViewMessage {
+  return {
+    id,
+    sequence: id,
+    createdAt,
+    type: 'user_message',
     text,
     subagentId: null,
   };
@@ -88,5 +99,28 @@ describe('preserveReloadIdentity', () => {
 
     expect(merged.metadata?.currentTeammates).toBe(currentTeammates);
     expect(merged.metadata?.sessionStatus).toBe('running');
+  });
+});
+
+describe('shouldPreserveOptimisticMessage', () => {
+  it('drops an optimistic user message when the persisted copy arrives after a slow DB write', () => {
+    const optimistic = makeUserMessage(-1, 'Why is SQLite over GVFS slow?', new Date('2026-06-09T15:18:36.000Z'));
+    const persisted = makeUserMessage(42, 'Why is SQLite over GVFS slow?', new Date('2026-06-09T15:18:41.500Z'));
+
+    expect(shouldPreserveOptimisticMessage(optimistic, [persisted])).toBe(false);
+  });
+
+  it('keeps an optimistic repeated prompt when the only matching DB row is older', () => {
+    const firstPersisted = makeUserMessage(41, 'yes', new Date('2026-06-09T15:18:00.000Z'));
+    const secondOptimistic = makeUserMessage(-1, 'yes', new Date('2026-06-09T15:18:30.000Z'));
+
+    expect(shouldPreserveOptimisticMessage(secondOptimistic, [firstPersisted])).toBe(true);
+  });
+
+  it('keeps an optimistic user message when no matching DB text exists', () => {
+    const optimistic = makeUserMessage(-1, 'continue', new Date('2026-06-09T15:18:30.000Z'));
+    const persisted = makeUserMessage(42, 'different prompt', new Date('2026-06-09T15:18:31.000Z'));
+
+    expect(shouldPreserveOptimisticMessage(optimistic, [persisted])).toBe(true);
   });
 });

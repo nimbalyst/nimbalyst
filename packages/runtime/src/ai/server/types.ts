@@ -307,6 +307,15 @@ export interface TokenUsageCategory {
   percentage: number;
 }
 
+export interface TranscriptPageInfo {
+  isPartial: boolean;
+  hasMoreBefore: boolean;
+  rawStartId: number | null;
+  rawEndId: number | null;
+  rawMessageCount: number;
+  totalRawMessageCount?: number;
+}
+
 export interface SessionData {
   id: string;  // Our session ID
   provider: AIProviderType | string;  // Provider type
@@ -316,6 +325,7 @@ export interface SessionData {
   agentRole?: AgentRole;
   createdBySessionId?: string | null;
   messages: TranscriptViewMessage[];
+  transcriptPage?: TranscriptPageInfo;
   documentContext?: DocumentContext;
   workspacePath?: string;
   title?: string;
@@ -403,6 +413,7 @@ export interface ProviderConfig {
   baseUrl?: string;
   allowedTools?: string[];  // List of allowed tool names, ['*'] for all tools
   effortLevel?: EffortLevel;  // Effort level for Opus 4.6 adaptive reasoning (low/medium/high/max)
+  serviceTier?: 'fast';  // Codex service tier override. Fast mode is opt-in and only supported by eligible Codex models/auth.
   responseFormat?: ProviderResponseFormat;  // Response format constraint (extension chat completions)
   skipLogging?: boolean;  // Skip message logging to DB (extension stateless completions)
 }

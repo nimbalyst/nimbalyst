@@ -151,6 +151,7 @@ describe('ClaudeCliSessionLauncher', () => {
     // The endpoint URL + bearer are injected into the CLI env (lifted from the MCP config).
     expect(cfg.env.NIMBALYST_PERMISSION_URL).toBe('http://127.0.0.1:5123/permission');
     expect(cfg.env.NIMBALYST_PERMISSION_TOKEN).toBe('secret-token-xyz');
+    expect(cfg.env.NIMBALYST_WORKSPACE_PATH).toBe('/work');
   });
 
   it('omits the permission hook when no hook script path is provided (keeps native gate)', async () => {

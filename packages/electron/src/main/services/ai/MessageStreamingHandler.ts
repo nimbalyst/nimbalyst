@@ -36,6 +36,7 @@ import {
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { resolveCodexServiceTier } from '@nimbalyst/runtime/ai/server/codexFastMode';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
@@ -565,6 +566,17 @@ export class MessageStreamingHandler {
         reinitConfig.baseUrl = providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234';
       }
 
+      if (session.provider === 'openai-codex') {
+        const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
+        const serviceTier = resolveCodexServiceTier(
+          (session.metadata as any)?.codexFastModeEnabled,
+          providerSettings['openai-codex']?.fastModeEnabled
+        );
+        if (serviceTier) {
+          reinitConfig.serviceTier = serviceTier;
+        }
+      }
+
       // Pass model to provider config for all providers including claude-code
       // Claude Code uses the model field to select variants (opus/sonnet/haiku)
       if (session.model || session.providerConfig?.model) {
@@ -759,6 +771,51 @@ export class MessageStreamingHandler {
     };
     this.installListener(provider, 'session:metadata-updated', onSessionMetadataUpdated);
 
+    type AgentStatusKind = 'thinking' | 'responding' | 'tool' | 'waiting' | 'queued' | 'complete' | 'error' | 'idle';
+    type AgentStatusPayload = {
+      kind: AgentStatusKind;
+      label: string;
+      detail?: string;
+      toolName?: string;
+    };
+    let lastAgentStatusKey = '';
+    let lastAgentStatusPushedAt = 0;
+    const publishAgentStatus = (
+      status: AgentStatusPayload,
+      options: {
+        sessionId?: string;
+        throttleMs?: number;
+        isExecuting?: boolean;
+        hasPendingPrompt?: boolean;
+        updatedAt?: number;
+      } = {},
+    ) => {
+      const syncProvider = getSyncProvider();
+      if (!syncProvider) return;
+      const targetSessionId = options.sessionId ?? session.id;
+      const now = Date.now();
+      const key = `${targetSessionId}|${status.kind}|${status.label}|${status.detail ?? ''}|${status.toolName ?? ''}`;
+      const throttleMs = options.throttleMs ?? 1000;
+      if (key === lastAgentStatusKey && now - lastAgentStatusPushedAt < throttleMs) return;
+      lastAgentStatusKey = key;
+      lastAgentStatusPushedAt = now;
+
+      const metadata: Record<string, unknown> = {
+        agentStatus: {
+          ...status,
+          updatedAt: now,
+        },
+      };
+      if (options.isExecuting !== undefined) metadata.isExecuting = options.isExecuting;
+      if (options.hasPendingPrompt !== undefined) metadata.hasPendingPrompt = options.hasPendingPrompt;
+      if (options.updatedAt !== undefined) metadata.updatedAt = options.updatedAt;
+
+      syncProvider.pushChange(targetSessionId, {
+        type: 'metadata_updated',
+        metadata: metadata as any,
+      });
+    };
+
     // Helper to persist pending-prompt state to ai_sessions.metadata AND
     // push the change to mobile in one call. See pendingPromptPersistence.ts
     // for why we persist locally: the in-memory atom can desync from reality
@@ -773,6 +830,11 @@ export class MessageStreamingHandler {
       logger.main.info('[AIService] ExitPlanMode confirmation requested:', data.requestId);
       safeSend(event, 'ai:exitPlanModeConfirm', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, true);
+      publishAgentStatus({
+        kind: 'waiting',
+        label: 'Waiting for your response',
+        detail: 'Plan approval',
+      }, { sessionId: data.sessionId, throttleMs: 0, hasPendingPrompt: true });
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
       // Update session status so all windows show the pending indicator
@@ -810,6 +872,11 @@ export class MessageStreamingHandler {
     }) => {
       logger.main.info('[AIService] ExitPlanMode resolved:', data.requestId, 'approved=', data.approved);
       syncPendingPrompt(data.sessionId, false);
+      publishAgentStatus({
+        kind: 'thinking',
+        label: 'Thinking...',
+        detail: 'Continuing after response',
+      }, { sessionId: data.sessionId, throttleMs: 0, isExecuting: true, hasPendingPrompt: false });
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
       getSessionStateManager().updateActivity({
@@ -827,6 +894,11 @@ export class MessageStreamingHandler {
       // logger.main.info('[AIService] AskUserQuestion requested:', data.questionId);
       safeSend(event, 'ai:askUserQuestion', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, true);
+      publishAgentStatus({
+        kind: 'waiting',
+        label: 'Waiting for your response',
+        detail: 'Question',
+      }, { sessionId: data.sessionId, throttleMs: 0, hasPendingPrompt: true });
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
       // Update session status to waiting_for_input so all windows show the pending indicator
@@ -853,6 +925,11 @@ export class MessageStreamingHandler {
       // logger.main.info('[AIService] AskUserQuestion answered:', data.questionId);
       safeSend(event, 'ai:askUserQuestionAnswered', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, false);
+      publishAgentStatus({
+        kind: 'thinking',
+        label: 'Thinking...',
+        detail: 'Continuing after answer',
+      }, { sessionId: data.sessionId, throttleMs: 0, isExecuting: true, hasPendingPrompt: false });
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
       // Update session status back to running so all windows clear the pending indicator
@@ -869,6 +946,11 @@ export class MessageStreamingHandler {
       logger.main.info('[AIService] Tool permission requested:', data.requestId);
       safeSend(event, 'ai:toolPermission', data);
       syncPendingPrompt(data.sessionId, true);
+      publishAgentStatus({
+        kind: 'waiting',
+        label: 'Waiting for your response',
+        detail: 'Tool permission',
+      }, { sessionId: data.sessionId, throttleMs: 0, hasPendingPrompt: true });
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
       // Update session status so all windows show the pending indicator
@@ -899,6 +981,11 @@ export class MessageStreamingHandler {
       logger.main.info('[AIService] Tool permission resolved:', data.requestId);
       safeSend(event, 'ai:toolPermissionResolved', { ...data, workspacePath: effectiveWorkspacePath });
       syncPendingPrompt(data.sessionId, false);
+      publishAgentStatus({
+        kind: 'thinking',
+        label: 'Thinking...',
+        detail: 'Continuing after permission',
+      }, { sessionId: data.sessionId, throttleMs: 0, isExecuting: true, hasPendingPrompt: false });
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
       // Update session status back to running so all windows clear the pending indicator
@@ -1081,7 +1168,15 @@ export class MessageStreamingHandler {
     if (syncProvider) {
       syncProvider.pushChange(session.id, {
         type: 'metadata_updated',
-        metadata: { isExecuting: true } as any,
+        metadata: {
+          isExecuting: true,
+          agentStatus: {
+            kind: 'thinking',
+            label: 'Thinking...',
+            detail: 'Waiting for the first response',
+            updatedAt: Date.now(),
+          },
+        } as any,
       });
     }
 
@@ -1137,12 +1232,23 @@ export class MessageStreamingHandler {
         // Refresh credentials every turn for all providers so key changes in settings apply immediately.
         const freshApiKey = this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
         const turnEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
-        await provider.initialize({
+        const turnConfig: ProviderConfig = {
           apiKey: freshApiKey,
           maxTokens: (session.providerConfig as any)?.maxTokens,
           temperature: (session.providerConfig as any)?.temperature,
           ...(turnEffortLevel && { effortLevel: turnEffortLevel }),
-        });
+        };
+        if (session.provider === 'openai-codex') {
+          const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
+          const serviceTier = resolveCodexServiceTier(
+            (session.metadata as any)?.codexFastModeEnabled,
+            providerSettings['openai-codex']?.fastModeEnabled
+          );
+          if (serviceTier) {
+            turnConfig.serviceTier = serviceTier;
+          }
+        }
+        await provider.initialize(turnConfig);
       }
 
       // Attach @ mentioned files for non-agent providers
@@ -1258,6 +1364,33 @@ export class MessageStreamingHandler {
           logger.main.error('[AIService] Failed to sync Codex workflow exports:', workflowError);
         }
       }
+
+      const formatToolStatus = (toolName: string, args?: Record<string, unknown>): { displayName: string; detail?: string } => {
+        if (toolName === 'command_execution') {
+          const command = typeof args?.command === 'string' ? args.command : undefined;
+          return {
+            displayName: 'Bash',
+            detail: command ? command.slice(0, 160) : undefined,
+          };
+        }
+        if (toolName.startsWith('mcp__')) {
+          const parts = toolName.split('__').filter(Boolean);
+          const rawName = parts[parts.length - 1] || toolName;
+          return {
+            displayName: rawName,
+            detail: parts.length > 1 ? parts.slice(0, -1).join('/') : undefined,
+          };
+        }
+        const filePath = typeof args?.file_path === 'string'
+          ? args.file_path
+          : typeof args?.path === 'string'
+            ? args.path
+            : undefined;
+        return {
+          displayName: toolName || 'tool',
+          detail: filePath ? path.basename(filePath) : undefined,
+        };
+      };
 
       // Meta-agent tools for extension-agent providers (e.g. gemini-antigravity).
       // Built-in providers (claude-code, openai-codex) discover these same tools
@@ -1403,6 +1536,10 @@ export class MessageStreamingHandler {
 
             // Update activity to indicate streaming
             if (textChunks === 1) {
+              publishAgentStatus({
+                kind: 'responding',
+                label: 'Responding...',
+              }, { throttleMs: 0, isExecuting: true });
               await stateManager.updateActivity({
                 sessionId: session.id,
                 isStreaming: true
@@ -1573,6 +1710,23 @@ export class MessageStreamingHandler {
             if (chunk.toolCall) {
               toolCallCount++;
               toolCalls.push(chunk.toolCall);
+              const toolStatus = formatToolStatus(chunk.toolCall.name, chunk.toolCall.arguments);
+              const toolHasResult = chunk.toolCall.result !== undefined && chunk.toolCall.result !== null;
+              publishAgentStatus(
+                toolHasResult
+                  ? {
+                      kind: 'thinking',
+                      label: 'Thinking...',
+                      detail: `Finished ${toolStatus.displayName}`,
+                    }
+                  : {
+                      kind: 'tool',
+                      label: `Using ${toolStatus.displayName}...`,
+                      detail: toolStatus.detail,
+                      toolName: toolStatus.displayName,
+                    },
+                { throttleMs: toolHasResult ? 750 : 250, isExecuting: true },
+              );
               if (lastTextSection.trim()) prevTextSection = lastTextSection.trim();
               lastTextSection = '';  // Reset so notification shows text after last tool call
               console.groupEnd();
@@ -1949,6 +2103,13 @@ export class MessageStreamingHandler {
             break;
 
           case 'stream_edit_start':
+            publishAgentStatus({
+              kind: 'tool',
+              label: 'Editing file...',
+              detail: documentContext?.filePath ? path.basename(documentContext.filePath) : undefined,
+              toolName: 'streamContent',
+            }, { throttleMs: 0, isExecuting: true });
+
             // Create pre-edit tag BEFORE streaming content (for non-agentic providers)
             // This enables diff visualization and persistence across app restarts
             if (documentContext?.filePath && session.provider !== 'claude-code') {
@@ -1976,6 +2137,12 @@ export class MessageStreamingHandler {
             break;
 
           case 'stream_edit_end':
+            publishAgentStatus({
+              kind: chunk.error ? 'error' : 'thinking',
+              label: chunk.error ? 'Edit failed' : 'Thinking...',
+              detail: chunk.error ? String(chunk.error).slice(0, 160) : 'Finished editing',
+            }, { throttleMs: 0, isExecuting: !chunk.error });
+
             // Forward streaming end event to renderer
             safeSend(event, 'ai:streamEditEnd', {
               sessionId: session.id,
@@ -2007,6 +2174,11 @@ export class MessageStreamingHandler {
 
           case 'error':
             hadError = true;  // Mark that an error occurred to skip auto /context
+            publishAgentStatus({
+              kind: 'error',
+              label: 'Agent hit an error',
+              detail: (chunk.error || 'Unknown error').slice(0, 160),
+            }, { throttleMs: 0, isExecuting: false, updatedAt: Date.now() });
             if (isClaudeCode) {
               console.error('[CLAUDE-CODE-SERVICE] ERROR FROM PROVIDER:', chunk.error || 'Unknown error');
               console.error('[CLAUDE-CODE-SERVICE] Error context:', {
@@ -2227,13 +2399,17 @@ export class MessageStreamingHandler {
               // Calculate new tokens for this message
               const newInputTokens = (tokenUsage.input_tokens || 0);
               const newOutputTokens = tokenUsage.output_tokens || 0;
-              const newTotalTokens = newInputTokens + newOutputTokens;
+              const reportedTotalTokens = tokenUsage.total_tokens || 0;
+              const newTotalTokens = reportedTotalTokens > 0
+                ? reportedTotalTokens
+                : newInputTokens + newOutputTokens;
               const isCodexProvider = session.provider === 'openai-codex';
+              const supportsCurrentContextSync = isCodexProvider || session.provider === 'opencode';
               const codexInitData = isCodexProvider ? (provider as any).getInitData?.() : null;
               const isResumedCodexThread = codexInitData?.isResumedThread === true;
 
-              const codexContextWindow =
-                isCodexProvider
+              const contextWindowForDisplay =
+                supportsCurrentContextSync
                   ? (contextWindowFromChunk || currentUsage.contextWindow)
                   : currentUsage.contextWindow;
 
@@ -2290,12 +2466,14 @@ export class MessageStreamingHandler {
                   providerCumulativeInputTokens,
                   providerCumulativeOutputTokens,
                 } : {}),
-                contextWindow: codexContextWindow,
+                contextWindow: contextWindowForDisplay,
                 currentContext:
-                  isCodexProvider && !contextCompacted
-                    ? (contextFillTokens !== undefined && codexContextWindow
-                      ? { tokens: contextFillTokens, contextWindow: codexContextWindow }
-                      : currentUsage.currentContext)
+                  supportsCurrentContextSync
+                    ? (contextCompacted
+                      ? undefined
+                      : (contextFillTokens !== undefined && contextWindowForDisplay
+                        ? { tokens: contextFillTokens, contextWindow: contextWindowForDisplay }
+                        : currentUsage.currentContext))
                     : currentUsage.currentContext,
               };
 
@@ -2307,8 +2485,8 @@ export class MessageStreamingHandler {
                 tokenUsage: updatedUsage
               });
 
-              // Push context usage to mobile sync for Codex sessions
-              if (isCodexProvider && contextFillTokens !== undefined && codexContextWindow) {
+              // Push context usage to mobile sync for agent sessions that report it.
+              if (supportsCurrentContextSync && contextFillTokens !== undefined && contextWindowForDisplay) {
                 const syncProvider = getSyncProvider();
                 if (syncProvider) {
                   syncProvider.pushChange(session.id, {
@@ -2316,7 +2494,7 @@ export class MessageStreamingHandler {
                     metadata: {
                       currentContext: {
                         tokens: contextFillTokens,
-                        contextWindow: codexContextWindow,
+                        contextWindow: contextWindowForDisplay,
                       },
                     } as any,
                   });
@@ -2604,9 +2782,19 @@ export class MessageStreamingHandler {
 
       // Clear executing and pending prompt flags for mobile sync
       if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
+        const doneAt = Date.now();
         syncProvider.pushChange(session.id, {
           type: 'metadata_updated',
-          metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+          metadata: {
+            isExecuting: false,
+            hasPendingPrompt: false,
+            agentStatus: {
+              kind: 'complete',
+              label: 'Done',
+              updatedAt: doneAt,
+            },
+            updatedAt: doneAt,
+          },
         });
       }
 
@@ -2698,9 +2886,20 @@ export class MessageStreamingHandler {
 
         // Clear executing and pending prompt flags for mobile sync on error
         if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
+          const errorAt = Date.now();
           syncProvider.pushChange(session.id, {
             type: 'metadata_updated',
-            metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+            metadata: {
+              isExecuting: false,
+              hasPendingPrompt: false,
+              agentStatus: {
+                kind: 'error',
+                label: 'Agent hit an error',
+                detail: error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160),
+                updatedAt: errorAt,
+              },
+              updatedAt: errorAt,
+            },
           });
 
           // Request mobile push notification for agent error (only when truly away)

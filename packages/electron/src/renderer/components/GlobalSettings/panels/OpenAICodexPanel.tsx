@@ -33,6 +33,7 @@ interface CodexAuthStatus {
 export function OpenAICodexPanel({
   config,
   onToggle,
+  onConfigChange,
 }: OpenAICodexPanelProps) {
   const usageIndicatorEnabled = useSetting('ai.showCodexUsageIndicator');
   const setUsageIndicatorEnabled = useSetSetting('ai.showCodexUsageIndicator');
@@ -161,6 +162,14 @@ export function OpenAICodexPanel({
         description="Display Codex usage limits in the navigation gutter"
         checked={usageIndicatorEnabled}
         onChange={setUsageIndicatorEnabled}
+      />
+
+      <SettingsToggle
+        variant="enable"
+        name="Use Fast mode for Codex sessions"
+        description="Starts new OpenAI Codex sessions with the Fast service tier when the selected model and ChatGPT auth support it. Fast mode uses more Codex credits."
+        checked={config.fastModeEnabled === true}
+        onChange={(enabled) => onConfigChange({ fastModeEnabled: enabled })}
       />
 
       {acpEnabled && (

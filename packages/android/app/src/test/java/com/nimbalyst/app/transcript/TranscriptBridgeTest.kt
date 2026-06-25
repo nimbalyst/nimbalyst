@@ -36,6 +36,54 @@ class TranscriptBridgeTest {
     }
 
     @Test
+    fun `parses request user input response payload`() {
+        var message: TranscriptBridgeMessage? = null
+        val bridge = TranscriptBridge { message = it }
+
+        bridge.postMessage(
+            """
+            {
+              "type":"interactive_response",
+              "action":"requestUserInputSubmit",
+              "promptId":"prompt-1",
+              "answers":{
+                "targets":{"type":"multiSelect","selected":["android","desktop"]}
+              }
+            }
+            """.trimIndent()
+        )
+
+        assertNotNull(message)
+        assertEquals("interactive_response", message?.type)
+        assertEquals("requestUserInputSubmit", message?.action)
+        assertEquals("prompt-1", message?.promptId)
+        assertEquals(
+            "android",
+            message
+                ?.raw
+                ?.getAsJsonObject("answers")
+                ?.getAsJsonObject("targets")
+                ?.getAsJsonArray("selected")
+                ?.get(0)
+                ?.asString
+        )
+    }
+
+    @Test
+    fun `parses load older history payload`() {
+        var message: TranscriptBridgeMessage? = null
+        val bridge = TranscriptBridge { message = it }
+
+        bridge.postMessage("""{"type":"load_older_history","beforeRawMessageId":1234,"count":240,"requestId":"req-1"}""")
+
+        assertNotNull(message)
+        assertEquals("load_older_history", message?.type)
+        assertEquals(1234L, message?.beforeRawMessageId)
+        assertEquals(240, message?.count)
+        assertEquals("req-1", message?.requestId)
+    }
+
+    @Test
     fun `ignores invalid payload`() {
         var called = false
         val bridge = TranscriptBridge { called = true }

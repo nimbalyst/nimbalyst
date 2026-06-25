@@ -9,11 +9,7 @@ import { codexUsageService, CodexUsageData } from '../services/CodexUsageService
 export function registerCodexUsageHandlers(): void {
   safeHandle('codex-usage:get', async (): Promise<CodexUsageData | null> => {
     try {
-      const cached = codexUsageService.getCachedUsage();
-      if (cached) {
-        return cached;
-      }
-      return await codexUsageService.refresh();
+      return await codexUsageService.getUsage();
     } catch (error) {
       logger.main.error('[CodexUsageHandlers] Error getting usage:', error);
       return null;

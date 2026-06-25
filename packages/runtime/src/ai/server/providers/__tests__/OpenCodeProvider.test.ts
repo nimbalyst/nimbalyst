@@ -66,6 +66,7 @@ function createMockProtocol(sseEvents: any[] = []) {
         yield event;
       }
     }),
+    respondToPermission: vi.fn(async () => {}),
     abortSession: vi.fn(),
     cleanupSession: vi.fn(),
     _closeFn: closeFn,
@@ -83,6 +84,7 @@ describe('OpenCodeProvider', () => {
     OpenCodeProvider.setShellEnvironmentLoader(null);
     OpenCodeProvider.setEnhancedPathLoader(null);
     OpenCodeProvider.setConfigLoader(null);
+    OpenCodeProvider.setTrustChecker(null);
   });
 
   it('returns the curated preset model list from getModels when no opencode.json exists', async () => {
@@ -193,6 +195,46 @@ describe('OpenCodeProvider', () => {
     expect(resultChunk).toBeDefined();
   });
 
+  it('auto-answers OpenCode file-style permissions in allow-all workspaces', async () => {
+    const protocol = createMockProtocol([
+      {
+        type: 'tool_call',
+        toolCall: {
+          id: 'perm-1',
+          name: 'ToolPermission',
+          arguments: {
+            requestId: 'perm-1',
+            toolName: 'OpenCode',
+            pattern: 'OpenCodePermission(external_directory:/tmp/*)',
+            openCodePermissionType: 'external_directory',
+            openCodePermissionPattern: ['/tmp/*'],
+          },
+        },
+        metadata: {
+          openCodePermissionRequest: true,
+          permissionId: 'perm-1',
+        },
+      },
+      { type: 'complete', content: '', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    ]);
+    OpenCodeProvider.setTrustChecker(() => ({ trusted: true, mode: 'allow-all' }));
+
+    const provider = new OpenCodeProvider({ protocol });
+    await provider.initialize({ model: 'opencode:default' });
+
+    const chunks: any[] = [];
+    for await (const chunk of provider.sendMessage('glob /tmp', undefined, 'session-allow-all', [], process.cwd())) {
+      chunks.push(chunk);
+    }
+
+    expect(protocol.respondToPermission).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'oc-session-1' }),
+      'perm-1',
+      'once',
+    );
+    expect(chunks.some((c) => c.type === 'complete')).toBe(true);
+  });
+
   it('yields error when workspacePath is missing', async () => {
     const protocol = createMockProtocol([]);
     const provider = new OpenCodeProvider({ protocol });
@@ -224,6 +266,25 @@ describe('OpenCodeProvider', () => {
     const sessionData = provider.getProviderSessionData('session-save');
     expect(sessionData.providerSessionId).toBe('oc-session-1');
     expect(sessionData.openCodeSessionId).toBe('oc-session-1');
+  });
+
+  it('saves provider session ID before a stream can block or fail', async () => {
+    const protocol = createMockProtocol([]);
+    protocol.sendMessage.mockImplementation(function* () {
+      throw new Error('permission wait interrupted');
+    });
+
+    const provider = new OpenCodeProvider({ protocol });
+    await provider.initialize({ model: 'opencode:default' });
+
+    const chunks: any[] = [];
+    for await (const chunk of provider.sendMessage('test', undefined, 'session-save-early', [], process.cwd())) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.some((c) => c.type === 'error')).toBe(true);
+    const sessionData = provider.getProviderSessionData('session-save-early');
+    expect(sessionData.providerSessionId).toBe('oc-session-1');
   });
 
   it('resumes existing session when provider session data exists', async () => {

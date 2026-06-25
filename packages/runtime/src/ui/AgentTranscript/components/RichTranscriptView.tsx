@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { VList, type VListHandle, type CacheSnapshot } from 'virtua';
-import type { TranscriptViewMessage, SessionData } from '../../../ai/server/types';
+import type { TranscriptViewMessage, SessionData, TranscriptPageInfo } from '../../../ai/server/types';
 import type { TranscriptSettings } from '../types';
 import { MessageSegment } from './MessageSegment';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -502,6 +502,10 @@ interface RichTranscriptViewProps {
   currentTeammates?: Array<{ agentId: string; status: 'running' | 'completed' | 'errored' | 'idle' }>;
   /** Optional: noun used in waiting text when teammates/workers are still running */
   waitingForNoun?: string;
+  /** Optional: exact text for the bottom transcript activity indicator */
+  waitingTextOverride?: string;
+  /** Optional: action rendered inline with the bottom transcript activity indicator */
+  waitingAction?: React.ReactNode;
   /** Optional: App start time (epoch ms) for rendering restart indicator line (dev mode only) */
   appStartTime?: number;
   /** Optional: Render a file using a host-provided embedded editor surface */
@@ -522,6 +526,12 @@ interface RichTranscriptViewProps {
    * / close buttons on narrow widths. See #309.
    */
   onSearchBarVisibilityChange?: (visible: boolean) => void;
+  /** Metadata for partial transcript windows, used to load older history on demand. */
+  transcriptPageInfo?: TranscriptPageInfo;
+  /** Optional callback to prepend the next older transcript page. */
+  onLoadOlderTranscript?: () => Promise<void>;
+  /** Whether an older transcript page is currently loading. */
+  isLoadingOlderTranscript?: boolean;
   /**
    * Optional: persist at-bottom state in the global per-session atom.
    * Disable for secondary transcript mounts like hover previews so they
@@ -553,6 +563,7 @@ const EDIT_TOOL_NAMES = new Set([
 ]);
 
 const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 50;
+const TRANSCRIPT_LOAD_OLDER_THRESHOLD_PX = 120;
 const DESKTOP_TRANSCRIPT_BUFFER_PX = 10000;
 const MOBILE_TRANSCRIPT_BUFFER_PX = 800;
 
@@ -1082,7 +1093,7 @@ export const extractEditsFromToolMessage = (message: TranscriptViewMessage): any
 export const RichTranscriptView = React.forwardRef<
   { scrollToMessage: (index: number) => void; scrollToTop: () => void },
   RichTranscriptViewProps
->(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, appStartTime, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, persistScrollState = true }, ref) => {
+>(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, waitingTextOverride, waitingAction, appStartTime, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, transcriptPageInfo, onLoadOlderTranscript, isLoadingOlderTranscript, persistScrollState = true }, ref) => {
   const [collapsedMessages, setCollapsedMessages] = useState<Set<number>>(new Set());
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollButtonRef = useRef<HTMLDivElement>(null);
@@ -1113,11 +1124,17 @@ export const RichTranscriptView = React.forwardRef<
   const isAtBottomRef = useRef(
     persistScrollState ? getSessionIsAtBottom(sessionId) : true
   );
+  const isLoadingOlderTranscriptRef = useRef(Boolean(isLoadingOlderTranscript));
+  const loadOlderInFlightRef = useRef(false);
 
   // Desktop gets a wider buffer to reduce row churn near selection;
   // iOS WKWebView uses a smaller buffer for memory pressure.
   const isMobileWebKit = useMemo(() => isAppleMobileWebKit(), []);
   const vlistBufferSize = isMobileWebKit ? MOBILE_TRANSCRIPT_BUFFER_PX : DESKTOP_TRANSCRIPT_BUFFER_PX;
+
+  useEffect(() => {
+    isLoadingOlderTranscriptRef.current = Boolean(isLoadingOlderTranscript);
+  }, [isLoadingOlderTranscript]);
 
   const settings = propsSettings || defaultSettings;
   const previousRenderRef = useRef<{
@@ -1148,6 +1165,39 @@ export const RichTranscriptView = React.forwardRef<
   const getAtBottomState = useCallback(() => {
     return isAtBottomRef.current;
   }, []);
+
+  const triggerLoadOlderTranscript = useCallback(() => {
+    if (!onLoadOlderTranscript || !transcriptPageInfo?.hasMoreBefore) return;
+    if (loadOlderInFlightRef.current || isLoadingOlderTranscriptRef.current) return;
+
+    const list = vlistRef.current;
+    if (!list) return;
+
+    const previousScrollSize = list.scrollSize;
+    const previousOffset = list.scrollOffset;
+    loadOlderInFlightRef.current = true;
+    isLoadingOlderTranscriptRef.current = true;
+
+    void onLoadOlderTranscript()
+      .catch((error) => {
+        console.error('[RichTranscriptView] Failed to load older transcript page:', error);
+      })
+      .finally(() => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const currentList = vlistRef.current;
+            if (currentList) {
+              const sizeDelta = currentList.scrollSize - previousScrollSize;
+              if (sizeDelta > 0) {
+                currentList.scrollTo(previousOffset + sizeDelta);
+              }
+            }
+            loadOlderInFlightRef.current = false;
+            isLoadingOlderTranscriptRef.current = false;
+          });
+        });
+      });
+  }, [onLoadOlderTranscript, transcriptPageInfo?.hasMoreBefore]);
 
   // Save VList cache when switching sessions or unmounting.
   // This lets returning to a session skip expensive re-measurement of all item sizes.
@@ -1268,6 +1318,8 @@ export const RichTranscriptView = React.forwardRef<
   // Compute waiting indicator text — show agent/teammate count when lead is idle but agents are running
   const waitingText = useMemo(() => {
     if (!isWaitingForResponse) return '';
+    const override = waitingTextOverride?.trim();
+    if (override) return override;
     if (runningTeammates.length > 0 && !isProcessing && sessionStatus !== 'running') {
       const singular = waitingForNoun || 'agent';
       const plural = singular.endsWith('s') ? singular : `${singular}s`;
@@ -1275,7 +1327,7 @@ export const RichTranscriptView = React.forwardRef<
       return `Waiting for ${runningTeammates.length} ${label} to complete...`;
     }
     return 'Thinking...';
-  }, [isProcessing, isWaitingForResponse, runningTeammates, sessionStatus, waitingForNoun]);
+  }, [isProcessing, isWaitingForResponse, runningTeammates, sessionStatus, waitingForNoun, waitingTextOverride]);
 
   // Compute effective target index for prompt additions display
   // Use the stored messageIndex if valid, otherwise find the last user message
@@ -2409,6 +2461,9 @@ export const RichTranscriptView = React.forwardRef<
                       const isAtBottom = isTranscriptAtBottom(distanceFromBottom);
                       // Update the per-session atom - this persists across component remounts
                       setAtBottomState(isAtBottom);
+                      if (isScrollReady && offset <= TRANSCRIPT_LOAD_OLDER_THRESHOLD_PX) {
+                        triggerLoadOlderTranscript();
+                      }
                       if (scrollButtonRef.current) {
                         const show = distanceFromBottom > viewportSize;
                         scrollButtonRef.current.style.opacity = show ? '1' : '0';
@@ -2450,6 +2505,11 @@ export const RichTranscriptView = React.forwardRef<
                         <div className="rich-transcript-waiting-dot w-2 h-2 rounded-full bg-[var(--nim-primary)]" />
                       </div>
                       <span className="rich-transcript-waiting-text">{waitingText}</span>
+                      {waitingAction && (
+                        <span className="rich-transcript-waiting-action not-italic ml-1">
+                          {waitingAction}
+                        </span>
+                      )}
                     </div>
                   )}
               </VList>

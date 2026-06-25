@@ -18,9 +18,14 @@ import {
   resolveGitCommitProposalPromptId,
 } from './gitCommitProposalPromptUtils';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
+import {
+  getMobileTranscriptHistoryPageJson,
+  getMobileTranscriptTailJson,
+} from '../../utils/transcriptHelpers';
 import { getGitSubprocessEnv } from '../gitEnv';
 
 const log = logger.ai;
+const PROJECT_CONTROL_SESSION_ID = '__mobile_project__';
 
 /**
  * Known control message types.
@@ -31,7 +36,14 @@ export type ControlMessageType =
   | 'question_response'  // Legacy - kept for backwards compatibility
   | 'prompt_response'    // New unified prompt response type
   | 'prompt'
-  | 'archive';
+  | 'delete_queued_prompt'
+  | 'send_queued_prompt_now'
+  | 'archive'
+  | 'pin'
+  | 'delete'
+  | 'create_project'
+  | 'create_project_response'
+  | 'load_transcript_history';
 
 // ============================================================
 // Payload Types
@@ -46,6 +58,26 @@ interface QuestionResponsePayload {
 interface PromptPayload {
   promptId: string;
   prompt: string;
+}
+
+interface QueuedPromptPayload {
+  promptId?: string;
+}
+
+interface PinPayload {
+  isPinned?: boolean;
+}
+
+interface CreateProjectPayload {
+  requestId?: string;
+  name?: string;
+  path?: string;
+}
+
+interface TranscriptHistoryPayload {
+  count?: number;
+  beforeRawMessageId?: number | null;
+  requestId?: string;
 }
 
 /**
@@ -102,6 +134,12 @@ export interface MobileSessionControlCallbacks {
    */
   triggerQueuedPromptProcessing(sessionId: string, workspacePath: string): Promise<boolean>;
 
+  /** Delete a pending queued prompt before it has been claimed for execution. */
+  deleteQueuedPrompt(sessionId: string, promptId: string): Promise<boolean>;
+
+  /** Interrupt the active turn if needed, then trigger pending queue processing. */
+  sendQueuedPromptNow(sessionId: string, promptId?: string): Promise<boolean>;
+
   /**
    * Reset any prompts stuck in 'executing' back to 'pending' for the given
    * session. Used by `case 'cancel'` so a queued prompt in-flight when
@@ -125,7 +163,7 @@ export function initMobileSessionControlHandler(
   }
 
   const cleanup = syncProvider.onSessionControlMessage((message) => {
-    handleControlMessage(message, findWindowByWorkspace, callbacks);
+    handleControlMessage(syncProvider, message, findWindowByWorkspace, callbacks);
   });
 
   // log.info('Mobile session control handler initialized');
@@ -137,11 +175,16 @@ export function initMobileSessionControlHandler(
  * Dispatch a control message to the appropriate handler
  */
 function handleControlMessage(
+  syncProvider: SyncProvider,
   message: SessionControlMessage,
   findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined,
   callbacks: MobileSessionControlCallbacks
 ): void {
   log.info('Received control message:', message.type, 'for session:', message.sessionId);
+
+  if (message.sentBy === 'desktop') {
+    return;
+  }
 
   switch (message.type) {
     case 'cancel':
@@ -182,15 +225,88 @@ function handleControlMessage(
       break;
     }
 
+    case 'delete_queued_prompt': {
+      const payload = message.payload as unknown as QueuedPromptPayload | undefined;
+      if (!payload?.promptId) {
+        log.warn('delete_queued_prompt missing promptId:', message.sessionId);
+        break;
+      }
+      void handleDeleteQueuedPrompt(message.sessionId, payload.promptId, callbacks);
+      break;
+    }
+
+    case 'send_queued_prompt_now': {
+      const payload = message.payload as unknown as QueuedPromptPayload | undefined;
+      void handleSendQueuedPromptNow(message.sessionId, payload?.promptId, callbacks);
+      break;
+    }
+
     case 'archive': {
       const payload = message.payload as { isArchived?: boolean } | undefined;
       const isArchived = payload?.isArchived ?? true;
-      handleArchive(message.sessionId, isArchived);
+      void handleArchive(syncProvider, message.sessionId, isArchived);
+      break;
+    }
+
+    case 'pin': {
+      const payload = message.payload as PinPayload | undefined;
+      void handlePin(syncProvider, message.sessionId, payload?.isPinned ?? true);
+      break;
+    }
+
+    case 'delete': {
+      void handleDelete(syncProvider, message.sessionId);
+      break;
+    }
+
+    case 'create_project': {
+      const payload = message.payload as CreateProjectPayload | undefined;
+      void handleCreateProject(syncProvider, payload);
+      break;
+    }
+
+    case 'load_transcript_history': {
+      const payload = message.payload as TranscriptHistoryPayload | undefined;
+      void handleLoadTranscriptHistory(syncProvider, message.sessionId, payload);
       break;
     }
 
     default:
       log.warn('Unknown control message type:', message.type);
+  }
+}
+
+async function handleLoadTranscriptHistory(
+  syncProvider: SyncProvider,
+  sessionId: string,
+  payload?: TranscriptHistoryPayload,
+): Promise<void> {
+  try {
+    const count = Number.isFinite(payload?.count)
+      ? Math.max(40, Math.min(120, Math.floor(payload?.count as number)))
+      : 100;
+    const beforeRawMessageId = typeof payload?.beforeRawMessageId === 'number' && Number.isFinite(payload.beforeRawMessageId)
+      ? Math.max(1, Math.floor(payload.beforeRawMessageId))
+      : null;
+    const pageJson = await getMobileTranscriptHistoryPageJson(sessionId, {
+      count,
+      beforeRawMessageId,
+      requestId: payload?.requestId,
+    });
+    if (!pageJson) {
+      log.warn('No mobile transcript history page available:', sessionId, 'count:', count, 'before:', beforeRawMessageId);
+      return;
+    }
+
+    syncProvider.pushChange?.(sessionId, {
+      type: 'metadata_updated',
+      metadata: {
+        mobileTranscriptHistoryPageJson: pageJson,
+        mobileTranscriptHistoryPageUpdatedAt: Date.now(),
+      },
+    });
+  } catch (err) {
+    log.error('Failed to handle load_transcript_history control message:', err);
   }
 }
 
@@ -212,6 +328,32 @@ async function handlePromptTrigger(
     await callbacks.triggerQueuedPromptProcessing(sessionId, session.workspacePath);
   } catch (err) {
     log.error('Failed to handle mobile prompt control message:', err);
+  }
+}
+
+async function handleDeleteQueuedPrompt(
+  sessionId: string,
+  promptId: string,
+  callbacks: MobileSessionControlCallbacks
+): Promise<void> {
+  try {
+    const deleted = await callbacks.deleteQueuedPrompt(sessionId, promptId);
+    log.info(`Mobile queued prompt delete ${deleted ? 'succeeded' : 'ignored'}:`, sessionId, promptId);
+  } catch (err) {
+    log.error('Failed to delete queued prompt from mobile:', err);
+  }
+}
+
+async function handleSendQueuedPromptNow(
+  sessionId: string,
+  promptId: string | undefined,
+  callbacks: MobileSessionControlCallbacks
+): Promise<void> {
+  try {
+    const sent = await callbacks.sendQueuedPromptNow(sessionId, promptId);
+    log.info(`Mobile queued prompt send-now ${sent ? 'triggered' : 'ignored'}:`, sessionId, promptId);
+  } catch (err) {
+    log.error('Failed to send queued prompt now from mobile:', err);
   }
 }
 
@@ -423,18 +565,206 @@ async function handleCancel(
 /**
  * Handle an archive/unarchive command from mobile
  */
-async function handleArchive(sessionId: string, isArchived: boolean): Promise<void> {
+async function handleArchive(syncProvider: SyncProvider, sessionId: string, isArchived: boolean): Promise<void> {
   log.info(`${isArchived ? 'Archiving' : 'Unarchiving'} session from mobile:`, sessionId);
 
   try {
     const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
     await AISessionsRepository.updateMetadata(sessionId, { isArchived });
+    await publishSessionMetadataToMobileIndex(syncProvider, sessionId, { isArchived });
 
     // Notify renderer to update UI
     notifyAllWindows('ai:sessionMetadataUpdated', { sessionId, isArchived });
   } catch (error) {
     log.error('Failed to archive session:', error);
   }
+}
+
+async function handlePin(syncProvider: SyncProvider, sessionId: string, isPinned: boolean): Promise<void> {
+  log.info(`${isPinned ? 'Pinning' : 'Unpinning'} session from mobile:`, sessionId);
+
+  try {
+    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+    await AISessionsRepository.updateMetadata(sessionId, { isPinned } as any);
+    await publishSessionMetadataToMobileIndex(syncProvider, sessionId, { isPinned } as any);
+    notifyAllWindows('ai:sessionMetadataUpdated', { sessionId, isPinned });
+  } catch (error) {
+    log.error('Failed to update pinned state from mobile:', error);
+  }
+}
+
+async function publishSessionMetadataToMobileIndex(
+  syncProvider: SyncProvider,
+  sessionId: string,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  syncProvider.pushChange?.(sessionId, {
+    type: 'metadata_updated',
+    metadata: metadata as any,
+  });
+
+  if (!syncProvider.syncSessionsToIndex) {
+    return;
+  }
+
+  const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+  const session = await AISessionsRepository.get(sessionId);
+  if (!session?.workspacePath) {
+    return;
+  }
+
+  type SessionIndexDataForProvider = Parameters<NonNullable<SyncProvider['syncSessionsToIndex']>>[0][number];
+  const indexData: SessionIndexDataForProvider = {
+    id: session.id,
+    title: session.title || 'Untitled',
+    provider: session.provider || 'unknown',
+    model: session.model,
+    mode: session.mode,
+    sessionType: session.sessionType || 'session',
+    parentSessionId: session.parentSessionId || undefined,
+    worktreeId: session.worktreeId,
+    isArchived: session.isArchived ?? false,
+    isPinned: session.isPinned ?? false,
+    hasBeenNamed: session.hasBeenNamed,
+    branchedFromSessionId: session.branchedFromSessionId,
+    branchPointMessageId: session.branchPointMessageId,
+    branchedAt: session.branchedAt,
+    workspaceId: session.workspacePath,
+    workspacePath: session.workspacePath,
+    messageCount: Array.isArray(session.messages) ? session.messages.length : 0,
+    updatedAt: session.updatedAt,
+    createdAt: session.createdAt,
+    metadata: session.metadata as Record<string, any> | undefined,
+  };
+
+  syncProvider.syncSessionsToIndex([indexData], { syncMessages: false });
+}
+
+async function handleDelete(syncProvider: SyncProvider, sessionId: string): Promise<void> {
+  log.info('Deleting session from mobile:', sessionId);
+
+  try {
+    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+    const session = await AISessionsRepository.get(sessionId);
+    ProviderFactory.destroyProvider(sessionId);
+    await AISessionsRepository.delete(sessionId);
+    await syncProvider.pushChange?.(sessionId, { type: 'session_deleted' });
+    notifyAllWindows('sessions:session-deleted', {
+      sessionId,
+      workspacePath: session?.workspacePath,
+      parentSessionId: session?.parentSessionId,
+    });
+    notifyAllWindows('ai:sessionDeleted', { sessionId });
+  } catch (error) {
+    log.error('Failed to delete session from mobile:', error);
+  }
+}
+
+async function handleCreateProject(
+  syncProvider: SyncProvider,
+  payload?: CreateProjectPayload,
+): Promise<void> {
+  const requestId = typeof payload?.requestId === 'string' ? payload.requestId : undefined;
+  if (!requestId) {
+    log.warn('create_project missing requestId');
+    return;
+  }
+
+  try {
+    const projectName = sanitizeProjectName(payload?.name);
+    if (!projectName) {
+      throw new Error('Project name is required.');
+    }
+
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const projectPath = resolveProjectPathForMobileCreate(payload?.path, projectName, path);
+    await fs.mkdir(projectPath, { recursive: true });
+
+    const { getSessionSyncConfig, setSessionSyncConfig } = await import('../../utils/store');
+    const currentSyncConfig = getSessionSyncConfig();
+    if (!currentSyncConfig?.serverUrl) {
+      throw new Error('Desktop sync is not configured.');
+    }
+    const enabledProjects = Array.from(new Set([...(currentSyncConfig.enabledProjects ?? []), projectPath]));
+    setSessionSyncConfig({
+      ...currentSyncConfig,
+      enabled: enabledProjects.length > 0,
+      enabledProjects,
+    });
+
+    await syncProvider.syncProjectConfig?.(projectPath, {
+      commands: [],
+      lastCommandsUpdate: Date.now(),
+    });
+
+    const { createWindow, findWindowByWorkspace } = await import('../../window/WindowManager');
+    if (!findWindowByWorkspace(projectPath)) {
+      createWindow(false, true, projectPath);
+    }
+
+    await sendProjectCreateResponse(syncProvider, {
+      requestId,
+      success: true,
+      projectId: projectPath,
+      name: path.basename(projectPath) || projectName,
+    });
+  } catch (error) {
+    log.error('Failed to create project from mobile:', error);
+    await sendProjectCreateResponse(syncProvider, {
+      requestId,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function sanitizeProjectName(name: unknown): string {
+  if (typeof name !== 'string') {
+    return '';
+  }
+  return name
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')
+    .replace(/\s+/g, ' ')
+    .slice(0, 120);
+}
+
+function resolveProjectPathForMobileCreate(
+  requestedPath: unknown,
+  projectName: string,
+  path: typeof import('path'),
+): string {
+  if (typeof requestedPath === 'string' && requestedPath.trim()) {
+    const trimmed = requestedPath.trim();
+    const expanded = trimmed === '~' || trimmed.startsWith('~/')
+      ? path.join(process.env.HOME || '', trimmed.slice(trimmed === '~' ? 1 : 2))
+      : trimmed;
+    return path.resolve(expanded);
+  }
+  return path.join(process.env.HOME || process.cwd(), 'Nimbalyst Projects', projectName);
+}
+
+async function sendProjectCreateResponse(
+  syncProvider: SyncProvider,
+  payload: {
+    requestId: string;
+    success: boolean;
+    projectId?: string;
+    name?: string;
+    error?: string;
+  },
+): Promise<void> {
+  if (!syncProvider.sendSessionControlMessage) {
+    return;
+  }
+  await syncProvider.sendSessionControlMessage({
+    sessionId: PROJECT_CONTROL_SESSION_ID,
+    type: 'create_project_response',
+    payload,
+    timestamp: Date.now(),
+    sentBy: 'desktop',
+  });
 }
 
 // ============================================================

@@ -9,11 +9,25 @@ export interface AgentMessagesStore {
    */
   createMany?(messages: CreateAgentMessageInput[]): Promise<void>;
   list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]>;
+  /** Get the newest messages for one session, returned oldest-to-newest */
+  listTail?(sessionId: string, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]>;
+  /** Get messages before a raw message id, returned oldest-to-newest */
+  listBefore?(sessionId: string, beforeId: number | null | undefined, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]>;
   /** Get message counts for multiple sessions in a single query */
   getMessageCounts?(sessionIds: string[]): Promise<Map<string, number>>;
+  /** True when getMessageCounts is backed by an exact native COUNT query. */
+  hasAccurateMessageCounts?: boolean;
 }
 
 let storeInstance: AgentMessagesStore | null = null;
+const warnedFallbacks = new Set<string>();
+
+function warnFallbackOnce(capability: string, detail: string): void {
+  const key = `${capability}:${detail}`;
+  if (warnedFallbacks.has(key)) return;
+  warnedFallbacks.add(key);
+  console.warn(`[AgentMessagesRepository] Store does not implement ${capability}; ${detail}`);
+}
 
 function requireStore(): AgentMessagesStore {
   if (!storeInstance) {
@@ -39,6 +53,10 @@ export const AgentMessagesRepository = {
     return requireStore();
   },
 
+  hasAccurateMessageCounts(): boolean {
+    return requireStore().hasAccurateMessageCounts === true;
+  },
+
   async create(message: CreateAgentMessageInput): Promise<void> {
     await requireStore().create(message);
   },
@@ -59,6 +77,37 @@ export const AgentMessagesRepository = {
 
   async list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]> {
     return await requireStore().list(sessionId, options);
+  },
+
+  async listTail(sessionId: string, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]> {
+    const store = requireStore();
+    if (store.listTail) {
+      return await store.listTail(sessionId, limit, options);
+    }
+
+    warnFallbackOnce('listTail', 'falling back to count-plus-offset pagination');
+    const counts = await this.getMessageCounts([sessionId]);
+    const total = counts.get(sessionId) ?? 0;
+    const boundedLimit = Math.max(1, limit);
+    const offset = Math.max(0, total - boundedLimit);
+    return await store.list(sessionId, { limit: boundedLimit, offset, includeHidden: options?.includeHidden });
+  },
+
+  async listBefore(sessionId: string, beforeId: number | null | undefined, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]> {
+    const store = requireStore();
+    const boundedLimit = Math.max(1, limit);
+    if (store.listBefore) {
+      return await store.listBefore(sessionId, beforeId, boundedLimit, options);
+    }
+    if (beforeId == null) {
+      return await this.listTail(sessionId, boundedLimit, options);
+    }
+
+    warnFallbackOnce('listBefore', 'falling back to a capped 50000-row in-memory filter');
+    const messages = await store.list(sessionId, { limit: 50000, includeHidden: options?.includeHidden });
+    return messages
+      .filter((message) => Number(message.id ?? 0) < beforeId)
+      .slice(-boundedLimit);
   },
 
   async getMessageCounts(sessionIds: string[]): Promise<Map<string, number>> {

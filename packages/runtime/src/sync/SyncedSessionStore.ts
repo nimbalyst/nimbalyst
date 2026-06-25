@@ -171,12 +171,6 @@ export function createSyncedSessionStore(
       // an explicit pushChange.
       const syncMetadata = buildSyncPayload(metadata as unknown as Record<string, unknown>);
 
-      // Draft input gets a separate freshness timestamp; bumping updatedAt
-      // here would cause the row to jump to the top on every keystroke.
-      if (metadata.draftInput !== undefined) {
-        syncMetadata.draftUpdatedAt = Date.now();
-      }
-
       if (Object.keys(syncMetadata).length === 0) {
         // No sync-relevant fields changed, skip sync update
         return;

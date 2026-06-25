@@ -13,6 +13,7 @@ import { ExtensionDevIndicator } from '../ExtensionDevIndicator';
 import { ClaudeUsageIndicator } from '../ClaudeUsageIndicator';
 import { CodexUsageIndicator } from '../CodexUsageIndicator';
 import { GeminiUsageIndicator } from '../GeminiUsageIndicator';
+import { FuguUsageIndicator } from '../FuguUsageIndicator';
 import { BackgroundTaskIndicator } from '../BackgroundTaskIndicator';
 import { VoiceModeButton } from '../UnifiedAI/VoiceModeButton';
 import { useExtensionGutterButtons, useExtensionBottomPanelButtons } from '../../extensions/panels/usePanels';
@@ -620,6 +621,13 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
         {!isHidden('gemini-usage') && (
           <div onContextMenu={(e) => openContextMenu(e, 'gemini-usage')}>
             <GeminiUsageIndicator />
+          </div>
+        )}
+
+        {/* Fugu Usage Indicator - Shows Sakana Fugu usage limits */}
+        {!isHidden('fugu-usage') && (
+          <div onContextMenu={(e) => openContextMenu(e, 'fugu-usage')}>
+            <FuguUsageIndicator />
           </div>
         )}
 

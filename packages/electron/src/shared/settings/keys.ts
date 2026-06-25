@@ -226,6 +226,11 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'showGeminiUsageIndicator' },
     true,
   ),
+  'ai.showFuguUsageIndicator': setting(
+    z.boolean(),
+    { store: 'ai-settings', path: 'showFuguUsageIndicator' },
+    true,
+  ),
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS_REGISTRY;

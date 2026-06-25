@@ -37,6 +37,13 @@ export interface SyncConfig {
   deviceInfo?: DeviceInfo;
 
   /**
+   * Optional callback used by desktop to publish a compact projected transcript
+   * tail for oversized sessions that can no longer sync their full message
+   * history to mobile.
+   */
+  getMobileTranscriptTailJson?: (sessionId: string, count: number) => Promise<string | null>;
+
+  /**
    * Function to get current device info for presence updates.
    * Called periodically (every 30s) to get up-to-date presence info.
    * If provided, takes precedence over static deviceInfo.
@@ -161,6 +168,7 @@ export interface SyncProvider {
         sentBy: 'mobile' | 'desktop';
       };
       isExecuting?: boolean;
+      agentStatus?: SyncedAgentStatus | null;
     }>;
     projects: Array<{
       projectId: string;
@@ -188,6 +196,8 @@ export interface SyncProvider {
       sentBy: 'mobile' | 'desktop';
     };
     isExecuting?: boolean;
+    /** Compact live status used by mobile/desktop surfaces while the agent works. */
+    agentStatus?: SyncedAgentStatus | null;
     /** Unix timestamp ms when this session was last read by any device */
     lastReadAt?: number;
     /** Number of prompts queued from mobile, waiting for desktop to process */
@@ -231,6 +241,8 @@ export interface SyncProvider {
       sentBy: 'mobile' | 'desktop';
     };
     isExecuting?: boolean;
+    /** Compact live status used by mobile/desktop surfaces while the agent works. */
+    agentStatus?: SyncedAgentStatus | null;
     /** Decrypted queued prompts */
     queuedPrompts?: Array<{ id: string; prompt: string; timestamp: number }>;
   } | undefined;
@@ -383,6 +395,20 @@ export interface SyncedQueuedPrompt {
   attachments?: EncryptedAttachment[];
 }
 
+/** Compact live status for cross-device session UI. */
+export interface SyncedAgentStatus {
+  /** Coarse state for styling and fallback behavior. */
+  kind: 'thinking' | 'responding' | 'tool' | 'waiting' | 'queued' | 'complete' | 'error' | 'idle' | (string & {});
+  /** Short user-facing label, e.g. "Thinking..." or "Using Bash...". */
+  label: string;
+  /** Optional extra context such as a tool name, prompt type, or target file. */
+  detail?: string;
+  /** Tool name when kind === "tool". */
+  toolName?: string;
+  /** Epoch ms when this status was produced. */
+  updatedAt: number;
+}
+
 /**
  * Encrypted image attachment sent from mobile via queued prompts.
  * Desktop decrypts the data, writes to temp file, and creates a ChatAttachment.
@@ -442,6 +468,8 @@ export interface SyncedSessionMetadata {
   };
   /** Whether the session is currently executing (processing AI request) */
   isExecuting?: boolean;
+  /** Compact live status used by mobile/desktop surfaces while the agent works. */
+  agentStatus?: SyncedAgentStatus | null;
   /** Current context usage (from /context command for Claude Code) */
   currentContext?: {
     tokens: number;         // Current tokens in context window
@@ -455,6 +483,14 @@ export interface SyncedSessionMetadata {
   tags?: string[];
   /** Unix timestamp ms when this session was last read by any device */
   lastReadAt?: number;
+  /** Compact projected transcript tail for oversized sessions on mobile. */
+  mobileTranscriptTailJson?: string;
+  /** Freshness marker for the mobile transcript tail. */
+  mobileTranscriptTailUpdatedAt?: number;
+  /** Latest cursor-based projected history page requested by mobile. */
+  mobileTranscriptHistoryPageJson?: string;
+  /** Freshness marker for the latest mobile history page. */
+  mobileTranscriptHistoryPageUpdatedAt?: number;
 }
 
 /**
@@ -496,6 +532,8 @@ export interface SessionIndexEntry {
   };
   /** Whether the session is currently executing (processing AI request) */
   isExecuting?: boolean;
+  /** Compact live status used by mobile/desktop surfaces while the agent works. */
+  agentStatus?: SyncedAgentStatus | null;
   /** Whether there are pending interactive prompts (permissions or questions) waiting for response */
   hasPendingPrompt?: boolean;
   /** Current context usage (from /context command for Claude Code) */
@@ -652,10 +690,50 @@ export interface SyncedSettings {
   availableModels?: SyncedAvailableModel[];
   /** Desktop's default model ID (e.g., "claude-code:opus") */
   defaultModel?: string;
+  /** Plan-usage snapshots from the desktop usage trackers, for mobile display */
+  usage?: SyncedUsageSnapshot;
   /** Whether the desktop "meta-agent" alpha feature is enabled (gates the mobile Meta Agent UI) */
   metaAgentEnabled?: boolean;
   /** Version for handling future upgrades */
   version: number;
+}
+
+/** One rate-limit window of a provider plan (utilization is 0-100). */
+export interface SyncedUsageWindow {
+  utilization: number;
+  /** ISO timestamp when the window resets, if known */
+  resetsAt: string | null;
+}
+
+export interface SyncedUsageSnapshot {
+  claude?: {
+    fiveHour: SyncedUsageWindow;
+    sevenDay: SyncedUsageWindow;
+    sevenDayOpus?: SyncedUsageWindow;
+    lastUpdated: number;
+  };
+  codex?: {
+    fiveHour: SyncedUsageWindow;
+    sevenDay: SyncedUsageWindow;
+    credits?: { hasCredits: boolean; unlimited: boolean; balance: number | null };
+    limitsAvailable?: boolean;
+    lastUpdated: number;
+  };
+  fugu?: {
+    fiveHour: SyncedUsageWindow;
+    sevenDay: SyncedUsageWindow;
+    tokenUsage?: {
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+      sessionCount: number;
+      lastSessionUpdatedAt: number | null;
+    };
+    limitsAvailable?: boolean;
+    accountUsageConfigured?: boolean;
+    accountUsageError?: string | null;
+    lastUpdated: number;
+  };
 }
 
 /**
