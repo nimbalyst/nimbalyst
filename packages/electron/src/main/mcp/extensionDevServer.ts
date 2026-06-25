@@ -30,57 +30,9 @@ import * as fs from "fs";
 import { ExtensionLogService } from "../services/ExtensionLogService";
 import { database } from "../database/initialize";
 import { findWindowByWorkspace } from "../window/WindowManager";
-import { getRestartSignalPath, getPackageRoot } from "../utils/appPaths";
+import { getPackageRoot } from "../utils/appPaths";
 import { requireMcpAuth } from "./mcpAuth";
-import { selectFocusedRestartSessions } from "./restartContinuationSelection";
-
-// ============================================================================
-// Restart continuation
-// ============================================================================
-
-/**
- * Of the running/streaming agent sessions, return only the one the FOCUSED
- * window is viewing, so /restart resumes just that session (NIM-813). Reuses the
- * renderer's existing `notifications:check-active-session` answerer (it replies
- * from `activeSessionIdAtom`), so no new renderer plumbing. A window views one
- * agent session, so the result is 0 or 1 id; returns `[]` when no window is
- * focused or none of the running sessions is the focused one.
- */
-async function selectFocusedRestartContinuationSessions(
-  runningSessionIds: string[]
-): Promise<string[]> {
-  if (runningSessionIds.length === 0) return [];
-
-  const { BrowserWindow, ipcMain } = require("electron");
-  const focused = BrowserWindow.getFocusedWindow();
-  if (!focused || focused.isDestroyed()) return [];
-
-  const viewingBySession: Record<string, boolean> = {};
-  await Promise.all(
-    runningSessionIds.map(
-      (sessionId) =>
-        new Promise<void>((resolve) => {
-          const requestId = `restart-continuation-${Date.now()}-${Math.random()}`;
-          const channel = `notifications:session-check-response:${requestId}`;
-          const timeout = setTimeout(() => {
-            ipcMain.removeAllListeners(channel);
-            resolve();
-          }, 500);
-          ipcMain.once(channel, (_event: unknown, isViewing: boolean) => {
-            clearTimeout(timeout);
-            viewingBySession[sessionId] = isViewing === true;
-            resolve();
-          });
-          focused.webContents.send("notifications:check-active-session", {
-            requestId,
-            sessionId,
-          });
-        })
-    )
-  );
-
-  return selectFocusedRestartSessions(runningSessionIds, viewingBySession);
-}
+import { restartNimbalystSafely } from "../services/SafeRestartService";
 
 // ============================================================================
 // File Utilities
@@ -1045,7 +997,7 @@ function createExtensionDevMcpServer(
         {
           name: "restart_nimbalyst",
           description:
-            "Restart the Nimbalyst application. Only use this tool when the user explicitly asks you to restart Nimbalyst. This will close all windows and relaunch the app. All active AI sessions will automatically continue after restart with a continuation message.",
+            "Safely restart the Nimbalyst application. Only use this tool when the user explicitly asks you to restart Nimbalyst. If AI sessions are running, streaming, or waiting for input, reloads the desktop UI without relaunching the main process so active work continues; otherwise performs a full app relaunch.",
           inputSchema: {
             type: "object",
             properties: {},
@@ -1648,104 +1600,26 @@ function createExtensionDevMcpServer(
       }
 
       case "restart_nimbalyst": {
-        console.log("[Extension Dev MCP] Restarting Nimbalyst...");
+        console.log("[Extension Dev MCP] Safe restart requested");
 
-        const { app } = await import("electron");
+        const result = await restartNimbalystSafely("extension-dev-mcp");
 
-        // Get all active agent sessions to continue after restart
-        try {
-          const { getSessionStateManager } = await import(
-            "@nimbalyst/runtime/ai/server/SessionStateManager"
-          );
-          const stateManager = getSessionStateManager();
-          // Only sessions whose turn is actually in progress need to be resumed
-          // after restart (NIM-846: getTrackedSessionIds would also return idle
-          // claude-code-cli sessions retained in the map between turns).
-          const agentSessionIds = stateManager.getRunningSessionIds();
-
-          // Resume only the session the FOCUSED window is viewing, not every
-          // running session across every window. Auto-resuming all of them
-          // re-creates the launch stampede that rate-limits the subscription
-          // (NIM-813); the user only expects the window they were working in to
-          // pick back up. Background sessions stay paused until interacted with.
-          const focusedSessionIds = await selectFocusedRestartContinuationSessions(
-            agentSessionIds
-          );
-
-          if (focusedSessionIds.length > 0) {
-            const userData = app.getPath("userData");
-            const restartContinuationPath = path.join(
-              userData,
-              "restart-continuation.json"
-            );
-            const continuationData = {
-              sessionIds: focusedSessionIds,
-              timestamp: Date.now(),
-            };
-            fs.writeFileSync(
-              restartContinuationPath,
-              JSON.stringify(continuationData),
-              "utf8"
-            );
-            console.log(
-              `[Extension Dev MCP] Saved restart continuation for focused session(s):`,
-              focusedSessionIds
-            );
-          } else {
-            console.log(
-              `[Extension Dev MCP] No focused running session to continue (had ${agentSessionIds.length} running)`
-            );
-          }
-        } catch (error) {
-          console.error(
-            "[Extension Dev MCP] Failed to save restart continuation:",
-            error
-          );
-        }
-
-        // Check if we're in dev mode (electron-vite spawns both vite and electron)
-        const isDev =
-          process.env.NODE_ENV === "development" ||
-          !!process.env.ELECTRON_RENDERER_URL;
-
-        if (isDev) {
-          // In dev mode, write a restart signal file and quit.
-          // The outer dev-loop.sh script watches for this file and restarts npm run dev.
-          // This avoids complex process killing and ensures clean restarts.
-          const restartSignalPath = getRestartSignalPath();
-
-          console.log(
-            `[Extension Dev MCP] Dev mode restart: writing signal to ${restartSignalPath}`
-          );
-
-          fs.writeFileSync(restartSignalPath, Date.now().toString(), "utf8");
-
-          // Give the file a moment to be written, then quit
-          setTimeout(() => {
-            app.quit();
-          }, 100);
-
+        if (result.busySessionIds.length > 0) {
           return {
             content: [
               {
                 type: "text",
-                text: "Restart requested. The dev server will relaunch shortly.",
+                text: result.message,
               },
             ],
             isError: false,
           };
-        } else {
-          // In production, use the standard relaunch mechanism
-          // CRITICAL: Use app.quit() NOT app.exit(0) to trigger the before-quit handler
-          // which performs proper database backup and cleanup to prevent corruption
-          app.relaunch();
-          app.quit();
-
-          return {
-            content: [{ type: "text", text: "Restarting Nimbalyst..." }],
-            isError: false,
-          };
         }
+
+        return {
+          content: [{ type: "text", text: "Restarting Nimbalyst..." }],
+          isError: false,
+        };
       }
 
       case "extension_get_status": {

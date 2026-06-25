@@ -106,6 +106,46 @@ class TranscriptPayloadBuilderTest {
     }
 
     @Test
+    fun `buildSessionPayload includes projected transcript tail array`() {
+        val payload = TranscriptPayloadBuilder.buildSessionPayload(
+            sessionId = "session-tail",
+            sessionTitle = "Tail",
+            provider = "openai-codex",
+            model = "gpt-5",
+            mode = "agent",
+            messages = emptyList(),
+            viewMessagesJson = """[{"type":"assistant_message","text":"Visible tail","createdAt":1234}]"""
+        )
+
+        val json = JsonParser.parseString(payload).asJsonObject
+        val viewMessages = json.getAsJsonArray("viewMessages")
+
+        assertEquals(1, viewMessages.size())
+        assertEquals("assistant_message", viewMessages[0].asJsonObject.get("type").asString)
+        assertEquals("Visible tail", viewMessages[0].asJsonObject.get("text").asString)
+    }
+
+    @Test
+    fun `buildSessionPayload accepts projected messages from history envelope for tail fallback`() {
+        val payload = TranscriptPayloadBuilder.buildSessionPayload(
+            sessionId = "session-tail-envelope",
+            sessionTitle = "Tail envelope",
+            provider = "openai-codex",
+            model = "gpt-5",
+            mode = "agent",
+            messages = emptyList(),
+            viewMessagesJson = """{"version":1,"sessionId":"session-tail-envelope","messages":[{"type":"user_message","text":"Prompt","createdAt":1000}]}"""
+        )
+
+        val json = JsonParser.parseString(payload).asJsonObject
+        val viewMessages = json.getAsJsonArray("viewMessages")
+
+        assertEquals(1, viewMessages.size())
+        assertEquals("user_message", viewMessages[0].asJsonObject.get("type").asString)
+        assertEquals("Prompt", viewMessages[0].asJsonObject.get("text").asString)
+    }
+
+    @Test
     fun `buildSessionPayload includes live agent status`() {
         val payload = TranscriptPayloadBuilder.buildSessionPayload(
             sessionId = "session-status",

@@ -36,6 +36,7 @@ import {
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { resolveCodexServiceTier } from '@nimbalyst/runtime/ai/server/codexFastMode';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
@@ -563,6 +564,17 @@ export class MessageStreamingHandler {
       if (session.provider === 'lmstudio') {
         const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
         reinitConfig.baseUrl = providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234';
+      }
+
+      if (session.provider === 'openai-codex') {
+        const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
+        const serviceTier = resolveCodexServiceTier(
+          (session.metadata as any)?.codexFastModeEnabled,
+          providerSettings['openai-codex']?.fastModeEnabled
+        );
+        if (serviceTier) {
+          reinitConfig.serviceTier = serviceTier;
+        }
       }
 
       // Pass model to provider config for all providers including claude-code
@@ -1220,12 +1232,23 @@ export class MessageStreamingHandler {
         // Refresh credentials every turn for all providers so key changes in settings apply immediately.
         const freshApiKey = this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
         const turnEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
-        await provider.initialize({
+        const turnConfig: ProviderConfig = {
           apiKey: freshApiKey,
           maxTokens: (session.providerConfig as any)?.maxTokens,
           temperature: (session.providerConfig as any)?.temperature,
           ...(turnEffortLevel && { effortLevel: turnEffortLevel }),
-        });
+        };
+        if (session.provider === 'openai-codex') {
+          const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
+          const serviceTier = resolveCodexServiceTier(
+            (session.metadata as any)?.codexFastModeEnabled,
+            providerSettings['openai-codex']?.fastModeEnabled
+          );
+          if (serviceTier) {
+            turnConfig.serviceTier = serviceTier;
+          }
+        }
+        await provider.initialize(turnConfig);
       }
 
       // Attach @ mentioned files for non-agent providers
@@ -2332,13 +2355,17 @@ export class MessageStreamingHandler {
               // Calculate new tokens for this message
               const newInputTokens = (tokenUsage.input_tokens || 0);
               const newOutputTokens = tokenUsage.output_tokens || 0;
-              const newTotalTokens = newInputTokens + newOutputTokens;
+              const reportedTotalTokens = tokenUsage.total_tokens || 0;
+              const newTotalTokens = reportedTotalTokens > 0
+                ? reportedTotalTokens
+                : newInputTokens + newOutputTokens;
               const isCodexProvider = session.provider === 'openai-codex';
+              const supportsCurrentContextSync = isCodexProvider || session.provider === 'opencode';
               const codexInitData = isCodexProvider ? (provider as any).getInitData?.() : null;
               const isResumedCodexThread = codexInitData?.isResumedThread === true;
 
-              const codexContextWindow =
-                isCodexProvider
+              const contextWindowForDisplay =
+                supportsCurrentContextSync
                   ? (contextWindowFromChunk || currentUsage.contextWindow)
                   : currentUsage.contextWindow;
 
@@ -2395,12 +2422,14 @@ export class MessageStreamingHandler {
                   providerCumulativeInputTokens,
                   providerCumulativeOutputTokens,
                 } : {}),
-                contextWindow: codexContextWindow,
+                contextWindow: contextWindowForDisplay,
                 currentContext:
-                  isCodexProvider && !contextCompacted
-                    ? (contextFillTokens !== undefined && codexContextWindow
-                      ? { tokens: contextFillTokens, contextWindow: codexContextWindow }
-                      : currentUsage.currentContext)
+                  supportsCurrentContextSync
+                    ? (contextCompacted
+                      ? undefined
+                      : (contextFillTokens !== undefined && contextWindowForDisplay
+                        ? { tokens: contextFillTokens, contextWindow: contextWindowForDisplay }
+                        : currentUsage.currentContext))
                     : currentUsage.currentContext,
               };
 
@@ -2412,8 +2441,8 @@ export class MessageStreamingHandler {
                 tokenUsage: updatedUsage
               });
 
-              // Push context usage to mobile sync for Codex sessions
-              if (isCodexProvider && contextFillTokens !== undefined && codexContextWindow) {
+              // Push context usage to mobile sync for agent sessions that report it.
+              if (supportsCurrentContextSync && contextFillTokens !== undefined && contextWindowForDisplay) {
                 const syncProvider = getSyncProvider();
                 if (syncProvider) {
                   syncProvider.pushChange(session.id, {
@@ -2421,7 +2450,7 @@ export class MessageStreamingHandler {
                     metadata: {
                       currentContext: {
                         tokens: contextFillTokens,
-                        contextWindow: codexContextWindow,
+                        contextWindow: contextWindowForDisplay,
                       },
                     } as any,
                   });

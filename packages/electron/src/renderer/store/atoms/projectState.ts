@@ -86,6 +86,7 @@ export type HideableGutterButton =
   | 'claude-usage'
   | 'codex-usage'
   | 'gemini-usage'
+  | 'fugu-usage'
   | 'extension-dev';
 
 /**

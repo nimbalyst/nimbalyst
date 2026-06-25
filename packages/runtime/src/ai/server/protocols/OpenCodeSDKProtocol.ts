@@ -33,6 +33,7 @@ import {
  * Matches the actual @opencode-ai/sdk API surface.
  */
 export interface OpenCodeClientLike {
+  postSessionIdPermissionsPermissionId?: (options: Record<string, unknown>) => Promise<unknown>;
   session: {
     create: (options?: Record<string, unknown>) => Promise<{ data: { id: string; [key: string]: unknown } }>;
     list: (options?: Record<string, unknown>) => Promise<{ data: Array<{ id: string; [key: string]: unknown }> }>;
@@ -64,6 +65,16 @@ export interface OpenCodeClientLike {
 export interface OpenCodeSSEEvent {
   type: string;
   properties?: Record<string, unknown>;
+}
+
+interface OpenCodeStreamState {
+  assistantMessageIds: Set<string>;
+  userMessageIds: Set<string>;
+  partTextSnapshots: Map<string, string>;
+  partTypes: Map<string, string>;
+  latestUsage?: ProtocolEvent['usage'];
+  latestContextFillTokens?: number;
+  latestContextWindow?: number;
 }
 
 /**
@@ -523,6 +534,7 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
 
     let fullText = '';
     let usage: { input_tokens: number; output_tokens: number; total_tokens: number } | undefined;
+    const streamState = createOpenCodeStreamState();
 
     try {
       const sessionOptions = session.raw?.options as SessionOptions | undefined;
@@ -572,12 +584,12 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
         };
 
         // Parse and yield protocol events
-        const protocolEvents = this.parseSSEEvent(event, sessionId);
+        const protocolEvents = this.parseSSEEvent(event, sessionId, streamState);
         for (const protocolEvent of protocolEvents) {
           if (protocolEvent.type === 'text' && protocolEvent.content) {
             fullText += protocolEvent.content;
           }
-          if (protocolEvent.type === 'usage' && protocolEvent.usage) {
+          if (protocolEvent.usage) {
             usage = protocolEvent.usage;
           }
           yield protocolEvent;
@@ -596,7 +608,9 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
       yield {
         type: 'complete',
         content: fullText,
-        usage: usage ?? { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        usage: usage ?? streamState.latestUsage ?? { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        ...(streamState.latestContextFillTokens !== undefined ? { contextFillTokens: streamState.latestContextFillTokens } : {}),
+        ...(streamState.latestContextWindow !== undefined ? { contextWindow: streamState.latestContextWindow } : {}),
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -623,6 +637,28 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
     }).catch(() => {});
   }
 
+  async respondToPermission(
+    session: ProtocolSession,
+    permissionId: string,
+    response: 'once' | 'always' | 'reject',
+  ): Promise<void> {
+    const baseUrl = session.raw?.baseUrl as string;
+    if (!baseUrl) {
+      throw new Error('Invalid session: missing baseUrl');
+    }
+
+    const client = await this.getClient(baseUrl);
+    if (typeof client.postSessionIdPermissionsPermissionId !== 'function') {
+      throw new Error('OpenCode SDK client does not expose the permission response endpoint');
+    }
+
+    await client.postSessionIdPermissionsPermissionId({
+      path: { id: session.id, permissionID: permissionId },
+      query: { directory: (session.raw?.options as SessionOptions | undefined)?.workspacePath },
+      body: { response },
+    });
+  }
+
   /**
    * Clean up session resources
    */
@@ -636,7 +672,11 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
    * Parse an OpenCode SSE event into protocol events.
    * Filters events to only the target session.
    */
-  private parseSSEEvent(event: OpenCodeSSEEvent, targetSessionId: string): ProtocolEvent[] {
+  private parseSSEEvent(
+    event: OpenCodeSSEEvent,
+    targetSessionId: string,
+    streamState: OpenCodeStreamState,
+  ): ProtocolEvent[] {
     const events: ProtocolEvent[] = [];
     const props = event.properties || {};
 
@@ -648,23 +688,36 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
       return events;
     }
 
-    switch (event.type) {
+    rememberOpenCodeUsage(event, props, streamState);
+
+    const eventType = normalizeOpenCodeEventType(event.type);
+
+    switch (eventType) {
+      case 'message.updated': {
+        recordMessageRole(props, streamState);
+        break;
+      }
+
       // Text/reasoning content updates
       case 'message.part.updated': {
         const part = props.part as Record<string, unknown> | undefined;
-        const delta = props.delta as string | undefined;
         if (!part) break;
 
         const partType = part.type as string;
+        rememberPartType(part, props, targetSessionId, streamState, partType);
+
+        const messageID = stringField(part.messageID) ?? stringField(props.messageID);
+        if (messageID && streamState.userMessageIds.has(messageID)) {
+          break;
+        }
 
         if (partType === 'text') {
-          // Use delta for incremental text, fall back to full text
-          const content = delta ?? (part.text as string);
+          const content = derivePartTextChunk(part, props, targetSessionId, streamState, partType);
           if (content) {
             events.push({ type: 'text', content });
           }
         } else if (partType === 'reasoning') {
-          const content = delta ?? (part.text as string);
+          const content = derivePartTextChunk(part, props, targetSessionId, streamState, partType);
           if (content) {
             events.push({ type: 'reasoning', content });
           }
@@ -718,10 +771,20 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
         const delta = props.delta as string | undefined;
         const field = props.field as string | undefined;
         if (delta && field === 'text') {
-          // Could be text or reasoning -- we need the part type to know.
-          // Default to text since that's most common; reasoning parts are
-          // typically delivered through message.part.updated with full text.
-          events.push({ type: 'text', content: delta });
+          const messageID = stringField(props.messageID);
+          if (messageID && streamState.userMessageIds.has(messageID)) {
+            break;
+          }
+
+          const partIdentityKey = openCodePartIdentityKeyFromProps(props, targetSessionId);
+          const partType = streamState.partTypes.get(partIdentityKey) ?? 'text';
+          rememberPartDelta(props, targetSessionId, streamState, partType, delta);
+
+          if (partType === 'reasoning') {
+            events.push({ type: 'reasoning', content: delta });
+          } else {
+            events.push({ type: 'text', content: delta });
+          }
         }
         break;
       }
@@ -746,10 +809,14 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
 
       // Session completed/idle
       case 'session.idle': {
-        events.push({
+        const completeEvent: ProtocolEvent = {
           type: 'complete',
           content: '',
-        });
+          ...(streamState.latestUsage ? { usage: streamState.latestUsage } : {}),
+          ...(streamState.latestContextFillTokens !== undefined ? { contextFillTokens: streamState.latestContextFillTokens } : {}),
+          ...(streamState.latestContextWindow !== undefined ? { contextWindow: streamState.latestContextWindow } : {}),
+        };
+        events.push(completeEvent);
         break;
       }
 
@@ -790,9 +857,42 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
       }
 
       // Permission request
-      case 'permission.updated': {
-        // Permission requests are handled by the provider layer
-        // Pass through as raw event
+      case 'permission.updated':
+      case 'permission.asked': {
+        const permissionId = stringField(props.id) ?? stringField(props.requestID);
+        if (!permissionId) break;
+        events.push({
+          type: 'tool_call',
+          toolCall: {
+            id: permissionId,
+            name: 'ToolPermission',
+            arguments: buildOpenCodePermissionToolArgs(props),
+          },
+          metadata: {
+            openCodePermissionRequest: true,
+            permissionId,
+          },
+        });
+        break;
+      }
+
+      case 'permission.replied': {
+        const permissionId = stringField(props.permissionID)
+          ?? stringField(props.requestID)
+          ?? stringField(props.id);
+        if (!permissionId) break;
+        const response = stringField(props.response) ?? stringField(props.reply) ?? '';
+        events.push({
+          type: 'tool_result',
+          toolResult: {
+            id: permissionId,
+            name: 'ToolPermission',
+            result: {
+              success: response !== 'reject',
+              result: JSON.stringify(openCodePermissionResponseToNimbalyst(response)),
+            },
+          },
+        });
         break;
       }
 
@@ -862,10 +962,307 @@ function extractEventSessionId(event: OpenCodeSSEEvent): string | undefined {
   const info = props.info as Record<string, unknown> | undefined;
   if (info) {
     if (typeof info.sessionID === 'string') return info.sessionID;
-    if (event.type === 'session.updated' && typeof info.id === 'string') {
+    if (normalizeOpenCodeEventType(event.type) === 'session.updated' && typeof info.id === 'string') {
       return info.id;
     }
   }
 
   return undefined;
+}
+
+function normalizeOpenCodeEventType(type: string): string {
+  return type.replace(/\.\d+$/, '');
+}
+
+function createOpenCodeStreamState(): OpenCodeStreamState {
+  return {
+    assistantMessageIds: new Set(),
+    userMessageIds: new Set(),
+    partTextSnapshots: new Map(),
+    partTypes: new Map(),
+    latestUsage: undefined,
+    latestContextFillTokens: undefined,
+    latestContextWindow: undefined,
+  };
+}
+
+function rememberOpenCodeUsage(
+  event: OpenCodeSSEEvent,
+  props: Record<string, unknown>,
+  streamState: OpenCodeStreamState,
+): void {
+  const usage = extractOpenCodeUsage(event, props);
+  if (usage) {
+    streamState.latestUsage = usage;
+    if (streamState.latestContextFillTokens === undefined && usage.total_tokens > 0) {
+      streamState.latestContextFillTokens = usage.total_tokens;
+    }
+  }
+
+  const contextWindow = extractNumberFromCandidates([
+    props,
+    props.info,
+    props.message,
+    props.part,
+    (props.info as Record<string, unknown> | undefined)?.model,
+    (props.message as Record<string, unknown> | undefined)?.model,
+  ], ['contextWindow', 'context_window', 'model_context_window', 'context_length', 'contextLength']);
+  if (contextWindow !== undefined && contextWindow > 0) {
+    streamState.latestContextWindow = contextWindow;
+  }
+
+  const contextFillTokens = extractNumberFromCandidates([
+    props,
+    props.info,
+    props.message,
+    props.part,
+  ], ['contextFillTokens', 'context_fill_tokens', 'context_tokens', 'contextTokens']);
+  if (contextFillTokens !== undefined && contextFillTokens >= 0) {
+    streamState.latestContextFillTokens = contextFillTokens;
+  }
+}
+
+function extractOpenCodeUsage(
+  event: OpenCodeSSEEvent,
+  props: Record<string, unknown>,
+): ProtocolEvent['usage'] | undefined {
+  const candidates = [
+    (event as unknown as Record<string, unknown>).usage,
+    props.usage,
+    (props.info as Record<string, unknown> | undefined)?.usage,
+    (props.message as Record<string, unknown> | undefined)?.usage,
+    (props.part as Record<string, unknown> | undefined)?.usage,
+  ];
+
+  for (const candidate of candidates) {
+    const usage = normalizeOpenCodeUsage(candidate);
+    if (usage) return usage;
+  }
+
+  return undefined;
+}
+
+function normalizeOpenCodeUsage(value: unknown): ProtocolEvent['usage'] | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const obj = value as Record<string, unknown>;
+  const input =
+    readNumericField(obj, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']) ??
+    readNumericField(obj, ['input', 'prompt']);
+  const output =
+    readNumericField(obj, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens']) ??
+    readNumericField(obj, ['output', 'completion']);
+  const total =
+    readNumericField(obj, ['total_tokens', 'totalTokens']) ??
+    ((input !== undefined || output !== undefined) ? (input ?? 0) + (output ?? 0) : undefined);
+
+  if (input === undefined && output === undefined && total === undefined) {
+    return undefined;
+  }
+
+  return {
+    input_tokens: Math.max(0, Math.trunc(input ?? 0)),
+    output_tokens: Math.max(0, Math.trunc(output ?? 0)),
+    total_tokens: Math.max(0, Math.trunc(total ?? 0)),
+  };
+}
+
+function extractNumberFromCandidates(
+  candidates: unknown[],
+  keys: string[],
+): number | undefined {
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const value = readNumericField(candidate as Record<string, unknown>, keys);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function readNumericField(obj: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return undefined;
+}
+
+function recordMessageRole(
+  props: Record<string, unknown>,
+  streamState: OpenCodeStreamState,
+): void {
+  const info = props.info as Record<string, unknown> | undefined;
+  const messageID = stringField(info?.id) ?? stringField(props.messageID);
+  if (!messageID) return;
+
+  const role = info?.role;
+  if (role === 'user') {
+    streamState.userMessageIds.add(messageID);
+    streamState.assistantMessageIds.delete(messageID);
+    return;
+  }
+
+  if (role === 'assistant') {
+    streamState.assistantMessageIds.add(messageID);
+    streamState.userMessageIds.delete(messageID);
+  }
+}
+
+function rememberPartType(
+  part: Record<string, unknown>,
+  props: Record<string, unknown>,
+  targetSessionId: string,
+  streamState: OpenCodeStreamState,
+  partType: string,
+): void {
+  const identityKey = openCodePartIdentityKey(part, props, targetSessionId);
+  streamState.partTypes.set(identityKey, partType);
+}
+
+function derivePartTextChunk(
+  part: Record<string, unknown>,
+  props: Record<string, unknown>,
+  targetSessionId: string,
+  streamState: OpenCodeStreamState,
+  partType: string,
+): string | undefined {
+  const delta = stringField(props.delta);
+  const key = openCodePartTextKey(part, props, targetSessionId, partType);
+
+  if (delta !== undefined) {
+    const fullSnapshot = stringField(part.text);
+    if (fullSnapshot !== undefined) {
+      streamState.partTextSnapshots.set(key, fullSnapshot);
+    } else {
+      streamState.partTextSnapshots.set(key, `${streamState.partTextSnapshots.get(key) ?? ''}${delta}`);
+    }
+    return delta || undefined;
+  }
+
+  const fullText = stringField(part.text);
+  if (fullText === undefined) return undefined;
+
+  const previous = streamState.partTextSnapshots.get(key);
+  streamState.partTextSnapshots.set(key, fullText);
+
+  // Empty terminal snapshots must not erase or replace streamed content.
+  if (!fullText) return undefined;
+
+  if (previous === undefined) {
+    return fullText;
+  }
+
+  if (fullText.startsWith(previous)) {
+    const suffix = fullText.slice(previous.length);
+    return suffix || undefined;
+  }
+
+  // OpenCode sends append-only text for normal assistant output. If a provider
+  // rewrites a part snapshot, the protocol has no replacement event type, so
+  // emitting the full text would duplicate visible content. Preserve the text
+  // already shown and wait for later append-only deltas/snapshots.
+  return undefined;
+}
+
+function rememberPartDelta(
+  props: Record<string, unknown>,
+  targetSessionId: string,
+  streamState: OpenCodeStreamState,
+  partType: string,
+  delta: string,
+): void {
+  const key = openCodePartTextKeyFromProps(props, targetSessionId, partType);
+  streamState.partTextSnapshots.set(key, `${streamState.partTextSnapshots.get(key) ?? ''}${delta}`);
+}
+
+function openCodePartIdentityKey(
+  part: Record<string, unknown>,
+  props: Record<string, unknown>,
+  targetSessionId: string,
+): string {
+  const sessionID = stringField(part.sessionID) ?? stringField(props.sessionID) ?? targetSessionId;
+  const messageID = stringField(part.messageID) ?? stringField(props.messageID) ?? 'unknown-message';
+  const partID = stringField(part.id) ?? stringField(props.partID) ?? 'unknown-part';
+  return `${sessionID}:${messageID}:${partID}`;
+}
+
+function openCodePartIdentityKeyFromProps(
+  props: Record<string, unknown>,
+  targetSessionId: string,
+): string {
+  const sessionID = stringField(props.sessionID) ?? targetSessionId;
+  const messageID = stringField(props.messageID) ?? 'unknown-message';
+  const partID = stringField(props.partID) ?? 'unknown-part';
+  return `${sessionID}:${messageID}:${partID}`;
+}
+
+function openCodePartTextKey(
+  part: Record<string, unknown>,
+  props: Record<string, unknown>,
+  targetSessionId: string,
+  partType: string,
+): string {
+  return `${openCodePartIdentityKey(part, props, targetSessionId)}:${partType}`;
+}
+
+function openCodePartTextKeyFromProps(
+  props: Record<string, unknown>,
+  targetSessionId: string,
+  partType: string,
+): string {
+  return `${openCodePartIdentityKeyFromProps(props, targetSessionId)}:${partType}`;
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function buildOpenCodePermissionToolArgs(props: Record<string, unknown>): Record<string, unknown> {
+  const permissionId = stringField(props.id) ?? stringField(props.requestID) ?? '';
+  const permissionType = stringField(props.type) ?? stringField(props.permission) ?? 'permission';
+  const title = stringField(props.title) ?? `OpenCode ${permissionType} permission`;
+  const patterns = normalizeOpenCodePermissionPattern(props.pattern ?? props.patterns);
+  const patternText = patterns.join(', ') || permissionType;
+  const rawCommand = `${title}${patternText ? `\n${patternText}` : ''}`;
+
+  return {
+    requestId: permissionId,
+    toolName: 'OpenCode',
+    rawCommand,
+    pattern: `OpenCodePermission(${permissionType}:${patternText})`,
+    patternDisplayName: title,
+    isDestructive: permissionType !== 'read',
+    warnings: [
+      `OpenCode is requesting ${permissionType} permission.`,
+      ...(patterns.length > 0 ? [`Requested path/pattern: ${patternText}`] : []),
+    ],
+    workspacePath: stringField((props.metadata as Record<string, unknown> | undefined)?.workspacePath) ?? '',
+    openCodePermissionType: permissionType,
+    openCodePermissionPattern: patterns,
+    openCodePermissionTitle: title,
+  };
+}
+
+function normalizeOpenCodePermissionPattern(pattern: unknown): string[] {
+  if (typeof pattern === 'string' && pattern) return [pattern];
+  if (Array.isArray(pattern)) {
+    return pattern.filter((value): value is string => typeof value === 'string' && value.length > 0);
+  }
+  return [];
+}
+
+function openCodePermissionResponseToNimbalyst(response: string): {
+  decision: 'allow' | 'deny';
+  scope: 'once' | 'session' | 'always';
+} {
+  if (response === 'reject') {
+    return { decision: 'deny', scope: 'once' };
+  }
+  if (response === 'always') {
+    return { decision: 'allow', scope: 'always' };
+  }
+  return { decision: 'allow', scope: 'once' };
 }

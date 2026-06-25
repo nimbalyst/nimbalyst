@@ -54,6 +54,8 @@ export class OpenCodeRawParser implements IRawMessageParser {
   // Latest token snapshot per assistant message ID, captured from
   // message.updated. Used to populate turn_ended on session.idle.
   private assistantTokens = new Map<string, AssistantTokenSnapshot>();
+  private partTextSnapshots = new Map<string, string>();
+  private partTypes = new Map<string, string>();
 
   async parseMessage(
     msg: RawMessage,
@@ -156,18 +158,20 @@ export class OpenCodeRawParser implements IRawMessageParser {
 
     if (!sseEvent || typeof sseEvent !== 'object') return [];
 
-    const eventType = typeof sseEvent.type === 'string' ? sseEvent.type : '';
+    if (sseEvent.type === 'nimbalyst_tool_result') {
+      return this.parseNimbalystToolResult(sseEvent as Record<string, unknown>);
+    }
+
+    const eventType = typeof sseEvent.type === 'string'
+      ? normalizeOpenCodeEventType(sseEvent.type)
+      : '';
     const props = (sseEvent.properties ?? {}) as Record<string, unknown>;
 
     switch (eventType) {
       case 'message.updated':
         return this.parseMessageUpdated(props);
       case 'message.part.updated':
-        // Text/reasoning content arrives via message.part.delta. The text
-        // payload on message.part.updated is the cumulative snapshot --
-        // emitting both would double-count. Tool parts are handled here
-        // because they don't get delta events.
-        return this.parsePartUpdatedToolOnly(msg, props, context);
+        return this.parsePartUpdated(msg, props, context);
       case 'message.part.delta':
         return this.parsePartDelta(msg, props);
       case 'file.edited':
@@ -178,6 +182,11 @@ export class OpenCodeRawParser implements IRawMessageParser {
         return this.parseSessionError(msg, props);
       case 'todo.updated':
         return this.parseTodoUpdated(msg, props);
+      case 'permission.updated':
+      case 'permission.asked':
+        return this.parsePermissionUpdated(msg, props);
+      case 'permission.replied':
+        return this.parsePermissionReplied(props);
       default:
         return [];
     }
@@ -220,7 +229,7 @@ export class OpenCodeRawParser implements IRawMessageParser {
 
   // ---- message.part.updated -------------------------------------------------
 
-  private parsePartUpdatedToolOnly(
+  private parsePartUpdated(
     msg: RawMessage,
     props: Record<string, unknown>,
     context: ParseContext,
@@ -229,6 +238,29 @@ export class OpenCodeRawParser implements IRawMessageParser {
     if (!part) return [];
 
     const partType = typeof part.type === 'string' ? part.type : '';
+    this.rememberPartType(part, props, partType);
+
+    const messageID = this.stringField(part.messageID) ?? this.stringField(props.messageID);
+    if (messageID && this.userMessageIds.has(messageID)) return [];
+
+    if (partType === 'text' || partType === 'reasoning') {
+      const content = this.derivePartTextChunk(part, props, partType);
+      if (!content) return [];
+      if (partType === 'reasoning') {
+        return [{
+          type: 'assistant_message',
+          text: '',
+          thinking: content,
+          createdAt: msg.createdAt,
+        }];
+      }
+      return [{
+        type: 'assistant_message',
+        text: content,
+        createdAt: msg.createdAt,
+      }];
+    }
+
     if (partType !== 'tool') return [];
 
     return this.parseToolPart(msg, part, context);
@@ -256,11 +288,115 @@ export class OpenCodeRawParser implements IRawMessageParser {
     // instance won't remember the assistant-role assertion from a prior batch.
     if (this.userMessageIds.has(messageID)) return [];
 
+    const identityKey = this.openCodePartIdentityKeyFromProps(props);
+    const partType = this.partTypes.get(identityKey) ?? 'text';
+    this.rememberPartDelta(props, partType, delta);
+
+    if (partType === 'reasoning') {
+      return [{
+        type: 'assistant_message',
+        text: '',
+        thinking: delta,
+        createdAt: msg.createdAt,
+      }];
+    }
+
     return [{
       type: 'assistant_message',
       text: delta,
       createdAt: msg.createdAt,
     }];
+  }
+
+  private rememberPartType(
+    part: Record<string, unknown>,
+    props: Record<string, unknown>,
+    partType: string,
+  ): void {
+    this.partTypes.set(this.openCodePartIdentityKey(part, props), partType);
+  }
+
+  private derivePartTextChunk(
+    part: Record<string, unknown>,
+    props: Record<string, unknown>,
+    partType: string,
+  ): string | undefined {
+    const delta = this.stringField(props.delta);
+    const key = this.openCodePartTextKey(part, props, partType);
+
+    if (delta !== undefined) {
+      const fullSnapshot = this.stringField(part.text);
+      if (fullSnapshot !== undefined) {
+        this.partTextSnapshots.set(key, fullSnapshot);
+      } else {
+        this.partTextSnapshots.set(key, `${this.partTextSnapshots.get(key) ?? ''}${delta}`);
+      }
+      return delta || undefined;
+    }
+
+    const fullText = this.stringField(part.text);
+    if (fullText === undefined) return undefined;
+
+    const previous = this.partTextSnapshots.get(key);
+    this.partTextSnapshots.set(key, fullText);
+
+    if (!fullText) return undefined;
+    if (previous === undefined) return fullText;
+
+    if (fullText.startsWith(previous)) {
+      const suffix = fullText.slice(previous.length);
+      return suffix || undefined;
+    }
+
+    // OpenCode normally appends assistant text. If a snapshot rewrites the
+    // part, the canonical transcript has no replacement event type, so do not
+    // emit the full snapshot and duplicate already-visible output.
+    return undefined;
+  }
+
+  private rememberPartDelta(
+    props: Record<string, unknown>,
+    partType: string,
+    delta: string,
+  ): void {
+    const key = this.openCodePartTextKeyFromProps(props, partType);
+    this.partTextSnapshots.set(key, `${this.partTextSnapshots.get(key) ?? ''}${delta}`);
+  }
+
+  private openCodePartIdentityKey(
+    part: Record<string, unknown>,
+    props: Record<string, unknown>,
+  ): string {
+    const sessionID = this.stringField(part.sessionID) ?? this.stringField(props.sessionID) ?? 'unknown-session';
+    const messageID = this.stringField(part.messageID) ?? this.stringField(props.messageID) ?? 'unknown-message';
+    const partID = this.stringField(part.id) ?? this.stringField(props.partID) ?? 'unknown-part';
+    return `${sessionID}:${messageID}:${partID}`;
+  }
+
+  private openCodePartIdentityKeyFromProps(props: Record<string, unknown>): string {
+    const sessionID = this.stringField(props.sessionID) ?? 'unknown-session';
+    const messageID = this.stringField(props.messageID) ?? 'unknown-message';
+    const partID = this.stringField(props.partID) ?? 'unknown-part';
+    return `${sessionID}:${messageID}:${partID}`;
+  }
+
+  private openCodePartTextKey(
+    part: Record<string, unknown>,
+    props: Record<string, unknown>,
+    partType: string,
+  ): string {
+    return `${this.openCodePartIdentityKey(part, props)}:${partType}`;
+  }
+
+  private openCodePartTextKeyFromProps(
+    props: Record<string, unknown>,
+    partType: string,
+  ): string {
+    return `${this.openCodePartIdentityKeyFromProps(props)}:${partType}`;
+  }
+
+  private stringField(value: unknown): string | undefined {
+    return typeof value === 'string' ? value : undefined;
   }
 
   private parseToolPart(
@@ -545,12 +681,80 @@ export class OpenCodeRawParser implements IRawMessageParser {
       createdAt: msg.createdAt,
     }];
   }
+
+  // ---- permission.updated / permission.replied ----------------------------
+  //
+  // OpenCode asks for external-directory and other permission approvals via a
+  // server-side permission stream instead of an MCP tool call. Project it into
+  // Nimbalyst's existing ToolPermission card so desktop and mobile can approve
+  // the run and replay the decision from raw transcript history.
+
+  private parsePermissionUpdated(
+    msg: RawMessage,
+    props: Record<string, unknown>,
+  ): CanonicalEventDescriptor[] {
+    const permissionId = this.stringField(props.id) ?? this.stringField(props.requestID);
+    if (!permissionId) return [];
+
+    return [{
+      type: 'tool_call_started',
+      toolName: 'ToolPermission',
+      toolDisplayName: 'Permission',
+      arguments: buildOpenCodePermissionToolArgs(props),
+      targetFilePath: null,
+      mcpServer: null,
+      mcpTool: null,
+      providerToolCallId: permissionId,
+      createdAt: msg.createdAt,
+    }];
+  }
+
+  private parsePermissionReplied(
+    props: Record<string, unknown>,
+  ): CanonicalEventDescriptor[] {
+    const permissionId = this.stringField(props.permissionID)
+      ?? this.stringField(props.requestID)
+      ?? this.stringField(props.id);
+    if (!permissionId) return [];
+
+    const response = this.stringField(props.response) ?? this.stringField(props.reply) ?? '';
+    return [{
+      type: 'tool_call_completed',
+      providerToolCallId: permissionId,
+      status: 'completed',
+      result: JSON.stringify(openCodePermissionResponseToNimbalyst(response)),
+      isError: false,
+    }];
+  }
+
+  private parseNimbalystToolResult(parsed: Record<string, unknown>): CanonicalEventDescriptor[] {
+    const toolUseId = this.stringField(parsed.tool_use_id) ?? this.stringField(parsed.id);
+    if (!toolUseId) return [];
+
+    const content = parsed.result;
+    const result = typeof content === 'string'
+      ? content
+      : content != null ? JSON.stringify(content) : '';
+    const isError = parsed.is_error === true;
+
+    return [{
+      type: 'tool_call_completed',
+      providerToolCallId: toolUseId,
+      status: isError ? 'error' : 'completed',
+      result,
+      isError,
+    }];
+  }
 }
 
 function numericField(record: Record<string, unknown> | undefined, key: string): number {
   if (!record) return 0;
   const value = record[key];
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function normalizeOpenCodeEventType(type: string): string {
+  return type.replace(/\.\d+$/, '');
 }
 
 // MCP server names registered in OpenCode by McpConfigService. We match a
@@ -581,4 +785,57 @@ function normalizeOpenCodeToolName(toolName: string): string {
   }
 
   return toolName;
+}
+
+function buildOpenCodePermissionToolArgs(props: Record<string, unknown>): Record<string, unknown> {
+  const permissionId = typeof props.id === 'string'
+    ? props.id
+    : typeof props.requestID === 'string' ? props.requestID : '';
+  const permissionType = typeof props.type === 'string'
+    ? props.type
+    : typeof props.permission === 'string' ? props.permission : 'permission';
+  const title = typeof props.title === 'string' && props.title
+    ? props.title
+    : `OpenCode ${permissionType} permission`;
+  const patterns = normalizeOpenCodePermissionPattern(props.pattern ?? props.patterns);
+  const patternText = patterns.join(', ') || permissionType;
+  const rawCommand = `${title}${patternText ? `\n${patternText}` : ''}`;
+
+  return {
+    requestId: permissionId,
+    toolName: 'OpenCode',
+    rawCommand,
+    pattern: `OpenCodePermission(${permissionType}:${patternText})`,
+    patternDisplayName: title,
+    isDestructive: permissionType !== 'read',
+    warnings: [
+      `OpenCode is requesting ${permissionType} permission.`,
+      ...(patterns.length > 0 ? [`Requested path/pattern: ${patternText}`] : []),
+    ],
+    workspacePath: '',
+    openCodePermissionType: permissionType,
+    openCodePermissionPattern: patterns,
+    openCodePermissionTitle: title,
+  };
+}
+
+function normalizeOpenCodePermissionPattern(pattern: unknown): string[] {
+  if (typeof pattern === 'string' && pattern) return [pattern];
+  if (Array.isArray(pattern)) {
+    return pattern.filter((value): value is string => typeof value === 'string' && value.length > 0);
+  }
+  return [];
+}
+
+function openCodePermissionResponseToNimbalyst(response: string): {
+  decision: 'allow' | 'deny';
+  scope: 'once' | 'session' | 'always';
+} {
+  if (response === 'reject') {
+    return { decision: 'deny', scope: 'once' };
+  }
+  if (response === 'always') {
+    return { decision: 'allow', scope: 'always' };
+  }
+  return { decision: 'allow', scope: 'once' };
 }

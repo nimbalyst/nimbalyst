@@ -22,10 +22,10 @@ export async function loadViewMessages(
   return { success: true, messages };
 }
 
-const MOBILE_TRANSCRIPT_TAIL_TEXT_LIMIT = 6000;
-const MOBILE_TRANSCRIPT_TAIL_PROGRESS_LIMIT = 400;
-const MOBILE_TRANSCRIPT_TAIL_MAX_RAW_MESSAGES = 1500;
-const MOBILE_TRANSCRIPT_HISTORY_PAGE_MAX_RAW_MESSAGES = 450;
+const MOBILE_TRANSCRIPT_TAIL_TEXT_LIMIT = 2500;
+const MOBILE_TRANSCRIPT_TAIL_PROGRESS_LIMIT = 300;
+const MOBILE_TRANSCRIPT_TAIL_MAX_RAW_MESSAGES = 2_000;
+const MOBILE_TRANSCRIPT_HISTORY_PAGE_MAX_RAW_MESSAGES = 120;
 const DESKTOP_TRANSCRIPT_HISTORY_PAGE_MAX_RAW_MESSAGES = 700;
 
 export interface MobileTranscriptHistoryPageRequest {
@@ -66,7 +66,7 @@ function agentMessageToRawMessage(message: AgentMessage): RawMessage {
 
 async function listRawMessageTail(sessionId: string, count: number): Promise<AgentMessage[]> {
   const limit = Math.max(1, Math.min(count, MOBILE_TRANSCRIPT_TAIL_MAX_RAW_MESSAGES));
-  return AgentMessagesRepository.listTail(sessionId, limit);
+  return AgentMessagesRepository.listTail(sessionId, limit, { includeHidden: true });
 }
 
 async function listRawMessagesBefore(
@@ -75,7 +75,7 @@ async function listRawMessagesBefore(
   count: number,
 ): Promise<AgentMessage[]> {
   const limit = Math.max(1, Math.min(count, MOBILE_TRANSCRIPT_HISTORY_PAGE_MAX_RAW_MESSAGES));
-  return AgentMessagesRepository.listBefore(sessionId, beforeRawMessageId, limit);
+  return AgentMessagesRepository.listBefore(sessionId, beforeRawMessageId, limit, { includeHidden: true });
 }
 
 async function listDesktopRawMessagesBefore(
@@ -84,7 +84,7 @@ async function listDesktopRawMessagesBefore(
   count: number,
 ): Promise<AgentMessage[]> {
   const limit = Math.max(1, Math.min(count, DESKTOP_TRANSCRIPT_HISTORY_PAGE_MAX_RAW_MESSAGES));
-  return AgentMessagesRepository.listBefore(sessionId, beforeRawMessageId, limit);
+  return AgentMessagesRepository.listBefore(sessionId, beforeRawMessageId, limit, { includeHidden: true });
 }
 
 function truncateMobileTailText(value: string | undefined, limit: number): string | undefined {
@@ -248,7 +248,7 @@ export async function getMobileTranscriptTailJson(
   const targetMessageCount = Math.max(1, count);
   const rawTailCount = Math.min(
     MOBILE_TRANSCRIPT_TAIL_MAX_RAW_MESSAGES,
-    Math.max(targetMessageCount * 3, 350),
+    Math.max(targetMessageCount * 4, 600),
   );
   const rawTail = await listRawMessageTail(sessionId, rawTailCount);
   const messages = (await projectRawMessagesToViewMessages(

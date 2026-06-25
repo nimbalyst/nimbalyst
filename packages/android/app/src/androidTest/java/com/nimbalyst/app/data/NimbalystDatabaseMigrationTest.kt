@@ -108,4 +108,87 @@ class NimbalystDatabaseMigrationTest {
 
         db.close()
     }
+
+    @Test
+    fun migrate3To4DeletesLegacySourceNullQueuedPrompts() {
+        val databaseName = "nimbalyst-migration-test-3-4.db"
+
+        helper.createDatabase(databaseName, 3).apply {
+            execSQL(
+                """
+                INSERT INTO projects (id, name, sessionCount, lastUpdatedAt, sortOrder)
+                VALUES ('project-1', 'Project One', 1, 1000, 0)
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO sessions (
+                    id,
+                    projectId,
+                    titleEncrypted,
+                    titleIv,
+                    titleDecrypted,
+                    isArchived,
+                    isPinned,
+                    isExecuting,
+                    hasQueuedPrompts,
+                    createdAt,
+                    updatedAt,
+                    lastSyncedSeq
+                ) VALUES (
+                    'session-1',
+                    'project-1',
+                    '',
+                    '',
+                    'Existing session',
+                    0,
+                    0,
+                    0,
+                    1,
+                    1100,
+                    1200,
+                    0
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO queued_prompts (
+                    id,
+                    sessionId,
+                    promptTextEncrypted,
+                    iv,
+                    createdAt,
+                    sentAt,
+                    promptTextDecrypted,
+                    source
+                ) VALUES (
+                    'legacy-prompt',
+                    'session-1',
+                    'ciphertext',
+                    'iv',
+                    1300,
+                    NULL,
+                    'stale prompt',
+                    NULL
+                )
+                """.trimIndent()
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(
+            databaseName,
+            4,
+            true,
+            NimbalystDatabase.MIGRATION_3_4
+        )
+
+        db.query("SELECT COUNT(*) FROM queued_prompts").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals(0, cursor.getInt(0))
+        }
+
+        db.close()
+    }
 }

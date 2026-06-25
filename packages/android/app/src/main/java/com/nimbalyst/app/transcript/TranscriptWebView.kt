@@ -222,15 +222,24 @@ private fun WebView.pushSessionPayload(
         viewMessagesJson = viewMessagesJson,
         historyPageJson = historyPageJson
     )
-    val msgCount = messages.size
-    // Log diagnostic info, then attempt to load the session
+    val payloadHash = payload.hashCode().toString()
+    // Log diagnostic info, then attempt to load the session.
     val script = """
         (function() {
             var hasNimbalyst = typeof window.nimbalyst !== 'undefined';
-            console.log('[TranscriptWebView] pushPayload: nimbalyst=' + hasNimbalyst + ' messages=$msgCount');
+            var payloadHash = ${gsonString(payloadHash)};
+            var payload = $payload;
+            var messageCount = Array.isArray(payload.messages) ? payload.messages.length : 0;
+            var viewMessageCount = Array.isArray(payload.viewMessages) ? payload.viewMessages.length : 0;
+            var historyMessageCount = payload.historyPage && Array.isArray(payload.historyPage.messages) ? payload.historyPage.messages.length : 0;
+            console.log('[TranscriptWebView] pushPayload: nimbalyst=' + hasNimbalyst + ' messages=' + messageCount + ' viewMessages=' + viewMessageCount + ' historyMessages=' + historyMessageCount);
             if (hasNimbalyst) {
+                if (window.__nimbalystLastPayloadHash === payloadHash) {
+                    return;
+                }
                 try {
-                    window.nimbalyst.loadSession($payload);
+                    window.nimbalyst.loadSession(payload);
+                    window.__nimbalystLastPayloadHash = payloadHash;
                     console.log('[TranscriptWebView] loadSession succeeded');
                 } catch(e) {
                     console.error('[TranscriptWebView] loadSession error: ' + e.message);
@@ -240,6 +249,9 @@ private fun WebView.pushSessionPayload(
     """.trimIndent()
     evaluateJavascript(script, null)
 }
+
+private fun gsonString(value: String): String =
+    com.google.gson.Gson().toJson(value)
 
 @Composable
 private fun MissingTranscriptAssets(

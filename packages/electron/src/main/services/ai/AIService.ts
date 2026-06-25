@@ -28,6 +28,7 @@ import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStat
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { resolveCodexServiceTier } from '@nimbalyst/runtime/ai/server/codexFastMode';
 import type { SessionStore } from '@nimbalyst/runtime';
 import {
   ModelIdentifier,
@@ -1230,10 +1231,26 @@ export class AIService {
               }
             }
 
-            // Create the session using the SessionManager
-            // Use mobile's provider/model selection if provided, otherwise fall back to desktop defaults
-            const resolvedProvider = (request.provider || 'claude-code') as import('@nimbalyst/runtime/ai/server/types').AIProviderType;
-            const resolvedModel = request.model || getDefaultAIModel() || 'claude-code:opus-1m';
+            // Create the session using the SessionManager. Provider-prefixed
+            // model IDs (for example opencode:sakana/fugu-ultra) are the
+            // source of truth; otherwise mobile creation can pair an OpenCode
+            // default model with the Claude provider and fail.
+            const desktopDefaultModel = getDefaultAIModel() || 'claude-code:opus-1m';
+            const requestedModel = request.model?.trim();
+            const requestedProvider = request.provider as AIProviderType | undefined;
+            const parsedRequestedModel = requestedModel ? ModelIdentifier.tryParse(requestedModel) : null;
+            const parsedDefaultModel = ModelIdentifier.tryParse(desktopDefaultModel);
+            const resolvedProvider = (
+              parsedRequestedModel?.provider ||
+              requestedProvider ||
+              parsedDefaultModel?.provider ||
+              'claude-code'
+            ) as AIProviderType;
+            const resolvedModel = requestedModel || (
+              requestedProvider && parsedDefaultModel?.provider !== requestedProvider
+                ? ModelIdentifier.getDefaultModelId(requestedProvider)
+                : desktopDefaultModel
+            );
             const resolvedSessionType = (request.sessionType || 'session') as import('@nimbalyst/runtime/ai/server/types').SessionType;
             const resolvedAgentRole = (request.agentRole || 'standard') as import('@nimbalyst/runtime/ai/server/types').AgentRole;
             const session = await this.sessionManager.createSession(
@@ -2045,6 +2062,14 @@ export class AIService {
         if (effortLevel) {
           initConfig.effortLevel = effortLevel;
         }
+        const providerSettings = this.getNormalizedProviderSettings() as any;
+        const serviceTier = resolveCodexServiceTier(
+          (session.metadata as any)?.codexFastModeEnabled,
+          providerSettings?.['openai-codex']?.fastModeEnabled
+        );
+        if (serviceTier) {
+          initConfig.serviceTier = serviceTier;
+        }
       }
 
       await providerInstance.initialize(initConfig);
@@ -2105,6 +2130,23 @@ export class AIService {
       }
 
       session.messages = await enrichTranscriptMessagesWithToolCallDiffs(session.id, session.messages);
+      const transcriptPage = session.transcriptPage;
+      if (session.id === 'c0287ccb-1d8a-4b58-9066-0b0658c73568' || transcriptPage?.isPartial || session.messages.length === 0) {
+        logger.main.info(`[AIService] ai:loadSession result ${JSON.stringify({
+          sessionId: session.id,
+          provider: session.provider,
+          messageCount: session.messages.length,
+          loadMs: Math.round(loadTime),
+          transcriptPage: transcriptPage ? {
+            isPartial: transcriptPage.isPartial,
+            hasMoreBefore: transcriptPage.hasMoreBefore,
+            rawStartId: transcriptPage.rawStartId,
+            rawEndId: transcriptPage.rawEndId,
+            rawMessageCount: transcriptPage.rawMessageCount,
+            totalRawMessageCount: transcriptPage.totalRawMessageCount,
+          } : null,
+        })}`);
+      }
 
       // Restore document context state from persisted data (if available)
       // This enables transition detection across app restarts
@@ -3041,6 +3083,7 @@ export class AIService {
       const showUsageIndicator = this.getSettingsStore().get('showUsageIndicator', true) as boolean;
       const showCodexUsageIndicator = this.getSettingsStore().get('showCodexUsageIndicator', true) as boolean;
       const showGeminiUsageIndicator = this.getSettingsStore().get('showGeminiUsageIndicator', true) as boolean;
+      const showFuguUsageIndicator = this.getSettingsStore().get('showFuguUsageIndicator', true) as boolean;
       const customClaudeCodePath = this.getSettingsStore().get('customClaudeCodePath', '') as string;
       const autoCommitEnabled = this.getSettingsStore().get('autoCommitEnabled', false) as boolean;
       const trackerAutomation = this.getSettingsStore().get('trackerAutomation', {
@@ -3065,6 +3108,7 @@ export class AIService {
         showUsageIndicator,
         showCodexUsageIndicator,
         showGeminiUsageIndicator,
+        showFuguUsageIndicator,
         customClaudeCodePath,
         autoCommitEnabled,
         trackerAutomation,
@@ -3159,6 +3203,7 @@ export class AIService {
       if (settings.showUsageIndicator !== undefined)       safeSet('ai.showUsageIndicator', settings.showUsageIndicator);
       if (settings.showCodexUsageIndicator !== undefined)  safeSet('ai.showCodexUsageIndicator', settings.showCodexUsageIndicator);
       if (settings.showGeminiUsageIndicator !== undefined) safeSet('ai.showGeminiUsageIndicator', settings.showGeminiUsageIndicator);
+      if (settings.showFuguUsageIndicator !== undefined)   safeSet('ai.showFuguUsageIndicator', settings.showFuguUsageIndicator);
 
       if (settings.trackerAutomation !== undefined && typeof settings.trackerAutomation === 'object') {
         // Merge with current for partial updates (callers may send just the

@@ -1,6 +1,7 @@
 package com.nimbalyst.app.transcript
 
 import com.google.gson.Gson
+import com.google.gson.JsonArray
 import com.google.gson.JsonParser
 import com.nimbalyst.app.data.MessageEntity
 
@@ -57,13 +58,11 @@ object TranscriptPayloadBuilder {
         )
 
         // Oversized sessions ship a pre-projected tail; pass it through as a raw
-        // JSON array so the renderer skips raw-message projection.
-        if (!viewMessagesJson.isNullOrBlank()) {
-            runCatching { JsonParser.parseString(viewMessagesJson) }
-                .getOrNull()
-                ?.takeIf { it.isJsonArray }
-                ?.let { payload["viewMessages"] = it }
-        }
+        // JSON array so the renderer skips raw-message projection. Accept the
+        // canonical array and the history-page envelope shape as a defensive
+        // fallback, since both carry already-projected view messages.
+        projectedMessagesArrayFrom(viewMessagesJson)
+            ?.let { payload["viewMessages"] = it }
 
         if (!historyPageJson.isNullOrBlank()) {
             runCatching { JsonParser.parseString(historyPageJson) }
@@ -73,5 +72,18 @@ object TranscriptPayloadBuilder {
         }
 
         return gson.toJson(payload)
+    }
+
+    private fun projectedMessagesArrayFrom(json: String?): JsonArray? {
+        if (json.isNullOrBlank()) return null
+        val parsed = runCatching { JsonParser.parseString(json) }.getOrNull() ?: return null
+        if (parsed.isJsonArray) return parsed.asJsonArray
+        if (parsed.isJsonObject) {
+            return parsed.asJsonObject
+                .get("messages")
+                ?.takeIf { it.isJsonArray }
+                ?.asJsonArray
+        }
+        return null
     }
 }

@@ -1,5 +1,6 @@
 package com.nimbalyst.app.ui
 
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -20,16 +21,21 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -55,8 +61,6 @@ import com.nimbalyst.app.ui.components.ConnectionIndicator
 import com.nimbalyst.app.utils.RelativeTimestamp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -66,6 +70,11 @@ fun ProjectListScreen(navController: NavController) {
     val syncState by app.syncManager.state.collectAsState()
     val connectedDevices by app.syncManager.connectedDevices.collectAsState()
     var isRefreshing by remember { mutableStateOf(false) }
+    var showCreateProjectDialog by remember { mutableStateOf(false) }
+    var newProjectName by remember { mutableStateOf("") }
+    var newProjectPath by remember { mutableStateOf("") }
+    var isCreatingProject by remember { mutableStateOf(false) }
+    var createProjectError by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val sortedProjects = remember(projects) {
         projects.sortedWith(
@@ -105,10 +114,114 @@ fun ProjectListScreen(navController: NavController) {
                 ConnectionIndicator(
                     syncState = syncState,
                     connectedDevices = connectedDevices,
-                    modifier = Modifier.padding(end = 16.dp)
+                    modifier = Modifier.padding(end = 8.dp)
                 )
+                IconButton(
+                    onClick = {
+                        newProjectName = ""
+                        newProjectPath = ""
+                        createProjectError = null
+                        showCreateProjectDialog = true
+                    },
+                    enabled = syncState.indexConnected && !isCreatingProject
+                ) {
+                    if (isCreatingProject) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Add, contentDescription = "New project")
+                    }
+                }
             }
         )
+
+        if (showCreateProjectDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    if (!isCreatingProject) {
+                        showCreateProjectDialog = false
+                    }
+                },
+                title = { Text("New project") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedTextField(
+                            value = newProjectName,
+                            onValueChange = {
+                                newProjectName = it
+                                createProjectError = null
+                            },
+                            label = { Text("Project name") },
+                            singleLine = true,
+                            enabled = !isCreatingProject,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = newProjectPath,
+                            onValueChange = {
+                                newProjectPath = it
+                                createProjectError = null
+                            },
+                            label = { Text("Desktop path (optional)") },
+                            placeholder = { Text("~/Nimbalyst Projects/${newProjectName.ifBlank { "My Project" }}") },
+                            singleLine = true,
+                            enabled = !isCreatingProject,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        createProjectError?.let { error ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                Text(
+                                    text = error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = newProjectName.isNotBlank() && syncState.indexConnected && !isCreatingProject,
+                        onClick = {
+                            if (isCreatingProject) return@TextButton
+                            coroutineScope.launch {
+                                isCreatingProject = true
+                                createProjectError = null
+                                try {
+                                    val result = app.syncManager.createProject(
+                                        name = newProjectName,
+                                        desktopPath = newProjectPath.takeIf { it.isNotBlank() }
+                                    )
+                                    result.onSuccess { project ->
+                                        showCreateProjectDialog = false
+                                        val encodedId = Uri.encode(project.id)
+                                        val encodedName = Uri.encode(project.name)
+                                        navController.navigate("sessions?projectId=$encodedId&name=$encodedName")
+                                    }.onFailure { error ->
+                                        createProjectError = error.message ?: "Failed to create project."
+                                    }
+                                } finally {
+                                    isCreatingProject = false
+                                }
+                            }
+                        }
+                    ) {
+                        Text("Create")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        enabled = !isCreatingProject,
+                        onClick = { showCreateProjectDialog = false }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
 
         PullToRefreshBox(
             isRefreshing = isRefreshing,
@@ -130,7 +243,7 @@ fun ProjectListScreen(navController: NavController) {
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "No projects yet. Projects will appear once synced from your desktop.",
+                        text = "No projects yet. Projects will appear once synced from your desktop, or tap + to create one.",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -169,8 +282,8 @@ fun ProjectListScreen(navController: NavController) {
                         ProjectRow(
                             project = project,
                             onClick = {
-                                val encodedId = URLEncoder.encode(project.id, StandardCharsets.UTF_8.toString())
-                                val encodedName = URLEncoder.encode(project.name, StandardCharsets.UTF_8.toString())
+                                val encodedId = Uri.encode(project.id)
+                                val encodedName = Uri.encode(project.name)
                                 navController.navigate("sessions?projectId=$encodedId&name=$encodedName")
                             }
                         )

@@ -858,6 +858,13 @@ export const sessionEffortLevelRawAtom = atomFamily((sessionId: string) =>
   })
 );
 
+export const sessionCodexFastModeRawAtom = atomFamily((sessionId: string) =>
+  atom((get) => {
+    const metadata = get(sessionStoreAtom(sessionId))?.metadata as Record<string, unknown> | undefined;
+    return metadata?.codexFastModeEnabled ?? null;
+  })
+);
+
 // ============================================================
 // Hierarchical session support (workstreams)
 // These atoms enable parent-child session relationships for grouping
@@ -1635,6 +1642,7 @@ export const loadSessionDataAtom = atom(
     const loadPromise = (async () => {
     try {
       const sessionData = await window.electronAPI.aiLoadSession(sessionId, workspacePath);
+      logTranscriptState('loadSessionDataAtom result', sessionId, sessionData);
       if (sessionData) {
         // Validate model field (for debugging)
         const model = sessionData.model;
@@ -1644,6 +1652,7 @@ export const loadSessionDataAtom = atom(
 
         // Set sessionStoreAtom - derived atoms (mode, model, archived) will automatically sync
         set(sessionStoreAtom(sessionId), sessionData);
+        logTranscriptState('loadSessionDataAtom committed', sessionId, sessionData);
 
         // Initialize draft input if session has saved draft
         if (sessionData.draftInput) {
@@ -1705,6 +1714,34 @@ export const updateSessionDataAtom = atom(
  * only the latest fetch should update the state to avoid stale data overwrites.
  */
 const pendingReloads = new Map<string, { version: number; aborted: boolean }>();
+
+function logTranscriptState(
+  event: string,
+  sessionId: string,
+  sessionData: SessionData | null | undefined,
+  extra: Record<string, unknown> = {},
+): void {
+  const page = sessionData?.transcriptPage;
+  if (!page?.isPartial && sessionId !== 'c0287ccb-1d8a-4b58-9066-0b0658c73568') {
+    return;
+  }
+
+  console.log('[sessions] ' + event + ' ' + JSON.stringify({
+    sessionId,
+    messageCount: sessionData?.messages?.length ?? 0,
+    provider: sessionData?.provider,
+    model: sessionData?.model,
+    page: page ? {
+      isPartial: page.isPartial,
+      hasMoreBefore: page.hasMoreBefore,
+      rawStartId: page.rawStartId,
+      rawEndId: page.rawEndId,
+      rawMessageCount: page.rawMessageCount,
+      totalRawMessageCount: page.totalRawMessageCount,
+    } : null,
+    ...extra,
+  }));
+}
 
 function preserveEquivalentArrayRef<T>(current: T[] | undefined, next: T[] | undefined): T[] | undefined {
   if (!current || !next) return next;
@@ -1896,6 +1933,9 @@ export const reloadSessionDataAtom = atom(
 
     try {
       const sessionData = await window.electronAPI.aiLoadSession(sessionId, workspacePath);
+      logTranscriptState('reloadSessionDataAtom result', sessionId, sessionData, {
+        version: currentVersion,
+      });
 
       // Check if this reload was superseded by a newer one
       if (thisReload.aborted) {
@@ -1913,6 +1953,11 @@ export const reloadSessionDataAtom = atom(
         if (current) {
           const dbMessages = sessionData.messages || [];
           const localMessages = current.messages || [];
+          logTranscriptState('reloadSessionDataAtom current-before-merge', sessionId, current, {
+            version: currentVersion,
+            dbMessageCount: dbMessages.length,
+            localMessageCount: localMessages.length,
+          });
 
           // Collect optimistic messages (negative IDs) that are not yet in the DB.
           // The provider can take more than a few seconds to persist the canonical
@@ -1983,6 +2028,9 @@ export const reloadSessionDataAtom = atom(
           if (!thisReload.aborted) {
             // console.log(`[TRANSCRIPT-DEBUG] reloadSessionDataAtom: setting ${sessionData.messages?.length ?? 0} messages from DB for session ${sessionId}`);
             set(sessionStoreAtom(sessionId), normalizedSessionData);
+            logTranscriptState('reloadSessionDataAtom committed', sessionId, normalizedSessionData, {
+              version: currentVersion,
+            });
             // Note: sessionModeAtom, sessionModelAtom, and sessionArchivedAtom are derived from sessionStoreAtom,
             // so they automatically stay in sync when sessionStoreAtom is updated
           }

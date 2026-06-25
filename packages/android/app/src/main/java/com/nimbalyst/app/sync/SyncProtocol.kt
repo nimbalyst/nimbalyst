@@ -99,6 +99,12 @@ data class SessionControlPayload(
     val sentBy: String = "mobile",
 )
 
+data class SessionControlBroadcast(
+    val type: String,
+    val message: SessionControlPayload,
+    val fromConnectionId: String? = null,
+)
+
 data class IndexSyncResponse(
     val type: String,
     val sessions: List<ServerSessionEntry> = emptyList(),
@@ -206,6 +212,14 @@ data class CreateSessionResponse(
     val error: String? = null,
 )
 
+data class CreateProjectResponse(
+    val requestId: String,
+    val success: Boolean,
+    val projectId: String? = null,
+    val name: String? = null,
+    val error: String? = null,
+)
+
 data class EncryptedSettingsPayload(
     val encryptedSettings: String,
     val settingsIv: String,
@@ -246,17 +260,30 @@ data class SyncedUsageCredits(
     val balance: Double? = null,
 )
 
+data class SyncedTokenUsage(
+    val inputTokens: Long? = null,
+    val outputTokens: Long? = null,
+    val totalTokens: Long? = null,
+    val sessionCount: Int? = null,
+    val lastSessionUpdatedAt: Long? = null,
+)
+
 data class SyncedProviderUsage(
     val fiveHour: SyncedUsageWindow? = null,
     val sevenDay: SyncedUsageWindow? = null,
     val sevenDayOpus: SyncedUsageWindow? = null,
     val credits: SyncedUsageCredits? = null,
+    val tokenUsage: SyncedTokenUsage? = null,
+    val limitsAvailable: Boolean? = null,
+    val accountUsageConfigured: Boolean? = null,
+    val accountUsageError: String? = null,
     val lastUpdated: Long? = null,
 )
 
 data class SyncedUsageSnapshot(
     val claude: SyncedProviderUsage? = null,
     val codex: SyncedProviderUsage? = null,
+    val fugu: SyncedProviderUsage? = null,
 )
 
 data class DevicesListMessage(

@@ -46,7 +46,9 @@ import com.nimbalyst.app.NimbalystApplication
 import com.nimbalyst.app.analytics.AnalyticsManager
 import com.nimbalyst.app.pairing.QRPairingData
 import com.nimbalyst.app.sync.SyncedProviderUsage
+import com.nimbalyst.app.sync.SyncedTokenUsage
 import com.nimbalyst.app.sync.SyncedUsageWindow
+import java.text.NumberFormat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -174,6 +176,7 @@ fun SettingsScreen(
                     )
                     usage.claude?.let { ProviderUsageBlock(name = "Claude", usage = it) }
                     usage.codex?.let { ProviderUsageBlock(name = "Codex", usage = it) }
+                    usage.fugu?.let { ProviderUsageBlock(name = "Fugu", usage = it) }
                 }
             }
         }
@@ -368,14 +371,28 @@ fun SettingsScreen(
 
 @Composable
 private fun ProviderUsageBlock(name: String, usage: SyncedProviderUsage) {
+    val limitsUnavailable = usage.limitsAvailable == false
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             text = name,
             style = MaterialTheme.typography.titleSmall
         )
-        usage.fiveHour?.let { UsageWindowRow(label = "5-hour", window = it) }
-        usage.sevenDay?.let { UsageWindowRow(label = "7-day", window = it) }
-        usage.sevenDayOpus?.let { UsageWindowRow(label = "7-day Opus", window = it) }
+        if (!limitsUnavailable) {
+            usage.fiveHour?.let { UsageWindowRow(label = "5-hour", window = it) }
+            usage.sevenDay?.let { UsageWindowRow(label = "7-day", window = it) }
+            usage.sevenDayOpus?.let { UsageWindowRow(label = "7-day Opus", window = it) }
+        } else {
+            val message = if (usage.accountUsageConfigured == true && !usage.accountUsageError.isNullOrBlank()) {
+                "Account limits unavailable: ${usage.accountUsageError}"
+            } else {
+                "Account limits unavailable; showing local token usage when available."
+            }
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         usage.credits?.let { credits ->
             val label = when {
                 credits.unlimited -> "Credits: unlimited"
@@ -391,6 +408,7 @@ private fun ProviderUsageBlock(name: String, usage: SyncedProviderUsage) {
                 )
             }
         }
+        usage.tokenUsage?.let { TokenUsageRows(it) }
         usage.lastUpdated?.let { ts ->
             Text(
                 text = "Updated ${formatAgo(ts)}",
@@ -398,6 +416,35 @@ private fun ProviderUsageBlock(name: String, usage: SyncedProviderUsage) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+@Composable
+private fun TokenUsageRows(usage: SyncedTokenUsage) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        usage.inputTokens?.let { SmallUsageRow(label = "Input tokens", value = formatTokenCount(it)) }
+        usage.outputTokens?.let { SmallUsageRow(label = "Output tokens", value = formatTokenCount(it)) }
+        usage.totalTokens?.let { SmallUsageRow(label = "Total tokens", value = formatTokenCount(it)) }
+        usage.sessionCount?.let { SmallUsageRow(label = "Sessions", value = it.toString()) }
+    }
+}
+
+@Composable
+private fun SmallUsageRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall
+        )
     }
 }
 
@@ -428,6 +475,10 @@ private fun UsageWindowRow(label: String, window: SyncedUsageWindow) {
             modifier = Modifier.fillMaxWidth()
         )
     }
+}
+
+private fun formatTokenCount(value: Long): String {
+    return NumberFormat.getIntegerInstance().format(value)
 }
 
 private fun formatResetsIn(resetsAtIso: String): String {

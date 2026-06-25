@@ -29,6 +29,48 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE sessionId = :sessionId")
     suspend fun deleteForSession(sessionId: String)
 
+    @Query(
+        """
+        DELETE FROM messages
+        WHERE sessionId = :sessionId
+          AND id LIKE 'mobile-local-%'
+          AND createdAt <= :createdBefore
+        """
+    )
+    suspend fun deleteLocalEchoesForSessionCreatedBefore(
+        sessionId: String,
+        createdBefore: Long
+    )
+
+    @Query(
+        """
+        DELETE FROM messages
+        WHERE sessionId = :sessionId
+          AND id LIKE 'mobile-local-%'
+          AND id NOT IN (:activeLocalEchoIds)
+          AND createdAt <= :createdBefore
+        """
+    )
+    suspend fun deleteLocalEchoesExceptCreatedBefore(
+        sessionId: String,
+        activeLocalEchoIds: List<String>,
+        createdBefore: Long
+    )
+
+    @Query(
+        """
+        DELETE FROM messages
+        WHERE id LIKE 'mobile-local-%'
+          AND createdAt <= :createdBefore
+          AND NOT EXISTS (
+            SELECT 1 FROM queued_prompts
+            WHERE queued_prompts.sessionId = messages.sessionId
+              AND ('mobile-local-' || queued_prompts.id) = messages.id
+          )
+        """
+    )
+    suspend fun deleteOrphanedLocalEchoesCreatedBefore(createdBefore: Long)
+
     @Upsert
     suspend fun upsertAll(messages: List<MessageEntity>)
 }

@@ -652,9 +652,18 @@ export function registerSettingsHandlers() {
 
             return { success: true, mode: 'dev' };
         } else {
-            // In production, use the standard relaunch mechanism
+            try {
+                const { setRestarting } = await import('../index');
+                setRestarting(true);
+                const { saveSessionState } = await import('../session/SessionState');
+                await saveSessionState();
+            } catch (error) {
+                logger.store.error('[app:restart] Failed to save session state before restart:', error);
+            }
+
+            // In production, use the standard relaunch mechanism and normal quit cleanup.
             app.relaunch();
-            app.exit(0);
+            app.quit();
 
             return { success: true, mode: 'production' };
         }

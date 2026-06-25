@@ -18,7 +18,7 @@ import org.json.JSONObject
         SyncStateEntity::class,
         TranscriptPageEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class NimbalystDatabase : RoomDatabase() {
@@ -40,7 +40,7 @@ abstract class NimbalystDatabase : RoomDatabase() {
                     NimbalystDatabase::class.java,
                     "nimbalyst-android.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .addCallback(object : Callback() {
                         override fun onCreate(db: SupportSQLiteDatabase) {
                             super.onCreate(db)
@@ -164,6 +164,12 @@ abstract class NimbalystDatabase : RoomDatabase() {
                     )
                     """.trimIndent()
                 )
+            }
+        }
+
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DELETE FROM queued_prompts WHERE source IS NULL")
             }
         }
 

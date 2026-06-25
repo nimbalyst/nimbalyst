@@ -54,6 +54,7 @@ interface TaskToolInput {
 
 const DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT = 5_000;
 const DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT = 350;
+const DESKTOP_EMPTY_TAIL_FALLBACK_RAW_MESSAGE_LIMIT = 2_000;
 const DESKTOP_TOKEN_USAGE_RAW_MESSAGE_LIMIT = 1_000;
 
 function agentMessageToRawMessage(message: AgentMessage): RawMessage {
@@ -94,7 +95,10 @@ async function listTailAgentMessages(
   count: number,
 ): Promise<AgentMessage[]> {
   const limit = Math.max(1, count);
-  return AgentMessagesRepository.listTail(sessionId, limit);
+  // Tail projection needs provider protocol rows too. Newer Codex/OpenCode
+  // transports store those as hidden raw rows, so filtering them out makes
+  // large-session tail loading jump back to old visible-only messages.
+  return AgentMessagesRepository.listTail(sessionId, limit, { includeHidden: true });
 }
 
 async function listAgentMessagesBefore(
@@ -103,7 +107,7 @@ async function listAgentMessagesBefore(
   count: number,
 ): Promise<AgentMessage[]> {
   const limit = Math.max(1, count);
-  return AgentMessagesRepository.listBefore(sessionId, beforeRawMessageId, limit);
+  return AgentMessagesRepository.listBefore(sessionId, beforeRawMessageId, limit, { includeHidden: true });
 }
 
 function toTimestampMillis(value: unknown): number {
@@ -1116,9 +1120,16 @@ export class SessionManager {
     const rawMessageCount = await getAgentMessageCount(sessionId);
 
     // Huge sessions cannot safely project the whole raw log on desktop open.
-    // Load a bounded raw tail directly, with page metadata so the renderer can
-    // fetch older slices on demand as the user scrolls upward.
-    const transcriptLoad = rawMessageCount > 0
+    // Load a bounded raw tail directly only past the safe full-load threshold,
+    // with page metadata so the renderer can fetch older slices on demand.
+    //
+    // Smaller sessions must use the canonical transcript path. Providers such
+    // as OpenCode intentionally store their raw SSE events as hidden rows; the
+    // canonical transformer turns those hidden raw rows into visible transcript
+    // messages. Tail-loading only non-hidden raw rows makes those sessions look
+    // blank even though the transcript data exists.
+    const shouldTailLoadTranscript = rawMessageCount > DESKTOP_FULL_TRANSCRIPT_RAW_MESSAGE_LIMIT;
+    const transcriptLoad = shouldTailLoadTranscript
       ? await this.loadRawTailTranscriptPage(sessionId, session.provider, rawMessageCount)
       : {
         messages: await this.loadCanonicalTranscript(sessionId, session.provider),
@@ -1184,16 +1195,48 @@ export class SessionManager {
     provider: string,
     totalRawMessageCount: number,
   ): Promise<{ messages: TranscriptViewMessage[]; pageInfo: TranscriptPageInfo }> {
-    const rawTail = await listTailAgentMessages(
+    let rawTail = await listTailAgentMessages(
       sessionId,
       DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT,
     );
+    let projected = await projectRawMessagesToViewMessages(rawTail.map(agentMessageToRawMessage), provider);
+
+    if (
+      rawTail.length > 0 &&
+      projected.length === 0 &&
+      totalRawMessageCount > DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT
+    ) {
+      const fallbackLimit = Math.min(
+        DESKTOP_EMPTY_TAIL_FALLBACK_RAW_MESSAGE_LIMIT,
+        totalRawMessageCount,
+      );
+      rawTail = await listTailAgentMessages(sessionId, fallbackLimit);
+      projected = await projectRawMessagesToViewMessages(rawTail.map(agentMessageToRawMessage), provider);
+      console.warn('[SessionManager] Empty projected transcript tail; retried with wider bounded tail ' + JSON.stringify({
+        sessionId,
+        provider,
+        initialRawMessageLimit: DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT,
+        fallbackRawMessageLimit: fallbackLimit,
+        fallbackRawMessageCount: rawTail.length,
+        projectedMessageCount: projected.length,
+        totalRawMessageCount,
+      }));
+    } else {
+      console.log('[SessionManager] Loaded bounded transcript tail ' + JSON.stringify({
+        sessionId,
+        provider,
+        rawMessageLimit: DESKTOP_TAIL_TRANSCRIPT_RAW_MESSAGE_LIMIT,
+        rawMessageCount: rawTail.length,
+        projectedMessageCount: projected.length,
+        totalRawMessageCount,
+      }));
+    }
+
     const rawStartId = rawTail[0]?.id != null ? Number(rawTail[0].id) : null;
     const rawEndId = rawTail[rawTail.length - 1]?.id != null ? Number(rawTail[rawTail.length - 1].id) : null;
     const hasMoreBefore = rawStartId != null
       ? (await listAgentMessagesBefore(sessionId, rawStartId, 1)).length > 0
       : false;
-    const projected = await projectRawMessagesToViewMessages(rawTail.map(agentMessageToRawMessage), provider);
 
     return {
       messages: stabilizeRawPageViewMessageIds(projected, rawStartId),

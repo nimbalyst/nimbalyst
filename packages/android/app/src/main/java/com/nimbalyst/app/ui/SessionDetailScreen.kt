@@ -54,12 +54,26 @@ import com.google.gson.JsonObject
 import com.nimbalyst.app.NimbalystApplication
 import com.nimbalyst.app.analytics.AnalyticsManager
 import com.nimbalyst.app.attachments.PendingAttachment
+import com.nimbalyst.app.data.MessageEntity
 import com.nimbalyst.app.transcript.TranscriptWebView
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val DELIVERY_TIMEOUT_MS = 10_000L
+private const val LOCAL_ECHO_DELIVERY_GRACE_MS = 30_000L
+private const val RAW_MESSAGES_BEFORE_PROJECTED_TAIL = 5_000
+
+internal fun shouldUseProjectedTranscriptTail(
+    rawMessageCount: Int,
+    transcriptTailJson: String?
+): Boolean {
+    if (transcriptTailJson.isNullOrBlank()) return false
+    return rawMessageCount == 0 || rawMessageCount > RAW_MESSAGES_BEFORE_PROJECTED_TAIL
+}
+
+private fun MessageEntity.isLocalEchoMessage(): Boolean =
+    metadataJson?.contains("\"localEcho\":true") == true
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -73,6 +87,7 @@ fun SessionDetailScreen(
     var draftPrompt by remember { mutableStateOf("") }
     var promptStatus by remember { mutableStateOf<String?>(null) }
     var isSendingPrompt by remember { mutableStateOf(false) }
+    var isCancellingSession by remember { mutableStateOf(false) }
     var pendingAttachments by remember { mutableStateOf<List<PendingAttachment>>(emptyList()) }
     // Delivery timeout state
     var deliveryWarning by remember { mutableStateOf<String?>(null) }
@@ -113,6 +128,11 @@ fun SessionDetailScreen(
     val transcriptTail = transcriptTails[sessionId]
     val transcriptHistoryPages by app.syncManager.transcriptHistoryPages.collectAsState()
     val transcriptHistoryPage = transcriptHistoryPages[sessionId]
+    val rawMessagesTooLargeForWebView = messages.size > RAW_MESSAGES_BEFORE_PROJECTED_TAIL
+    val useProjectedTranscriptTail = shouldUseProjectedTranscriptTail(
+        rawMessageCount = messages.size,
+        transcriptTailJson = transcriptTail
+    )
     // Latest page to push into the WebView, fed from both the sync flow and
     // the local page cache. The nonce forces a recomposition (and so a WebView
     // re-push) even when the same cached page is served twice, e.g. after the
@@ -127,13 +147,22 @@ fun SessionDetailScreen(
     // Sessions with neither synced messages nor projected transcript content
     // would otherwise render an empty transcript. Show a clear hint instead,
     // after a short grace period so it never flashes on load.
-    val hasNoContent = messages.isEmpty() &&
+    val hasNoContent = (messages.isEmpty() || rawMessagesTooLargeForWebView) &&
         transcriptTail.isNullOrBlank() &&
         transcriptHistoryPage.isNullOrBlank()
     var showEmptyHint by remember(sessionId) { mutableStateOf(false) }
+    var requestedInitialHistoryPage by remember(sessionId) { mutableStateOf(false) }
     LaunchedEffect(sessionId, hasNoContent) {
         showEmptyHint = false
         if (hasNoContent) {
+            if (!requestedInitialHistoryPage) {
+                requestedInitialHistoryPage = true
+                app.syncManager.requestTranscriptHistoryPage(
+                    sessionId = sessionId,
+                    beforeRawMessageId = null,
+                    count = 400
+                )
+            }
             delay(2500)
             showEmptyHint = true
         }
@@ -166,6 +195,20 @@ fun SessionDetailScreen(
     }
 
     val sessionTitle = session?.titleDecrypted ?: "Untitled session"
+    val activeQueuedPromptIds = remember(queuedPrompts) { queuedPrompts.map { it.id } }
+    val currentAgentStatusKind = session?.effectiveAgentStatusKind()
+    val currentAgentStatusLabel = session?.effectiveAgentStatusLabel()
+    val currentAgentStatusDetail = session?.effectiveAgentStatusDetail()
+    val currentIsExecuting = session?.effectiveIsExecuting() == true
+
+    LaunchedEffect(sessionId, activeQueuedPromptIds, messages.lastOrNull()?.id) {
+        val pruneBefore = System.currentTimeMillis() - LOCAL_ECHO_DELIVERY_GRACE_MS
+        app.repository.pruneLocalSubmittedPrompts(
+            sessionId = sessionId,
+            activePromptIds = activeQueuedPromptIds,
+            createdBefore = pruneBefore
+        )
+    }
 
     val submitPrompt = { promptText: String, attachments: List<PendingAttachment> ->
         coroutineScope.launch {
@@ -180,7 +223,8 @@ fun SessionDetailScreen(
             val result = app.syncManager.sendPrompt(
                 sessionId = sessionId,
                 text = promptText,
-                attachments = attachments
+                attachments = attachments,
+                recordLocalEcho = useProjectedTranscriptTail || rawMessagesTooLargeForWebView
             )
             result.onSuccess {
                 draftPrompt = ""
@@ -274,15 +318,20 @@ fun SessionDetailScreen(
                 provider = session?.provider ?: "unknown",
                 model = session?.model ?: "unknown",
                 mode = session?.mode ?: "agent",
-                isExecuting = session?.effectiveIsExecuting() == true,
-                agentStatusKind = session?.effectiveAgentStatusKind(),
-                agentStatusLabel = session?.effectiveAgentStatusLabel(),
-                agentStatusDetail = session?.effectiveAgentStatusDetail(),
-                // Oversized sessions render the projected tail; their (stale)
-                // synced raw messages are ignored by the renderer, so skip
-                // serializing them into every WebView push.
-                messages = if (transcriptTail.isNullOrBlank()) messages else emptyList(),
-                transcriptTailJson = transcriptTail,
+                isExecuting = currentIsExecuting,
+                agentStatusKind = currentAgentStatusKind,
+                agentStatusLabel = currentAgentStatusLabel,
+                agentStatusDetail = currentAgentStatusDetail,
+                // Oversized sessions render the projected tail to avoid
+                // serializing very large raw-message batches. For normal-sized
+                // sessions, prefer local raw projection so Android can recover
+                // when an older desktop build published a stale or incomplete tail.
+                messages = if (useProjectedTranscriptTail || rawMessagesTooLargeForWebView) {
+                    messages.filter { it.isLocalEchoMessage() }
+                } else {
+                    messages
+                },
+                transcriptTailJson = if (useProjectedTranscriptTail) transcriptTail else null,
                 transcriptHistoryPageJson = latestHistoryPage?.second,
                 onPromptSubmitted = { text -> submitPrompt(text, emptyList()) },
                 onInteractiveResponse = { bridgeMessage ->
@@ -503,6 +552,25 @@ fun SessionDetailScreen(
                         Text("Camera")
                     }
                     Spacer(modifier = Modifier.weight(1f))
+                    if (currentIsExecuting) {
+                        OutlinedButton(
+                            enabled = !isCancellingSession,
+                            onClick = {
+                                coroutineScope.launch {
+                                    isCancellingSession = true
+                                    val result = app.syncManager.cancelSession(sessionId)
+                                    result.onSuccess {
+                                        promptStatus = "Stop requested."
+                                    }.onFailure { error ->
+                                        promptStatus = error.message ?: "Failed to stop session."
+                                    }
+                                    isCancellingSession = false
+                                }
+                            }
+                        ) {
+                            Text(if (isCancellingSession) "Stopping..." else "Stop")
+                        }
+                    }
                     Button(
                         enabled = !isSendingPrompt && (draftPrompt.isNotBlank() || pendingAttachments.isNotEmpty()),
                         onClick = { submitPrompt(draftPrompt, pendingAttachments) }

@@ -1083,6 +1083,7 @@ export interface ProviderConfig {
   updateAvailable?: boolean;
   installStatus?: 'not-installed' | 'installing' | 'installed' | 'error';
   authMethod?: string;
+  fastModeEnabled?: boolean;
 }
 
 /**
@@ -1110,7 +1111,7 @@ const defaultProviders: Record<string, ProviderConfig> = {
   claude: { enabled: false, testStatus: 'idle' },
   'claude-code': { enabled: true, testStatus: 'idle', installStatus: 'not-installed' },
   openai: { enabled: false, testStatus: 'idle' },
-  'openai-codex': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
+  'openai-codex': { enabled: false, testStatus: 'idle', installStatus: 'not-installed', fastModeEnabled: false },
   'openai-codex-acp': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   opencode: { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   'copilot-cli': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },

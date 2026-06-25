@@ -513,6 +513,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       cwd: options.workspacePath,
       approvalPolicy: 'never', // Nimbalyst routes approvals via host bindings; we never want codex to block waiting on stdin
       ephemeral: false,
+      serviceTier: typeof options.raw?.serviceTier === 'string' ? options.raw.serviceTier : null,
       developerInstructions: systemPrompt,
       config,
       ...(additionalDirectories.length > 0

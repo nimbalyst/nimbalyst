@@ -35,6 +35,7 @@ import { timeStartupPhase } from '../utils/startupTiming';
 import { getMobileTranscriptTailJson } from '../utils/transcriptHelpers';
 import { claudeUsageService, onClaudeUsageUpdate } from './ClaudeUsageService';
 import { codexUsageService, onCodexUsageUpdate } from './CodexUsageService';
+import { fuguUsageService, onFuguUsageUpdate } from './FuguUsageService';
 
 function loadSyncModule() {
   return syncModule;
@@ -1234,7 +1235,8 @@ async function getAvailableModelsForMobile(): Promise<{ models: Array<{ id: stri
 function buildUsageSnapshotForMobile(): import('@nimbalyst/runtime/sync').SyncedUsageSnapshot | undefined {
   const claude = claudeUsageService.getCached();
   const codex = codexUsageService.getCached();
-  if (!claude && !codex) return undefined;
+  const fugu = fuguUsageService.getCached();
+  if (!claude && !codex && !fugu) return undefined;
   return {
     claude: claude ? {
       fiveHour: claude.fiveHour,
@@ -1246,7 +1248,17 @@ function buildUsageSnapshotForMobile(): import('@nimbalyst/runtime/sync').Synced
       fiveHour: codex.fiveHour,
       sevenDay: codex.sevenDay,
       credits: codex.credits,
+      limitsAvailable: codex.limitsAvailable,
       lastUpdated: codex.lastUpdated,
+    } : undefined,
+    fugu: fugu ? {
+      fiveHour: fugu.fiveHour,
+      sevenDay: fugu.sevenDay,
+      tokenUsage: fugu.tokenUsage,
+      limitsAvailable: fugu.limitsAvailable,
+      accountUsageConfigured: fugu.accountUsageConfigured,
+      accountUsageError: fugu.accountUsageError,
+      lastUpdated: fugu.lastUpdated,
     } : undefined,
   };
 }
@@ -1275,6 +1287,7 @@ export function registerUsageSettingsSync(): void {
   usageListenersRegistered = true;
   onClaudeUsageUpdate(() => scheduleUsageSettingsSync());
   onCodexUsageUpdate(() => scheduleUsageSettingsSync());
+  onFuguUsageUpdate(() => scheduleUsageSettingsSync());
 }
 
 export async function syncSettingsToMobile(openaiApiKey?: string): Promise<void> {

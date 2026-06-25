@@ -13,6 +13,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+
+private const val LOCAL_ECHO_STARTUP_PRUNE_GRACE_MS = 30_000L
 
 class NimbalystApplication : Application() {
     val applicationScope: CoroutineScope by lazy {
@@ -54,6 +57,11 @@ class NimbalystApplication : Application() {
         WebSocketClient.appVersion = runCatching {
             packageManager.getPackageInfo(packageName, 0).versionName
         }.getOrNull()
+        applicationScope.launch {
+            repository.pruneOrphanedLocalSubmittedPrompts(
+                createdBefore = System.currentTimeMillis() - LOCAL_ECHO_STARTUP_PRUNE_GRACE_MS
+            )
+        }
     }
 
     override fun onTerminate() {

@@ -546,6 +546,53 @@ interface ClientMetadata {
   mobileTranscriptHistoryPageUpdatedAt?: number;
 }
 
+const MAX_CLIENT_METADATA_JSON_CHARS = 320_000;
+const MAX_MOBILE_TRANSCRIPT_BLOB_CHARS = 280_000;
+
+function pruneClientMetadataForSync(metadata: ClientMetadata, source: string): ClientMetadata {
+  const pruned: ClientMetadata = { ...metadata };
+
+  const dropHistoryPage = (reason: string) => {
+    if (pruned.mobileTranscriptHistoryPageJson === undefined) return;
+    console.warn(`[CollabV3] Dropping mobile transcript history page from ${source}: ${reason}`);
+    delete pruned.mobileTranscriptHistoryPageJson;
+    delete pruned.mobileTranscriptHistoryPageUpdatedAt;
+  };
+
+  const dropTail = (reason: string) => {
+    if (pruned.mobileTranscriptTailJson === undefined) return;
+    console.warn(`[CollabV3] Dropping mobile transcript tail from ${source}: ${reason}`);
+    delete pruned.mobileTranscriptTailJson;
+    delete pruned.mobileTranscriptTailUpdatedAt;
+  };
+
+  if ((pruned.mobileTranscriptHistoryPageJson?.length ?? 0) > MAX_MOBILE_TRANSCRIPT_BLOB_CHARS) {
+    dropHistoryPage(`${pruned.mobileTranscriptHistoryPageJson?.length ?? 0} chars exceeds ${MAX_MOBILE_TRANSCRIPT_BLOB_CHARS}`);
+  }
+  if ((pruned.mobileTranscriptTailJson?.length ?? 0) > MAX_MOBILE_TRANSCRIPT_BLOB_CHARS) {
+    dropTail(`${pruned.mobileTranscriptTailJson?.length ?? 0} chars exceeds ${MAX_MOBILE_TRANSCRIPT_BLOB_CHARS}`);
+  }
+
+  let jsonLength = JSON.stringify(pruned).length;
+  if (jsonLength > MAX_CLIENT_METADATA_JSON_CHARS && pruned.mobileTranscriptHistoryPageJson !== undefined && pruned.mobileTranscriptTailJson !== undefined) {
+    dropTail(`combined metadata is ${jsonLength} chars; keeping requested history page`);
+    jsonLength = JSON.stringify(pruned).length;
+  }
+  if (jsonLength > MAX_CLIENT_METADATA_JSON_CHARS && pruned.mobileTranscriptHistoryPageJson !== undefined) {
+    dropHistoryPage(`metadata is ${jsonLength} chars after pruning`);
+    jsonLength = JSON.stringify(pruned).length;
+  }
+  if (jsonLength > MAX_CLIENT_METADATA_JSON_CHARS && pruned.mobileTranscriptTailJson !== undefined) {
+    dropTail(`metadata is ${jsonLength} chars after pruning`);
+    jsonLength = JSON.stringify(pruned).length;
+  }
+  if (jsonLength > MAX_CLIENT_METADATA_JSON_CHARS) {
+    console.warn(`[CollabV3] Client metadata from ${source} is still ${jsonLength} chars after pruning transcript blobs`);
+  }
+
+  return pruned;
+}
+
 /**
  * Extract ClientMetadata from raw PGLite metadata.
  * This is the single place that maps database schema -> encrypted client metadata.
@@ -587,7 +634,7 @@ function buildClientMetadataFromRaw(
   if (mobileTranscriptTailUpdatedAt !== undefined) result.mobileTranscriptTailUpdatedAt = mobileTranscriptTailUpdatedAt;
   if (hasMobileTranscriptHistoryPage) result.mobileTranscriptHistoryPageJson = mobileTranscriptHistoryPageJson;
   if (mobileTranscriptHistoryPageUpdatedAt !== undefined) result.mobileTranscriptHistoryPageUpdatedAt = mobileTranscriptHistoryPageUpdatedAt;
-  return result;
+  return pruneClientMetadataForSync(result, 'raw session metadata');
 }
 
 // Why: the lightweight `indexClientMetadataPatch` wire message added in
@@ -614,6 +661,7 @@ function isIndexClientMetadataOnlyUpdate(metadata: Partial<SyncedSessionMetadata
 // the v0.63.0 mobile-spins-forever regression; the suite in
 // `__tests__/CollabV3Sync.routing.test.ts` pins its classification.
 export { isIndexClientMetadataOnlyUpdate as isIndexClientMetadataOnlyUpdateForTest };
+export { pruneClientMetadataForSync as pruneClientMetadataForSyncForTest };
 
 const ACTIVE_AGENT_STATUS_KINDS = new Set(['thinking', 'responding', 'tool', 'editing']);
 
@@ -646,18 +694,21 @@ function buildClientMetadataFromCacheEntry(entry: Pick<
     return undefined;
   }
 
-  return {
+  const hasHistoryPage = entry.mobileTranscriptHistoryPageJson !== undefined;
+  return pruneClientMetadataForSync({
     currentContext: entry.currentContext,
     hasPendingPrompt: entry.hasPendingPrompt,
     agentStatus: entry.agentStatus,
     phase: entry.phase,
     tags: entry.tags,
     hasBeenNamed: entry.hasBeenNamed,
-    mobileTranscriptTailJson: entry.mobileTranscriptTailJson,
-    mobileTranscriptTailUpdatedAt: entry.mobileTranscriptTailUpdatedAt,
+    // History pages are one-shot responses. Do not combine them with the tail;
+    // that turns one scroll request into a large durable metadata payload.
+    mobileTranscriptTailJson: hasHistoryPage ? undefined : entry.mobileTranscriptTailJson,
+    mobileTranscriptTailUpdatedAt: hasHistoryPage ? undefined : entry.mobileTranscriptTailUpdatedAt,
     mobileTranscriptHistoryPageJson: entry.mobileTranscriptHistoryPageJson,
     mobileTranscriptHistoryPageUpdatedAt: entry.mobileTranscriptHistoryPageUpdatedAt,
-  };
+  }, 'cached session metadata');
 }
 
 /**
@@ -667,7 +718,8 @@ async function encryptClientMetadata(
   metadata: ClientMetadata,
   key: CryptoKey
 ): Promise<{ encryptedClientMetadata: string; clientMetadataIv: string }> {
-  const { encrypted, iv } = await encrypt(JSON.stringify(metadata), key);
+  const safeMetadata = pruneClientMetadataForSync(metadata, 'outgoing client metadata');
+  const { encrypted, iv } = await encrypt(JSON.stringify(safeMetadata), key);
   return { encryptedClientMetadata: encrypted, clientMetadataIv: iv };
 }
 
@@ -983,6 +1035,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   let lastJwtMismatchLogAt = 0;
   const JWT_MISMATCH_LOG_INTERVAL_MS = 60_000;
   const MOBILE_TRANSCRIPT_TAIL_COUNT = 350;
+  const MOBILE_TRANSCRIPT_TAIL_DEBOUNCE_MS = 900;
+  const mobileTranscriptTailTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   function clearIndexReady(): void {
     indexReady = false;
@@ -1109,6 +1163,23 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     } catch (err) {
       console.error('[CollabV3] Failed to publish mobile transcript tail:', err);
     }
+  }
+
+  function scheduleMobileTranscriptTailPublish(sessionId: string, updatedAtOverride?: number): void {
+    if (!isMessageSyncDisabled(sessionId)) {
+      return;
+    }
+
+    const existing = mobileTranscriptTailTimers.get(sessionId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+
+    const timer = setTimeout(() => {
+      mobileTranscriptTailTimers.delete(sessionId);
+      void publishMobileTranscriptTail(sessionId, updatedAtOverride ?? Date.now());
+    }, MOBILE_TRANSCRIPT_TAIL_DEBOUNCE_MS);
+    mobileTranscriptTailTimers.set(sessionId, timer);
   }
 
   /**
@@ -1258,6 +1329,20 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     indexEntry.encryptedQueuedPrompts = await encryptQueuedPrompts(queuedPrompts, key);
   }
 
+  function cacheSessionIndexEntry(entry: CachedSessionIndex): void {
+    if (entry.mobileTranscriptHistoryPageJson === undefined && entry.mobileTranscriptHistoryPageUpdatedAt === undefined) {
+      sessionIndexCache.set(entry.sessionId, entry);
+      return;
+    }
+
+    const durableEntry: CachedSessionIndex = {
+      ...entry,
+      mobileTranscriptHistoryPageJson: undefined,
+      mobileTranscriptHistoryPageUpdatedAt: undefined,
+    };
+    sessionIndexCache.set(entry.sessionId, durableEntry);
+  }
+
   async function sendIndexUpdate(baseEntry: CachedSessionIndex): Promise<void> {
     if (!indexWs || !config.encryptionKey) {
       console.error('[CollabV3] Cannot send session update: index socket or encryption key missing');
@@ -1302,7 +1387,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       indexEntry.clientMetadataIv = clientMetadataIv;
     }
 
-    sessionIndexCache.set(baseEntry.sessionId, baseEntry);
+    cacheSessionIndexEntry(baseEntry);
     const indexMsg: ClientMessage = { type: 'indexUpdate', session: indexEntry };
     indexWs.send(JSON.stringify(indexMsg));
   }
@@ -1326,7 +1411,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       patch.clientMetadataIv = clientMetadataIv;
     }
 
-    sessionIndexCache.set(baseEntry.sessionId, baseEntry);
+    cacheSessionIndexEntry(baseEntry);
     const patchMsg: ClientMessage = { type: 'indexClientMetadataPatch', patch };
     indexWs.send(JSON.stringify(patchMsg));
   }
@@ -3048,8 +3133,16 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     async pushChange(sessionId: string, change: SessionChange): Promise<void> {
       const session = sessions.get(sessionId);
       const sessionConnected = session?.status.connected;
+      if (change.type === 'session_deleted') {
+        const timer = mobileTranscriptTailTimers.get(sessionId);
+        if (timer) {
+          clearTimeout(timer);
+          mobileTranscriptTailTimers.delete(sessionId);
+        }
+      }
       if (isMessageSyncDisabled(sessionId) && change.type !== 'session_deleted') {
         if (change.type !== 'metadata_updated') {
+          scheduleMobileTranscriptTailPublish(sessionId, Date.now());
           return;
         }
       }
@@ -3058,7 +3151,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       // index room even without a session room connection. The session room is only opened
       // when a user enters a session to sync messages - but index metadata updates should
       // always go through as long as the index WebSocket is connected.
-      const canPushIndexOnly = change.type === 'metadata_updated' && indexWs && indexConnected && config.encryptionKey;
+      const canPushIndexOnly = (
+        (change.type === 'metadata_updated' && config.encryptionKey) ||
+        change.type === 'session_deleted'
+      ) && indexWs && indexConnected;
 
       if (!sessionConnected && !canPushIndexOnly) {
         console.warn('[CollabV3] Cannot push change - not connected:', sessionId, 'sessionExists:', !!session, 'indexConnected:', indexConnected, 'hasKey:', !!config.encryptionKey);

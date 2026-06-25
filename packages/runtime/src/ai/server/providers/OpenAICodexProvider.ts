@@ -1110,6 +1110,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
           codexConfigOverrides: this.buildCodexConfigOverrides(mcpServers),
           ...(codexEnv ? { codexEnv } : {}),
           ...(this.config?.effortLevel ? { effortLevel: this.config.effortLevel } : {}),
+          ...(this.config?.serviceTier ? { serviceTier: this.config.serviceTier } : {}),
           ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
         },
       };
@@ -1889,6 +1890,13 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       // raw agent reasoning in streamed events.
       show_raw_agent_reasoning: true,
     };
+
+    if (this.config?.serviceTier) {
+      configOverrides.service_tier = this.config.serviceTier;
+      configOverrides.features = {
+        fast_mode: true,
+      };
+    }
 
     if (Object.keys(codexMcpServers).length > 0) {
       configOverrides.mcp_servers = codexMcpServers;

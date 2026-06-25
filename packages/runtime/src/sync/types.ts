@@ -716,6 +716,22 @@ export interface SyncedUsageSnapshot {
     fiveHour: SyncedUsageWindow;
     sevenDay: SyncedUsageWindow;
     credits?: { hasCredits: boolean; unlimited: boolean; balance: number | null };
+    limitsAvailable?: boolean;
+    lastUpdated: number;
+  };
+  fugu?: {
+    fiveHour: SyncedUsageWindow;
+    sevenDay: SyncedUsageWindow;
+    tokenUsage?: {
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+      sessionCount: number;
+      lastSessionUpdatedAt: number | null;
+    };
+    limitsAvailable?: boolean;
+    accountUsageConfigured?: boolean;
+    accountUsageError?: string | null;
     lastUpdated: number;
   };
 }

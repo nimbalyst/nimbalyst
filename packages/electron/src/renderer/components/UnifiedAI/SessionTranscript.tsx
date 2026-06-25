@@ -33,6 +33,7 @@ import { useDialog } from '../../contexts/DialogContext';
 import { FileGutter } from '../AIChat/FileGutter';
 import { recordClaudeActivity } from '../../store/listeners/claudeUsageListeners';
 import { recordCodexActivity } from '../../store/listeners/codexUsageListeners';
+import { recordFuguActivity } from '../../store/listeners/fuguUsageListeners';
 import { transcriptMessageFingerprint } from '../../store/transcriptMessageFingerprint';
 import { PendingReviewBanner } from '../AIChat/PendingReviewBanner';
 import { WakeupBanner } from '../AIChat/WakeupBanner';
@@ -60,6 +61,7 @@ import {
   sessionWorktreePathAtom,
   sessionDocumentContextAtom,
   sessionEffortLevelRawAtom,
+  sessionCodexFastModeRawAtom,
   sessionLoadingAtom,
   sessionModeAtom,
   sessionModelAtom,
@@ -104,7 +106,7 @@ import {
 } from '../../store/atoms/terminals';
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
-import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom } from '../../store/atoms/appSettings';
+import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom, getProviderConfigAtom } from '../../store/atoms/appSettings';
 import { supportsEffortLevel, parseEffortLevel, type EffortLevel } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
@@ -245,6 +247,12 @@ interface Todo {
   status: 'pending' | 'in_progress' | 'completed';
   content: string;
   activeForm: string;
+}
+
+function isFuguSession(provider: string | null | undefined, model: string | null | undefined): boolean {
+  if (provider !== 'opencode') return false;
+  const normalized = (model || '').toLowerCase();
+  return normalized.includes('fugu') || normalized.includes('sakana');
 }
 
 export interface SessionTranscriptRef {
@@ -501,6 +509,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionWorktreePath = useAtomValue(sessionWorktreePathAtom(sessionId));
   const sessionDocumentContext = useAtomValue(sessionDocumentContextAtom(sessionId));
   const rawEffortLevel = useAtomValue(sessionEffortLevelRawAtom(sessionId));
+  const rawCodexFastModeEnabled = useAtomValue(sessionCodexFastModeRawAtom(sessionId));
   const loadSessionData = useSetAtom(loadSessionDataAtom);
   const reloadSessionData = useSetAtom(reloadSessionDataAtom);
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
@@ -513,6 +522,8 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionParentId = useAtomValue(sessionParentIdAtom(sessionId));
   const defaultModel = useAtomValue(defaultAgentModelAtom);
   const defaultEffortLevel = useAtomValue(defaultEffortLevelAtom);
+  const codexProviderConfigAtom = useMemo(() => getProviderConfigAtom('openai-codex'), []);
+  const codexProviderConfig = useAtomValue(codexProviderConfigAtom);
 
   const sessionData = useMemo(() => {
     if (!hasSessionData) return null;
@@ -545,6 +556,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       metadata: {
         ...safeMetadata,
         effortLevel: rawEffortLevel ?? (safeMetadata as Record<string, unknown> | undefined)?.effortLevel ?? null,
+        codexFastModeEnabled: rawCodexFastModeEnabled ?? (safeMetadata as Record<string, unknown> | undefined)?.codexFastModeEnabled ?? null,
         sessionStatus,
         currentTeammates: metadataTeammates,
         currentTodos,
@@ -560,6 +572,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     sessionDocumentContext,
     sessionWorktreePath,
     rawEffortLevel,
+    rawCodexFastModeEnabled,
     sessionStatus,
     metadataTeammates,
     currentTodos,
@@ -625,6 +638,18 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const effortLevel = useMemo(() => {
     return rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel;
   }, [rawEffortLevel, defaultEffortLevel]);
+
+  const showCodexFastMode = useMemo(() => {
+    const model = currentModel ?? '';
+    return provider === 'openai-codex' || model === 'openai-codex' || model.startsWith('openai-codex:');
+  }, [provider, currentModel]);
+
+  const codexFastModeEnabled = useMemo(() => {
+    if (typeof rawCodexFastModeEnabled === 'boolean') {
+      return rawCodexFastModeEnabled;
+    }
+    return (codexProviderConfig as { fastModeEnabled?: boolean } | undefined)?.fastModeEnabled === true;
+  }, [rawCodexFastModeEnabled, codexProviderConfig]);
 
   // Memoize the teammate list passed to AgentTranscriptPanel so its memo
   // comparison doesn't see a new array reference on every keystroke. Without
@@ -892,13 +917,19 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     if (!sessionId || !workspacePath) return;
     if (!hasSessionData) {
       loadSessionData({ sessionId, workspacePath });
+    } else if (messages.length === 0) {
+      // Session list/restore code seeds lightweight placeholder sessionStore
+      // entries with an empty message array. Do not let a running session keep
+      // that placeholder mounted forever; hydrate the real transcript even
+      // while the agent is processing.
+      reloadSessionData({ sessionId, workspacePath });
     } else if (!isProcessing) {
       // Session data exists but session is idle/completed -- reload from DB
       // to pick up any messages that arrived after the cached snapshot
       // (e.g., the user navigated away during streaming and came back after completion)
       reloadSessionData({ sessionId, workspacePath });
     }
-  }, [sessionId, workspacePath, hasSessionData, isProcessing, loadSessionData, reloadSessionData]);
+  }, [sessionId, workspacePath, hasSessionData, messages.length, isProcessing, loadSessionData, reloadSessionData]);
 
   // Ensure centralized file/pending atoms are initialized for this session in Files mode.
   useEffect(() => {
@@ -1383,6 +1414,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       if (provider === 'openai-codex') {
         void recordCodexActivity();
       }
+      if (isFuguSession(provider, currentModel)) {
+        void recordFuguActivity();
+      }
 
       await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
 
@@ -1391,6 +1425,8 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         recordClaudeActivity();
       } else if (provider === 'openai-codex') {
         void recordCodexActivity();
+      } else if (isFuguSession(provider, currentModel)) {
+        void recordFuguActivity();
       }
     } catch (error) {
       console.error('[SessionTranscript] Failed to send message:', error);
@@ -1406,7 +1442,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       });
       setIsProcessing(false);
     }
-  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity]);
+  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, currentModel, recordClaudeActivity]);
 
   // Launch a sibling session from a `launch: new-session` action prompt.
   // Builds the originating-session mention prefix here (in the renderer) so the
@@ -1644,6 +1680,16 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       previous_level: previousLevel,
     });
   }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog]);
+
+  const handleCodexFastModeChange = useCallback(async (enabled: boolean) => {
+    const previousValue = codexFastModeEnabled;
+    await updateSessionMetadataField(sessionId, 'codexFastModeEnabled', enabled, null, updateSessionStore);
+    posthog?.capture('codex_fast_mode_changed', {
+      enabled,
+      previous_enabled: previousValue,
+      scope: 'session',
+    });
+  }, [sessionId, updateSessionStore, codexFastModeEnabled, posthog]);
 
   const handleCommandSelect = useCallback((command: string) => {
     setDraftInput(command);
@@ -2697,6 +2743,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         effortLevel={effortLevel}
         onEffortLevelChange={handleEffortLevelChange}
         showEffortLevel={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showEffortLevel}
+        codexFastModeEnabled={codexFastModeEnabled}
+        onCodexFastModeChange={handleCodexFastModeChange}
+        showCodexFastMode={showCodexFastMode}
         tokenUsage={tokenUsage}
         provider={provider}
         onQueue={handleQueue}

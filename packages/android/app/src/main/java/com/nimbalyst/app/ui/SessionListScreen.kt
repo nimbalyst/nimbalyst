@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,7 +28,9 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -37,8 +40,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -62,11 +67,24 @@ import androidx.navigation.NavController
 import com.nimbalyst.app.NimbalystApplication
 import com.nimbalyst.app.analytics.AnalyticsManager
 import com.nimbalyst.app.data.SessionEntity
+import com.nimbalyst.app.sync.SyncedAvailableModel
 import com.nimbalyst.app.ui.components.ConnectionIndicator
 import com.nimbalyst.app.utils.RelativeTimestamp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Calendar
+
+internal fun nestedWorkstreamChildIds(sessions: List<SessionEntity>): Set<String> {
+    val workstreamParentIds = sessions
+        .filter { it.sessionType == "workstream" }
+        .mapTo(mutableSetOf()) { it.id }
+    if (workstreamParentIds.isEmpty()) return emptySet()
+
+    return sessions
+        .asSequence()
+        .filter { it.parentSessionId in workstreamParentIds }
+        .mapTo(mutableSetOf()) { it.id }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -80,9 +98,84 @@ fun SessionListScreen(
         .collectAsState(initial = emptyList())
     val syncState by app.syncManager.state.collectAsState()
     val connectedDevices by app.syncManager.connectedDevices.collectAsState()
+    val availableModels by app.syncManager.availableModels.collectAsState()
+    val desktopDefaultModel by app.syncManager.desktopDefaultModel.collectAsState()
     var isRefreshing by remember { mutableStateOf(false) }
-    var showCreateMenu by remember { mutableStateOf(false) }
+    var showModelPicker by remember { mutableStateOf(false) }
+    var selectedCreateModelId by remember { mutableStateOf<String?>(null) }
+    var isCreatingSession by remember { mutableStateOf(false) }
+    var createSessionError by remember { mutableStateOf<String?>(null) }
+    var sessionActionError by remember { mutableStateOf<String?>(null) }
+    var sessionPendingDelete by remember { mutableStateOf<SessionEntity?>(null) }
     val coroutineScope = rememberCoroutineScope()
+    val modelChoices = remember(availableModels) {
+        val fallbackModels = listOf(
+            SyncedAvailableModel(
+                id = "openai-codex:gpt-5.5",
+                name = "GPT 5.5",
+                provider = "openai-codex"
+            ),
+            SyncedAvailableModel(
+                id = "openai-codex:gpt-5",
+                name = "GPT 5",
+                provider = "openai-codex"
+            ),
+            SyncedAvailableModel(
+                id = "claude-code:fable",
+                name = "Claude Fable",
+                provider = "claude-code"
+            ),
+            SyncedAvailableModel(
+                id = "opencode:sakana/fugu-ultra",
+                name = "Fugu Ultra",
+                provider = "opencode"
+            )
+        )
+        (availableModels + fallbackModels)
+            .distinctBy { it.id }
+            .sortedWith(compareBy<SyncedAvailableModel> { it.provider }.thenBy { it.name })
+    }
+    val defaultCreateModelId = remember(modelChoices, desktopDefaultModel) {
+        val ids = modelChoices.map { it.id }.toSet()
+        desktopDefaultModel?.takeIf { it in ids }
+            ?: modelChoices.firstOrNull { it.id == "openai-codex:gpt-5.5" }?.id
+            ?: modelChoices.firstOrNull { it.id == "openai-codex:gpt-5" }?.id
+            ?: modelChoices.firstOrNull()?.id
+    }
+    val createSession: (SyncedAvailableModel?) -> Unit = { selectedModel ->
+        if (!isCreatingSession) {
+            coroutineScope.launch {
+                isCreatingSession = true
+                createSessionError = null
+                try {
+                    val result = app.syncManager.createSession(
+                        projectId = projectId,
+                        provider = selectedModel?.provider,
+                        model = selectedModel?.id
+                    )
+                    result.onSuccess { sessionId ->
+                        AnalyticsManager.capture("mobile_session_created")
+                        navController.navigate("sessions/$sessionId")
+                    }.onFailure { error ->
+                        createSessionError = error.message ?: "Failed to create session."
+                    }
+                } finally {
+                    isCreatingSession = false
+                }
+            }
+        }
+    }
+    val selectedCreateModel = modelChoices.firstOrNull { it.id == selectedCreateModelId }
+        ?: modelChoices.firstOrNull { it.id == defaultCreateModelId }
+    val visibleError = createSessionError ?: sessionActionError
+    val runSessionAction: (suspend () -> Result<Unit>) -> Unit = { action ->
+        coroutineScope.launch {
+            sessionActionError = null
+            action().onFailure { error ->
+                sessionActionError = error.message ?: "Session action failed."
+            }
+        }
+    }
 
     val pinnedSessions = remember(sessions) {
         sessions.filter { it.isPinned }.sortedByDescending { it.updatedAt }
@@ -117,30 +210,134 @@ fun SessionListScreen(
                     connectedDevices = connectedDevices,
                     modifier = Modifier.padding(end = 8.dp)
                 )
-                Box {
-                    IconButton(onClick = { showCreateMenu = true }) {
+                IconButton(
+                    onClick = {
+                        selectedCreateModelId = defaultCreateModelId
+                        showModelPicker = true
+                    },
+                    enabled = syncState.indexConnected && !isCreatingSession
+                ) {
+                    if (isCreatingSession) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
                         Icon(Icons.Default.Add, contentDescription = "New session")
-                    }
-                    DropdownMenu(
-                        expanded = showCreateMenu,
-                        onDismissRequest = { showCreateMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("New Session") },
-                            onClick = {
-                                showCreateMenu = false
-                                coroutineScope.launch {
-                                    val result = app.syncManager.createSession(projectId)
-                                    if (result.isSuccess) {
-                                        AnalyticsManager.capture("mobile_session_created")
-                                    }
-                                }
-                            }
-                        )
                     }
                 }
             }
         )
+
+        if (showModelPicker) {
+            AlertDialog(
+                onDismissRequest = {
+                    if (!isCreatingSession) {
+                        showModelPicker = false
+                    }
+                },
+                title = { Text("Pick a model") },
+                text = {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 420.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(modelChoices, key = { it.id }) { model ->
+                            val selected = model.id == selectedCreateModel?.id
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .clickable { selectedCreateModelId = model.id }
+                                    .padding(horizontal = 6.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                RadioButton(
+                                    selected = selected,
+                                    onClick = { selectedCreateModelId = model.id }
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = model.name.ifBlank { model.id },
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "${providerFamilyLabel(model.provider, model.id)} - ${model.id}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = selectedCreateModel != null && !isCreatingSession,
+                        onClick = {
+                            val model = selectedCreateModel ?: return@TextButton
+                            showModelPicker = false
+                            createSession(model)
+                        }
+                    ) {
+                        Text("Create")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        enabled = !isCreatingSession,
+                        onClick = { showModelPicker = false }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        sessionPendingDelete?.let { session ->
+            AlertDialog(
+                onDismissRequest = { sessionPendingDelete = null },
+                title = { Text("Delete session?") },
+                text = {
+                    Text(
+                        text = "This removes \"${session.titleDecrypted ?: "Untitled session"}\" from desktop and mobile."
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            sessionPendingDelete = null
+                            runSessionAction { app.syncManager.deleteSession(session.id) }
+                        }
+                    ) {
+                        Text("Delete")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { sessionPendingDelete = null }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        AnimatedVisibility(visible = visibleError != null) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(
+                    text = visibleError.orEmpty(),
+                    modifier = Modifier.padding(14.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+        }
 
         PullToRefreshBox(
             isRefreshing = isRefreshing,
@@ -172,12 +369,13 @@ fun SessionListScreen(
                 val workstreamParents = unpinnedSessions
                     .filter { it.sessionType == "workstream" }
                     .sortedByDescending { it.updatedAt }
+                val nestedChildIds = nestedWorkstreamChildIds(unpinnedSessions)
                 val childSessionsByParent = unpinnedSessions
-                    .filter { !it.parentSessionId.isNullOrBlank() }
+                    .filter { it.id in nestedChildIds }
                     .groupBy { it.parentSessionId!! }
                 val standaloneIds = buildSet {
                     workstreamParents.forEach { add(it.id) }
-                    unpinnedSessions.filter { !it.parentSessionId.isNullOrBlank() }.forEach { add(it.id) }
+                    addAll(nestedChildIds)
                 }
                 val standaloneSessions = unpinnedSessions.filter { it.id !in standaloneIds }
 
@@ -207,7 +405,17 @@ fun SessionListScreen(
                         items(pinnedSessions, key = { "pinned-${it.id}" }) { session ->
                             SessionRow(
                                 session = session,
-                                onClick = { navController.navigate("sessions/${session.id}") }
+                                onClick = { navController.navigate("sessions/${session.id}") },
+                                onTogglePinned = { target ->
+                                    runSessionAction { app.syncManager.setSessionPinned(target.id, !target.isPinned) }
+                                },
+                                onArchive = { target ->
+                                    runSessionAction { app.syncManager.archiveSession(target.id) }
+                                },
+                                onDelete = { target -> sessionPendingDelete = target },
+                                onCancel = { target ->
+                                    runSessionAction { app.syncManager.cancelSession(target.id) }
+                                }
                             )
                         }
                     }
@@ -227,6 +435,16 @@ fun SessionListScreen(
                                 children = childSessionsByParent[parent.id] ?: emptyList(),
                                 onSessionClick = { sessionId ->
                                     navController.navigate("sessions/$sessionId")
+                                },
+                                onTogglePinned = { target ->
+                                    runSessionAction { app.syncManager.setSessionPinned(target.id, !target.isPinned) }
+                                },
+                                onArchive = { target ->
+                                    runSessionAction { app.syncManager.archiveSession(target.id) }
+                                },
+                                onDelete = { target -> sessionPendingDelete = target },
+                                onCancel = { target ->
+                                    runSessionAction { app.syncManager.cancelSession(target.id) }
                                 }
                             )
                         }
@@ -245,7 +463,17 @@ fun SessionListScreen(
                         items(groupSessions, key = { it.id }) { session ->
                             SessionRow(
                                 session = session,
-                                onClick = { navController.navigate("sessions/${session.id}") }
+                                onClick = { navController.navigate("sessions/${session.id}") },
+                                onTogglePinned = { target ->
+                                    runSessionAction { app.syncManager.setSessionPinned(target.id, !target.isPinned) }
+                                },
+                                onArchive = { target ->
+                                    runSessionAction { app.syncManager.archiveSession(target.id) }
+                                },
+                                onDelete = { target -> sessionPendingDelete = target },
+                                onCancel = { target ->
+                                    runSessionAction { app.syncManager.cancelSession(target.id) }
+                                }
                             )
                         }
                     }
@@ -344,7 +572,11 @@ private fun SectionHeader(
 @Composable
 private fun SessionRow(
     session: SessionEntity,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onTogglePinned: (SessionEntity) -> Unit,
+    onArchive: (SessionEntity) -> Unit,
+    onDelete: (SessionEntity) -> Unit,
+    onCancel: (SessionEntity) -> Unit
 ) {
     val hasUnread = session.lastMessageAt != null &&
         (session.lastReadAt == null || session.lastMessageAt > session.lastReadAt)
@@ -441,7 +673,66 @@ private fun SessionRow(
                         strokeWidth = 2.dp
                     )
                 }
+                SessionActionsMenu(
+                    session = session,
+                    onTogglePinned = onTogglePinned,
+                    onArchive = onArchive,
+                    onDelete = onDelete,
+                    onCancel = onCancel
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun SessionActionsMenu(
+    session: SessionEntity,
+    onTogglePinned: (SessionEntity) -> Unit,
+    onArchive: (SessionEntity) -> Unit,
+    onDelete: (SessionEntity) -> Unit,
+    onCancel: (SessionEntity) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        IconButton(onClick = { expanded = true }) {
+            Icon(Icons.Default.MoreVert, contentDescription = "Session actions")
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            if (session.effectiveIsExecuting()) {
+                DropdownMenuItem(
+                    text = { Text("Interrupt") },
+                    onClick = {
+                        expanded = false
+                        onCancel(session)
+                    }
+                )
+            }
+            DropdownMenuItem(
+                text = { Text(if (session.isPinned) "Unpin" else "Pin") },
+                onClick = {
+                    expanded = false
+                    onTogglePinned(session)
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Archive") },
+                onClick = {
+                    expanded = false
+                    onArchive(session)
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Delete") },
+                onClick = {
+                    expanded = false
+                    onDelete(session)
+                }
+            )
         }
     }
 }
@@ -474,7 +765,11 @@ private fun MetaChip(
 private fun WorkstreamGroup(
     parent: SessionEntity,
     children: List<SessionEntity>,
-    onSessionClick: (String) -> Unit
+    onSessionClick: (String) -> Unit,
+    onTogglePinned: (SessionEntity) -> Unit,
+    onArchive: (SessionEntity) -> Unit,
+    onDelete: (SessionEntity) -> Unit,
+    onCancel: (SessionEntity) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
     val sortedChildren = remember(children) { children.sortedByDescending { it.updatedAt } }
@@ -531,6 +826,13 @@ private fun WorkstreamGroup(
                     imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                     contentDescription = if (expanded) "Collapse" else "Expand"
                 )
+                SessionActionsMenu(
+                    session = parent,
+                    onTogglePinned = onTogglePinned,
+                    onArchive = onArchive,
+                    onDelete = onDelete,
+                    onCancel = onCancel
+                )
             }
 
             AnimatedVisibility(visible = expanded) {
@@ -538,7 +840,11 @@ private fun WorkstreamGroup(
                     sortedChildren.forEach { child ->
                         ChildSessionRow(
                             child = child,
-                            onClick = { onSessionClick(child.id) }
+                            onClick = { onSessionClick(child.id) },
+                            onTogglePinned = onTogglePinned,
+                            onArchive = onArchive,
+                            onDelete = onDelete,
+                            onCancel = onCancel
                         )
                     }
                 }
@@ -550,7 +856,11 @@ private fun WorkstreamGroup(
 @Composable
 private fun ChildSessionRow(
     child: SessionEntity,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onTogglePinned: (SessionEntity) -> Unit,
+    onArchive: (SessionEntity) -> Unit,
+    onDelete: (SessionEntity) -> Unit,
+    onCancel: (SessionEntity) -> Unit
 ) {
     val childUnread = child.lastMessageAt != null &&
         (child.lastReadAt == null || child.lastMessageAt > child.lastReadAt)
@@ -615,6 +925,13 @@ private fun ChildSessionRow(
                     strokeWidth = 2.dp
                 )
             }
+            SessionActionsMenu(
+                session = child,
+                onTogglePinned = onTogglePinned,
+                onArchive = onArchive,
+                onDelete = onDelete,
+                onCancel = onCancel
+            )
         }
     }
 }
