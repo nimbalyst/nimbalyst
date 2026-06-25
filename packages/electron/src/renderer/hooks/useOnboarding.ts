@@ -269,25 +269,42 @@ export function useOnboarding({
       // Small delay to let other windows start up first
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      // Check if unified onboarding has been completed. Race against a 3s
-      // timeout - defense-in-depth for issue #260, where a cold-start hang
-      // would otherwise leave this hook awaiting forever and the dialog
-      // would never open. On timeout we conservatively assume "not
-      // completed" so the dialog opens and the user is unblocked. Logs the
-      // elapsed time so we can correlate against the main-side handler log.
+      // Check if unified onboarding has been completed. The onboarding:get
+      // handler reads electron-store synchronously (~0ms); when this call is
+      // slow it's because the main-process event loop is saturated at cold
+      // start (multiple windows + live sync produce multi-second IPC delays),
+      // not because the read itself is slow. A *slow* read is not a *negative*
+      // read: treating a timeout as "not completed" makes the dialog re-open
+      // for returning users every congested startup (NIM-896).
+      //
+      // So we retry the read across several short windows rather than giving
+      // up after one. The true value comes back as soon as the event loop
+      // drains. Only if every attempt times out (a genuine cold-start hang,
+      // the issue #260 case) do we fall back to showing the dialog so a true
+      // first-run user is never permanently blocked from onboarding.
+      const ATTEMPT_TIMEOUT_MS = 3000;
+      const MAX_ATTEMPTS = 5;
       const t0 = performance.now();
-      const result = await Promise.race([
-        window.electronAPI.invoke('onboarding:get').then((s) => ({ kind: 'ok' as const, state: s })),
-        new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 3000)),
-      ]);
-      const elapsed = Math.round(performance.now() - t0);
-      let state: { unifiedOnboardingCompleted?: boolean } | null;
-      if (result.kind === 'timeout') {
-        console.warn(`[useOnboarding] onboarding:get timed out after ${elapsed}ms; proceeding to show dialog`);
+      let state: { unifiedOnboardingCompleted?: boolean } | null = null;
+      let resolved = false;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const result = await Promise.race([
+          window.electronAPI.invoke('onboarding:get').then((s) => ({ kind: 'ok' as const, state: s })),
+          new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), ATTEMPT_TIMEOUT_MS)),
+        ]);
+        if (result.kind === 'ok') {
+          state = result.state;
+          resolved = true;
+          const elapsed = Math.round(performance.now() - t0);
+          console.log(`[useOnboarding] onboarding:get resolved in ${elapsed}ms after ${attempt} attempt(s) (completed=${!!result.state?.unifiedOnboardingCompleted})`);
+          break;
+        }
+        console.warn(`[useOnboarding] onboarding:get attempt ${attempt}/${MAX_ATTEMPTS} timed out (${ATTEMPT_TIMEOUT_MS}ms); retrying`);
+      }
+      if (!resolved) {
+        const elapsed = Math.round(performance.now() - t0);
+        console.warn(`[useOnboarding] onboarding:get never resolved after ${elapsed}ms; proceeding to show dialog`);
         state = null;
-      } else {
-        console.log(`[useOnboarding] onboarding:get resolved in ${elapsed}ms (completed=${!!result.state?.unifiedOnboardingCompleted})`);
-        state = result.state;
       }
 
       // Only check the new unified onboarding flag

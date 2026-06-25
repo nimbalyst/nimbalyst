@@ -13,6 +13,9 @@ import {
   resolveOwnedWorkspacePath,
   sessionEventMatchesWorkspace,
 } from '../../shared/sessionWorkspaceRouting';
+import { parseJsonObjectColumn } from '../utils/jsonColumn';
+import { setSessionPendingPrompt } from '../services/ai/pendingPromptPersistence';
+import { clearStalePendingPromptOnTerminal } from '../services/ai/pendingPromptTerminalClear';
 
 // Track if handlers are registered to prevent double registration
 let handlersRegistered = false;
@@ -55,6 +58,27 @@ async function getCanonicalWorkspacePathForSession(sessionId: string): Promise<s
   }
 }
 
+/**
+ * Read the authoritative persisted `hasPendingPrompt` bit for a session.
+ * Returns null when the row is missing or unreadable so callers can no-op
+ * instead of churning a write. Parses the metadata column with the
+ * backend-divergent helper (SQLite hands back a raw JSON string).
+ */
+async function readPersistedHasPendingPrompt(sessionId: string): Promise<boolean | null> {
+  try {
+    const { rows } = await database.query<{ metadata: unknown }>(
+      `SELECT metadata FROM ai_sessions WHERE id = $1 LIMIT 1`,
+      [sessionId]
+    );
+    if (rows.length === 0) return null;
+    const metadata = parseJsonObjectColumn(rows[0].metadata);
+    return metadata.hasPendingPrompt === true;
+  } catch (error) {
+    console.error('[SessionStateHandlers] Failed to read hasPendingPrompt:', error);
+    return null;
+  }
+}
+
 export async function registerSessionStateHandlers() {
   if (handlersRegistered) {
     console.log('[SessionStateHandlers] Handlers already registered, skipping');
@@ -68,6 +92,22 @@ export async function registerSessionStateHandlers() {
 
   // Subscribe to state changes and sync to mobile
   setupSyncSubscription(stateManager);
+
+  // NIM-871: when a turn reaches a terminal state, clear any stale persisted
+  // pending-prompt bit. An interactive prompt that was abandoned (e.g. the user
+  // submitted a new prompt instead of answering the widget) otherwise leaves
+  // `metadata.hasPendingPrompt` set, and the session-list loader re-seeds the
+  // "awaiting user input" indicator from it on every refresh — stuck forever.
+  // Single subscription (not per-window) so it fires once per transition; the
+  // read-guard inside avoids a metadata write on every prompt-free turn end.
+  stateManager.subscribe((event: SessionStateEvent) => {
+    void clearStalePendingPromptOnTerminal(event, {
+      readHasPendingPrompt: readPersistedHasPendingPrompt,
+      clearPendingPrompt: (sessionId) => setSessionPendingPrompt(sessionId, false),
+      onError: (err) =>
+        console.error('[SessionStateHandlers] Failed to clear stale pending prompt on terminal event:', err),
+    });
+  });
 
   // Get tracked session IDs (bare map membership; may include idle sessions).
   // NOT a "running" signal — see getTrackedSessionIds / NIM-846. Most callers

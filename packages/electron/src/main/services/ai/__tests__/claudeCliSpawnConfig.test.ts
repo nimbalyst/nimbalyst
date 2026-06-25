@@ -145,8 +145,9 @@ describe('buildClaudeCliSpawnConfig', () => {
     const cfg = buildClaudeCliSpawnConfig(base);
     expect(cfg.args).toContain('--append-system-prompt');
     const nudge = cfg.args[cfg.args.indexOf('--append-system-prompt') + 1] ?? '';
-    expect(nudge).toContain('mcp__nimbalyst-mcp__AskUserQuestion');
-    expect(nudge).toContain('mcp__nimbalyst-mcp__PromptForUserInput');
+    // Core interactive tools now live on the eager `nimbalyst` server (Phase 2).
+    expect(nudge).toContain('mcp__nimbalyst__AskUserQuestion');
+    expect(nudge).toContain('mcp__nimbalyst__PromptForUserInput');
   });
 
   it('nudges the model to name the session via update_session_meta on its first turn', () => {
@@ -156,7 +157,8 @@ describe('buildClaudeCliSpawnConfig', () => {
     // needs to be told to call the tool.
     const cfg = buildClaudeCliSpawnConfig(base);
     const nudge = cfg.args[cfg.args.indexOf('--append-system-prompt') + 1] ?? '';
-    expect(nudge).toContain('mcp__nimbalyst-session-naming__update_session_meta');
+    // update_session_meta folds into the eager core `nimbalyst` server (Phase 5).
+    expect(nudge).toContain('mcp__nimbalyst__update_session_meta');
   });
 
   it('keeps the disallow flag followed by a non-variadic flag so it consumes only AskUserQuestion', () => {

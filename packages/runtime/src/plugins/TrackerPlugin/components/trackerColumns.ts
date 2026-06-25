@@ -16,7 +16,7 @@ import { resolveRoleFieldName, getFieldByRole } from '../trackerRecordAccessors'
 // Types
 // ============================================================================
 
-export type ColumnRenderType = 'badge' | 'text' | 'date' | 'avatar' | 'progress' | 'tags' | 'type-icon' | 'module' | 'url';
+export type ColumnRenderType = 'badge' | 'text' | 'date' | 'avatar' | 'progress' | 'tags' | 'type-icon' | 'module' | 'url' | 'relationship';
 
 export interface TrackerColumnDef {
   /** Unique column ID -- matches the field name in the schema */
@@ -67,6 +67,7 @@ const STRUCTURAL_COLUMNS: TrackerColumnDef[] = [
  * Infer the column render type from a FieldDefinition.
  */
 function inferRenderType(field: FieldDefinition): ColumnRenderType {
+  if (field.type === 'relationship' || field.type === 'reference') return 'relationship';
   if (field.type === 'date' || field.type === 'datetime') return 'date';
   if (field.type === 'array') return 'tags';
   if (field.type === 'user') return 'avatar';

@@ -31,6 +31,7 @@ export type CollabLocalOriginResolutionStatus =
 export interface CollabLocalOriginBinding {
   orgId: string;
   documentId: string;
+  projectId: string | null;
   gitRemoteHash: string | null;
   workspacePathHash: string | null;
   relativePath: string;
@@ -74,6 +75,7 @@ export interface ReuploadLocalOriginResult {
 interface CollabLocalOriginRow {
   org_id: string;
   document_id: string;
+  project_id: string | null;
   git_remote_hash: string | null;
   workspace_path_hash: string | null;
   relative_path: string;
@@ -93,6 +95,7 @@ interface CollabLocalOriginRow {
 interface UpsertBindingInput {
   orgId: string;
   documentId: string;
+  projectId: string | null;
   gitRemoteHash: string | null;
   workspacePathHash: string | null;
   relativePath: string;
@@ -124,6 +127,7 @@ function mapBinding(row: CollabLocalOriginRow, resolvedPath: string | null): Col
   return {
     orgId: row.org_id,
     documentId: row.document_id,
+    projectId: row.project_id,
     gitRemoteHash: row.git_remote_hash,
     workspacePathHash: row.workspace_path_hash,
     relativePath: row.relative_path,
@@ -176,6 +180,7 @@ async function fetchBindingRow(orgId: string, documentId: string): Promise<Colla
       SELECT
         org_id,
         document_id,
+        project_id,
         git_remote_hash,
         workspace_path_hash,
         relative_path,
@@ -205,6 +210,7 @@ async function fetchBindingRowByRelativePath(orgId: string, relativePath: string
       SELECT
         org_id,
         document_id,
+        project_id,
         git_remote_hash,
         workspace_path_hash,
         relative_path,
@@ -236,6 +242,7 @@ async function upsertBinding(input: UpsertBindingInput): Promise<void> {
       INSERT INTO collab_local_origins (
         org_id,
         document_id,
+        project_id,
         git_remote_hash,
         workspace_path_hash,
         relative_path,
@@ -252,9 +259,10 @@ async function upsertBinding(input: UpsertBindingInput): Promise<void> {
         updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15, $16
+        $11, $12, $13, $14, $15, $16, $17
       )
       ON CONFLICT (org_id, document_id) DO UPDATE SET
+        project_id = EXCLUDED.project_id,
         git_remote_hash = EXCLUDED.git_remote_hash,
         workspace_path_hash = EXCLUDED.workspace_path_hash,
         relative_path = EXCLUDED.relative_path,
@@ -272,6 +280,7 @@ async function upsertBinding(input: UpsertBindingInput): Promise<void> {
     [
       input.orgId,
       input.documentId,
+      input.projectId,
       input.gitRemoteHash,
       input.workspacePathHash,
       input.relativePath,
@@ -527,6 +536,7 @@ export async function recordLocalOriginShare(params: {
   await upsertBinding({
     orgId: team.orgId,
     documentId: params.documentId,
+    projectId: team.teamProjectId ?? null,
     gitRemoteHash: team.gitRemoteHash ?? null,
     workspacePathHash: await computeWorkspacePathHash(params.workspacePath),
     relativePath,
@@ -590,6 +600,7 @@ export async function relinkLocalOriginBinding(params: {
   await upsertBinding({
     orgId: team.orgId,
     documentId: params.documentId,
+    projectId: team.teamProjectId ?? null,
     gitRemoteHash: team.gitRemoteHash ?? null,
     workspacePathHash: await computeWorkspacePathHash(params.workspacePath),
     relativePath,
@@ -753,6 +764,7 @@ export async function reuploadFromLocalOrigin(params: {
     await upsertBinding({
       orgId: binding.orgId,
       documentId: binding.documentId,
+      projectId: binding.projectId,
       gitRemoteHash: binding.gitRemoteHash,
       workspacePathHash: binding.workspacePathHash,
       relativePath: binding.relativePath,

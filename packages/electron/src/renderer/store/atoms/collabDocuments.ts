@@ -349,29 +349,60 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
     }
 
     store.set(workspaceHasTeamAtomFamily(workspacePath), true);
-    const { orgId, orgKeyBase64, orgKeyFingerprint, serverUrl, userId, personalOrgId } = result.config;
+    const { orgId, teamProjectId, keyCustody, orgKeyBase64, legacyOrgKeysBase64, orgKeyFingerprint, serverUrl, userId, personalOrgId } = result.config;
     store.set(teamOrgIdAtomFamily(workspacePath), orgId);
 
     const { TeamSyncProvider } = await import('@nimbalyst/runtime/sync');
 
-    const keyBytes = Uint8Array.from(atob(orgKeyBase64), c => c.charCodeAt(0));
-    const encryptionKey = await crypto.subtle.importKey(
-      'raw',
-      keyBytes,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt']
-    );
+    // Epic H2: server-managed teams sync doc-index titles as plaintext (the
+    // server encrypts at rest with the team DEK), so there is no org key to
+    // import.
+    const serverManaged = keyCustody === 'server-managed';
+    const encryptionKey = serverManaged
+      ? undefined
+      : await crypto.subtle.importKey(
+          'raw',
+          Uint8Array.from(atob(orgKeyBase64), c => c.charCodeAt(0)),
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
+
+    // NIM-906/910: in server-managed mode, import every retained legacy org-key
+    // EPOCH (current + archived) so the provider can read and self-heal
+    // PRE-MIGRATION ciphertext titles even when the org key was rotated and
+    // titles span epochs. Absent any, such titles render as locked entries,
+    // never raw base64.
+    const legacyOrgKeys: CryptoKey[] = [];
+    if (serverManaged && Array.isArray(legacyOrgKeysBase64)) {
+      for (const b64 of legacyOrgKeysBase64) {
+        if (!b64) continue;
+        legacyOrgKeys.push(
+          await crypto.subtle.importKey(
+            'raw',
+            Uint8Array.from(atob(b64), c => c.charCodeAt(0)),
+            { name: 'AES-GCM', length: 256 },
+            false,
+            ['encrypt', 'decrypt']
+          )
+        );
+      }
+    }
 
     const provider = new TeamSyncProvider({
       serverUrl,
       orgId,
+      // Epic H3 P0/A: tag doc-index registers with the resolved project so the
+      // server's project-partitioned index attributes docs to the right project.
+      teamProjectId,
       userId,
       // Announced to the TeamRoom on connect so inbox-event fanout can reach
       // this member's PersonalIndexRoom. Undefined when personal sync is not
       // yet configured locally.
       personalOrgId,
+      keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
       encryptionKey,
+      legacyOrgKeys,
       orgKeyFingerprint,
       getJwt: async () => {
         const jwtResult = await window.electronAPI.documentSync.getJwt(orgId);
@@ -428,10 +459,40 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
         );
       },
 
-      onMemberAdded: (_member) => {
+      onMemberAdded: (member) => {
         (window as any).electronAPI.team.autoWrapNewMembers(orgId).catch((err: unknown) => {
           console.error('[collabDocuments] auto-wrap after memberAdded failed:', err);
         });
+        // Epic H1: keep the local org_members projection live.
+        (window as any).electronAPI.org
+          .applyMemberUpserted(orgId, member.userId, member.email ?? null, member.role)
+          .catch((err: unknown) => {
+            console.error('[collabDocuments] applyMemberUpserted failed:', err);
+          });
+      },
+
+      onMemberRoleChanged: (userId, role) => {
+        (window as any).electronAPI.org
+          .applyMemberRoleChanged(orgId, userId, role)
+          .catch((err: unknown) => {
+            console.error('[collabDocuments] applyMemberRoleChanged failed:', err);
+          });
+      },
+
+      onMemberRemoved: (userId) => {
+        (window as any).electronAPI.org
+          .applyMemberRemoved(orgId, userId)
+          .catch((err: unknown) => {
+            console.error('[collabDocuments] applyMemberRemoved failed:', err);
+          });
+      },
+
+      onProjectAccessChanged: (projectId, userId, projectRole) => {
+        (window as any).electronAPI.org
+          .applyProjectAccess(projectId, userId, projectRole)
+          .catch((err: unknown) => {
+            console.error('[collabDocuments] applyProjectAccess failed:', err);
+          });
       },
 
       onIdentityKeyUploaded: (_userId) => {

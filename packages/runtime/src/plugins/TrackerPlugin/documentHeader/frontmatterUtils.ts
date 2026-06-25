@@ -176,6 +176,39 @@ export function detectTrackerFromFrontmatter(content: string): TrackerFrontmatte
 }
 
 /**
+ * Set or clear ONLY the `share` flag in a document's frontmatter, preserving
+ * every other key (including extension/legacy blocks like `planStatus`) exactly
+ * as-is. Unlike `updateTrackerInFrontmatter`, this does NOT migrate legacy keys
+ * to the canonical `trackerStatus` format -- so toggling team-sharing on a plan
+ * never reshuffles the plan extension's own frontmatter block.
+ *
+ * `share` is the tracker's per-item team-share flag; it sits at the top level,
+ * where the projection's field merge still surfaces it. Pass `null` to remove
+ * the key entirely (the unshare case).
+ */
+export function setShareInFrontmatter(
+  content: string,
+  share: { status: string; body: string } | null,
+): string {
+  const frontmatter = extractFrontmatter(content) || {};
+  const next: Record<string, any> = { ...frontmatter };
+  if (share) next.share = share;
+  else delete next.share;
+
+  const yamlContent = jsyaml.dump(next, {
+    indent: 2,
+    lineWidth: -1,
+    noRefs: true,
+  });
+  // `\r?\n` matches both LF and CRLF openers (nimbalyst#68).
+  const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
+  if (frontmatterRegex.test(content)) {
+    return content.replace(frontmatterRegex, `---\n${yamlContent}---\n`);
+  }
+  return `---\n${yamlContent}---\n${content}`;
+}
+
+/**
  * Update frontmatter in markdown content
  */
 export function updateFrontmatter(

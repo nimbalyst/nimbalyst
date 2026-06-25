@@ -35,6 +35,7 @@ export type {
   JSONSchema,
   JSONSchemaProperty,
   ExtensionAITool,
+  ExtensionAIToolAccess,
   AIToolContext,
   ExtensionToolResult,
   ExtensionContext,

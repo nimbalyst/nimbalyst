@@ -10,26 +10,50 @@ import path from 'path';
  * resolution of `@nimbalyst/runtime/...` (hits the stale dist/ exports map
  * instead of src). CI runs the root config; this exists so per-package runs
  * report the same results.
+ *
+ * vitest 4 removed `environmentMatchGlobs`; the jsdom-default / node-for-`src/ai`
+ * split is expressed with `test.projects` instead.
  */
+const alias = [
+  { find: '@nimbalyst/runtime', replacement: path.resolve(__dirname, './src') },
+  { find: /^@\//, replacement: `${path.resolve(__dirname, './src/editor')}/` },
+];
+
+const setupFiles = ['../../test-utils/setup.ts'];
+
 export default defineConfig({
-  plugins: [react()],
   test: {
-    globals: true,
-    environment: 'jsdom',
-    environmentMatchGlobs: [
-      ['src/ai/**/*.{test,spec}.{ts,tsx}', 'node'],
-    ],
-    setupFiles: ['../../test-utils/setup.ts'],
-    include: [
-      'src/**/__tests__/**/*.test.{ts,tsx}',
-      'src/**/__tests__/**/*.spec.{ts,tsx}',
-    ],
-    exclude: ['node_modules', 'dist'],
-  },
-  resolve: {
-    alias: [
-      { find: '@nimbalyst/runtime', replacement: path.resolve(__dirname, './src') },
-      { find: /^@\//, replacement: `${path.resolve(__dirname, './src/editor')}/` },
+    projects: [
+      {
+        plugins: [react()],
+        resolve: { alias },
+        test: {
+          name: 'jsdom',
+          globals: true,
+          environment: 'jsdom',
+          setupFiles,
+          include: [
+            'src/**/__tests__/**/*.test.{ts,tsx}',
+            'src/**/__tests__/**/*.spec.{ts,tsx}',
+          ],
+          exclude: ['node_modules', 'dist', 'src/ai/**'],
+        },
+      },
+      {
+        plugins: [react()],
+        resolve: { alias },
+        test: {
+          name: 'node',
+          globals: true,
+          environment: 'node',
+          setupFiles,
+          include: [
+            'src/ai/**/__tests__/**/*.test.{ts,tsx}',
+            'src/ai/**/__tests__/**/*.spec.{ts,tsx}',
+          ],
+          exclude: ['node_modules', 'dist'],
+        },
+      },
     ],
   },
 });

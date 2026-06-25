@@ -7,6 +7,9 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MessageDao {
+    @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY sequence ASC")
+    fun observeMessagesForSession(sessionId: String): Flow<List<MessageEntity>>
+
     @Query(
         """
         SELECT * FROM (

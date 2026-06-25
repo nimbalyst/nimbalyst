@@ -19,6 +19,7 @@ import {
   setFileSystemServiceFor,
 } from '@nimbalyst/runtime';
 import { navigationHistoryService } from '../services/NavigationHistoryService';
+import { signalFirstWindowLoaded } from '../services/startupMaintenanceGate';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { FeatureTrackingService } from '../services/analytics/FeatureTrackingService';
 import { ExtensionLogService } from '../services/ExtensionLogService';
@@ -696,6 +697,11 @@ export function createWindow(
         // When the window is ready, send initial data
         window.webContents.once('did-finish-load', () => {
             // console.log('[MAIN] did-finish-load at', new Date().toISOString(), 'elapsed:', Date.now() - startTime, 'ms');
+
+            // Mark "first usable" so deferred startup maintenance (transcript
+            // backfill, etc.) is released only after the first window has
+            // painted, never competing with the queries that load it. NIM-899.
+            signalFirstWindowLoaded();
 
             // DO NOT send theme-change here - the window already got the theme via getThemeSync()
             // Sending it again causes a flash as React re-applies the same theme

@@ -26,6 +26,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'my_tool_name',
     description: 'What this tool does - Claude reads this to decide when to use it',
+    access: { kind: 'filesystem' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -42,7 +43,7 @@ export const aiTools: ExtensionAITool[] = [
     },
     handler: async (args, context) => {
       // Implement tool logic
-      return { result: 'success' };
+      return { success: true };
     },
   },
 ];
@@ -80,8 +81,36 @@ interface AIToolContext {
 
   // Access host services such as filesystem, UI, and AI helpers
   extensionContext: ExtensionContext;
+
+  // Present only for tools that declare editor-read or editor-write access
+  editorAPI?: unknown;
 }
 ```
+
+## Tool Document Access
+
+Every tool should declare how it interacts with document state:
+
+```typescript
+type ExtensionAIToolAccess =
+  | { kind: 'filesystem' }
+  | { kind: 'editor-read' }
+  | { kind: 'editor-write' };
+```
+
+Use `filesystem` for tools that read or write latest file content through `context.extensionContext.services.filesystem`. This is the right default for compilers, analyzers, indexers, symbol lookup, CAD preview tools, and tools that can parse the file format directly. The host does not mount a hidden editor, provide `editorAPI`, or flush editor state for filesystem tools.
+
+Use `editor-read` only when the tool needs a mounted editor API but will not mutate content, such as renderer-backed screenshot/export tools or selection inspection. The host may use a visible editor or a read-only hidden editor, but it never saves afterward.
+
+Use `editor-write` for tools that intentionally mutate editor state, such as Excalidraw tools that add shapes, connect elements, or rearrange a diagram. These tools are the only tools allowed to persist editor mutations after running.
+
+`filePath` does not imply editor access. If your tool compiles/analyzes from disk, declare `access: { kind: 'filesystem' }` even if it accepts a `filePath` argument.
+
+### Safety: you cannot accidentally clobber a file
+
+The access mode is the contract you declare, but it is not what enforces safety. The host owns the only path that writes a mounted editor back to disk, and that path is conflict-aware: after an `editor-write` tool runs, the host re-reads disk and commits the editor's content **only if disk still matches what the editor loaded**. If anything changed the file out of band while the tool ran (for example the agent's own `Edit`), the host aborts the write and reloads the editor from disk instead of overwriting. A hidden editor never saves on its own; it persists only through this post-tool commit.
+
+This means a mis-declared or undeclared tool cannot silently destroy a file: the worst case for a tool that forgets `access` is a needless editor mount, never data loss. Declaring `filesystem` is still strongly preferred for disk-first tools — it avoids the mount entirely and always reads the latest content — but correctness does not depend on every author getting the declaration right.
 
 ## Example: Spreadsheet Tools
 
@@ -126,6 +155,7 @@ export const aiTools: ExtensionAITool[] = [
     name: 'csv.get_schema',
     description: 'Get the column names and row count of the current CSV file',
     scope: 'global',
+    access: { kind: 'filesystem' },
     inputSchema: {
       type: 'object',
       properties: {},
@@ -153,6 +183,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'csv.get_rows',
     description: 'Get rows from the CSV file. Returns data as objects with column names as keys.',
+    access: { kind: 'filesystem' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -199,6 +230,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'csv.add_row',
     description: 'Add a new row to the CSV file',
+    access: { kind: 'filesystem' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -269,6 +301,49 @@ Nimbalyst will:
 1. Persist the updated file content
 2. Notify the active editor through file watching
 3. Let the editor reload or reconcile its in-memory state
+
+## Editor-Read Tools
+
+```typescript
+{
+  name: 'myext.get_summary',
+  description: 'Summarize the current document. Does not modify it.',
+  scope: 'editor',
+  access: { kind: 'editor-read' },
+  inputSchema: { type: 'object', properties: {} },
+  handler: async (_args, context) => {
+    // Read from context.editorAPI without mutating content.
+  },
+}
+```
+
+`readOnly: true` is still accepted for compatibility, but new tools should use `access`. If the tool can read from disk instead of a mounted editor, prefer `filesystem`.
+
+## Editor-Write Tools
+
+Use `editor-write` when a tool intentionally changes editor state:
+
+```typescript
+{
+  name: 'diagram.add_box',
+  description: 'Add a labeled box to the current diagram.',
+  scope: 'editor',
+  access: { kind: 'editor-write' },
+  inputSchema: {
+    type: 'object',
+    properties: { label: { type: 'string' } },
+    required: ['label'],
+  },
+  handler: async (args, context) => {
+    const api = context.editorAPI as DiagramAPI | undefined;
+    if (!api) return { success: false, error: 'No diagram editor is available.' };
+    api.addBox(String(args.label));
+    return { success: true };
+  },
+}
+```
+
+Editor-write tools keep features like Excalidraw's shape/layout tools, but they are the only tools that can trigger an editor save after execution. Disk-first CAD tools such as OpenSCAD or replicad compile/inspect tools should use `filesystem`, not `editor-write`.
 
 ## Tool Naming Conventions
 
@@ -399,6 +474,7 @@ For a more complex example, here are tools for a data modeling extension:
 export const aiTools: ExtensionAITool[] = [
   {
     name: 'datamodel.get_entities',
+    access: { kind: 'filesystem' },
     description: 'List all entities (tables/models) defined in the data model',
     inputSchema: { type: 'object', properties: {} },
     handler: async (_args, context) => {
@@ -425,6 +501,7 @@ export const aiTools: ExtensionAITool[] = [
 
   {
     name: 'datamodel.get_entity',
+    access: { kind: 'filesystem' },
     description: 'Get detailed information about a specific entity',
     inputSchema: {
       type: 'object',
@@ -465,6 +542,7 @@ export const aiTools: ExtensionAITool[] = [
 
   {
     name: 'datamodel.add_field',
+    access: { kind: 'filesystem' },
     description: 'Add a new field to an entity',
     inputSchema: {
       type: 'object',

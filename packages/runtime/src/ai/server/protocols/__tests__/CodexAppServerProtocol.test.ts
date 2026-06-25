@@ -11,9 +11,10 @@ import { PassThrough } from 'node:stream';
 // IMPORTANT: mock `node:child_process` BEFORE importing the protocol so the
 // module under test picks up the stub.
 const spawnMock = vi.fn();
-vi.mock('node:child_process', () => ({
-  spawn: (...args: unknown[]) => spawnMock(...args),
-}));
+vi.mock('node:child_process', () => {
+  const spawn = (...args: unknown[]) => spawnMock(...args);
+  return { spawn, default: { spawn } };
+});
 
 // Stub binary resolution so we don't depend on @openai/codex being installed.
 vi.mock('../codexAppServer/codexAppServerBinary', () => ({

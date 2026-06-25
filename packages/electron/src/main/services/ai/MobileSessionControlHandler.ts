@@ -22,6 +22,7 @@ import {
   getMobileTranscriptHistoryPageJson,
   getMobileTranscriptTailJson,
 } from '../../utils/transcriptHelpers';
+import { getGitSubprocessEnv } from '../gitEnv';
 
 const log = logger.ai;
 const PROJECT_CONTROL_SESSION_ID = '__mobile_project__';
@@ -1077,7 +1078,7 @@ async function handleGitCommitResponse(
       workspacePath,
       response.message,
       response.files,
-      { logContext: '[GitCommit mobile]' }
+      { logContext: '[GitCommit mobile]', env: getGitSubprocessEnv() }
     );
     await emitProposalResponse(
       createGitCommitProposalResponse(commitResult, response.files, response.message)

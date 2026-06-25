@@ -21,6 +21,7 @@ interface QueuedPromptDao {
         """
         DELETE FROM queued_prompts
         WHERE sessionId = :sessionId
+          AND (source IS NOT NULL OR sentAt IS NOT NULL)
         """
     )
     suspend fun deleteRemoteForSession(sessionId: String)

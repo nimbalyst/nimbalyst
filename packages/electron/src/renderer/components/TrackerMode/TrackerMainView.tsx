@@ -18,6 +18,7 @@ import {
 } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import type { TrackerDataModel } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { KanbanBoard } from './KanbanBoard';
+import { TagBoard } from './TagBoard';
 import { TrackerItemDetail } from './TrackerItemDetail';
 import { TrackerSyncRejectionBanner } from './TrackerSyncRejectionBanner';
 import { ImportFromSourceDialog } from './ImportFromSourceDialog';
@@ -41,7 +42,7 @@ import { store } from '../../store';
 import { useFloatingMenu } from '../../hooks/useFloatingMenu';
 import { buildTrackerTagOptions, filterTrackerItemsByTags } from './trackerTagFilterUtils';
 
-export type ViewMode = 'list' | 'table' | 'kanban';
+export type ViewMode = 'list' | 'table' | 'kanban' | 'tag-board';
 
 /** Provenance key for a record: the importer provider id, or 'native'. */
 function recordSourceKey(record: TrackerRecord): string {
@@ -947,6 +948,14 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               columnConfig={columnConfig}
               onColumnConfigChange={handleColumnConfigChange}
             />
+          ) : viewMode === 'tag-board' ? (
+            <TagBoard
+              filterType={filterType}
+              searchQuery={searchQuery}
+              onItemSelect={handleItemSelect}
+              selectedItemId={selectedItemId}
+              overrideItems={filteredItems}
+            />
           ) : (
             <KanbanBoard
               filterType={filterType}
@@ -987,6 +996,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onLaunchSession={handleLaunchSession}
               onArchive={handleArchiveItem}
               onDelete={handleDeleteItem}
+              onOpenItem={handleItemSelect}
             />
           </DetailPanelResizable>
         )}

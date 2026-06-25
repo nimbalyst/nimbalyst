@@ -28,6 +28,7 @@ export type {
   TeamDocIndexBroadcastMessage,
   TeamDocIndexRemoveBroadcastMessage,
   TeamOrgKeyRotatedMessage,
+  TeamProjectAccessChangedMessage,
   TeamErrorMessage,
 } from '@nimbalyst/collab-protocol';
 
@@ -51,6 +52,15 @@ export interface TeamSyncConfig {
   /** B2B organization ID */
   orgId: string;
 
+  /**
+   * Epic H3 P0/A: the active project's tracker-room routing key. Document rooms
+   * are org-scoped (`org:{orgId}:doc:{docId}`), but the doc INDEX is now
+   * project-partitioned on the server, so each `docIndexRegister` carries this
+   * `projectId` to attribute the doc to its project. `null` (or absent) tags the
+   * doc to the org's primary project (legacy behavior).
+   */
+  teamProjectId?: string | null;
+
   /** Current user's ID */
   userId: string;
 
@@ -62,8 +72,35 @@ export interface TeamSyncConfig {
    */
   personalOrgId?: string;
 
-  /** AES-256-GCM key for encrypting/decrypting document titles (org key) */
-  encryptionKey: CryptoKey;
+  /**
+   * Epic H2 key custody. `legacy-e2e` (default): the client encrypts/decrypts
+   * doc-index titles with the org key (zero-knowledge). `server-managed`: the
+   * server holds the per-team DEK and encrypts titles at rest, so the client
+   * sends/receives PLAINTEXT titles and `encryptionKey` is unused.
+   */
+  keyCustody?: 'legacy-e2e' | 'server-managed';
+
+  /**
+   * AES-256-GCM key for encrypting/decrypting document titles (org key).
+   * Required in `legacy-e2e` mode; unused (and optional) in `server-managed`.
+   */
+  encryptionKey?: CryptoKey;
+
+  /**
+   * NIM-906/910: retained legacy org keys, used ONLY in `server-managed` mode to
+   * read PRE-MIGRATION doc-index titles. Titles registered before the team
+   * flipped to server-managed are still AES ciphertext — the TeamRoom passes
+   * them through unchanged with their original (non-empty) iv, since the server
+   * never held the zero-knowledge org key and so cannot re-key them.
+   *
+   * This is an ARRAY because the org key may have been ROTATED while the team
+   * was still legacy-e2e, so different titles can be encrypted under different
+   * org-key EPOCHS (current + archived). We try each candidate key until one
+   * decrypts; only when ALL fail do we surface the row as `decryptFailed`
+   * (locked) instead of raw base64. A client holding the right epoch can also
+   * re-register the recovered title as plaintext via `backfillLegacyTitles()`.
+   */
+  legacyOrgKeys?: CryptoKey[];
 
   /**
    * Fingerprint of the current org key (`SHA-256(rawKey).slice(0,32)`),
@@ -106,6 +143,13 @@ export interface TeamSyncConfig {
 
   /** Called when the org encryption key is rotated (fingerprint changed) */
   onOrgKeyRotated?: (fingerprint: string) => void;
+
+  /**
+   * Called when a member's project-scoped access changed (Epic H1). `projectRole`
+   * is the new role, or `null` when access was revoked. The host writes this
+   * through to the local org/project projection so `canAccess` stays live.
+   */
+  onProjectAccessChanged?: (projectId: string, userId: string, projectRole: string | null) => void;
 
   /** Called when connection status changes */
   onStatusChange?: (status: TeamSyncStatus) => void;

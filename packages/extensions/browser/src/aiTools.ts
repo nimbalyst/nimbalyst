@@ -92,6 +92,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.open_session',
     scope: 'global',
+    access: { kind: 'filesystem' } as const,
     description:
       'Open a new browser session and load a URL. By default the session is headless (agent-owned, rendered off-screen) so you can drive it without a visible tab. Returns the sessionId to use with the other browser tools.',
     inputSchema: {
@@ -137,6 +138,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.open_local_preview',
     scope: 'global',
+    access: { kind: 'filesystem' } as const,
     description:
       'Open a workspace-relative or absolute local HTML file as a live preview in a browser session (served over nim-preview:// so relative assets resolve). Headless by default. Returns the sessionId.',
     inputSchema: {
@@ -164,6 +166,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.list_sessions',
     scope: 'global',
+    access: { kind: 'filesystem' } as const,
     description: 'List the ids of all open browser sessions (both editor-backed and agent-owned).',
     inputSchema: { type: 'object', properties: {} },
     handler: async () => {
@@ -178,6 +181,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.close_session',
     scope: 'global',
+    access: { kind: 'filesystem' } as const,
     description: 'Close an agent-owned browser session and free its resources.',
     inputSchema: {
       type: 'object',
@@ -200,6 +204,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.navigate',
     scope: 'editor',
+    access: { kind: 'editor-read' } as const,
     editorFilePatterns: EDITOR_PATTERNS,
     description: 'Navigate the target browser session to a URL.',
     inputSchema: {
@@ -223,6 +228,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.reload',
     scope: 'editor',
+    access: { kind: 'editor-read' } as const,
     editorFilePatterns: EDITOR_PATTERNS,
     description: 'Reload the current page in the target browser session.',
     inputSchema: { type: 'object', properties: { ...SESSION_ID_PROP } },
@@ -238,6 +244,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.go_back',
     scope: 'editor',
+    access: { kind: 'editor-read' } as const,
     editorFilePatterns: EDITOR_PATTERNS,
     description: 'Go back one entry in the session navigation history.',
     inputSchema: { type: 'object', properties: { ...SESSION_ID_PROP } },
@@ -253,6 +260,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.go_forward',
     scope: 'editor',
+    access: { kind: 'editor-read' } as const,
     editorFilePatterns: EDITOR_PATTERNS,
     description: 'Go forward one entry in the session navigation history.',
     inputSchema: { type: 'object', properties: { ...SESSION_ID_PROP } },
@@ -268,6 +276,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.get_page_info',
     scope: 'editor',
+    access: { kind: 'editor-read' } as const,
     editorFilePatterns: EDITOR_PATTERNS,
     description:
       'Read the current page: url, title, visible text (truncated), and an indexed list of interactive elements (links, buttons, inputs). Use the returned `index` values with browser.click / browser.type.',
@@ -284,6 +293,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.click',
     scope: 'editor',
+    access: { kind: 'editor-read' } as const,
     editorFilePatterns: EDITOR_PATTERNS,
     description:
       'Click an element via a real input event. Target by CSS selector, by an index from browser.get_page_info, or by explicit x/y CSS-pixel coordinates.',
@@ -312,6 +322,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.type',
     scope: 'editor',
+    access: { kind: 'editor-read' } as const,
     editorFilePatterns: EDITOR_PATTERNS,
     description:
       'Type text into an element (real character events, safe for controlled inputs). Target by selector or index; omit both to type into the focused element. Set clear=true to empty the field first.',
@@ -342,6 +353,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.scroll',
     scope: 'editor',
+    access: { kind: 'editor-read' } as const,
     editorFilePatterns: EDITOR_PATTERNS,
     description:
       'Scroll the page by a delta (dx/dy) or scroll a selector/index element into view.',
@@ -371,6 +383,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.evaluate',
     scope: 'editor',
+    access: { kind: 'editor-read' } as const,
     editorFilePatterns: EDITOR_PATTERNS,
     description:
       'Run JavaScript in the page and return its (serializable) result. The expression is awaited, so you can return a Promise. Use for reading DOM state or driving interactions selectors can’t express.',
@@ -395,6 +408,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'browser.screenshot',
     scope: 'editor',
+    access: { kind: 'editor-read' } as const,
     editorFilePatterns: EDITOR_PATTERNS,
     description:
       'Capture a screenshot of the target browser session and save it as a PNG under the workspace. Returns the file path so you can view it.',

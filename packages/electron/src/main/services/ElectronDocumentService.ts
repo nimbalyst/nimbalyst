@@ -14,17 +14,28 @@ import {
 } from '@nimbalyst/runtime';
 import crypto from 'crypto';
 import { getCurrentIdentity } from './TrackerIdentityService';
+import { applyCommentMutation, type CommentMutation } from './tracker/commentMutations';
+import { extractItemCustomFields } from './tracker/trackerRowCustomFields';
+import {
+  getBacklinks as getRelationshipBacklinks,
+  reindexItemRelationships,
+  rebuildWorkspaceRelationshipIndex,
+} from './tracker/trackerRelationshipIndexStore';
+import { propagateInverseRelationships } from './tracker/inverseRelationshipWrites';
+import { applyRelationshipFieldWrites } from './tracker/relationshipFieldWrite';
 import { extractFrontmatter, extractCommonFields } from '../utils/frontmatterReader';
 import { VIRTUAL_DOCS, isVirtualPath } from '@nimbalyst/runtime';
 import {
   updateTrackerInFrontmatter,
   updateInlineTrackerItem,
   removeInlineTrackerItem,
+  setShareInFrontmatter,
   EXTENSION_OWNED_KEYS,
   LEGACY_KEY_TO_TYPE,
   buildFullDocumentTrackerId,
   parseFullDocumentTrackerId,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
+import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { shouldExcludeDir } from '../utils/fileFilters';
 import { getRegisteredExtensions } from '../extensions/RegisteredFileTypes';
@@ -33,8 +44,11 @@ import { syncTrackerItem, unsyncTrackerItem, isTrackerSyncActive } from './Track
 import {
   getEffectiveTrackerSyncPolicy,
   getInitialTrackerSyncStatus,
-  shouldSyncTrackerPolicy,
+  isTrackerItemShared,
+  shouldSyncTrackerItem,
 } from './TrackerPolicyService';
+import { computeFrontmatterTrackerTransition } from './tracker/frontmatterTrackerTransition';
+import { applyHeadlessBodyMarkdown } from './MainBodyDocService';
 
 export interface ParsedInlineTrackerCandidate extends Omit<TrackerItem, 'id'> {
   id?: string;
@@ -243,10 +257,19 @@ export class ElectronDocumentService implements DocumentService {
 
   // Performance limits - balance between completeness and performance
   private static readonly MAX_FILES_TO_SCAN = 2000;   // Stop adding regular files after 2000
-  private static readonly MAX_SCAN_TIME_MS = 10000;   // Stop scanning after 10 seconds (increased to allow full scan)
+  private static readonly MAX_SCAN_TIME_MS = 10000;   // Default scan budget (responsive on-demand scans)
+  // NIM-879: when a scan stops early, a background completion pass runs with this
+  // larger budget so the tracker metadata cache is never left silently incomplete
+  // (the symptom: gitignored nimbalyst-local/plans scanned after the cap = lost
+  // plans). The scan yields the event loop, so a longer budget never freezes the UI.
+  private static readonly EXTENDED_SCAN_TIME_MS = 120000;
   private static readonly MAX_DEPTH = 8;              // Maximum directory depth
 
   private isScanning = false; // Prevent concurrent scans
+  /** Whether the most recent scan stopped early (hit the time/file/depth cap). */
+  private lastScanStoppedEarly = false;
+  /** Guards against scheduling more than one background completion pass. */
+  private extendedScanScheduled = false;
 
   /**
    * Quick check if a markdown file contains tracker-relevant frontmatter
@@ -332,7 +355,10 @@ export class ElectronDocumentService implements DocumentService {
     }
   }
 
-  private async refreshDocuments() {
+  private async refreshDocuments(
+    budgetMs: number = ElectronDocumentService.MAX_SCAN_TIME_MS,
+    isExtendedPass = false,
+  ) {
     // Prevent concurrent scans
     if (this.isScanning) {
       return;
@@ -341,12 +367,7 @@ export class ElectronDocumentService implements DocumentService {
     this.isScanning = true;
     try {
       const oldDocuments = this.documents;
-      this.documents = await this.scanDocuments();
-
-      // console.log(`[DocumentService] refreshDocuments: found ${this.documents.length} documents`);
-      // if (this.documents.length > 0) {
-      //   console.log(`[DocumentService] Sample documents:`, this.documents.slice(0, 3).map(d => d.path));
-      // }
+      this.documents = await this.scanDocuments(budgetMs);
 
       // Update metadata cache
       await this.updateMetadataCache(oldDocuments, this.documents);
@@ -358,6 +379,50 @@ export class ElectronDocumentService implements DocumentService {
     } finally {
       this.isScanning = false;
     }
+
+    // NIM-879: if a default-budget scan stopped early (e.g. a slow startup under
+    // load truncated the walk before reaching gitignored nimbalyst-local/plans),
+    // run ONE background completion pass with an extended budget so the tracker
+    // metadata cache fills in and plans aren't silently lost. Never schedule from
+    // the extended pass itself (avoid an endless loop if even 120s isn't enough).
+    if (!isExtendedPass) {
+      this.scheduleExtendedScanIfNeeded();
+    }
+  }
+
+  /**
+   * Schedule a single background full re-scan (extended budget) when the last
+   * default-budget scan stopped early. Re-running with the SAME budget can't
+   * progress (the depth-first walk re-covers the same prefix), so the completion
+   * pass needs a larger budget. The scan yields the event loop, so it never
+   * freezes the UI. After it finishes, watchers + tracker consumers refresh.
+   */
+  private scheduleExtendedScanIfNeeded(): void {
+    if (!this.lastScanStoppedEarly || this.extendedScanScheduled) return;
+    this.extendedScanScheduled = true;
+    const attempt = async (triesLeft: number): Promise<void> => {
+      // Defer if another scan is in flight; retry a few times before giving up.
+      if (this.isScanning) {
+        if (triesLeft <= 0) { this.extendedScanScheduled = false; return; }
+        setTimeout(() => void attempt(triesLeft - 1), 1500);
+        return;
+      }
+      try {
+        await this.refreshDocuments(ElectronDocumentService.EXTENDED_SCAN_TIME_MS, true);
+        // Surface the now-complete tracker set so the Plans/tracker views update.
+        try {
+          const items = await this.listFullDocumentTrackerItemsFromMetadata();
+          if (items.length > 0) {
+            this.trackerItemWatchers.forEach(cb => cb({
+              added: [], updated: items, removed: [], timestamp: new Date(),
+            }));
+          }
+        } catch { /* best-effort UI refresh */ }
+      } finally {
+        this.extendedScanScheduled = false;
+      }
+    };
+    setTimeout(() => void attempt(5), 1500);
   }
 
   private hasDocumentListChanged(oldDocs: Document[], newDocs: Document[]): boolean {
@@ -467,6 +532,15 @@ export class ElectronDocumentService implements DocumentService {
             } else {
               updated.push(metadata);
             }
+
+            // Capture full-document tracker status transitions from a DIRECT
+            // in-session frontmatter edit (the normal way a plan/decision moves
+            // through the system). Gated on `oldDoc` so it never runs during the
+            // cold-open bulk scan -- avoiding the NIM-875 per-file upsert storm.
+            // Non-tracker frontmatter short-circuits before any DB query.
+            if (oldDoc && data) {
+              await this.captureFrontmatterTrackerTransition(newDoc.path, data);
+            }
           } else {
             // Frontmatter didn't change, but file mtime did - update mtime in cache
             this.fileStateCache.set(newDoc.path, {
@@ -507,7 +581,7 @@ export class ElectronDocumentService implements DocumentService {
     dirPath: string,
     basePath: string = '',
     depth: number = 0,
-    scanState: { count: number; trackerCount: number; startTime: number; stopped: boolean; sinceYield: number }
+    scanState: { count: number; trackerCount: number; startTime: number; stopped: boolean; sinceYield: number; budgetMs: number }
   ): Promise<Document[]> {
     const documents: Document[] = [];
 
@@ -517,7 +591,7 @@ export class ElectronDocumentService implements DocumentService {
     }
 
     const elapsed = Date.now() - scanState.startTime;
-    if (elapsed > ElectronDocumentService.MAX_SCAN_TIME_MS) {
+    if (elapsed > scanState.budgetMs) {
       scanState.stopped = true;
       return documents;
     }
@@ -569,7 +643,7 @@ export class ElectronDocumentService implements DocumentService {
 
       for (const item of items) {
         // Check time limit on EVERY iteration to bail out quickly
-        if (Date.now() - scanState.startTime > ElectronDocumentService.MAX_SCAN_TIME_MS) {
+        if (Date.now() - scanState.startTime > scanState.budgetMs) {
           scanState.stopped = true;
           break;
         }
@@ -658,18 +732,22 @@ export class ElectronDocumentService implements DocumentService {
     return documents;
   }
 
-  private async scanDocuments(): Promise<Document[]> {
+  private async scanDocuments(budgetMs: number = ElectronDocumentService.MAX_SCAN_TIME_MS): Promise<Document[]> {
     try {
-      const scanState = { count: 0, trackerCount: 0, startTime: Date.now(), stopped: false, sinceYield: 0 };
+      const scanState = { count: 0, trackerCount: 0, startTime: Date.now(), stopped: false, sinceYield: 0, budgetMs };
       const docs = await this.scanDirectoryAsync(this.workspacePath, '', 0, scanState);
+
+      // Record whether this scan was truncated so the caller can schedule a
+      // background completion pass (NIM-879).
+      this.lastScanStoppedEarly = scanState.stopped;
 
       // Log info about scan results
       const elapsed = Date.now() - scanState.startTime;
       if (scanState.stopped) {
         console.warn(
           `[DocumentService] Scan stopped early: scanned ${scanState.count} files in ${elapsed}ms. ` +
-          `Time limit: ${ElectronDocumentService.MAX_SCAN_TIME_MS}ms, depth limit: ${ElectronDocumentService.MAX_DEPTH}. ` +
-          `Some files may not appear in @ mentions.`
+          `Time budget: ${budgetMs}ms, depth limit: ${ElectronDocumentService.MAX_DEPTH}. ` +
+          `A background completion pass will run; some files may be temporarily missing.`
         );
       } else if (scanState.trackerCount > 0) {
         // console.log(
@@ -1009,7 +1087,6 @@ export class ElectronDocumentService implements DocumentService {
   private async listFullDocumentTrackerItemsFromMetadata(): Promise<TrackerItem[]> {
     this.startScanIfNeeded();
 
-    const { globalRegistry } = await import('@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel');
     const items: TrackerItem[] = [];
 
     for (const metadata of this.metadataCache.values()) {
@@ -1241,6 +1318,297 @@ export class ElectronDocumentService implements DocumentService {
     return result.rows.length > 0 ? this.rowToTrackerItem(result.rows[0]) : null;
   }
 
+  /**
+   * Capture a status/field transition for a full-document (frontmatter-backed)
+   * tracker when its frontmatter is edited directly on disk. This is what gives
+   * plans (and other full-document trackers) a status-over-time history even
+   * when the change never went through the tracker UI/MCP update path.
+   *
+   * The caller gates this to in-session frontmatter edits (an already-known doc
+   * whose frontmatter hash changed), so it never runs during the cold-open bulk
+   * scan. It updates an existing projection row (or lazily materializes one for
+   * the single edited file) and writes the full `data` payload computed in JS,
+   * which is safe across both DB backends and preserves system metadata.
+   */
+  private async captureFrontmatterTrackerTransition(
+    relativePath: string,
+    frontmatter: Record<string, any>,
+  ): Promise<void> {
+    try {
+      const resolved = resolveFullDocumentFrontmatter(frontmatter);
+      if (!resolved) return; // not a tracker document -> nothing to do (no DB hit)
+      const type = resolved.trackerType;
+      const canonicalId = buildFullDocumentTrackerId(type, relativePath);
+
+      const existingRes = await database.query<any>(
+        `SELECT id, data FROM tracker_items
+         WHERE workspace = $1 AND source = 'frontmatter' AND source_ref = $2 AND type = $3
+         ORDER BY updated DESC
+         LIMIT 1`,
+        [this.workspacePath, relativePath, type],
+      );
+      const row = existingRes.rows[0];
+      const existingData = row ? (parseJsonColumn<Record<string, any>>(row.data) ?? {}) : null;
+
+      // Tracked field values from the resolved frontmatter, minus routing keys.
+      // Title falls back to the filename, matching the projection path.
+      const title = (resolved.trackerData.title as string)
+        || (frontmatter.title as string)
+        || relativePath.split('/').pop()?.replace(/\.md$/, '')
+        || 'Untitled';
+      const newFields: Record<string, any> = { title };
+      for (const [key, value] of Object.entries(resolved.trackerData)) {
+        if (key === 'type' || key === 'trackerStatus' || key === 'activity') continue;
+        if (value !== undefined && value !== null) newFields[key] = value;
+      }
+
+      let identity: unknown = null;
+      try { identity = getCurrentIdentity(this.workspacePath); } catch { identity = null; }
+
+      const { data: nextData, changes, isNew } = computeFrontmatterTrackerTransition(
+        existingData,
+        newFields,
+        identity,
+        Date.now(),
+      );
+
+      // Reconcile the per-plan share flags explicitly from the CURRENT frontmatter.
+      // The generic transition only writes keys that are present and never
+      // deletes, so REMOVING the `share` block from frontmatter must clear the
+      // stored flag here -- otherwise an unshare-by-deletion would never take.
+      const fmShare = (resolved.trackerData as Record<string, any>).share;
+      const fmShared = (resolved.trackerData as Record<string, any>).shared;
+      if (fmShare !== undefined) nextData.share = fmShare; else delete nextData.share;
+      if (fmShared !== undefined) nextData.shared = fmShared; else delete nextData.shared;
+      // The sync round-trip nests the flag under `customFields.share`, and
+      // isTrackerItemShared lets the nested value win. Mirror the file's intent
+      // there too, so removing `share` from frontmatter actually unshares (the
+      // file is the source of truth for a frontmatter-backed item).
+      if (nextData.customFields && typeof nextData.customFields === 'object') {
+        if (fmShare !== undefined) nextData.customFields.share = fmShare;
+        else delete nextData.customFields.share;
+      }
+
+      // Detect a share-flag flip (NIM-876). A pure share toggle has no tracked-field
+      // change, so it must still force a write + reconcile.
+      const wasShared = isTrackerItemShared(existingData);
+      const nowShared = isTrackerItemShared(nextData);
+      const shareChanged = wasShared !== nowShared;
+
+      if (!row) {
+        // No projection row yet: materialize THIS single edited file (one insert,
+        // not a bulk-scan storm). content is filled in on the next full projection.
+        await database.query(
+          `INSERT INTO tracker_items (
+            id, type, data, workspace, document_path, line_number,
+            created, updated, last_indexed, sync_status,
+            content, archived, source, source_ref
+          ) VALUES ($1, $2, $3, $4, $5, 0, NOW(), NOW(), NOW(), 'local', NULL, FALSE, 'frontmatter', $5)
+          ON CONFLICT (id) DO UPDATE SET
+            data = tracker_items.data || $3,
+            updated = NOW()`,
+          [canonicalId, type, JSON.stringify(nextData), this.workspacePath, relativePath],
+        );
+      } else if (changes.length > 0 || shareChanged) {
+        // Existing row + a real transition (or share toggle): persist full data.
+        await database.query(
+          `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
+          [JSON.stringify(nextData), row.id],
+        );
+      } else {
+        return; // existing row, no tracked-field change, no share flip -> no write
+      }
+
+      const persisted = await database.query<any>(
+        `SELECT * FROM tracker_items WHERE id = $1`,
+        [row?.id ?? canonicalId],
+      );
+      if (persisted.rows.length > 0) {
+        const item = this.rowToTrackerItem(persisted.rows[0]);
+        const changeEvent: TrackerItemChangeEvent = {
+          added: isNew ? [item] : [],
+          updated: isNew ? [] : [item],
+          removed: [],
+          timestamp: new Date(),
+        };
+        this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+
+        // Reconcile team sharing when the share flag flipped (or a freshly
+        // materialized row is already flagged). Lifecycle-share rides the
+        // existing tracker sync path; the item carries its own body version.
+        if (shareChanged || (isNew && nowShared)) {
+          await this.reconcileFrontmatterShare(item, persisted.rows[0].id, relativePath, nowShared);
+        } else if (nowShared && changes.length > 0) {
+          // NIM-880: an ALREADY-shared plan whose lifecycle field changed (no
+          // share flip) must still push the updated metadata. The reconcile gate
+          // above only fires on a flip/new-flag, so without this the change was
+          // written locally and never reached the room (and the already-synced
+          // row -- sync_id set, status 'synced' -- isn't a backfill candidate
+          // either). Body is unchanged here, so no re-seed.
+          await this.syncSharedFrontmatterMetadata(item, persisted.rows[0].id);
+        }
+      }
+    } catch (error) {
+      console.error(`[DocumentService] captureFrontmatterTrackerTransition failed for ${relativePath}:`, error);
+    }
+  }
+
+  /**
+   * Push or remove a frontmatter-backed (full-document) tracker item from the
+   * team TrackerRoom when its per-plan `share` flag flips (NIM-876).
+   *
+   * Lifecycle-share rides the normal tracker sync path. The BODY is shared the
+   * same way every other tracker item's body is: through the
+   * `tracker-content/<itemId>` room (MainBodyDocService / applyHeadlessBodyMarkdown),
+   * NOT the file-share-to-team document index. We persist the file's markdown
+   * body to the row (bumping body_version + cache) and seed the live room, so a
+   * teammate opening the shared plan sees its content. When sharing is turned
+   * OFF, the item is deleted from the room and reset to local.
+   *
+   * @param item     the projected tracker item (canonical `fm:<type>:<path>` id)
+   * @param rowId    the backing DB row id (may differ from the canonical id for
+   *                 legacy rows) -- used for the local sync_status write
+   * @param relativePath workspace-relative path of the backing markdown file
+   * @param nowShared whether the item is currently flagged for sharing
+   */
+  private async reconcileFrontmatterShare(
+    item: TrackerItem,
+    rowId: string,
+    relativePath: string,
+    nowShared: boolean,
+  ): Promise<void> {
+    const workspace = item.workspace || this.workspacePath;
+    try {
+      if (nowShared) {
+        const policy = getEffectiveTrackerSyncPolicy(workspace, item.type);
+        // Respect the type policy: a `local` type never shares even if flagged.
+        if (!shouldSyncTrackerItem(policy, item)) return;
+        if (isTrackerSyncActive(workspace)) {
+          await syncTrackerItem(item);
+          // Body-share: push the file's markdown body through the SAME
+          // tracker-content room mechanism used for every tracker body, so the
+          // plan body is readable by teammates. No live renderer peer exists on
+          // this main-process path, so we seed the headless Y.Doc explicitly
+          // (mirroring the MCP tracker_create body path).
+          await this.shareFrontmatterBody(item.id, relativePath, workspace);
+        } else {
+          // Sync not live yet. Seed the body LOCALLY anyway (NIM-880): this bumps
+          // `body_version`, writes the body cache, and seeds the headless Y.Doc,
+          // so when the engine reconnects the backfill ships a real bodyVersion
+          // and the body is already present -- a pre-connect share that only
+          // marked pending used to push metadata with bodyVersion 0 and an empty
+          // body. Then mark pending so the reconnect backfill re-pushes it.
+          await this.shareFrontmatterBody(item.id, relativePath, workspace);
+          await database.query(
+            `UPDATE tracker_items SET sync_status = 'pending' WHERE id = $1`,
+            [rowId],
+          );
+        }
+      } else if (isTrackerSyncActive(workspace)) {
+        // Unshare (live): reset the local row FIRST so the unshare always lands
+        // locally even if the room delete is slow/erroring, then remove from the
+        // team room best-effort. Clearing `sync_id` keeps the backfill from
+        // re-processing it.
+        // console.log('[DocumentService] reconcile UNSHARE(live) resetting row', rowId);
+        await database.query(
+          `UPDATE tracker_items SET sync_status = 'local', sync_id = NULL WHERE id = $1`,
+          [rowId],
+        );
+        try {
+          await unsyncTrackerItem(item.id, workspace);
+        } catch (unsyncErr) {
+          console.error('[DocumentService] reconcile unsync (room delete) failed; local row already reset:', unsyncErr);
+        }
+      } else {
+        // Unshare (offline): `unsyncTrackerItem` would no-op with no engine, so
+        // resetting straight to 'local' (NIM-880) stranded the deletion -- the
+        // row kept its `sync_id` and never re-entered the backfill candidate set,
+        // so the team room kept the plan. Mark pending instead: the reconnect
+        // backfill sees a previously-shared (sync_id set) but now-unflagged item
+        // and issues the room tombstone.
+        await database.query(
+          `UPDATE tracker_items SET sync_status = 'pending' WHERE id = $1`,
+          [rowId],
+        );
+      }
+    } catch (err) {
+      console.error('[DocumentService] reconcileFrontmatterShare failed:', err);
+    }
+  }
+
+  /**
+   * Share a frontmatter-backed item's body through the standard tracker-content
+   * room: read the file's markdown (sans frontmatter), persist it as the item's
+   * body (bumping `body_version` + cache + metadata re-sync via
+   * `updateTrackerItemContent`), then seed the live `tracker-content/<itemId>`
+   * Y.Doc so a teammate who opens the item sees content immediately. Best-effort;
+   * the durable record is the PGLite body + version bump.
+   */
+  private async shareFrontmatterBody(
+    itemId: string,
+    relativePath: string,
+    workspace: string,
+  ): Promise<void> {
+    try {
+      const fullPath = path.join(this.workspacePath, relativePath);
+      let fileContent: string;
+      try {
+        fileContent = await fs.readFile(fullPath, 'utf-8');
+      } catch {
+        return; // file vanished mid-edit -> nothing to seed
+      }
+      const bodyMatch = fileContent.match(/^---\s*\n[\s\S]*?\n---\s*\n([\s\S]*)$/);
+      const markdownBody = (bodyMatch ? bodyMatch[1] : fileContent).trim();
+      if (!markdownBody) return; // empty body -> nothing to share
+
+      // Persist + bump version + cache + metadata re-sync (no headless seed here;
+      // updateTrackerItemContent intentionally skips it to avoid the renderer
+      // autosave loop -- but this path has no live peer, so we seed below).
+      await this.updateTrackerItemContent(itemId, markdownBody);
+      await applyHeadlessBodyMarkdown(workspace, itemId, markdownBody);
+    } catch (err) {
+      console.error('[DocumentService] shareFrontmatterBody failed:', err);
+    }
+  }
+
+  /**
+   * Push the metadata of an ALREADY-shared frontmatter item to the team room
+   * after a lifecycle/field change (NIM-880). No share flip and no body change,
+   * so this is a metadata-only push -- it does NOT re-seed the body. Gated by the
+   * per-item policy; when sync is offline the row is marked pending so the
+   * reconnect backfill re-pushes the new metadata.
+   */
+  private async syncSharedFrontmatterMetadata(item: TrackerItem, rowId: string): Promise<void> {
+    const workspace = item.workspace || this.workspacePath;
+    try {
+      const policy = getEffectiveTrackerSyncPolicy(workspace, item.type);
+      if (!shouldSyncTrackerItem(policy, item)) return;
+      if (isTrackerSyncActive(workspace)) {
+        await syncTrackerItem(item);
+      } else {
+        await database.query(
+          `UPDATE tracker_items SET sync_status = 'pending' WHERE id = $1`,
+          [rowId],
+        );
+      }
+    } catch (err) {
+      console.error('[DocumentService] syncSharedFrontmatterMetadata failed:', err);
+    }
+  }
+
+  /**
+   * Per-item team-sync decision for a resolved tracker item: combines the
+   * effective type policy with the per-item share flag (NIM-880). Call sites that
+   * push to the room (body save, archive toggle) must gate on this -- not merely
+   * on `isTrackerSyncActive` -- because `syncTrackerItem` itself does no policy
+   * gating, so an unflagged hybrid item would otherwise leak.
+   */
+  private shouldSyncItemNow(item: TrackerItem): boolean {
+    const workspace = item.workspace || this.workspacePath;
+    const policy = getEffectiveTrackerSyncPolicy(workspace, item.type);
+    return shouldSyncTrackerItem(policy, item);
+  }
+
   // Tracker Items API methods
   async listTrackerItems(): Promise<TrackerItem[]> {
     try {
@@ -1336,23 +1704,15 @@ export class ElectronDocumentService implements DocumentService {
       bodyVersion: row.body_version !== undefined && row.body_version !== null
         ? Number(row.body_version)
         : undefined,
-      // Pass through extra JSONB data fields (e.g. kanbanSortOrder) so they
-      // survive the TrackerItem -> TrackerRecord conversion via customFields.
-      customFields: (() => {
-        const known = new Set([
-          'title', 'description', 'status', 'priority', 'owner', 'tags',
-          'created', 'updated', 'dueDate', 'assigneeEmail', 'reporterEmail',
-          'authorIdentity', 'lastModifiedBy', 'createdByAgent', 'assigneeId',
-          'reporterId', 'labels', 'linkedSessions', 'linkedCommitSha', 'documentId',
-        ]);
-        const extra: Record<string, any> = {};
-        if (data) {
-          for (const [k, v] of Object.entries(data)) {
-            if (!known.has(k) && v !== undefined) extra[k] = v;
-          }
-        }
-        return Object.keys(extra).length > 0 ? extra : undefined;
-      })(),
+      // Pass through extra JSONB data fields (e.g. kanbanSortOrder) AND un-nest
+      // a nested `data.customFields` bag so custom schema columns (e.g. prUrl)
+      // survive the TrackerItem -> TrackerRecord conversion. See NIM-863.
+      customFields: extractItemCustomFields(data, new Set([
+        'title', 'description', 'status', 'priority', 'owner', 'tags',
+        'created', 'updated', 'dueDate', 'assigneeEmail', 'reporterEmail',
+        'authorIdentity', 'lastModifiedBy', 'createdByAgent', 'assigneeId',
+        'reporterId', 'labels', 'linkedSessions', 'linkedCommitSha', 'documentId',
+      ])),
     };
   }
 
@@ -1463,6 +1823,197 @@ export class ElectronDocumentService implements DocumentService {
   }
 
   /**
+   * Flip a tracker item's team-share flag from the UI — the per-item "Share
+   * with team" toggle for `hybrid` trackers (e.g. plans). Writes the canonical
+   * `share` flag into the item's data and reconciles the team TrackerRoom:
+   * sharing pushes the item (its body rides the `tracker-content/<id>` room the
+   * open detail editor seeds once it becomes collaborative); unsharing tombstones
+   * it from the room and resets the local row to `local`.
+   *
+   * Native DB items only. File-backed (frontmatter) plans carry their share flag
+   * in the markdown and are reconciled by `reconcileFrontmatterShare` on save.
+   */
+  async setTrackerItemShared(itemId: string, shared: boolean): Promise<TrackerItem> {
+    const row = await this.resolveTrackerRowForPublicId(itemId, { createProjectionForFullDocument: true });
+    if (!row) {
+      throw new Error(`Tracker item not found: ${itemId}`);
+    }
+    const shareFlag = shared
+      ? { status: 'team', body: 'team' }
+      : { status: 'private', body: 'private' };
+
+    // File-backed plans/decisions (`fm:<type>:<path>`) carry their canonical
+    // share flag in the markdown frontmatter. Write ONLY the top-level `share`
+    // key (via setShareInFrontmatter) so the plan extension's own frontmatter
+    // block is left untouched -- updateTrackerItemInFile would migrate the
+    // legacy `planStatus:` block and reshuffle the file.
+    //
+    // Reconcile the room push EXPLICITLY here rather than rely on the
+    // file-change rescan: we also write the flag to the DB row below, so by the
+    // time the rescan runs captureFrontmatterTrackerTransition sees no change
+    // and skips its reconcile. reconcileFrontmatterShare pushes the item (and
+    // seeds its file body) on share, or tombstones it on unshare.
+    if ((row.source === 'frontmatter' || row.source === 'import') && (row.source_ref || row.document_path)) {
+      const relativePath = row.source_ref || row.document_path;
+      const fullPath = path.join(this.workspacePath, relativePath);
+      try {
+        const content = await fs.readFile(fullPath, 'utf-8');
+        const updatedContent = setShareInFrontmatter(content, shared ? shareFlag : null);
+        await fs.writeFile(fullPath, updatedContent, 'utf-8');
+      } catch (err) {
+        throw new Error(`Failed to write share flag to ${relativePath}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // Mirror the flag into the DB row so the UI + reconcile see it at once.
+      // Deliberately do NOT bump the row's `updated` column -- sharing is not a
+      // content edit and must not advance the plan's "updated" timestamp.
+      //
+      // Clear/set BOTH the top-level `share` and the nested `customFields.share`:
+      // the sync round-trip stores the flag nested, and isTrackerItemShared makes
+      // the nested value win -- so an unshare that only cleared the top level
+      // would leave a stale nested `team` flag and the item would re-sync.
+      const fmData = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+      if (shared) {
+        fmData.share = shareFlag;
+        fmData.customFields = {
+          ...(fmData.customFields && typeof fmData.customFields === 'object' ? fmData.customFields : {}),
+          share: shareFlag,
+        };
+      } else {
+        delete fmData.share;
+        if (fmData.customFields && typeof fmData.customFields === 'object') {
+          delete fmData.customFields.share;
+        }
+      }
+      fmData.shared = false;
+      await database.query(
+        `UPDATE tracker_items SET data = $1 WHERE id = $2`,
+        [JSON.stringify(fmData), row.id],
+      );
+      const fmResult = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [row.id]);
+      const fmItem = this.rowToTrackerItem(fmResult.rows[0]);
+
+      await this.reconcileFrontmatterShare(fmItem, row.id, relativePath, shared);
+
+      // Re-read so the emitted item reflects the final sync_status.
+      const finalResult = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [row.id]);
+      const finalItem = this.rowToTrackerItem(finalResult.rows[0]);
+      this.trackerItemWatchers.forEach(callback => callback({
+        added: [], updated: [finalItem], removed: [], timestamp: new Date(),
+      }));
+      return finalItem;
+    }
+
+    // Native (DB-backed) item. Unsharing a native item is BLOCKED for now: the
+    // sync engine has no "remove from room, keep local" primitive -- unsync goes
+    // through engine.deleteItem, which tombstones the local row too. A file-backed
+    // plan re-projects from its file, but a native item would be permanently
+    // deleted. Until a real unshare primitive lands, refuse native unshare so the
+    // UI/data can't lose an item. (Native SHARE is fine.)
+    if (!shared) {
+      throw new Error(
+        'Unsharing a native tracker item is not supported yet (it would delete the item). ' +
+        'Only file-backed plans/decisions can be unshared from the UI.',
+      );
+    }
+
+    const data = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+
+    // Write the flag in BOTH storage shapes. The sync round-trip stores custom
+    // fields nested under `data.customFields`, and `extractItemCustomFields`
+    // makes the nested value WIN over the top-level one -- so writing only the
+    // top level would leave a stale nested `team` flag on unshare and the item
+    // would still read as shared. Keep both consistent.
+    data.share = shareFlag;
+    data.customFields = {
+      ...(data.customFields && typeof data.customFields === 'object' ? data.customFields : {}),
+      share: shareFlag,
+    };
+    data.shared = false; // drop any legacy boolean flag
+    data.lastModifiedBy = getCurrentIdentity(row.workspace);
+
+    await database.query(
+      `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
+      [JSON.stringify(data), row.id],
+    );
+
+    // Read back for the reconcile (it needs the share flag for the policy gate).
+    let result = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [row.id]);
+    let item = this.rowToTrackerItem(result.rows[0]);
+
+    await this.reconcileItemShare(item, row.id, shared);
+
+    // Re-read AFTER reconcile so the emitted item carries the final sync_status
+    // (synced/pending on share, local on unshare) -- otherwise the renderer's
+    // "is this item shared" check would lag a beat behind on the room state.
+    result = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [row.id]);
+    item = this.rowToTrackerItem(result.rows[0]);
+    this.trackerItemWatchers.forEach(callback => callback({
+      added: [],
+      updated: [item],
+      removed: [],
+      timestamp: new Date(),
+    }));
+
+    return item;
+  }
+
+  /**
+   * Push or remove a native tracker item from the team TrackerRoom when its
+   * per-item `share` flag flips. Mirrors `reconcileFrontmatterShare` minus the
+   * file-body seed (a native item's body is seeded by the live collaborative
+   * editor that mounts once the item becomes shared).
+   *
+   *   - share + sync live    -> syncTrackerItem (push to room)
+   *   - share + offline      -> mark pending (reconnect backfill pushes it)
+   *   - unshare + sync live  -> unsyncTrackerItem + reset row to local
+   *   - unshare + offline    -> mark pending (reconnect backfill tombstones it)
+   */
+  private async reconcileItemShare(item: TrackerItem, rowId: string, nowShared: boolean): Promise<void> {
+    const workspace = item.workspace || this.workspacePath;
+    try {
+      if (nowShared) {
+        const policy = getEffectiveTrackerSyncPolicy(workspace, item.type);
+        // Respect the type policy: a `local` type never shares even if flagged.
+        if (!shouldSyncTrackerItem(policy, item)) return;
+        if (isTrackerSyncActive(workspace)) {
+          await syncTrackerItem(item);
+        } else {
+          await database.query(
+            `UPDATE tracker_items SET sync_status = 'pending' WHERE id = $1`,
+            [rowId],
+          );
+        }
+      } else if (isTrackerSyncActive(workspace)) {
+        // Unshare (live): reset the local row FIRST so the unshare always lands
+        // locally even if the room delete is slow/erroring, then remove from the
+        // team room best-effort. Clearing `sync_id` keeps the backfill from
+        // re-processing it.
+        // console.log('[DocumentService] reconcile UNSHARE(live) resetting row', rowId);
+        await database.query(
+          `UPDATE tracker_items SET sync_status = 'local', sync_id = NULL WHERE id = $1`,
+          [rowId],
+        );
+        try {
+          await unsyncTrackerItem(item.id, workspace);
+        } catch (unsyncErr) {
+          console.error('[DocumentService] reconcile unsync (room delete) failed; local row already reset:', unsyncErr);
+        }
+      } else {
+        // Unshare (offline): mark pending so the reconnect backfill sees a
+        // previously-shared (sync_id set) but now-unflagged item and issues the
+        // room tombstone (NIM-880).
+        await database.query(
+          `UPDATE tracker_items SET sync_status = 'pending' WHERE id = $1`,
+          [rowId],
+        );
+      }
+    } catch (err) {
+      console.error('[DocumentService] reconcileItemShare failed:', err);
+    }
+  }
+
+  /**
    * Update the rich content (Lexical editor state) of a tracker item.
    */
   async updateTrackerItemContent(itemId: string, content: any): Promise<void> {
@@ -1524,7 +2075,12 @@ export class ElectronDocumentService implements DocumentService {
       // this push exists for the "search / preview / never-opened"
       // surface, which only ever reads the metadata projection. The
       // 800ms debounce upstream keeps the burst rate reasonable.
-      if (isTrackerSyncActive(item.workspace)) {
+      //
+      // Gate on the per-item policy (NIM-880): `syncTrackerItem` does no policy
+      // check, so an unflagged hybrid item's body save would otherwise leak to
+      // the room. The legit frontmatter body-share path (shareFrontmatterBody)
+      // still passes here because by then the row carries the share flag.
+      if (isTrackerSyncActive(item.workspace) && this.shouldSyncItemNow(item)) {
         try {
           await syncTrackerItem(item);
         } catch (syncErr) {
@@ -1681,8 +2237,10 @@ export class ElectronDocumentService implements DocumentService {
     };
     this.trackerItemWatchers.forEach(callback => callback(changeEvent));
 
-    // Push archived state to sync server so other clients see it
-    if (isTrackerSyncActive(item.workspace)) {
+    // Push archived state to sync server so other clients see it. Gate on the
+    // per-item policy (NIM-880) so an unflagged hybrid item doesn't leak to the
+    // room just because it was archived.
+    if (isTrackerSyncActive(item.workspace) && this.shouldSyncItemNow(item)) {
       try {
         await syncTrackerItem(item);
       } catch (syncErr) {
@@ -2124,7 +2682,6 @@ export class ElectronDocumentService implements DocumentService {
     syncMode?: string;
   }): Promise<TrackerItem> {
     // Check if this type allows creation
-    const { globalRegistry } = await import('@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel');
     const model = globalRegistry.get(payload.type);
     if (model && model.creatable === false) {
       throw new Error(`Cannot create items of type '${payload.type}': type is not creatable`);
@@ -2170,7 +2727,8 @@ export class ElectronDocumentService implements DocumentService {
     const source = payload.source || 'native';
     const contentJson = payload.content ? JSON.stringify(payload.content) : null;
     const syncPolicy = getEffectiveTrackerSyncPolicy(payload.workspace, payload.type, payload.syncMode);
-    const syncStatus = getInitialTrackerSyncStatus(syncPolicy);
+    // Per-item decision (NIM-876): hybrid types only sync flagged items.
+    const syncStatus = getInitialTrackerSyncStatus(syncPolicy, data);
 
     await database.query(
       `INSERT INTO tracker_items (
@@ -2918,7 +3476,7 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
       const item = await requireDocumentService(event).createTrackerItem(payload);
       // console.log('[DocumentService] create-tracker-item created locally:', item.id);
 
-      if (shouldSyncTrackerPolicy(syncPolicy)) {
+      if (shouldSyncTrackerItem(syncPolicy, item)) {
         const active = isTrackerSyncActive(payload.workspace);
         // console.log('[DocumentService] create-tracker-item sync check:', { syncPolicy, active });
         if (active) {
@@ -2950,10 +3508,37 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
       //   requestedSyncMode: payload.syncMode,
       //   updateKeys: Object.keys(payload.updates),
       // });
-      const item = await requireDocumentService(event).updateTrackerItem(payload.itemId, payload.updates);
+      const svc = requireDocumentService(event);
+
+      // Capture the pre-update relationship values so inverse propagation (below)
+      // can diff added/dropped targets. Best-effort by canonical id; if the row
+      // can't be read here we simply skip inverse propagation for this update.
+      let oldData: Record<string, unknown> = {};
+      let oldType: string | null = null;
+      try {
+        const oldRow = await database.query<any>(`SELECT type, data FROM tracker_items WHERE id = $1`, [payload.itemId]);
+        if (oldRow.rows[0]) {
+          oldType = oldRow.rows[0].type ?? null;
+          oldData = parseJsonColumn<Record<string, unknown>>(oldRow.rows[0].data) ?? {};
+        }
+      } catch { /* skip inverse propagation if old data is unavailable */ }
+
+      const updates = { ...payload.updates };
+      if (oldType) {
+        const relWrite = applyRelationshipFieldWrites(
+          updates,
+          globalRegistry.get(oldType)?.fields ?? [],
+          payload.itemId,
+        );
+        if (!relWrite.ok) {
+          throw new Error(`Invalid relationship field "${relWrite.field}": ${relWrite.errors.join('; ')}`);
+        }
+      }
+
+      const item = await svc.updateTrackerItem(payload.itemId, updates);
       const syncPolicy = getEffectiveTrackerSyncPolicy(item.workspace, item.type, payload.syncMode);
 
-      if (shouldSyncTrackerPolicy(syncPolicy)) {
+      if (shouldSyncTrackerItem(syncPolicy, item)) {
         const syncActive = isTrackerSyncActive(item.workspace);
         // console.log('[DocumentService] update-tracker-item sync gate:', { syncPolicy, workspace: item.workspace, syncActive });
         try {
@@ -2961,7 +3546,7 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
             await syncTrackerItem(item);
             // console.log('[DocumentService] update-tracker-item synced:', item.id);
           } else {
-            await requireDocumentService(event).updateTrackerItemSyncStatus(item.id, 'pending');
+            await svc.updateTrackerItemSyncStatus(item.id, 'pending');
             // console.log('[DocumentService] update-tracker-item skipped: sync not active for workspace');
           }
         } catch (syncErr) {
@@ -2971,9 +3556,65 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
         // console.log('[DocumentService] update-tracker-item no sync: effective mode =', syncPolicy.mode);
       }
 
+      // Phase 3: materialize inverse relationship fields on target items. Applies
+      // each target write through the same update+sync+reindex flow as the source
+      // (never re-entering this handler, so no inverse-of-inverse loop).
+      try {
+        await propagateInverseRelationships(
+          { id: item.id, type: item.type, issueKey: item.issueKey, title: item.title },
+          updates,
+          oldData,
+          {
+            loadItem: async (id) => {
+              const row = await database.query<any>(`SELECT id, type, data FROM tracker_items WHERE id = $1`, [id]);
+              if (!row.rows[0]) return null;
+              return {
+                id: row.rows[0].id,
+                type: row.rows[0].type,
+                data: parseJsonColumn<Record<string, unknown>>(row.rows[0].data) ?? {},
+              };
+            },
+            applyTargetUpdate: async (targetId, fieldName, value) => {
+              const target = await svc.updateTrackerItem(targetId, { [fieldName]: value });
+              const targetPolicy = getEffectiveTrackerSyncPolicy(target.workspace, target.type, payload.syncMode);
+              if (shouldSyncTrackerItem(targetPolicy, target)) {
+                if (isTrackerSyncActive(target.workspace)) {
+                  await syncTrackerItem(target);
+                } else {
+                  await svc.updateTrackerItemSyncStatus(target.id, 'pending');
+                }
+              }
+              const targetDefs = globalRegistry.get(target.type)?.fields ?? [];
+              const targetData = await database.query<any>(`SELECT data, updated FROM tracker_items WHERE id = $1`, [target.id]);
+              const td = parseJsonColumn<Record<string, unknown>>(targetData.rows[0]?.data) ?? {};
+              const updatedAt = targetData.rows[0]?.updated
+                ? (typeof targetData.rows[0].updated === 'string' ? targetData.rows[0].updated : new Date(targetData.rows[0].updated).toISOString())
+                : null;
+              await reindexItemRelationships(target.workspace, target.id, td, targetDefs, updatedAt, database as any);
+            },
+          },
+        );
+      } catch (invErr) {
+        console.error('[DocumentService] inverse relationship propagation failed:', invErr);
+      }
+
       return { success: true, item };
     } catch (error) {
       console.error('[DocumentService] update-tracker-item failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Per-item "Share with team" toggle for hybrid trackers (e.g. plans).
+  safeHandle('document-service:set-tracker-item-shared', async (event, payload: {
+    itemId: string;
+    shared: boolean;
+  }) => {
+    try {
+      const item = await requireDocumentService(event).setTrackerItemShared(payload.itemId, payload.shared);
+      return { success: true, item };
+    } catch (error) {
+      console.error('[DocumentService] set-tracker-item-shared failed:', error);
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   });
@@ -3114,15 +3755,14 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
   async function syncAfterCommentMutation(event: IpcMainInvokeEvent, itemId: string, workspace: string, itemType: string): Promise<void> {
     try {
       const syncPolicy = getEffectiveTrackerSyncPolicy(workspace, itemType as any);
-      if (shouldSyncTrackerPolicy(syncPolicy)) {
+      const service = requireDocumentService(event);
+      const item = await service.getTrackerItemById(itemId);
+      // Per-item decision (NIM-876): hybrid types only sync flagged items.
+      if (item && shouldSyncTrackerItem(syncPolicy, item)) {
         if (isTrackerSyncActive(workspace)) {
-          const service = requireDocumentService(event);
-          const item = await service.getTrackerItemById(itemId);
-          if (item) {
-            await syncTrackerItem(item);
-          }
+          await syncTrackerItem(item);
         } else {
-          await requireDocumentService(event).updateTrackerItemSyncStatus(itemId, 'pending');
+          await service.updateTrackerItemSyncStatus(itemId, 'pending');
         }
       }
     } catch (syncErr) {
@@ -3160,14 +3800,13 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
         linkedCommitSha: d.linkedCommitSha || undefined, documentId: d.documentId || undefined,
         syncStatus: r.sync_status || 'local',
       };
-      // Pass through extra JSONB data fields (activity, comments, etc.)
+      // Pass through extra JSONB data fields (activity, comments, etc.) AND
+      // un-nest a nested `data.customFields` bag so custom schema columns
+      // survive the TrackerItem -> TrackerRecord conversion. See NIM-863.
       // Uses the item's own keys as the "known" set -- no hardcoded list.
       const itemKeys = new Set(Object.keys(item));
-      const extra: Record<string, any> = {};
-      for (const [k, v] of Object.entries(d)) {
-        if (v !== undefined && !itemKeys.has(k)) extra[k] = v;
-      }
-      if (Object.keys(extra).length > 0) (item as any).customFields = extra;
+      const cf = extractItemCustomFields(d, itemKeys);
+      if (cf) (item as any).customFields = cf;
       event.sender.send('document-service:tracker-items-changed', {
         added: [], updated: [item], removed: [], timestamp: new Date(),
       });
@@ -3239,17 +3878,25 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
 
       const data = typeof row.rows[0].data === 'string' ? JSON.parse(row.rows[0].data) : row.rows[0].data || {};
       const comments = data.comments || [];
-      const idx = comments.findIndex((c: any) => c.id === payload.commentId);
-      if (idx === -1) return { success: false, error: 'Comment not found' };
 
-      if (payload.body !== undefined) {
-        comments[idx].body = payload.body;
-        comments[idx].updatedAt = Date.now();
+      // NIM-360: edit/delete are author-only. Build the requested mutation
+      // (delete wins over edit if both are set) and let the pure guard enforce
+      // authorship + LWW stamping. Fails closed for non-authors / unknown ids.
+      const actor = getCurrentIdentity(row.rows[0].workspace);
+      const mutation: CommentMutation | null =
+        payload.deleted === true
+          ? { kind: 'delete' }
+          : payload.body !== undefined
+            ? { kind: 'edit', body: payload.body }
+            : null;
+      if (!mutation) return { success: false, error: 'No comment change requested' };
+
+      const result = applyCommentMutation(comments, payload.commentId, mutation, actor, Date.now());
+      if (!result.ok) {
+        return { success: false, error: result.error, code: result.code };
       }
-      if (payload.deleted !== undefined) {
-        comments[idx].deleted = payload.deleted;
-      }
-      data.comments = comments;
+      data.comments = result.comments;
+      data.lastModifiedBy = actor;
 
       await database.query(
         `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
@@ -3262,6 +3909,71 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
       // Trigger sync
       await syncAfterCommentMutation(event, payload.itemId, row.rows[0].workspace, row.rows[0].type);
 
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Relationship backlinks (Epic C Phase 2). The tracker_relationship_index is a
+  // local, rebuildable projection of relationship field values; build it lazily
+  // per workspace on first request, then return incoming links for an item. The
+  // UI resolves source titles from its already-loaded items map, so we return
+  // only the edge identity.
+  // Throttle full-workspace rebuilds: cheap enough to re-run so MCP/agent writes
+  // (which don't reindex incrementally) surface in backlinks, but not on every
+  // rapid item open. UI field edits reindex their own item immediately.
+  const relationshipIndexBuiltAt = new Map<string, number>();
+  const RELATIONSHIP_INDEX_TTL_MS = 2000;
+
+  async function ensureRelationshipIndex(workspace: string): Promise<void> {
+    const last = relationshipIndexBuiltAt.get(workspace) ?? 0;
+    if (Date.now() - last < RELATIONSHIP_INDEX_TTL_MS) return;
+    relationshipIndexBuiltAt.set(workspace, Date.now()); // set before await to dedupe concurrent builds
+    try {
+      await rebuildWorkspaceRelationshipIndex(
+        workspace,
+        (type) => globalRegistry.get(type)?.fields ?? [],
+        database as any,
+      );
+    } catch (err) {
+      relationshipIndexBuiltAt.delete(workspace); // allow a retry on next request
+      console.error('[DocumentService] relationship index build failed:', err);
+    }
+  }
+
+  safeHandle('document-service:tracker-item-backlinks', async (_event, payload: { itemId: string }) => {
+    try {
+      const row = await database.query<any>(`SELECT workspace FROM tracker_items WHERE id = $1`, [payload.itemId]);
+      const workspace = row.rows[0]?.workspace;
+      if (!workspace) return { success: true, backlinks: [] };
+      await ensureRelationshipIndex(workspace);
+      const backlinks = await getRelationshipBacklinks(workspace, payload.itemId, database as any);
+      return {
+        success: true,
+        backlinks: backlinks.map((b) => ({
+          sourceItemId: b.sourceItemId,
+          sourceFieldId: b.sourceFieldId,
+          relationshipTypeKey: b.relationshipTypeKey,
+        })),
+      };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error), backlinks: [] };
+    }
+  });
+
+  // Incremental reindex of one item's outgoing relationship edges. Called by the
+  // renderer after a relationship field changes so backlinks update without a
+  // full workspace rebuild. Idempotent.
+  safeHandle('document-service:tracker-item-reindex-relationships', async (_event, payload: { itemId: string }) => {
+    try {
+      const row = await database.query<any>(`SELECT id, type, data, workspace, updated FROM tracker_items WHERE id = $1`, [payload.itemId]);
+      if (row.rows.length === 0) return { success: false, error: 'Item not found' };
+      const r = row.rows[0];
+      const data = typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || {});
+      const defs = globalRegistry.get(r.type)?.fields ?? [];
+      const updatedAt = typeof r.updated === 'string' ? r.updated : (r.updated ? new Date(r.updated).toISOString() : null);
+      await reindexItemRelationships(r.workspace, r.id, data, defs, updatedAt, database as any);
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };

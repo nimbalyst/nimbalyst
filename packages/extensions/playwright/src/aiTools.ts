@@ -17,6 +17,7 @@ function flattenTests(nodes: TestNode[]): TestNode[] {
 export const aiTools: ExtensionAITool[] = [
   {
     name: 'playwright.list_tests',
+    access: { kind: 'filesystem' } as const,
     description: 'List all Playwright tests in the project with their hierarchy and current status from the last run. Supports multiple test configs (e.g. E2E tests and extension tests). If no tests have been discovered yet, returns the command to run for discovery.',
     inputSchema: {
       type: 'object',
@@ -87,6 +88,7 @@ export const aiTools: ExtensionAITool[] = [
   },
   {
     name: 'playwright.run_test',
+    access: { kind: 'filesystem' } as const,
     description: 'Run Playwright tests and display results in the test panel. Returns the command to execute. After running, pass the JSON output back to update the panel.',
     inputSchema: {
       type: 'object',
@@ -161,6 +163,7 @@ export const aiTools: ExtensionAITool[] = [
   },
   {
     name: 'playwright.get_failures',
+    access: { kind: 'filesystem' } as const,
     description: 'Get details of failed tests from the most recent test run, including error messages, stack traces, and screenshot paths.',
     inputSchema: {
       type: 'object',
@@ -213,6 +216,7 @@ export const aiTools: ExtensionAITool[] = [
   // --- New tools: flaky tests and trace analysis ---
   {
     name: 'playwright.get_flaky_tests',
+    access: { kind: 'filesystem' } as const,
     description: 'Get tests ranked by failure rate across recorded test runs. Shows which tests fail most often and how frequently.',
     inputSchema: {
       type: 'object',
@@ -264,6 +268,7 @@ export const aiTools: ExtensionAITool[] = [
   },
   {
     name: 'playwright.get_history',
+    access: { kind: 'filesystem' } as const,
     description: 'Get test run history with pass/fail trends and duration statistics.',
     inputSchema: {
       type: 'object',

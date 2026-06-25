@@ -13,7 +13,7 @@ import { toolRegistry, type ToolDefinition } from '../ai/tools';
 import { editorRegistry } from '../ai/EditorRegistry';
 import { getExtensionLoader } from './ExtensionLoader';
 import { getEditorAPI as getCentralEditorAPI, flushEditorSave, getRegisteredPaths } from './ExtensionEditorAPIRegistry';
-import type { ExtensionAITool, AIToolContext, LoadedExtension, ExtensionToolResult } from './types';
+import type { ExtensionAITool, ExtensionAIToolAccess, AIToolContext, LoadedExtension, ExtensionToolResult } from './types';
 
 // Track which tools were registered by which extension
 const extensionToolsMap = new Map<string, string[]>();
@@ -38,6 +38,34 @@ export interface MCPToolDefinition {
   extensionId: string;
   scope: 'global' | 'editor';
   editorFilePatterns?: string[];
+  /** Explicit document/editor access mode for this tool. */
+  access?: ExtensionAIToolAccess;
+  /** Legacy read-only flag. Prefer `access`. */
+  readOnly?: boolean;
+}
+
+const missingAccessWarnings = new Set<string>();
+
+function getNamespacedToolName(extension: LoadedExtension, tool: ExtensionAITool): string {
+  return tool.name.includes('.')
+    ? tool.name
+    : `${extension.manifest.id.split('.').pop()}.${tool.name}`;
+}
+
+function resolveToolAccess(tool: ExtensionAITool): ExtensionAIToolAccess {
+  if (tool.access) return tool.access;
+  if (tool.readOnly) return { kind: 'editor-read' };
+  return { kind: 'editor-write' };
+}
+
+function warnForMissingAccess(toolName: string, tool: ExtensionAITool): void {
+  if (tool.access || tool.readOnly || missingAccessWarnings.has(toolName)) return;
+  missingAccessWarnings.add(toolName);
+  console.warn(
+    `[ExtensionAIToolsBridge] Tool ${toolName} does not declare an access mode. ` +
+      'Falling back to editor-write compatibility behavior. Add ' +
+      "`access: { kind: 'filesystem' }`, `editor-read`, or `editor-write`."
+  );
 }
 
 // Callback for notifying about tool changes (set by renderer)
@@ -82,9 +110,7 @@ export function getMCPToolDefinitions(): MCPToolDefinition[] {
 
     for (const tool of extensionTools) {
       // Namespace the tool name
-      const namespacedName = tool.name.includes('.')
-        ? tool.name
-        : `${extension.manifest.id.split('.').pop()}.${tool.name}`;
+      const namespacedName = getNamespacedToolName(extension, tool);
 
       // Determine file patterns for editor-scoped tools
       const scope = tool.scope || 'editor';
@@ -107,6 +133,8 @@ export function getMCPToolDefinitions(): MCPToolDefinition[] {
         extensionId: extension.manifest.id,
         scope,
         editorFilePatterns,
+        access: resolveToolAccess(tool),
+        readOnly: tool.readOnly,
       });
     }
   }
@@ -170,6 +198,10 @@ export async function executeExtensionTool(
   }
 
   const extensionId = handler.extension.manifest.id;
+  const toolAccess = resolveToolAccess(handler.tool);
+  const requiresEditor = toolAccess.kind === 'editor-read' || toolAccess.kind === 'editor-write';
+  const shouldFlushEditor = toolAccess.kind === 'editor-write';
+  warnForMissingAccess(toolName, handler.tool);
 
   // Resolve filePath: prefer explicit arg from agent, fall back to session state
   const resolvedFilePath = (args.filePath as string) || context.activeFilePath;
@@ -177,10 +209,10 @@ export async function executeExtensionTool(
   let ensureEditorError: string | undefined;
 
   try {
-    // Ensure editor is available if a filePath is provided.
-    // This covers both editor-scoped tools AND global tools that operate on files
-    // (e.g., Excalidraw tools are scope:'global' but still need a mounted editor).
-    if (resolvedFilePath && context.workspacePath && ensureEditorCallback) {
+    // Ensure an editor is available only for tools that explicitly need editor
+    // state. Filesystem tools operate on latest disk content and must never
+    // mount or flush a hidden editor just because a filePath was provided.
+    if (requiresEditor && resolvedFilePath && context.workspacePath && ensureEditorCallback) {
       try {
         console.log(`[ExtensionAIToolsBridge] Ensuring editor available for ${resolvedFilePath}`);
         await ensureEditorCallback(resolvedFilePath, context.workspacePath);
@@ -191,11 +223,11 @@ export async function executeExtensionTool(
       }
     }
 
-    const editorAPI = resolvedFilePath ? getCentralEditorAPI(resolvedFilePath) : undefined;
+    const editorAPI = requiresEditor && resolvedFilePath ? getCentralEditorAPI(resolvedFilePath) : undefined;
 
     // If the editor failed to mount AND the API still isn't available,
     // return a diagnostic error instead of letting the tool fail with a vague message.
-    if (resolvedFilePath && !editorAPI && ensureEditorError) {
+    if (requiresEditor && resolvedFilePath && !editorAPI && ensureEditorError) {
       const registeredPaths = getRegisteredPaths();
       console.error(
         `[ExtensionAIToolsBridge] Editor mount failed and no API available for ${resolvedFilePath}.`,
@@ -219,7 +251,7 @@ export async function executeExtensionTool(
     }
 
     // Log diagnostic info when editor API isn't found despite having a file path
-    if (resolvedFilePath && !editorAPI) {
+    if (requiresEditor && resolvedFilePath && !editorAPI) {
       const registeredPaths = getRegisteredPaths();
       console.warn(
         `[ExtensionAIToolsBridge] No editor API found for ${resolvedFilePath}.`,
@@ -237,14 +269,14 @@ export async function executeExtensionTool(
 
     const result = await handler.tool.handler(args, aiContext);
 
-    // Flush save immediately after tool execution to prevent data loss
-    // when the user closes the tab before the normal auto-save interval fires.
-    if (resolvedFilePath) {
-      flushEditorSave(resolvedFilePath);
+    // Persist only tools that explicitly mutate editor state. Filesystem and
+    // editor-read tools never flush editor buffers.
+    if (resolvedFilePath && shouldFlushEditor) {
+      await flushEditorSave(resolvedFilePath);
     }
 
     // Release the hidden editor reference (starts TTL countdown)
-    if (resolvedFilePath && releaseEditorCallback) {
+    if (requiresEditor && resolvedFilePath && releaseEditorCallback) {
       releaseEditorCallback(resolvedFilePath);
     }
 
@@ -256,7 +288,7 @@ export async function executeExtensionTool(
     };
   } catch (error) {
     // Release the hidden editor reference on error too
-    if (resolvedFilePath && releaseEditorCallback) {
+    if (requiresEditor && resolvedFilePath && releaseEditorCallback) {
       releaseEditorCallback(resolvedFilePath);
     }
 

@@ -1,33 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mockApp = {
-  quit: vi.fn(),
-  relaunch: vi.fn(),
-};
-
-const mockBrowserWindow = {
-  getAllWindows: vi.fn(),
-};
-
-const mockSaveSessionState = vi.fn();
-const mockSetRestarting = vi.fn();
-const mockGetSessionStateManager = vi.fn();
+const mocks = vi.hoisted(() => ({
+  app: {
+    quit: vi.fn(),
+    relaunch: vi.fn(),
+  },
+  browserWindow: {
+    getAllWindows: vi.fn(),
+  },
+  saveSessionState: vi.fn(),
+  setRestarting: vi.fn(),
+  getSessionStateManager: vi.fn(),
+}));
 
 vi.mock('electron', () => ({
-  app: mockApp,
-  BrowserWindow: mockBrowserWindow,
+  app: mocks.app,
+  BrowserWindow: mocks.browserWindow,
 }));
 
 vi.mock('@nimbalyst/runtime/ai/server/SessionStateManager', () => ({
-  getSessionStateManager: mockGetSessionStateManager,
+  getSessionStateManager: mocks.getSessionStateManager,
 }));
 
 vi.mock('../../index', () => ({
-  setRestarting: mockSetRestarting,
+  setRestarting: mocks.setRestarting,
 }));
 
 vi.mock('../../session/SessionState', () => ({
-  saveSessionState: mockSaveSessionState,
+  saveSessionState: mocks.saveSessionState,
 }));
 
 vi.mock('../../utils/appPaths', () => ({
@@ -37,8 +37,8 @@ vi.mock('../../utils/appPaths', () => ({
 import { restartNimbalystSafely } from '../SafeRestartService';
 
 function setActiveSessionStates(states: Record<string, any>): void {
-  mockGetSessionStateManager.mockReturnValue({
-    getActiveSessionIds: () => Object.keys(states),
+  mocks.getSessionStateManager.mockReturnValue({
+    getTrackedSessionIds: () => Object.keys(states),
     getSessionState: (sessionId: string) => states[sessionId],
   });
 }
@@ -66,7 +66,7 @@ describe('SafeRestartService', () => {
       },
     };
 
-    mockBrowserWindow.getAllWindows.mockReturnValue([windowA, windowB]);
+    mocks.browserWindow.getAllWindows.mockReturnValue([windowA, windowB]);
     setActiveSessionStates({
       busy: { status: 'running', isStreaming: false },
     });
@@ -76,12 +76,12 @@ describe('SafeRestartService', () => {
     expect(result.action).toBe('ui-reloaded');
     expect(result.busySessionIds).toEqual(['busy']);
     expect(result.reloadedWindowCount).toBe(2);
-    expect(mockSaveSessionState).toHaveBeenCalledTimes(1);
+    expect(mocks.saveSessionState).toHaveBeenCalledTimes(1);
     expect(windowA.webContents.reloadIgnoringCache).toHaveBeenCalledTimes(1);
     expect(windowB.webContents.reloadIgnoringCache).toHaveBeenCalledTimes(1);
-    expect(mockApp.relaunch).not.toHaveBeenCalled();
-    expect(mockApp.quit).not.toHaveBeenCalled();
-    expect(mockSetRestarting).not.toHaveBeenCalled();
+    expect(mocks.app.relaunch).not.toHaveBeenCalled();
+    expect(mocks.app.quit).not.toHaveBeenCalled();
+    expect(mocks.setRestarting).not.toHaveBeenCalled();
   });
 
   it('performs a full relaunch when no sessions are busy', async () => {
@@ -91,9 +91,9 @@ describe('SafeRestartService', () => {
 
     expect(result.action).toBe('restarting');
     expect(result.busySessionIds).toEqual([]);
-    expect(mockSetRestarting).toHaveBeenCalledWith(true);
-    expect(mockSaveSessionState).toHaveBeenCalledTimes(1);
-    expect(mockApp.relaunch).toHaveBeenCalledTimes(1);
-    expect(mockApp.quit).toHaveBeenCalledTimes(1);
+    expect(mocks.setRestarting).toHaveBeenCalledWith(true);
+    expect(mocks.saveSessionState).toHaveBeenCalledTimes(1);
+    expect(mocks.app.relaunch).toHaveBeenCalledTimes(1);
+    expect(mocks.app.quit).toHaveBeenCalledTimes(1);
   });
 });

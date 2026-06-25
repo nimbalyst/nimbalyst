@@ -4,7 +4,7 @@
  *
  * When the CLI needs permission for a built-in tool (Bash/Edit/Write/…) it
  * invokes our MCP `request_tool_permission` tool (via
- * `--permission-prompt-tool mcp__nimbalyst-mcp__request_tool_permission`). The
+ * `--permission-prompt-tool request_tool_permission`). The
  * user answers a `ToolPermissionWidget` with a scope (once / session / always).
  *
  * The CLI has no knowledge of a "session"-scoped approval (we never wrote it to

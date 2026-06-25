@@ -32,6 +32,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'json.get_structure',
     description: 'Get the structure of the JSON document showing keys and types at each level',
+    access: { kind: 'filesystem' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -86,6 +87,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'json.get_value',
     description: 'Get the value at a specific path in the JSON document',
+    access: { kind: 'filesystem' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -136,6 +138,7 @@ export const aiTools: ExtensionAITool[] = [
   {
     name: 'json.set_value',
     description: 'Set the value at a specific path in the JSON document',
+    access: { kind: 'filesystem' },
     inputSchema: {
       type: 'object',
       properties: {

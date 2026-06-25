@@ -83,6 +83,8 @@ Parsers implement `IRawMessageParser` and are **pure functions** over a single r
 
 `packages/runtime/src/ai/server/transcript/searchableTextExtractor.ts`. Per-row extractor that runs on the write path inside `AIProvider.logAgentMessage` / `logAgentMessageNonBlocking`. Produces `{ searchableText: string | null, messageKind: 'user' | 'assistant' | 'tool' | 'system' | 'meta' }` directly from the raw payload. The result is persisted on the same row so FTS and cross-session "list user prompts" style queries don't need a derived table.
 
+Historical rows (predating the extractor) are backfilled by `services/AgentMessagesBackfill.ts`. That pass is **deferred past first-usable** via `services/startupMaintenanceGate.ts` and chunked, and it short-circuits on a persisted completion flag so a finished DB never re-scans `ai_agent_messages` at startup. Never reintroduce an un-awaited backfill loop or an unindexed `COUNT(*)` probe on the startup path — it head-of-line-blocks the single FIFO SQLite worker. See the "Startup maintenance" section in `packages/electron/DATABASE.md` (NIM-899).
+
 ### TranscriptWriter
 
 Same as before -- shared service used by the transformer for emitting canonical events through the runtime's routing store. Owns sequence assignment and assistant_message coalescing.

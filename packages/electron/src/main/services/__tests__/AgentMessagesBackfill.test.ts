@@ -188,10 +188,10 @@ describe('runAgentMessagesBackfill', () => {
     const flagStore = makeFlagStore();
     await runAgentMessagesBackfill(db, { chunkSize: 10, flagStore });
 
-    // Reset call counters and run again. The gate filter
-    // (`message_kind IS NULL`) should match zero rows, so we expect exactly
-    // one empty SELECT and no UPDATEs / DELETEs. The historical sweep is
-    // also skipped because its flag was set on the first run.
+    // Reset call counters and run again. The first run drained every NULL row
+    // cleanly, so it set the completion flag -- the second run must skip the
+    // extractor pass ENTIRELY (no SELECT at all), not just match zero rows.
+    // This is the NIM-899 fix: a completed DB never re-scans ai_agent_messages.
     sqlCounts.select = 0;
     sqlCounts.historicalSelect = 0;
     sqlCounts.update = 0;
@@ -202,10 +202,44 @@ describe('runAgentMessagesBackfill', () => {
     expect(stats.searchableTextBackfilled).toBe(0);
     expect(stats.transientsDeleted).toBe(0);
     expect(stats.historicalTransientsDeleted).toBe(0);
-    expect(sqlCounts.select).toBe(1);
+    expect(sqlCounts.select).toBe(0);
     expect(sqlCounts.historicalSelect).toBe(0);
     expect(sqlCounts.update).toBe(0);
     expect(sqlCounts.delete).toBe(0);
+    warn.mockRestore();
+  });
+
+  it('does NOT set the completion flag when a row UPDATE fails (must retry next startup)', async () => {
+    const { db, query } = makeFakeDb([userRow(1, 'hello'), userRow(2, 'world')]);
+    // Make the UPDATE for row 2 throw so the pass cannot drain cleanly.
+    const realQuery = query.getMockImplementation()!;
+    query.mockImplementation(async (sql: string, params: unknown[] = []) => {
+      const norm = sql.replace(/\s+/g, ' ').trim();
+      if (norm.startsWith('UPDATE ai_agent_messages SET searchable_text') && params[2] === 2) {
+        throw new Error('simulated UPDATE failure');
+      }
+      return realQuery(sql, params);
+    });
+
+    const flagStore = makeFlagStore();
+    await runAgentMessagesBackfill(db, { chunkSize: 10, flagStore });
+
+    // A failed row stays message_kind NULL, so the completion flag must stay
+    // unset and the next startup must re-run the pass.
+    expect(flagStore.raw['agentMessagesSearchableBackfillCompleteV1']).toBeUndefined();
+    warn.mockRestore();
+  });
+
+  it('skips the extractor pass when the completion flag is already set', async () => {
+    const { db, sqlCounts } = makeFakeDb([userRow(1, 'pending')]);
+    const flagStore = makeFlagStore();
+    flagStore.set('agentMessagesSearchableBackfillCompleteV1', true);
+
+    const stats = await runAgentMessagesBackfill(db, { chunkSize: 10, flagStore });
+
+    expect(stats.searchableTextBackfilled).toBe(0);
+    expect(sqlCounts.select).toBe(0);
+    expect(sqlCounts.update).toBe(0);
     warn.mockRestore();
   });
 

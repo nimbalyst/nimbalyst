@@ -21,7 +21,21 @@ export interface CollabDocumentConfig {
   orgId: string;
   documentId: string;
   title: string;
-  documentKey: CryptoKey;
+  /**
+   * Epic H2 key custody. `legacy-e2e` (default): client encrypts/decrypts doc
+   * data with `documentKey`. `server-managed`: the server holds the per-team
+   * DEK and encrypts at rest, so the client syncs PLAINTEXT and `documentKey`
+   * is absent.
+   */
+  keyCustody?: 'legacy-e2e' | 'server-managed';
+  /** Org AES-256-GCM key. Present in legacy-e2e; absent in server-managed. */
+  documentKey?: CryptoKey;
+  /**
+   * Legacy org key for reading PRE-MIGRATION rows in server-managed mode
+   * (NIM-878). Rows written before the legacy-e2e -> server-managed flip are
+   * still AES-ciphertext and must be decrypted with the original org key.
+   */
+  legacyDocumentKey?: CryptoKey;
   serverUrl: string;
   getJwt: () => Promise<string>;
   /** Optional extra query appended to revision-history HTTP requests. */
@@ -332,9 +346,15 @@ export async function resolveCollabConfigForUri(
       return null;
     }
 
-    const { orgId, title: resolvedTitle, orgKeyBase64, orgKeyFingerprint, serverUrl, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+    const { orgId, title: resolvedTitle, orgKeyBase64, legacyOrgKeyBase64, orgKeyFingerprint, serverUrl, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
     const resolvedDocumentType = documentType ?? result.config.documentType;
-    const documentKey = await importOrgKeyFromBase64(orgKeyBase64);
+    const serverManaged = result.config.keyCustody === 'server-managed';
+    const documentKey = serverManaged ? undefined : await importOrgKeyFromBase64(orgKeyBase64);
+    // Server-managed docs may still serve PRE-MIGRATION legacy-e2e rows; import
+    // the legacy org key (when provided) so those old rows can be decrypted (NIM-878).
+    const legacyDocumentKey = serverManaged && legacyOrgKeyBase64
+      ? await importOrgKeyFromBase64(legacyOrgKeyBase64)
+      : undefined;
     const hasWsProxy = !!window.electronAPI?.documentSync?.wsConnect;
 
     const config: CollabDocumentConfig = {
@@ -343,7 +363,9 @@ export async function resolveCollabConfigForUri(
       documentId,
       title: resolvedTitle,
       documentType: resolvedDocumentType,
+      keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
       documentKey,
+      legacyDocumentKey,
       orgKeyFingerprint,
       serverUrl,
       userId,
@@ -412,11 +434,16 @@ export async function openCollabDocumentViaIPC(options: {
     throw new Error(result.error || 'Failed to resolve collaborative document config');
   }
 
-  const { orgId, documentId, title, orgKeyBase64, serverUrl, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+  const { orgId, documentId, title, orgKeyBase64, legacyOrgKeyBase64, serverUrl, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
   const documentType = options.documentType ?? result.config.documentType;
+  const serverManaged = result.config.keyCustody === 'server-managed';
 
-  // Reconstruct CryptoKey from raw base64
-  const documentKey = await importOrgKeyFromBase64(orgKeyBase64);
+  // Reconstruct CryptoKey from raw base64 (legacy only; server-managed has none)
+  const documentKey = serverManaged ? undefined : await importOrgKeyFromBase64(orgKeyBase64);
+  // Legacy org key for reading pre-migration rows in server-managed mode (NIM-878).
+  const legacyDocumentKey = serverManaged && legacyOrgKeyBase64
+    ? await importOrgKeyFromBase64(legacyOrgKeyBase64)
+    : undefined;
 
   // Build the real URI now that we have orgId
   const realUri = buildCollabUri(orgId, documentId);
@@ -432,7 +459,9 @@ export async function openCollabDocumentViaIPC(options: {
     documentId,
     title,
     documentType,
+    keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
     documentKey,
+    legacyDocumentKey,
     serverUrl,
     userId,
     userName,

@@ -28,6 +28,7 @@ import {
 } from '../types';
 import { OpenCodeSDKProtocol } from '../protocols/OpenCodeSDKProtocol';
 import { McpConfigService } from '../services/McpConfigService';
+import { getMcpConfigService, isInternalMcpServerEnabled } from '../services/mcpServerConfig';
 import { MCPServerConfig } from '../../../types/MCPServerConfig';
 import { safeJSONSerialize } from '../../../utils/serialization';
 import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
@@ -77,16 +78,8 @@ export class OpenCodeProvider extends BaseAgentProvider {
     isResumedSession: boolean;
   } | null = null;
 
-  // Shared MCP server ports (injected from electron main process)
-  private static mcpServerPort: number | null = null;
-  private static sessionNamingServerPort: number | null = null;
-  private static extensionDevServerPort: number | null = null;
-  private static superLoopProgressServerPort: number | null = null;
-  private static sessionContextServerPort: number | null = null;
-  private static settingsServerPort: number | null = null;
-  private static settingsAgentToolsDisabledLoader: (() => boolean) | null = null;
-  // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers (Issue #146)
-  private static mcpAuthToken: string | null = null;
+  // Internal MCP-server enablement (ports, kill-switches, extension/tracker
+  // loaders, auth token) lives in the shared `mcpServerConfig` registry now.
 
   // MCP config loader (injected from electron main process)
   private static mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null = null;
@@ -108,16 +101,8 @@ export class OpenCodeProvider extends BaseAgentProvider {
     // Initialize protocol (or use injected for testing)
     this.protocol = deps?.protocol || new OpenCodeSDKProtocol();
 
-    // Initialize MCP config service
-    this.mcpConfigService = new McpConfigService({
-      mcpServerPort: OpenCodeProvider.mcpServerPort,
-      sessionNamingServerPort: OpenCodeProvider.sessionNamingServerPort,
-      extensionDevServerPort: OpenCodeProvider.extensionDevServerPort,
-      superLoopProgressServerPort: OpenCodeProvider.superLoopProgressServerPort,
-      sessionContextServerPort: OpenCodeProvider.sessionContextServerPort,
-      settingsServerPort: OpenCodeProvider.settingsServerPort,
-      settingsAgentToolsDisabledLoader: OpenCodeProvider.settingsAgentToolsDisabledLoader,
-      mcpAuthToken: OpenCodeProvider.mcpAuthToken,
+    // Initialize MCP config service from the shared registry + provider loaders.
+    this.mcpConfigService = getMcpConfigService({
       mcpConfigLoader: OpenCodeProvider.mcpConfigLoader,
       claudeSettingsEnvLoader: null,
       shellEnvironmentLoader: OpenCodeProvider.shellEnvironmentLoader,
@@ -132,39 +117,9 @@ export class OpenCodeProvider extends BaseAgentProvider {
     return 'opencode';
   }
 
-  // Static injection setters (called from electron main process at startup)
-  public static setMcpServerPort(port: number | null): void {
-    OpenCodeProvider.mcpServerPort = port;
-  }
-
-  public static setSessionNamingServerPort(port: number | null): void {
-    OpenCodeProvider.sessionNamingServerPort = port;
-  }
-
-  public static setExtensionDevServerPort(port: number | null): void {
-    OpenCodeProvider.extensionDevServerPort = port;
-  }
-
-  public static setSuperLoopProgressServerPort(port: number | null): void {
-    OpenCodeProvider.superLoopProgressServerPort = port;
-  }
-
-  public static setSessionContextServerPort(port: number | null): void {
-    OpenCodeProvider.sessionContextServerPort = port;
-  }
-
-  public static setSettingsServerPort(port: number | null): void {
-    OpenCodeProvider.settingsServerPort = port;
-  }
-
-  public static setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void {
-    OpenCodeProvider.settingsAgentToolsDisabledLoader = loader;
-  }
-
-  public static setMcpAuthToken(token: string | null): void {
-    OpenCodeProvider.mcpAuthToken = token;
-  }
-
+  // Static injection setters (called from electron main process at startup).
+  // Internal MCP-server ports / kill-switches / loaders / auth token are
+  // configured once via `configureMcpServers` (shared registry).
   public static setMcpConfigLoader(loader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null): void {
     OpenCodeProvider.mcpConfigLoader = loader;
   }
@@ -298,7 +253,7 @@ export class OpenCodeProvider extends BaseAgentProvider {
    */
   protected buildSystemPrompt(_documentContext?: DocumentContext): string {
     return buildClaudeCodeSystemPrompt({
-      hasSessionNaming: !!OpenCodeProvider.sessionNamingServerPort,
+      hasSessionNaming: isInternalMcpServerEnabled(),
       toolReferenceStyle: 'opencode' as any,
     });
   }

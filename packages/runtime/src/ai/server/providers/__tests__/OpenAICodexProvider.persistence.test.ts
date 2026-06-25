@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAICodexProvider } from '../OpenAICodexProvider';
+import { configureMcpServers } from '../../services/mcpServerConfig';
 import { AgentMessagesRepository } from '../../../../storage/repositories/AgentMessagesRepository';
 import type { CreateAgentMessageInput } from '../../types';
 
@@ -28,7 +29,7 @@ describe('OpenAICodexProvider persistence', () => {
   });
 
   afterEach(() => {
-    OpenAICodexProvider.setSessionNamingServerPort(null);
+    configureMcpServers({ mcpServerPort: null });
     AgentMessagesRepository.clearStore();
   });
 
@@ -386,7 +387,9 @@ describe('OpenAICodexProvider persistence', () => {
   });
 
   it('persists the session naming reminder as a tagged non-searchable input row', async () => {
-    OpenAICodexProvider.setSessionNamingServerPort(41002);
+    // update_session_meta now rides on the eager core `nimbalyst` server (MCP
+    // consolidation Phase 5); registering it triggers the naming-reminder gate.
+    configureMcpServers({ mcpServerPort: 41001 });
 
     const sentContents: string[] = [];
     const protocol = {
@@ -468,7 +471,7 @@ describe('OpenAICodexProvider persistence', () => {
   });
 
   it('tags the session naming reminder turn output rows so the transcript hides them', async () => {
-    OpenAICodexProvider.setSessionNamingServerPort(41003);
+    configureMcpServers({ mcpServerPort: 41001 });
 
     let turn = 0;
     const protocol = {

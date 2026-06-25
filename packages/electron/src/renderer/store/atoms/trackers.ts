@@ -69,7 +69,7 @@ function migrateViewMode(
   raw: unknown,
   alreadyMigrated: boolean,
 ): TrackerModeLayout['viewMode'] {
-  if (raw === 'list' || raw === 'kanban') return raw;
+  if (raw === 'list' || raw === 'kanban' || raw === 'tag-board') return raw;
   if (raw === 'table') {
     if (!alreadyMigrated) return 'list';
     return 'table';
@@ -105,6 +105,7 @@ export async function initTrackerPanelLayout(workspacePath: string): Promise<voi
         sidebarWidth: savedModeLayout.sidebarWidth ?? DEFAULT_MODE_LAYOUT.sidebarWidth,
         detailPanelWidth: savedModeLayout.detailPanelWidth ?? DEFAULT_MODE_LAYOUT.detailPanelWidth,
         typeColumnConfigs: savedModeLayout.typeColumnConfigs ?? DEFAULT_MODE_LAYOUT.typeColumnConfigs,
+        groupBy: savedModeLayout.groupBy ?? DEFAULT_MODE_LAYOUT.groupBy,
         viewModeMigrated: true,
       };
 
@@ -114,6 +115,13 @@ export async function initTrackerPanelLayout(workspacePath: string): Promise<voi
       if (!alreadyMigrated) {
         scheduleModeLayoutPersist(workspacePath, newLayout);
       }
+    }
+
+    // Saved views are stored alongside the layout but as their own key so the
+    // (frequently re-persisted) layout blob stays small.
+    const savedViews = workspaceState?.trackerSavedViews;
+    if (Array.isArray(savedViews)) {
+      store.set(trackerSavedViewsAtom, savedViews as SavedView[]);
     }
   } catch (err) {
     console.error('[trackers] Failed to load layout:', err);
@@ -134,6 +142,7 @@ export type TrackerFilterChip = 'mine' | 'unassigned' | 'high-priority' | 'recen
 /** Per-type column configuration (re-exported from runtime) */
 export type { TypeColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
 import type { TypeColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
+import type { SavedView, TrackerGroupBy } from '../../components/TrackerMode/trackerSavedViews';
 
 export interface TrackerModeLayout {
   /** Selected type filter in sidebar ('all' or specific type) */
@@ -146,12 +155,13 @@ export interface TrackerModeLayout {
    * - `table`  -- true grid with aligned header and resizable columns
    *               (`TrackerTableGrid`).
    * - `kanban` -- column-per-status board (`KanbanBoard`).
+   * - `tag-board` -- column-per-tag board (`TagBoard`).
    *
    * Legacy persisted state used `'table'` for the list view; loads through
    * `initTrackerPanelLayout` rewrite that to `'list'` once, gated by
    * `viewModeMigrated`.
    */
-  viewMode: 'list' | 'table' | 'kanban';
+  viewMode: 'list' | 'table' | 'kanban' | 'tag-board';
   /** Currently selected tracker item ID (opens detail panel when non-null) */
   selectedItemId: string | null;
   /** Sidebar width in pixels */
@@ -160,6 +170,8 @@ export interface TrackerModeLayout {
   detailPanelWidth: number;
   /** Per-type column configuration (keyed by tracker type, 'all' for the all-types view) */
   typeColumnConfigs: Record<string, TypeColumnConfig>;
+  /** Active grouping for grouped renderings (NIM-788). Defaults to 'none'. */
+  groupBy: TrackerGroupBy;
   /**
    * Set to `true` once the one-shot `'table' -> 'list'` rewrite has run for
    * this workspace. Future loads pass `viewMode` through untouched so users
@@ -176,6 +188,7 @@ const DEFAULT_MODE_LAYOUT: TrackerModeLayout = {
   sidebarWidth: 220,
   detailPanelWidth: 400,
   typeColumnConfigs: {},
+  groupBy: 'none',
   viewModeMigrated: true,
 };
 
@@ -228,6 +241,50 @@ export const setTrackerModeLayoutAtom = atom(
     if (currentWorkspacePath) {
       scheduleModeLayoutPersist(currentWorkspacePath, newLayout);
     }
+  }
+);
+
+/** Active grouping in tracker mode. */
+export const trackerModeGroupByAtom = atom(
+  (get) => get(trackerModeLayoutAtom).groupBy
+);
+
+// ============================================================
+// Saved Views (NIM-788)
+// ============================================================
+
+/** Saved view definitions for the current workspace. */
+export const trackerSavedViewsAtom = atom<SavedView[]>([]);
+
+function persistSavedViews(workspacePath: string, views: SavedView[]): void {
+  window.electronAPI
+    .invoke('workspace:update-state', workspacePath, { trackerSavedViews: views })
+    .catch((err: unknown) => {
+      console.error('[trackers] Failed to persist saved views:', err);
+    });
+}
+
+/** Add (or replace by id) a saved view and persist to workspace settings. */
+export const saveTrackerViewAtom = atom(
+  null,
+  (get, set, view: SavedView) => {
+    const current = get(trackerSavedViewsAtom);
+    const existingIdx = current.findIndex((v) => v.id === view.id);
+    const next = existingIdx >= 0
+      ? current.map((v) => (v.id === view.id ? view : v))
+      : [...current, view];
+    set(trackerSavedViewsAtom, next);
+    if (currentWorkspacePath) persistSavedViews(currentWorkspacePath, next);
+  }
+);
+
+/** Remove a saved view by id and persist. */
+export const deleteTrackerViewAtom = atom(
+  null,
+  (get, set, viewId: string) => {
+    const next = get(trackerSavedViewsAtom).filter((v) => v.id !== viewId);
+    set(trackerSavedViewsAtom, next);
+    if (currentWorkspacePath) persistSavedViews(currentWorkspacePath, next);
   }
 );
 

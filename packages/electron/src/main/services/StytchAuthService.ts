@@ -23,9 +23,10 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../utils/logger';
-import { STYTCH_CONFIG } from '@nimbalyst/runtime';
+import { STYTCH_CONFIG, asPersonalJwt, asPersonalMemberId, type PersonalJwt, type PersonalMemberId } from '@nimbalyst/runtime';
 import { getSessionSyncConfig, setSessionSyncConfig } from '../utils/store';
 import { AnalyticsService } from './analytics/AnalyticsService';
+import { reconcilePersonalUserId } from './auth/personalUserIdReconcile';
 
 // Stytch types
 interface StytchUser {
@@ -672,8 +673,8 @@ export function getPersonalOrgId(): string | null {
  * change to the team org's member ID. This function returns the original
  * personal org member ID so sync room IDs and encryption keys stay consistent.
  */
-export function getPersonalUserId(): string | null {
-  return authState.personalUserId;
+export function getPersonalUserId(): PersonalMemberId | null {
+  return authState.personalUserId ? asPersonalMemberId(authState.personalUserId) : null;
 }
 
 /**
@@ -684,28 +685,33 @@ export function getPersonalUserId(): string | null {
  *
  * Returns the personal member ID, or null if resolution fails.
  */
-export async function resolvePersonalUserId(serverUrl: string): Promise<string | null> {
-  // Already resolved
-  if (authState.personalUserId) {
-    return authState.personalUserId;
-  }
+export async function resolvePersonalUserId(serverUrl: string): Promise<PersonalMemberId | null> {
+  // The personal-org exchange below is authoritative. We intentionally do NOT
+  // early-return on a cached personalUserId: a stale cached value (e.g. seeded
+  // from a non-personal sub by the creds migration) would otherwise never be
+  // corrected, permanently refusing the personal index room. See NIM-859. When
+  // the exchange can't run (offline / missing token) we fall back to the cached
+  // value so offline behavior is unchanged.
+  const cached: PersonalMemberId | null = authState.personalUserId
+    ? asPersonalMemberId(authState.personalUserId)
+    : null;
 
   const personalOrgId = authState.personalOrgId;
   if (!personalOrgId) {
     logger.main.warn('[StytchAuthService] Cannot resolve personalUserId: no personalOrgId');
-    return null;
+    return cached;
   }
 
   const sessionToken = authState.sessionToken;
   if (!sessionToken) {
     logger.main.warn('[StytchAuthService] Cannot resolve personalUserId: no session token');
-    return null;
+    return cached;
   }
 
   const jwt = authState.sessionJwt;
   if (!jwt) {
     logger.main.warn('[StytchAuthService] Cannot resolve personalUserId: no JWT');
-    return null;
+    return cached;
   }
 
   try {
@@ -725,7 +731,7 @@ export async function resolvePersonalUserId(serverUrl: string): Promise<string |
     if (!response.ok) {
       const errData = await response.json().catch(() => ({ error: `HTTP ${response.status}` })) as { error?: string };
       logger.main.error('[StytchAuthService] Failed to resolve personalUserId:', errData.error || response.status);
-      return null;
+      return cached;
     }
 
     const data = await response.json() as {
@@ -735,45 +741,50 @@ export async function resolvePersonalUserId(serverUrl: string): Promise<string |
 
     if (!data.sessionJwt) {
       logger.main.error('[StytchAuthService] Session exchange returned no JWT');
-      return null;
+      return cached;
     }
 
     // Extract member ID from the personal-org-scoped JWT
     const parts = data.sessionJwt.split('.');
     if (parts.length !== 3) {
       logger.main.error('[StytchAuthService] Invalid JWT format from session exchange');
-      return null;
+      return cached;
     }
     const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString()) as { sub?: string };
-    const personalUserId = payload.sub;
-    if (!personalUserId) {
+    // The exchange sub is authoritative -- reconcile against (and correct) any
+    // stale cached value. See NIM-859.
+    const { personalUserId: resolvedUserId, changed } = reconcilePersonalUserId(cached, payload.sub ?? null);
+    if (!resolvedUserId) {
       logger.main.error('[StytchAuthService] JWT sub claim missing from session exchange response');
-      return null;
+      return cached;
+    }
+    if (changed) {
+      logger.main.info('[StytchAuthService] Corrected personalUserId via personal-org exchange:', cached, '->', resolvedUserId);
     }
 
     // Persist the resolved personal member ID and personal JWT
-    authState = { ...authState, personalUserId, personalSessionJwt: data.sessionJwt };
+    authState = { ...authState, personalUserId: resolvedUserId, personalSessionJwt: data.sessionJwt };
     const creds = loadStytchCredentials();
     if (creds) {
-      saveStytchCredentials({ ...creds, personalUserId });
+      saveStytchCredentials({ ...creds, personalUserId: resolvedUserId });
     }
     // Update accounts map
     if (personalOrgId) {
-      updateAccountCredentials(personalOrgId, { personalUserId });
+      updateAccountCredentials(personalOrgId, { personalUserId: resolvedUserId });
     }
 
     // The session exchange also updated the session token -- persist that too
-    // so future refreshes work. But do NOT update personalOrgId or personalUserId
-    // from the exchange response -- we just resolved those.
+    // so future refreshes work. But do NOT update personalOrgId from the
+    // exchange response.
     if (data.sessionToken) {
       updateSessionToken(data.sessionToken);
     }
 
-    logger.main.info('[StytchAuthService] Resolved personalUserId:', personalUserId, 'and stored personal JWT');
-    return personalUserId;
+    logger.main.info('[StytchAuthService] Resolved personalUserId:', resolvedUserId, 'and stored personal JWT');
+    return asPersonalMemberId(resolvedUserId);
   } catch (error) {
     logger.main.error('[StytchAuthService] Error resolving personalUserId:', error);
-    return null;
+    return cached;
   }
 }
 
@@ -834,8 +845,9 @@ export function getAccounts(): AccountInfo[] {
  * for session/index room routing. Falls back to sessionJwt if we
  * haven't done a team session exchange (personal org is the default).
  */
-export function getPersonalSessionJwt(): string | null {
-  return authState.personalSessionJwt || authState.sessionJwt;
+export function getPersonalSessionJwt(): PersonalJwt | null {
+  const jwt = authState.personalSessionJwt || authState.sessionJwt;
+  return jwt ? asPersonalJwt(jwt) : null;
 }
 
 /**
@@ -935,7 +947,36 @@ export async function refreshPersonalSession(serverUrl: string): Promise<boolean
       return false;
     }
 
-    authState = { ...authState, personalSessionJwt: data.sessionJwt };
+    // The personal-org exchange sub is authoritative. Correct a stale
+    // personalUserId here too -- refresh historically rewrote only the JWT and
+    // never the id, leaving the personal index room permanently refused. See
+    // NIM-859.
+    try {
+      const jwtParts = data.sessionJwt.split('.');
+      const payload = jwtParts.length === 3
+        ? (JSON.parse(Buffer.from(jwtParts[1], 'base64url').toString()) as { sub?: string })
+        : {};
+      const { personalUserId: resolvedUserId, changed } = reconcilePersonalUserId(
+        authState.personalUserId ?? null,
+        payload.sub ?? null,
+      );
+      if (changed && resolvedUserId) {
+        logger.main.info('[StytchAuthService] Corrected personalUserId during personal session refresh:',
+          authState.personalUserId ?? null, '->', resolvedUserId);
+        authState = { ...authState, personalUserId: resolvedUserId, personalSessionJwt: data.sessionJwt };
+        const creds = loadStytchCredentials();
+        if (creds) {
+          saveStytchCredentials({ ...creds, personalUserId: resolvedUserId });
+        }
+        if (personalOrgId) {
+          updateAccountCredentials(personalOrgId, { personalUserId: resolvedUserId });
+        }
+      } else {
+        authState = { ...authState, personalSessionJwt: data.sessionJwt };
+      }
+    } catch {
+      authState = { ...authState, personalSessionJwt: data.sessionJwt };
+    }
 
     // Update the session token (shared across orgs)
     if (data.sessionToken) {

@@ -372,6 +372,7 @@ The `known_error` event uses an `errorId` property to identify specific error co
 | `mobile_project_selected` | `ProjectListScreen.tsx:74` | User taps on a project | None (privacy - no project names) | (pending release) |  |
 | `mobile_ai_message_sent` | `SessionDetailScreen.tsx:648` | User sends a message to AI from mobile | `hasAttachments` (boolean) | (pending release) |  |
 | `mobile_pairing_completed` | `SettingsScreen.tsx:134` | QR code scan successful | None | (pending release) |  |
+| `mobile_login_started` | `LoginScreen.kt` | User initiates sign-in (Google or magic link) | `method` (google/magic_link) | (pending release) |  |
 | `mobile_login_completed` | `SettingsScreen.tsx:63` | User completes Stytch authentication | None | (pending release) |  |
 | `mobile_analytics_opt_out` | `AnalyticsService.ts:93` | User opts out of analytics | None | (pending release) |  |
 | `mobile_meta_agent_created` | `SessionListView.swift` | User creates a Meta Agent from the create menu (alpha-gated) | `model` (string) | (pending release) |  |

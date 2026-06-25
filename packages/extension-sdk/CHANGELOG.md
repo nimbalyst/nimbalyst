@@ -14,6 +14,10 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 
 ## [Unreleased]
 
+### Added
+
+- `ExtensionAITool.access` declares whether a tool uses filesystem, editor-read, or editor-write access; `readOnly` remains as a compatibility alias.
+
 ## [0.2.0]
 
 Adds opt-in collaborative editing for custom editors. Backwards-compatible: extensions built against 0.2.0 continue to work on older Nimbalyst hosts -- the collaboration hook detects the absence of `host.collaboration` and reports `isCollaborative: false` so the editor falls back to local-only editing.

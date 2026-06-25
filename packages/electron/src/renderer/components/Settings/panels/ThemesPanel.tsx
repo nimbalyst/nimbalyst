@@ -7,7 +7,7 @@ import { pendingThemeFallbackAtom } from '../../../store/atoms/themeFallback';
 import { themeListChangedVersionAtom } from '../../../store/atoms/themeList';
 
 interface ThemesPanelProps {
-  scope: 'user' | 'project';
+  scope: 'user' | 'organization' | 'project';
   workspacePath?: string;
 }
 

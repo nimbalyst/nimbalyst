@@ -18,6 +18,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.NimbalystAndroid">
             <intent-filter>
@@ -46,6 +47,10 @@
                     android:host="pair"
                     android:scheme="nimbalyst" />
             </intent-filter>
+            <!-- Note: nimbalyst://session/[id] is delivered only via the push
+                 notification's explicit Intent(MainActivity) (see
+                 NimbalystFirebaseMessagingService). No BROWSABLE intent-filter is
+                 declared for it, which would needlessly let any web page invoke it. -->
         </activity>
 
         <service
@@ -55,6 +60,14 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Maintains the encrypted sync WebSocket to the paired desktop while the app is backgrounded." />
+        </service>
+
+        <service
+            android:name=".notifications.NimbalystFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
         </service>
     </application>
 

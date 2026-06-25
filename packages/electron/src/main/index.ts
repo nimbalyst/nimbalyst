@@ -71,6 +71,7 @@ import {
     getAppSetting,
     getClaudeCodeSettings,
     isSettingsAgentToolsDisabled,
+    isTrackersAgentToolsEnabled,
     store
 } from './utils/store';
 import { getAIProviderOverridesWithWorktreeFallback } from './utils/aiSettingsMerge';
@@ -89,10 +90,11 @@ import { registerTerminalHandlers, shutdownTerminalHandlers } from './ipc/Termin
 import { AIService } from './services/ai/AIService';
 import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesForWorkspace } from './utils/workspaceDetection';
 import { cliManager, initEnhancedPath, getEnhancedPath, getShellEnvironment } from './services/CLIManager';
-import { registerWorkspaceWindow, registerExtensionTools, shutdownHttpServer, startMcpHttpServer, updateDocumentState } from './mcp/httpServer';
+import { registerWorkspaceWindow, registerExtensionTools, shutdownHttpServer, startMcpHttpServer, updateDocumentState, getActiveExtensionShortNames } from './mcp/httpServer';
 import { writeMcpEndpointDescriptor, removeMcpEndpointDescriptor, type EndpointWorkspace } from './mcp/mcpEndpointDescriptor';
-import { startSessionContextServer, cleanupSessionContextServer, shutdownSessionContextServer } from './mcp/sessionContextServer';
-import { startSettingsServer, shutdownSettingsServer } from './mcp/settingsServer';
+// MCP consolidation Phase 7: sessionContextServer / settingsServer no longer run
+// as standalone HTTP servers; their tool dispatch + schemas are imported by the
+// unified httpServer instead. Nothing to start/shutdown from here.
 import { generateMcpAuthToken, getMcpAuthToken } from './mcp/mcpAuth';
 import {
   registerNimAssetSchemeAsPrivileged,
@@ -140,6 +142,7 @@ import { getAgentWorkflowService } from './services/AgentWorkflowService';
 import { queueMarketplaceInstallRequest, registerExtensionMarketplaceHandlers, runExtensionAutoUpdate } from './ipc/ExtensionMarketplaceHandlers';
 import { getRegisteredExtensions } from './extensions/RegisteredFileTypes';
 import { ClaudeCodeProvider, OpenAICodexProvider, OpenAICodexACPProvider, OpenCodeProvider, CopilotCLIProvider } from '@nimbalyst/runtime/ai/server';
+import { configureMcpServers } from '@nimbalyst/runtime/ai/server';
 import { matchesAllowPattern } from '@nimbalyst/runtime/ai/server/permissions/toolPermissionHelpers';
 import { resolveCodexPreEditHookScriptPath } from './services/ai/codexPreEditHookPath';
 import { sessionFileTracker } from './services/SessionFileTracker';
@@ -176,6 +179,7 @@ import { getPermissionService } from './services/PermissionService';
 import { ClaudeSettingsManager } from './services/ClaudeSettingsManager';
 import { TrayManager } from './tray/TrayManager';
 import { pathToFileURL } from 'url';
+import { registerLinuxAppImageProtocolHandler } from './services/LinuxProtocolRegistration';
 
 // CRITICAL: Hide dock icon when running as background Node process
 // This prevents Terminal icon from appearing when Claude Code spawns child processes
@@ -521,6 +525,8 @@ if (process.defaultApp) {
     app.setAsDefaultProtocolClient('nimbalyst');
 }
 
+registerLinuxAppImageProtocolHandler();
+
 // Single-instance lock
 // Ensures only one instance runs at a time. When a second instance launches
 // (e.g., from a file double-click), it forwards its context to the primary instance.
@@ -550,6 +556,10 @@ if (!allowMultipleInstances) {
         if (fileArg) {
             logger.main.info(`[SingleInstance] Found file in argv: ${fileArg}`);
             try { writeFileSync(pendingOpenFilePath, fileArg, 'utf-8'); } catch (_) {}
+            app.quit();
+        } else if (process.argv.find(arg => arg.startsWith('nimbalyst://'))) {
+            // Primary instance will handle via second-instance event; quit immediately
+            logger.main.info('[SingleInstance] Second instance has deep link arg, quitting immediately');
             app.quit();
         } else {
             // No file in argv -- wait for open-file Apple Event
@@ -1115,6 +1125,9 @@ function parseCommandLineArgs() {
         } else if (arg === '--filter' && i + 1 < args.length) {
             pendingFilter = args[i + 1];
             logger.main.info(`✓ Filter from CLI: ${pendingFilter}`);
+        } else if (arg.startsWith('nimbalyst://')) {
+            pendingDeepLinkUrl = arg;
+            logger.main.info(`[SingleInstance] Found deep link in argv: ${arg.substring(0, 60)}...`);
         } else if (!arg.startsWith('--') && !arg.startsWith('-')) {
             // Handle plain file path argument (e.g., "preditor file.md")
             const argExists = existsSync(arg);
@@ -2049,12 +2062,7 @@ app.whenReady().then(async () => {
     // Issue #146: required so a malicious page in the user's browser can't
     // invoke MCP tools against the localhost ports.
     const mcpAuthToken = generateMcpAuthToken();
-    ClaudeCodeProvider.setMcpAuthToken(mcpAuthToken);
-    OpenAICodexProvider.setMcpAuthToken(mcpAuthToken);
-    OpenAICodexACPProvider.setMcpAuthToken(mcpAuthToken);
-    OpenCodeProvider.setMcpAuthToken(mcpAuthToken);
-    CopilotCLIProvider.setMcpAuthToken(mcpAuthToken);
-    ClaudeCliLauncherConfig.setMcpAuthToken(mcpAuthToken);
+    configureMcpServers({ mcpAuthToken });
 
     // Test-only IPC handler: lets E2E tests verify the bearer token is
     // enforced by the MCP servers. Mirrors the pattern used for
@@ -2078,13 +2086,25 @@ app.whenReady().then(async () => {
         // Store the actual port for providers to use
         (global as any).mcpServerPort = result.port;
 
-        // Inject the port into ClaudeCodeProvider so it can configure the MCP server
-        ClaudeCodeProvider.setMcpServerPort(result.port);
-        OpenAICodexProvider.setMcpServerPort(result.port);
-        OpenAICodexACPProvider.setMcpServerPort(result.port);
-        OpenCodeProvider.setMcpServerPort(result.port);
-        CopilotCLIProvider.setMcpServerPort(result.port);
-        ClaudeCliLauncherConfig.setMcpServerPort(result.port);
+        // MCP consolidation: all internal MCP-server enablement (port, per-ext
+        // servers, tracker opt-out) goes through the shared registry once —
+        // every provider + the CLI launcher read it via getMcpConfigService.
+        //
+        // Per-extension servers (Phase 3): each active extension gets its own
+        // deferred `nimbalyst-<ext>` server; read fresh per session-start so
+        // newly-loaded extensions get a server without an app restart.
+        //
+        // Tracker opt-out (Phase 4): read `trackers.enabled` from workspace state
+        // per config build so the Trackers settings toggle takes effect on the
+        // next session start without a restart. Returns "disabled" (true => omit
+        // `nimbalyst-trackers`); default on.
+        configureMcpServers({
+            mcpServerPort: result.port,
+            extensionMcpServerNamesLoader: (workspacePath?: string) =>
+                getActiveExtensionShortNames(workspacePath),
+            trackersAgentToolsDisabledLoader: (workspacePath?: string) =>
+                workspacePath ? !isTrackersAgentToolsEnabled(workspacePath) : false,
+        });
 
         // Publish the loopback endpoint + per-launch token so the `nim`
         // companion CLI can discover and talk to this running instance (live
@@ -2103,65 +2123,34 @@ app.whenReady().then(async () => {
             logger.mcp.error('Failed to start MCP SSE server:', error);
     }
 
-    // Start session naming MCP server
+    // Session metadata fns injection (MCP consolidation Phase 7: no standalone
+    // HTTP server — `update_session_meta` is served by the unified `/mcp/core`).
+    // The service still injects the title/metadata/query fns that dispatch uses.
     try {
         const sessionNamingService = SessionNamingService.getInstance();
         await sessionNamingService.start();
-        // logger.mcp.info('Session naming MCP server started');
     } catch (error) {
-        logger.mcp.error('Failed to start session naming MCP server:', error);
+        logger.mcp.error('Failed to start session naming service:', error);
     }
 
-    // Start extension dev MCP server (for Extension Developer Kit)
+    // Start extension dev MCP server (for Extension Developer Kit). Still its own
+    // standalone HTTP server (profile-gated); registers its port via the shared
+    // MCP config registry.
     try {
         const extensionDevService = ExtensionDevService.getInstance();
         await extensionDevService.start();
-        // logger.mcp.info('Extension dev MCP server started');
     } catch (error) {
         logger.mcp.error('Failed to start extension dev MCP server:', error);
     }
 
-    // Super Loop progress MCP server disabled - was leaking into non-super-loop sessions
-    // TODO: Re-enable with proper gating so it only appears in super loop sessions
-
-    // Start session context MCP server (session summary, workstream overview, recent sessions)
-    try {
-        const result = await startSessionContextServer();
-        ClaudeCodeProvider.setSessionContextServerPort(result.port);
-        OpenAICodexProvider.setSessionContextServerPort(result.port);
-        OpenAICodexACPProvider.setSessionContextServerPort(result.port);
-        OpenCodeProvider.setSessionContextServerPort(result.port);
-        CopilotCLIProvider.setSessionContextServerPort(result.port);
-        ClaudeCliLauncherConfig.setSessionContextServerPort(result.port);
-    } catch (error) {
-        logger.mcp.error('Failed to start session context MCP server:', error);
-    }
-
-    // Start settings control MCP server (lets agents inspect/change Nimbalyst settings).
-    // Port is injected into the standard providers; the meta-agent profile excludes
-    // this namespace via McpConfigService.
-    try {
-        const result = await startSettingsServer();
-        ClaudeCodeProvider.setSettingsServerPort(result.port);
-        OpenAICodexProvider.setSettingsServerPort(result.port);
-        OpenAICodexACPProvider.setSettingsServerPort(result.port);
-        OpenCodeProvider.setSettingsServerPort(result.port);
-        CopilotCLIProvider.setSettingsServerPort(result.port);
-        ClaudeCliLauncherConfig.setSettingsServerPort(result.port);
-
-        // Kill-switch loader: read fresh from the store on every config build
-        // so flipping `settingsAgentToolsDisabled` in Settings > Advanced takes
-        // effect on the next session start without an app restart.
-        const killSwitch = () => isSettingsAgentToolsDisabled();
-        ClaudeCodeProvider.setSettingsAgentToolsDisabledLoader(killSwitch);
-        OpenAICodexProvider.setSettingsAgentToolsDisabledLoader(killSwitch);
-        OpenAICodexACPProvider.setSettingsAgentToolsDisabledLoader(killSwitch);
-        OpenCodeProvider.setSettingsAgentToolsDisabledLoader(killSwitch);
-        CopilotCLIProvider.setSettingsAgentToolsDisabledLoader(killSwitch);
-        ClaudeCliLauncherConfig.setSettingsAgentToolsDisabledLoader(killSwitch);
-    } catch (error) {
-        logger.mcp.error('Failed to start settings MCP server:', error);
-    }
+    // MCP consolidation Phase 7: session-context + settings tools fold onto the
+    // unified server (`/mcp/host`); no standalone HTTP servers. The settings
+    // kill-switch (read fresh from the store per config build, so flipping
+    // `settingsAgentToolsDisabled` in Settings > Advanced takes effect on the
+    // next session start) is the only thing still wired here.
+    configureMcpServers({
+        settingsAgentToolsDisabledLoader: () => isSettingsAgentToolsDisabled(),
+    });
 
     try {
         const metaAgentService = MetaAgentService.getInstance();
@@ -2481,8 +2470,10 @@ app.whenReady().then(async () => {
 
     // Save session periodically (every 30 seconds)
     sessionSaveInterval = setInterval(async () => {
-        // Only save if app is not quitting
-        if (!isAppQuitting) {
+        // Only save if app is not quitting or restarting. During a restart the
+        // good state is saved once in `before-quit`; a periodic save firing
+        // afterward (over an emptied windows map) would clobber it (NIM-869).
+        if (!isAppQuitting && !isRestarting()) {
             await saveSessionState();
         }
     }, 30000);
@@ -2576,6 +2567,16 @@ app.on('before-quit', async (event) => {
         console.log('[QUIT] Restart signal detected, saving session state before restart');
         // Mark as restarting BEFORE saving to prevent window close handlers from overwriting
         isAppRestarting = true;
+        // Stop the periodic session-save timer and mark quitting so NO further
+        // save can fire after windows tear down. Without this the periodic save
+        // (guarded only by !isAppQuitting) could run over an emptied windows map
+        // and overwrite the good state with `{ windows: [] }` -- the restart
+        // would then come back to the Workspace Manager with no projects (NIM-869).
+        isAppQuitting = true;
+        if (sessionSaveInterval) {
+            clearInterval(sessionSaveInterval);
+            sessionSaveInterval = null;
+        }
         // Save session state so the session is restored after restart
         try {
             await saveSessionState();
@@ -2922,47 +2923,17 @@ app.on('before-quit', async (event) => {
 
     // Super Loop progress MCP server shutdown skipped (server disabled)
 
-    try {
-        // Shutdown session context MCP server
-        const shutdownPromise = shutdownSessionContextServer();
-        const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 500));
-        await Promise.race([shutdownPromise, timeoutPromise]);
-        ClaudeCodeProvider.setSessionContextServerPort(null);
-        OpenAICodexProvider.setSessionContextServerPort(null);
-        OpenAICodexACPProvider.setSessionContextServerPort(null);
-        OpenCodeProvider.setSessionContextServerPort(null);
-        CopilotCLIProvider.setSessionContextServerPort(null);
-        console.log('[QUIT] Session context MCP server shutdown complete');
-    } catch (error) {
-        console.error('[QUIT] Error closing session context MCP server:', error);
-    }
-
-    try {
-        // Shutdown settings control MCP server
-        const shutdownPromise = shutdownSettingsServer();
-        const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 500));
-        await Promise.race([shutdownPromise, timeoutPromise]);
-        ClaudeCodeProvider.setSettingsServerPort(null);
-        OpenAICodexProvider.setSettingsServerPort(null);
-        OpenAICodexACPProvider.setSettingsServerPort(null);
-        OpenCodeProvider.setSettingsServerPort(null);
-        CopilotCLIProvider.setSettingsServerPort(null);
-        console.log('[QUIT] Settings MCP server shutdown complete');
-    } catch (error) {
-        console.error('[QUIT] Error closing settings MCP server:', error);
-    }
-
+    // MCP consolidation Phase 7: session-context / settings / meta-agent tools
+    // are served by the unified server; no standalone HTTP servers to tear down.
+    // The meta-agent service shutdown still detaches its state listener.
     try {
         const metaAgentService = MetaAgentService.getInstance();
         const shutdownPromise = metaAgentService.shutdown();
         const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 500));
         await Promise.race([shutdownPromise, timeoutPromise]);
-        ClaudeCodeProvider.setMetaAgentServerPort(null);
-        OpenAICodexProvider.setMetaAgentServerPort(null);
-        OpenAICodexACPProvider.setMetaAgentServerPort(null);
-        console.log('[QUIT] Meta-agent MCP server shutdown complete');
+        console.log('[QUIT] Meta-agent service shutdown complete');
     } catch (error) {
-        console.error('[QUIT] Error closing meta-agent MCP server:', error);
+        console.error('[QUIT] Error shutting down meta-agent service:', error);
     }
 
     try {

@@ -31,6 +31,7 @@ import { InstalledExtensionsPanel } from './panels/InstalledExtensionsPanel';
 import { PrivilegedExtensionsPanel } from './panels/PrivilegedExtensionsPanel';
 import { ThemesPanel } from './panels/ThemesPanel';
 import { TeamPanel } from './panels/TeamPanel';
+import { OrgPanel } from './panels/OrgPanel';
 import { TrackerConfigPanel } from './panels/TrackerConfigPanel';
 import { GitHubAccountPanel } from './panels/GitHubAccountPanel';
 import { ExtensionMarketplacePanel } from './panels/ExtensionMarketplacePanel';
@@ -47,6 +48,7 @@ import {
   type AIModel,
 } from '../../store/atoms/appSettings';
 import { omitModelsField } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
+import { selectedOrgIdAtom } from '../../store/atoms/orgScope';
 
 // Re-export ProviderConfig for backward compatibility
 export type { ProviderConfig } from '../../store/atoms/appSettings';
@@ -60,7 +62,10 @@ export interface Model {
 
 // Note: The ProviderConfig interface has been moved to appSettings.ts
 
-export type SettingsScope = 'user' | 'project';
+// Epic H3 P3: a third "Organization" scope, keyed to the org selected in the
+// OrgSwitcher (not the active workspace). Org admin (members, encryption, the
+// project registry, consolidation) lives here rather than in Project scope.
+export type SettingsScope = 'user' | 'organization' | 'project';
 
 interface MarketplaceInstallRequest {
   extensionId: string;
@@ -98,7 +103,7 @@ const ExtensionAgentSettingsPanel: React.FC<{
   extEntry: ExtAgentItem;
   commonProps: Record<string, unknown>;
   workspacePath?: string;
-  scope: 'user' | 'project';
+  scope: SettingsScope;
   onOpenInstalledExtensions: () => void;
 }> = ({ extEntry, commonProps, workspacePath, scope, onOpenInstalledExtensions }) => {
   const loadedExt = getExtensionLoader().getExtension(extEntry.extensionId);
@@ -250,6 +255,49 @@ export function SettingsView({
   useEffect(() => { refreshExtAgentProviders(); }, [refreshExtAgentProviders]);
   const [scope, setScope] = useState<SettingsScope>(initialScope || 'user');
 
+  // Epic H3 P3: Organization scope. The selected org is shared with the
+  // OrgSwitcher; the tab is enabled only when the user belongs to a team org.
+  const [selectedOrgId, setSelectedOrgId] = useAtom(selectedOrgIdAtom);
+  const [orgChoices, setOrgChoices] = useState<{ orgId: string; name: string }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await (window as any).electronAPI?.team?.list?.();
+        if (cancelled || !res?.success || !Array.isArray(res.teams)) return;
+        const orgs: { orgId: string; name: string }[] = res.teams
+          .filter((t: { membershipType?: string }) => !t.membershipType || t.membershipType === 'active_member')
+          .map((t: { orgId: string; name: string }) => ({ orgId: t.orgId, name: t.name }));
+        if (cancelled) return;
+        setOrgChoices(orgs);
+        if (orgs.length === 0) return;
+        // Default the Organization scope to the CURRENT PROJECT's org (not just
+        // the first team in the list) so opening settings from a project lands on
+        // that project's org. An existing valid selection (e.g. set by the
+        // OrgSwitcher's "Manage organization…" deep-link) is preserved.
+        let preferred: string | null = null;
+        if (workspacePath) {
+          try {
+            const ws = await (window as any).electronAPI?.team?.findForWorkspace?.(workspacePath);
+            const wsOrgId: string | undefined = ws?.team?.orgId ?? ws?.orgId;
+            if (wsOrgId && orgs.some(o => o.orgId === wsOrgId)) preferred = wsOrgId;
+          } catch { /* fall back to first org */ }
+        }
+        if (cancelled) return;
+        setSelectedOrgId((prev) => (prev && orgs.some(o => o.orgId === prev) ? prev : (preferred ?? orgs[0].orgId)));
+      } catch {
+        /* non-fatal: Organization scope just stays disabled */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [setSelectedOrgId, workspacePath]);
+  const hasTeamOrg = orgChoices.length > 0;
+  // The org the Organization scope operates on: the shared selection if valid,
+  // else the first team org.
+  const effectiveOrgId = (selectedOrgId && orgChoices.some(o => o.orgId === selectedOrgId))
+    ? selectedOrgId
+    : (orgChoices[0]?.orgId ?? null);
+
   // AI Provider settings - using Jotai atoms (Phase 5b)
   const [aiProviderSettings] = useAtom(aiProviderSettingsAtom);
   const [, updateAIProviderSettings] = useAtom(setAIProviderSettingsAtom);
@@ -307,7 +355,11 @@ export function SettingsView({
   const [hasWorkspaceMcpServers, setHasWorkspaceMcpServers] = useState(false);
   const [workspaceMcpServerCount, setWorkspaceMcpServerCount] = useState(0);
 
-  // Valid categories for each scope
+  // Valid categories for each scope.
+  // Epic H3 P3: 'org' (pure org admin) is Organization-scope only. 'team' lives
+  // in BOTH scopes -- workspace-centric setup (create/join) in Project scope, and
+  // org admin in Organization scope. 'tracker-config' stays project-local.
+  const organizationCategories: SettingsCategory[] = ['org', 'team'];
   const projectCategories: SettingsCategory[] = [
     'agent-permissions',
     'team',
@@ -334,10 +386,14 @@ export function SettingsView({
     'lmstudio',
     ...(developerMode ? (['github'] as SettingsCategory[]) : []),
     'sync',
+    'shared-links',
     'notifications',
+    'themes',
     'voice-mode',
     'agent-features',
     'advanced',
+    'database',
+    'beta-features',
     'marketplace',
     'installed-extensions',
     'claude-plugins',
@@ -378,13 +434,21 @@ export function SettingsView({
 
   // When scope changes, ensure selected category is valid for that scope
   useEffect(() => {
-    const validCategories = scope === 'project' ? projectCategories : userCategories;
+    const validCategories = scope === 'project'
+      ? projectCategories
+      : scope === 'organization'
+        ? organizationCategories
+        : userCategories;
     // Extension-contributed agent providers (e.g. antigravity-gemini-agent) are
     // valid selectable categories too; don't bounce the user off them.
     const isExtensionProvider = extAgentProviders.some((pr) => pr.id === selectedCategory);
     if (!isExtensionProvider && !validCategories.includes(selectedCategory as SettingsCategory)) {
       // Default to first valid category for the scope
-      setSelectedCategory(scope === 'project' ? 'agent-permissions' : 'claude-code');
+      setSelectedCategory(
+        scope === 'project' ? 'agent-permissions'
+          : scope === 'organization' ? 'org'
+          : 'claude-code',
+      );
     }
   }, [scope, selectedCategory, developerMode, extAgentProviders]);
 
@@ -841,8 +905,12 @@ export function SettingsView({
             workspacePath={workspacePath ?? undefined}
           />
         );
+      case 'org':
+        // Epic H3 P3: in Organization scope, key off the selected org (not the
+        // workspace). Falls back to workspace resolution if no org is selected.
+        return <OrgPanel orgId={scope === 'organization' ? (effectiveOrgId ?? undefined) : undefined} workspacePath={workspacePath ?? undefined} />;
       case 'team':
-        return <TeamPanel workspacePath={workspacePath ?? undefined} />;
+        return <TeamPanel orgId={scope === 'organization' ? (effectiveOrgId ?? undefined) : undefined} workspacePath={workspacePath ?? undefined} />;
       case 'tracker-config':
         return <TrackerConfigPanel workspacePath={workspacePath ?? undefined} />;
       case 'github':
@@ -909,18 +977,16 @@ export function SettingsView({
     }
   };
 
-  // Categories that are only available in project scope
-  const projectOnlyCategories: SettingsCategory[] = ['agent-permissions', 'team', 'tracker-config'];
-
-  // Handle scope changes - preserve selected category when possible
+  // Handle scope changes. When entering Organization scope, make sure a team org
+  // is selected; category validity for the new scope is enforced by the
+  // validation effect above (it keeps the current category when it's valid in the
+  // target scope -- e.g. 'team' carries across Project<->Organization -- and
+  // otherwise bounces to that scope's default).
   const handleScopeChange = (newScope: SettingsScope) => {
     setScope(newScope);
-    // Only change category if current one is not available in the new scope
-    if (newScope === 'user' && projectOnlyCategories.includes(selectedCategory as SettingsCategory)) {
-      // Switching to user scope from a project-only category
-      setSelectedCategory('claude-code');
+    if (newScope === 'organization' && effectiveOrgId) {
+      setSelectedOrgId(effectiveOrgId);
     }
-    // When switching to project scope, keep the current category (all user categories are available in project scope)
   };
 
   return (
@@ -939,7 +1005,19 @@ export function SettingsView({
               }`}
               onClick={() => handleScopeChange('user')}
             >
-              User
+              Application
+            </button>
+            <button
+              className={`settings-scope-tab settings-scope-tab-organization py-1.5 px-4 rounded-md text-xs font-medium cursor-pointer transition-all duration-150 border-none disabled:opacity-50 disabled:cursor-not-allowed ${
+                scope === 'organization'
+                  ? 'bg-[var(--nim-primary)] text-white shadow-sm'
+                  : 'bg-transparent text-[var(--nim-text-muted)] hover:text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]'
+              }`}
+              onClick={() => handleScopeChange('organization')}
+              disabled={!hasTeamOrg}
+              title={!hasTeamOrg ? 'Join or create a team to access organization settings' : undefined}
+            >
+              Organization
             </button>
             <button
               className={`settings-scope-tab py-1.5 px-4 rounded-md text-xs font-medium cursor-pointer transition-all duration-150 border-none disabled:opacity-50 disabled:cursor-not-allowed ${
@@ -954,11 +1032,16 @@ export function SettingsView({
               Project
             </button>
           </div>
-          <span className="settings-scope-hint text-[13px] text-[var(--nim-text-muted)]">
-            {scope === 'user'
-              ? 'These settings apply to all projects'
-              : `Settings for ${workspaceName || 'this project'}`}
-          </span>
+          {/* Org scope's org picker lives at the top of the sidebar (so "which
+              org am I editing" sits with the org admin nav, not in global
+              chrome). Only User/Project scopes show a hint here. */}
+          {scope !== 'organization' && (
+            <span className="settings-scope-hint text-[13px] text-[var(--nim-text-muted)]">
+              {scope === 'user'
+                ? 'These settings apply to all projects'
+                : `Settings for ${workspaceName || 'this project'}`}
+            </span>
+          )}
         </div>
 
         <span className="flex-1" />
@@ -980,6 +1063,9 @@ export function SettingsView({
           onSelectCategory={setSelectedCategory}
           providerStatus={providerStatus}
           scope={scope}
+          orgChoices={orgChoices}
+          selectedOrgId={effectiveOrgId}
+          onSelectOrg={setSelectedOrgId}
           // releaseChannel now comes from Jotai atom in SettingsSidebar
         />
 

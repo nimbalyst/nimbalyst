@@ -230,7 +230,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
    * pass on first start. Without this, resumed threads start with codex's
    * defaults and the agent sees zero MCP tools available -- breaking
    * `developer_git_commit_proposal`, AskUserQuestion, and every other
-   * Nimbalyst-internal tool that ships through nimbalyst-mcp.
+   * Nimbalyst-internal tool that ships through the nimbalyst MCP servers.
    */
   async resumeSession(sessionId: string, options: SessionOptions): Promise<ProtocolSession> {
     const raw = await this.spawnAndInit(options);

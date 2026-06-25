@@ -1,119 +1,23 @@
 /**
- * Settings Control MCP Server (`nimbalyst-settings`)
+ * Settings Control tool surface (`settings_*` / `workspace_*` / `appearance_*` / …)
  *
  * Exposes a curated, action-shaped surface for an AI agent to inspect and
  * change Nimbalyst settings on the user's behalf. All mutations route through
  * SettingsControlService which enforces the allow-list, deny-list, rate-limit,
  * and audit logging.
  *
- * See docs/INTERNAL_MCP_SERVERS.md for the standard MCP-server pattern this
- * file follows (per-connection context via query string, SSE + StreamableHTTP
- * transports, per-launch bearer token auth via mcpAuth).
+ * MCP consolidation: these tools are served by the unified internal MCP HTTP
+ * server (`packages/electron/src/main/mcp/httpServer.ts`) — the settings tools
+ * on the `/mcp/host` endpoint (`nimbalyst-host`) and the two tracker-config
+ * tools on `/mcp/trackers` per the topology reverse index. This module exports
+ * only the tool schemas + an endpoint-agnostic dispatch fn; the standalone HTTP
+ * server it used to run was retired in Phase 7.
  */
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  ErrorCode,
-  McpError,
-} from "@modelcontextprotocol/sdk/types.js";
-import { createServer, IncomingMessage, ServerResponse } from "http";
-import { parse as parseUrl } from "url";
-import { randomUUID } from "crypto";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 
 import { SettingsControlService } from "../services/SettingsControlService";
 import { restartNimbalystSafely } from "../services/SafeRestartService";
-import { requireMcpAuth } from "./mcpAuth";
-
-// ─── Transport tracking ─────────────────────────────────────────────
-
-interface TransportMetadata {
-  transport: SSEServerTransport;
-  aiSessionId: string;
-  workspaceId: string | undefined;
-}
-const activeTransports = new Map<string, TransportMetadata>();
-
-interface StreamableTransportMetadata {
-  transport: StreamableHTTPServerTransport;
-  aiSessionId: string;
-  workspaceId: string | undefined;
-}
-const activeStreamableTransports = new Map<string, StreamableTransportMetadata>();
-
-let httpServerInstance: any = null;
-
-// ─── Lifecycle ──────────────────────────────────────────────────────
-
-export function cleanupSettingsServer(): void {
-  for (const [id, meta] of activeTransports.entries()) {
-    try {
-      meta.transport.onclose?.();
-      const res = (meta.transport as any).res;
-      if (res && !res.headersSent) {
-        res.end();
-      }
-    } catch (error) {
-      console.error(`[Settings MCP] Error closing transport ${id}:`, error);
-    }
-  }
-  activeTransports.clear();
-
-  for (const [id, meta] of activeStreamableTransports.entries()) {
-    try {
-      void meta.transport.close().catch((error) => {
-        console.error(`[Settings MCP] Error closing streamable ${id}:`, error);
-      });
-    } catch (error) {
-      console.error(`[Settings MCP] Error closing streamable ${id}:`, error);
-    }
-  }
-  activeStreamableTransports.clear();
-}
-
-export function shutdownSettingsServer(): Promise<void> {
-  return new Promise((resolve) => {
-    if (!httpServerInstance) {
-      resolve();
-      return;
-    }
-    let done = false;
-    const safeResolve = () => {
-      if (!done) {
-        done = true;
-        resolve();
-      }
-    };
-    try {
-      cleanupSettingsServer();
-    } catch (error) {
-      console.error("[Settings MCP] Cleanup error:", error);
-    }
-    try {
-      httpServerInstance.closeAllConnections?.();
-    } catch (error) {
-      console.error("[Settings MCP] closeAllConnections error:", error);
-    }
-    try {
-      httpServerInstance.close?.((err?: Error) => {
-        if (err) console.error("[Settings MCP] close error:", err);
-        httpServerInstance = null;
-        safeResolve();
-      });
-    } catch (error) {
-      console.error("[Settings MCP] close threw:", error);
-      httpServerInstance = null;
-      safeResolve();
-    }
-    setTimeout(() => {
-      httpServerInstance = null;
-      safeResolve();
-    }, 1000);
-  });
-}
 
 // ─── Tool descriptors ───────────────────────────────────────────────
 
@@ -328,405 +232,139 @@ const TOOLS = [
   },
 ] as const;
 
-// ─── MCP server creation ────────────────────────────────────────────
+// ─── Shared tool surface (served by the unified MCP server) ─────────
 
-function createSettingsMcpServer(aiSessionId: string, workspaceId: string | undefined): Server {
-  const server = new Server(
-    { name: "nimbalyst-settings", version: "1.0.0" },
-    { capabilities: { tools: {} } },
-  );
+/** Tool schemas exposed by the settings surface (`{name, description, inputSchema}`). */
+export const settingsToolSchemas = TOOLS as ReadonlyArray<{
+  name: string;
+  description: string;
+  inputSchema: unknown;
+}>;
 
-  (server as { onerror?: (error: Error) => void }).onerror = (error: Error) => {
-    console.error("[MCP:nimbalyst-settings] Server error:", error);
-  };
+/**
+ * Dispatch a settings tool call to SettingsControlService and return the
+ * MCP `{content, isError}` shape. `name` may carry the
+ * `mcp__nimbalyst-host__` (or `-trackers__`) prefix; it is stripped.
+ */
+export async function dispatchSettingsTool(
+  name: string,
+  rawArgs: unknown,
+  aiSessionId: string,
+  workspaceId: string | undefined,
+): Promise<{ content: Array<{ type: string; text: string }>; isError: boolean }> {
+  const toolName = name.replace(/^mcp__nimbalyst-[a-z]+__/, "");
+  const args = (rawArgs ?? {}) as Record<string, any>;
+  const svc = SettingsControlService.getInstance();
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS as any }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
-    const { name, arguments: rawArgs } = request.params;
-    const toolName = name.replace(/^mcp__nimbalyst-settings__/, "");
-    const args = (rawArgs ?? {}) as Record<string, any>;
-    const svc = SettingsControlService.getInstance();
-
-    const respond = (payload: unknown) => ({
-      content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
-      isError: typeof payload === "object" && payload !== null && (payload as any).ok === false,
-    });
-
-    try {
-      switch (toolName) {
-        case "settings_get_overview":
-          return respond({ ok: true, after: svc.getOverview(workspaceId) });
-
-        case "restart_nimbalyst":
-          return respond(await restartNimbalystSafely("settings-mcp"));
-
-        case "workspace_create":
-          return respond(
-            await svc.createWorkspace(aiSessionId, {
-              targetPath: args.targetPath,
-              openAfterCreate: args.openAfterCreate,
-              force: args.force,
-            }),
-          );
-
-        case "workspace_open":
-          return respond(await svc.openWorkspace(aiSessionId, { workspacePath: args.workspacePath }));
-
-        case "sync_set_for_project":
-          return respond(
-            await svc.setProjectSync(aiSessionId, {
-              workspacePath: args.workspacePath,
-              enableSessionSync: args.enableSessionSync,
-              enableDocumentSync: args.enableDocumentSync,
-            }),
-          );
-
-        case "appearance_set_theme":
-          return respond(await svc.setTheme(aiSessionId, { theme: args.theme }));
-
-        case "appearance_set_completion_sound":
-          return respond(await svc.setCompletionSound(aiSessionId, { enabled: !!args.enabled }));
-
-        case "appearance_set_spellcheck":
-          return respond(await svc.setSpellcheck(aiSessionId, { enabled: !!args.enabled }));
-
-        case "analytics_set_enabled":
-          return respond(await svc.setAnalytics(aiSessionId, { enabled: !!args.enabled }));
-
-        case "ai_set_default_model":
-          return respond(
-            await svc.setDefaultAIModel(aiSessionId, { providerModel: args.providerModel }),
-          );
-
-        case "ai_set_preferred_language":
-          return respond(
-            await svc.setPreferredAgentLanguage(aiSessionId, { language: args.language ?? "" }),
-          );
-
-        case "features_toggle":
-          return respond(
-            await svc.toggleFeature(aiSessionId, {
-              bucket: args.bucket,
-              tag: args.tag,
-              enabled: !!args.enabled,
-            }),
-          );
-
-        case "extension_set_enabled":
-          return respond(
-            await svc.setExtensionEnabled(aiSessionId, {
-              extensionId: args.extensionId,
-              enabled: !!args.enabled,
-            }),
-          );
-
-        case "workspace_set_trust":
-          return respond(
-            await svc.setWorkspaceTrust(aiSessionId, {
-              workspacePath: args.workspacePath,
-              trusted: !!args.trusted,
-              mode: args.mode,
-            }),
-          );
-
-        case "tracker_set_sync_policy":
-          return respond(
-            await svc.setTrackerSyncPolicy(aiSessionId, {
-              workspacePath: args.workspacePath,
-              trackerType: args.trackerType,
-              mode: args.mode,
-            }),
-          );
-
-        case "tracker_set_issue_key_prefix":
-          return respond(
-            await svc.setIssueKeyPrefix(aiSessionId, {
-              workspacePath: args.workspacePath,
-              prefix: args.prefix,
-            }),
-          );
-
-        default:
-          throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
-      }
-    } catch (error) {
-      if (error instanceof McpError) throw error;
-      console.error(`[Settings MCP] Tool ${toolName} failed:`, error);
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        content: [{ type: "text", text: `Error: ${message}` }],
-        isError: true,
-      };
-    }
+  const respond = (payload: unknown) => ({
+    content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+    isError: typeof payload === "object" && payload !== null && (payload as any).ok === false,
   });
 
-  return server;
-}
-
-// ─── HTTP server boilerplate (mirrors sessionContextServer) ─────────
-
-function getMcpSessionIdHeader(req: IncomingMessage): string | undefined {
-  const headerValue = req.headers["mcp-session-id"];
-  if (Array.isArray(headerValue)) return headerValue[0];
-  if (typeof headerValue === "string" && headerValue.length > 0) return headerValue;
-  return undefined;
-}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown | undefined> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  if (chunks.length === 0) return undefined;
-  const rawBody = Buffer.concat(chunks).toString("utf8").trim();
-  if (!rawBody) return undefined;
   try {
-    return JSON.parse(rawBody);
-  } catch {
-    return undefined;
-  }
-}
+    switch (toolName) {
+      case "settings_get_overview":
+        return respond({ ok: true, after: svc.getOverview(workspaceId) });
 
-function isInitializeMessage(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "method" in value &&
-    (value as Record<string, unknown>).method === "initialize"
-  );
-}
+      case "restart_nimbalyst":
+        return respond(await restartNimbalystSafely("settings-mcp"));
 
-function isInitializePayload(payload: unknown): boolean {
-  if (!payload) return false;
-  if (Array.isArray(payload)) return payload.some((entry) => isInitializeMessage(entry));
-  return isInitializeMessage(payload);
-}
+      case "workspace_create":
+        return respond(
+          await svc.createWorkspace(aiSessionId, {
+            targetPath: args.targetPath,
+            openAfterCreate: args.openAfterCreate,
+            force: args.force,
+          }),
+        );
 
-async function tryCreateSettingsServer(port: number): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-      const parsedUrl = parseUrl(req.url || "", true);
-      const pathname = parsedUrl.pathname;
-      const mcpSessionIdHeader = getMcpSessionIdHeader(req);
+      case "workspace_open":
+        return respond(await svc.openWorkspace(aiSessionId, { workspacePath: args.workspacePath }));
 
-      if (req.method === "OPTIONS") {
-        res.writeHead(200, {
-          "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-          "Access-Control-Allow-Headers":
-            "Authorization, Content-Type, mcp-session-id, mcp-protocol-version",
-        });
-        res.end();
-        return;
-      }
+      case "sync_set_for_project":
+        return respond(
+          await svc.setProjectSync(aiSessionId, {
+            workspacePath: args.workspacePath,
+            enableSessionSync: args.enableSessionSync,
+            enableDocumentSync: args.enableDocumentSync,
+          }),
+        );
 
-      if (pathname === "/mcp" && !requireMcpAuth(req)) {
-        res.writeHead(401);
-        res.end("Unauthorized");
-        return;
-      }
+      case "appearance_set_theme":
+        return respond(await svc.setTheme(aiSessionId, { theme: args.theme }));
 
-      const aiSessionId =
-        (parsedUrl.query.sessionId as string | undefined) ?? undefined;
-      const workspaceId =
-        (parsedUrl.query.workspaceId as string | undefined) ?? undefined;
+      case "appearance_set_completion_sound":
+        return respond(await svc.setCompletionSound(aiSessionId, { enabled: !!args.enabled }));
 
-      if (pathname === "/mcp" && req.method === "GET") {
-        if (mcpSessionIdHeader) {
-          const meta = activeStreamableTransports.get(mcpSessionIdHeader);
-          if (!meta) {
-            res.writeHead(404);
-            res.end("Streamable session not found");
-            return;
-          }
-          try {
-            await meta.transport.handleRequest(req, res);
-          } catch (error) {
-            console.error("[Settings MCP] streamable GET error:", error);
-            if (!res.headersSent) {
-              res.writeHead(500);
-              res.end("Internal server error");
-            }
-          }
-          return;
-        }
+      case "appearance_set_spellcheck":
+        return respond(await svc.setSpellcheck(aiSessionId, { enabled: !!args.enabled }));
 
-        if (!aiSessionId) {
-          res.writeHead(400);
-          res.end("Missing sessionId");
-          return;
-        }
+      case "analytics_set_enabled":
+        return respond(await svc.setAnalytics(aiSessionId, { enabled: !!args.enabled }));
 
-        const server = createSettingsMcpServer(aiSessionId, workspaceId);
-        const transport = new SSEServerTransport("/mcp", res);
-        activeTransports.set(transport.sessionId, {
-          transport,
-          aiSessionId,
-          workspaceId,
-        });
-        server
-          .connect(transport)
-          .then(() => {
-            transport.onclose = () => {
-              activeTransports.delete(transport.sessionId);
-            };
-          })
-          .catch((error) => {
-            console.error("[Settings MCP] connect error:", error);
-            activeTransports.delete(transport.sessionId);
-            if (!res.headersSent) {
-              res.writeHead(500);
-              res.end();
-            }
-          });
-        return;
-      }
+      case "ai_set_default_model":
+        return respond(
+          await svc.setDefaultAIModel(aiSessionId, { providerModel: args.providerModel }),
+        );
 
-      if (pathname === "/mcp" && req.method === "POST") {
-        const legacyTransportSessionId = parsedUrl.query.sessionId as string | undefined;
-        const legacyMeta = legacyTransportSessionId
-          ? activeTransports.get(legacyTransportSessionId)
-          : undefined;
+      case "ai_set_preferred_language":
+        return respond(
+          await svc.setPreferredAgentLanguage(aiSessionId, { language: args.language ?? "" }),
+        );
 
-        if (legacyMeta && !mcpSessionIdHeader) {
-          try {
-            await legacyMeta.transport.handlePostMessage(req, res);
-          } catch (error) {
-            console.error("[Settings MCP] legacy SSE POST error:", error);
-            if (!res.headersSent) {
-              res.writeHead(500);
-              res.end("Internal server error");
-            }
-          }
-          return;
-        }
+      case "features_toggle":
+        return respond(
+          await svc.toggleFeature(aiSessionId, {
+            bucket: args.bucket,
+            tag: args.tag,
+            enabled: !!args.enabled,
+          }),
+        );
 
-        const parsedBody = await readJsonBody(req);
-        if (!mcpSessionIdHeader && legacyTransportSessionId && !isInitializePayload(parsedBody)) {
-          res.writeHead(404);
-          res.end("Transport session not found");
-          return;
-        }
+      case "extension_set_enabled":
+        return respond(
+          await svc.setExtensionEnabled(aiSessionId, {
+            extensionId: args.extensionId,
+            enabled: !!args.enabled,
+          }),
+        );
 
-        let streamableMeta: StreamableTransportMetadata | undefined = mcpSessionIdHeader
-          ? activeStreamableTransports.get(mcpSessionIdHeader)
-          : undefined;
+      case "workspace_set_trust":
+        return respond(
+          await svc.setWorkspaceTrust(aiSessionId, {
+            workspacePath: args.workspacePath,
+            trusted: !!args.trusted,
+            mode: args.mode,
+          }),
+        );
 
-        if (mcpSessionIdHeader && !streamableMeta) {
-          res.writeHead(404);
-          res.end("Streamable session not found");
-          return;
-        }
+      case "tracker_set_sync_policy":
+        return respond(
+          await svc.setTrackerSyncPolicy(aiSessionId, {
+            workspacePath: args.workspacePath,
+            trackerType: args.trackerType,
+            mode: args.mode,
+          }),
+        );
 
-        if (!streamableMeta) {
-          if (!isInitializePayload(parsedBody)) {
-            res.writeHead(400);
-            res.end("Missing sessionId");
-            return;
-          }
-          if (!aiSessionId) {
-            res.writeHead(400);
-            res.end("Missing sessionId");
-            return;
-          }
-          const server = createSettingsMcpServer(aiSessionId, workspaceId);
-          const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-            onsessioninitialized: (sid) => {
-              activeStreamableTransports.set(sid, {
-                transport,
-                aiSessionId,
-                workspaceId,
-              });
-            },
-          });
-          transport.onclose = () => {
-            const sid = transport.sessionId;
-            if (sid) activeStreamableTransports.delete(sid);
-          };
-          transport.onerror = (error) => {
-            console.error("[Settings MCP] streamable transport error:", error);
-          };
-          await server.connect(transport);
-          streamableMeta = { transport, aiSessionId, workspaceId };
-        }
+      case "tracker_set_issue_key_prefix":
+        return respond(
+          await svc.setIssueKeyPrefix(aiSessionId, {
+            workspacePath: args.workspacePath,
+            prefix: args.prefix,
+          }),
+        );
 
-        try {
-          await streamableMeta.transport.handleRequest(req, res, parsedBody);
-        } catch (error) {
-          console.error("[Settings MCP] streamable POST error:", error);
-          if (!res.headersSent) {
-            res.writeHead(500);
-            res.end("Internal server error");
-          }
-        }
-        return;
-      }
-
-      if (pathname === "/mcp" && req.method === "DELETE") {
-        if (!mcpSessionIdHeader) {
-          res.writeHead(400);
-          res.end("Missing mcp-session-id header");
-          return;
-        }
-        const meta = activeStreamableTransports.get(mcpSessionIdHeader);
-        if (!meta) {
-          res.writeHead(404);
-          res.end("Streamable session not found");
-          return;
-        }
-        try {
-          await meta.transport.handleRequest(req, res);
-        } catch (error) {
-          console.error("[Settings MCP] streamable DELETE error:", error);
-          if (!res.headersSent) {
-            res.writeHead(500);
-            res.end("Internal server error");
-          }
-        }
-        return;
-      }
-
-      res.writeHead(404);
-      res.end("Not found");
-    });
-
-    httpServer.listen(port, "127.0.0.1", (err?: Error) => {
-      if (err) reject(err);
-    });
-    httpServer.on("listening", () => {
-      httpServer.unref();
-      resolve(httpServer);
-    });
-    httpServer.on("error", (err: any) => reject(err));
-  });
-}
-
-// ─── Public API ─────────────────────────────────────────────────────
-
-export async function startSettingsServer(
-  startPort: number = 3559,
-): Promise<{ httpServer: any; port: number }> {
-  let port = startPort;
-  let httpServer: any = null;
-  let maxAttempts = 100;
-  while (maxAttempts > 0) {
-    try {
-      httpServer = await tryCreateSettingsServer(port);
-      console.log(`[Settings MCP] Started on port ${port}`);
-      break;
-    } catch (error: any) {
-      if (error.code === "EADDRINUSE") {
-        port++;
-        maxAttempts--;
-      } else {
-        throw error;
-      }
+      default:
+        throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }
+  } catch (error) {
+    if (error instanceof McpError) throw error;
+    console.error(`[Settings MCP] Tool ${toolName} failed:`, error);
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      content: [{ type: "text", text: `Error: ${message}` }],
+      isError: true,
+    };
   }
-  if (!httpServer) {
-    throw new Error(`[Settings MCP] Could not find available port from ${startPort}`);
-  }
-  httpServerInstance = httpServer;
-  return { httpServer, port };
 }

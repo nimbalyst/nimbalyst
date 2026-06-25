@@ -17,7 +17,7 @@ import os from 'os';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { app } from 'electron';
-import { McpConfigService } from '@nimbalyst/runtime/ai/server';
+import { McpConfigService, getMcpConfigService } from '@nimbalyst/runtime/ai/server';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { getTerminalSessionManager } from '../TerminalSessionManager';
 import { getEnhancedPath, getShellEnvironment } from '../CLIManager';
@@ -35,40 +35,19 @@ import { maybeAutoNameClaudeCliSessionProduction } from './claudeCliSessionAutoN
 import type { ClaudeTurnState } from './claudeCliPidState';
 
 interface ClaudeCliLauncherConfig {
-  mcpServerPort: number | null;
-  sessionNamingServerPort: number | null;
-  extensionDevServerPort: number | null;
-  sessionContextServerPort: number | null;
-  metaAgentServerPort: number | null;
-  settingsServerPort: number | null;
-  settingsAgentToolsDisabledLoader: (() => boolean) | null;
-  mcpAuthToken: string | null;
+  // Internal MCP-server enablement (ports, kill-switches, loaders, auth token)
+  // lives in the shared `mcpServerConfig` registry now; the launcher only owns
+  // its provider-specific `mcpConfigLoader` (user/workspace .mcp.json filter).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, any>>) | null;
 }
 
 const config: ClaudeCliLauncherConfig = {
-  mcpServerPort: null,
-  sessionNamingServerPort: null,
-  extensionDevServerPort: null,
-  sessionContextServerPort: null,
-  metaAgentServerPort: null,
-  settingsServerPort: null,
-  settingsAgentToolsDisabledLoader: null,
-  mcpAuthToken: null,
   mcpConfigLoader: null,
 };
 
 /** Static setters, wired from `index.ts` alongside the CLI providers. */
 export const ClaudeCliLauncherConfig = {
-  setMcpServerPort: (port: number | null) => { config.mcpServerPort = port; },
-  setSessionNamingServerPort: (port: number | null) => { config.sessionNamingServerPort = port; },
-  setExtensionDevServerPort: (port: number | null) => { config.extensionDevServerPort = port; },
-  setSessionContextServerPort: (port: number | null) => { config.sessionContextServerPort = port; },
-  setMetaAgentServerPort: (port: number | null) => { config.metaAgentServerPort = port; },
-  setSettingsServerPort: (port: number | null) => { config.settingsServerPort = port; },
-  setSettingsAgentToolsDisabledLoader: (loader: (() => boolean) | null) => { config.settingsAgentToolsDisabledLoader = loader; },
-  setMcpAuthToken: (token: string | null) => { config.mcpAuthToken = token; },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   setMcpConfigLoader: (loader: ((workspacePath?: string) => Promise<Record<string, any>>) | null) => { config.mcpConfigLoader = loader; },
 };
@@ -140,16 +119,7 @@ function prepareAttachmentsAllowDir(workspacePath: string): string[] | undefined
 }
 
 function buildMcpConfigService(): McpConfigService {
-  return new McpConfigService({
-    mcpServerPort: config.mcpServerPort,
-    sessionNamingServerPort: config.sessionNamingServerPort,
-    extensionDevServerPort: config.extensionDevServerPort,
-    superLoopProgressServerPort: null,
-    sessionContextServerPort: config.sessionContextServerPort,
-    metaAgentServerPort: config.metaAgentServerPort,
-    settingsServerPort: config.settingsServerPort,
-    settingsAgentToolsDisabledLoader: config.settingsAgentToolsDisabledLoader,
-    mcpAuthToken: config.mcpAuthToken,
+  return getMcpConfigService({
     mcpConfigLoader: config.mcpConfigLoader,
     claudeSettingsEnvLoader: null,
     shellEnvironmentLoader: () => getShellEnvironment(),

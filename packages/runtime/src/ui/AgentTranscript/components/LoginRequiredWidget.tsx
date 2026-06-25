@@ -172,6 +172,9 @@ export const LoginRequiredWidget: React.FC = () => {
             <span className="login-status-icon text-base">&#9888;</span>
             <span>{loginStatus.message}</span>
           </div>
+          <div className="login-status-fallback text-[var(--nim-text-muted)]">
+            Still stuck? Open a Claude Code terminal session and run <code className="px-1 py-0.5 rounded bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)]">/login</code> there, then click &ldquo;Check Status&rdquo;.
+          </div>
         </div>
       )}
 

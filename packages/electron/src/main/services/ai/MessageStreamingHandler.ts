@@ -1484,6 +1484,50 @@ export class MessageStreamingHandler {
           });
         }
         switch (chunk.type) {
+          case 'context_usage': {
+            // Mid-turn context-fill snapshot (NIM-868). Updates ONLY
+            // currentContext so the indicator refreshes per assistant step
+            // during a long agentic turn. Must not touch cumulative
+            // input/output counters -- those settle on the 'complete' chunk.
+            const partialContextFill: number | undefined = chunk.contextFillTokens;
+            const partialContextWindow = selectedModelContextWindow || session.tokenUsage?.contextWindow;
+            if (partialContextFill !== undefined && partialContextWindow) {
+              const currentUsage = session.tokenUsage ?? {
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              };
+              const updatedUsage: NonNullable<SessionData['tokenUsage']> = {
+                ...currentUsage,
+                contextWindow: partialContextWindow,
+                currentContext: { tokens: partialContextFill, contextWindow: partialContextWindow },
+              };
+
+              await this.svc.sessionManager.updateSessionTokenUsage(session.id, updatedUsage);
+              safeSend(event, 'ai:tokenUsageUpdated', {
+                sessionId: session.id,
+                tokenUsage: updatedUsage,
+              });
+
+              // Push live context usage to mobile sync
+              const syncProvider = getSyncProvider();
+              if (syncProvider) {
+                syncProvider.pushChange(session.id, {
+                  type: 'metadata_updated',
+                  metadata: {
+                    currentContext: {
+                      tokens: partialContextFill,
+                      contextWindow: partialContextWindow,
+                    },
+                  } as any,
+                });
+              }
+
+              session.tokenUsage = updatedUsage;
+            }
+            break;
+          }
+
           case 'text':
             textChunks++;
             const chunkContent = chunk.content || '';

@@ -15,7 +15,7 @@
 interface RegistryEntry {
   api: unknown;
   /** Trigger an immediate save of the editor's content to disk. */
-  flushSave?: () => void;
+  flushSave?: () => void | Promise<void>;
 }
 
 const registry = new Map<string, RegistryEntry>();
@@ -40,7 +40,7 @@ function normalizePath(filePath: string): string {
  * Called by EditorHost.registerEditorAPI() when extensions report readiness.
  * @param flushSave Optional callback to trigger an immediate save (used after tool execution).
  */
-export function registerEditorAPI(filePath: string, api: unknown, flushSave?: () => void): void {
+export function registerEditorAPI(filePath: string, api: unknown, flushSave?: () => void | Promise<void>): void {
   registry.set(normalizePath(filePath), { api, flushSave });
 }
 
@@ -71,8 +71,11 @@ export function hasEditorAPI(filePath: string): boolean {
  * Called by the bridge after tool execution to prevent data loss
  * when the user closes the tab before the normal auto-save fires.
  */
-export function flushEditorSave(filePath: string): void {
-  registry.get(normalizePath(filePath))?.flushSave?.();
+export async function flushEditorSave(filePath: string): Promise<boolean> {
+  const flushSave = registry.get(normalizePath(filePath))?.flushSave;
+  if (!flushSave) return false;
+  await flushSave();
+  return true;
 }
 
 /**

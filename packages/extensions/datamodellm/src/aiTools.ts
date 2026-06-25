@@ -26,6 +26,7 @@ function getStore(context: { editorAPI?: unknown }): DataModelStoreApi | null {
 export const aiTools = [
   {
     name: 'get_schema',
+    access: { kind: 'editor-read' } as const,
     description: `Get the current data model schema. Use this to understand the existing entities and relationships before making changes.
 
 Example usage:
@@ -80,6 +81,7 @@ Example usage:
 
   {
     name: 'capture_screenshot',
+    access: { kind: 'editor-read' } as const,
     description: `Capture a screenshot of the current data model diagram. Use this when the user wants to see or share the visual representation of their schema.
 
 Example usage:

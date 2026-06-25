@@ -14,6 +14,7 @@
  */
 
 import type { SessionStore } from '@nimbalyst/runtime';
+import { asPersonalMemberId } from '@nimbalyst/runtime';
 import type { DeviceInfo } from '@nimbalyst/runtime/sync';
 import * as syncModule from '@nimbalyst/runtime/sync';
 import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, getAlphaFeatures, store, type SessionSyncConfig } from '../utils/store';
@@ -370,18 +371,23 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     // to the team org member ID. We must use the personal org member ID for:
     // 1. Encryption key salt (must match iOS which always uses personal member ID)
     // 2. Sync room IDs (must be same room as iOS to see each other's data)
-    let personalUserId = getPersonalUserId();
+    // Always re-derive from the authoritative personal-org exchange so a stale
+    // persisted personalUserId is corrected BEFORE we build the sync provider
+    // (NIM-859). resolvePersonalUserId() falls back to the cached value when it
+    // can't reach the server, so offline init is unchanged.
+    let personalUserId = await resolvePersonalUserId(serverUrl);
     if (!personalUserId) {
-      // Migration: personalUserId not yet stored. Try to resolve by exchanging
-      // the session to the personal org and extracting the member ID from the JWT.
-      logger.main.info('[SyncManager] personalUserId not set, attempting to resolve via session exchange...');
-      personalUserId = await resolvePersonalUserId(serverUrl);
+      personalUserId = getPersonalUserId();
     }
     if (!personalUserId) {
-      // Last resort fallback: use whatever userId we have (may be team member ID).
-      // This is wrong for multi-org users but better than not syncing at all.
-      logger.main.warn('[SyncManager] Could not resolve personalUserId, falling back to stytchUserId:', stytchUserId);
-      personalUserId = stytchUserId;
+      // Last-resort fallback: the active/team member id is NOT a personal member
+      // id (see jwtScopes / NIM-859) -- using it for the personal index room is
+      // wrong for multi-org users, but better than not syncing at all. The
+      // explicit cast records that we KNOW this is a personal-scope violation.
+      logger.main.warn('[SyncManager] Could not resolve personalUserId, falling back to stytchUserId (NOT personal-scoped):', stytchUserId);
+      // stytchUserId is guaranteed non-null (guarded above). The cast records
+      // that we KNOWINGLY use the active/team member id for the personal room.
+      personalUserId = asPersonalMemberId(stytchUserId);
     }
 
     logger.main.info('[SyncManager] Initializing session sync...', {
@@ -475,10 +481,23 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
       }
     }
 
-    // Also prefer persisted personalUserId from config if available
+    // If the persisted sync config disagrees with the personalUserId we just
+    // resolved from the authoritative personal-org exchange, the config value is
+    // stale (NIM-859). Prefer the resolved id and rewrite the config -- but only
+    // when both refer to the same personal org, to avoid clobbering a config
+    // written under a different login order (see personalOrgId note above).
     if (config.personalUserId && config.personalUserId !== personalUserId) {
-      logger.main.info(`[SyncManager] Using persisted personalUserId=${config.personalUserId} (auth state had ${personalUserId})`);
-      personalUserId = config.personalUserId;
+      const sameOrg = !config.personalOrgId || config.personalOrgId === getPersonalOrgId();
+      if (sameOrg && personalUserId) {
+        logger.main.info(`[SyncManager] Correcting stale sync-config personalUserId ${config.personalUserId} -> ${personalUserId}`);
+        const currentConfig = getSessionSyncConfig();
+        if (currentConfig) {
+          setSessionSyncConfig({ ...currentConfig, personalUserId });
+        }
+      } else {
+        logger.main.info(`[SyncManager] Using persisted personalUserId=${config.personalUserId} (resolved ${personalUserId}; differing org, not overriding)`);
+        personalUserId = asPersonalMemberId(config.personalUserId);
+      }
     }
 
     logger.main.info(`[SyncManager] Using personalOrgId=${personalOrgId} personalUserId=${personalUserId} for sync room IDs`);

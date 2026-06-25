@@ -56,6 +56,15 @@ interface UseTrackerContentCollabOptions {
    * - `string`: a team exists; collab setup proceeds as normal.
    */
   teamOrgId: string | null | undefined;
+  /**
+   * Whether THIS item is shared with the team. Only consulted for `hybrid`
+   * trackers, where sharing is per-item: an unshared hybrid item must NOT
+   * connect to its `tracker-content/<id>` room (that would push its body to the
+   * server). `shared`-mode types ignore this (every item is shared); `local`
+   * types never collaborate. Defaults to treating the item as shared so callers
+   * that don't pass it keep the prior always-collaborative behavior.
+   */
+  itemShared?: boolean;
 }
 
 interface TrackerContentCollabResult {
@@ -116,16 +125,22 @@ export function useTrackerContentCollab({
   syncMode,
   teamMemberCount,
   teamOrgId,
+  itemShared = true,
 }: UseTrackerContentCollabOptions): TrackerContentCollabResult {
   const isTeamSynced = syncMode !== 'local';
+  // Per-item gate: `shared` types always collaborate; `hybrid` types only
+  // collaborate when THIS item is shared (an unshared local plan stays on the
+  // PGLite editor and never pushes its body to the room). Sharing flips this
+  // true, which remounts the editor in collaborative mode and seeds the room.
+  const perItemShareSatisfied = syncMode === 'shared' || (syncMode === 'hybrid' && itemShared);
   // Collab is only attempted for team-synced trackers in workspaces that
   // actually have a team. Without a team there is nothing to collaborate
   // with, so we skip the document-sync IPC entirely.
-  const isCollabActive = isTeamSynced && typeof teamOrgId === 'string';
+  const isCollabActive = isTeamSynced && typeof teamOrgId === 'string' && perItemShareSatisfied;
   // Pending: team-synced but the parent hasn't resolved the team yet.
   // Stay in `loading: true` so the UI shows a connecting state instead of
   // prematurely flipping to the local editor.
-  const isCollabPending = isTeamSynced && teamOrgId === undefined;
+  const isCollabPending = isTeamSynced && teamOrgId === undefined && perItemShareSatisfied;
   const isMultiUser = teamMemberCount > 1;
   const [loading, setLoading] = useState(isCollabActive || isCollabPending);
   const [status, setStatus] = useState<DocumentSyncStatus>('disconnected');
@@ -205,7 +220,10 @@ export function useTrackerContentCollab({
         serverUrl: config.serverUrl,
         getJwt: config.getJwt,
         orgId: config.orgId,
+        keyCustody: config.keyCustody,
         documentKey: config.documentKey,
+        // Legacy org key so pre-migration tracker bodies still decrypt (NIM-878).
+        legacyDocumentKey: config.legacyDocumentKey,
         orgKeyFingerprint: config.orgKeyFingerprint,
         userId: config.userId,
         documentId: config.documentId,

@@ -137,6 +137,7 @@ export const aiTools = [
   {
     name: 'get_elements',
     scope: 'global' as const,
+    access: { kind: 'editor-read' } as const,
     description: 'Get list of diagram elements with labels and group membership. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -177,6 +178,7 @@ export const aiTools = [
   {
     name: 'add_rectangle',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Add a labeled rectangle to the diagram. Rectangles are rounded by default. Use x,y for explicit positioning, or nearElement for relative placement. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -295,6 +297,7 @@ export const aiTools = [
   {
     name: 'add_arrow',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Add an arrow connecting two elements. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -436,6 +439,7 @@ export const aiTools = [
   {
     name: 'update_element',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Update text, color, or style of existing element. Can look up by ID or label. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -552,6 +556,7 @@ export const aiTools = [
   {
     name: 'remove_element',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Remove an element by ID or label. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -675,6 +680,7 @@ export const aiTools = [
   {
     name: 'import_mermaid',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Import a Mermaid diagram into Excalidraw. Use this to create complex architecture diagrams, flowcharts, and system designs. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -745,6 +751,7 @@ export const aiTools = [
   {
     name: 'clear_all',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Remove all elements from the diagram. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -771,6 +778,7 @@ export const aiTools = [
   {
     name: 'add_frame',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Add a frame (container with title) to group related elements. Frames have a title bar and can contain other elements. Use this to create visual sections like "Browser", "Services", "Database" in architecture diagrams. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -849,6 +857,7 @@ export const aiTools = [
   {
     name: 'add_row',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Add multiple labeled rectangles arranged horizontally in a row. Great for creating groups of related items side by side. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -950,6 +959,7 @@ export const aiTools = [
   {
     name: 'add_column',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Add multiple labeled rectangles arranged vertically in a column. Great for creating stacked items or lists. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -1051,6 +1061,7 @@ export const aiTools = [
   {
     name: 'align_elements',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Align multiple elements by their labels. Use this to make elements line up neatly. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -1205,6 +1216,7 @@ export const aiTools = [
   {
     name: 'distribute_elements',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Distribute elements evenly with equal spacing between them. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -1364,6 +1376,7 @@ export const aiTools = [
   {
     name: 'move_element',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Move an element to specific coordinates or by a relative offset. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -1474,6 +1487,7 @@ export const aiTools = [
   {
     name: 'group_elements',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Group multiple elements together so they move as a unit. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -1549,6 +1563,7 @@ export const aiTools = [
   {
     name: 'set_elements_in_frame',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Move elements into a frame so they become children of that frame. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -1632,6 +1647,7 @@ export const aiTools = [
   {
     name: 'add_arrows',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Add multiple arrows in a single batch operation. Much more efficient than calling add_arrow repeatedly when creating diagrams with many connections. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -1804,6 +1820,7 @@ export const aiTools = [
   {
     name: 'add_elements',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Add multiple rectangles in a single batch operation. Much more efficient than calling add_rectangle repeatedly when creating diagrams with many elements. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,
@@ -1931,6 +1948,7 @@ export const aiTools = [
   {
     name: 'remove_elements',
     scope: 'global' as const,
+    access: { kind: 'editor-write' } as const,
     description: 'Remove multiple elements in a single batch operation. Much more efficient than calling remove_element repeatedly. Requires an open .excalidraw file.',
     parameters: {
       type: 'object' as const,

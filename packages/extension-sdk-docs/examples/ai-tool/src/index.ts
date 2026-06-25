@@ -42,6 +42,7 @@ export const aiTools: ExtensionAITool[] = [
     name: 'wordstats.count',
     description: 'Count words, characters, sentences, and paragraphs in the current document',
     scope: 'global',
+    access: { kind: 'filesystem' },
     inputSchema: {
       type: 'object',
       properties: {},
@@ -86,6 +87,7 @@ export const aiTools: ExtensionAITool[] = [
     name: 'wordstats.frequency',
     description: 'Get the most frequently used words in the document',
     scope: 'global',
+    access: { kind: 'filesystem' },
     inputSchema: {
       type: 'object',
       properties: {

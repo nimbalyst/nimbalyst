@@ -204,8 +204,13 @@ export class ClaudeCodeTranscriptAdapter {
 
     if (!chunk.message) return items;
 
-    // Per-step usage from assistant message (not cumulative -- used for context fill)
-    if (chunk.message.usage) {
+    // Per-step usage from assistant message (not cumulative -- used for context fill).
+    // Skip sub-agent chunks (parent_tool_use_id set): a sub-agent runs as its own
+    // SDK conversation with a much smaller context, and its chunks are relayed back
+    // through this same iterator. Without this guard the lead's context-fill bounces
+    // between the lead's large context and a sub-agent's small one as the live
+    // indicator updates per step (NIM-868). Same guard the session_id capture uses.
+    if (chunk.message.usage && !chunk.parent_tool_use_id) {
       items.push({ kind: 'usage', usage: chunk.message.usage, isPerStep: true });
     }
 

@@ -4,6 +4,7 @@
 
 import { toMillis } from '../utils/timestampUtils';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
+import { computeSessionPhaseTransition } from './session/sessionPhaseTransition';
 
 import type {
   SessionStore,
@@ -470,8 +471,26 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             [sessionId],
           );
           const existingMetadata = normalizeJsonObject(rows[0]?.metadata);
+          const merged: Record<string, any> = { ...existingMetadata, ...incoming };
+          // Record workflow-phase transitions into metadata.activity[] so the
+          // session's lifecycle history is self-contained and renderable on the
+          // project-graph timeline (see session/sessionPhaseTransition.ts). This
+          // is the single chokepoint for every phase change -- the
+          // update_session_meta MCP tool and the kanban UI both land here. Only
+          // the workflow `phase` is tracked; operational status flips too often
+          // for the bounded log.
+          const incomingPhase = (incoming as Record<string, unknown>).phase;
+          if (typeof incomingPhase === 'string') {
+            const transition = computeSessionPhaseTransition(
+              existingMetadata as Record<string, any>,
+              incomingPhase,
+              null,
+              Date.now(),
+            );
+            if (transition.changed) merged.activity = transition.metadata.activity;
+          }
           updates.push(`metadata = $${values.length + 1}`);
-          values.push(JSON.stringify({ ...existingMetadata, ...incoming }));
+          values.push(JSON.stringify(merged));
         }
       }
       if ((metadata as any).hasBeenNamed !== undefined) pushUpdate('has_been_named =', (metadata as any).hasBeenNamed);

@@ -12,6 +12,7 @@ import { getActiveDatabase, getAllDatabases, hasActiveDatabase, dispatchDisplayQ
 export const aiTools = [
   {
     name: 'sqlite_list_databases',
+    access: { kind: 'filesystem' } as const,
     description: 'List all currently open SQLite databases in the browser',
     parameters: {
       type: 'object' as const,
@@ -41,6 +42,7 @@ export const aiTools = [
 
   {
     name: 'sqlite_list_tables',
+    access: { kind: 'filesystem' } as const,
     description: 'List all tables in the currently open SQLite database',
     parameters: {
       type: 'object' as const,
@@ -67,6 +69,7 @@ export const aiTools = [
 
   {
     name: 'sqlite_describe_table',
+    access: { kind: 'filesystem' } as const,
     description: 'Get the schema (columns, types, constraints) of a table',
     parameters: {
       type: 'object' as const,
@@ -144,6 +147,7 @@ export const aiTools = [
 
   {
     name: 'sqlite_query',
+    access: { kind: 'filesystem' } as const,
     description: 'Execute a SQL query on the database. Use this for SELECT queries to retrieve data.',
     parameters: {
       type: 'object' as const,
@@ -222,6 +226,7 @@ export const aiTools = [
 
   {
     name: 'sqlite_count',
+    access: { kind: 'filesystem' } as const,
     description: 'Get the row count for a table, optionally with a WHERE clause',
     parameters: {
       type: 'object' as const,
@@ -270,6 +275,7 @@ export const aiTools = [
 
   {
     name: 'sqlite_sample',
+    access: { kind: 'filesystem' } as const,
     description: 'Get a random sample of rows from a table',
     parameters: {
       type: 'object' as const,
@@ -330,6 +336,7 @@ export const aiTools = [
 
   {
     name: 'sqlite_analyze',
+    access: { kind: 'filesystem' } as const,
     description: 'Get statistics about a column (distinct values, null count, min/max for numeric)',
     parameters: {
       type: 'object' as const,
@@ -425,6 +432,7 @@ export const aiTools = [
 
   {
     name: 'sqlite_schema',
+    access: { kind: 'filesystem' } as const,
     description: 'Get the full database schema including all tables and their relationships',
     parameters: {
       type: 'object' as const,
@@ -494,6 +502,7 @@ export const aiTools = [
 
   {
     name: 'sqlite_display_query',
+    access: { kind: 'filesystem' } as const,
     description: 'Execute a SQL query and display the results directly in the SQLite editor UI. Use this to show query results to the user in the database browser interface rather than as text output.',
     parameters: {
       type: 'object' as const,

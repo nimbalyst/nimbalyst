@@ -21,7 +21,7 @@ describe('buildClaudeCliResponseEvent', () => {
 
   it('flags chart/display tools', () => {
     const e = buildClaudeCliResponseEvent({
-      toolNames: ['mcp__nimbalyst-mcp__display_to_user'],
+      toolNames: ['mcp__nimbalyst__display_to_user'],
       finalText: '',
     });
     expect(e.usedChartTool).toBe(true);

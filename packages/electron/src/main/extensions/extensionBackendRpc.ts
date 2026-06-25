@@ -197,7 +197,7 @@ export interface BrokerPayloads {
     sessionId: string;
     /** Workspace path; the host normalizes worktree paths to the parent repo. */
     workspacePath?: string;
-    /** Tool name (may carry the mcp__nimbalyst-meta-agent__ prefix). */
+    /** Tool name (may carry the mcp__nimbalyst-host__ prefix). */
     name: string;
     /** Parsed tool arguments. */
     args: Record<string, unknown>;

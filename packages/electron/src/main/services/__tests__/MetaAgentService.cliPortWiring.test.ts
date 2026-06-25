@@ -1,9 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// NIM-828: MetaAgentService.start() wired the meta-agent MCP port into the SDK
-// providers but never into ClaudeCliLauncherConfig, so claude-code-cli sessions
-// were launched with an --mcp-config missing nimbalyst-meta-agent (spawn_session
-// et al unavailable). Mock surface mirrors MetaAgentService.providerInheritance.test.ts.
+// NIM-828 (original): MetaAgentService.start() had to wire the standalone
+// meta-agent MCP port into ClaudeCliLauncherConfig so claude-code-cli sessions
+// got an --mcp-config including the meta-agent tools.
+//
+// MCP consolidation Phase 7: the standalone meta-agent server is retired — its
+// tools fold onto the unified server's `/mcp/host` endpoint, which every
+// provider (including the CLI launcher) already receives via the shared MCP
+// config. So there is no longer a port to wire; the meaningful invariant is that
+// `start()` still injects the tool fns that the unified server's
+// `dispatchMetaAgentTool` calls.
 vi.mock('@nimbalyst/runtime', () => ({
   AISessionsRepository: {
     create: vi.fn(),
@@ -15,9 +21,6 @@ vi.mock('@nimbalyst/runtime', () => ({
 }));
 
 vi.mock('@nimbalyst/runtime/ai/server', () => ({
-  ClaudeCodeProvider: { setMetaAgentServerPort: vi.fn() },
-  OpenAICodexProvider: { setMetaAgentServerPort: vi.fn() },
-  OpenAICodexACPProvider: { setMetaAgentServerPort: vi.fn() },
   SessionManager: class {
     async initialize() {}
   },
@@ -46,34 +49,35 @@ vi.mock('../../database/initialize', () => ({ getDatabase: () => null }));
 vi.mock('../../file/GitRefWatcher', () => ({ gitRefWatcher: {} }));
 vi.mock('./ai/AIService', () => ({ AIService: class {} }));
 vi.mock('../../mcp/metaAgentServer', () => ({
-  startMetaAgentServer: vi.fn(async () => ({ port: 45678 })),
   setMetaAgentToolFns: vi.fn(),
-  shutdownMetaAgentServer: vi.fn(async () => {}),
 }));
 vi.mock('../metaAgentNotificationSignature', () => ({ computeNotificationSignature: vi.fn() }));
 vi.mock('../metaAgentMessageText', () => ({
   extractMessageText: vi.fn(),
   extractUserPrompts: vi.fn(),
 }));
-vi.mock('../ai/claudeCliLauncherSingleton', () => ({
-  ClaudeCliLauncherConfig: { setMetaAgentServerPort: vi.fn() },
-}));
 
-import { ClaudeCliLauncherConfig } from '../ai/claudeCliLauncherSingleton';
+import { setMetaAgentToolFns } from '../../mcp/metaAgentServer';
 import { MetaAgentService } from '../MetaAgentService';
 
-describe('MetaAgentService CLI launcher port wiring (NIM-828)', () => {
+describe('MetaAgentService tool-fn injection (Phase 7: no standalone server)', () => {
   beforeEach(() => {
-    vi.mocked(ClaudeCliLauncherConfig.setMetaAgentServerPort).mockReset();
+    vi.mocked(setMetaAgentToolFns).mockReset();
   });
 
-  it('injects the meta-agent server port into ClaudeCliLauncherConfig on start and clears it on shutdown', async () => {
+  it('injects the meta-agent tool fns into the unified-server dispatch on start', async () => {
     const service = MetaAgentService.getInstance();
 
     await service.start({} as any);
-    expect(ClaudeCliLauncherConfig.setMetaAgentServerPort).toHaveBeenCalledWith(45678);
+
+    // The dispatch (dispatchMetaAgentTool) used by the unified `/mcp/host`
+    // endpoint reads these injected fns.
+    expect(setMetaAgentToolFns).toHaveBeenCalledTimes(1);
+    const fns = vi.mocked(setMetaAgentToolFns).mock.calls[0][0];
+    expect(typeof fns.createSession).toBe('function');
+    expect(typeof fns.spawnSession).toBe('function');
+    expect(typeof fns.listWorktrees).toBe('function');
 
     await service.shutdown();
-    expect(ClaudeCliLauncherConfig.setMetaAgentServerPort).toHaveBeenLastCalledWith(null);
   });
 });

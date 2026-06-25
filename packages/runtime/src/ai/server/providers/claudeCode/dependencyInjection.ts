@@ -40,39 +40,12 @@ export const ClaudeCodeDeps = {
   // inheritance) before falling through to the global setting.
   customClaudeCodePathLoader: null as ((workspacePath: string) => string) | null,
 
-  // ---- MCP Server Ports ----
-
-  // Shared MCP server port (provides capture_editor_screenshot tool only)
-  // applyDiff and streamContent are NOT exposed via MCP - they're only for chat providers via IPC
-  mcpServerPort: null as number | null,
-
-  // Session naming MCP server port
-  sessionNamingServerPort: null as number | null,
-
-  // Extension dev MCP server port (build, install, reload, uninstall tools)
-  extensionDevServerPort: null as number | null,
-
-  // Super Loop progress MCP server port
-  superLoopProgressServerPort: null as number | null,
-
-  // Session context MCP server port (session summary, workstream overview, recent sessions)
-  sessionContextServerPort: null as number | null,
-
-  // Meta-agent MCP server port
-  metaAgentServerPort: null as number | null,
-
-  // Settings control MCP server port (allows agents to inspect/change Nimbalyst settings)
-  settingsServerPort: null as number | null,
-
-  // Kill-switch loader for the settings MCP. Returns true to omit the server
-  // from the agent's MCP config on the next session start.
-  settingsAgentToolsDisabledLoader: null as (() => boolean) | null,
-
-  // Per-launch bearer token for the internal Nimbalyst MCP HTTP servers.
-  // Issue #146: required so a malicious page in the user's browser can't
-  // invoke MCP tools against the localhost ports. Plumbed to the SDK
-  // subprocesses through the `headers` field on each MCP server config.
-  mcpAuthToken: null as string | null,
+  // ---- Internal MCP server enablement ----
+  // Ports, kill-switches, extension/tracker loaders, and the per-launch bearer
+  // token now live in the shared `mcpServerConfig` registry (configured once
+  // from electron main via `configureMcpServers`). ClaudeCodeProvider builds its
+  // McpConfigService via `getMcpConfigService`, passing only the provider-owned
+  // config/env loaders below.
 
   // ---- Loaders ----
 
@@ -136,42 +109,6 @@ export const ClaudeCodeDeps = {
 
   setCustomClaudeCodePathLoader(loader: ((workspacePath: string) => string) | null): void {
     this.customClaudeCodePathLoader = loader;
-  },
-
-  setMcpServerPort(port: number | null): void {
-    this.mcpServerPort = port;
-  },
-
-  setSessionNamingServerPort(port: number | null): void {
-    this.sessionNamingServerPort = port;
-  },
-
-  setExtensionDevServerPort(port: number | null): void {
-    this.extensionDevServerPort = port;
-  },
-
-  setSuperLoopProgressServerPort(port: number | null): void {
-    this.superLoopProgressServerPort = port;
-  },
-
-  setSessionContextServerPort(port: number | null): void {
-    this.sessionContextServerPort = port;
-  },
-
-  setMetaAgentServerPort(port: number | null): void {
-    this.metaAgentServerPort = port;
-  },
-
-  setSettingsServerPort(port: number | null): void {
-    this.settingsServerPort = port;
-  },
-
-  setSettingsAgentToolsDisabledLoader(loader: (() => boolean) | null): void {
-    this.settingsAgentToolsDisabledLoader = loader;
-  },
-
-  setMcpAuthToken(token: string | null): void {
-    this.mcpAuthToken = token;
   },
 
   setMCPConfigLoader(loader: McpConfigLoader | null): void {

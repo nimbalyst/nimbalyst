@@ -7,6 +7,7 @@
     "build:transcript": "vite build --config vite.config.transcript.ts",
     "sync:transcript-assets": "bash ./scripts/sync-transcript-assets.sh",
     "android:assemble:debug": "./gradlew :app:assembleDebug",
+    "android:assemble:release": "./gradlew :app:assembleRelease",
     "android:test:unit": "./gradlew :app:testDebugUnitTest"
   },
   "dependencies": {

@@ -829,6 +829,48 @@ export interface JSONSchemaProperty {
 }
 
 /**
+ * Declares what kind of document access an AI tool needs.
+ *
+ * This is intentionally separate from `scope`: a globally available tool may
+ * still operate on a file, and an editor-scoped tool may only need filesystem
+ * reads. The host uses this value to decide whether it should mount an editor
+ * and whether the tool is allowed to persist editor mutations.
+ */
+export type ExtensionAIToolAccess =
+  | {
+      /**
+       * Tool reads/writes through explicit services such as
+       * `context.extensionContext.services.filesystem`. The host must not mount
+       * an editor, provide `editorAPI`, or flush editor state for this tool.
+       *
+       * This is the safe default for compilers, analyzers, indexers, symbol
+       * lookup, and any tool that can operate on latest disk content. A
+       * `filePath` argument never by itself requires editor access.
+       */
+      kind: 'filesystem';
+    }
+  | {
+      /**
+       * Tool needs a mounted editor API to inspect editor state but does not
+       * mutate document content. The host provides the editor API (preferring a
+       * visible editor when the file is open, otherwise a hidden one) but never
+       * flushes editor state after the tool runs.
+       */
+      kind: 'editor-read';
+    }
+  | {
+      /**
+       * Tool intentionally mutates editor state. The host mounts an editor if
+       * needed and persists the change after the tool returns through its
+       * conflict-aware save path: the write is committed only if disk still
+       * matches what the editor loaded, otherwise it is aborted and the editor
+       * reloads from disk so an out-of-band write is never clobbered. Authors do
+       * not configure this; the host owns the commit and conflict policy.
+       */
+      kind: 'editor-write';
+    };
+
+/**
  * AI tool definition from an extension.
  */
 export interface ExtensionAITool {
@@ -862,6 +904,25 @@ export interface ExtensionAITool {
    * If omitted, the host may inherit the extension's custom editor patterns.
    */
   editorFilePatterns?: string[];
+
+  /**
+   * Declares the document/editor access this tool needs.
+   *
+   * Use `filesystem` for CAD/compiler/analyzer tools that read latest disk
+   * content through services. Use `editor-read` only when the tool needs a
+   * mounted editor API without mutating content. Use `editor-write` when the
+   * tool intentionally changes editor content.
+   */
+  access?: ExtensionAIToolAccess;
+
+  /**
+   * Legacy read-only flag.
+   *
+   * @deprecated Use `access: { kind: 'filesystem' }` for disk-first tools or
+   * `access: { kind: 'editor-read' }` for tools that need read-only editor
+   * state. `readOnly: true` is treated as `editor-read` by compatibility code.
+   */
+  readOnly?: boolean;
 
   /** Handler function */
   handler: (

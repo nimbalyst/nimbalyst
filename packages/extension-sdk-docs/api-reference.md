@@ -343,6 +343,8 @@ interface ExtensionAITool {
   parameters?: JSONSchema; // legacy alias
   scope?: 'global' | 'editor';
   editorFilePatterns?: string[];
+  access?: ExtensionAIToolAccess;
+  readOnly?: boolean; // deprecated alias for editor-read compatibility
   handler: (
     params: Record<string, unknown>,
     context: AIToolContext
@@ -351,10 +353,18 @@ interface ExtensionAITool {
 ```
 
 ```ts
+type ExtensionAIToolAccess =
+  | { kind: 'filesystem' }   // no editor mount, no flush; reads/writes via services (default for compilers/analyzers)
+  | { kind: 'editor-read' }  // host provides editorAPI, never flushes editor state
+  | { kind: 'editor-write' }; // host provides editorAPI and commits after the tool via its conflict-aware save path
+```
+
+```ts
 interface AIToolContext {
   workspacePath?: string;
   activeFilePath?: string;
   extensionContext: ExtensionContext;
+  editorAPI?: unknown;
 }
 ```
 

@@ -8,6 +8,7 @@ import { notificationService } from "../../services/NotificationService";
 import { TrayManager } from "../../tray/TrayManager";
 import { findWindowIdForWorkspacePath } from "../mcpWorkspaceResolver";
 import { setSessionPendingPrompt } from "../../services/ai/pendingPromptPersistence";
+import { getGitSubprocessEnv } from "../../services/gitEnv";
 import {
   resolveRequestUserInputPromptTargets,
   resolveToolUseIdFromMcpRequest,
@@ -880,7 +881,7 @@ export async function handleGitCommitProposal(
         workspacePath,
         commitMessage,
         filePaths,
-        { logContext: "[git:auto-commit]" }
+        { logContext: "[git:auto-commit]", env: getGitSubprocessEnv() }
       );
     } catch (error) {
       console.error("[MCP Server] Auto-commit failed:", error);
@@ -1452,7 +1453,7 @@ export async function handleRequestUserInput(
   // NIM-806: do NOT persist a synthetic nimbalyst_tool_use here (same reasoning
   // as handleAskUserQuestion). The proxy observation bridge already persists the
   // CLI's assistant turn containing this PromptForUserInput tool_use block (full
-  // name mcp__nimbalyst-mcp__PromptForUserInput, which CustomToolWidgets maps to
+  // name mcp__nimbalyst__PromptForUserInput, which CustomToolWidgets maps to
   // RequestUserInputWidget), keyed by the same promptId. A second synthetic row
   // landed ~before the proxy turn's text → widget rendered above its motivating
   // text + a duplicate card. Settle still writes the synthetic tool_result.

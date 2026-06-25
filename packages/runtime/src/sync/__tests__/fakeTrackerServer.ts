@@ -36,6 +36,10 @@ import type {
   TrackerRoomConfig,
   TrackerDeltaMessage,
   TrackerSyncResponseMessage,
+  EncryptedTrackerSchemaEnvelope,
+  TrackerSchemaSyncResponseMessage,
+  TrackerSchemaDeltaMessage,
+  TrackerSchemaMutationAckMessage,
 } from '../trackerProtocol';
 
 // ============================================================================
@@ -159,6 +163,16 @@ interface StoredItem {
   issueKey: string | null;
 }
 
+interface StoredSchema {
+  schemaType: string;
+  syncId: SyncId;
+  encryptedPayload: string | null;
+  iv: string | null;
+  updatedAt: number;
+  deletedAt: number | null;
+  orgKeyFingerprint: string | null;
+}
+
 export interface FakeTrackerRoomOptions {
   /** Initial config; defaults to issueKeyPrefix='NIM'. */
   config?: TrackerRoomConfig;
@@ -185,8 +199,10 @@ export interface FakeTrackerRoomOptions {
  */
 export class FakeTrackerRoom {
   private readonly items = new Map<string, StoredItem>();
+  private readonly schemas = new Map<string, StoredSchema>();
   private readonly connections = new Set<FakeWebSocket>();
   private syncId: SyncId = 0;
+  private schemaSyncId: SyncId = 0;
   private nextIssueNumber = 1;
   private config: TrackerRoomConfig;
   private currentFingerprint: string | null;
@@ -194,6 +210,7 @@ export class FakeTrackerRoom {
 
   /** Mutation log for test assertions. */
   readonly receivedMutations: Array<{ itemId: string; clientMutationId: string }> = [];
+  readonly receivedSchemaMutations: Array<{ schemaType: string; clientMutationId: string }> = [];
 
   constructor(options: FakeTrackerRoomOptions = {}) {
     this.config = options.config ?? { issueKeyPrefix: 'NIM' };
@@ -274,6 +291,12 @@ export class FakeTrackerRoom {
         break;
       case 'trackerMutation':
         this.handleMutation(ws, msg);
+        break;
+      case 'trackerSchemaSync':
+        this.handleSchemaSync(ws, msg.sinceSyncId);
+        break;
+      case 'trackerSchemaMutation':
+        this.handleSchemaMutation(ws, msg);
         break;
       case 'trackerSetConfig':
         this.handleSetConfig(msg.key, msg.value);
@@ -375,6 +398,82 @@ export class FakeTrackerRoom {
     }
   }
 
+  private handleSchemaSync(ws: FakeWebSocket, sinceSyncId: SyncId): void {
+    const schemas: EncryptedTrackerSchemaEnvelope[] = [...this.schemas.values()]
+      .filter(row => row.syncId > sinceSyncId)
+      .sort((a, b) => a.syncId - b.syncId)
+      .map(toSchemaEnvelope);
+
+    const response: TrackerSchemaSyncResponseMessage = {
+      type: 'trackerSchemaSyncResponse',
+      schemas,
+      cursorSyncId: schemas.length > 0 ? schemas[schemas.length - 1].syncId : sinceSyncId,
+      hasMore: false,
+    };
+    this.deliver(ws, response);
+  }
+
+  private handleSchemaMutation(
+    ws: FakeWebSocket,
+    msg: Extract<TrackerClientMessage, { type: 'trackerSchemaMutation' }>,
+  ): void {
+    this.receivedSchemaMutations.push({
+      schemaType: msg.schemaType,
+      clientMutationId: msg.clientMutationId,
+    });
+
+    if (this.rejectAll) {
+      this.sendSchemaReject(ws, msg.clientMutationId, 'forbidden', 'rejectAll=true');
+      return;
+    }
+
+    if (
+      this.currentFingerprint !== null &&
+      msg.encryptedPayload !== null &&
+      msg.orgKeyFingerprint !== this.currentFingerprint
+    ) {
+      this.sendSchemaReject(
+        ws,
+        msg.clientMutationId,
+        'staleKeyEpoch',
+        `Expected ${this.currentFingerprint}, got ${msg.orgKeyFingerprint ?? '(none)'}`,
+      );
+      return;
+    }
+
+    const isDelete = msg.encryptedPayload === null;
+    const now = Date.now();
+    this.schemaSyncId++;
+    const newSyncId = this.schemaSyncId;
+
+    const stored: StoredSchema = {
+      schemaType: msg.schemaType,
+      syncId: newSyncId,
+      encryptedPayload: isDelete ? null : msg.encryptedPayload,
+      iv: isDelete ? null : (msg.iv ?? null),
+      updatedAt: now,
+      deletedAt: isDelete ? now : null,
+      orgKeyFingerprint: isDelete ? null : (msg.orgKeyFingerprint ?? null),
+    };
+    this.schemas.set(msg.schemaType, stored);
+
+    const envelope = toSchemaEnvelope(stored);
+    const ack: TrackerSchemaMutationAckMessage = {
+      type: 'trackerSchemaMutationAck',
+      clientMutationId: msg.clientMutationId,
+      accepted: true,
+      syncId: newSyncId,
+      schema: envelope,
+    };
+    this.deliver(ws, ack);
+
+    const delta: TrackerSchemaDeltaMessage = { type: 'trackerSchemaDelta', schema: envelope };
+    for (const peer of this.connections) {
+      if (peer === ws) continue;
+      this.deliver(peer, delta);
+    }
+  }
+
   private handleSetConfig(key: 'issueKeyPrefix', value: string): void {
     if (key === 'issueKeyPrefix') {
       this.config = { ...this.config, issueKeyPrefix: value };
@@ -400,6 +499,21 @@ export class FakeTrackerRoom {
     this.deliver(ws, ack);
   }
 
+  private sendSchemaReject(
+    ws: FakeWebSocket,
+    clientMutationId: string,
+    code: TrackerMutationRejectCode,
+    message: string,
+  ): void {
+    const ack: TrackerSchemaMutationAckMessage = {
+      type: 'trackerSchemaMutationAck',
+      clientMutationId,
+      accepted: false,
+      error: { code, message },
+    };
+    this.deliver(ws, ack);
+  }
+
   private deliver(ws: FakeWebSocket, msg: TrackerServerMessage): void {
     ws.deliver(JSON.stringify(msg));
   }
@@ -407,6 +521,10 @@ export class FakeTrackerRoom {
   /** Read the stored items (for assertions). */
   getStoredItems(): EncryptedTrackerItemEnvelope[] {
     return [...this.items.values()].map(toEnvelope);
+  }
+
+  getStoredSchemas(): EncryptedTrackerSchemaEnvelope[] {
+    return [...this.schemas.values()].map(toSchemaEnvelope);
   }
 }
 
@@ -422,6 +540,19 @@ function toEnvelope(stored: StoredItem): EncryptedTrackerItemEnvelope {
   if (stored.iv !== null && stored.encryptedPayload !== null) env.iv = stored.iv;
   if (stored.issueNumber !== null) env.issueNumber = stored.issueNumber;
   if (stored.issueKey !== null) env.issueKey = stored.issueKey;
+  return env;
+}
+
+function toSchemaEnvelope(stored: StoredSchema): EncryptedTrackerSchemaEnvelope {
+  const env: EncryptedTrackerSchemaEnvelope = {
+    schemaType: stored.schemaType,
+    syncId: stored.syncId,
+    encryptedPayload: stored.encryptedPayload,
+    updatedAt: stored.updatedAt,
+    deletedAt: stored.deletedAt,
+    orgKeyFingerprint: stored.orgKeyFingerprint,
+  };
+  if (stored.iv !== null && stored.encryptedPayload !== null) env.iv = stored.iv;
   return env;
 }
 

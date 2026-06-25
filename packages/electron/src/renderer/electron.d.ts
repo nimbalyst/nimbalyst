@@ -484,6 +484,10 @@ interface ElectronAPI {
       updates: Record<string, any>;
       syncMode?: string;
     }) => Promise<{ success: boolean; item?: any; error?: string }>;
+    setTrackerItemShared: (payload: {
+      itemId: string;
+      shared: boolean;
+    }) => Promise<{ success: boolean; item?: any; error?: string }>;
     updateTrackerItemContent: (payload: {
       itemId: string;
       content: any;
@@ -874,7 +878,10 @@ interface ElectronAPI {
         documentId: string;
         title: string;
         documentType?: string;
+        keyCustody?: 'legacy-e2e' | 'server-managed';
         orgKeyBase64: string;
+        /** Legacy org key for reading pre-migration rows in server-managed mode (NIM-878). */
+        legacyOrgKeyBase64?: string;
         orgKeyFingerprint?: string;
         serverUrl: string;
         userId: string;
@@ -1049,7 +1056,11 @@ interface ElectronAPI {
       success: boolean;
       config?: {
         orgId: string;
+        teamProjectId?: string | null;
+        keyCustody?: 'legacy-e2e' | 'server-managed';
         orgKeyBase64: string;
+        /** Legacy org-key epochs (current + archived) for reading/healing pre-migration ciphertext titles in server-managed mode (NIM-906/910). */
+        legacyOrgKeysBase64?: string[];
         orgKeyFingerprint: string | null;
         serverUrl: string;
         userId: string;

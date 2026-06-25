@@ -74,7 +74,7 @@ Displays captured editor screenshots with a large inline preview and lightbox mo
 
 ## MCP Tool Name Handling
 
-MCP tools often have prefixed names (e.g., `mcp__nimbalyst-mcp__capture_editor_screenshot`). The `getCustomToolWidget()` function handles this automatically by:
+MCP tools often have prefixed names (e.g., `mcp__nimbalyst__capture_editor_screenshot`). The `getCustomToolWidget()` function handles this automatically by:
 
 1. First checking for an exact match
 2. Then stripping `mcp__nimbalyst__` prefix and checking again

@@ -101,6 +101,21 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'tracker_type_defs',
       sqlFile: path.join(schemaDir, '0012_tracker_type_defs.sql'),
     },
+    {
+      version: 13,
+      name: 'orgs_and_projects',
+      sqlFile: path.join(schemaDir, '0013_orgs_and_projects.sql'),
+    },
+    {
+      version: 14,
+      name: 'tracker_relationship_index',
+      sqlFile: path.join(schemaDir, '0014_tracker_relationship_index.sql'),
+    },
+    {
+      version: 15,
+      name: 'collab_local_origins_project_id',
+      sqlFile: path.join(schemaDir, '0015_collab_local_origins_project_id.sql'),
+    },
   ];
 }
 

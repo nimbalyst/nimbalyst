@@ -31,6 +31,7 @@ import type {
   TeamDocIndexBroadcastMessage,
   TeamDocIndexRemoveBroadcastMessage,
   TeamOrgKeyRotatedMessage,
+  TeamProjectAccessChangedMessage,
   EncryptedDocIndexEntry,
   ServerTeamState,
 } from './teamSyncTypes';
@@ -121,6 +122,24 @@ export class TeamSyncProvider {
 
   /** Local cache of decrypted doc index entries */
   private localEntries: Map<string, DocIndexEntry> = new Map();
+
+  /**
+   * NIM-906: documentIds whose titles were recovered from a PRE-MIGRATION
+   * legacy ciphertext row (non-empty iv) using the legacy org key. These are
+   * candidates for `backfillLegacyTitles()`, which re-registers them as
+   * plaintext so the server can re-key them under the team DEK.
+   */
+  private legacyTitleDocIds: Set<string> = new Set();
+
+  /** Guards the one-shot auto self-heal so it runs at most once per session. */
+  private legacyTitleBackfillRan = false;
+
+  /**
+   * NIM-910: resolvers waiting for the next team/doc-index snapshot, used to
+   * verify a backfill actually persisted server-side. Resolved with the RAW
+   * (still-encrypted) server entries so the caller can inspect `titleIv`.
+   */
+  private resyncWaiters: Array<(docs: EncryptedDocIndexEntry[]) => void> = [];
 
   /**
    * Pending doc index messages queued while disconnected.
@@ -248,19 +267,44 @@ export class TeamSyncProvider {
   // Public API: Document Index
   // --------------------------------------------------------------------------
 
+  /** Epic H2: true when the server holds the team DEK (no client crypto). */
+  private get serverManaged(): boolean {
+    return this.config.keyCustody === 'server-managed';
+  }
+
+  /** Org key fingerprint to attach to a doc-index write; null in server-managed. */
+  private get wireOrgKeyFingerprint(): string | null {
+    return this.serverManaged ? null : this.config.orgKeyFingerprint;
+  }
+
+  /**
+   * Build the wire title fields. Legacy: AES-256-GCM with the org key.
+   * Server-managed: plaintext title with the empty-string iv sentinel (the
+   * server encrypts at rest with the team DEK).
+   */
+  private async encodeTitleForWire(title: string): Promise<{ encryptedTitle: string; titleIv: string }> {
+    if (this.serverManaged) {
+      return { encryptedTitle: title, titleIv: '' };
+    }
+    return encryptTitle(title, this.config.encryptionKey!);
+  }
+
   async registerDocument(documentId: string, title: string, documentType: string): Promise<void> {
-    const { encryptedTitle, titleIv } = await encryptTitle(title, this.config.encryptionKey);
+    const { encryptedTitle, titleIv } = await this.encodeTitleForWire(title);
     this.send({
       type: 'docIndexRegister', documentId, encryptedTitle, titleIv, documentType,
-      orgKeyFingerprint: this.config.orgKeyFingerprint,
+      // Epic H3 P0/A: attribute the doc to the active project so the server's
+      // project-partitioned doc index (and a future move) can scope it.
+      projectId: this.config.teamProjectId ?? null,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
     });
   }
 
   async updateDocumentTitle(documentId: string, newTitle: string): Promise<void> {
-    const { encryptedTitle, titleIv } = await encryptTitle(newTitle, this.config.encryptionKey);
+    const { encryptedTitle, titleIv } = await this.encodeTitleForWire(newTitle);
     this.send({
       type: 'docIndexUpdate', documentId, encryptedTitle, titleIv,
-      orgKeyFingerprint: this.config.orgKeyFingerprint,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
     });
   }
 
@@ -268,7 +312,7 @@ export class TeamSyncProvider {
     this.localEntries.delete(documentId);
     this.send({
       type: 'docIndexRemove', documentId,
-      orgKeyFingerprint: this.config.orgKeyFingerprint,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
     });
   }
 
@@ -298,6 +342,17 @@ export class TeamSyncProvider {
     payload: InboxEventPayload;
   }): Promise<void> {
     if (params.recipients.length === 0) return;
+    // Inbox fanout delivers an org-key-encrypted blob into each recipient's
+    // (zero-knowledge) PersonalIndexRoom, so it depends on the shared org key.
+    // Server-managed teams have no client-held org key, so cross-lane inbox
+    // fanout is deferred for them (Epic H2 v1 limitation; notifications are a
+    // tracked enterprise follow-up). Skip rather than crash.
+    if (this.serverManaged || !this.config.encryptionKey) {
+      if (this.serverManaged) {
+        console.warn('[TeamSync] inbox fanout skipped: server-managed teams have no client org key (H2 v1 limitation)');
+      }
+      return;
+    }
     // Reuse the org-key AES-GCM string encryptor; fields are generic
     // (ciphertext + iv) regardless of the "title" naming.
     const { encryptedTitle: encryptedPayload, titleIv: iv } = await encryptTitle(
@@ -360,6 +415,9 @@ export class TeamSyncProvider {
         case 'orgKeyRotated':
           this.handleOrgKeyRotated(message);
           break;
+        case 'projectAccessChanged':
+          this.handleProjectAccessChanged(message);
+          break;
         case 'inboxEventFanoutAck':
           // Best-effort fanout; nothing to reconcile on the sender side.
           break;
@@ -401,6 +459,43 @@ export class TeamSyncProvider {
 
     // Replay any doc index mutations that were queued while disconnected
     this.replayPendingDocIndexMessages();
+
+    // NIM-910: `teamSync` returns doc-index titles RAW (the server does not
+    // decrypt DEK rows on that path), so server-managed plaintext titles arrive
+    // as undecryptable ciphertext and render as locked. Immediately request the
+    // decrypting `docIndexSync` path, whose response is authoritative for the
+    // document list and overwrites the raw one.
+    this.send({ type: 'docIndexSync' });
+
+    // NIM-906: self-heal any PRE-MIGRATION ciphertext titles we could recover.
+    this.maybeAutoBackfillLegacyTitles();
+  }
+
+  /**
+   * NIM-906: one-shot self-heal. If this client recovered any legacy ciphertext
+   * titles (it holds the legacy org key), re-register them as plaintext so the
+   * server re-keys them under the team DEK and the whole team sees real titles.
+   * Runs at most once per session and only matters for migrated teams that were
+   * left with un-rekeyed titles; a no-op everywhere else.
+   */
+  private maybeAutoBackfillLegacyTitles(): void {
+    if (this.legacyTitleBackfillRan) return;
+    if (!this.serverManaged || !(this.config.legacyOrgKeys?.length)) return;
+    if (this.legacyTitleDocIds.size === 0) return;
+    this.legacyTitleBackfillRan = true;
+    void this.backfillLegacyTitles().catch((err) => {
+      console.warn('[TeamSync] auto legacy-title backfill failed:', err);
+    });
+  }
+
+  /** Resolve any pending backfill-verification waiters with raw server entries. */
+  private notifyResyncWaiters(documents: EncryptedDocIndexEntry[]): void {
+    if (this.resyncWaiters.length === 0) return;
+    const waiters = this.resyncWaiters;
+    this.resyncWaiters = [];
+    for (const w of waiters) {
+      try { w(documents); } catch { /* waiter cleanup is best-effort */ }
+    }
   }
 
   private handleMemberAdded(msg: TeamMemberAddedMessage): void {
@@ -451,6 +546,7 @@ export class TeamSyncProvider {
   }
 
   private async handleDocIndexSyncResponse(msg: TeamDocIndexSyncResponseMessage): Promise<void> {
+    this.notifyResyncWaiters(msg.documents);
     const documents = await this.decryptDocuments(msg.documents);
     this.localEntries.clear();
     for (const doc of documents) {
@@ -460,6 +556,9 @@ export class TeamSyncProvider {
       this.teamState.documents = documents;
     }
     this.config.onDocumentsLoaded?.(documents);
+
+    // NIM-906: self-heal any PRE-MIGRATION ciphertext titles we could recover.
+    this.maybeAutoBackfillLegacyTitles();
   }
 
   private async handleDocIndexBroadcast(msg: TeamDocIndexBroadcastMessage): Promise<void> {
@@ -499,6 +598,10 @@ export class TeamSyncProvider {
     this.config.onOrgKeyRotated?.(msg.fingerprint);
   }
 
+  private handleProjectAccessChanged(msg: TeamProjectAccessChangedMessage): void {
+    this.config.onProjectAccessChanged?.(msg.projectId, msg.userId, msg.projectRole);
+  }
+
   private handleDocIndexRemoveBroadcast(msg: TeamDocIndexRemoveBroadcastMessage): void {
     this.localEntries.delete(msg.documentId);
     if (this.teamState) {
@@ -512,6 +615,15 @@ export class TeamSyncProvider {
   // --------------------------------------------------------------------------
 
   private async decryptDocuments(encrypted: EncryptedDocIndexEntry[]): Promise<DocIndexEntry[]> {
+    // NIM-910: characterize what the server is actually sending, so a sync/collab
+    // bug is diagnosed from SERVER state (empty-iv = server-decrypted plaintext;
+    // non-empty-iv = legacy ciphertext passed through) rather than the local view.
+    if (this.serverManaged) {
+      const emptyIv = encrypted.filter(e => !e.titleIv).length;
+      console.log('[TeamSync] doc-index sync:', encrypted.length, 'entries,',
+        emptyIv, 'server-plaintext (empty iv),', encrypted.length - emptyIv,
+        'legacy-ciphertext; legacyKeyEpochs=', this.config.legacyOrgKeys?.length ?? 0);
+    }
     const results: DocIndexEntry[] = [];
     for (const e of encrypted) {
       try {
@@ -540,7 +652,11 @@ export class TeamSyncProvider {
   }
 
   private async decryptEntry(encrypted: EncryptedDocIndexEntry): Promise<DocIndexEntry> {
-    const title = await decryptTitle(encrypted.encryptedTitle, encrypted.titleIv, this.config.encryptionKey);
+    const title = await this.decryptTitleFromWire(
+      encrypted.documentId,
+      encrypted.encryptedTitle,
+      encrypted.titleIv,
+    );
     return {
       documentId: encrypted.documentId,
       title,
@@ -549,6 +665,146 @@ export class TeamSyncProvider {
       createdAt: encrypted.createdAt,
       updatedAt: encrypted.updatedAt,
     };
+  }
+
+  /**
+   * NIM-906: resolve a wire title to plaintext. Mirrors
+   * `DocumentSync.decryptFromWire` for the doc-index title path.
+   *
+   * Server-managed mode is MIXED during/after the legacy-e2e -> server-managed
+   * migration:
+   *   - Empty-iv sentinel ('') => the server already decrypted the title with
+   *     the team DEK; it is plaintext, pass it through.
+   *   - Non-empty iv => a PRE-MIGRATION row the server passed through unchanged
+   *     (still AES ciphertext under the old org key). Decrypt it with the
+   *     retained legacy org key, and record it so `backfillLegacyTitles()` can
+   *     re-register it as plaintext. With no legacy key we THROW so the caller
+   *     marks the entry `decryptFailed` (locked) rather than rendering the raw
+   *     base64 ciphertext as a title (which the tree builder shreds on '/').
+   */
+  private async decryptTitleFromWire(
+    documentId: string,
+    encryptedTitle: string,
+    titleIv: string,
+  ): Promise<string> {
+    if (this.serverManaged) {
+      if (!titleIv) {
+        return encryptedTitle;
+      }
+      const candidates = this.config.legacyOrgKeys ?? [];
+      if (candidates.length === 0) {
+        throw new Error(
+          'legacy-e2e doc-index title in a server-managed team but no legacy org key is available',
+        );
+      }
+      // The org key may have rotated while the team was legacy-e2e, so titles
+      // can be under different epochs. Try each candidate; first one wins.
+      let lastErr: unknown;
+      for (const key of candidates) {
+        try {
+          const title = await decryptTitle(encryptedTitle, titleIv, key);
+          this.legacyTitleDocIds.add(documentId);
+          return title;
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      throw lastErr instanceof Error
+        ? lastErr
+        : new Error('no legacy org-key epoch could decrypt this doc-index title');
+    }
+    return decryptTitle(encryptedTitle, titleIv, this.config.encryptionKey!);
+  }
+
+  /**
+   * NIM-906: re-register every legacy doc-index title this client recovered
+   * (decrypted from a non-empty-iv ciphertext row) as PLAINTEXT, so the
+   * server DEK-encrypts it at rest, stamps the current fingerprint, and
+   * broadcasts it back to the whole team with the empty-iv sentinel. This is
+   * the only path that can heal a team whose titles were left as ciphertext by
+   * the migration — only a client holding the legacy org key can recover the
+   * plaintext (the server never had that zero-knowledge key).
+   *
+   * Idempotent: once a title is re-registered as plaintext the server serves it
+   * with an empty iv, so it is no longer recorded as legacy on the next load.
+   *
+   * VERIFIED: the server does not echo a client's own `docIndexUpdate` broadcast,
+   * and `send()` is fire-and-forget, so a successful send is NOT proof the write
+   * persisted (a `rotation_locked` barrier silently rejects writes — this was the
+   * NIM-910 mis-verification). After sending we re-request a fresh sync and count
+   * how many of the re-registered docs now come back as server-plaintext
+   * (empty iv). Returns `{ sent, confirmed }`; `confirmed === null` means the
+   * verification round-trip timed out (persistence unknown).
+   */
+  async backfillLegacyTitles(): Promise<{ sent: number; confirmed: number | null }> {
+    if (!this.serverManaged || !(this.config.legacyOrgKeys?.length)) {
+      return { sent: 0, confirmed: 0 };
+    }
+    // Claim the work synchronously (before the first await) so a concurrent
+    // caller — e.g. the auto self-heal racing an explicit repair — sees an
+    // empty set and doesn't double-register the same titles.
+    const ids = Array.from(this.legacyTitleDocIds);
+    this.legacyTitleDocIds.clear();
+    const sentIds: string[] = [];
+    const failed: string[] = [];
+    for (const documentId of ids) {
+      const entry = this.localEntries.get(documentId);
+      if (!entry || entry.decryptFailed) continue;
+      try {
+        await this.updateDocumentTitle(documentId, entry.title);
+        sentIds.push(documentId);
+      } catch (err) {
+        failed.push(documentId); // allow a later retry
+        console.warn('[TeamSync] backfillLegacyTitles re-register failed for', documentId, err);
+      }
+    }
+    for (const documentId of failed) this.legacyTitleDocIds.add(documentId);
+    if (sentIds.length === 0) return { sent: 0, confirmed: 0 };
+
+    // Verify the writes actually persisted server-side.
+    const raw = await this.requestDocIndexResync();
+    let confirmed: number | null = null;
+    if (raw) {
+      const plaintextNow = new Set(raw.filter(e => !e.titleIv).map(e => e.documentId));
+      confirmed = sentIds.filter(id => plaintextNow.has(id)).length;
+    }
+    console.log('[TeamSync] backfill legacy titles: sent', sentIds.length,
+      'confirmed-persisted', confirmed,
+      confirmed !== null && confirmed < sentIds.length
+        ? '(server rejected some — likely a key-rotation write lock; will retry next sync)'
+        : '');
+    if (confirmed !== null && confirmed < sentIds.length) {
+      // Re-queue the unconfirmed ones so a later sync retries them.
+      const persisted = raw ? new Set(raw.filter(e => !e.titleIv).map(e => e.documentId)) : new Set<string>();
+      for (const id of sentIds) {
+        if (!persisted.has(id)) this.legacyTitleDocIds.add(id);
+      }
+    }
+    return { sent: sentIds.length, confirmed };
+  }
+
+  /**
+   * Request a fresh team/doc-index snapshot and resolve with the RAW (still
+   * encrypted) entries the server returns, so callers can inspect actual server
+   * state (e.g. confirm a backfill persisted). Resolves null on timeout.
+   */
+  private requestDocIndexResync(timeoutMs = 6000): Promise<EncryptedDocIndexEntry[] | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (docs: EncryptedDocIndexEntry[] | null) => {
+        if (settled) return;
+        settled = true;
+        this.resyncWaiters = this.resyncWaiters.filter(w => w !== waiter);
+        resolve(docs);
+      };
+      const waiter = (docs: EncryptedDocIndexEntry[]) => done(docs);
+      this.resyncWaiters.push(waiter);
+      setTimeout(() => done(null), timeoutMs);
+      // Use the DECRYPTING path: a persisted backfill comes back as plaintext
+      // with an empty iv here (teamSync returns raw DEK ciphertext and can't
+      // confirm persistence).
+      this.send({ type: 'docIndexSync' });
+    });
   }
 
   private send(message: TeamClientMessage): void {

@@ -52,3 +52,52 @@ export function filterTrackerItemsByTags(items: TrackerRecord[], activeTags: str
   const activeSet = new Set(activeTags);
   return items.filter((item) => getTrackerItemTags(item).some((tag) => activeSet.has(tag)));
 }
+
+/**
+ * A single column of the tag board (NIM-774). `tag` is the tag name the column
+ * represents, or `null` for the trailing "Untagged" bucket.
+ */
+export interface TrackerTagBoardColumn {
+  tag: string | null;
+  label: string;
+  items: TrackerRecord[];
+}
+
+/**
+ * Group items into tag-board columns. Each distinct tag (from the schema `tags`
+ * role / array field) becomes a column; an item carrying multiple tags appears
+ * in every matching column. Columns are ordered by item count (desc) then tag
+ * name (asc) to keep the busiest tags first and the order stable. Items with no
+ * tags collect into a trailing "Untagged" column, which is omitted entirely when
+ * every item is tagged.
+ */
+export function groupTrackerItemsByTag(items: TrackerRecord[]): TrackerTagBoardColumn[] {
+  const byTag = new Map<string, TrackerRecord[]>();
+  const untagged: TrackerRecord[] = [];
+
+  for (const item of items) {
+    const uniqueTags = Array.from(new Set(getTrackerItemTags(item)));
+    if (uniqueTags.length === 0) {
+      untagged.push(item);
+      continue;
+    }
+    for (const tag of uniqueTags) {
+      const bucket = byTag.get(tag);
+      if (bucket) bucket.push(item);
+      else byTag.set(tag, [item]);
+    }
+  }
+
+  const columns: TrackerTagBoardColumn[] = Array.from(byTag.entries())
+    .map(([tag, tagItems]) => ({ tag, label: tag, items: tagItems }))
+    .sort((a, b) => {
+      if (b.items.length !== a.items.length) return b.items.length - a.items.length;
+      return a.label.localeCompare(b.label);
+    });
+
+  if (untagged.length > 0) {
+    columns.push({ tag: null, label: 'Untagged', items: untagged });
+  }
+
+  return columns;
+}

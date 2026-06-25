@@ -39,6 +39,22 @@ interface EditorHost {
 
 This contract ensures that extensions integrate seamlessly with tabs, dirty indicators, file watching, and AI edit streaming regardless of the underlying editor technology.
 
+## AI Tool Document Access
+
+AI tools do not automatically get editor access just because a tool call has a
+`filePath`. Each tool declares one document access mode:
+
+| Mode | Editor mount | Save behavior | Use for |
+| --- | --- | --- | --- |
+| `filesystem` | Never | Never flushes editor state | compilers, analyzers, project graphs, symbol lookup |
+| `editor-read` | Visible/read-only hidden editor when needed | Never flushes editor state | renderer-backed exports, selection/scene inspection |
+| `editor-write` | Visible or hidden writable editor | Persists after the tool through the host save path | Excalidraw-style shape/layout mutations |
+
+This keeps disk-first extensions such as OpenSCAD and replicad out of the
+hidden-editor lifecycle while preserving useful editor-writing tools like
+Excalidraw diagram edits. New extension tools should always set
+`ExtensionAITool.access`; `readOnly` is a deprecated compatibility flag.
+
 ## useEditorLifecycle Hook (Recommended)
 
 The `useEditorLifecycle` hook replaces all manual `EditorHost` subscription boilerplate with a single hook call. **All new custom editors should use this hook.**

@@ -22,6 +22,7 @@ import { createPGLiteDocumentsRepository } from './PGLiteDocumentsRepository';
 import { createPGLiteQueuedPromptsStore, type QueuedPromptsStore } from './PGLiteQueuedPromptsStore';
 import { createPGLiteSessionWakeupsStore, type SessionWakeupsStore } from './PGLiteSessionWakeupsStore';
 import { runAgentMessagesBackfill } from './AgentMessagesBackfill';
+import { runWhenFirstUsable } from './startupMaintenanceGate';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { createSQLiteStoreAdapter } from '../database/sqlite/SQLiteStoreAdapter';
 import { logger } from '../utils/logger';
@@ -164,11 +165,12 @@ class RepositoryManager {
 
       // Phase 1C/5 of canonical-transcript-deprecation: backfill
       // searchable_text/message_kind on existing rows and delete transient
-      // claude-code chunks. Idempotent and run off the critical-path so it
-      // doesn't block startup.
-      void runAgentMessagesBackfill(dbAdapter).catch((err) => {
-        logger.main.error('[RepositoryManager] AgentMessages backfill failed:', err);
-      });
+      // claude-code chunks. Idempotent. Deferred until the app is first-usable
+      // (first window painted + idle) so it never competes with the queries
+      // that load the first window -- the shared SQLite worker is FIFO and a
+      // long maintenance query head-of-line-blocks everything queued behind it.
+      // NIM-899.
+      runWhenFirstUsable('agent-messages-backfill', () => runAgentMessagesBackfill(dbAdapter));
 
       // Subscribe to auth state changes to reinitialize sync when user authenticates
       // This handles the case where Stytch is lazy-initialized after repositories are ready

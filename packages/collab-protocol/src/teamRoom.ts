@@ -69,6 +69,13 @@ export interface TeamDocIndexRegisterMessage {
   encryptedTitle: string;
   titleIv: string;
   documentType: string;
+  /**
+   * Epic H3 P0: the project this document belongs to (the tracker-room routing
+   * `teamProjectId`). Optional for backward compatibility — when omitted the
+   * server tags the doc with the org's primary project. Lets a project move
+   * answer "which docs travel with this project."
+   */
+  projectId?: string | null;
   orgKeyFingerprint?: string | null;
 }
 
@@ -105,6 +112,7 @@ export type TeamServerMessage =
   | TeamDocIndexBroadcastMessage
   | TeamDocIndexRemoveBroadcastMessage
   | TeamOrgKeyRotatedMessage
+  | TeamProjectAccessChangedMessage
   | InboxEventFanoutAckMessage
   | TeamErrorMessage;
 
@@ -168,6 +176,21 @@ export interface TeamOrgKeyRotatedMessage {
   fingerprint: string;
 }
 
+/**
+ * Broadcast: a member's project-scoped access changed (Epic H1).
+ *
+ * Emitted by the TeamRoom when a project_access grant is created, updated, or
+ * revoked (via the admin REST mutations or the one-time backfill). Lets every
+ * connected member keep its local org/project projection live without polling.
+ * `projectRole` is the new role, or `null` when access was revoked.
+ */
+export interface TeamProjectAccessChangedMessage {
+  type: 'projectAccessChanged';
+  projectId: string;
+  userId: string;
+  projectRole: string | null;
+}
+
 /** Full document list response */
 export interface TeamDocIndexSyncResponseMessage {
   type: 'docIndexSyncResponse';
@@ -206,6 +229,12 @@ export interface EncryptedDocIndexEntry {
   createdBy: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Epic H3 P0: the project this document belongs to (tracker-room routing
+   * `teamProjectId`). Null for legacy/pre-H3 rows (treated as the org's
+   * primary project at read time).
+   */
+  projectId?: string | null;
 }
 
 /** Full team state snapshot sent on teamSync */

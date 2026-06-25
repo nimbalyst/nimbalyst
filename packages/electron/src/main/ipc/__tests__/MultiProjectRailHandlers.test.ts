@@ -106,12 +106,16 @@ class FakeService {
 }
 
 vi.mock('../../services/ElectronDocumentService', () => ({
-  ElectronDocumentService: vi.fn().mockImplementation(() => new FakeService()),
+  ElectronDocumentService: vi.fn(function () {
+    return new FakeService();
+  }),
   setupDocumentServiceHandlers: mocks.setupDocumentServiceHandlers,
 }));
 
 vi.mock('../../services/ElectronFileSystemService', () => ({
-  ElectronFileSystemService: vi.fn().mockImplementation(() => new FakeService()),
+  ElectronFileSystemService: vi.fn(function () {
+    return new FakeService();
+  }),
 }));
 
 vi.mock('electron', () => ({
