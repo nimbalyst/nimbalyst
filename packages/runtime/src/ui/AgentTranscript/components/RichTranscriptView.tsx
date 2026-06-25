@@ -504,6 +504,8 @@ interface RichTranscriptViewProps {
   waitingForNoun?: string;
   /** Optional: exact text for the bottom transcript activity indicator */
   waitingTextOverride?: string;
+  /** Optional: action rendered inline with the bottom transcript activity indicator */
+  waitingAction?: React.ReactNode;
   /** Optional: App start time (epoch ms) for rendering restart indicator line (dev mode only) */
   appStartTime?: number;
   /** Optional: Render a file using a host-provided embedded editor surface */
@@ -1091,7 +1093,7 @@ export const extractEditsFromToolMessage = (message: TranscriptViewMessage): any
 export const RichTranscriptView = React.forwardRef<
   { scrollToMessage: (index: number) => void; scrollToTop: () => void },
   RichTranscriptViewProps
->(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, waitingTextOverride, appStartTime, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, transcriptPageInfo, onLoadOlderTranscript, isLoadingOlderTranscript, persistScrollState = true }, ref) => {
+>(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, waitingTextOverride, waitingAction, appStartTime, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, transcriptPageInfo, onLoadOlderTranscript, isLoadingOlderTranscript, persistScrollState = true }, ref) => {
   const [collapsedMessages, setCollapsedMessages] = useState<Set<number>>(new Set());
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollButtonRef = useRef<HTMLDivElement>(null);
@@ -2503,6 +2505,11 @@ export const RichTranscriptView = React.forwardRef<
                         <div className="rich-transcript-waiting-dot w-2 h-2 rounded-full bg-[var(--nim-primary)]" />
                       </div>
                       <span className="rich-transcript-waiting-text">{waitingText}</span>
+                      {waitingAction && (
+                        <span className="rich-transcript-waiting-action not-italic ml-1">
+                          {waitingAction}
+                        </span>
+                      )}
                     </div>
                   )}
               </VList>

@@ -87,7 +87,6 @@ fun SessionDetailScreen(
     var draftPrompt by remember { mutableStateOf("") }
     var promptStatus by remember { mutableStateOf<String?>(null) }
     var isSendingPrompt by remember { mutableStateOf(false) }
-    var isCancellingSession by remember { mutableStateOf(false) }
     var pendingAttachments by remember { mutableStateOf<List<PendingAttachment>>(emptyList()) }
     // Delivery timeout state
     var deliveryWarning by remember { mutableStateOf<String?>(null) }
@@ -334,6 +333,16 @@ fun SessionDetailScreen(
                 transcriptTailJson = if (useProjectedTranscriptTail) transcriptTail else null,
                 transcriptHistoryPageJson = latestHistoryPage?.second,
                 onPromptSubmitted = { text -> submitPrompt(text, emptyList()) },
+                onCancelSession = {
+                    coroutineScope.launch {
+                        val result = app.syncManager.cancelSession(sessionId)
+                        result.onSuccess {
+                            promptStatus = "Stop requested."
+                        }.onFailure { error ->
+                            promptStatus = error.message ?: "Failed to stop session."
+                        }
+                    }
+                },
                 onInteractiveResponse = { bridgeMessage ->
                     coroutineScope.launch {
                         val promptId = bridgeMessage.promptId
@@ -552,25 +561,6 @@ fun SessionDetailScreen(
                         Text("Camera")
                     }
                     Spacer(modifier = Modifier.weight(1f))
-                    if (currentIsExecuting) {
-                        OutlinedButton(
-                            enabled = !isCancellingSession,
-                            onClick = {
-                                coroutineScope.launch {
-                                    isCancellingSession = true
-                                    val result = app.syncManager.cancelSession(sessionId)
-                                    result.onSuccess {
-                                        promptStatus = "Stop requested."
-                                    }.onFailure { error ->
-                                        promptStatus = error.message ?: "Failed to stop session."
-                                    }
-                                    isCancellingSession = false
-                                }
-                            }
-                        ) {
-                            Text(if (isCancellingSession) "Stopping..." else "Stop")
-                        }
-                    }
                     Button(
                         enabled = !isSendingPrompt && (draftPrompt.isNotBlank() || pendingAttachments.isNotEmpty()),
                         onClick = { submitPrompt(draftPrompt, pendingAttachments) }

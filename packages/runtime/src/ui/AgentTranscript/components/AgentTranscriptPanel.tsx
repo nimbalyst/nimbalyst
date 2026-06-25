@@ -110,6 +110,8 @@ interface AgentTranscriptPanelProps {
   waitingForNoun?: string;
   /** Optional: exact text for the bottom transcript activity indicator */
   waitingTextOverride?: string;
+  /** Optional: action rendered inline with the bottom transcript activity indicator */
+  waitingAction?: React.ReactNode;
   /** Current session phase for the kanban board */
   currentPhase?: string | null;
   /** Available phase columns for the kanban board picker */
@@ -159,6 +161,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   currentTeammates,
   waitingForNoun,
   waitingTextOverride,
+  waitingAction,
   currentPhase,
   phaseColumns,
   onSetPhase,
@@ -396,6 +399,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
           currentTeammates={currentTeammates ?? sessionData.metadata?.currentTeammates as Array<{ agentId: string; status: 'running' | 'completed' | 'errored' | 'idle' }> | undefined}
           waitingForNoun={waitingForNoun}
           waitingTextOverride={waitingTextOverride}
+          waitingAction={waitingAction}
           appStartTime={appStartTime}
           renderEmbeddedFile={renderEmbeddedFile}
           canEmbedFile={canEmbedFile}

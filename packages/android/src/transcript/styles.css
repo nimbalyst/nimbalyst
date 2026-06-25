@@ -96,3 +96,18 @@ body {
   font-size: 13px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
 }
+
+.mobile-transcript-stop-button {
+  border: 1px solid color-mix(in srgb, var(--nim-error, #ef4444) 70%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--nim-error, #ef4444) 10%, transparent);
+  color: var(--nim-error, #ef4444);
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 18px;
+}
+
+.mobile-transcript-stop-button:active {
+  transform: scale(0.98);
+}

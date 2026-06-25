@@ -39,6 +39,7 @@ fun TranscriptWebView(
     transcriptHistoryPageJson: String? = null,
     onPromptSubmitted: (String) -> Unit = {},
     onInteractiveResponse: (TranscriptBridgeMessage) -> Unit = {},
+    onCancelSession: () -> Unit = {},
     onLoadOlderHistory: (Long?, Int?) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
@@ -95,6 +96,7 @@ fun TranscriptWebView(
                         when (message.type) {
                             "prompt" -> message.text?.let(onPromptSubmitted)
                             "interactive_response" -> onInteractiveResponse(message)
+                            "cancel_session" -> onCancelSession()
                             "load_older_history" -> onLoadOlderHistory(message.beforeRawMessageId, message.count)
                         }
                     },

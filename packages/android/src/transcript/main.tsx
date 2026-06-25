@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import ReactDOM from "react-dom/client";
 import { Provider as JotaiProvider } from "jotai";
 import { store } from "@nimbalyst/runtime/store";
@@ -1248,6 +1248,24 @@ function TranscriptApp() {
     postToNative({ type: "prompt", text: "/compact" });
   }, []);
 
+  const handleStopSession = useCallback(() => {
+    postToNative({ type: "cancel_session" });
+  }, []);
+
+  const waitingAction = useMemo(() => {
+    if (!bottomAgentStatusActive) return undefined;
+
+    return (
+      <button
+        type="button"
+        className="mobile-transcript-stop-button"
+        onClick={handleStopSession}
+      >
+        Stop
+      </button>
+    );
+  }, [bottomAgentStatusActive, handleStopSession]);
+
   if (!sessionId || !sessionData) {
     return (
       <div
@@ -1274,6 +1292,7 @@ function TranscriptApp() {
         sessionData={sessionData}
         isProcessing={bottomAgentStatusActive}
         waitingTextOverride={bottomAgentStatusLabel}
+        waitingAction={waitingAction}
         hideSidebar={true}
         onCompact={handleCompact}
       />
