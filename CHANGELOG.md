@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Windows: Claude Code CLI chat sessions now start instead of failing immediately on launch. (#684)
 
 ### Removed
 <!-- Removed features go here -->
