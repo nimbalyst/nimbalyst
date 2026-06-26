@@ -142,6 +142,8 @@ export interface ClaudeCliSpawnInput {
   pluginDirs?: string[];
   /** Extra CLI args appended verbatim (escape hatch for flags we pass through). */
   extraArgs?: string[];
+  /** Platform (process.platform); injectable for cross-platform tests. */
+  platform?: NodeJS.Platform;
 }
 
 export interface ClaudeCliSpawnConfig {
@@ -345,5 +347,17 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
     }
   }
 
-  return { executable, args, env };
+  // On Windows, node-pty runs a `.cmd`/`.bat` through cmd.exe, which is
+  // line-oriented: a newline inside an argument truncates the command line at
+  // that point, dropping everything after it. Nimbalyst passes a multi-line
+  // `--append-system-prompt`, so collapse CR/LF runs to a single space for the
+  // `.cmd`/`.bat` launch path. The append is plain instructions, so single-lining
+  // is semantically harmless; a real `.exe` or the SDK path is unaffected. (#684)
+  const platform = input.platform ?? process.platform;
+  const launchArgs =
+    platform === 'win32' && /\.(cmd|bat)$/i.test(executable)
+      ? args.map((arg) => arg.replace(/[\r\n]+/g, ' '))
+      : args;
+
+  return { executable, args: launchArgs, env };
 }
