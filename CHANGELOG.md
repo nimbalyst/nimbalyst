@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Advanced setting to route Claude Code CLI (Subscription) traffic through a custom local API proxy (e.g. a token-compression or caching layer).
 
 ### Changed
 <!-- Changes to existing functionality go here -->

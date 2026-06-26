@@ -33,7 +33,11 @@ export interface ClaudeCliProxyObservationDeps {
   onRateLimit?: (info: { statusCode: number; retryAfter?: string }) => void;
   /** Any non-2xx upstream response (>= 400) with a bounded error body — surfaced in the transcript. */
   onUpstreamError?: (info: { statusCode: number; body?: string; retryAfter?: string }) => void;
-  /** Test seam — point the proxy at a fake upstream. Defaults to the real API. */
+  /**
+   * Upstream the proxy forwards `/v1/messages` to. Defaults to the real Anthropic
+   * API. Set in production to a user-configured loopback middleware proxy
+   * (token-compression / gateway / cache), and in tests to a fake upstream.
+   */
   upstreamUrl?: string;
 }
 

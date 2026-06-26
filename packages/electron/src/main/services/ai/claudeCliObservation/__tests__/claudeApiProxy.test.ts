@@ -19,6 +19,7 @@ interface FakeUpstream {
   url: string;
   close: () => Promise<void>;
   lastHeaders: () => http.IncomingHttpHeaders;
+  lastPath: () => string;
   connectionCount: () => number;
 }
 
@@ -28,10 +29,12 @@ interface FakeUpstream {
  */
 function startFakeUpstream(): Promise<FakeUpstream> {
   let lastHeaders: http.IncomingHttpHeaders = {};
+  let lastPath = "";
   let connections = 0;
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       lastHeaders = req.headers;
+      lastPath = req.url || "";
       // Drain the body so the socket completes.
       req.on("data", () => {});
       req.on("end", () => {
@@ -58,6 +61,7 @@ function startFakeUpstream(): Promise<FakeUpstream> {
         url: `http://127.0.0.1:${addr.port}`,
         close: () => new Promise((r) => server.close(() => r())),
         lastHeaders: () => lastHeaders,
+        lastPath: () => lastPath,
         connectionCount: () => connections,
       });
     });
@@ -71,10 +75,12 @@ function startFakeErrorUpstream(
   headers: Record<string, string> = {},
 ): Promise<FakeUpstream> {
   let lastHeaders: http.IncomingHttpHeaders = {};
+  let lastPath = "";
   let connections = 0;
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       lastHeaders = req.headers;
+      lastPath = req.url || "";
       req.on("data", () => {});
       req.on("end", () => {
         res.writeHead(statusCode, { "content-type": "application/json", ...headers });
@@ -91,6 +97,7 @@ function startFakeErrorUpstream(
         url: `http://127.0.0.1:${addr.port}`,
         close: () => new Promise((r) => server.close(() => r())),
         lastHeaders: () => lastHeaders,
+        lastPath: () => lastPath,
         connectionCount: () => connections,
       });
     });
@@ -176,6 +183,66 @@ describe("claudeApiProxy", () => {
     const upstreamHeaders = upstream.lastHeaders();
     expect(upstreamHeaders["accept-encoding"]).toBeUndefined();
     expect(upstreamHeaders["host"]).toContain("127.0.0.1");
+  });
+
+  it("forwards to /v1/messages unchanged when the upstream has no base path (default shape)", async () => {
+    upstream = await startFakeUpstream();
+
+    proxy = await startClaudeApiProxy(
+      { onSSEEvent: () => {}, onProxyError: (err) => { throw err; } },
+      { upstreamUrl: upstream.url },
+    );
+
+    await postToProxy(
+      proxy.port,
+      JSON.stringify({ model: "claude-x", messages: [{ role: "user", content: "hi" }] }),
+      {},
+    );
+
+    expect(upstream.lastPath()).toBe("/v1/messages");
+  });
+
+  it("preserves a base path on the upstream origin so a prefixed proxy receives /<prefix>/v1/messages", async () => {
+    // A token-compression / gateway proxy commonly mounts the Anthropic API under
+    // a path prefix (e.g. Headroom's `/anthropic`). `new URL(reqPath, origin)`
+    // would drop it; the proxy must prepend it instead.
+    upstream = await startFakeUpstream();
+
+    proxy = await startClaudeApiProxy(
+      { onSSEEvent: () => {}, onProxyError: (err) => { throw err; } },
+      { upstreamUrl: `${upstream.url}/anthropic` },
+    );
+
+    await postToProxy(
+      proxy.port,
+      JSON.stringify({ model: "claude-x", messages: [{ role: "user", content: "hi" }] }),
+      {},
+    );
+
+    expect(upstream.lastPath()).toBe("/anthropic/v1/messages");
+  });
+
+  it("preserves the query string when prepending a base path", async () => {
+    upstream = await startFakeUpstream();
+
+    proxy = await startClaudeApiProxy(
+      { onSSEEvent: () => {}, onProxyError: (err) => { throw err; } },
+      { upstreamUrl: `${upstream.url}/gw` },
+    );
+
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request(
+        { hostname: "127.0.0.1", port: proxy!.port, path: "/v1/messages?beta=true", method: "POST" },
+        (res) => {
+          res.on("data", () => {});
+          res.on("end", () => resolve());
+        },
+      );
+      req.on("error", reject);
+      req.end(JSON.stringify({ model: "claude-x", messages: [] }));
+    });
+
+    expect(upstream.lastPath()).toBe("/gw/v1/messages?beta=true");
   });
 
   it("reuses one upstream connection across sequential requests (keep-alive)", async () => {

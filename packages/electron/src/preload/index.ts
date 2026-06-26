@@ -1551,9 +1551,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Claude Code API
   claudeCode: {
-    getSettings: () => ipcRenderer.invoke('claudeCode:get-settings') as Promise<{ projectCommandsEnabled: boolean; userCommandsEnabled: boolean }>,
+    getSettings: () => ipcRenderer.invoke('claudeCode:get-settings') as Promise<{ projectCommandsEnabled: boolean; userCommandsEnabled: boolean; apiUpstreamUrl?: string }>,
     setProjectCommandsEnabled: (enabled: boolean) => ipcRenderer.invoke('claudeCode:set-project-commands-enabled', enabled),
     setUserCommandsEnabled: (enabled: boolean) => ipcRenderer.invoke('claudeCode:set-user-commands-enabled', enabled),
+    setApiUpstreamUrl: (url: string) => ipcRenderer.invoke('claudeCode:set-api-upstream-url', url) as Promise<{ success: true } | { success: false; error: string }>,
     // User-level environment variables (~/.claude/settings.json)
     getEnv: () => ipcRenderer.invoke('claudeSettings:get-env') as Promise<Record<string, string>>,
     setEnv: (env: Record<string, string>) => ipcRenderer.invoke('claudeSettings:set-env', env) as Promise<{ success: boolean }>,
