@@ -65,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Committing no longer triggers a burst of slow database queries that briefly hitched the app.
 - Excalidraw drawings shared with the team no longer open blank or render with a light canvas in dark mode.
 - Reopening a shared document in Shared Docs mode no longer instantly closes the tab.
+- Windows: Claude Code CLI chat sessions now start instead of failing immediately on launch. (#684)
 
 ### Removed
 <!-- Removed features go here -->
