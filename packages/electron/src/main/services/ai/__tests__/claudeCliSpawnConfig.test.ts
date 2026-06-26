@@ -433,3 +433,38 @@ describe('resolveClaudeCliModelArg', () => {
     expect(resolveClaudeCliModelArg('   ')).toBeUndefined();
   });
 });
+
+// #684: node-pty runs a `.cmd`/`.bat` through cmd.exe, which is line-oriented, so
+// a newline inside an arg truncates the command line. Nimbalyst's multi-line
+// `--append-system-prompt` must be single-lined for the `.cmd` launch path.
+describe('buildClaudeCliSpawnConfig Windows .cmd newline handling (#684)', () => {
+  const base = { cwd: 'C:\\work', baseEnv: {} as Record<string, string | undefined> };
+
+  it('collapses newline args on the Windows .cmd path so the multi-line --append-system-prompt survives', () => {
+    const cfg = buildClaudeCliSpawnConfig({
+      ...base,
+      claudeExecutable: 'C:\\Users\\t\\AppData\\Roaming\\npm\\claude.cmd',
+      platform: 'win32',
+    });
+    expect(cfg.args.some((a) => /[\r\n]/.test(a))).toBe(false);
+    const i = cfg.args.indexOf('--append-system-prompt');
+    expect(i).toBeGreaterThan(-1);
+    expect(cfg.args[i + 1]).toContain('Nimbalyst');
+    expect(/[\r\n]/.test(cfg.args[i + 1])).toBe(false);
+  });
+
+  it('also collapses for a .bat executable on win32', () => {
+    const cfg = buildClaudeCliSpawnConfig({ ...base, claudeExecutable: 'C:\\x\\claude.bat', platform: 'win32' });
+    expect(cfg.args.some((a) => /[\r\n]/.test(a))).toBe(false);
+  });
+
+  it('leaves multi-line args intact off the .cmd path (a real .exe, or non-Windows)', () => {
+    const onExe = buildClaudeCliSpawnConfig({ ...base, claudeExecutable: 'C:\\x\\claude.exe', platform: 'win32' });
+    const onDarwin = buildClaudeCliSpawnConfig({ ...base, claudeExecutable: '/usr/local/bin/claude', platform: 'darwin' });
+    for (const cfg of [onExe, onDarwin]) {
+      const i = cfg.args.indexOf('--append-system-prompt');
+      expect(i).toBeGreaterThan(-1);
+      expect(/[\r\n]/.test(cfg.args[i + 1])).toBe(true);
+    }
+  });
+});
