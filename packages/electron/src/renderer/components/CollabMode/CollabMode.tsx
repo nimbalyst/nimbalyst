@@ -519,6 +519,7 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
             isAIChatCollapsed={chatCollapsed}
           >
             <TabContent
+              workspaceId={workspacePath}
               onTabClose={handleTabClose}
               onGetContentReady={handleGetContentReady}
             />
