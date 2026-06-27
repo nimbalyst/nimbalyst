@@ -680,7 +680,7 @@ class SyncManager(
         val projects = response.projects.mapNotNull(::processProjectEntry)
         val sessions = response.sessions.mapNotNull { processSessionEntry(it) }
         val syncedAt = System.currentTimeMillis()
-        repository.replaceIndexSnapshot(
+        repository.reconcileIndexSnapshot(
             projects = projects,
             sessions = sessions.map { it.session },
             syncedAt = syncedAt

@@ -42,6 +42,36 @@ class NimbalystRepository(
         }
     }
 
+    suspend fun reconcileIndexSnapshot(
+        projects: List<ProjectEntity>,
+        sessions: List<SessionEntity>,
+        syncedAt: Long
+    ) {
+        database.withTransaction {
+            val projectIds = projects.map { it.id }
+            if (projectIds.isEmpty()) {
+                database.projectDao().deleteAll()
+            } else {
+                database.projectDao().deleteNotIn(projectIds)
+            }
+            if (projects.isNotEmpty()) {
+                database.projectDao().upsertAll(projects)
+            }
+            if (sessions.isNotEmpty()) {
+                database.sessionDao().upsertAll(sessions)
+            }
+            database.projectDao().refreshAllProjectStats()
+            database.syncStateDao().upsert(
+                SyncStateEntity(
+                    roomId = INDEX_SYNC_ROOM_ID,
+                    lastCursor = null,
+                    lastSequence = 0,
+                    lastSyncedAt = syncedAt
+                )
+            )
+        }
+    }
+
     suspend fun upsertSession(session: SessionEntity) {
         database.withTransaction {
             database.sessionDao().upsertAll(listOf(session))
