@@ -21,6 +21,7 @@ import {
   SessionType,
   ModelIdentifier,
   shouldBlockStartedSessionProviderSwitch,
+  isAgentProvider,
   AgentRole,
 } from './types';
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
@@ -933,6 +934,15 @@ export class SessionManager {
       throw new Error(`Parent session ${parentSessionId} not found`);
     }
 
+    // Agent providers (Claude Code, Codex, ...) can only resume a conversation
+    // from its END -- the SDK has no resume-at-message API -- so an earlier
+    // branch point can't be honored natively. Restrict them to a latest-message
+    // fork: drop the branch point and copy the whole conversation (the native
+    // SDK fork then continues exactly from the end).
+    const effectiveBranchPointMessageId = isAgentProvider(parentSession.provider)
+      ? undefined
+      : branchPointMessageId;
+
     // Create a new session ID for the branch
     const branchSessionId = uuidv4();
     const workspace = parentSession.workspacePath;
@@ -985,9 +995,39 @@ export class SessionManager {
       worktreePath: parentSession.worktreePath,
       worktreeProjectPath: parentSession.worktreeProjectPath,
       branchedFromSessionId: parentSessionId,  // The session this branch was forked from
-      branchPointMessageId,
+      branchPointMessageId: effectiveBranchPointMessageId,
       branchedAt: now,
     });
+
+    // Copy the parent's raw transcript up to the branch point into the new
+    // session so the fork is self-contained (survives deletion of the parent)
+    // and immediately shows the prior conversation. Chat providers replay this
+    // history on the next turn; agent providers display it and continue via the
+    // native SDK fork.
+    const parentMessages = await AgentMessagesRepository.list(parentSessionId, {
+      includeHidden: true,
+    });
+    let messagesToCopy = parentMessages;
+    if (effectiveBranchPointMessageId != null) {
+      const cutoff = effectiveBranchPointMessageId;
+      messagesToCopy = parentMessages.filter(
+        (m) => typeof m.id === 'number' && m.id <= cutoff
+      );
+    }
+    if (messagesToCopy.length > 0) {
+      await AgentMessagesRepository.createMany(
+        messagesToCopy.map((m) => ({
+          sessionId: branchSessionId,
+          source: m.source,
+          direction: m.direction,
+          content: m.content,
+          metadata: m.metadata,
+          hidden: m.hidden,
+          createdAt: m.createdAt,
+          providerMessageId: m.providerMessageId,
+        }))
+      );
+    }
 
     const session: SessionData = {
       id: branchSessionId,
@@ -1006,7 +1046,7 @@ export class SessionManager {
       worktreePath: parentSession.worktreePath,
       worktreeProjectPath: parentSession.worktreeProjectPath,
       branchedFromSessionId: parentSessionId,  // The session this branch was forked from
-      branchPointMessageId,
+      branchPointMessageId: effectiveBranchPointMessageId,
       branchedAt: now,
       // Store source session's provider session ID for forking
       branchedFromProviderSessionId,
