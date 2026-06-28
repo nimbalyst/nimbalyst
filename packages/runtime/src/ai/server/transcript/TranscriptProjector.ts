@@ -43,6 +43,13 @@ export interface TranscriptViewMessage {
   type: TranscriptEventType;
   text?: string;
   mode?: 'agent' | 'planning' | 'auto';
+  /**
+   * Raw `ai_agent_messages.id` for user messages, threaded from the canonical
+   * `user_message` payload. The UI uses this to target the exact raw row when
+   * editing/rewinding. Undefined for non-user events and for stale in-memory
+   * events written before a reparse.
+   */
+  rawMessageId?: number;
   attachments?: UserMessagePayload['attachments'];
   toolCall?: {
     toolName: string;
@@ -219,6 +226,9 @@ function projectEvent(
       const p = event.payload as unknown as UserMessagePayload;
       base.text = event.searchableText ?? undefined;
       base.mode = p.mode;
+      if (p.rawMessageId != null) {
+        base.rawMessageId = p.rawMessageId;
+      }
       if (p.attachments) {
         base.attachments = p.attachments;
       }

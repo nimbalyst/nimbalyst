@@ -52,6 +52,10 @@ export interface UserMessageDescriptor {
   inputType?: 'user' | 'system_message';
   attachments?: UserMessagePayload['attachments'];
   createdAt?: Date;
+  /** Raw `ai_agent_messages.id` this descriptor was parsed from. Stamped by the
+   * transformer/projector loop (not the parser) so edit/rewind can target the
+   * exact raw row. */
+  rawMessageId?: number;
 }
 
 export interface AssistantMessageDescriptor {
