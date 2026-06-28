@@ -101,16 +101,17 @@ export function extractTriggerMatch(
 }
 
 /**
- * Slash completion is context-sensitive:
- * - At column 0, show slash commands
- * - Later in the prompt, show skills only
+ * Slash completion offers the full command + skill list wherever a `/` trigger
+ * is valid (column 0 or after whitespace). Built-in commands used to be hidden
+ * once the cursor moved past column 0; they now appear mid-message too so the
+ * menu is identical at the start of a prompt and inside it.
  */
 export function getSlashTypeaheadScope(match: TriggerMatch | null): SlashTypeaheadScope | null {
   if (!match || match.trigger !== '/') {
     return null;
   }
 
-  return match.startIndex === 0 ? 'commands' : 'skills';
+  return 'commands';
 }
 
 /**
