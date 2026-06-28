@@ -345,13 +345,16 @@ export const renameSessionActionAtom = atom(
 /**
  * Branch a session: create a fork at the current message and open the new branch.
  */
-export const branchSessionActionAtom = atom(null, async (get, set, sessionId: string) => {
+export const branchSessionActionAtom = atom(null, async (get, set, params: string | { sessionId: string; branchPointMessageId?: number }) => {
+  const sessionId = typeof params === 'string' ? params : params.sessionId;
+  const branchPointMessageId = typeof params === 'string' ? undefined : params.branchPointMessageId;
   const workspacePath = getWorkspacePath(get);
   if (!workspacePath || typeof window === 'undefined' || !window.electronAPI) return;
 
   try {
     const result = await window.electronAPI.invoke('sessions:branch', {
       parentSessionId: sessionId,
+      branchPointMessageId,
       workspacePath,
     });
 

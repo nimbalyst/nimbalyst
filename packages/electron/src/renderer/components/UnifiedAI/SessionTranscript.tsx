@@ -89,6 +89,7 @@ import {
   loadInitialQueuedPrompts,
 } from '../../store';
 import { streamCompletionSignalAtom } from '../../store/atoms/sessionTranscript';
+import { branchSessionActionAtom } from '../../store/actions/sessionHistoryActions';
 import { convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitAtAtom, sessionDraftLocalModifiedAtAtom, nextOptimisticId } from '../../store/atoms/sessions';
 import { clearAIInputHistoryAtom } from '../../store/atoms/aiInputUndo';
 import {
@@ -469,6 +470,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   // Child session creation for "start new session" option
   const createChildSession = useSetAtom(createChildSessionAtom);
+  const dispatchBranchSession = useSetAtom(branchSessionActionAtom);
   const convertToWorkstream = useSetAtom(convertToWorkstreamAtom);
   const sessionChildren = useAtomValue(sessionChildrenAtom(sessionId));
   const sessionParentId = useAtomValue(sessionParentIdAtom(sessionId));
@@ -2399,6 +2401,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             onOpenInExternalEditor={hasExternalEditor ? handleOpenInExternalEditor : undefined}
             externalEditorName={externalEditorName}
             onCompact={handleCompact}
+            onForkFromMessage={(message) => { void dispatchBranchSession({ sessionId, branchPointMessageId: message.id }); }}
             promptAdditions={showPromptAdditions ? promptAdditions : null}
             currentTeammates={transcriptTeammates}
             waitingForNoun={waitingForNoun}
