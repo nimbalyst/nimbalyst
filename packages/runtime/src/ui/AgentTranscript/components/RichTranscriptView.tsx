@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { VList, type VListHandle, type CacheSnapshot } from 'virtua';
 import type { TranscriptViewMessage, SessionData } from '../../../ai/server/types';
+import { isAgentProvider } from '../../../ai/server/types';
 import type { TranscriptSettings } from '../types';
 import { MessageSegment } from './MessageSegment';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -490,6 +491,8 @@ interface RichTranscriptViewProps {
   onOpenSession?: (sessionId: string) => void;
   /** Optional: Callback to trigger /compact command */
   onCompact?: () => void;
+  /** Optional: Fork a new session starting from this message (branch point) */
+  onForkFromMessage?: (message: TranscriptViewMessage, index: number) => void;
   /** Optional: Prompt additions for debugging (system prompt, user message, and attachments) */
   promptAdditions?: {
     systemPromptAddition: string | null;
@@ -1082,7 +1085,7 @@ export const extractEditsFromToolMessage = (message: TranscriptViewMessage): any
 export const RichTranscriptView = React.forwardRef<
   { scrollToMessage: (index: number) => void; scrollToTop: () => void },
   RichTranscriptViewProps
->(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, appStartTime, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, persistScrollState = true }, ref) => {
+>(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, onForkFromMessage, promptAdditions, currentTeammates, waitingForNoun, appStartTime, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, persistScrollState = true }, ref) => {
   const [collapsedMessages, setCollapsedMessages] = useState<Set<number>>(new Set());
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollButtonRef = useRef<HTMLDivElement>(null);
@@ -2246,7 +2249,19 @@ export const RichTranscriptView = React.forwardRef<
 
         <div className={`rich-transcript-message-content relative ${isNewGroup ? 'ml-6' : 'no-indent ml-0'}`}>
           {/* Copy button - shows on hover */}
-          <div className="rich-transcript-message-copy-action absolute -top-1 right-0 z-[1]">
+          <div className="rich-transcript-message-copy-action absolute -top-1 right-0 z-[1] flex items-center gap-1">
+            {onForkFromMessage &&
+              (message.type === 'user_message' || message.type === 'assistant_message') &&
+              (isAgentProvider(provider) ? index === messages.length - 1 : true) && (
+                <button
+                  onClick={() => onForkFromMessage(message, index)}
+                  className="rich-transcript-fork-button p-1.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)]"
+                  title="Fork from here"
+                  data-testid="transcript-fork-button"
+                >
+                  <MaterialSymbol icon="alt_route" size={16} className="text-[var(--nim-text-faint)]" />
+                </button>
+              )}
             <button
               onClick={() => copyTranscriptViewMessageContent(message, index)}
               className={`rich-transcript-copy-button p-1.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)] ${copiedMessageIndex === index ? 'copied' : ''}`}
