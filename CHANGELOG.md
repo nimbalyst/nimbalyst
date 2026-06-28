@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-- Mobile project list no longer holds onto projects that the server has dropped from the sync snapshot.
+- Mobile project list no longer holds onto projects that the server has dropped from the sync snapshot, and no longer wipes itself when a transient decryption failure shrinks the snapshot.
 
 ### Removed
 <!-- Removed features go here -->
