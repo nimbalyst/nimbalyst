@@ -30,6 +30,8 @@ import { TranscriptEmbeddedFileCard } from './TranscriptEmbeddedFileCard';
 import { getDiffPeekSizeForInteractiveWidgetHost } from './interactiveWidgetHostProxy';
 import { customEditorRegistry } from '../CustomEditors/registry';
 import { useDialog } from '../../contexts/DialogContext';
+import { DIALOG_IDS } from '../../dialogs/registry';
+import type { RewindSessionData } from '../../dialogs/dataDialogs';
 import { FileGutter } from '../AIChat/FileGutter';
 import { recordClaudeActivity } from '../../store/listeners/claudeUsageListeners';
 import { recordCodexActivity } from '../../store/listeners/codexUsageListeners';
@@ -861,7 +863,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // - ai:tokenUsageUpdated → sessionTranscriptListeners updates sessionStoreAtom
   // - ai:error → sessionTranscriptListeners updates sessionErrorAtom
   // ============================================================
-  const { confirm } = useDialog();
+  const { confirm, open, close } = useDialog();
 
   // Handle errors from centralized atom
   useEffect(() => {
@@ -1437,6 +1439,65 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       console.error('[SessionTranscript] Failed to send /compact command:', error);
     }
   }, [sessionId, sessionData, messages, getEffectiveDocumentContext, aiMode, workspacePath, updateSessionStore]);
+
+  // Edit a previously-sent user message and rewind: confirm the destructive
+  // truncation (with the file-revert choice when files changed), call the
+  // backend rewind primitive, then re-send the edited text as the new turn at
+  // the rewound position. handleSend reads the draft atom imperatively, so
+  // setting it just before the call is sufficient.
+  const handleEditUserMessage = useCallback(async (
+    rawMessageId: number,
+    newText: string,
+    hasDownstream: boolean,
+  ) => {
+    const text = newText.trim();
+    if (!text) return;
+
+    let revertFiles = false;
+    if (hasDownstream) {
+      let messageCount = 0;
+      let fileCount = 0;
+      try {
+        const impact = (await window.electronAPI.invoke('ai:getRewindImpact', sessionId, rawMessageId)) as
+          | { messageCount?: number; fileCount?: number }
+          | undefined;
+        messageCount = impact?.messageCount ?? 0;
+        fileCount = impact?.fileCount ?? 0;
+      } catch (err) {
+        console.error('[SessionTranscript] getRewindImpact failed:', err);
+      }
+
+      const choice = await new Promise<'chat' | 'files' | null>((resolve) => {
+        const data: RewindSessionData = {
+          messageCount,
+          fileCount,
+          onChatOnly: () => { close(DIALOG_IDS.REWIND_SESSION); resolve('chat'); },
+          onChatAndFiles: () => { close(DIALOG_IDS.REWIND_SESSION); resolve('files'); },
+          onCancel: () => { close(DIALOG_IDS.REWIND_SESSION); resolve(null); },
+        };
+        open(DIALOG_IDS.REWIND_SESSION, data);
+      });
+      if (choice === null) return; // cancelled
+      revertFiles = choice === 'files';
+    }
+
+    try {
+      const result = (await window.electronAPI.invoke('ai:rewindSession', sessionId, rawMessageId, {
+        revertFiles,
+        workspacePath,
+      })) as { success?: boolean; error?: string } | undefined;
+      if (!result?.success) {
+        console.error('[SessionTranscript] ai:rewindSession failed:', result?.error);
+        return;
+      }
+    } catch (err) {
+      console.error('[SessionTranscript] ai:rewindSession error:', err);
+      return;
+    }
+
+    store.set(sessionDraftInputAtom(sessionId), text);
+    await handleSend();
+  }, [sessionId, workspacePath, open, close, handleSend]);
 
   const handleTodoClick = useCallback((todo: TodoItem) => {
     onTodoClick?.(todo);
@@ -2399,6 +2460,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             onOpenInExternalEditor={hasExternalEditor ? handleOpenInExternalEditor : undefined}
             externalEditorName={externalEditorName}
             onCompact={handleCompact}
+            onEditUserMessage={handleEditUserMessage}
             promptAdditions={showPromptAdditions ? promptAdditions : null}
             currentTeammates={transcriptTeammates}
             waitingForNoun={waitingForNoun}

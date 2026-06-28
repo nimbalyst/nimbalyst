@@ -23,6 +23,7 @@ export const DIALOG_IDS = {
   // Alert group
   CONFIRM: 'confirm-dialog',
   ERROR: 'error-dialog',
+  REWIND_SESSION: 'rewind-session',
 
   // System group
   PROJECT_SELECTION: 'project-selection',
