@@ -200,5 +200,98 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
         };
       });
     },
+
+    async getMessageById(sessionId: string, messageId: number): Promise<AgentMessage | null> {
+      await ensureReady();
+      const { rows } = await db.query<any>(
+        `SELECT id, session_id, created_at, source, direction, content, metadata, hidden, provider_message_id
+           FROM ai_agent_messages
+          WHERE session_id = $1 AND id = $2
+          LIMIT 1`,
+        [sessionId, messageId]
+      );
+      if (rows.length === 0) return null;
+      const row = rows[0];
+      let metadata = row.metadata;
+      if (typeof metadata === 'string') {
+        try {
+          metadata = JSON.parse(metadata);
+        } catch {
+          // Keep as string if parsing fails
+        }
+      }
+      return {
+        id: Number(row.id),
+        sessionId: row.session_id,
+        createdAt: row.created_at ? new Date(row.created_at) : undefined,
+        source: row.source,
+        direction: row.direction,
+        content: row.content,
+        metadata: metadata ?? undefined,
+        hidden: row.hidden ?? false,
+        providerMessageId: row.provider_message_id ?? undefined,
+      };
+    },
+
+    async getLastUserMessageId(sessionId: string): Promise<number | null> {
+      await ensureReady();
+      const { rows } = await db.query<any>(
+        `SELECT id FROM ai_agent_messages
+          WHERE session_id = $1 AND message_kind = 'user'
+          ORDER BY id DESC
+          LIMIT 1`,
+        [sessionId]
+      );
+      return rows.length > 0 ? Number(rows[0].id) : null;
+    },
+
+    async deleteMessagesAfter(sessionId: string, afterId: number): Promise<{ deletedIds: number[] }> {
+      await ensureReady();
+
+      // SELECT-then-DELETE (rather than DELETE ... RETURNING) so the result is
+      // identical on both backends -- the SQLite shim routes writes through the
+      // WriteCoordinator, which does not surface RETURNING rows. Both statements
+      // land in one transaction (PGLite) / one batch tick (SQLite), so they are
+      // atomic. FK CASCADE on ai_tool_call_file_edits.message_id and the FTS
+      // delete trigger clean up dependents automatically.
+      await db.query('BEGIN', []);
+      try {
+        const { rows } = await db.query<any>(
+          `SELECT id FROM ai_agent_messages
+            WHERE session_id = $1 AND id > $2
+            ORDER BY id ASC`,
+          [sessionId, afterId]
+        );
+        const deletedIds = rows.map((r) => Number(r.id));
+
+        if (deletedIds.length > 0) {
+          await db.query(
+            `DELETE FROM ai_agent_messages WHERE session_id = $1 AND id > $2`,
+            [sessionId, afterId]
+          );
+        }
+
+        await db.query('COMMIT', []);
+        return { deletedIds };
+      } catch (error) {
+        await db.query('ROLLBACK', []);
+        throw error;
+      }
+    },
+
+    async updateMessageContent(
+      sessionId: string,
+      messageId: number,
+      content: string,
+      searchableText: string | null
+    ): Promise<void> {
+      await ensureReady();
+      await db.query(
+        `UPDATE ai_agent_messages
+            SET content = $3, searchable_text = $4
+          WHERE session_id = $1 AND id = $2`,
+        [sessionId, messageId, content, searchableText]
+      );
+    },
   };
 }

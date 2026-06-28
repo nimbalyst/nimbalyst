@@ -136,5 +136,61 @@ export function createSyncedAgentMessagesStore(
       }
       return counts;
     },
+
+    async getMessageById(sessionId: string, messageId: number): Promise<AgentMessage | null> {
+      if (!baseStore.getMessageById) {
+        const messages = await baseStore.list(sessionId, { includeHidden: true });
+        return messages.find((m) => m.id === messageId) ?? null;
+      }
+      return baseStore.getMessageById(sessionId, messageId);
+    },
+
+    async getLastUserMessageId(sessionId: string): Promise<number | null> {
+      if (!baseStore.getLastUserMessageId) {
+        throw new Error('Base agent messages store does not support getLastUserMessageId');
+      }
+      return baseStore.getLastUserMessageId(sessionId);
+    },
+
+    async deleteMessagesAfter(sessionId: string, afterId: number): Promise<{ deletedIds: number[] }> {
+      if (!baseStore.deleteMessagesAfter) {
+        throw new Error('Base agent messages store does not support deleteMessagesAfter');
+      }
+      const result = await baseStore.deleteMessagesAfter(sessionId, afterId);
+      // Best-effort: notify the cross-device propagation hook. The desktop's
+      // local delete above is the source of truth and keeps this device
+      // consistent immediately.
+      notifyMessagesTruncated(sessionId, afterId, result.deletedIds);
+      return result;
+    },
+
+    async updateMessageContent(
+      sessionId: string,
+      messageId: number,
+      content: string,
+      searchableText: string | null
+    ): Promise<void> {
+      if (!baseStore.updateMessageContent) {
+        throw new Error('Base agent messages store does not support updateMessageContent');
+      }
+      await baseStore.updateMessageContent(sessionId, messageId, content, searchableText);
+    },
   };
+}
+
+/**
+ * Notify other devices that a session's tail was truncated by an edit/rewind.
+ *
+ * Deliberately a no-op in v1. The personal-sync `message_added` path has no
+ * delete/truncate counterpart (`packages/collab-protocol/src/personal.ts`), so
+ * propagating a truncation cross-device would require a new protocol change
+ * type plus matching CollabV3-server and iOS-client handling. Until that lands,
+ * the desktop truncation is local-first and authoritative; a mobile mirror that
+ * had the discarded tail reconciles on its next full index/session sync. This
+ * is the single, documented integration point when the protocol gains a
+ * truncation message.
+ */
+function notifyMessagesTruncated(_sessionId: string, _afterId: number, _deletedIds: number[]): void {
+  // No cross-device truncation message exists yet (see docblock). Local delete
+  // is authoritative.
 }
