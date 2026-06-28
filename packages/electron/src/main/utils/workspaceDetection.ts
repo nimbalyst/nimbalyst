@@ -67,7 +67,8 @@ export function getRelativeWorkspacePath(filePath: string, workspacePath: string
 
 /**
  * Resolve a workspace path to its parent project path.
- * If the path is a worktree (matches {project}_worktrees/{name}/ pattern),
+ * If the path is a worktree (matches {project}_worktrees/<name> pattern, where
+ * <name> may be nested for branch-style worktree names like `feature/foo`),
  * returns the parent project path. Otherwise returns the original path.
  *
  * This is used by the permission system to ensure worktrees inherit
@@ -84,10 +85,13 @@ export function resolveProjectPath(workspacePath: string): string {
   // Normalize the path to remove trailing slashes for consistent matching
   const normalizedPath = normalizeWorkspacePath(workspacePath);
 
-  // Match pattern: /{project}_worktrees/{name}
-  // This matches our worktree creation pattern in GitWorktreeService
-  // Use [\\/] to match both forward and backslash (Windows and Unix)
-  const match = normalizedPath.match(/^(.+)_worktrees[\\/][^\\/]+$/);
+  // Match pattern: /{project}_worktrees/{...name}
+  // The trailing segment may itself contain slashes: branch-style worktree
+  // names like `feature/foo` create nested directories
+  // (`{project}_worktrees/feature/foo`). Match the whole remainder, not a
+  // single segment, so those resolve to the project too. The greedy (.+)
+  // anchors on the last `_worktrees/`. Use [\\/] for forward+backslash.
+  const match = normalizedPath.match(/^(.+)_worktrees[\\/].+$/);
   return match ? match[1] : normalizedPath;
 }
 
@@ -103,8 +107,42 @@ export function isWorktreePath(workspacePath: string): boolean {
   }
 
   const normalizedPath = normalizeWorkspacePath(workspacePath);
-  // Use [\\/] to match both forward and backslash (Windows and Unix)
-  return /_worktrees[\\/][^\\/]+$/.test(normalizedPath);
+  // Use [\\/] to match both forward and backslash (Windows and Unix).
+  // `.+$` (not `[^\\/]+$`) so nested/branch-style worktree names match too.
+  return /_worktrees[\\/].+$/.test(normalizedPath);
+}
+
+/**
+ * Walk up the directory tree from `startPath` (inclusive) and return the first
+ * ancestor for which `predicate` is true, or null if none match up to the
+ * filesystem root.
+ *
+ * Used by the permission layer so a subfolder inherits the agent permissions of
+ * the nearest ancestor directory that has them explicitly set (the project the
+ * user trusted). Pure and synchronous — the caller supplies the lookup.
+ */
+export function findNearestAncestor(
+  startPath: string,
+  predicate: (dir: string) => boolean,
+): string | null {
+  if (!startPath) {
+    return null;
+  }
+
+  let current = normalizeWorkspacePath(startPath);
+  const root = path.parse(current).root;
+
+  // Bounded by the filesystem root; dirname() converges to the root.
+  while (true) {
+    if (predicate(current)) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current || current === root) {
+      return null;
+    }
+    current = parent;
+  }
 }
 
 /**
