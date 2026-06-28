@@ -6,6 +6,8 @@ import { BrowserWindow, ipcMain } from 'electron';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { safeHandle } from '../../utils/ipcRegistry';
+import { RewindSessionService } from './RewindSessionService';
+import { FileRevertService } from './FileRevertService';
 import Store from 'electron-store';
 import {
   isExtensionAgentProvider,
@@ -153,6 +155,11 @@ export class AIService {
   // each claiming a different prompt and sending both to the AI concurrently.
   private sessionsProcessingQueue = new Set<string>();
 
+  // One-shot, per-session context prefix staged by a rewind and consumed by the
+  // next send (MessageStreamingHandler), so a freshly-reset agent provider keeps
+  // the conversational thread after its session is reset.
+  public pendingRewindContext = new Map<string, string>();
+
   // Track mobile session creation requests to prevent duplicate processing
   // (can happen if the same request is delivered multiple times)
   private processingMobileSessionRequests = new Set<string>();
@@ -163,10 +170,19 @@ export class AIService {
   // Owns the streaming send-message lifecycle (extracted from setupIpcHandlers).
   private streamingHandler: MessageStreamingHandler;
 
+  // Owns the edit-a-previous-message + rewind truncation primitive.
+  private rewindService: RewindSessionService;
+
   constructor(sessionStore: SessionStore) {
     logger.main.info('[AIService] Constructor called');
     this.sessionManager = new SessionManager(sessionStore);
     this.streamingHandler = new MessageStreamingHandler(this);
+    this.rewindService = new RewindSessionService({
+      sessionManager: this.sessionManager,
+      sessionsProcessingQueue: this.sessionsProcessingQueue,
+      pendingRewindContext: this.pendingRewindContext,
+    });
+    this.rewindService.setFileRevertService(new FileRevertService());
 
     // Set up persistence callback for DocumentContextService
     // Use AISessionsRepository directly since SessionManager doesn't have a generic updateMetadata
@@ -1997,6 +2013,46 @@ export class AIService {
       }
 
       return { success: true };
+    });
+
+    // Edit a previously-sent user message and rewind: destructively discard
+    // everything after the target message, optionally revert files, reset the
+    // provider session, and rebuild the transcript. The renderer then re-sends
+    // the edited message via the normal ai:sendMessage path.
+    safeHandle('ai:rewindSession', async (
+      _event,
+      sessionId: string,
+      targetRawMessageId: number,
+      options?: { revertFiles?: boolean; workspacePath?: string }
+    ) => {
+      if (!sessionId) {
+        throw new Error('sessionId is required to rewind');
+      }
+      if (typeof targetRawMessageId !== 'number') {
+        throw new Error('targetRawMessageId is required to rewind');
+      }
+      return await this.rewindService.rewindSession({
+        sessionId,
+        targetRawMessageId,
+        revertFiles: options?.revertFiles ?? false,
+        workspacePath: options?.workspacePath,
+      });
+    });
+
+    // Read-only preview of a rewind's blast radius (message + file counts) for
+    // the confirm dialog.
+    safeHandle('ai:getRewindImpact', async (
+      _event,
+      sessionId: string,
+      targetRawMessageId: number
+    ) => {
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      if (typeof targetRawMessageId !== 'number') {
+        throw new Error('targetRawMessageId is required');
+      }
+      return await this.rewindService.getRewindImpact(sessionId, targetRawMessageId);
     });
 
     // Update session messages
