@@ -28,11 +28,11 @@ export const RewindSessionDialog: React.FC<RewindSessionDialogProps> = ({
 
   const messagePart =
     messageCount > 0
-      ? `${messageCount} ${messageCount === 1 ? 'Nachricht' : 'Nachrichten'} nach dieser werden verworfen`
-      : 'Die Unterhaltung wird ab hier neu gestartet';
+      ? `${messageCount} ${messageCount === 1 ? 'message' : 'messages'} after this one will be discarded`
+      : 'The conversation will be restarted from here';
   const filePart =
     fileCount > 0
-      ? `, und ${fileCount} ${fileCount === 1 ? 'Datei wurde' : 'Dateien wurden'} seither geändert.`
+      ? `, and ${fileCount} ${fileCount === 1 ? 'file has' : 'files have'} changed since.`
       : '.';
 
   return (
@@ -42,32 +42,32 @@ export const RewindSessionDialog: React.FC<RewindSessionDialogProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="rewind-session-dialog-title m-0 mb-3 text-lg font-semibold text-nim">
-          Nachricht bearbeiten &amp; zurücksetzen
+          Edit message &amp; rewind
         </h2>
         <p className="rewind-session-dialog-message m-0 mb-5 text-sm text-nim-muted leading-relaxed">
           {messagePart}
-          {filePart} Was soll passieren?
+          {filePart} What would you like to do?
         </p>
         <div className="rewind-session-dialog-buttons flex flex-col gap-2">
           <button
             className="rewind-session-chat-only nim-btn-primary w-full justify-center"
             onClick={onChatOnly}
           >
-            Nur Chat zurücksetzen
+            Reset chat only
           </button>
           <button
             className={`rewind-session-chat-and-files w-full justify-center ${fileCount > 0 ? 'nim-btn-danger' : 'nim-btn-secondary'}`}
             onClick={onChatAndFiles}
             disabled={fileCount === 0}
-            title={fileCount === 0 ? 'Keine Dateiänderungen nach dieser Nachricht' : undefined}
+            title={fileCount === 0 ? 'No file changes after this message' : undefined}
           >
-            Chat + Dateien zurücksetzen
+            Reset chat + files
           </button>
           <button
             className="rewind-session-cancel nim-btn-secondary w-full justify-center mt-1"
             onClick={onCancel}
           >
-            Abbrechen
+            Cancel
           </button>
         </div>
       </div>

@@ -1,5 +1,5 @@
 /**
- * FileRevertService -- the "Chat + Dateien zurücksetzen" half of the edit/rewind
+ * FileRevertService -- the "Reset chat + files" half of the edit/rewind
  * feature. Restores files the AI edited after the rewind target back to their
  * as-of-target content, using the bounded per-file snapshot history.
  *
