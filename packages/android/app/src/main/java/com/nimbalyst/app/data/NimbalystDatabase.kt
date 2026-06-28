@@ -17,7 +17,13 @@ import org.json.JSONObject
         SyncStateEntity::class,
     ],
     version = 1,
-    exportSchema = true
+    // packages/android/app/schemas/ is gitignored, so the exported schema is
+    // never committed and not used for migration validation. Leaving export on
+    // can trip an intermittent CI race in Room KSP between the Debug and
+    // Release variants writing to the shared schema directory ("Empty schema
+    // file" from SchemaBundle.deserialize during exportSchema). Turn it off
+    // until/unless we introduce real migration testing.
+    exportSchema = false
 )
 abstract class NimbalystDatabase : RoomDatabase() {
     abstract fun projectDao(): ProjectDao
