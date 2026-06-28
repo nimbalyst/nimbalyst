@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- Git worktrees with branch-style names (e.g. `feature/x`) and project subfolders now inherit the parent project's agent permissions instead of re-prompting for every tool call.
 
 ### Removed
 <!-- Removed features go here -->
