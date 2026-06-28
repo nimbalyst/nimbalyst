@@ -1287,6 +1287,43 @@ export class HistoryManager {
     }
   }
 
+  /**
+   * Fetch a file's content as of a point in time within a session: the newest
+   * snapshot for (filePath, sessionId) whose timestamp is <= `timestampMs`.
+   * Used by the edit/rewind file-revert to restore a file to its as-of-message-N
+   * state. Best-effort -- bounded by snapshot retention. Returns null when no
+   * in-session snapshot at or before the cutoff exists.
+   */
+  async getSnapshotContentAsOf(
+    filePath: string,
+    sessionId: string,
+    timestampMs: number,
+  ): Promise<string | null> {
+    try {
+      if (!database.isInitialized()) {
+        await database.initialize();
+      }
+      const result = await database.query<{ content: Buffer }>(
+        `
+          SELECT content
+          FROM document_history
+          WHERE file_path = $1
+            AND metadata->>'sessionId' = $2
+            AND timestamp <= $3
+          ORDER BY timestamp DESC
+          LIMIT 1
+        `,
+        [filePath, sessionId, timestampMs],
+      );
+      if (result.rows.length === 0) return null;
+      const decompressed = await gunzip(result.rows[0].content);
+      return decompressed.toString('utf-8');
+    } catch (error) {
+      logger.main.error('[HistoryManager] getSnapshotContentAsOf failed:', error);
+      return null;
+    }
+  }
+
   async getDiffBaseline(filePath: string): Promise<{ content: string; tagType: 'pre-edit' | 'incremental-approval' } | null> {
     try {
       // SIMPLIFIED: With the unique constraint, there's only ONE pending tag per file
