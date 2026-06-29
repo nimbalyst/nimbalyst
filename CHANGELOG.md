@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- New AI sessions now appear immediately instead of waiting for sync to connect.
 
 ### Removed
 <!-- Removed features go here -->
