@@ -4,7 +4,10 @@ import type { OpenAICompatibleProviderType } from '@nimbalyst/runtime/ai/server/
 export const DEFAULT_LMSTUDIO_BASE_URL = 'http://127.0.0.1:1234';
 export const DUMMY_OPENAI_COMPATIBLE_API_KEY = 'DUMMY_NIMBALYST_KEY';
 
-export const OPENAI_COMPATIBLE_PROVIDER_DEFAULT_BASE_URLS: Partial<Record<OpenAICompatibleProviderType, string>> = {};
+export const OPENAI_COMPATIBLE_PROVIDER_DEFAULT_BASE_URLS: Partial<Record<OpenAICompatibleProviderType, string>> = {
+  ollama: 'http://127.0.0.1:11434/v1',
+  anythingllm: 'http://127.0.0.1:3001/api/v1/openai',
+};
 
 function cleanBaseUrl(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;

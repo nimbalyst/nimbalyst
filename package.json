@@ -25,6 +25,7 @@
     "test:provider:integration": "cross-env RUN_AI_PROVIDER_TESTS=true vitest --run",
     "prepare": "node scripts/install-git-hooks.mjs",
     "hooks:install": "node scripts/install-git-hooks.mjs",
+    "providers:openai-compatible": "node scripts/manage-openai-compatible-provider.mjs",
     "check:override-sync": "node scripts/check-override-sync.mjs",
     "extension-sdk:check-public": "bash scripts/extension-sdk-public-checks.sh",
     "analyze": "node scripts/bundle-size.js",

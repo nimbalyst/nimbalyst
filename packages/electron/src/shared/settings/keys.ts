@@ -112,6 +112,16 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'providerSettings.openrouter' },
     { enabled: false, testStatus: 'idle' },
   ),
+  'ai.provider.ollama': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.ollama' },
+    { enabled: false, baseUrl: 'http://127.0.0.1:11434/v1', testStatus: 'idle' },
+  ),
+  'ai.provider.anythingllm': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.anythingllm' },
+    { enabled: false, baseUrl: 'http://127.0.0.1:3001/api/v1/openai', testStatus: 'idle' },
+  ),
   'ai.provider.featherless': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.featherless' },
@@ -182,6 +192,16 @@ export const SETTINGS_REGISTRY = {
   'ai.apiKey.openrouter': setting(
     z.string(),
     { store: 'ai-settings', path: 'apiKeys.openrouter' },
+    '',
+  ),
+  'ai.apiKey.ollama': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.ollama' },
+    '',
+  ),
+  'ai.apiKey.anythingllm': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.anythingllm' },
     '',
   ),
   'ai.apiKey.featherless': setting(
