@@ -555,6 +555,8 @@ export class AIService {
         return globalApiKeys['claude-code'];
       case 'openai':
         return globalApiKeys['openai'];
+      case 'ollama':
+      case 'anythingllm':
       case 'openrouter':
       case 'featherless':
       case 'featherless-official':
@@ -1740,6 +1742,8 @@ export class AIService {
               throw new Error('OpenAI API key not configured');
             }
             break;
+          case 'ollama':
+          case 'anythingllm':
           case 'openrouter':
           case 'featherless':
           case 'featherless-official':
@@ -2965,6 +2969,8 @@ export class AIService {
         writeApiKey('anthropic', settings.apiKeys.anthropic);
         writeApiKey('claude-code', settings.apiKeys['claude-code']);
         writeApiKey('openai', settings.apiKeys.openai);
+        writeApiKey('ollama', settings.apiKeys.ollama);
+        writeApiKey('anythingllm', settings.apiKeys.anythingllm);
         writeApiKey('openrouter', settings.apiKeys.openrouter);
         writeApiKey('featherless', settings.apiKeys.featherless);
         writeApiKey('featherless-official', settings.apiKeys['featherless-official']);
@@ -3078,6 +3084,8 @@ export class AIService {
               return { success: false, error: 'OpenAI API key not configured' };
             }
             break;
+          case 'ollama':
+          case 'anythingllm':
           case 'openrouter':
           case 'featherless':
           case 'featherless-official':
@@ -3307,6 +3315,10 @@ export class AIService {
       const modelsConfig = {
         ...apiKeys,
         openai_base_url: getConfiguredOpenAIBaseUrl(this.getSettingsStore()) || '',
+        ollama: apiKeys.ollama || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        ollama_base_url: getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'ollama') || '',
+        anythingllm: apiKeys.anythingllm || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        anythingllm_base_url: getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'anythingllm') || '',
         openrouter: apiKeys.openrouter || DUMMY_OPENAI_COMPATIBLE_API_KEY,
         openrouter_base_url: getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'openrouter') || '',
         featherless: apiKeys.featherless || DUMMY_OPENAI_COMPATIBLE_API_KEY,
@@ -3463,6 +3475,14 @@ export class AIService {
           enabled: providerSettings['openai']?.enabled === true && !!apiKeys['openai'],
           models: providerSettings['openai']?.models
         },
+        'ollama': {
+          enabled: providerSettings['ollama']?.enabled === true,
+          models: providerSettings['ollama']?.models
+        },
+        'anythingllm': {
+          enabled: providerSettings['anythingllm']?.enabled === true,
+          models: providerSettings['anythingllm']?.models
+        },
         'openrouter': {
           enabled: providerSettings['openrouter']?.enabled === true,
           models: providerSettings['openrouter']?.models
@@ -3518,6 +3538,10 @@ export class AIService {
       const modelsConfig = {
         ...apiKeys,
         openai_base_url: getConfiguredOpenAIBaseUrl(this.getSettingsStore()) || '',
+        ollama: apiKeys.ollama || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        ollama_base_url: getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'ollama') || '',
+        anythingllm: apiKeys.anythingllm || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        anythingllm_base_url: getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'anythingllm') || '',
         openrouter: apiKeys.openrouter || DUMMY_OPENAI_COMPATIBLE_API_KEY,
         openrouter_base_url: getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'openrouter') || '',
         featherless: apiKeys.featherless || DUMMY_OPENAI_COMPATIBLE_API_KEY,

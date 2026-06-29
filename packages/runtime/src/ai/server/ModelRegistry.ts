@@ -61,6 +61,8 @@ export class ModelRegistry {
           models = await ClaudeCodeCliProvider.getModels();
           break;
         case 'openai':
+        case 'ollama':
+        case 'anythingllm':
         case 'openrouter':
         case 'featherless':
         case 'featherless-official':
@@ -126,6 +128,8 @@ export class ModelRegistry {
     if (shouldFetch('claude-code')) jobs.push({ provider: 'claude-code', promise: this.getModelsForProvider('claude-code') });
     if (shouldFetch('claude-code-cli')) jobs.push({ provider: 'claude-code-cli', promise: this.getModelsForProvider('claude-code-cli') });
     if (shouldFetch('openai')) jobs.push({ provider: 'openai', promise: this.getModelsForProvider('openai', apiKeys['openai'], apiKeys['openai_base_url']) });
+    if (shouldFetch('ollama')) jobs.push({ provider: 'ollama', promise: this.getModelsForProvider('ollama', apiKeys['ollama'], apiKeys['ollama_base_url']) });
+    if (shouldFetch('anythingllm')) jobs.push({ provider: 'anythingllm', promise: this.getModelsForProvider('anythingllm', apiKeys['anythingllm'], apiKeys['anythingllm_base_url']) });
     if (shouldFetch('openrouter')) jobs.push({ provider: 'openrouter', promise: this.getModelsForProvider('openrouter', apiKeys['openrouter'], apiKeys['openrouter_base_url']) });
     if (shouldFetch('featherless')) jobs.push({ provider: 'featherless', promise: this.getModelsForProvider('featherless', apiKeys['featherless'], apiKeys['featherless_base_url']) });
     if (shouldFetch('featherless-official')) jobs.push({ provider: 'featherless-official', promise: this.getModelsForProvider('featherless-official', apiKeys['featherless-official'], apiKeys['featherless-official_base_url']) });
@@ -167,6 +171,8 @@ export class ModelRegistry {
         const { ClaudeProvider } = await import('./providers/ClaudeProvider');
         return ClaudeProvider.getDefaultModel();
       case 'openai':
+      case 'ollama':
+      case 'anythingllm':
       case 'openrouter':
       case 'featherless':
       case 'featherless-official':

@@ -161,6 +161,8 @@ export function getProviderDisplayName(provider: string): string {
     case 'claude-code': return 'Claude Agent';
     case 'claude-code-cli': return 'Claude Code CLI';
     case 'openai': return 'OpenAI';
+    case 'ollama': return 'Ollama';
+    case 'anythingllm': return 'AnythingLLM';
     case 'openrouter': return 'OpenRouter Free';
     case 'featherless': return 'Featherless Full';
     case 'featherless-official': return 'Featherless Official';
@@ -182,6 +184,8 @@ export function getProviderLabel(provider: string): string {
     case 'claude-code': return 'CODE';
     case 'claude-code-cli': return 'CLI';
     case 'openai': return 'GPT';
+    case 'ollama': return 'OLLAMA';
+    case 'anythingllm': return 'ANY';
     case 'openrouter': return 'FREE';
     case 'featherless': return 'FLESS';
     case 'featherless-official': return 'OFF';

@@ -10,6 +10,8 @@ export type SettingsCategory =
   | 'claude-code'
   | 'claude'
   | 'openai'
+  | 'ollama'
+  | 'anythingllm'
   | 'openrouter'
   | 'featherless'
   | 'featherless-official'
@@ -237,6 +239,18 @@ Best for quick edits and tasks that do not require multi-file operations.`,
           name: 'OpenAI',
           icon: getProviderIcon('openai', { size: 16 }),
           statusDot: getStatusDot('openai'),
+        },
+        {
+          id: 'ollama',
+          name: 'Ollama',
+          icon: getProviderIcon('lmstudio', { size: 16 }),
+          statusDot: getStatusDot('ollama'),
+        },
+        {
+          id: 'anythingllm',
+          name: 'AnythingLLM',
+          icon: getProviderIcon('openai', { size: 16 }),
+          statusDot: getStatusDot('anythingllm'),
         },
         {
           id: 'openrouter',

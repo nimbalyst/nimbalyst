@@ -64,6 +64,8 @@ export class ProviderFactory {
         provider = new ClaudeCodeCliProvider();
         break;
       case 'openai':
+      case 'ollama':
+      case 'anythingllm':
       case 'openrouter':
       case 'featherless':
       case 'featherless-official':

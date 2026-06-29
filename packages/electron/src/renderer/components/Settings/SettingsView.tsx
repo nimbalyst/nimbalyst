@@ -371,6 +371,8 @@ export function SettingsView({
     'claude-code',
     'claude',
     'openai',
+    'ollama',
+    'anythingllm',
     'openrouter',
     'featherless-official',
     'featherless-sane',
@@ -386,6 +388,8 @@ export function SettingsView({
     'claude-code',
     'claude',
     'openai',
+    'ollama',
+    'anythingllm',
     'openrouter',
     'featherless-official',
     'featherless-sane',
@@ -846,6 +850,28 @@ export function SettingsView({
         );
       case 'openai':
         return wrapWithOverride('openai', 'OpenAI', <OpenAIPanel {...commonProps} />);
+      case 'ollama':
+        return wrapWithOverride('ollama', 'Ollama', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Ollama"
+            providerDescription="Local Ollama models through its OpenAI-compatible endpoint."
+            apiKeyName="ollama"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder="http://127.0.0.1:11434/v1"
+          />
+        ));
+      case 'anythingllm':
+        return wrapWithOverride('anythingllm', 'AnythingLLM', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="AnythingLLM"
+            providerDescription="Local AnythingLLM models through its OpenAI-compatible endpoint."
+            apiKeyName="anythingllm"
+            apiKeyPlaceholder="AnythingLLM API key"
+            baseUrlPlaceholder="http://127.0.0.1:3001/api/v1/openai"
+          />
+        ));
       case 'openrouter':
         return wrapWithOverride('openrouter', 'OpenRouter Free', (
           <OpenAIPanel

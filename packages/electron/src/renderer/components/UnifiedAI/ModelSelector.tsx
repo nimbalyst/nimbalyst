@@ -124,6 +124,8 @@ export function ModelSelector({
       case 'claude':
       case 'claude-code':
       case 'openai':
+      case 'ollama':
+      case 'anythingllm':
       case 'openrouter':
       case 'featherless':
       case 'featherless-official':
@@ -183,6 +185,8 @@ export function ModelSelector({
       case 'claude-code': return 'Claude Agent (Claude Code Based)';
       case 'claude-code-cli': return 'Claude Code CLI (Subscription)';
       case 'openai': return 'OpenAI';
+      case 'ollama': return 'Ollama';
+      case 'anythingllm': return 'AnythingLLM';
       case 'openrouter': return 'OpenRouter Free';
       case 'featherless': return 'Featherless Full';
       case 'featherless-official': return 'Featherless Official';
@@ -219,7 +223,7 @@ export function ModelSelector({
     return getProviderIcon(provider, { size });
   };
 
-  const CHAT_MODEL_PROVIDERS = new Set(['claude', 'openai', 'openrouter', 'featherless', 'featherless-official', 'featherless-sane', 'featherless-heretic', 'featherless-keyword', 'openai-codex', 'lmstudio']);
+  const CHAT_MODEL_PROVIDERS = new Set(['claude', 'openai', 'ollama', 'anythingllm', 'openrouter', 'featherless', 'featherless-official', 'featherless-sane', 'featherless-heretic', 'featherless-keyword', 'openai-codex', 'lmstudio']);
   const getProviderType = (provider: string): ProviderType => {
     if (CHAT_MODEL_PROVIDERS.has(provider)) return 'model';
     if (isAgentProvider(provider)) return 'agent';
