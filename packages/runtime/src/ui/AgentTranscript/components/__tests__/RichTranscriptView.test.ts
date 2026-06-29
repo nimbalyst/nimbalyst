@@ -435,13 +435,18 @@ describe('interactive widget tool name normalization', () => {
     expect(isInteractiveWidgetTool('ExitPlanMode')).toBe(true);
     expect(isInteractiveWidgetTool('ToolPermission')).toBe(true);
     expect(isInteractiveWidgetTool('GitCommitProposal')).toBe(true);
+    expect(isInteractiveWidgetTool('PromptForUserInput')).toBe(true);
+    expect(isInteractiveWidgetTool('RequestUserInput')).toBe(true);
 
     expect(isInteractiveWidgetTool('mcp__nimbalyst-mcp__AskUserQuestion')).toBe(true);
     expect(isInteractiveWidgetTool('mcp__nimbalyst-mcp__ExitPlanMode')).toBe(true);
     expect(isInteractiveWidgetTool('mcp__nimbalyst__GitCommitProposal')).toBe(true);
+    expect(isInteractiveWidgetTool('mcp__nimbalyst-mcp__PromptForUserInput')).toBe(true);
+    expect(isInteractiveWidgetTool('mcp__nimbalyst-mcp__RequestUserInput')).toBe(true);
 
     expect(isInteractiveWidgetTool('Read')).toBe(false);
     expect(isInteractiveWidgetTool('mcp__nimbalyst-mcp__SomeOtherTool')).toBe(false);
+    expect(isInteractiveWidgetTool('mcp__nimbalyst-mcp__capture_editor_screenshot')).toBe(false);
     expect(isInteractiveWidgetTool(undefined)).toBe(false);
     expect(isInteractiveWidgetTool(null)).toBe(false);
     expect(isInteractiveWidgetTool('')).toBe(false);
