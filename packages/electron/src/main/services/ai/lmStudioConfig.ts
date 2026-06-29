@@ -4,14 +4,7 @@ import type { OpenAICompatibleProviderType } from '@nimbalyst/runtime/ai/server/
 export const DEFAULT_LMSTUDIO_BASE_URL = 'http://127.0.0.1:1234';
 export const DUMMY_OPENAI_COMPATIBLE_API_KEY = 'DUMMY_NIMBALYST_KEY';
 
-export const OPENAI_COMPATIBLE_PROVIDER_DEFAULT_BASE_URLS: Partial<Record<OpenAICompatibleProviderType, string>> = {
-  openrouter: 'http://100.122.89.110:10302/v1',
-  featherless: 'http://100.122.89.110:10301/v1',
-  'featherless-official': 'http://100.122.89.110:10303/v1',
-  'featherless-sane': 'http://100.122.89.110:10304/v1',
-  'featherless-heretic': 'http://100.122.89.110:10305/v1',
-  'featherless-keyword': 'http://100.122.89.110:10306/v1',
-};
+export const OPENAI_COMPATIBLE_PROVIDER_DEFAULT_BASE_URLS: Partial<Record<OpenAICompatibleProviderType, string>> = {};
 
 function cleanBaseUrl(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
