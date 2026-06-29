@@ -107,6 +107,36 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'providerSettings.openai' },
     { enabled: false, testStatus: 'idle' },
   ),
+  'ai.provider.openrouter': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.openrouter' },
+    { enabled: false, baseUrl: 'http://100.122.89.110:10302/v1', testStatus: 'idle' },
+  ),
+  'ai.provider.featherless': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.featherless' },
+    { enabled: false, baseUrl: 'http://100.122.89.110:10301/v1', testStatus: 'idle' },
+  ),
+  'ai.provider.featherless-official': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.featherless-official' },
+    { enabled: false, baseUrl: 'http://100.122.89.110:10303/v1', testStatus: 'idle' },
+  ),
+  'ai.provider.featherless-sane': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.featherless-sane' },
+    { enabled: false, baseUrl: 'http://100.122.89.110:10304/v1', testStatus: 'idle' },
+  ),
+  'ai.provider.featherless-heretic': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.featherless-heretic' },
+    { enabled: false, baseUrl: 'http://100.122.89.110:10305/v1', testStatus: 'idle' },
+  ),
+  'ai.provider.featherless-keyword': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.featherless-keyword' },
+    { enabled: false, baseUrl: 'http://100.122.89.110:10306/v1', testStatus: 'idle' },
+  ),
   'ai.provider.openai-codex': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.openai-codex' },
@@ -130,7 +160,7 @@ export const SETTINGS_REGISTRY = {
   'ai.provider.lmstudio': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.lmstudio' },
-    { enabled: false, baseUrl: 'http://127.0.0.1:8234', testStatus: 'idle' },
+    { enabled: false, baseUrl: 'http://127.0.0.1:1234', testStatus: 'idle' },
   ),
 
   // ---- API keys (per-key) ----
@@ -149,6 +179,36 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'apiKeys.openai' },
     '',
   ),
+  'ai.apiKey.openrouter': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.openrouter' },
+    '',
+  ),
+  'ai.apiKey.featherless': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.featherless' },
+    '',
+  ),
+  'ai.apiKey.featherless-official': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.featherless-official' },
+    '',
+  ),
+  'ai.apiKey.featherless-sane': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.featherless-sane' },
+    '',
+  ),
+  'ai.apiKey.featherless-heretic': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.featherless-heretic' },
+    '',
+  ),
+  'ai.apiKey.featherless-keyword': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.featherless-keyword' },
+    '',
+  ),
   'ai.apiKey.openai-codex': setting(
     z.string(),
     { store: 'ai-settings', path: 'apiKeys.openai-codex' },
@@ -165,7 +225,7 @@ export const SETTINGS_REGISTRY = {
   'ai.apiKey.lmstudio_url': setting(
     z.string(),
     { store: 'ai-settings', path: 'apiKeys.lmstudio_url' },
-    'http://127.0.0.1:8234',
+    'http://127.0.0.1:1234',
   ),
 
   // ---- Other AI-domain settings ----

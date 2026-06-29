@@ -151,9 +151,16 @@ export interface Message {
  * Add new providers here -- the type, runtime array, and exhaustiveness
  * checks all derive from this one definition.
  */
-export const AI_PROVIDER_TYPES = ['claude', 'claude-code', 'claude-code-cli', 'openai', 'openai-codex', 'openai-codex-acp', 'lmstudio', 'opencode', 'copilot-cli'] as const;
+export const AI_PROVIDER_TYPES = ['claude', 'claude-code', 'claude-code-cli', 'openai', 'openrouter', 'featherless', 'featherless-official', 'featherless-sane', 'featherless-heretic', 'featherless-keyword', 'openai-codex', 'openai-codex-acp', 'lmstudio', 'opencode', 'copilot-cli'] as const;
 
 export type AIProviderType = typeof AI_PROVIDER_TYPES[number];
+
+export const OPENAI_COMPATIBLE_PROVIDER_TYPES = ['openai', 'openrouter', 'featherless', 'featherless-official', 'featherless-sane', 'featherless-heretic', 'featherless-keyword'] as const;
+export type OpenAICompatibleProviderType = typeof OPENAI_COMPATIBLE_PROVIDER_TYPES[number];
+
+export function isOpenAICompatibleProvider(provider: string): provider is OpenAICompatibleProviderType {
+  return (OPENAI_COMPATIBLE_PROVIDER_TYPES as readonly string[]).includes(provider);
+}
 
 /**
  * Exhaustive switch helper. Use in default cases to get a compile error

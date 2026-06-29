@@ -46,6 +46,12 @@ const PROVIDERS: ProviderInfo[] = [
   { id: 'claude-code', name: 'Claude Agent', subtitle: 'CLI-based MCP', apiKeyField: 'claude-code' },
   { id: 'claude', name: 'Claude', subtitle: 'Anthropic API', apiKeyField: 'anthropic' },
   { id: 'openai', name: 'OpenAI', subtitle: 'GPT Models', apiKeyField: 'openai' },
+  { id: 'openrouter', name: 'OpenRouter Free', subtitle: 'OneCLI Bridge', apiKeyField: 'openrouter' },
+  { id: 'featherless-official', name: 'Featherless Official', subtitle: 'OneCLI Bridge', apiKeyField: 'featherless-official' },
+  { id: 'featherless-sane', name: 'Featherless Sane', subtitle: 'OneCLI Bridge', apiKeyField: 'featherless-sane' },
+  { id: 'featherless', name: 'Featherless Full', subtitle: 'OneCLI Bridge', apiKeyField: 'featherless' },
+  { id: 'featherless-heretic', name: 'Featherless Heretic', subtitle: 'OneCLI Bridge', apiKeyField: 'featherless-heretic' },
+  { id: 'featherless-keyword', name: 'Featherless Keyword', subtitle: 'OneCLI Bridge', apiKeyField: 'featherless-keyword' },
   { id: 'lmstudio', name: 'LM Studio', subtitle: 'Local Models' },
 ];
 

@@ -20,7 +20,7 @@ interface LMStudioConfig extends ProviderConfig {
 }
 
 export class LMStudioProvider extends BaseAIProvider {
-  private baseUrl: string = 'http://127.0.0.1:8234';
+  private baseUrl: string = 'http://127.0.0.1:1234';
   private abortController: AbortController | null = null;
   private resolvedModel: string | null = null;
 
@@ -30,7 +30,7 @@ export class LMStudioProvider extends BaseAIProvider {
 
   async initialize(config: LMStudioConfig): Promise<void> {
     this.config = config;
-    this.baseUrl = config.baseUrl || 'http://127.0.0.1:8234';
+    this.baseUrl = config.baseUrl || 'http://127.0.0.1:1234';
 
     // Test connection and discover the actual loaded model
     try {
@@ -785,7 +785,7 @@ export class LMStudioProvider extends BaseAIProvider {
   /**
    * Get available models from LMStudio
    */
-  static async getModels(baseUrl: string = 'http://127.0.0.1:8234'): Promise<AIModel[]> {
+  static async getModels(baseUrl: string = 'http://127.0.0.1:1234'): Promise<AIModel[]> {
     try {
       const response = await fetch(`${baseUrl}/v1/models`);
       

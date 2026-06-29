@@ -161,6 +161,12 @@ export function getProviderDisplayName(provider: string): string {
     case 'claude-code': return 'Claude Agent';
     case 'claude-code-cli': return 'Claude Code CLI';
     case 'openai': return 'OpenAI';
+    case 'openrouter': return 'OpenRouter Free';
+    case 'featherless': return 'Featherless Full';
+    case 'featherless-official': return 'Featherless Official';
+    case 'featherless-sane': return 'Featherless Sane';
+    case 'featherless-heretic': return 'Featherless Heretic';
+    case 'featherless-keyword': return 'Featherless Keyword';
     case 'lmstudio': return 'LMStudio';
     case 'copilot-cli': return 'GitHub Copilot';
     default: return provider;
@@ -176,6 +182,12 @@ export function getProviderLabel(provider: string): string {
     case 'claude-code': return 'CODE';
     case 'claude-code-cli': return 'CLI';
     case 'openai': return 'GPT';
+    case 'openrouter': return 'FREE';
+    case 'featherless': return 'FLESS';
+    case 'featherless-official': return 'OFF';
+    case 'featherless-sane': return 'SANE';
+    case 'featherless-heretic': return 'HER';
+    case 'featherless-keyword': return 'KEY';
     case 'lmstudio': return 'LOCAL';
     default: return provider.toUpperCase();
   }
