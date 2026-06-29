@@ -1027,6 +1027,8 @@ export { DisplayOptionsPanel } from './components/DisplayOptionsPanel';
 export { getDefaultColumnConfig, resolveColumnsForType, BUILTIN_COLUMNS, DEFAULT_VISIBLE_COLUMNS } from './components/trackerColumns';
 export type { TrackerColumnDef, TypeColumnConfig, ColumnRenderType } from './components/trackerColumns';
 export type { TrackerFieldEditorProps } from './components/TrackerFieldEditor';
+export { groupTrackerItems, normalizeTrackerGroupBy } from './trackerGrouping';
+export type { TrackerGroup, TrackerGroupBy } from './trackerGrouping';
 
 // Export tracker data atoms (cross-platform reactive state)
 export {

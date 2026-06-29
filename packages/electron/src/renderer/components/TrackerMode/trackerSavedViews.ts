@@ -13,16 +13,16 @@ import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import type { TrackerIdentity } from '@nimbalyst/runtime';
 import {
   getRecordPriority,
-  getRecordStatus,
   getFieldByRole,
   isMyRecord,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
+import type { TrackerGroupBy } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import type { TrackerFilterChip } from '../../store/atoms/trackers';
 import type { ViewMode } from './TrackerMainView';
-import { getTrackerItemTags, filterTrackerItemsByTags } from './trackerTagFilterUtils';
+import { filterTrackerItemsByTags } from './trackerTagFilterUtils';
 
-/** How items are grouped in a grouped view. `none` = a single flat group. */
-export type TrackerGroupBy = 'none' | 'status' | 'priority' | 'assignee' | 'type' | 'tag';
+export { groupTrackerItems } from '@nimbalyst/runtime/plugins/TrackerPlugin';
+export type { TrackerGroup, TrackerGroupBy } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 
 export interface SavedViewDefinition {
   /** Selected type filter: `'all'` or a specific tracker type. */
@@ -107,93 +107,4 @@ export function filterTrackerItems(
   out = filterTrackerItemsByTags(out, def.tagFilter);
 
   return out;
-}
-
-export interface TrackerGroup {
-  /** Group key: the field value, or `''` for the empty/none bucket. */
-  key: string;
-  label: string;
-  items: TrackerRecord[];
-}
-
-function titleCase(value: string): string {
-  return value
-    .split('-')
-    .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : w))
-    .join(' ');
-}
-
-function singleGroupValue(item: TrackerRecord, groupBy: Exclude<TrackerGroupBy, 'none' | 'tag'>): string {
-  switch (groupBy) {
-    case 'status':
-      return (getRecordStatus(item) || '').toLowerCase();
-    case 'priority':
-      return (getRecordPriority(item) || '').toLowerCase();
-    case 'type':
-      return item.primaryType;
-    case 'assignee':
-      return ((getFieldByRole(item, 'assignee') as string | undefined) || '');
-  }
-}
-
-/**
- * Group items for a grouped rendering. `none` returns a single bucket; `tag`
- * groups by the schema tags role (an item with N tags appears in N groups, with
- * a trailing "Untagged" bucket); the rest group by a single-valued field in
- * first-seen order, collecting empty values into a trailing fallback bucket
- * ("Unassigned" for assignee, "None" otherwise).
- */
-export function groupTrackerItems(items: TrackerRecord[], groupBy: TrackerGroupBy): TrackerGroup[] {
-  if (groupBy === 'none') {
-    return [{ key: '', label: 'All', items }];
-  }
-
-  if (groupBy === 'tag') {
-    const byTag = new Map<string, TrackerRecord[]>();
-    const order: string[] = [];
-    const untagged: TrackerRecord[] = [];
-    for (const item of items) {
-      const tags = Array.from(new Set(getTrackerItemTags(item)));
-      if (tags.length === 0) {
-        untagged.push(item);
-        continue;
-      }
-      for (const tag of tags) {
-        const bucket = byTag.get(tag);
-        if (bucket) bucket.push(item);
-        else {
-          byTag.set(tag, [item]);
-          order.push(tag);
-        }
-      }
-    }
-    const groups: TrackerGroup[] = order.map((tag) => ({ key: tag, label: `#${tag}`, items: byTag.get(tag)! }));
-    if (untagged.length > 0) groups.push({ key: '', label: 'Untagged', items: untagged });
-    return groups;
-  }
-
-  const buckets = new Map<string, TrackerRecord[]>();
-  const order: string[] = [];
-  for (const item of items) {
-    const value = singleGroupValue(item, groupBy);
-    const bucket = buckets.get(value);
-    if (bucket) bucket.push(item);
-    else {
-      buckets.set(value, [item]);
-      order.push(value);
-    }
-  }
-
-  const emptyLabel = groupBy === 'assignee' ? 'Unassigned' : 'None';
-  // Keep non-empty groups in first-seen order; push the empty bucket last.
-  const nonEmpty = order.filter((v) => v !== '');
-  const groups: TrackerGroup[] = nonEmpty.map((value) => ({
-    key: value,
-    label: groupBy === 'type' || groupBy === 'assignee' ? value : titleCase(value),
-    items: buckets.get(value)!,
-  }));
-  if (buckets.has('')) {
-    groups.push({ key: '', label: emptyLabel, items: buckets.get('')! });
-  }
-  return groups;
 }

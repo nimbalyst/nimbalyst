@@ -37,8 +37,9 @@ import {
 } from './trackerColumns';
 import { DisplayOptionsPanel } from './DisplayOptionsPanel';
 import { useTrackerRows } from './useTrackerRows';
-import { renderCell, ContextSubmenu } from './TrackerTable';
+import { renderCell, ContextSubmenu, TrackerGroupHeader } from './TrackerTable';
 import type { SortColumn, SortDirection } from './TrackerTable';
+import { groupTrackerItems, normalizeTrackerGroupBy } from '../trackerGrouping';
 
 interface TrackerTableGridProps {
   filterType?: TrackerItemType | 'all';
@@ -175,6 +176,15 @@ export function TrackerTableGrid({
     });
     return sorted;
   }, [filteredItems, currentSortBy, currentSortDirection]);
+  const activeGroupBy = normalizeTrackerGroupBy(effectiveColumnConfig.groupBy);
+  const isGrouped = activeGroupBy !== 'none';
+  const groupedItems = useMemo(
+    () => groupTrackerItems(sortedItems, activeGroupBy),
+    [sortedItems, activeGroupBy],
+  );
+  const rowIndexById = useMemo(() => {
+    return new Map(sortedItems.map((item, index) => [item.id, index]));
+  }, [sortedItems]);
 
   // Row interaction (shared with TrackerTable)
   const rows = useTrackerRows({
@@ -412,28 +422,60 @@ export function TrackerTableGrid({
               );
             })}
 
-            {/* Body rows -- each row uses display: contents so its cells join the parent grid */}
-            {sortedItems.map((item, rowIndex) => (
-              <GridRow
-                key={item.id || rowIndex}
-                item={item}
-                rowIndex={rowIndex}
-                columns={visibleColumnDefs}
-                selectedIds={selectedIds}
-                selectedItemId={selectedItemId}
-                focusedIndex={focusedIndex}
-                editingCell={editingCell}
-                setEditingCell={setEditingCell}
-                editingTitle={editingTitle}
-                setEditingTitle={setEditingTitle}
-                titleInputRef={titleInputRef}
-                handleFieldUpdate={handleFieldUpdate}
-                isItemEditable={isItemEditable}
-                handleRowClick={handleRowClick}
-                handleContextMenu={handleContextMenu}
-                openItemInEditor={openItemInEditor}
-              />
-            ))}
+            {isGrouped ? (
+              groupedItems.map((group) => (
+                <React.Fragment key={`${activeGroupBy}:${group.key || 'empty'}`}>
+                  <TrackerGroupHeader
+                    label={group.label}
+                    count={group.items.length}
+                    style={{ gridColumn: '1 / -1' }}
+                  />
+                  {group.items.map((item) => (
+                    <GridRow
+                      key={item.id}
+                      item={item}
+                      rowIndex={rowIndexById.get(item.id) ?? 0}
+                      columns={visibleColumnDefs}
+                      selectedIds={selectedIds}
+                      selectedItemId={selectedItemId}
+                      focusedIndex={focusedIndex}
+                      editingCell={editingCell}
+                      setEditingCell={setEditingCell}
+                      editingTitle={editingTitle}
+                      setEditingTitle={setEditingTitle}
+                      titleInputRef={titleInputRef}
+                      handleFieldUpdate={handleFieldUpdate}
+                      isItemEditable={isItemEditable}
+                      handleRowClick={handleRowClick}
+                      handleContextMenu={handleContextMenu}
+                      openItemInEditor={openItemInEditor}
+                    />
+                  ))}
+                </React.Fragment>
+              ))
+            ) : (
+              sortedItems.map((item, rowIndex) => (
+                <GridRow
+                  key={item.id || rowIndex}
+                  item={item}
+                  rowIndex={rowIndex}
+                  columns={visibleColumnDefs}
+                  selectedIds={selectedIds}
+                  selectedItemId={selectedItemId}
+                  focusedIndex={focusedIndex}
+                  editingCell={editingCell}
+                  setEditingCell={setEditingCell}
+                  editingTitle={editingTitle}
+                  setEditingTitle={setEditingTitle}
+                  titleInputRef={titleInputRef}
+                  handleFieldUpdate={handleFieldUpdate}
+                  isItemEditable={isItemEditable}
+                  handleRowClick={handleRowClick}
+                  handleContextMenu={handleContextMenu}
+                  openItemInEditor={openItemInEditor}
+                />
+              ))
+            )}
           </div>
         )}
       </div>

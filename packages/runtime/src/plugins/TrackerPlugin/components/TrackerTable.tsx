@@ -34,6 +34,7 @@ import {
 import { UserAvatar } from './UserAvatar';
 import { DisplayOptionsPanel } from './DisplayOptionsPanel';
 import { useTrackerRows } from './useTrackerRows';
+import { groupTrackerItems, normalizeTrackerGroupBy } from '../trackerGrouping';
 
 export type SortColumn = 'title' | 'type' | 'status' | 'priority' | 'progress' | 'module' | 'lastIndexed' | (string & {});
 export type SortDirection = 'asc' | 'desc';
@@ -68,6 +69,24 @@ interface TrackerTableProps {
   /** Callback when column config changes (from display options panel) */
   onColumnConfigChange?: (config: import('./trackerColumns').TypeColumnConfig) => void;
 }
+
+export const TrackerGroupHeader: React.FC<{
+  label: string;
+  count: number;
+  className?: string;
+  style?: React.CSSProperties;
+}> = ({ label, count, className = '', style }) => (
+  <div
+    data-testid="tracker-table-group-header"
+    className={`tracker-table-group-header flex items-center gap-2 px-3 py-1.5 bg-[var(--nim-bg-secondary)] border-b border-[var(--nim-border)] text-[11px] font-semibold text-[var(--nim-text-muted)] ${className}`}
+    style={style}
+  >
+    <span className="truncate">{label}</span>
+    <span className="text-[10px] font-medium text-[var(--nim-text-faint)]">
+      {count} item{count === 1 ? '' : 's'}
+    </span>
+  </div>
+);
 
 /**
  * Get educational description for each tracker type
@@ -926,6 +945,15 @@ export function TrackerTable({
 
   // console.log('[TrackerTable] Render - items:', items.length, 'filtered:', filteredItems.length, 'typeFilter:', typeFilter);
   const sortedItems = sortItems(filteredItems, currentSortBy, currentSortDirection);
+  const activeGroupBy = normalizeTrackerGroupBy(effectiveColumnConfig.groupBy);
+  const isGrouped = activeGroupBy !== 'none';
+  const groupedItems = useMemo(
+    () => groupTrackerItems(sortedItems, activeGroupBy),
+    [sortedItems, activeGroupBy],
+  );
+  const rowIndexById = useMemo(() => {
+    return new Map(sortedItems.map((item, index) => [item.id, index]));
+  }, [sortedItems]);
 
   // Row interaction model -- shared with TrackerTableGrid via useTrackerRows.
   const rows = useTrackerRows({
@@ -1093,6 +1121,72 @@ export function TrackerTable({
     { value: 'idea', label: 'Ideas', icon: 'lightbulb' },
     { value: 'decision', label: 'Decisions', icon: 'gavel' },
   ];
+
+  const renderTrackerRow = (item: TrackerRecord, index: number) => {
+    const title = getRecordTitle(item);
+
+    return (
+      <div
+        key={item.id || index}
+        className={`tracker-table-row flex items-center gap-3 px-3 py-[7px] border-b border-[var(--nim-border)] cursor-pointer transition-colors duration-100 hover:bg-[var(--nim-bg-secondary)] select-none ${
+          selectedIds.has(item.id) ? 'bg-[var(--nim-bg-secondary)]' : ''
+        } ${
+          selectedItemId && item.id === selectedItemId ? 'bg-[var(--nim-bg-secondary)]' : ''
+        } ${
+          focusedIndex === index ? 'outline outline-1 outline-[var(--nim-primary)] -outline-offset-1' : ''
+        }`}
+        data-testid="tracker-table-row"
+        data-item-id={item.id}
+        data-item-title={item.fields.title as string}
+        onClick={(e) => handleRowClick(item, index, e)}
+        onDoubleClick={() => { if (item.system.documentPath) openItemInEditor(item); }}
+        onContextMenu={(e) => handleContextMenu(e, item, index)}
+      >
+        <span className="shrink-0 w-5 flex items-center justify-center" style={{ color: getTypeColor(item.primaryType), opacity: 0.7 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: '16px', fontVariationSettings: "'wght' 300" }}>{getTypeIcon(item.primaryType)}</span>
+        </span>
+
+        <div className="tracker-table-cell title flex-1 min-w-0">
+          {editingCell?.itemId === item.id && editingCell?.field === 'title' ? (
+            <input
+              ref={titleInputRef}
+              type="text"
+              value={editingTitle}
+              onChange={(e) => setEditingTitle(e.target.value)}
+              onBlur={() => {
+                if (editingTitle.trim() && editingTitle !== (item.fields.title as string)) handleFieldUpdate(item, 'title', editingTitle.trim());
+                else setEditingCell(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { if (editingTitle.trim() && editingTitle !== title) handleFieldUpdate(item, 'title', editingTitle.trim()); else setEditingCell(null); }
+                else if (e.key === 'Escape') setEditingCell(null);
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full bg-[var(--nim-bg-secondary)] border border-[var(--nim-primary)] rounded px-1 py-0.5 text-[13px] text-[var(--nim-text)] font-medium outline-none"
+            />
+          ) : (
+            <div className="flex items-baseline gap-2 min-w-0">
+              {item.issueKey && (
+                <span className="shrink-0 text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-[var(--nim-text-faint)]">{item.issueKey}</span>
+              )}
+              <span className="text-[13px] font-medium text-[var(--nim-text)] truncate">{title}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {visibleColumnDefs.filter(col => col.id !== 'type' && col.id !== 'title').map(col => {
+            const value = getCellValue(item, col.id);
+            return (
+              <div key={col.id} className={`tracker-table-cell ${col.id}`}>
+                {renderCell(col, item, value, editingCell, isItemEditable, setEditingCell, editingTitle, setEditingTitle, titleInputRef, handleFieldUpdate)}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="tracker-table-wrapper flex flex-col h-full w-full bg-[var(--nim-bg)]" data-testid="tracker-table">
@@ -1275,80 +1369,15 @@ export function TrackerTable({
               </div>
             )}
           </div>
+        ) : isGrouped ? (
+          groupedItems.map((group) => (
+            <React.Fragment key={`${activeGroupBy}:${group.key || 'empty'}`}>
+              <TrackerGroupHeader label={group.label} count={group.items.length} />
+              {group.items.map((item) => renderTrackerRow(item, rowIndexById.get(item.id) ?? 0))}
+            </React.Fragment>
+          ))
         ) : (
-          sortedItems.map((item, index) => {
-            const title = getRecordTitle(item);
-            const status = getRecordStatus(item);
-            const priority = getRecordPriority(item);
-            const statusColor = getStatusColor(status, item.primaryType);
-            const lastIndexed = item.system.lastIndexed ? new Date(item.system.lastIndexed) : new Date(0);
-            const editable = isItemEditable(item);
-
-            return (
-              <div
-                key={item.id || index}
-                className={`tracker-table-row flex items-center gap-3 px-3 py-[7px] border-b border-[var(--nim-border)] cursor-pointer transition-colors duration-100 hover:bg-[var(--nim-bg-secondary)] select-none ${
-                  selectedIds.has(item.id) ? 'bg-[var(--nim-bg-secondary)]' : ''
-                } ${
-                  selectedItemId && item.id === selectedItemId ? 'bg-[var(--nim-bg-secondary)]' : ''
-                } ${
-                  focusedIndex === index ? 'outline outline-1 outline-[var(--nim-primary)] -outline-offset-1' : ''
-                }`}
-                data-testid="tracker-table-row"
-                data-item-id={item.id}
-                data-item-title={item.fields.title as string}
-                onClick={(e) => handleRowClick(item, index, e)}
-                onDoubleClick={() => { if (item.system.documentPath) openItemInEditor(item); }}
-                onContextMenu={(e) => handleContextMenu(e, item, index)}
-              >
-                {/* Type icon - fixed width for alignment */}
-                <span className="shrink-0 w-5 flex items-center justify-center" style={{ color: getTypeColor(item.primaryType), opacity: 0.7 }}>
-                  <span className="material-symbols-outlined" style={{ fontSize: '16px', fontVariationSettings: "'wght' 300" }}>{getTypeIcon(item.primaryType)}</span>
-                </span>
-
-                {/* Title (takes remaining space) */}
-                <div className="tracker-table-cell title flex-1 min-w-0">
-                  {editingCell?.itemId === item.id && editingCell?.field === 'title' ? (
-                    <input
-                      ref={titleInputRef}
-                      type="text"
-                      value={editingTitle}
-                      onChange={(e) => setEditingTitle(e.target.value)}
-                      onBlur={() => {
-                        if (editingTitle.trim() && editingTitle !== (item.fields.title as string)) handleFieldUpdate(item, 'title', editingTitle.trim());
-                        else setEditingCell(null);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') { if (editingTitle.trim() && editingTitle !== title) handleFieldUpdate(item, 'title', editingTitle.trim()); else setEditingCell(null); }
-                        else if (e.key === 'Escape') setEditingCell(null);
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      className="w-full bg-[var(--nim-bg-secondary)] border border-[var(--nim-primary)] rounded px-1 py-0.5 text-[13px] text-[var(--nim-text)] font-medium outline-none"
-                    />
-                  ) : (
-                    <div className="flex items-baseline gap-2 min-w-0">
-                      {item.issueKey && (
-                        <span className="shrink-0 text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-[var(--nim-text-faint)]">{item.issueKey}</span>
-                      )}
-                      <span className="text-[13px] font-medium text-[var(--nim-text)] truncate">{title}</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Right-side metadata: render visible columns (except type/title which are already shown) */}
-                <div className="flex items-center gap-2 shrink-0">
-                  {visibleColumnDefs.filter(col => col.id !== 'type' && col.id !== 'title').map(col => {
-                    const value = getCellValue(item, col.id);
-                    return (
-                      <div key={col.id} className={`tracker-table-cell ${col.id}`}>
-                        {renderCell(col, item, value, editingCell, isItemEditable, setEditingCell, editingTitle, setEditingTitle, titleInputRef, handleFieldUpdate)}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })
+          sortedItems.map((item, index) => renderTrackerRow(item, index))
         )}
       </div>
 
