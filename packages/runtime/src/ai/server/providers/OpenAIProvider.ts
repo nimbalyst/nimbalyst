@@ -13,7 +13,8 @@ import {
   StreamChunk,
   Message,
   AIModel,
-  ModelIdentifier
+  ModelIdentifier,
+  OpenAICompatibleProviderType
 } from '../types';
 import { OPENAI_MODELS, DEFAULT_MODELS } from '../../modelConstants';
 import { buildUserMessageAddition } from './documentContextUtils';
@@ -21,14 +22,21 @@ import { buildUserMessageAddition } from './documentContextUtils';
 export class OpenAIProvider extends BaseAIProvider {
   private openai: OpenAI | null = null;
   private abortController: AbortController | null = null;
+  private providerId: OpenAICompatibleProviderType;
 
   static readonly DEFAULT_MODEL = DEFAULT_MODELS.openai;
+
+  constructor(providerId: OpenAICompatibleProviderType = 'openai') {
+    super();
+    this.providerId = providerId;
+  }
 
   async initialize(config: ProviderConfig): Promise<void> {
     const initStartTime = Date.now();
     console.log(`[OpenAIProvider] Initializing with config:`, {
       hasApiKey: !!config.apiKey,
       model: config.model,
+      baseUrl: config.baseUrl,
       temperature: config.temperature,
       maxTokens: config.maxTokens
     });
@@ -44,10 +52,19 @@ export class OpenAIProvider extends BaseAIProvider {
     console.log(`[OpenAIProvider] Creating OpenAI client with timeout: ${timeout}ms, maxRetries: 0`);
     this.openai = new OpenAI({
       apiKey: config.apiKey,
+      baseURL: config.baseUrl,
       timeout,
       maxRetries: 0,  // NO RETRIES - fail fast
       dangerouslyAllowBrowser: false  // We're in Node.js/Electron main process
     });
+
+    if (!this.config.model || this.config.model.endsWith(':local-model')) {
+      const models = await OpenAIProvider.getModels(config.apiKey, config.baseUrl, this.providerId);
+      const firstModel = models[0]?.id;
+      if (firstModel) {
+        this.config.model = firstModel;
+      }
+    }
     console.log(`[OpenAIProvider] OpenAI client created`);
     console.log(`[OpenAIProvider] Initialized in ${Date.now() - initStartTime}ms`);
   }
@@ -214,7 +231,7 @@ export class OpenAIProvider extends BaseAIProvider {
     // Log the input message
     // CRITICAL: Must await to ensure user message is persisted before proceeding
     if (sessionId) {
-      await this.logAgentMessage(sessionId, 'openai', 'input', message);
+      await this.logAgentMessage(sessionId, this.providerId, 'input', message);
     }
 
     try {
@@ -231,7 +248,7 @@ export class OpenAIProvider extends BaseAIProvider {
       }
 
       // Remove provider prefix from model ID for API call
-      const modelId = this.config.model.replace('openai:', '');
+      const modelId = this.config.model.replace(`${this.providerId}:`, '');
       console.log(`[OpenAIProvider] Using model: ${modelId}`);
 
       const completionParams: any = {
@@ -344,7 +361,7 @@ export class OpenAIProvider extends BaseAIProvider {
           console.error('[OpenAIProvider] Error in streaming response:', errorMessage);
 
           // Log error to database
-          this.logError(sessionId, 'openai', new Error(errorMessage), 'streaming_response');
+          this.logError(sessionId, this.providerId, new Error(errorMessage), 'streaming_response');
 
           yield {
             type: 'error',
@@ -470,7 +487,7 @@ export class OpenAIProvider extends BaseAIProvider {
               // Log tool call to database in format that UI can reconstruct
               if (sessionId) {
                 // Log the tool_use block
-                this.logAgentMessage(sessionId, 'openai', 'output', JSON.stringify({
+                this.logAgentMessage(sessionId, this.providerId, 'output', JSON.stringify({
                   type: 'assistant',
                   message: {
                     content: [{
@@ -486,7 +503,7 @@ export class OpenAIProvider extends BaseAIProvider {
                 const resultContent = executionResult !== undefined
                   ? (typeof executionResult === 'string' ? executionResult : JSON.stringify(executionResult))
                   : 'Tool executed';
-                this.logAgentMessage(sessionId, 'openai', 'output', JSON.stringify({
+                this.logAgentMessage(sessionId, this.providerId, 'output', JSON.stringify({
                   type: 'assistant',
                   message: {
                     content: [{
@@ -540,7 +557,7 @@ export class OpenAIProvider extends BaseAIProvider {
       // Log the text output message if there was any text content
       // Note: Tool calls are logged individually above, so we only log text here
       if (sessionId && fullContent) {
-        await this.logAgentMessage(sessionId, 'openai', 'output', fullContent, {
+        await this.logAgentMessage(sessionId, this.providerId, 'output', fullContent, {
           usage: usageData
         });
       }
@@ -571,7 +588,7 @@ export class OpenAIProvider extends BaseAIProvider {
         console.error(`[OpenAIProvider] Error after ${errorTime}ms:`, error);
 
         // Log error to database
-        this.logError(sessionId, 'openai', error, 'catch_block');
+        this.logError(sessionId, this.providerId, error, 'catch_block');
 
         yield {
           type: 'error',
@@ -614,15 +631,25 @@ export class OpenAIProvider extends BaseAIProvider {
   /**
    * Get available OpenAI models (filtered from API response)
    */
-  static async getModels(apiKey?: string): Promise<AIModel[]> {
+  static async getModels(apiKey?: string, baseUrl?: string, provider: OpenAICompatibleProviderType = 'openai'): Promise<AIModel[]> {
     if (!apiKey) return this.getDefaultModels();
 
     try {
       // console.log('[OpenAIProvider] Fetching available models from OpenAI API');
       const modelFetchStart = Date.now();
-      const openai = new OpenAI({ apiKey });
+      const openai = new OpenAI({ apiKey, baseURL: baseUrl });
       const response = await openai.models.list();
       // console.log(`[OpenAIProvider] Fetched ${response.data.length} models in ${Date.now() - modelFetchStart}ms`);
+
+      if (baseUrl || provider !== 'openai') {
+        return response.data.map((model) => ({
+          id: ModelIdentifier.create(provider, model.id).combined,
+          name: model.id,
+          provider,
+          maxTokens: 0,
+          contextWindow: 0
+        }));
+      }
 
       // Filter to only allowed models
       const availableIds = new Set(response.data.map(m => m.id));
@@ -631,9 +658,9 @@ export class OpenAIProvider extends BaseAIProvider {
       for (const model of OPENAI_MODELS) {
         if (availableIds.has(model.id)) {
           filtered.push({
-            id: ModelIdentifier.create('openai', model.id).combined,
+            id: ModelIdentifier.create(provider, model.id).combined,
             name: model.displayName,
-            provider: 'openai' as const,
+            provider,
             maxTokens: model.maxTokens,
             contextWindow: model.contextWindow
           });

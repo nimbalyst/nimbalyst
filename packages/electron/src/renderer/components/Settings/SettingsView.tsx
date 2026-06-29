@@ -371,6 +371,12 @@ export function SettingsView({
     'claude-code',
     'claude',
     'openai',
+    'openrouter',
+    'featherless-official',
+    'featherless-sane',
+    'featherless',
+    'featherless-heretic',
+    'featherless-keyword',
     'openai-codex',
     'opencode',
     'copilot-cli',
@@ -380,6 +386,12 @@ export function SettingsView({
     'claude-code',
     'claude',
     'openai',
+    'openrouter',
+    'featherless-official',
+    'featherless-sane',
+    'featherless',
+    'featherless-heretic',
+    'featherless-keyword',
     'openai-codex',
     'opencode',
     'copilot-cli',
@@ -832,6 +844,72 @@ export function SettingsView({
         );
       case 'openai':
         return wrapWithOverride('openai', 'OpenAI', <OpenAIPanel {...commonProps} />);
+      case 'openrouter':
+        return wrapWithOverride('openrouter', 'OpenRouter Free', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="OpenRouter Free"
+            providerDescription="OpenRouter through the OneCLI bridge. The bridge filters visible models to free IDs and injects the real OpenRouter credential."
+            apiKeyName="openrouter"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder="http://100.122.89.110:10302/v1"
+          />
+        ));
+      case 'featherless':
+        return wrapWithOverride('featherless', 'Featherless Full', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Featherless Full"
+            providerDescription="Full Featherless model zoo through the OneCLI bridge. Use a dummy API key; the bridge injects the real credential."
+            apiKeyName="featherless"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder="http://100.122.89.110:10301/v1"
+          />
+        ));
+      case 'featherless-official':
+        return wrapWithOverride('featherless-official', 'Featherless Official', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Featherless Official"
+            providerDescription="Everyday Featherless bridge filtered to official-ish model families. Use a dummy API key; OneCLI injects the real credential."
+            apiKeyName="featherless-official"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder="http://100.122.89.110:10303/v1"
+          />
+        ));
+      case 'featherless-sane':
+        return wrapWithOverride('featherless-sane', 'Featherless Sane', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Featherless Sane"
+            providerDescription="Wider Featherless bridge for instruct, chat, coder, and known model families. Use a dummy API key; OneCLI injects the real credential."
+            apiKeyName="featherless-sane"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder="http://100.122.89.110:10304/v1"
+          />
+        ));
+      case 'featherless-heretic':
+        return wrapWithOverride('featherless-heretic', 'Featherless Heretic', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Featherless Heretic"
+            providerDescription="Featherless bridge filtered for heretic, uncensored, abliterated, and related model IDs for explicit training use cases."
+            apiKeyName="featherless-heretic"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder="http://100.122.89.110:10305/v1"
+          />
+        ));
+      case 'featherless-keyword':
+        return wrapWithOverride('featherless-keyword', 'Featherless Keyword', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Featherless Keyword"
+            providerDescription="Scriptable Featherless bridge whose model filter is controlled on the VPS. Default filter is code, coder, and coding."
+            apiKeyName="featherless-keyword"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder="http://100.122.89.110:10306/v1"
+          />
+        ));
       case 'openai-codex':
         return wrapWithOverride('openai-codex', 'OpenAI Codex', <OpenAICodexPanel {...commonProps} />);
       case 'opencode':

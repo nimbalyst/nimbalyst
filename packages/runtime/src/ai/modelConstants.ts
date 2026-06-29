@@ -317,6 +317,12 @@ export const CLAUDE_CODE_SAFE_FALLBACK_MODEL = 'claude-code:opus' as const;
 export const DEFAULT_MODELS = {
   claude: 'claude:claude-opus-4-8',
   openai: 'openai:gpt-5.5',
+  openrouter: 'openrouter:local-model',
+  featherless: 'featherless:local-model',
+  'featherless-official': 'featherless-official:local-model',
+  'featherless-sane': 'featherless-sane:local-model',
+  'featherless-heretic': 'featherless-heretic:local-model',
+  'featherless-keyword': 'featherless-keyword:local-model',
   'claude-code': 'claude-code:opus-1m',
   'claude-code-cli': 'claude-code-cli:opus-1m',
   'openai-codex': 'openai-codex:gpt-5.5',

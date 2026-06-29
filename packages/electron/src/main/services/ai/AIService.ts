@@ -31,6 +31,8 @@ import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { SessionStore } from '@nimbalyst/runtime';
 import {
   ModelIdentifier,
+  OPENAI_COMPATIBLE_PROVIDER_TYPES,
+  isOpenAICompatibleProvider,
   type DocumentContext,
   type Message,
   type ProviderConfig,
@@ -67,6 +69,13 @@ import {AnalyticsService} from "../analytics/AnalyticsService.ts";
 import { FeatureUsageService, FEATURES } from "../FeatureUsageService.ts";
 import { historyManager } from '../../HistoryManager';
 import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
+import {
+  DEFAULT_LMSTUDIO_BASE_URL,
+  DUMMY_OPENAI_COMPATIBLE_API_KEY,
+  getConfiguredLMStudioBaseUrl,
+  getConfiguredOpenAICompatibleBaseUrl,
+  getConfiguredOpenAIBaseUrl,
+} from './lmStudioConfig';
 import {
   getAIProviderOverrides,
   saveAIProviderOverrides,
@@ -122,12 +131,24 @@ import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claud
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 
 const execFileAsync = promisify(execFile);
+const MAX_MODELS_PER_PROVIDER_FOR_UI = 500;
+
+function capModelsPerProviderForUi(models: AIModel[]): AIModel[] {
+  const counts = new Map<string, number>();
+  return models.filter((model) => {
+    const count = counts.get(model.provider) ?? 0;
+    if (count >= MAX_MODELS_PER_PROVIDER_FOR_UI) return false;
+    counts.set(model.provider, count + 1);
+    return true;
+  });
+}
 
 export class AIService {
   private sessionManager: SessionManager;
   private settingsStore: Store<Record<string, unknown>> | null = null;
   private readonly analytics = AnalyticsService.getInstance();
   private cachedNormalizedProviderSettings: Record<string, any> | null = null;
+  private unsubscribeAISettingsListener: (() => void) | null = null;
   // Store reference to sendMessage handler for queue processing
   private sendMessageHandler: ((event: Electron.IpcMainInvokeEvent, message: string, documentContext?: DocumentContext, sessionId?: string, workspacePath?: string) => Promise<{ content: string }>) | null = null;
   // NOTE: Providers are now tracked per-session in ProviderFactory, not per-window
@@ -167,6 +188,11 @@ export class AIService {
     logger.main.info('[AIService] Constructor called');
     this.sessionManager = new SessionManager(sessionStore);
     this.streamingHandler = new MessageStreamingHandler(this);
+    this.unsubscribeAISettingsListener = getSettingsService().subscribe((key) => {
+      if (key.startsWith('ai.provider.') || key.startsWith('ai.apiKey.')) {
+        this.cachedNormalizedProviderSettings = null;
+      }
+    });
 
     // Set up persistence callback for DocumentContextService
     // Use AISessionsRepository directly since SessionManager doesn't have a generic updateMetadata
@@ -460,7 +486,7 @@ export class AIService {
               lmstudio: {
                 enabled: false,
                 testStatus: "idle",
-                baseUrl: "http://127.0.0.1:8234"
+                baseUrl: DEFAULT_LMSTUDIO_BASE_URL
               }
             }
           },
@@ -529,6 +555,13 @@ export class AIService {
         return globalApiKeys['claude-code'];
       case 'openai':
         return globalApiKeys['openai'];
+      case 'openrouter':
+      case 'featherless':
+      case 'featherless-official':
+      case 'featherless-sane':
+      case 'featherless-heretic':
+      case 'featherless-keyword':
+        return globalApiKeys[provider] || DUMMY_OPENAI_COMPATIBLE_API_KEY;
       case 'openai-codex':
         return globalApiKeys['openai-codex'];
       case 'lmstudio':
@@ -1598,6 +1631,13 @@ export class AIService {
         if (hasOpenAI) return true;
       }
 
+      for (const provider of OPENAI_COMPATIBLE_PROVIDER_TYPES) {
+        if (provider === 'openai') continue;
+        if (providerSettings[provider]?.enabled === true && providerSettings[provider]?.models?.length > 0) {
+          return true;
+        }
+      }
+
       // Check OpenAI Codex (uses its own auth, doesn't need API key in settings)
       const hasCodex = providerSettings['openai-codex']?.enabled === true;
       if (hasCodex) return true;
@@ -1699,6 +1739,13 @@ export class AIService {
             if (!apiKey) {
               throw new Error('OpenAI API key not configured');
             }
+            break;
+          case 'openrouter':
+          case 'featherless':
+          case 'featherless-official':
+          case 'featherless-sane':
+          case 'featherless-heretic':
+          case 'featherless-keyword':
             break;
           case 'openai-codex':
             // Codex SDK uses its own auth (codex auth login), API key is optional
@@ -1858,9 +1905,12 @@ export class AIService {
 
       // Add LMStudio-specific config
       if (provider === 'lmstudio') {
-        const lmstudioSettings = this.getSettingsStore().get('providerSettings.lmstudio', {}) as any;
-        const storedApiKeys = this.getSettingsStore().get('apiKeys', {}) as Record<string, string>;
-        initConfig.baseUrl = lmstudioSettings.baseUrl || storedApiKeys['lmstudio_url'] || 'http://127.0.0.1:8234';
+        initConfig.baseUrl = getConfiguredLMStudioBaseUrl(this.getSettingsStore());
+      }
+      if (provider === 'openai') {
+        initConfig.baseUrl = getConfiguredOpenAIBaseUrl(this.getSettingsStore());
+      } else if (isOpenAICompatibleProvider(provider)) {
+        initConfig.baseUrl = getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), provider);
       }
 
       // Pass through allowedTools and effort level settings for Claude Code
@@ -2915,6 +2965,12 @@ export class AIService {
         writeApiKey('anthropic', settings.apiKeys.anthropic);
         writeApiKey('claude-code', settings.apiKeys['claude-code']);
         writeApiKey('openai', settings.apiKeys.openai);
+        writeApiKey('openrouter', settings.apiKeys.openrouter);
+        writeApiKey('featherless', settings.apiKeys.featherless);
+        writeApiKey('featherless-official', settings.apiKeys['featherless-official']);
+        writeApiKey('featherless-sane', settings.apiKeys['featherless-sane']);
+        writeApiKey('featherless-heretic', settings.apiKeys['featherless-heretic']);
+        writeApiKey('featherless-keyword', settings.apiKeys['featherless-keyword']);
         writeApiKey('openai-codex', settings.apiKeys['openai-codex']);
         if (settings.apiKeys.lmstudio_url !== undefined) {
           // lmstudio_url is a regular setting -- no masking, just write it.
@@ -2935,6 +2991,14 @@ export class AIService {
         for (const [providerId, config] of Object.entries(normalizedAll)) {
           if (config === undefined) continue;
           safeSet(`ai.provider.${providerId}`, config);
+          if (
+            providerId === 'lmstudio' &&
+            config &&
+            typeof config === 'object' &&
+            typeof (config as { baseUrl?: unknown }).baseUrl === 'string'
+          ) {
+            safeSet('ai.apiKey.lmstudio_url', (config as { baseUrl: string }).baseUrl);
+          }
         }
         // Provider cache must be invalidated after writes so the next read
         // returns the new value rather than the pre-save snapshot.
@@ -3014,6 +3078,14 @@ export class AIService {
               return { success: false, error: 'OpenAI API key not configured' };
             }
             break;
+          case 'openrouter':
+          case 'featherless':
+          case 'featherless-official':
+          case 'featherless-sane':
+          case 'featherless-heretic':
+          case 'featherless-keyword':
+            apiKey = apiKeys[provider] || DUMMY_OPENAI_COMPATIBLE_API_KEY;
+            break;
           case 'openai-codex':
             apiKey = apiKeys['openai-codex'];
             break;
@@ -3044,9 +3116,13 @@ export class AIService {
       }
 
       try {
-        // For OpenAI, just try to list models as a connection test
-        if (provider === 'openai') {
-          const models = await ModelRegistry.getModelsForProvider('openai', apiKey);
+        // For OpenAI-compatible providers, list models as a connection test
+        if (isOpenAICompatibleProvider(provider)) {
+          const models = await ModelRegistry.getModelsForProvider(
+            provider,
+            apiKey,
+            getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), provider),
+          );
           return { success: models.length > 0, provider };
         }
 
@@ -3194,8 +3270,7 @@ export class AIService {
 
         // For LMStudio, test the endpoint
         if (provider === 'lmstudio') {
-          const providerSettings = this.getSettingsStore().get('providerSettings', {}) as any;
-          const baseUrl = providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234';
+          const baseUrl = getConfiguredLMStudioBaseUrl(this.getSettingsStore());
           const response = await fetch(`${baseUrl}/v1/models`);
           if (!response.ok) {
             throw new Error(`LMStudio server not responding at ${baseUrl}`);
@@ -3221,15 +3296,32 @@ export class AIService {
       if (providerSettings['claude']?.enabled === true && !!apiKeys['anthropic']) enabledSet.add('claude');
       if (providerSettings['claude-code']?.enabled !== false) enabledSet.add('claude-code');
       if (providerSettings['openai']?.enabled === true && !!apiKeys['openai']) enabledSet.add('openai');
+      for (const provider of OPENAI_COMPATIBLE_PROVIDER_TYPES) {
+        if (provider === 'openai') continue;
+        if (providerSettings[provider]?.enabled === true) enabledSet.add(provider);
+      }
       if (providerSettings['openai-codex']?.enabled === true) enabledSet.add('openai-codex');
       if (providerSettings['opencode']?.enabled === true) enabledSet.add('opencode');
       if (providerSettings['lmstudio']?.enabled === true) enabledSet.add('lmstudio');
 
       const modelsConfig = {
         ...apiKeys,
-        lmstudio_url: providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234'
+        openai_base_url: getConfiguredOpenAIBaseUrl(this.getSettingsStore()) || '',
+        openrouter: apiKeys.openrouter || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        openrouter_base_url: getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'openrouter') || '',
+        featherless: apiKeys.featherless || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        featherless_base_url: getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless') || '',
+        'featherless-official': apiKeys['featherless-official'] || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        'featherless-official_base_url': getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless-official') || '',
+        'featherless-sane': apiKeys['featherless-sane'] || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        'featherless-sane_base_url': getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless-sane') || '',
+        'featherless-heretic': apiKeys['featherless-heretic'] || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        'featherless-heretic_base_url': getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless-heretic') || '',
+        'featherless-keyword': apiKeys['featherless-keyword'] || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        'featherless-keyword_base_url': getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless-keyword') || '',
+        lmstudio_url: getConfiguredLMStudioBaseUrl(this.getSettingsStore())
       };
-      const allModels = await ModelRegistry.getAllModels(modelsConfig, enabledSet);
+      const allModels = capModelsPerProviderForUi(await ModelRegistry.getAllModels(modelsConfig, enabledSet));
 
       // Append extension-contributed agent provider models (see ai:getModels).
       for (const agentEntry of getAgentProviderRegistry().list()) {
@@ -3251,6 +3343,13 @@ export class AIService {
         }
         grouped[model.provider].push(model);
       }
+
+      logger.main.info('[AIService] ai:getAllModels result', JSON.stringify({
+        enabledProviders: Array.from(enabledSet),
+        groupedCounts: Object.fromEntries(
+          Object.entries(grouped).map(([provider, models]) => [provider, models.length]),
+        ),
+      }));
 
       return {
         success: true,
@@ -3364,6 +3463,30 @@ export class AIService {
           enabled: providerSettings['openai']?.enabled === true && !!apiKeys['openai'],
           models: providerSettings['openai']?.models
         },
+        'openrouter': {
+          enabled: providerSettings['openrouter']?.enabled === true,
+          models: providerSettings['openrouter']?.models
+        },
+        'featherless': {
+          enabled: providerSettings['featherless']?.enabled === true,
+          models: providerSettings['featherless']?.models
+        },
+        'featherless-official': {
+          enabled: providerSettings['featherless-official']?.enabled === true,
+          models: providerSettings['featherless-official']?.models
+        },
+        'featherless-sane': {
+          enabled: providerSettings['featherless-sane']?.enabled === true,
+          models: providerSettings['featherless-sane']?.models
+        },
+        'featherless-heretic': {
+          enabled: providerSettings['featherless-heretic']?.enabled === true,
+          models: providerSettings['featherless-heretic']?.models
+        },
+        'featherless-keyword': {
+          enabled: providerSettings['featherless-keyword']?.enabled === true,
+          models: providerSettings['featherless-keyword']?.models
+        },
         'openai-codex': {
           // Codex SDK uses its own auth (codex auth login), API key is optional
           enabled: providerSettings['openai-codex']?.enabled === true,
@@ -3394,9 +3517,22 @@ export class AIService {
       );
       const modelsConfig = {
         ...apiKeys,
-        lmstudio_url: providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234'
+        openai_base_url: getConfiguredOpenAIBaseUrl(this.getSettingsStore()) || '',
+        openrouter: apiKeys.openrouter || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        openrouter_base_url: getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'openrouter') || '',
+        featherless: apiKeys.featherless || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        featherless_base_url: getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless') || '',
+        'featherless-official': apiKeys['featherless-official'] || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        'featherless-official_base_url': getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless-official') || '',
+        'featherless-sane': apiKeys['featherless-sane'] || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        'featherless-sane_base_url': getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless-sane') || '',
+        'featherless-heretic': apiKeys['featherless-heretic'] || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        'featherless-heretic_base_url': getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless-heretic') || '',
+        'featherless-keyword': apiKeys['featherless-keyword'] || DUMMY_OPENAI_COMPATIBLE_API_KEY,
+        'featherless-keyword_base_url': getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless-keyword') || '',
+        lmstudio_url: getConfiguredLMStudioBaseUrl(this.getSettingsStore())
       };
-      const allModels = await ModelRegistry.getAllModels(modelsConfig, enabledProviderSet);
+      const allModels = capModelsPerProviderForUi(await ModelRegistry.getAllModels(modelsConfig, enabledProviderSet));
 
       // const claudeCodeModels = allModels.filter(m => m.provider === 'claude-code');
       // console.log('[AIService] ai:getModels - claude-code models from registry:',
@@ -3465,6 +3601,13 @@ export class AIService {
         }
         grouped[model.provider].push(model);
       }
+
+      logger.main.info('[AIService] ai:getModels result', JSON.stringify({
+        enabledProviders: Array.from(enabledProviderSet),
+        groupedCounts: Object.fromEntries(
+          Object.entries(grouped).map(([provider, models]) => [provider, models.length]),
+        ),
+      }));
 
       // Log final claude-code models being returned
       const enabledClaudeCodeModels = enabledModels.filter(m => m.provider === 'claude-code');
@@ -3733,7 +3876,7 @@ export class AIService {
 
     // Extension SDK: List available chat models
     safeHandle('extensions:ai-list-models', async () => {
-      const CHAT_PROVIDERS: AIProviderType[] = ['claude', 'openai', 'lmstudio'];
+      const CHAT_PROVIDERS: AIProviderType[] = ['claude', ...OPENAI_COMPATIBLE_PROVIDER_TYPES, 'lmstudio'];
       const providerSettings = this.getNormalizedProviderSettings() as any;
       const globalApiKeys = this.getSettingsStore().get('apiKeys', {}) as Record<string, string>;
 
@@ -3745,9 +3888,13 @@ export class AIService {
         if (settings && settings.enabled === false) continue;
 
         const apiKey = provider === 'claude' ? globalApiKeys['anthropic']
-          : provider === 'openai' ? globalApiKeys['openai']
+          : isOpenAICompatibleProvider(provider) ? (globalApiKeys[provider] || DUMMY_OPENAI_COMPATIBLE_API_KEY)
           : undefined;
-        const baseUrl = provider === 'lmstudio' ? (globalApiKeys['lmstudio_url'] || undefined) : undefined;
+        const baseUrl = provider === 'lmstudio'
+          ? getConfiguredLMStudioBaseUrl(this.getSettingsStore())
+          : isOpenAICompatibleProvider(provider)
+            ? getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), provider)
+            : undefined;
 
         try {
           const models = await ModelRegistry.getModelsForProvider(provider, apiKey, baseUrl);
@@ -4046,13 +4193,13 @@ export class AIService {
 
   /**
    * Resolve which chat provider and config to use for an extension completion request.
-   * Only chat providers (claude, openai, lmstudio) are supported.
+   * Only chat providers (Claude, OpenAI-compatible providers, LM Studio) are supported.
    */
   private async resolveExtensionChatProvider(
     event: Electron.IpcMainInvokeEvent,
     options: { model?: string; maxTokens?: number; temperature?: number; responseFormat?: any }
   ): Promise<{ provider: AIProvider; providerConfig: ProviderConfig; providerType: AIProviderType; syntheticSessionId: string }> {
-    const CHAT_PROVIDERS: AIProviderType[] = ['claude', 'openai', 'lmstudio'];
+    const CHAT_PROVIDERS: AIProviderType[] = ['claude', ...OPENAI_COMPATIBLE_PROVIDER_TYPES, 'lmstudio'];
 
     // Determine provider from model ID or find first available
     let providerType: AIProviderType | undefined;
@@ -4066,7 +4213,15 @@ export class AIService {
       } else {
         // Try to find this model across providers
         for (const p of CHAT_PROVIDERS) {
-          const models = await ModelRegistry.getModelsForProvider(p);
+          const models = await ModelRegistry.getModelsForProvider(
+            p,
+            isOpenAICompatibleProvider(p) ? this.getApiKeyForProvider(p) : undefined,
+            p === 'lmstudio'
+              ? getConfiguredLMStudioBaseUrl(this.getSettingsStore())
+              : isOpenAICompatibleProvider(p)
+                ? getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), p)
+                : undefined,
+          );
           if (models.some(m => m.id === options.model)) {
             providerType = p;
             modelId = options.model;
@@ -4114,8 +4269,9 @@ export class AIService {
 
     // LM Studio needs baseUrl
     if (providerType === 'lmstudio') {
-      const globalApiKeys = this.getSettingsStore().get('apiKeys', {}) as Record<string, string>;
-      providerConfig.baseUrl = globalApiKeys['lmstudio_url'] || 'http://127.0.0.1:1234';
+      providerConfig.baseUrl = getConfiguredLMStudioBaseUrl(this.getSettingsStore());
+    } else if (isOpenAICompatibleProvider(providerType)) {
+      providerConfig.baseUrl = getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), providerType);
     }
 
     const syntheticSessionId = `ext-completion-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

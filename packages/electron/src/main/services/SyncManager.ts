@@ -1209,7 +1209,7 @@ async function getAvailableModelsForMobile(): Promise<{ models: Array<{ id: stri
 
     const modelsConfig = {
       ...apiKeys,
-      lmstudio_url: providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234'
+      lmstudio_url: providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:1234'
     };
     const allModels = await ModelRegistry.getAllModels(modelsConfig, enabledSet as Set<any>);
     // Filter to enabled models (model-level filtering for specific model selection)

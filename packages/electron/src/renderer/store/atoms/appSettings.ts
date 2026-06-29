@@ -1138,11 +1138,17 @@ const defaultProviders: Record<string, ProviderConfig> = {
   claude: { enabled: false, testStatus: 'idle' },
   'claude-code': { enabled: true, testStatus: 'idle', installStatus: 'not-installed' },
   openai: { enabled: false, testStatus: 'idle' },
+  openrouter: { enabled: false, baseUrl: 'http://100.122.89.110:10302/v1', testStatus: 'idle' },
+  featherless: { enabled: false, baseUrl: 'http://100.122.89.110:10301/v1', testStatus: 'idle' },
+  'featherless-official': { enabled: false, baseUrl: 'http://100.122.89.110:10303/v1', testStatus: 'idle' },
+  'featherless-sane': { enabled: false, baseUrl: 'http://100.122.89.110:10304/v1', testStatus: 'idle' },
+  'featherless-heretic': { enabled: false, baseUrl: 'http://100.122.89.110:10305/v1', testStatus: 'idle' },
+  'featherless-keyword': { enabled: false, baseUrl: 'http://100.122.89.110:10306/v1', testStatus: 'idle' },
   'openai-codex': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   'openai-codex-acp': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   opencode: { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   'copilot-cli': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
-  lmstudio: { enabled: false, baseUrl: 'http://127.0.0.1:8234', testStatus: 'idle' },
+  lmstudio: { enabled: false, baseUrl: 'http://127.0.0.1:1234', testStatus: 'idle' },
 };
 
 /**
@@ -1152,9 +1158,15 @@ const defaultApiKeys: Record<string, string> = {
   anthropic: '',
   'claude-code': '',
   openai: '',
+  openrouter: '',
+  featherless: '',
+  'featherless-official': '',
+  'featherless-sane': '',
+  'featherless-heretic': '',
+  'featherless-keyword': '',
   'openai-codex': '',
   opencode: '',
-  lmstudio_url: 'http://127.0.0.1:8234',
+  lmstudio_url: 'http://127.0.0.1:1234',
 };
 
 /**
