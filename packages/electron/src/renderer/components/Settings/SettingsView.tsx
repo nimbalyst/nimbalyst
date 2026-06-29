@@ -411,6 +411,8 @@ export function SettingsView({
     'claude-plugins',
     'mcp-servers',
   ];
+  const openAICompatibleProviderDescription = 'here be dragons, a house of dragons';
+  const openAICompatibleBaseUrlPlaceholder = 'https://example.com/v1';
 
   // When initialCategory/initialScope props change, update state (for deep linking)
   useEffect(() => {
@@ -849,10 +851,10 @@ export function SettingsView({
           <OpenAIPanel
             {...commonProps}
             providerName="OpenRouter Free"
-            providerDescription="OpenRouter through the OneCLI bridge. The bridge filters visible models to free IDs and injects the real OpenRouter credential."
+            providerDescription={openAICompatibleProviderDescription}
             apiKeyName="openrouter"
             apiKeyPlaceholder="Any dummy value"
-            baseUrlPlaceholder="http://100.122.89.110:10302/v1"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
           />
         ));
       case 'featherless':
@@ -860,10 +862,10 @@ export function SettingsView({
           <OpenAIPanel
             {...commonProps}
             providerName="Featherless Full"
-            providerDescription="Full Featherless model zoo through the OneCLI bridge. Use a dummy API key; the bridge injects the real credential."
+            providerDescription={openAICompatibleProviderDescription}
             apiKeyName="featherless"
             apiKeyPlaceholder="Any dummy value"
-            baseUrlPlaceholder="http://100.122.89.110:10301/v1"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
           />
         ));
       case 'featherless-official':
@@ -871,10 +873,10 @@ export function SettingsView({
           <OpenAIPanel
             {...commonProps}
             providerName="Featherless Official"
-            providerDescription="Everyday Featherless bridge filtered to official-ish model families. Use a dummy API key; OneCLI injects the real credential."
+            providerDescription={openAICompatibleProviderDescription}
             apiKeyName="featherless-official"
             apiKeyPlaceholder="Any dummy value"
-            baseUrlPlaceholder="http://100.122.89.110:10303/v1"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
           />
         ));
       case 'featherless-sane':
@@ -882,10 +884,10 @@ export function SettingsView({
           <OpenAIPanel
             {...commonProps}
             providerName="Featherless Sane"
-            providerDescription="Wider Featherless bridge for instruct, chat, coder, and known model families. Use a dummy API key; OneCLI injects the real credential."
+            providerDescription={openAICompatibleProviderDescription}
             apiKeyName="featherless-sane"
             apiKeyPlaceholder="Any dummy value"
-            baseUrlPlaceholder="http://100.122.89.110:10304/v1"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
           />
         ));
       case 'featherless-heretic':
@@ -893,10 +895,10 @@ export function SettingsView({
           <OpenAIPanel
             {...commonProps}
             providerName="Featherless Heretic"
-            providerDescription="Featherless bridge filtered for heretic, uncensored, abliterated, and related model IDs for explicit training use cases."
+            providerDescription={openAICompatibleProviderDescription}
             apiKeyName="featherless-heretic"
             apiKeyPlaceholder="Any dummy value"
-            baseUrlPlaceholder="http://100.122.89.110:10305/v1"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
           />
         ));
       case 'featherless-keyword':
@@ -904,10 +906,10 @@ export function SettingsView({
           <OpenAIPanel
             {...commonProps}
             providerName="Featherless Keyword"
-            providerDescription="Scriptable Featherless bridge whose model filter is controlled on the VPS. Default filter is code, coder, and coding."
+            providerDescription={openAICompatibleProviderDescription}
             apiKeyName="featherless-keyword"
             apiKeyPlaceholder="Any dummy value"
-            baseUrlPlaceholder="http://100.122.89.110:10306/v1"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
           />
         ));
       case 'openai-codex':

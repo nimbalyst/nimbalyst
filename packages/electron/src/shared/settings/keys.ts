@@ -104,32 +104,32 @@ export const SETTINGS_REGISTRY = {
   'ai.provider.openrouter': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.openrouter' },
-    { enabled: false, baseUrl: 'http://100.122.89.110:10302/v1', testStatus: 'idle' },
+    { enabled: false, testStatus: 'idle' },
   ),
   'ai.provider.featherless': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.featherless' },
-    { enabled: false, baseUrl: 'http://100.122.89.110:10301/v1', testStatus: 'idle' },
+    { enabled: false, testStatus: 'idle' },
   ),
   'ai.provider.featherless-official': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.featherless-official' },
-    { enabled: false, baseUrl: 'http://100.122.89.110:10303/v1', testStatus: 'idle' },
+    { enabled: false, testStatus: 'idle' },
   ),
   'ai.provider.featherless-sane': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.featherless-sane' },
-    { enabled: false, baseUrl: 'http://100.122.89.110:10304/v1', testStatus: 'idle' },
+    { enabled: false, testStatus: 'idle' },
   ),
   'ai.provider.featherless-heretic': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.featherless-heretic' },
-    { enabled: false, baseUrl: 'http://100.122.89.110:10305/v1', testStatus: 'idle' },
+    { enabled: false, testStatus: 'idle' },
   ),
   'ai.provider.featherless-keyword': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.featherless-keyword' },
-    { enabled: false, baseUrl: 'http://100.122.89.110:10306/v1', testStatus: 'idle' },
+    { enabled: false, testStatus: 'idle' },
   ),
   'ai.provider.openai-codex': setting(
     ProviderConfigSchema,
