@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Tracker status changes now work for custom tracker types that rename their workflow status field.
 
 ### Removed
 <!-- Removed features go here -->
