@@ -5,11 +5,12 @@ import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type Slas
 import { buildSlashCommandOptions, fetchSlashCommandEntries, type SlashCommandEntry } from '../Typeahead/slashCommandAutocomplete';
 import { readClipboard, type ChatAttachment } from '@nimbalyst/runtime';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
-import type { EffortLevel } from '../../utils/modelUtils';
+import type { EffortLevel, ThinkingMode } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
 import { ModeTag, AIMode } from './ModeTag';
 import { ModelSelector } from './ModelSelector';
 import { EffortLevelSelector } from './EffortLevelSelector';
+import { ThinkingModeSelector } from './ThinkingModeSelector';
 import { registerPendingVoiceCommandSetter } from './VoiceModeButton.tsx';
 import { PendingVoiceCommand } from './PendingVoiceCommand';
 import { pendingVoiceCommandAtom, voiceActiveSessionIdAtom, type PendingVoiceCommand as PendingVoiceCommandType } from '../../store/atoms/voiceModeState';
@@ -85,6 +86,11 @@ interface AIInputProps {
   effortLevel?: EffortLevel;
   onEffortLevelChange?: (level: EffortLevel) => void;
   showEffortLevel?: boolean;
+  thinkingMode?: ThinkingMode;
+  onThinkingModeChange?: (mode: ThinkingMode) => void;
+  showThinkingToggle?: boolean;
+  reasoningControlsDisabled?: boolean;
+  reasoningControlsDisabledTitle?: string;
 
   // Token usage display support (for Claude Code)
   tokenUsage?: {
@@ -164,6 +170,11 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     effortLevel,
     onEffortLevelChange,
     showEffortLevel,
+    thinkingMode,
+    onThinkingModeChange,
+    showThinkingToggle,
+    reasoningControlsDisabled = false,
+    reasoningControlsDisabledTitle,
     tokenUsage,
     provider,
     onQueue,
@@ -1297,6 +1308,16 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
               <EffortLevelSelector
                 level={effortLevel}
                 onLevelChange={onEffortLevelChange}
+                disabled={reasoningControlsDisabled}
+                disabledTitle={reasoningControlsDisabledTitle}
+              />
+            )}
+            {showThinkingToggle && onThinkingModeChange && thinkingMode && (
+              <ThinkingModeSelector
+                mode={thinkingMode}
+                onModeChange={onThinkingModeChange}
+                disabled={reasoningControlsDisabled}
+                disabledTitle={reasoningControlsDisabledTitle}
               />
             )}
             {workspacePath && (

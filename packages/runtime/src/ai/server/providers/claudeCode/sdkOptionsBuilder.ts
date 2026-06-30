@@ -11,7 +11,7 @@ import path from 'path';
 import { app } from 'electron';
 import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
-import { DEFAULT_EFFORT_LEVEL } from '../../effortLevels';
+import { DEFAULT_EFFORT_LEVEL, type ThinkingMode } from '../../effortLevels';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
 
@@ -38,7 +38,7 @@ export interface BuildSdkOptionsDeps {
     resolveTeamContext: (sessionId?: string) => Promise<string | undefined>;
   };
   sessions: { getSessionId: (sessionId: string) => string | null | undefined };
-  config: { model?: string; apiKey?: string; effortLevel?: string };
+  config: { model?: string; apiKey?: string; effortLevel?: string; thinkingMode?: ThinkingMode };
   abortController: AbortController;
 }
 
@@ -83,6 +83,14 @@ export interface BuildSdkOptionsResult {
   promptInput: AsyncIterable<SDKUserMessage>;
   promptController: PromptStreamController;
   helperMethod: 'native' | 'custom';
+}
+
+function canDisableThinkingForModel(model: string | undefined): boolean {
+  const normalized = model?.toLowerCase() ?? '';
+  if (!normalized || normalized.includes('fable') || normalized.includes('haiku')) {
+    return false;
+  }
+  return normalized.includes('opus') || normalized.includes('sonnet');
 }
 
 export function createPersistentPromptStream(
@@ -198,6 +206,7 @@ export async function buildSdkOptions(
   const customPath = ClaudeCodeDeps.customClaudeCodePathLoader?.(workspacePath) || '';
   const effectivePath = customPath || resolvedBinaryPath;
   // console.log(`[CLAUDE-CODE] Binary path: custom=${customPath || '(none)'} resolved=${resolvedBinaryPath ?? '(none)'} effective=${effectivePath ?? '(none)'}`);
+  const resolvedModel = resolveModelVariant();
 
   const options: any = {
     pathToClaudeCodeExecutable: effectivePath,
@@ -212,7 +221,7 @@ export async function buildSdkOptions(
     mcpServers: await mcpConfigService.getMcpServersConfig({ sessionId, workspacePath: mcpConfigWorkspacePath || workspacePath }),
     cwd: workspacePath,
     abortController,
-    model: resolveModelVariant(),
+    model: resolvedModel,
     // IMPORTANT: Do NOT add manual tool restrictions or prompt injections for plan mode here.
     // The SDK's `permissionMode: 'plan'` natively enforces planning restrictions (scopes
     // Write to the plan file only). Manual filtering was removed in favour of this approach.
@@ -244,6 +253,14 @@ export async function buildSdkOptions(
       'PermissionDenied': [{ hooks: [toolHooksService.createPermissionDeniedHook()] }],
     },
   };
+
+  if (config.thinkingMode === 'disabled') {
+    if (canDisableThinkingForModel(resolvedModel)) {
+      options.thinking = { type: 'disabled' as const };
+    } else {
+      console.warn(`[CLAUDE-CODE] Extended thinking cannot be disabled for model "${resolvedModel}"; omitting SDK thinking option.`);
+    }
+  }
 
   if (currentMode === 'planning') {
     console.log('[CLAUDE-CODE] Plan mode active: delegating tool restrictions to SDK permissionMode=plan');
