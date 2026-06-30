@@ -409,6 +409,7 @@ export interface ProviderConfig {
   maxTokens?: number;
   temperature?: number;
   baseUrl?: string;
+  modelFilterRegex?: string;
   allowedTools?: string[];  // List of allowed tool names, ['*'] for all tools
   effortLevel?: EffortLevel;  // Effort level for Opus 4.6 adaptive reasoning (low/medium/high/max)
   responseFormat?: ProviderResponseFormat;  // Response format constraint (extension chat completions)

@@ -18,6 +18,10 @@ import {
 } from '../types';
 import { OPENAI_MODELS, DEFAULT_MODELS } from '../../modelConstants';
 import { buildUserMessageAddition } from './documentContextUtils';
+import {
+  filterOpenAICompatibleModelIds,
+  isOpenAICompatibleModelAllowed,
+} from '../openAICompatibleModelFilters';
 
 export class OpenAIProvider extends BaseAIProvider {
   private openai: OpenAI | null = null;
@@ -59,12 +63,17 @@ export class OpenAIProvider extends BaseAIProvider {
     });
 
     if (!this.config.model || this.config.model.endsWith(':local-model')) {
-      const models = await OpenAIProvider.getModels(config.apiKey, config.baseUrl, this.providerId);
+      const models = await OpenAIProvider.getModels(config.apiKey, config.baseUrl, this.providerId, config.modelFilterRegex);
       const firstModel = models[0]?.id;
       if (firstModel) {
         this.config.model = firstModel;
       }
     }
+
+    if (this.config.model && !isOpenAICompatibleModelAllowed(this.providerId, this.config.model, this.config.modelFilterRegex)) {
+      throw new Error(`Model ${this.config.model} is not allowed for provider ${this.providerId}`);
+    }
+
     console.log(`[OpenAIProvider] OpenAI client created`);
     console.log(`[OpenAIProvider] Initialized in ${Date.now() - initStartTime}ms`);
   }
@@ -242,13 +251,15 @@ export class OpenAIProvider extends BaseAIProvider {
         console.warn('[OpenAIProvider] WARNING: No tools available! Check tool registration.');
       }
 
+      if (!this.config.model) {
+        throw new Error('No model specified for OpenAI provider');
+      }
+
       // Remove provider prefix from model ID for API call
-<<<<<<< HEAD
-      const configuredModel = this.config.model || OpenAIProvider.DEFAULT_MODEL;
-      const modelId = configuredModel.replace('openai:', '');
-=======
       const modelId = this.config.model.replace(`${this.providerId}:`, '');
->>>>>>> 61334ce15 (Add OpenAI-compatible bridge providers)
+      if (!isOpenAICompatibleModelAllowed(this.providerId, modelId, this.config.modelFilterRegex)) {
+        throw new Error(`Model ${modelId} is not allowed for provider ${this.providerId}`);
+      }
       console.log(`[OpenAIProvider] Using model: ${modelId}`);
 
       const completionParams: any = {
@@ -631,7 +642,7 @@ export class OpenAIProvider extends BaseAIProvider {
   /**
    * Get available OpenAI models (filtered from API response)
    */
-  static async getModels(apiKey?: string, baseUrl?: string, provider: OpenAICompatibleProviderType = 'openai'): Promise<AIModel[]> {
+  static async getModels(apiKey?: string, baseUrl?: string, provider: OpenAICompatibleProviderType = 'openai', modelFilterRegex?: string): Promise<AIModel[]> {
     if (!apiKey) return this.getDefaultModels();
 
     try {
@@ -642,9 +653,14 @@ export class OpenAIProvider extends BaseAIProvider {
       // console.log(`[OpenAIProvider] Fetched ${response.data.length} models in ${Date.now() - modelFetchStart}ms`);
 
       if (baseUrl || provider !== 'openai') {
-        return response.data.map((model) => ({
-          id: ModelIdentifier.create(provider, model.id).combined,
-          name: model.id,
+        const modelIds = filterOpenAICompatibleModelIds(
+          provider,
+          response.data.map((model) => model.id),
+          modelFilterRegex,
+        );
+        return modelIds.map((modelId) => ({
+          id: ModelIdentifier.create(provider, modelId).combined,
+          name: modelId,
           provider,
           maxTokens: 0,
           contextWindow: 0

@@ -43,6 +43,7 @@ import {
   type DiffResult,
   type ToolResult,
   type AIProviderType,
+  type OpenAICompatibleProviderType,
   type AIModel,
   type SessionData,
   type SessionType,
@@ -1869,6 +1870,10 @@ export class AIService {
         temperature: this.getProviderSetting(provider, 'temperature')
       };
 
+      if (isOpenAICompatibleProvider(provider)) {
+        providerConfig.modelFilterRegex = this.getOpenAICompatibleModelFilterRegex(provider);
+      }
+
       // Only add model to config if we have one and it's not claude-code
       if (model) {
         const modelForProvider = extractModelForProvider(model, provider);
@@ -2003,6 +2008,7 @@ export class AIService {
         initConfig.baseUrl = getConfiguredOpenAIBaseUrl(this.getSettingsStore());
       } else if (isOpenAICompatibleProvider(provider)) {
         initConfig.baseUrl = getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), provider);
+        initConfig.modelFilterRegex = this.getOpenAICompatibleModelFilterRegex(provider);
       }
 
       // Pass through allowedTools and effort level settings for Claude Code
@@ -3222,6 +3228,7 @@ export class AIService {
             provider,
             apiKey,
             getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), provider),
+            this.getOpenAICompatibleModelFilterRegex(provider),
           );
           return { success: models.length > 0, provider };
         }
@@ -3428,7 +3435,12 @@ export class AIService {
         'featherless-keyword_base_url': getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless-keyword') || '',
         lmstudio_url: getConfiguredLMStudioBaseUrl(this.getSettingsStore())
       };
-      const allModels = capModelsPerProviderForUi(await ModelRegistry.getAllModels(modelsConfig, enabledSet));
+      const openAICompatibleModelFilterRegexes = Object.fromEntries(
+        OPENAI_COMPATIBLE_PROVIDER_TYPES.map((provider) => [provider, this.getOpenAICompatibleModelFilterRegex(provider)]),
+      ) as Partial<Record<AIProviderType, string>>;
+      const allModels = capModelsPerProviderForUi(
+        await ModelRegistry.getAllModels(modelsConfig, enabledSet, openAICompatibleModelFilterRegexes),
+      );
 
       // Append extension-contributed agent provider models (see ai:getModels).
       for (const agentEntry of getAgentProviderRegistry().list()) {
@@ -3656,7 +3668,12 @@ export class AIService {
         'featherless-keyword_base_url': getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), 'featherless-keyword') || '',
         lmstudio_url: getConfiguredLMStudioBaseUrl(this.getSettingsStore())
       };
-      const allModels = capModelsPerProviderForUi(await ModelRegistry.getAllModels(modelsConfig, enabledProviderSet));
+      const openAICompatibleModelFilterRegexes = Object.fromEntries(
+        OPENAI_COMPATIBLE_PROVIDER_TYPES.map((provider) => [provider, this.getOpenAICompatibleModelFilterRegex(provider)]),
+      ) as Partial<Record<AIProviderType, string>>;
+      const allModels = capModelsPerProviderForUi(
+        await ModelRegistry.getAllModels(modelsConfig, enabledProviderSet, openAICompatibleModelFilterRegexes),
+      );
 
       // const claudeCodeModels = allModels.filter(m => m.provider === 'claude-code');
       // console.log('[AIService] ai:getModels - claude-code models from registry:',
@@ -3873,6 +3890,10 @@ export class AIService {
         temperature: this.getProviderSetting(provider, 'temperature'),
       };
 
+      if (isOpenAICompatibleProvider(provider)) {
+        providerConfig.modelFilterRegex = this.getOpenAICompatibleModelFilterRegex(provider);
+      }
+
       // For non-claude-code providers, set the model in provider config
       if (model && provider !== 'claude-code') {
         const modelForProvider = extractModelForProvider(model, provider);
@@ -3998,7 +4019,14 @@ export class AIService {
             : undefined;
 
         try {
-          const models = await ModelRegistry.getModelsForProvider(provider, apiKey, baseUrl);
+          const models = await ModelRegistry.getModelsForProvider(
+            provider,
+            apiKey,
+            baseUrl,
+            isOpenAICompatibleProvider(provider)
+              ? this.getOpenAICompatibleModelFilterRegex(provider)
+              : undefined,
+          );
           const enabledModelIds = settings?.models as string[] | undefined;
 
           for (const model of models) {
@@ -4186,6 +4214,10 @@ export class AIService {
     return providerSettings[provider]?.[key];
   }
 
+  private getOpenAICompatibleModelFilterRegex(provider: OpenAICompatibleProviderType): string | undefined {
+    return this.getProviderSetting(provider, 'modelFilterRegex');
+  }
+
   private maskApiKey(key: string): string {
     if (!key || key.length <= 20) return key;
     return `${key.substring(0, 10)}...${key.substring(key.length - 4)}`;
@@ -4322,6 +4354,9 @@ export class AIService {
               : isOpenAICompatibleProvider(p)
                 ? getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), p)
                 : undefined,
+            isOpenAICompatibleProvider(p)
+              ? this.getOpenAICompatibleModelFilterRegex(p)
+              : undefined,
           );
           if (models.some(m => m.id === options.model)) {
             providerType = p;
@@ -4373,6 +4408,7 @@ export class AIService {
       providerConfig.baseUrl = getConfiguredLMStudioBaseUrl(this.getSettingsStore());
     } else if (isOpenAICompatibleProvider(providerType)) {
       providerConfig.baseUrl = getConfiguredOpenAICompatibleBaseUrl(this.getSettingsStore(), providerType);
+      providerConfig.modelFilterRegex = this.getOpenAICompatibleModelFilterRegex(providerType);
     }
 
     const syntheticSessionId = `ext-completion-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

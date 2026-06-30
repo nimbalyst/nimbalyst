@@ -1127,6 +1127,7 @@ export interface ProviderConfig {
   enabled: boolean;
   apiKey?: string;
   baseUrl?: string;
+  modelFilterRegex?: string;
   models?: string[];
   /** Model IDs hidden from the session picker (denylist; wins over `models`). */
   hiddenModels?: string[];

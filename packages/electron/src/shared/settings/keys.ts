@@ -30,6 +30,7 @@ export const ProviderConfigSchema = z.object({
   enabled: z.boolean(),
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
+  modelFilterRegex: z.string().optional(),
   models: z.array(z.string()).optional(),
   hiddenModels: z.array(z.string()).optional(),
   testStatus: ProviderTestStatusSchema,

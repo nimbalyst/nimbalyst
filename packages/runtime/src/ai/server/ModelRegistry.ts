@@ -15,7 +15,8 @@ export class ModelRegistry {
   static async getModelsForProvider(
     provider: AIProviderType,
     apiKey?: string,
-    baseUrl?: string
+    baseUrl?: string,
+    modelFilterRegex?: string,
   ): Promise<AIModel[]> {
     // console.log('[ModelRegistry] getModelsForProvider called:', {
     //   provider,
@@ -70,7 +71,7 @@ export class ModelRegistry {
         case 'featherless-heretic':
         case 'featherless-keyword':
           const { OpenAIProvider } = await import('./providers/OpenAIProvider');
-          models = await OpenAIProvider.getModels(apiKey, baseUrl, provider);
+          models = await OpenAIProvider.getModels(apiKey, baseUrl, provider, modelFilterRegex);
           break;
         case 'openai-codex':
           const { OpenAICodexProvider } = await import('./providers/OpenAICodexProvider');
@@ -116,7 +117,11 @@ export class ModelRegistry {
    * @param apiKeys - API keys and config (e.g., anthropic, openai, lmstudio_url)
    * @param enabledProviders - Optional set of enabled provider types. If provided, only these providers are fetched.
    */
-  static async getAllModels(apiKeys: Record<string, string>, enabledProviders?: Set<AIProviderType>): Promise<AIModel[]> {
+  static async getAllModels(
+    apiKeys: Record<string, string>,
+    enabledProviders?: Set<AIProviderType>,
+    modelFilterRegexes: Partial<Record<AIProviderType, string>> = {},
+  ): Promise<AIModel[]> {
     const allModels: AIModel[] = [];
 
     const shouldFetch = (provider: AIProviderType) => !enabledProviders || enabledProviders.has(provider);
@@ -127,15 +132,15 @@ export class ModelRegistry {
     if (shouldFetch('claude')) jobs.push({ provider: 'claude', promise: this.getModelsForProvider('claude', apiKeys['anthropic']) });
     if (shouldFetch('claude-code')) jobs.push({ provider: 'claude-code', promise: this.getModelsForProvider('claude-code') });
     if (shouldFetch('claude-code-cli')) jobs.push({ provider: 'claude-code-cli', promise: this.getModelsForProvider('claude-code-cli') });
-    if (shouldFetch('openai')) jobs.push({ provider: 'openai', promise: this.getModelsForProvider('openai', apiKeys['openai'], apiKeys['openai_base_url']) });
-    if (shouldFetch('ollama')) jobs.push({ provider: 'ollama', promise: this.getModelsForProvider('ollama', apiKeys['ollama'], apiKeys['ollama_base_url']) });
-    if (shouldFetch('anythingllm')) jobs.push({ provider: 'anythingllm', promise: this.getModelsForProvider('anythingllm', apiKeys['anythingllm'], apiKeys['anythingllm_base_url']) });
-    if (shouldFetch('openrouter')) jobs.push({ provider: 'openrouter', promise: this.getModelsForProvider('openrouter', apiKeys['openrouter'], apiKeys['openrouter_base_url']) });
-    if (shouldFetch('featherless')) jobs.push({ provider: 'featherless', promise: this.getModelsForProvider('featherless', apiKeys['featherless'], apiKeys['featherless_base_url']) });
-    if (shouldFetch('featherless-official')) jobs.push({ provider: 'featherless-official', promise: this.getModelsForProvider('featherless-official', apiKeys['featherless-official'], apiKeys['featherless-official_base_url']) });
-    if (shouldFetch('featherless-sane')) jobs.push({ provider: 'featherless-sane', promise: this.getModelsForProvider('featherless-sane', apiKeys['featherless-sane'], apiKeys['featherless-sane_base_url']) });
-    if (shouldFetch('featherless-heretic')) jobs.push({ provider: 'featherless-heretic', promise: this.getModelsForProvider('featherless-heretic', apiKeys['featherless-heretic'], apiKeys['featherless-heretic_base_url']) });
-    if (shouldFetch('featherless-keyword')) jobs.push({ provider: 'featherless-keyword', promise: this.getModelsForProvider('featherless-keyword', apiKeys['featherless-keyword'], apiKeys['featherless-keyword_base_url']) });
+    if (shouldFetch('openai')) jobs.push({ provider: 'openai', promise: this.getModelsForProvider('openai', apiKeys['openai'], apiKeys['openai_base_url'], modelFilterRegexes['openai']) });
+    if (shouldFetch('ollama')) jobs.push({ provider: 'ollama', promise: this.getModelsForProvider('ollama', apiKeys['ollama'], apiKeys['ollama_base_url'], modelFilterRegexes['ollama']) });
+    if (shouldFetch('anythingllm')) jobs.push({ provider: 'anythingllm', promise: this.getModelsForProvider('anythingllm', apiKeys['anythingllm'], apiKeys['anythingllm_base_url'], modelFilterRegexes['anythingllm']) });
+    if (shouldFetch('openrouter')) jobs.push({ provider: 'openrouter', promise: this.getModelsForProvider('openrouter', apiKeys['openrouter'], apiKeys['openrouter_base_url'], modelFilterRegexes['openrouter']) });
+    if (shouldFetch('featherless')) jobs.push({ provider: 'featherless', promise: this.getModelsForProvider('featherless', apiKeys['featherless'], apiKeys['featherless_base_url'], modelFilterRegexes['featherless']) });
+    if (shouldFetch('featherless-official')) jobs.push({ provider: 'featherless-official', promise: this.getModelsForProvider('featherless-official', apiKeys['featherless-official'], apiKeys['featherless-official_base_url'], modelFilterRegexes['featherless-official']) });
+    if (shouldFetch('featherless-sane')) jobs.push({ provider: 'featherless-sane', promise: this.getModelsForProvider('featherless-sane', apiKeys['featherless-sane'], apiKeys['featherless-sane_base_url'], modelFilterRegexes['featherless-sane']) });
+    if (shouldFetch('featherless-heretic')) jobs.push({ provider: 'featherless-heretic', promise: this.getModelsForProvider('featherless-heretic', apiKeys['featherless-heretic'], apiKeys['featherless-heretic_base_url'], modelFilterRegexes['featherless-heretic']) });
+    if (shouldFetch('featherless-keyword')) jobs.push({ provider: 'featherless-keyword', promise: this.getModelsForProvider('featherless-keyword', apiKeys['featherless-keyword'], apiKeys['featherless-keyword_base_url'], modelFilterRegexes['featherless-keyword']) });
     if (shouldFetch('openai-codex')) jobs.push({ provider: 'openai-codex', promise: this.getModelsForProvider('openai-codex', apiKeys['openai']) });
     if (shouldFetch('openai-codex-acp')) jobs.push({ provider: 'openai-codex-acp', promise: this.getModelsForProvider('openai-codex-acp', apiKeys['openai']) });
     if (shouldFetch('opencode')) jobs.push({ provider: 'opencode', promise: this.getModelsForProvider('opencode') });
