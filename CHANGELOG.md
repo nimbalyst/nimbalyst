@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Claude Agent sessions now expose an `Extended: On` / `Extended: Off` selector next to the effort selector for models that support disabling extended thinking. It defaults to off, is stored per session, and takes effect on the next prompt; reasoning controls are greyed out and ignored when a custom Claude Agent brain is selected.
+- OpenCode presets now include GLM 5.2 via direct Z.AI and Z.AI Coding Plan providers, and the local Claude Agent brain selector exposes separate no-fallback GLM 5.2 routes for Z.AI API balance and Z.AI Coding Plan tokens.
 - OpenCode agent (role) picker in the AI input toolbar: when an OpenCode session is active, a dropdown lists available agents (e.g. custom roles defined in `~/.config/opencode/agent/`) and the selected agent is passed to the OpenCode server at session creation. Stored in session metadata; follows the same pattern as the effort-level selector.
 
 ### Changed
-<!-- Changes to existing functionality go here -->
+- The model picker now labels the Claude coding agent as "Claude Agent" instead of referring to its underlying Claude Code/CLI implementation.
 
 ### Fixed
 <!-- Bug fixes go here -->

@@ -33,7 +33,7 @@ import {
 } from '@nimbalyst/runtime/ai/server/types';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
-import { parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
@@ -413,6 +413,79 @@ export class MessageStreamingHandler {
     let provider = ProviderFactory.getProvider(session.provider as AIProviderType, session.id);
     perfLog.getProviderTime = Date.now() - providerStartTime;
 
+    // [PROBE-Q1 + FIX 2026-06-14] The per-session claude-code backend is stored at
+    // session.metadata.claudeBackend, but the in-memory `session` handed here can be a stale
+    // snapshot (captured before the dropdown write) OR carry an unwrapped/nested metadata blob
+    // (the row holds BOTH a top-level claudeBackend AND a nested `metadata` artifact from
+    // `{ metadata: session.metadata }` writes). Either defeats a plain `session.metadata.claudeBackend`
+    // read -> the session silently ran on Anthropic. Resolve from a FRESH DB read, tolerating the
+    // nested artifact. The BUILD_MARKER also proves the running main is current (not a stale bundle).
+    let freshClaudeBackend: string | undefined;
+    let freshThinkingModeRaw: unknown;
+    if (isProviderClaudeCode) {
+      const sm: any = session.metadata ?? {};
+      freshThinkingModeRaw = sm.thinkingMode ?? sm.metadata?.thinkingMode;
+      try {
+        const freshRow: any = await AISessionsRepository.get(session.id);
+        const fm: any = freshRow?.metadata ?? {};
+        freshClaudeBackend = fm.claudeBackend ?? fm.metadata?.claudeBackend
+          ?? sm.claudeBackend ?? sm.metadata?.claudeBackend ?? undefined;
+        freshThinkingModeRaw = fm.thinkingMode ?? fm.metadata?.thinkingMode
+          ?? sm.thinkingMode ?? sm.metadata?.thinkingMode ?? freshThinkingModeRaw;
+        console.log(`[PROBE-Q1] BUILD_MARKER=2026-06-14-A sess=${session.id} providerExisted=${!!provider}`
+          + ` inTop=${sm.claudeBackend ?? '(undef)'} inNested=${sm.metadata?.claudeBackend ?? '(undef)'}`
+          + ` dbTop=${fm.claudeBackend ?? '(undef)'} dbNested=${fm.metadata?.claudeBackend ?? '(undef)'}`
+          + ` resolved=${freshClaudeBackend ?? '(undef)'}`);
+      } catch (e: any) {
+        freshClaudeBackend = sm.claudeBackend ?? sm.metadata?.claudeBackend ?? undefined;
+        freshThinkingModeRaw = sm.thinkingMode ?? sm.metadata?.thinkingMode ?? freshThinkingModeRaw;
+        console.log(`[PROBE-Q1] BUILD_MARKER=2026-06-14-A sess=${session.id} freshReadFailed=${e?.message} fallback=${freshClaudeBackend ?? '(undef)'}`);
+      }
+    }
+
+    // Self-heal the per-session claude-code backend (Anthropic vs DeepSeek/Kimi/Qwen).
+    // A cached provider holds the brain it was initialized with; `initialize()` (which
+    // applies the custom-backend env) only runs in the `if (!provider)` block below. If the
+    // session's selected backend has since changed -- or the provider was cached from before a
+    // selection -- the cache must be dropped so it rebuilds with the right brain. Without this,
+    // a "DeepSeek" session silently keeps serving Anthropic (the `customBackend=(none)` symptom).
+    if (provider && isProviderClaudeCode) {
+      const desiredBackend = freshClaudeBackend;
+      const activeBackend = (provider as any)?.config?.customBackend ?? undefined;
+      if (desiredBackend !== activeBackend) {
+        console.log(
+          `[CC-BACKEND] backend drift on session ${session.id}: active=${activeBackend ?? '(none)'} desired=${desiredBackend ?? '(none)'} -> rebuilding provider`
+        );
+        ProviderFactory.destroyProvider(session.id, 'claude-code');
+        provider = null as any;
+      }
+    }
+
+    // Self-heal OpenCode model selection. Unlike claude-code (which reinits on every turn via
+    // buildClaudeCodeRuntimeConfig), OpenCode only initializes in the `if (!provider)` block.
+    // When the user switches models mid-session, sessions:update-metadata writes session.model
+    // to DB and destroys the cached provider. If the provider somehow survived the destroy (race
+    // or re-cache), or was freshly created but initialize() received a stale/empty config, the
+    // cached model won't match session.model. This drift check corrects it without restarting
+    // the OpenCode subprocess (provider instance is reused; only this.config is refreshed).
+    if (provider && session.provider === 'opencode') {
+      const sessionModel = session.model || (session.providerConfig as any)?.model;
+      const freshModel = sessionModel
+        ? extractModelForProvider(sessionModel, session.provider as AIProviderType)
+        : null;
+      const cachedModel = (provider as any)?.config?.model;
+      if (freshModel !== null && freshModel !== cachedModel) {
+        console.log(
+          `[OPENCODE-MODEL] model drift on session ${session.id}: cached=${cachedModel ?? '(none)'} desired=${freshModel} -> reinit config`
+        );
+        await provider.initialize({
+          maxTokens: (session.providerConfig as any)?.maxTokens,
+          temperature: (session.providerConfig as any)?.temperature,
+          model: freshModel,
+        });
+      }
+    }
+
     // If provider doesn't exist, create and initialize it
     if (!provider) {
       if (isProviderClaudeCode) {
@@ -476,12 +549,20 @@ export class MessageStreamingHandler {
         maxTokens: (session.providerConfig as any)?.maxTokens,
         temperature: (session.providerConfig as any)?.temperature,
         // Pass effort level from session metadata (Opus 4.6 adaptive reasoning)
-        ...((session.metadata as any)?.effortLevel && {
+        ...((!isProviderClaudeCode || !freshClaudeBackend) && (session.metadata as any)?.effortLevel && {
           effortLevel: parseEffortLevel((session.metadata as any).effortLevel),
         }),
         // Pass OpenCode agent from session metadata
         ...(session.provider === 'opencode' && (session.metadata as any)?.opencodeAgent && {
           agent: (session.metadata as any).opencodeAgent,
+        }),
+        // Pass Claude Code custom backend (non-Anthropic brain) from session metadata.
+        // Runs THIS claude-code session on DeepSeek/Kimi/Qwen; absent = default Anthropic.
+        ...(isProviderClaudeCode && freshClaudeBackend && {
+          customBackend: freshClaudeBackend,
+        }),
+        ...(isProviderClaudeCode && !freshClaudeBackend && {
+          thinkingMode: parseThinkingMode(freshThinkingModeRaw),
         }),
       };
 
@@ -535,6 +616,12 @@ export class MessageStreamingHandler {
 
       if (isProviderClaudeCode) {
         const safeConfig = { ...reinitConfig, apiKey: reinitConfig.apiKey ? '***' : undefined };
+        console.log(
+          `[CC-BACKEND] reinit(build): session=${session.id} provider=${session.provider} ` +
+          `meta.claudeBackend=${(session.metadata as any)?.claudeBackend ?? '(none)'} ` +
+          `reinit.customBackend=${(reinitConfig as any).customBackend ?? '(none)'} ` +
+          `metaKeys=[${Object.keys(((session.metadata as any) ?? {})).join(',')}]`
+        );
       }
       const safeConfig = { ...reinitConfig, apiKey: reinitConfig.apiKey ? '***' : undefined };
       const initStartTime = Date.now();
@@ -1064,6 +1151,14 @@ export class MessageStreamingHandler {
       } else {
         // Refresh credentials every turn for all providers so key changes in settings apply immediately.
         const freshApiKey = this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
+        // Include the current model selection so this refresh doesn't erase it.
+        // Without this, providers with a model picker (OpenCode, LMStudio) lose their
+        // selected model on every turn — config.model becomes undefined and the provider
+        // falls back to its hardcoded default (e.g. deepseek/deepseek-chat for OpenCode).
+        const sessionModelStr = session.model || (session.providerConfig as any)?.model;
+        const modelForRefresh = sessionModelStr
+          ? extractModelForProvider(sessionModelStr, session.provider as AIProviderType)
+          : undefined;
         await provider.initialize({
           apiKey: freshApiKey,
           maxTokens: (session.providerConfig as any)?.maxTokens,
@@ -1071,12 +1166,39 @@ export class MessageStreamingHandler {
           ...((session.metadata as any)?.effortLevel && {
             effortLevel: parseEffortLevel((session.metadata as any).effortLevel),
           }),
+          ...(session.provider === 'opencode' && (session.metadata as any)?.opencodeAgent && {
+            agent: (session.metadata as any).opencodeAgent,
+          }),
+          ...(modelForRefresh ? { model: modelForRefresh } : {}),
         });
       }
 
       // Attach @ mentioned files for non-agent providers
       const { enhancedMessage, attachedFiles } = await attachMentionedFiles(message, workspacePath, provider);
-      const messageToSend = enhancedMessage;
+      let messageToSend = enhancedMessage;
+
+      // When the claude-code backend changed mid-session, providerSessionId was cleared so the
+      // new backend starts a fresh session (not trying to resume on a different API endpoint).
+      // Inject the prior conversation history into the first message so the new model has context.
+      // Trigger: no providerSessionId (fresh session) but existing messages (model switch, not session start).
+      if (isProviderClaudeCode && !session.providerSessionId && sessionMessages.length > 0) {
+        const historyLines: string[] = [];
+        for (const m of sessionMessages.slice(-16)) {
+          const historyMessage = m as any;
+          const role = (historyMessage.role === 'user' || historyMessage.type === 'user_message') ? 'User'
+                     : (historyMessage.role === 'assistant' || historyMessage.type === 'assistant_message') ? 'Assistant'
+                     : null;
+          if (!role) continue;
+          const raw = typeof historyMessage.content === 'string' ? historyMessage.content
+                    : Array.isArray(historyMessage.content) ? (historyMessage.content as any[]).filter((c: any) => c.type === 'text').map((c: any) => c.text).join(' ')
+                    : historyMessage.text || '';
+          const excerpt = String(raw || '').substring(0, 400).trim();
+          if (excerpt) historyLines.push(`${role}: ${excerpt}`);
+        }
+        if (historyLines.length > 0) {
+          messageToSend = `[Context from prior conversation in this session — read before responding:]\n${historyLines.join('\n')}\n\n[Current message:]\n${messageToSend}`;
+        }
+      }
 
       if (attachedFiles.length > 0) {
         logger.main.info(`[AIService] Attached ${attachedFiles.length} files via @ mentions`, {

@@ -1,16 +1,20 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
-import type { EffortLevel } from '../../utils/modelUtils';
-import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../../utils/modelUtils';
+import type { ThinkingMode } from '../../utils/modelUtils';
 
-interface EffortLevelSelectorProps {
-  level: EffortLevel;
-  onLevelChange: (level: EffortLevel) => void;
+const THINKING_MODE_OPTIONS: { key: ThinkingMode; label: string }[] = [
+  { key: 'enabled', label: 'Extended: On' },
+  { key: 'disabled', label: 'Extended: Off' },
+];
+
+interface ThinkingModeSelectorProps {
+  mode: ThinkingMode;
+  onModeChange: (mode: ThinkingMode) => void;
   disabled?: boolean;
   disabledTitle?: string;
 }
 
-export function EffortLevelSelector({ level, onLevelChange, disabled = false, disabledTitle }: EffortLevelSelectorProps) {
+export function ThinkingModeSelector({ mode, onModeChange, disabled = false, disabledTitle }: ThinkingModeSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -34,33 +38,33 @@ export function EffortLevelSelector({ level, onLevelChange, disabled = false, di
     };
   }, [isOpen]);
 
-  const currentLevel = EFFORT_LEVELS.find(l => l.key === level) ?? EFFORT_LEVELS.find(l => l.key === DEFAULT_EFFORT_LEVEL)!;
+  const currentMode = THINKING_MODE_OPTIONS.find(option => option.key === mode) ?? THINKING_MODE_OPTIONS[1];
 
   return (
-    <div className="relative inline-block" ref={dropdownRef}>
+    <div className="thinking-mode-selector relative inline-block" ref={dropdownRef}>
       <button
-        data-testid="effort-level-selector"
+        data-testid="thinking-mode-selector"
         className={`flex items-center gap-1 px-2 py-[3px] rounded-xl text-[11px] font-medium transition-all duration-200 outline-none whitespace-nowrap bg-[var(--nim-bg-secondary)] text-[var(--nim-text-muted)] border border-[var(--nim-border)] ${disabled ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)]'}`}
         disabled={disabled}
         onClick={() => setIsOpen(!isOpen)}
         title={disabled ? disabledTitle : undefined}
-        aria-label={`Effort level: ${currentLevel.label}`}
+        aria-label={`Extended thinking: ${currentMode.key === 'enabled' ? 'on' : 'off'}`}
       >
         <MaterialSymbol icon="psychology" size={12} />
-        <span>{currentLevel.label}</span>
+        <span>{currentMode.label}</span>
         <MaterialSymbol icon="expand_more" size={14} className={`transition-transform duration-200 shrink-0 ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
       {isOpen && (
-        <div className="absolute bottom-full left-0 mb-1 min-w-[120px] rounded-lg p-1 z-[1000] bg-[var(--nim-bg)] border border-[var(--nim-border)] shadow-[0_4px_12px_rgba(0,0,0,0.15)]">
-          {EFFORT_LEVELS.map(l => (
+        <div className="absolute bottom-full left-0 mb-1 min-w-[136px] rounded-lg p-1 z-[1000] bg-[var(--nim-bg)] border border-[var(--nim-border)] shadow-[0_4px_12px_rgba(0,0,0,0.15)]">
+          {THINKING_MODE_OPTIONS.map(option => (
             <button
-              key={l.key}
-              className={`flex items-center justify-between gap-2 px-2 py-1.5 w-full border-none rounded text-xs cursor-pointer transition-[background] duration-150 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] ${l.key === level ? 'bg-[var(--nim-bg-secondary)] text-[var(--nim-primary)]' : ''}`}
-              onClick={() => { onLevelChange(l.key); setIsOpen(false); }}
+              key={option.key}
+              className={`flex items-center justify-between gap-2 px-2 py-1.5 w-full border-none rounded text-xs cursor-pointer transition-[background] duration-150 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] ${option.key === mode ? 'bg-[var(--nim-bg-secondary)] text-[var(--nim-primary)]' : ''}`}
+              onClick={() => { onModeChange(option.key); setIsOpen(false); }}
             >
-              <span>{l.label}</span>
-              {l.key === level && <MaterialSymbol icon="check" size={14} />}
+              <span>{option.label}</span>
+              {option.key === mode && <MaterialSymbol icon="check" size={14} />}
             </button>
           ))}
         </div>

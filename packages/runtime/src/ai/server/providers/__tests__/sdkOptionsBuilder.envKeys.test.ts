@@ -69,13 +69,19 @@ function makeParams(overrides: Partial<Parameters<typeof buildSdkOptions>[1]> = 
 
 describe('buildSdkOptions env-key hardening', () => {
   let originalAnthropic: string | undefined;
+  let originalAnthropicAuth: string | undefined;
   let originalOpenAI: string | undefined;
   let originalEntrypoint: string | undefined;
+  let originalZai: string | undefined;
+  let originalZaiCodingPlan: string | undefined;
 
   beforeEach(() => {
     originalAnthropic = process.env.ANTHROPIC_API_KEY;
+    originalAnthropicAuth = process.env.ANTHROPIC_AUTH_TOKEN;
     originalOpenAI = process.env.OPENAI_API_KEY;
     originalEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
+    originalZai = process.env.ZAI_API_KEY;
+    originalZaiCodingPlan = process.env.ZAI_CODING_PLAN_API_KEY;
   });
 
   afterEach(() => {
@@ -83,6 +89,11 @@ describe('buildSdkOptions env-key hardening', () => {
       delete process.env.ANTHROPIC_API_KEY;
     } else {
       process.env.ANTHROPIC_API_KEY = originalAnthropic;
+    }
+    if (originalAnthropicAuth === undefined) {
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+    } else {
+      process.env.ANTHROPIC_AUTH_TOKEN = originalAnthropicAuth;
     }
     if (originalOpenAI === undefined) {
       delete process.env.OPENAI_API_KEY;
@@ -93,6 +104,16 @@ describe('buildSdkOptions env-key hardening', () => {
       delete process.env.CLAUDE_CODE_ENTRYPOINT;
     } else {
       process.env.CLAUDE_CODE_ENTRYPOINT = originalEntrypoint;
+    }
+    if (originalZai === undefined) {
+      delete process.env.ZAI_API_KEY;
+    } else {
+      process.env.ZAI_API_KEY = originalZai;
+    }
+    if (originalZaiCodingPlan === undefined) {
+      delete process.env.ZAI_CODING_PLAN_API_KEY;
+    } else {
+      process.env.ZAI_CODING_PLAN_API_KEY = originalZaiCodingPlan;
     }
   });
 
@@ -143,5 +164,90 @@ describe('buildSdkOptions env-key hardening', () => {
     // Flags buildSdkOptions always composes onto the spawned session env.
     expect(options.env.ENABLE_TOOL_SEARCH).toBe('auto:2');
     expect(options.env.CLAUDE_CODE_ENTRYPOINT).toBe('cli');
+  });
+
+  it('passes disabled extended thinking through the SDK options for supported Anthropic models', async () => {
+    const { options } = await buildSdkOptions(
+      makeDeps({ config: { thinkingMode: 'disabled' } }),
+      makeParams()
+    );
+
+    expect(options.thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('suppresses effort and thinking controls when a custom Claude Code backend is selected', async () => {
+    const { options } = await buildSdkOptions(
+      makeDeps({
+        config: {
+          customBackend: 'deepseek-reasoner',
+          effortLevel: 'max',
+          thinkingMode: 'disabled',
+        },
+      }),
+      makeParams()
+    );
+
+    expect(options.thinking).toBeUndefined();
+    expect(options.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+    expect(options.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('deepseek-reasoner');
+  });
+
+  it('routes GLM 5.2 API balance through ZAI_API_KEY only', async () => {
+    process.env.ZAI_API_KEY = 'zai-api-balance-token';
+    process.env.ZAI_CODING_PLAN_API_KEY = 'zai-coding-plan-token';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'ambient-anthropic-compatible-token';
+
+    const { options } = await buildSdkOptions(
+      makeDeps({
+        config: {
+          customBackend: 'glm-5.2',
+        },
+      }),
+      makeParams()
+    );
+
+    expect(options.env.ANTHROPIC_BASE_URL).toBe('https://api.z.ai/api/anthropic');
+    expect(options.env.ANTHROPIC_AUTH_TOKEN).toBe('zai-api-balance-token');
+    expect(options.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('glm-5.2[1m]');
+    expect(options.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1000000');
+  });
+
+  it('routes GLM 5.2 Coding Plan through ZAI_CODING_PLAN_API_KEY only', async () => {
+    process.env.ZAI_API_KEY = 'zai-api-balance-token';
+    process.env.ZAI_CODING_PLAN_API_KEY = 'zai-coding-plan-token';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'ambient-anthropic-compatible-token';
+
+    const { options } = await buildSdkOptions(
+      makeDeps({
+        config: {
+          customBackend: 'glm-5.2-coding-plan',
+        },
+      }),
+      makeParams()
+    );
+
+    expect(options.env.ANTHROPIC_BASE_URL).toBe('https://api.z.ai/api/anthropic');
+    expect(options.env.ANTHROPIC_AUTH_TOKEN).toBe('zai-coding-plan-token');
+    expect(options.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('glm-5.2[1m]');
+    expect(options.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1000000');
+  });
+
+  it('does not fall back to ambient Anthropic-compatible auth for GLM Coding Plan', async () => {
+    process.env.ZAI_API_KEY = 'zai-api-balance-token';
+    delete process.env.ZAI_CODING_PLAN_API_KEY;
+    process.env.ANTHROPIC_AUTH_TOKEN = 'ambient-anthropic-compatible-token';
+
+    const { options } = await buildSdkOptions(
+      makeDeps({
+        config: {
+          customBackend: 'glm-5.2-coding-plan',
+        },
+      }),
+      makeParams()
+    );
+
+    expect(options.env.ANTHROPIC_BASE_URL).toBe('https://api.z.ai/api/anthropic');
+    expect(options.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(options.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('glm-5.2[1m]');
   });
 });

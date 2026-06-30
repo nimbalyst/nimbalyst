@@ -6,6 +6,7 @@
  */
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ThinkingMode = 'enabled' | 'disabled';
 
 export const EFFORT_LEVELS: { key: EffortLevel; label: string }[] = [
   { key: 'low', label: 'Low' },
@@ -16,8 +17,10 @@ export const EFFORT_LEVELS: { key: EffortLevel; label: string }[] = [
 ];
 
 export const DEFAULT_EFFORT_LEVEL: EffortLevel = 'high';
+export const DEFAULT_THINKING_MODE: ThinkingMode = 'disabled';
 
 const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
+const VALID_THINKING_MODES = new Set<string>(['enabled', 'disabled']);
 
 /**
  * Validate and return a valid EffortLevel, or the default if invalid.
@@ -27,4 +30,14 @@ export function parseEffortLevel(value: unknown): EffortLevel {
     return value as EffortLevel;
   }
   return DEFAULT_EFFORT_LEVEL;
+}
+
+/**
+ * Validate and return a valid ThinkingMode, or the default if invalid.
+ */
+export function parseThinkingMode(value: unknown): ThinkingMode {
+  if (typeof value === 'string' && VALID_THINKING_MODES.has(value)) {
+    return value as ThinkingMode;
+  }
+  return DEFAULT_THINKING_MODE;
 }

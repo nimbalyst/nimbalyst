@@ -837,10 +837,26 @@ export const sessionEffortLevelRawAtom = atomFamily((sessionId: string) =>
   })
 );
 
+export const sessionThinkingModeRawAtom = atomFamily((sessionId: string) =>
+  atom((get) => {
+    const metadata = get(sessionStoreAtom(sessionId))?.metadata as Record<string, unknown> | undefined;
+    return metadata?.thinkingMode ?? null;
+  })
+);
+
 export const sessionOpenCodeAgentAtom = atomFamily((sessionId: string) =>
   atom((get) => {
     const metadata = get(sessionStoreAtom(sessionId))?.metadata as Record<string, unknown> | undefined;
     return (metadata?.opencodeAgent as string | undefined) ?? null;
+  })
+);
+
+// Per-session non-Anthropic backend for the claude-code provider (run THIS
+// Claude Code session on DeepSeek/Kimi/Qwen). See providers/claudeCode/customBackends.ts.
+export const sessionClaudeBackendAtom = atomFamily((sessionId: string) =>
+  atom((get) => {
+    const metadata = get(sessionStoreAtom(sessionId))?.metadata as Record<string, unknown> | undefined;
+    return (metadata?.claudeBackend as string | undefined) ?? null;
   })
 );
 

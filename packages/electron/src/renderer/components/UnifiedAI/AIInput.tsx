@@ -5,11 +5,12 @@ import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type Slas
 import { buildSlashCommandOptions, fetchSlashCommandEntries, type SlashCommandEntry } from '../Typeahead/slashCommandAutocomplete';
 import { readClipboard, type ChatAttachment } from '@nimbalyst/runtime';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
-import type { EffortLevel } from '../../utils/modelUtils';
+import type { EffortLevel, ThinkingMode } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
 import { ModeTag, AIMode } from './ModeTag';
 import { ModelSelector } from './ModelSelector';
 import { EffortLevelSelector } from './EffortLevelSelector';
+import { ThinkingModeSelector } from './ThinkingModeSelector';
 import { registerPendingVoiceCommandSetter } from './VoiceModeButton.tsx';
 import { PendingVoiceCommand } from './PendingVoiceCommand';
 import { pendingVoiceCommandAtom, voiceActiveSessionIdAtom, type PendingVoiceCommand as PendingVoiceCommandType } from '../../store/atoms/voiceModeState';
@@ -40,6 +41,11 @@ import type { AIInputSnapshot } from '../../store/atoms/aiInputUndo';
 export interface AIInputRef {
   focus: () => void;
   textarea: HTMLTextAreaElement | null;
+}
+
+export interface OpenCodeAgentOption {
+  name: string;
+  defaultModel?: string;
 }
 
 interface AIInputProps {
@@ -79,10 +85,20 @@ interface AIInputProps {
   onEffortLevelChange?: (level: EffortLevel) => void;
   showEffortLevel?: boolean;
 
+  // Extended thinking support (Claude Agent request-level option)
+  thinkingMode?: ThinkingMode;
+  onThinkingModeChange?: (mode: ThinkingMode) => void;
+  showThinkingToggle?: boolean;
+
   // OpenCode agent (role) selection
   opencodeAgent?: string | null;
   onAgentChange?: (agent: string) => void;
-  availableAgents?: string[];
+  availableAgents?: OpenCodeAgentOption[];
+
+  // Claude Code custom backend (run this session on a non-Anthropic brain)
+  claudeBackend?: string | null;
+  onClaudeBackendChange?: (backend: string) => void;
+  availableClaudeBackends?: { id: string; name: string }[];
 
   // Token usage display support (for Claude Code)
   tokenUsage?: {
@@ -160,9 +176,15 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     effortLevel,
     onEffortLevelChange,
     showEffortLevel,
+    thinkingMode,
+    onThinkingModeChange,
+    showThinkingToggle,
     opencodeAgent,
     onAgentChange,
     availableAgents,
+    claudeBackend,
+    onClaudeBackendChange,
+    availableClaudeBackends,
     tokenUsage,
     provider,
     onQueue,
@@ -195,6 +217,8 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     // Voice mode state - derived from centralized atom
     const voiceActiveSessionId = useAtomValue(voiceActiveSessionIdAtom);
     const isVoiceActive = voiceActiveSessionId === sessionId;
+    const disableClaudeReasoningControls = currentProvider === 'claude-code' && !!claudeBackend;
+    const disabledReasoningControlTitle = 'Reasoning controls do not apply while a custom Claude Agent brain is selected.';
 
     // Undo/redo stack for the input. Snapshots include text, attachments, and
     // cursor; boundary events (paste, drop, typeahead, attachment add/remove,
@@ -1270,7 +1294,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         />
 
         {/* Inline controls row - hidden in memory mode */}
-        {!isMemoryMode && (onModeChange || onModelChange || workspacePath || (tokenUsage && provider === 'claude-code')) && (
+        {!isMemoryMode && (onModeChange || onModelChange || showThinkingToggle || workspacePath || (tokenUsage && provider === 'claude-code')) && (
           <div style={{
             display: 'flex',
             alignItems: 'center',
@@ -1294,6 +1318,16 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
               <EffortLevelSelector
                 level={effortLevel}
                 onLevelChange={onEffortLevelChange}
+                disabled={disableClaudeReasoningControls}
+                disabledTitle={disabledReasoningControlTitle}
+              />
+            )}
+            {showThinkingToggle && onThinkingModeChange && (
+              <ThinkingModeSelector
+                mode={thinkingMode ?? 'disabled'}
+                onModeChange={onThinkingModeChange}
+                disabled={disableClaudeReasoningControls}
+                disabledTitle={disabledReasoningControlTitle}
               />
             )}
             {currentProvider === 'opencode' && availableAgents && availableAgents.length > 0 && onAgentChange && (
@@ -1304,8 +1338,21 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
                 title="OpenCode agent role"
               >
                 <option value="">default agent</option>
-                {availableAgents.map((a) => (
-                  <option key={a} value={a}>{a}</option>
+                {availableAgents.map((agent) => (
+                  <option key={agent.name} value={agent.name}>{agent.name}</option>
+                ))}
+              </select>
+            )}
+            {currentProvider === 'claude-code' && availableClaudeBackends && availableClaudeBackends.length > 0 && onClaudeBackendChange && (
+              <select
+                className="claude-backend-picker border border-[var(--nim-border)] rounded bg-[var(--nim-bg)] text-[var(--nim-text)] text-xs px-2 py-1 focus:outline-none focus:border-[var(--nim-primary)]"
+                value={claudeBackend ?? ''}
+                onChange={(e) => onClaudeBackendChange(e.target.value)}
+                title="Run this Claude Code session on a non-Anthropic brain"
+              >
+                <option value="">Anthropic (default)</option>
+                {availableClaudeBackends.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
                 ))}
               </select>
             )}

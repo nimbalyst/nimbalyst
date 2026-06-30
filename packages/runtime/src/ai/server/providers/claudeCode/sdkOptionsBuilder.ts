@@ -11,7 +11,8 @@ import path from 'path';
 import { app } from 'electron';
 import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
-import { DEFAULT_EFFORT_LEVEL } from '../../effortLevels';
+import { DEFAULT_EFFORT_LEVEL, type ThinkingMode } from '../../effortLevels';
+import { resolveClaudeCodeBackend, applyClaudeCodeBackendEnv } from './customBackends';
 
 type SessionMode = 'planning' | 'agent' | undefined;
 
@@ -34,7 +35,7 @@ export interface BuildSdkOptionsDeps {
     resolveTeamContext: (sessionId?: string) => Promise<string | undefined>;
   };
   sessions: { getSessionId: (sessionId: string) => string | null | undefined };
-  config: { model?: string; apiKey?: string; effortLevel?: string };
+  config: { model?: string; apiKey?: string; effortLevel?: string; thinkingMode?: ThinkingMode; customBackend?: string };
   abortController: AbortController;
 }
 
@@ -117,6 +118,16 @@ export function createPersistentPromptStream(
   };
 }
 
+function canDisableThinkingForModel(model: string | undefined): boolean {
+  if (!model) return false;
+  const normalized = model.toLowerCase();
+  if (normalized.includes('fable')) return false;
+  return normalized === 'opus'
+    || normalized === 'sonnet'
+    || normalized.includes('opus')
+    || normalized.includes('sonnet');
+}
+
 export async function buildSdkOptions(
   deps: BuildSdkOptionsDeps,
   params: BuildSdkOptionsParams
@@ -149,6 +160,7 @@ export async function buildSdkOptions(
   } = params;
 
   let helperMethod: 'native' | 'custom' = 'native';
+  const resolvedModel = resolveModelVariant();
 
   // Determine which settings sources to use based on user preferences
   let settingSources: string[] = ['local'];
@@ -188,7 +200,7 @@ export async function buildSdkOptions(
     mcpServers: await mcpConfigService.getMcpServersConfig({ sessionId, workspacePath: mcpConfigWorkspacePath || workspacePath }),
     cwd: workspacePath,
     abortController,
-    model: resolveModelVariant(),
+    model: resolvedModel,
     // IMPORTANT: Do NOT add manual tool restrictions or prompt injections for plan mode here.
     // The SDK's `permissionMode: 'plan'` natively enforces planning restrictions (scopes
     // Write to the plan file only). Manual filtering was removed in favour of this approach.
@@ -204,6 +216,14 @@ export async function buildSdkOptions(
       'PostToolUse': [{ hooks: [toolHooksService.createPostToolUseHook()] }],
     },
   };
+
+  if (config.thinkingMode === 'disabled' && !config.customBackend) {
+    if (canDisableThinkingForModel(resolvedModel)) {
+      options.thinking = { type: 'disabled' as const };
+    } else {
+      console.warn(`[CLAUDE-CODE] Ignoring thinkingMode=disabled for model ${resolvedModel}; model does not support disabling extended thinking`);
+    }
+  }
 
   if (currentMode === 'planning') {
     console.log('[CLAUDE-CODE] Plan mode active: delegating tool restrictions to SDK permissionMode=plan');
@@ -275,7 +295,7 @@ export async function buildSdkOptions(
     // the official CLI and removes that asymmetry. The user can still
     // override via their own env var if they want the original sdk-ts label.
     ...(process.env.CLAUDE_CODE_ENTRYPOINT == null && { CLAUDE_CODE_ENTRYPOINT: 'cli' }),
-    ...(config.effortLevel && config.effortLevel !== DEFAULT_EFFORT_LEVEL && {
+    ...(!config.customBackend && config.effortLevel && config.effortLevel !== DEFAULT_EFFORT_LEVEL && {
       CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel
     }),
   };
@@ -344,6 +364,19 @@ export async function buildSdkOptions(
     env.ANTHROPIC_API_KEY = config.apiKey;
     if (teammateManager.packagedBuildOptions?.env) {
       teammateManager.packagedBuildOptions.env.ANTHROPIC_API_KEY = config.apiKey;
+    }
+  }
+
+  // Per-session custom backend: run THIS Claude Code session on a non-Anthropic
+  // brain (DeepSeek/Kimi/Qwen) via its Anthropic-Messages endpoint. Applied
+  // AFTER the API-key block so the gateway token wins over any Settings key.
+  // No backend selected -> this is a no-op and the session uses default Anthropic.
+  const customBackend = resolveClaudeCodeBackend(config.customBackend);
+  console.log(`[CC-BACKEND] sdkOptions: config.customBackend=${config.customBackend ?? '(none)'} resolved=${customBackend?.id ?? '(none)'} (DIAGNOSTIC)`);
+  if (customBackend) {
+    applyClaudeCodeBackendEnv(env, customBackend);
+    if (teammateManager.packagedBuildOptions?.env) {
+      applyClaudeCodeBackendEnv(teammateManager.packagedBuildOptions.env, customBackend);
     }
   }
 

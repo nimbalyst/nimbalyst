@@ -22,7 +22,7 @@ import { AgentTranscriptPanel } from '@nimbalyst/runtime/ui/AgentTranscript/comp
 import type { InteractiveWidgetHost, PermissionScope } from '@nimbalyst/runtime/ui/AgentTranscript/components/CustomToolWidgets/InteractiveWidgetHost';
 import type { TodoItem } from '@nimbalyst/runtime/ui/AgentTranscript/types';
 import { isToolLikeMessage } from '@nimbalyst/runtime/ui/AgentTranscript/utils/messageTypeHelpers';
-import { AIInput, AIInputRef } from './AIInput';
+import { AIInput, AIInputRef, type OpenCodeAgentOption } from './AIInput';
 import { PromptQueueList } from './PromptQueueList';
 import { TranscriptEmbeddedFileCard } from './TranscriptEmbeddedFileCard';
 import { customEditorRegistry } from '../CustomEditors/registry';
@@ -53,7 +53,9 @@ import {
   sessionWorktreePathAtom,
   sessionDocumentContextAtom,
   sessionEffortLevelRawAtom,
+  sessionThinkingModeRawAtom,
   sessionOpenCodeAgentAtom,
+  sessionClaudeBackendAtom,
   sessionLoadingAtom,
   sessionModeAtom,
   sessionModelAtom,
@@ -89,7 +91,7 @@ import { clearAIInputHistoryAtom } from '../../store/atoms/aiInputUndo';
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
 import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom } from '../../store/atoms/appSettings';
-import { supportsEffortLevel, parseEffortLevel, type EffortLevel } from '../../utils/modelUtils';
+import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, parseThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
 import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPeekSizeAtoms';
@@ -418,8 +420,10 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionWorktreePath = useAtomValue(sessionWorktreePathAtom(sessionId));
   const sessionDocumentContext = useAtomValue(sessionDocumentContextAtom(sessionId));
   const rawEffortLevel = useAtomValue(sessionEffortLevelRawAtom(sessionId));
+  const rawThinkingMode = useAtomValue(sessionThinkingModeRawAtom(sessionId));
   const rawOpenCodeAgent = useAtomValue(sessionOpenCodeAgentAtom(sessionId));
-  const [availableAgents, setAvailableAgents] = useState<string[]>([]);
+  const rawClaudeBackend = useAtomValue(sessionClaudeBackendAtom(sessionId));
+  const [availableAgents, setAvailableAgents] = useState<OpenCodeAgentOption[]>([]);
   const loadSessionData = useSetAtom(loadSessionDataAtom);
   const reloadSessionData = useSetAtom(reloadSessionDataAtom);
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
@@ -450,6 +454,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       metadata: {
         ...(snapshot?.metadata ?? {}),
         effortLevel: rawEffortLevel ?? (snapshot?.metadata as Record<string, unknown> | undefined)?.effortLevel ?? null,
+        thinkingMode: rawThinkingMode ?? (snapshot?.metadata as Record<string, unknown> | undefined)?.thinkingMode ?? null,
         sessionStatus,
         currentTeammates: metadataTeammates,
         currentTodos,
@@ -465,6 +470,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     sessionDocumentContext,
     sessionWorktreePath,
     rawEffortLevel,
+    rawThinkingMode,
     sessionStatus,
     metadataTeammates,
     currentTodos,
@@ -475,6 +481,8 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const effortLevel = useMemo(() => {
     return rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel;
   }, [rawEffortLevel, defaultEffortLevel]);
+  const showThinkingToggle = useMemo(() => provider === 'claude-code' && supportsThinkingToggle(currentModel), [provider, currentModel]);
+  const thinkingMode = useMemo(() => parseThinkingMode(rawThinkingMode), [rawThinkingMode]);
 
   // Memoize the teammate list passed to AgentTranscriptPanel so its memo
   // comparison doesn't see a new array reference on every keystroke. Without
@@ -1261,14 +1269,28 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     });
   }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog]);
 
+  const handleThinkingModeChange = useCallback(async (mode: ThinkingMode) => {
+    const previousMode = thinkingMode;
+    await updateSessionMetadataField(sessionId, 'thinkingMode', mode, null, updateSessionStore);
+    posthog?.capture('ai_thinking_mode_changed', {
+      thinking_mode: mode,
+      previous_mode: previousMode,
+      model: currentModel ?? null,
+    });
+  }, [sessionId, updateSessionStore, thinkingMode, currentModel, posthog]);
+
   const handleAgentChange = useCallback(async (agentName: string) => {
     await updateSessionMetadataField(sessionId, 'opencodeAgent', agentName || null, null, updateSessionStore);
+  }, [sessionId, updateSessionStore]);
+
+  const handleClaudeBackendChange = useCallback(async (backendId: string) => {
+    await updateSessionMetadataField(sessionId, 'claudeBackend', backendId || null, null, updateSessionStore);
   }, [sessionId, updateSessionStore]);
 
   useEffect(() => {
     if (provider !== 'opencode' || !window.electronAPI) return;
     window.electronAPI.invoke('opencode-config:list-agents')
-      .then((result: { success: boolean; agents?: string[] }) => {
+      .then((result: { success: boolean; agents?: OpenCodeAgentOption[]; agentNames?: string[] }) => {
         if (result.success && result.agents) {
           setAvailableAgents(result.agents);
         }
@@ -2139,9 +2161,22 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         effortLevel={effortLevel}
         onEffortLevelChange={handleEffortLevelChange}
         showEffortLevel={showEffortLevel}
+        thinkingMode={thinkingMode}
+        onThinkingModeChange={handleThinkingModeChange}
+        showThinkingToggle={showThinkingToggle}
         opencodeAgent={rawOpenCodeAgent}
         onAgentChange={handleAgentChange}
         availableAgents={availableAgents}
+        claudeBackend={rawClaudeBackend}
+        onClaudeBackendChange={handleClaudeBackendChange}
+        availableClaudeBackends={[
+          { id: 'glm-5.2', name: 'GLM 5.2 (Z.AI API balance)' },
+          { id: 'glm-5.2-coding-plan', name: 'GLM 5.2 (Z.AI Coding Plan)' },
+          { id: 'deepseek-reasoner', name: 'DeepSeek V4 (reasoner)' },
+          { id: 'deepseek-chat', name: 'DeepSeek V4 (fast)' },
+          { id: 'kimi-k2.6', name: 'Kimi K2.6' },
+          { id: 'qwen3-max-thinking', name: 'Qwen3 Max (thinking)' },
+        ]}
         tokenUsage={tokenUsage}
         provider={provider}
         onQueue={handleQueue}

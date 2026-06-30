@@ -94,6 +94,8 @@ describe('OpenCodeProvider', () => {
       expect.objectContaining({ id: 'opencode:anthropic/claude-sonnet-4-5', provider: 'opencode' }),
       expect.objectContaining({ id: 'opencode:openai/gpt-5', provider: 'opencode' }),
       expect.objectContaining({ id: 'opencode:google/gemini-2.5-pro', provider: 'opencode' }),
+      expect.objectContaining({ id: 'opencode:zai/glm-5.2', provider: 'opencode' }),
+      expect.objectContaining({ id: 'opencode:zai-coding-plan/glm-5.2', provider: 'opencode' }),
     ]));
   });
 
@@ -153,7 +155,7 @@ describe('OpenCodeProvider', () => {
     ]);
 
     const provider = new OpenCodeProvider({ protocol });
-    await provider.initialize({ model: 'opencode:default' });
+    await provider.initialize({});
 
     const chunks: any[] = [];
     for await (const chunk of provider.sendMessage('test', undefined, 'session-1', [], process.cwd())) {
@@ -180,7 +182,7 @@ describe('OpenCodeProvider', () => {
     ]);
 
     const provider = new OpenCodeProvider({ protocol });
-    await provider.initialize({ model: 'opencode:default' });
+    await provider.initialize({});
 
     const chunks: any[] = [];
     for await (const chunk of provider.sendMessage('edit file', undefined, 'session-2', [], process.cwd())) {
@@ -197,7 +199,7 @@ describe('OpenCodeProvider', () => {
   it('yields error when workspacePath is missing', async () => {
     const protocol = createMockProtocol([]);
     const provider = new OpenCodeProvider({ protocol });
-    await provider.initialize({ model: 'opencode:default' });
+    await provider.initialize({});
 
     const chunks: any[] = [];
     for await (const chunk of provider.sendMessage('test', undefined, 'session-3', [])) {
@@ -216,7 +218,7 @@ describe('OpenCodeProvider', () => {
     ]);
 
     const provider = new OpenCodeProvider({ protocol });
-    await provider.initialize({ model: 'opencode:default' });
+    await provider.initialize({});
 
     for await (const _chunk of provider.sendMessage('test', undefined, 'session-save', [], process.cwd())) {
       // drain
@@ -234,7 +236,7 @@ describe('OpenCodeProvider', () => {
     ]);
 
     const provider = new OpenCodeProvider({ protocol });
-    await provider.initialize({ model: 'opencode:default' });
+    await provider.initialize({});
 
     // First message creates a session
     for await (const _chunk of provider.sendMessage('first', undefined, 'session-resume', [], process.cwd())) {

@@ -23,7 +23,7 @@ import {
 } from '@nimbalyst/runtime/ai/modelConstants';
 import { CLAUDE_CODE_VARIANTS, ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 
-export { type EffortLevel, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL, parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+export { type EffortLevel, type ThinkingMode, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL, DEFAULT_THINKING_MODE, parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 
 interface ModelInfo {
   providerId: string;
@@ -239,4 +239,18 @@ export function supportsEffortLevel(modelId?: string): boolean {
   if (parsed?.provider === 'openai-codex' || parsed?.provider === 'openai-codex-acp') return true;
   if (modelId.startsWith('openai-codex:') || modelId.startsWith('openai-codex-acp:')) return true;
   return false;
+}
+
+/**
+ * Check if a Claude Code model supports disabling extended thinking.
+ * Fable variants always require thinking on, and non-Claude-Code providers use
+ * their own reasoning controls.
+ */
+export function supportsThinkingToggle(modelId?: string): boolean {
+  if (!modelId) return false;
+  const normalized = modelId.toLowerCase();
+  if (normalized.includes('fable')) return false;
+
+  const variant = extractClaudeCodeVariant(modelId);
+  return variant === 'opus' || variant === 'opus-4-6' || variant === 'sonnet';
 }

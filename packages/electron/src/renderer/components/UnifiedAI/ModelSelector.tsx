@@ -147,7 +147,7 @@ export function ModelSelector({
   const getProviderLabel = (provider: string) => {
     switch (provider) {
       case 'claude': return 'Claude Chat';
-      case 'claude-code': return 'Claude Agent (Claude Code Based)';
+      case 'claude-code': return 'Claude Agent';
       case 'openai': return 'OpenAI';
       case 'openai-codex': return 'OpenAI Codex';
       case 'openai-codex-acp': return 'OpenAI Codex (ACP)';
