@@ -130,6 +130,7 @@ import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
+import { OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES } from '@nimbalyst/runtime/ai/server/openAICompatibleModelFilters';
 
 const execFileAsync = promisify(execFile);
 const MAX_MODELS_PER_PROVIDER_FOR_UI = 500;
@@ -428,6 +429,72 @@ export class AIService {
     );
   }
 
+  private migrateOpenAICompatibleProviderDefaults(): void {
+    const providerSettings = this.settingsStore!.get('providerSettings', {}) as Record<string, any>;
+    const defaults: Record<string, any> = {
+      ollama: {
+        enabled: false,
+        testStatus: 'idle',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+      },
+      anythingllm: {
+        enabled: false,
+        testStatus: 'idle',
+        baseUrl: 'http://127.0.0.1:3001/api/v1/openai',
+      },
+      openrouter: {
+        enabled: false,
+        testStatus: 'idle',
+        modelFilterRegex: OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES.openrouter,
+      },
+      featherless: {
+        enabled: false,
+        testStatus: 'idle',
+      },
+      'featherless-official': {
+        enabled: false,
+        testStatus: 'idle',
+        modelFilterRegex: OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES['featherless-official'],
+      },
+      'featherless-sane': {
+        enabled: false,
+        testStatus: 'idle',
+        modelFilterRegex: OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES['featherless-sane'],
+      },
+      'featherless-heretic': {
+        enabled: false,
+        testStatus: 'idle',
+        modelFilterRegex: OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES['featherless-heretic'],
+      },
+      'featherless-keyword': {
+        enabled: false,
+        testStatus: 'idle',
+        modelFilterRegex: OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES['featherless-keyword'],
+      },
+    };
+
+    let changed = false;
+    for (const [provider, defaultConfig] of Object.entries(defaults)) {
+      const existing = providerSettings[provider];
+      if (!existing || typeof existing !== 'object') {
+        providerSettings[provider] = defaultConfig;
+        changed = true;
+        continue;
+      }
+      for (const [key, value] of Object.entries(defaultConfig)) {
+        if (existing[key] === undefined) {
+          existing[key] = value;
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      this.settingsStore!.set('providerSettings', providerSettings);
+      this.cachedNormalizedProviderSettings = null;
+    }
+  }
+
   private migrateClaudeCodeVariantInsertion(
     migrationKey: string,
     variantId: string,
@@ -506,6 +573,7 @@ export class AIService {
         }
       });
       this.migrateClaudeCodeModelList();
+      this.migrateOpenAICompatibleProviderDefaults();
     }
     return this.settingsStore;
   }
