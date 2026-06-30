@@ -5,12 +5,15 @@ import * as path from 'path';
 import { RecentItem, SessionState, SessionWindow } from '../types';
 import { logger } from './logger';
 import { type EffortLevel, parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { isOpenAICompatibleProvider } from '@nimbalyst/runtime/ai/server/types';
 import type { OnboardingConfig } from '../../shared/types/workspace';
 import { DEFAULT_ONBOARDING_CONFIG } from '../../shared/types/workspace';
 import { AlphaFeatureTag, getDefaultAlphaFeatures, ALPHA_FEATURES } from '../../shared/alphaFeatures';
 import { DeveloperFeatureTag, getDefaultDeveloperFeatures, DEVELOPER_FEATURES } from '../../shared/developerFeatures';
 import { BetaFeatureTag, getDefaultBetaFeatures, enableAllBetaFeatures as enableAllBetaFeaturesUtil, BETA_FEATURES } from '../../shared/betaFeatures';
 import { normalizeCodexProviderConfig, omitModelsField } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
+
+const DUMMY_OPENAI_COMPATIBLE_API_KEY = 'DUMMY_NIMBALYST_KEY';
 
 // Theme can be a built-in theme or an extension theme ID (format: "extensionId:themeId")
 export type AppTheme = 'dark' | 'light' | 'system' | 'auto' | 'crystal-dark' | string;
@@ -1099,8 +1102,10 @@ function getAiSettingsStore(): Store<Record<string, unknown>> {
 /**
  * Resolve a provider API key from EXPLICIT settings only — a per-workspace
  * project override if present, else the global `ai-settings` `apiKeys[providerId]`.
- * NEVER reads `process.env` (CLAUDE.md no-implicit-env-key rule). Returns null
- * when not configured. Mirrors `AIService.getApiKeyForProvider` so the
+ * NEVER reads `process.env` (CLAUDE.md no-implicit-env-key rule). Mirrors
+ * `AIService.getApiKeyForProvider` so OpenAI-compatible local/proxy endpoints
+ * can use a dummy key when they do not require auth, while plain OpenAI still
+ * requires an explicitly configured key. The
  * backend-module `getApiKey` broker hands an extension engine the same key the
  * AI providers use (the key lives in `ai-settings`, NOT `app-settings`).
  */
@@ -1116,7 +1121,12 @@ export function getProviderApiKeyFromSettings(
   }
   const apiKeys = getAiSettingsStore().get('apiKeys') as Record<string, string> | undefined;
   const key = apiKeys?.[providerId];
-  return typeof key === 'string' && key.length > 0 ? key : null;
+  if (typeof key === 'string' && key.length > 0) {
+    return key;
+  }
+  return isOpenAICompatibleProvider(providerId) && providerId !== 'openai'
+    ? DUMMY_OPENAI_COMPATIBLE_API_KEY
+    : null;
 }
 
 export function saveAIProviderOverrides(workspacePath: string, overrides: AIProviderOverrides | undefined): void {
