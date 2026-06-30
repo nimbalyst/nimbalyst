@@ -24,6 +24,7 @@ import { AlphaFeatureTag, getDefaultAlphaFeatures } from '../../../shared/alphaF
 import { BetaFeatureTag } from '../../../shared/betaFeatures';
 import { DeveloperFeatureTag, DEVELOPER_FEATURES, getDefaultDeveloperFeatures, enableAllDeveloperFeatures, disableAllDeveloperFeatures, areAllDeveloperFeaturesEnabled } from '../../../shared/developerFeatures';
 import { normalizeCodexProviderConfig, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
+import { OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES } from '@nimbalyst/runtime/ai/server/openAICompatibleModelFilters';
 import { onSettingChanged } from './settingAtomFamily';
 import {
   type GutterCustomizationState,
@@ -1170,12 +1171,12 @@ const defaultProviders: Record<string, ProviderConfig> = {
   openai: { enabled: false, testStatus: 'idle' },
   ollama: { enabled: false, baseUrl: 'http://127.0.0.1:11434/v1', testStatus: 'idle' },
   anythingllm: { enabled: false, baseUrl: 'http://127.0.0.1:3001/api/v1/openai', testStatus: 'idle' },
-  openrouter: { enabled: false, testStatus: 'idle' },
+  openrouter: { enabled: false, testStatus: 'idle', modelFilterRegex: OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES.openrouter },
   featherless: { enabled: false, testStatus: 'idle' },
-  'featherless-official': { enabled: false, testStatus: 'idle' },
-  'featherless-sane': { enabled: false, testStatus: 'idle' },
-  'featherless-heretic': { enabled: false, testStatus: 'idle' },
-  'featherless-keyword': { enabled: false, testStatus: 'idle' },
+  'featherless-official': { enabled: false, testStatus: 'idle', modelFilterRegex: OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES['featherless-official'] },
+  'featherless-sane': { enabled: false, testStatus: 'idle', modelFilterRegex: OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES['featherless-sane'] },
+  'featherless-heretic': { enabled: false, testStatus: 'idle', modelFilterRegex: OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES['featherless-heretic'] },
+  'featherless-keyword': { enabled: false, testStatus: 'idle', modelFilterRegex: OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES['featherless-keyword'] },
   'openai-codex': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   'openai-codex-acp': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   opencode: { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
