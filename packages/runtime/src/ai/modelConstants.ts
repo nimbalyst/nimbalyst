@@ -379,6 +379,18 @@ export const OPENCODE_PRESET_MODELS: OpenCodePresetModel[] = [
     providerID: 'google',
     modelID: 'gemini-2.5-pro',
   },
+  {
+    id: 'opencode:zai/glm-5.2',
+    name: 'GLM 5.2 (Z.AI)',
+    providerID: 'zai',
+    modelID: 'glm-5.2',
+  },
+  {
+    id: 'opencode:zai-coding-plan/glm-5.2',
+    name: 'GLM 5.2 (Z.AI Coding Plan)',
+    providerID: 'zai-coding-plan',
+    modelID: 'glm-5.2',
+  },
 ];
 
 /** OpenCode provider id reserved for an LM Studio bridge written into opencode.json. */

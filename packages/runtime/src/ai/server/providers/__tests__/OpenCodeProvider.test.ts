@@ -93,6 +93,8 @@ describe('OpenCodeProvider', () => {
       expect.objectContaining({ id: 'opencode:anthropic/claude-sonnet-4-5', provider: 'opencode' }),
       expect.objectContaining({ id: 'opencode:openai/gpt-5', provider: 'opencode' }),
       expect.objectContaining({ id: 'opencode:google/gemini-2.5-pro', provider: 'opencode' }),
+      expect.objectContaining({ id: 'opencode:zai/glm-5.2', provider: 'opencode' }),
+      expect.objectContaining({ id: 'opencode:zai-coding-plan/glm-5.2', provider: 'opencode' }),
     ]));
   });
 
