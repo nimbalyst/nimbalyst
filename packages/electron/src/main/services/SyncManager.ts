@@ -33,6 +33,13 @@ import { setSleepPreventionMode, setSyncConnected, shutdownSleepPrevention, type
 import { reconnectAllTrackerSyncs } from './TrackerSyncManager';
 import { BrowserWindow } from 'electron';
 import { timeStartupPhase } from '../utils/startupTiming';
+import { OPENAI_COMPATIBLE_PROVIDER_TYPES, type AIProviderType } from '@nimbalyst/runtime/ai/server/types';
+import {
+  DUMMY_OPENAI_COMPATIBLE_API_KEY,
+  getConfiguredLMStudioBaseUrl,
+  getConfiguredOpenAIBaseUrl,
+  getConfiguredOpenAICompatibleBaseUrl,
+} from './ai/lmStudioConfig';
 
 function loadSyncModule() {
   return syncModule;
@@ -1196,22 +1203,37 @@ async function getAvailableModelsForMobile(): Promise<{ models: Array<{ id: stri
 
     const aiStore = new Store<Record<string, unknown>>({ name: 'ai-settings' });
     const apiKeys = aiStore.get('apiKeys', {}) as Record<string, string>;
-    const providerSettings = aiStore.get('providerSettings', {}) as Record<string, { enabled?: boolean; models?: string[]; baseUrl?: string }>;
+    const providerSettings = aiStore.get('providerSettings', {}) as Record<string, { enabled?: boolean; models?: string[]; baseUrl?: string; modelFilterRegex?: string }>;
 
     // Build enabled provider set to avoid fetching from disabled providers (e.g., LMStudio network call)
-    const enabledSet = new Set<string>();
+    const enabledSet = new Set<AIProviderType>();
     if (providerSettings['claude']?.enabled === true && !!apiKeys['anthropic']) enabledSet.add('claude');
     if (providerSettings['claude-code']?.enabled !== false) enabledSet.add('claude-code');
-    if (providerSettings['openai']?.enabled === true && !!apiKeys['openai']) enabledSet.add('openai');
     if (providerSettings['openai-codex']?.enabled === true) enabledSet.add('openai-codex');
     if (providerSettings['openai-codex-acp']?.enabled === true) enabledSet.add('openai-codex-acp');
     if (providerSettings['lmstudio']?.enabled === true) enabledSet.add('lmstudio');
+    for (const provider of OPENAI_COMPATIBLE_PROVIDER_TYPES) {
+      if (providerSettings[provider]?.enabled !== true) continue;
+      if (provider === 'openai' && !apiKeys['openai']) continue;
+      enabledSet.add(provider);
+    }
 
-    const modelsConfig = {
+    const modelsConfig: Record<string, string> = {
       ...apiKeys,
-      lmstudio_url: providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:1234'
+      openai_base_url: getConfiguredOpenAIBaseUrl(aiStore) || '',
+      lmstudio_url: getConfiguredLMStudioBaseUrl(aiStore)
     };
-    const allModels = await ModelRegistry.getAllModels(modelsConfig, enabledSet as Set<any>);
+    for (const provider of OPENAI_COMPATIBLE_PROVIDER_TYPES) {
+      if (provider !== 'openai') {
+        modelsConfig[provider] = apiKeys[provider] || DUMMY_OPENAI_COMPATIBLE_API_KEY;
+      }
+      modelsConfig[`${provider}_base_url`] = getConfiguredOpenAICompatibleBaseUrl(aiStore, provider) || '';
+    }
+    const modelFilterRegexes = Object.fromEntries(
+      OPENAI_COMPATIBLE_PROVIDER_TYPES.map((provider) => [provider, providerSettings[provider]?.modelFilterRegex]),
+    ) as Partial<Record<AIProviderType, string>>;
+
+    const allModels = await ModelRegistry.getAllModels(modelsConfig, enabledSet, modelFilterRegexes);
     // Filter to enabled models (model-level filtering for specific model selection)
     const enabledModels = allModels.filter(model => {
       const ps = providerSettings[model.provider] as { enabled?: boolean; models?: string[] } | undefined;
