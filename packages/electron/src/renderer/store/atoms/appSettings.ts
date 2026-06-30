@@ -1103,6 +1103,7 @@ export interface ProviderConfig {
   enabled: boolean;
   apiKey?: string;
   baseUrl?: string;
+  modelFilterRegex?: string;
   models?: string[];
   testStatus?: 'idle' | 'testing' | 'success' | 'error';
   testMessage?: string;

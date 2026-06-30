@@ -15,15 +15,16 @@ function option(name) {
 
 function usage() {
   console.error(`Usage:
-  node scripts/manage-openai-compatible-provider.mjs --add <id> [--base-url <url>]
+  node scripts/manage-openai-compatible-provider.mjs --add <id> [--base-url <url>] [--model-filter-regex <regex>]
   node scripts/manage-openai-compatible-provider.mjs --remove <id>
-  node scripts/manage-openai-compatible-provider.mjs --edit <id> [--base-url <url>]`);
+  node scripts/manage-openai-compatible-provider.mjs --edit <id> [--base-url <url>] [--model-filter-regex <regex>]`);
   process.exit(1);
 }
 
 if (!action || !id || !/^[a-z][a-z0-9-]*$/.test(id)) usage();
 
 const baseUrl = option('--base-url');
+const modelFilterRegex = option('--model-filter-regex');
 
 function file(relativePath) {
   return path.join(repoRoot, relativePath);
@@ -35,6 +36,10 @@ function read(relativePath) {
 
 function write(relativePath, content) {
   writeFileSync(file(relativePath), content);
+}
+
+function asSingleQuotedString(value) {
+  return `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
 }
 
 function updateConstArray(content, name, updater) {
@@ -108,9 +113,28 @@ function updateDefaultBaseUrl() {
   write(relativePath, content);
 }
 
+function updateDefaultModelFilterRegex() {
+  const relativePath = 'packages/runtime/src/ai/server/openAICompatibleModelFilters.ts';
+  let content = read(relativePath);
+  const key = id.includes('-') ? `'${id}'` : id;
+  const linePattern = new RegExp(`\\n  ${key}: '[^']*',`);
+  content = content.replace(linePattern, '');
+
+  if ((action === '--add' || action === '--edit') && modelFilterRegex) {
+    const line = `  ${key}: ${asSingleQuotedString(modelFilterRegex)},`;
+    content = content.replace(
+      /export const OPENAI_COMPATIBLE_MODEL_ALLOW_REGEXES: Partial<Record<OpenAICompatibleProviderType, string>> = \{\n/,
+      (prefix) => `${prefix}${line}\n`,
+    );
+  }
+
+  write(relativePath, content);
+}
+
 updateProviderTypes();
 updateDefaultModels();
 updateDefaultBaseUrl();
+updateDefaultModelFilterRegex();
 
 console.log(`[manage-openai-compatible-provider] ${action.slice(2)} ${id}`);
 console.log('Follow-up checklist: ProviderFactory, ModelRegistry, settings registry/defaults, SettingsView, SettingsSidebar, ProjectAIProvidersPanel, ModelSelector, modelUtils, ProviderIcons, and AIService.');
