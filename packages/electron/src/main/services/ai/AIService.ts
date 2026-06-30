@@ -3686,6 +3686,24 @@ export class AIService {
         isModelEnabled(model, enabledProviders[model.provider as AIProviderType]),
       );
 
+      for (const provider of OPENAI_COMPATIBLE_PROVIDER_TYPES) {
+        if (provider === 'openai' || !enabledProviders[provider]?.enabled) continue;
+        if (enabledModels.some(model => model.provider === provider)) continue;
+
+        const configuredModels = enabledProviders[provider]?.models?.length
+          ? enabledProviders[provider].models
+          : [`${provider}:local-model`];
+        for (const modelId of configuredModels) {
+          enabledModels.push({
+            id: modelId,
+            name: extractModelForProvider(modelId, provider) || modelId,
+            provider,
+            maxTokens: 0,
+            contextWindow: 0,
+          });
+        }
+      }
+
       // Surface extension-contributed agent providers (aiAgentProviders) in the
       // picker. The built-in `enabledProviders` map is keyed on AIProviderType,
       // so the filter above drops them; append after it. Each registered,
