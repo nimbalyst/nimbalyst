@@ -24,6 +24,7 @@ import {
   voiceLastReportedFileAtom,
   voiceListenStateAtom,
   voiceErrorAtom,
+  voiceReconnectingAtom,
   voiceModePreviewAudioAtom,
   getVoiceAudioCallback,
   getVoiceInterruptCallback,
@@ -327,6 +328,7 @@ function resetVoiceAtoms(): void {
   store.set(voiceDbSessionIdAtom, null);
   store.set(voiceLastReportedFileAtom, null);
   store.set(voiceErrorAtom, null);
+  store.set(voiceReconnectingAtom, false);
 }
 
 /**
@@ -632,7 +634,31 @@ export function initVoiceModeListeners(): () => void {
       error: { type: string; message: string };
     }) => {
       if (!isVoiceActive()) return;
+      // Retries exhausted -- clear the transient reconnect state and surface the
+      // hard error.
+      store.set(voiceReconnectingAtom, false);
       store.set(voiceErrorAtom, payload.error);
+    })
+  );
+
+  // =========================================================================
+  // Reconnect (transient socket drop -> backoff reconnect)
+  // =========================================================================
+  cleanups.push(
+    window.electronAPI.on('voice-mode:reconnecting', (_payload: {
+      sessionId: string;
+      attempt: number;
+    }) => {
+      if (!isVoiceActive()) return;
+      store.set(voiceReconnectingAtom, true);
+    })
+  );
+  cleanups.push(
+    window.electronAPI.on('voice-mode:reconnected', (_payload: {
+      sessionId: string;
+    }) => {
+      if (!isVoiceActive()) return;
+      store.set(voiceReconnectingAtom, false);
     })
   );
 

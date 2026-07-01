@@ -33,6 +33,8 @@ import type {
   CreateSessionResponse,
   CreateWorktreeRequest,
   CreateWorktreeResponse,
+  VoiceToolRequest,
+  VoiceToolResponse,
   EncryptedSettingsPayload,
   SyncedSettings,
   SessionControlMessage,
@@ -237,6 +239,28 @@ interface EncryptedCreateWorktreeResponse {
   error?: string;
 }
 
+/** Encrypted voice-tool request for wire protocol (toolName/args carry project knowledge). */
+interface EncryptedVoiceToolRequest {
+  requestId: string;
+  encryptedProjectId: string;
+  projectIdIv: string;
+  encryptedToolName: string;
+  toolNameIv: string;
+  encryptedArgs: string;
+  argsIv: string;
+  timestamp: number;
+}
+
+/** Encrypted voice-tool response for wire protocol. */
+interface EncryptedVoiceToolResponse {
+  requestId: string;
+  success: boolean;
+  encryptedResult?: string;
+  resultIv?: string;
+  encryptedError?: string;
+  errorIv?: string;
+}
+
 interface IndexClientMetadataPatch {
   sessionId: string;
   encryptedClientMetadata?: string;
@@ -260,6 +284,8 @@ type ClientMessage =
   | { type: 'createSessionResponse'; response: EncryptedCreateSessionResponse }
   | { type: 'createWorktreeRequest'; request: EncryptedCreateWorktreeRequest }
   | { type: 'createWorktreeResponse'; response: EncryptedCreateWorktreeResponse }
+  | { type: 'voiceToolRequest'; request: EncryptedVoiceToolRequest }
+  | { type: 'voiceToolResponse'; response: EncryptedVoiceToolResponse }
   | { type: 'sessionControl'; message: { sessionId: string; messageType: string; payload?: Record<string, unknown>; timestamp: number; sentBy: 'desktop' | 'mobile' } }
   | { type: 'requestMobilePush'; sessionId: string; title: string; body: string; requestingDeviceId?: string }
   | { type: 'settingsSync'; settings: EncryptedSettingsPayload }
@@ -307,6 +333,8 @@ type ServerMessage =
   | { type: 'createSessionResponseBroadcast'; response: EncryptedCreateSessionResponse; fromConnectionId?: string }
   | { type: 'createWorktreeRequestBroadcast'; request: EncryptedCreateWorktreeRequest; fromConnectionId?: string }
   | { type: 'createWorktreeResponseBroadcast'; response: EncryptedCreateWorktreeResponse; fromConnectionId?: string }
+  | { type: 'voiceToolRequestBroadcast'; request: EncryptedVoiceToolRequest; fromConnectionId?: string }
+  | { type: 'voiceToolResponseBroadcast'; response: EncryptedVoiceToolResponse; fromConnectionId?: string }
   | { type: 'sessionControlBroadcast'; message: { sessionId: string; messageType: string; payload?: Record<string, unknown>; timestamp: number; sentBy: 'desktop' | 'mobile' }; fromConnectionId?: string }
   | { type: 'settingsSyncBroadcast'; settings: EncryptedSettingsPayload; fromConnectionId?: string }
   | { type: 'error'; code: string; message: string };
@@ -1049,6 +1077,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   // Listeners for worktree creation requests (from mobile)
   const createWorktreeRequestListeners = new Set<(request: CreateWorktreeRequest) => void>();
+
+  // Listeners for voice-tool requests (from mobile; desktop runs the tool)
+  const voiceToolRequestListeners = new Set<(request: VoiceToolRequest) => void>();
+
+  // Listeners for voice-tool responses (for mobile to receive the desktop result)
+  const voiceToolResponseListeners = new Set<(response: VoiceToolResponse) => void>();
 
   // Listeners for generic session control messages (cancel, question_response, etc.)
   const sessionControlMessageListeners = new Set<(message: SessionControlMessage) => void>();
@@ -2182,6 +2216,82 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                 callback(response);
               } catch (err) {
                 console.error('[CollabV3] Error in create session response listener:', err);
+              }
+            });
+            break;
+          }
+
+          case 'voiceToolRequestBroadcast': {
+            // Another device (mobile) asked the desktop to run a voice tool.
+            if (!config.encryptionKey) {
+              console.error('[CollabV3] Cannot handle voice tool request - no encryption key');
+              break;
+            }
+            try {
+              const projectId = await decryptProjectId(
+                message.request.encryptedProjectId,
+                message.request.projectIdIv,
+                config.encryptionKey,
+              );
+              const toolName = await decrypt(
+                message.request.encryptedToolName,
+                message.request.toolNameIv,
+                config.encryptionKey,
+              );
+              const argsJson = await decrypt(
+                message.request.encryptedArgs,
+                message.request.argsIv,
+                config.encryptionKey,
+              );
+              const decryptedRequest: VoiceToolRequest = {
+                requestId: message.request.requestId,
+                projectId,
+                toolName,
+                argsJson,
+                timestamp: message.request.timestamp,
+              };
+              voiceToolRequestListeners.forEach((callback) => {
+                try {
+                  callback(decryptedRequest);
+                } catch (err) {
+                  console.error('[CollabV3] Error in voice tool request listener:', err);
+                }
+              });
+            } catch (err) {
+              console.error('[CollabV3] Failed to decrypt voice tool request:', err);
+            }
+            break;
+          }
+
+          case 'voiceToolResponseBroadcast': {
+            // Desktop responded to our voice tool request.
+            if (!config.encryptionKey) {
+              console.error('[CollabV3] Cannot handle voice tool response - no encryption key');
+              break;
+            }
+            let resultJson: string | undefined;
+            let error: string | undefined;
+            try {
+              if (message.response.encryptedResult && message.response.resultIv) {
+                resultJson = await decrypt(message.response.encryptedResult, message.response.resultIv, config.encryptionKey);
+              }
+              if (message.response.encryptedError && message.response.errorIv) {
+                error = await decrypt(message.response.encryptedError, message.response.errorIv, config.encryptionKey);
+              }
+            } catch (err) {
+              console.error('[CollabV3] Failed to decrypt voice tool response:', err);
+            }
+            const response: VoiceToolResponse = {
+              requestId: message.response.requestId,
+              success: message.response.success,
+              resultJson,
+              error,
+            };
+            voiceToolResponseListeners.forEach((callback) => {
+              try {
+                callback(response);
+              } catch (err) {
+                console.error('[CollabV3] Error in voice tool response listener:', err);
               }
             });
             break;
@@ -3373,6 +3483,103 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       createSessionResponseListeners.add(callback);
       return () => {
         createSessionResponseListeners.delete(callback);
+      };
+    },
+
+    /** Subscribe to voice-tool requests from other devices (desktop runs the tool). */
+    onVoiceToolRequest(callback: (request: VoiceToolRequest) => void): () => void {
+      voiceToolRequestListeners.add(callback);
+      return () => {
+        voiceToolRequestListeners.delete(callback);
+      };
+    },
+
+    /** Send a voice-tool result back to the requesting device (desktop -> mobile). */
+    async sendVoiceToolResponse(response: VoiceToolResponse): Promise<void> {
+      if (!indexWs || !indexConnected) {
+        try {
+          await connectToIndex();
+        } catch (err) {
+          console.error('[CollabV3] Failed to connect before sending voice tool response:', err);
+          return;
+        }
+      }
+      if (!indexWs || !indexConnected) {
+        console.error('[CollabV3] Cannot send voice tool response - not connected');
+        return;
+      }
+      if (!config.encryptionKey) {
+        console.error('[CollabV3] Cannot send voice tool response - no encryption key');
+        return;
+      }
+
+      const wireResponse: EncryptedVoiceToolResponse = {
+        requestId: response.requestId,
+        success: response.success,
+      };
+      try {
+        if (response.resultJson) {
+          const { encrypted, iv } = await encrypt(response.resultJson, config.encryptionKey);
+          wireResponse.encryptedResult = encrypted;
+          wireResponse.resultIv = iv;
+        }
+        if (response.error) {
+          const { encrypted, iv } = await encrypt(response.error, config.encryptionKey);
+          wireResponse.encryptedError = encrypted;
+          wireResponse.errorIv = iv;
+        }
+      } catch (err) {
+        console.error('[CollabV3] Failed to encrypt voice tool response:', err);
+        return;
+      }
+
+      const msg: ClientMessage = { type: 'voiceToolResponse', response: wireResponse };
+      indexWs.send(JSON.stringify(msg));
+    },
+
+    /** Send a voice-tool request (mobile -> desktop). */
+    async sendVoiceToolRequest(request: VoiceToolRequest): Promise<void> {
+      if (!indexWs || !indexConnected) {
+        try {
+          await connectToIndex();
+        } catch (err) {
+          console.error('[CollabV3] Failed to connect before sending voice tool request:', err);
+          return;
+        }
+      }
+      if (!indexWs || !indexConnected) {
+        console.error('[CollabV3] Cannot send voice tool request - not connected');
+        return;
+      }
+      if (!config.encryptionKey) {
+        console.error('[CollabV3] Cannot send voice tool request - no encryption key');
+        return;
+      }
+
+      const { encryptedProjectId, projectIdIv } = await encryptProjectId(request.projectId, config.encryptionKey);
+      const toolNameEnc = await encrypt(request.toolName, config.encryptionKey);
+      const argsEnc = await encrypt(request.argsJson, config.encryptionKey);
+
+      const wireRequest: EncryptedVoiceToolRequest = {
+        requestId: request.requestId,
+        encryptedProjectId,
+        projectIdIv,
+        encryptedToolName: toolNameEnc.encrypted,
+        toolNameIv: toolNameEnc.iv,
+        encryptedArgs: argsEnc.encrypted,
+        argsIv: argsEnc.iv,
+        timestamp: request.timestamp,
+      };
+
+      const msg: ClientMessage = { type: 'voiceToolRequest', request: wireRequest };
+      indexWs.send(JSON.stringify(msg));
+    },
+
+    /** Subscribe to voice-tool responses (mobile receives the desktop result). */
+    onVoiceToolResponse(callback: (response: VoiceToolResponse) => void): () => void {
+      voiceToolResponseListeners.add(callback);
+      return () => {
+        voiceToolResponseListeners.delete(callback);
       };
     },
 

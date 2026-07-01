@@ -110,6 +110,18 @@ export class AudioPlayback {
       // instead of audioContext.destination directly
       source.connect(this.streamDestination);
 
+      // Never schedule a chunk in the past. Within a single turn nextStartTime
+      // accumulates by buffer duration while currentTime advances in real time.
+      // If chunk delivery lags realtime over a long response, the cumulative
+      // scheduled duration falls behind elapsed time and nextStartTime drifts
+      // *before* currentTime. Calling source.start() with a past time makes Web
+      // Audio play that buffer immediately, so a backlog of tail chunks all fire
+      // at once and overlap -- heard as the voice "speeding up" (chipmunk) near
+      // the end of a response. Clamp to now so each chunk plays sequentially.
+      if (this.nextStartTime < this.audioContext.currentTime) {
+        this.nextStartTime = this.audioContext.currentTime;
+      }
+
       // Schedule playback
       source.start(this.nextStartTime);
 

@@ -150,6 +150,15 @@ export const voiceLastReportedFileAtom = atom<string | null>(null);
 export const voiceErrorAtom = atom<{ type: string; message: string } | null>(null);
 
 /**
+ * Transient reconnect state. True while the voice WebSocket dropped
+ * unexpectedly and is being re-established with backoff. Set by centralized
+ * listeners on voice-mode:reconnecting, cleared on voice-mode:reconnected,
+ * session start, or session end. A hard voiceErrorAtom is only set after
+ * reconnect attempts are exhausted.
+ */
+export const voiceReconnectingAtom = atom<boolean>(false);
+
+/**
  * Latest `voice-mode:preview-audio` event from main.
  *
  * Request-atom shape: each event bumps `version` and replaces `payload`.

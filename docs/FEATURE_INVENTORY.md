@@ -174,7 +174,9 @@ A concise reference of all features in the product. Keep this up to date as feat
 
 ## Voice Mode
 
-- Voice control via OpenAI Realtime API
+- Voice control via OpenAI Realtime API (gpt-realtime-2 by default, with automatic fallback to gpt-realtime)
+- Selectable model and reasoning effort in settings
+- Automatic reconnect with backoff on dropped connections (transient "reconnecting" state; voice/model preserved)
 - Live transcription streaming
 - Voice commands with countdown before submit
 - Interactive prompt answering (verbal AskUserQuestion, plan approval, git commit)
@@ -206,7 +208,9 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Context usage display
 - Queued prompt management
 - Hierarchical session navigation (workstream/worktree aware)
-- Mobile voice mode
+- Mobile voice mode (soft chime + haptic cue when the session connects and it's your turn to talk)
+- Mobile voice: asking the voice agent to start a new session opens it automatically on the device that asked
+- Mobile voice: the floating mic shows a tool-call indicator (animated ring + tool-icon badge) while the agent runs a tool
 
 ## Collaboration
 
@@ -332,6 +336,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Claude Code CLI sessions: raw-terminal drawer is vertically resizable and remembers its height and collapsed state per session
 - Claude Code CLI sessions: mid-session model switching from the model picker (drives the CLI's `/model` command; idle turns only)
 - Claude Fable 5 selectable across all Claude providers (chat, Claude Agent, Claude Code CLI)
+- Claude Sonnet 5 selectable across all Claude providers, with the previous Sonnet 4.6 still selectable as a pinned choice
 
 ## Settings
 

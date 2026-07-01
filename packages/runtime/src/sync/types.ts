@@ -250,6 +250,18 @@ export interface SyncProvider {
   /** Subscribe to session creation responses (for mobile to receive response from desktop) */
   onCreateSessionResponse?(callback: (response: CreateSessionResponse) => void): () => void;
 
+  /** Subscribe to voice-tool requests from other devices (desktop runs the tool). */
+  onVoiceToolRequest?(callback: (request: VoiceToolRequest) => void): () => void;
+
+  /** Send a voice-tool result back to the requesting device (desktop -> mobile). */
+  sendVoiceToolResponse?(response: VoiceToolResponse): Promise<void>;
+
+  /** Send a voice-tool request (mobile -> desktop). */
+  sendVoiceToolRequest?(request: VoiceToolRequest): Promise<void>;
+
+  /** Subscribe to voice-tool responses (mobile receives the desktop result). */
+  onVoiceToolResponse?(callback: (response: VoiceToolResponse) => void): () => void;
+
   /** Subscribe to worktree creation requests from other devices (e.g., mobile) */
   onCreateWorktreeRequest?(callback: (request: CreateWorktreeRequest) => void): () => void;
 
@@ -587,6 +599,41 @@ export interface CreateSessionResponse {
 }
 
 /**
+ * Generic voice-tool RPC: a mobile voice agent asks the desktop to run a
+ * voice-enabled tool (e.g. the Nimbalyst Memory extension's
+ * search_project_knowledge / recall / remember) and return the result.
+ * Sent via index WebSocket, processed by desktop. The desktop gates execution
+ * to tools flagged voiceAgent:true. toolName/args/result are E2E-encrypted on
+ * the wire (they carry project knowledge).
+ */
+export interface VoiceToolRequest {
+  /** Unique request ID for correlation */
+  requestId: string;
+  /** Project/workspace this call targets */
+  projectId: string;
+  /** Tool name (realtime-safe, e.g. "search_project_knowledge") */
+  toolName: string;
+  /** JSON-stringified tool arguments */
+  argsJson: string;
+  /** Timestamp when request was created */
+  timestamp: number;
+}
+
+/**
+ * Response to a voice-tool request. Sent by desktop after the tool runs.
+ */
+export interface VoiceToolResponse {
+  /** Request ID this is responding to */
+  requestId: string;
+  /** Whether the tool ran successfully */
+  success: boolean;
+  /** JSON-stringified tool result (success message / data), if any */
+  resultJson?: string;
+  /** Error message if the tool failed or was not permitted */
+  error?: string;
+}
+
+/**
  * Request to create a new git worktree from mobile.
  * Sent via index WebSocket, processed by desktop.
  */
@@ -654,6 +701,13 @@ export interface SyncedSettings {
   defaultModel?: string;
   /** Whether the desktop "meta-agent" alpha feature is enabled (gates the mobile Meta Agent UI) */
   metaAgentEnabled?: boolean;
+  /**
+   * Desktop's preferred agent language (BCP-47 or common language name). The
+   * voice agent pins its spoken language to this so mobile never starts up in a
+   * different language than the desktop is configured for. Empty/omitted means
+   * no preference -> the voice agent falls back to English.
+   */
+  preferredAgentLanguage?: string;
   /** Version for handling future upgrades */
   version: number;
 }
