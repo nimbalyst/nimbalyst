@@ -1030,6 +1030,32 @@ export class MessageStreamingHandler {
     };
     this.installListener(provider, 'teammates:allCompleted', onTeammatesAllCompleted);
 
+    // Listen for a background sub-agent drain settling. When the lead finished but
+    // a native (non-teammate) sub-agent was still running, endSession was deferred
+    // (willResumeAfterCompletion). Once the drain settles with no continuation, end
+    // the deferred session. Mirrors onTeammatesAllCompleted. See NIM-1344 / #732.
+    const onSubagentsDrainSettled = async (data: { sessionId: string }) => {
+      if (!data.sessionId) return;
+      if (!stateManager.isSessionActive(data.sessionId)) return;
+      const isLeadBusy = typeof (provider as any).isLeadBusy === 'function'
+        && (provider as any).isLeadBusy();
+      if (isLeadBusy) {
+        logger.main.info(`[AIService] Sub-agent drain settled for ${data.sessionId}, but lead is busy — deferring endSession`);
+        return;
+      }
+      // A queued/continuation turn may already be taking over; let it own the end.
+      if (this.svc.sessionsProcessingQueue.has(data.sessionId)) return;
+
+      logger.main.info(`[AIService] Sub-agent drain settled for session ${data.sessionId}, ending deferred session`);
+      await stateManager.endSession(data.sessionId);
+      await this.svc.hooklessWatcher.stopForSession(data.sessionId);
+      codexEditWindowRegistry.clearSession(data.sessionId);
+
+      const soundService = SoundNotificationService.getInstance();
+      soundService.playCompletionSound(workspacePath);
+    };
+    this.installListener(provider, 'subagents:drainSettled', onSubagentsDrainSettled);
+
     // Track user @ mentions in the message
     try {
       await sessionFileTracker.trackUserMessage(

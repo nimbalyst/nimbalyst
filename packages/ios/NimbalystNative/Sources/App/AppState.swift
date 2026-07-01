@@ -48,6 +48,11 @@ public final class AppState: ObservableObject {
     /// Voice mode agent. One instance shared across the app (iOS only).
     #if os(iOS)
     @Published public private(set) var voiceAgent: VoiceAgent?
+
+    /// Session the UI should navigate to because the voice agent just created it
+    /// on this device. Observed by the navigation views (iPhone stack / iPad
+    /// split) to open the new session. Set back to nil by the view once handled.
+    @Published public var voiceNavigationRequest: String?
     #endif
 
     private var cryptoManager: CryptoManager?
@@ -601,6 +606,18 @@ public final class AppState: ObservableObject {
             }
         }
 
+        // When the voice agent creates a session, switch this device's UI to it.
+        // Only the device that issued the request navigates (matched by requestId);
+        // other paired devices just see the session appear in their list.
+        sync.onSessionCreated = { [weak self, weak voice] requestId, sessionId in
+            Task { @MainActor in
+                guard let self, let voice,
+                      voice.consumePendingCreateSession(requestId: requestId) else { return }
+                voice.activeSessionId = sessionId
+                await self.navigateWhenSessionAvailable(sessionId)
+            }
+        }
+
         // Wire settings sync to update VoiceAgent and model list when settings arrive from desktop
         sync.onSettingsSynced = { [weak self, weak voice] settings in
             Task { @MainActor in
@@ -634,6 +651,25 @@ public final class AppState: ObservableObject {
         voice.configure(database: database, syncManager: sync, projectId: projectId)
         #endif
     }
+
+    #if os(iOS)
+    /// Publish a navigation request to the just-created session once its row has
+    /// synced into the local database. The `createSessionResponseBroadcast` can
+    /// arrive before the session's `indexBroadcast`, so we briefly wait for the
+    /// row rather than navigate to a session the views can't yet resolve.
+    @MainActor
+    private func navigateWhenSessionAvailable(_ sessionId: String) async {
+        for _ in 0..<25 { // ~5s max (25 * 200ms)
+            if let db = databaseManager, (try? db.session(byId: sessionId)) != nil {
+                voiceNavigationRequest = sessionId
+                return
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        // Fall back: navigate anyway; the view retries the row lookup itself.
+        voiceNavigationRequest = sessionId
+    }
+    #endif
 
     // MARK: - Screenshot Mode
 

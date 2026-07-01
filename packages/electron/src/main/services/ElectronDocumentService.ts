@@ -23,6 +23,7 @@ import {
 } from './tracker/trackerRelationshipIndexStore';
 import { propagateInverseRelationships } from './tracker/inverseRelationshipWrites';
 import { applyRelationshipFieldWrites } from './tracker/relationshipFieldWrite';
+import { nestRelationshipFieldsIntoCustomFields } from './tracker/relationshipFieldStorage';
 import { extractFrontmatter, extractCommonFields } from '../utils/frontmatterReader';
 import { VIRTUAL_DOCS, isVirtualPath } from '@nimbalyst/runtime';
 import {
@@ -1801,6 +1802,14 @@ export class ElectronDocumentService implements DocumentService {
       data[key] = value;
     }
 
+    const writtenFields = new Set(Object.keys(updates).filter((key) => key !== 'typeTags'));
+
+    // Relationship values must live under data.customFields (the durable synced
+    // shape). Route any relationship-typed field into the nested bag, preserving
+    // sibling custom fields and clearing the top-level shadow, so the value
+    // survives the sync re-serialization and inverse-write reads find it (NIM-1305).
+    nestRelationshipFieldsIntoCustomFields(data, globalRegistry.get(row.type)?.fields ?? [], { writtenFields });
+
     await database.query(
       `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
       [JSON.stringify(data), row.id]
@@ -1821,6 +1830,60 @@ export class ElectronDocumentService implements DocumentService {
     this.trackerItemWatchers.forEach(callback => callback(changeEvent));
 
     return updated;
+  }
+
+  /**
+   * Materialize inverse relationship fields on target items after a source item's
+   * relationship field changed (Phase 3). Shared by the IPC update handler and the
+   * MCP `tracker_update` path so the two can't drift (NIM-1305 Defect A).
+   *
+   * Each inverse target write goes through `updateTrackerItem` (which nests the
+   * value under data.customFields and broadcasts a complete record), then the same
+   * sync gate + relationship reindex as the source. `propagateInverseRelationships`
+   * reads the target's existing inverse array customFields-aware, so adding one
+   * link preserves the target's other links. Loop-safe: targets are written via
+   * `updateTrackerItem`, never by re-entering this method.
+   */
+  async propagateInverseForUpdate(
+    source: { id: string; type: string; issueKey?: string; title?: string },
+    changedFields: Record<string, unknown>,
+    oldData: Record<string, unknown>,
+    syncMode?: string,
+  ): Promise<void> {
+    await propagateInverseRelationships(
+      source,
+      changedFields,
+      oldData,
+      {
+        loadItem: async (id) => {
+          const row = await database.query<any>(`SELECT id, type, data FROM tracker_items WHERE id = $1`, [id]);
+          if (!row.rows[0]) return null;
+          return {
+            id: row.rows[0].id,
+            type: row.rows[0].type,
+            data: parseJsonColumn<Record<string, unknown>>(row.rows[0].data) ?? {},
+          };
+        },
+        applyTargetUpdate: async (targetId, fieldName, value) => {
+          const target = await this.updateTrackerItem(targetId, { [fieldName]: value });
+          const targetPolicy = getEffectiveTrackerSyncPolicy(target.workspace, target.type, syncMode);
+          if (shouldSyncTrackerItem(targetPolicy, target)) {
+            if (isTrackerSyncActive(target.workspace)) {
+              await syncTrackerItem(target);
+            } else {
+              await this.updateTrackerItemSyncStatus(target.id, 'pending');
+            }
+          }
+          const targetDefs = globalRegistry.get(target.type)?.fields ?? [];
+          const targetData = await database.query<any>(`SELECT data, updated FROM tracker_items WHERE id = $1`, [target.id]);
+          const td = parseJsonColumn<Record<string, unknown>>(targetData.rows[0]?.data) ?? {};
+          const updatedAt = targetData.rows[0]?.updated
+            ? (typeof targetData.rows[0].updated === 'string' ? targetData.rows[0].updated : new Date(targetData.rows[0].updated).toISOString())
+            : null;
+          await reindexItemRelationships(target.workspace, target.id, td, targetDefs, updatedAt, database as any);
+        },
+      },
+    );
   }
 
   /**
@@ -3606,43 +3669,15 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
         // console.log('[DocumentService] update-tracker-item no sync: effective mode =', syncPolicy.mode);
       }
 
-      // Phase 3: materialize inverse relationship fields on target items. Applies
-      // each target write through the same update+sync+reindex flow as the source
-      // (never re-entering this handler, so no inverse-of-inverse loop).
+      // Phase 3: materialize inverse relationship fields on target items via the
+      // shared, customFields-aware helper (same path the MCP tracker_update handler
+      // uses, so the two can't drift — NIM-1305 Defect A).
       try {
-        await propagateInverseRelationships(
+        await svc.propagateInverseForUpdate(
           { id: item.id, type: item.type, issueKey: item.issueKey, title: item.title },
           updates,
           oldData,
-          {
-            loadItem: async (id) => {
-              const row = await database.query<any>(`SELECT id, type, data FROM tracker_items WHERE id = $1`, [id]);
-              if (!row.rows[0]) return null;
-              return {
-                id: row.rows[0].id,
-                type: row.rows[0].type,
-                data: parseJsonColumn<Record<string, unknown>>(row.rows[0].data) ?? {},
-              };
-            },
-            applyTargetUpdate: async (targetId, fieldName, value) => {
-              const target = await svc.updateTrackerItem(targetId, { [fieldName]: value });
-              const targetPolicy = getEffectiveTrackerSyncPolicy(target.workspace, target.type, payload.syncMode);
-              if (shouldSyncTrackerItem(targetPolicy, target)) {
-                if (isTrackerSyncActive(target.workspace)) {
-                  await syncTrackerItem(target);
-                } else {
-                  await svc.updateTrackerItemSyncStatus(target.id, 'pending');
-                }
-              }
-              const targetDefs = globalRegistry.get(target.type)?.fields ?? [];
-              const targetData = await database.query<any>(`SELECT data, updated FROM tracker_items WHERE id = $1`, [target.id]);
-              const td = parseJsonColumn<Record<string, unknown>>(targetData.rows[0]?.data) ?? {};
-              const updatedAt = targetData.rows[0]?.updated
-                ? (typeof targetData.rows[0].updated === 'string' ? targetData.rows[0].updated : new Date(targetData.rows[0].updated).toISOString())
-                : null;
-              await reindexItemRelationships(target.workspace, target.id, td, targetDefs, updatedAt, database as any);
-            },
-          },
+          payload.syncMode,
         );
       } catch (invErr) {
         console.error('[DocumentService] inverse relationship propagation failed:', invErr);

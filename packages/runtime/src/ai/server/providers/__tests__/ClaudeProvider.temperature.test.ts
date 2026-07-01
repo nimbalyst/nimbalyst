@@ -61,7 +61,24 @@ describe('ClaudeProvider.supportsTemperature', () => {
     });
   });
 
-  describe('accepts temperature for all Sonnet variants', () => {
+  describe('rejects temperature for Sonnet 5+', () => {
+    it('returns false for claude-sonnet-5', () => {
+      // Sonnet 5 adopted the Opus 4.7+ posture: adaptive thinking, effort
+      // parameter, and no sampling parameters (temperature returns HTTP 400).
+      expect(ClaudeProvider.supportsTemperature('claude-sonnet-5')).toBe(false);
+    });
+
+    it('returns false for a future dated/minor Sonnet 5 id', () => {
+      expect(ClaudeProvider.supportsTemperature('claude-sonnet-5-1')).toBe(false);
+      expect(ClaudeProvider.supportsTemperature('claude-sonnet-6')).toBe(false);
+    });
+
+    it('matches case-insensitively', () => {
+      expect(ClaudeProvider.supportsTemperature('CLAUDE-SONNET-5')).toBe(false);
+    });
+  });
+
+  describe('accepts temperature for Sonnet 4.x and legacy Sonnet', () => {
     it('returns true for Sonnet 4.6', () => {
       expect(ClaudeProvider.supportsTemperature('claude-sonnet-4-6')).toBe(true);
     });
@@ -80,8 +97,8 @@ describe('ClaudeProvider.supportsTemperature', () => {
 
     it('does NOT classify Sonnet 4.7 as Opus 4.7 (different family)', () => {
       // If Anthropic ever ships claude-sonnet-4-7 the regex must NOT match
-      // the opus-only pattern. Sonnet has not been reported as deprecating
-      // temperature at any version, so this stays true.
+      // the opus-only pattern. The Sonnet 4.x line still accepts temperature
+      // (only Sonnet 5+ deprecated it), so these stay true.
       expect(ClaudeProvider.supportsTemperature('claude-sonnet-4-7')).toBe(true);
       expect(ClaudeProvider.supportsTemperature('claude-sonnet-4-99')).toBe(true);
     });

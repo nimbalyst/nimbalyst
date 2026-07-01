@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.66.5",
+  "version": "0.66.6",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -50,8 +50,8 @@
     "marketing:screenshots:grep": "playwright test --config=marketing/playwright.marketing.config.ts --grep"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.186",
-    "@anthropic-ai/sdk": "^0.100.1",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.197",
+    "@anthropic-ai/sdk": "^0.109.0",
     "@electric-sql/pglite": "0.3.14",
     "@electron-toolkit/utils": "^4.0.0",
     "@excalidraw/excalidraw": "0.17.6",

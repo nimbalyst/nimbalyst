@@ -174,7 +174,9 @@ A concise reference of all features in the product. Keep this up to date as feat
 
 ## Voice Mode
 
-- Voice control via OpenAI Realtime API
+- Voice control via OpenAI Realtime API (gpt-realtime-2 by default, with automatic fallback to gpt-realtime)
+- Selectable model and reasoning effort in settings
+- Automatic reconnect with backoff on dropped connections (transient "reconnecting" state; voice/model preserved)
 - Live transcription streaming
 - Voice commands with countdown before submit
 - Interactive prompt answering (verbal AskUserQuestion, plan approval, git commit)
@@ -185,7 +187,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Backend-module voice/agent tools — an extension's utility-process can register MCP tools dispatched in-process (no renderer hop), enabling native engines to answer the voice and coding agents sub-second
 - Project-knowledge grounding (Nimbalyst Memory extension) — local hybrid search over your design docs, plans, CLAUDE.md, and notes, available to the voice and coding agents
 - Hands-free brainstorm loop — talk an idea through, kick off a plan (`/design`), have the agent read the written plan back to refine it by voice, then `/implement`; ask "is it done yet?" anytime for live task status
-- Voice agent tool calls (memory lookups, coding-agent questions, and more) are recorded in the voice session transcript and render as tool widgets
+- Voice agent tool calls (memory lookups, coding-agent questions, and more) are recorded in the voice session transcript and render as tool widgets, including a dedicated memory-recall widget showing the query and the returned source documents (title + snippet)
 - Available on both desktop and iOS
 
 ## Mobile (iOS)
@@ -206,7 +208,9 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Context usage display
 - Queued prompt management
 - Hierarchical session navigation (workstream/worktree aware)
-- Mobile voice mode
+- Mobile voice mode (soft chime + haptic cue when the session connects and it's your turn to talk)
+- Mobile voice: asking the voice agent to start a new session opens it automatically on the device that asked
+- Mobile voice: the floating mic shows a tool-call indicator (animated ring + tool-icon badge) while the agent runs a tool
 
 ## Collaboration
 
@@ -332,6 +336,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Claude Code CLI sessions: raw-terminal drawer is vertically resizable and remembers its height and collapsed state per session
 - Claude Code CLI sessions: mid-session model switching from the model picker (drives the CLI's `/model` command; idle turns only)
 - Claude Fable 5 selectable across all Claude providers (chat, Claude Agent, Claude Code CLI)
+- Claude Sonnet 5 selectable across all Claude providers, with the previous Sonnet 4.6 still selectable as a pinned choice
 
 ## Settings
 

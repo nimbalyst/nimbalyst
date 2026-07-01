@@ -29,6 +29,15 @@ import { onSettingChanged } from './settingAtomFamily';
 // Voice type - all available OpenAI Realtime voices
 export type VoiceId = 'alloy' | 'ash' | 'ballad' | 'coral' | 'echo' | 'sage' | 'shimmer' | 'verse' | 'marin' | 'cedar';
 
+// Selectable OpenAI Realtime speech-to-speech models. gpt-realtime-2 is the
+// default (GPT-5-class reasoning, 128K context, more consistent voice rendering);
+// gpt-realtime is the fallback for accounts/regions without gpt-realtime-2 access.
+export type RealtimeModel = 'gpt-realtime-2' | 'gpt-realtime';
+
+// Realtime reasoning-effort throttle (latency vs answer quality). Default 'low'
+// for a voice relay; higher = smarter but slower.
+export type RealtimeReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+
 export interface TurnDetectionConfig {
   mode: 'server_vad' | 'push_to_talk';
   vadThreshold?: number;
@@ -44,6 +53,10 @@ export interface SystemPromptConfig {
 export interface VoiceModeSettings {
   enabled: boolean;
   voice: VoiceId;
+  /** OpenAI Realtime speech-to-speech model. Default 'gpt-realtime-2'. */
+  model: RealtimeModel;
+  /** Reasoning-effort throttle for the realtime model. Default 'low'. */
+  reasoningEffort: RealtimeReasoningEffort;
   turnDetection: TurnDetectionConfig;
   voiceAgentPrompt: SystemPromptConfig;
   codingAgentPrompt: SystemPromptConfig;
@@ -58,6 +71,8 @@ export interface VoiceModeSettings {
 const defaultVoiceModeSettings: VoiceModeSettings = {
   enabled: false,
   voice: 'alloy',
+  model: 'gpt-realtime-2',
+  reasoningEffort: 'low',
   turnDetection: {
     mode: 'server_vad',
     vadThreshold: 0.5,
@@ -188,6 +203,8 @@ export async function initVoiceModeSettings(): Promise<VoiceModeSettings> {
       return {
         enabled: settings.enabled || false,
         voice: settings.voice || 'alloy',
+        model: settings.model ?? defaultVoiceModeSettings.model,
+        reasoningEffort: settings.reasoningEffort ?? defaultVoiceModeSettings.reasoningEffort,
         turnDetection: settings.turnDetection || defaultVoiceModeSettings.turnDetection,
         voiceAgentPrompt: settings.voiceAgentPrompt || {},
         codingAgentPrompt: settings.codingAgentPrompt || {},

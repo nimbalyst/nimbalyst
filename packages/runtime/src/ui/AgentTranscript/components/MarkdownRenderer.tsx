@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import type { PluggableList } from 'unified';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -294,6 +294,28 @@ function isAbsoluteFilePath(filePath: string): boolean {
 }
 
 /**
+ * Matches a Windows drive-letter absolute path, tolerating a single spurious
+ * leading slash (`/D:/...`) that some link sources prepend. Capture group 1 is
+ * the normalized path without the leading slash (e.g. `D:/work/foo.pas`).
+ */
+const WINDOWS_DRIVE_PATH_RE = /^\/?([A-Za-z]:[\\/].*)$/;
+
+/**
+ * react-markdown's `defaultUrlTransform` treats a Windows drive letter (`D:`)
+ * as a URL scheme. Since `d:` isn't an allowed protocol it blanks the href to
+ * `''`, which made Windows file links render as `<a href="">` and open a blank
+ * window on click (GitHub #744). Preserve Windows absolute paths verbatim and
+ * delegate everything else to the default so `javascript:`/`data:` links stay
+ * sanitized.
+ */
+export function transcriptUrlTransform(url: string): string {
+  if (WINDOWS_DRIVE_PATH_RE.test(url) || url.startsWith('\\\\')) {
+    return url;
+  }
+  return defaultUrlTransform(url);
+}
+
+/**
  * Returns the tracker reference key for a `nimbalyst://<key>` href, or null.
  */
 export function parseTrackerReferenceHref(href?: string): string | null {
@@ -330,11 +352,21 @@ export function resolveTranscriptFilePathFromHref(href?: string): string | null 
       return null;
     }
   } else {
-    // Keep web links (https:, mailto:, etc.) as external links.
-    if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(trimmedHref)) {
-      return null;
+    // A Windows drive-letter absolute path (`D:\...`, `D:/...`, or the
+    // leading-slash-mangled `/D:/...`) superficially looks like a URI with a
+    // `d:` scheme. Detect and normalize it (dropping the spurious leading
+    // slash) before the external-scheme rejection below, otherwise these
+    // links are treated as external URLs and open a blank window (#744).
+    const windowsDrive = trimmedHref.match(WINDOWS_DRIVE_PATH_RE);
+    if (windowsDrive) {
+      candidate = safeDecodeURIComponent(stripQueryAndHash(windowsDrive[1]));
+    } else {
+      // Keep web links (https:, mailto:, etc.) as external links.
+      if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(trimmedHref)) {
+        return null;
+      }
+      candidate = safeDecodeURIComponent(stripQueryAndHash(trimmedHref));
     }
-    candidate = safeDecodeURIComponent(stripQueryAndHash(trimmedHref));
   }
 
   let cleanedPath = stripLineAndColumnSuffix(candidate);
@@ -417,6 +449,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
+        urlTransform={transcriptUrlTransform}
         components={{
           // Code blocks with syntax highlighting
           code({ node, inline, className, children, ...props }: any) {

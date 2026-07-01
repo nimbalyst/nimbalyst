@@ -26,6 +26,20 @@ final class RealtimeClient {
     private(set) var hasActiveResponse = false
     private var functionCallBuffer: [String: String] = [:]  // call_id -> accumulated arguments
 
+    /// Serialize responses. Overlapping responses (e.g. several tool results each
+    /// triggering response.create) interleave their audio deltas into one playback
+    /// buffer -> garbled speech. `responseInFlight` is true between sending
+    /// response.create and the matching response.done; while it (or
+    /// hasActiveResponse) is set, a new request is coalesced into a single
+    /// follow-up sent after the active response finishes.
+    private var responseInFlight = false
+    private var pendingResponseRequest = false
+
+    /// After a barge-in cancel, audio deltas for the cancelled response may still
+    /// be in flight over the socket. Drop them until the next response starts so
+    /// the agent's voice doesn't briefly resume after the user interrupted.
+    private var discardingAudio = false
+
     // MARK: - Callbacks
 
     var onConnected: (() -> Void)?
@@ -35,6 +49,7 @@ final class RealtimeClient {
     var onAudioDone: (() -> Void)?
     var onTextDelta: ((String) -> Void)?
     var onFunctionCall: ((String, String, String) -> Void)?  // name, arguments JSON, call_id
+    var onFunctionResultSent: ((String) -> Void)?  // call_id — fired when a tool result is sent
     var onSpeechStarted: (() -> Void)?
     var onSpeechStopped: (() -> Void)?
     var onError: ((String, String) -> Void)?       // type, message
@@ -96,6 +111,9 @@ final class RealtimeClient {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         hasActiveResponse = false
+        responseInFlight = false
+        pendingResponseRequest = false
+        discardingAudio = false
         currentResponseId = nil
         functionCallBuffer.removeAll()
         // Don't call onDisconnected here - that's for unexpected disconnects only.
@@ -118,14 +136,39 @@ final class RealtimeClient {
         sendEvent(["type": "input_audio_buffer.commit"])
     }
 
-    /// Cancel the current response (user interruption).
+    /// Cancel the current response (user interruption / barge-in). Optimistically
+    /// clears local response state so a racing "no active response" error isn't
+    /// produced, drops any queued follow-up, and discards in-flight audio.
     func cancelResponse() {
         sendEvent(["type": "response.cancel"])
+        hasActiveResponse = false
+        responseInFlight = false
+        pendingResponseRequest = false
+        discardingAudio = true
     }
 
-    /// Request a new response from the assistant.
+    /// Request a new response from the assistant. Serialized: if a response is
+    /// already active or in flight, the request is coalesced and a single
+    /// follow-up is sent after the active response's response.done.
     func createResponse() {
+        if hasActiveResponse || responseInFlight {
+            pendingResponseRequest = true
+            return
+        }
+        sendResponseCreate()
+    }
+
+    private func sendResponseCreate() {
+        responseInFlight = true
+        pendingResponseRequest = false
         sendEvent(["type": "response.create"])
+    }
+
+    /// Send a coalesced follow-up response once the prior one finished, unless a
+    /// barge-in cleared it.
+    private func flushPendingResponse() {
+        guard pendingResponseRequest, !hasActiveResponse, !responseInFlight else { return }
+        sendResponseCreate()
     }
 
     /// Send a function call result back to the conversation.
@@ -138,6 +181,7 @@ final class RealtimeClient {
                 "output": output,
             ],
         ])
+        onFunctionResultSent?(callId)
         // Trigger a new response after providing tool result
         createResponse()
     }
@@ -281,16 +325,21 @@ final class RealtimeClient {
                 currentResponseId = response["id"] as? String
             }
             hasActiveResponse = true
+            responseInFlight = true
+            discardingAudio = false
             onResponseCreated?()
 
         case "response.done":
             hasActiveResponse = false
+            responseInFlight = false
             textDeltaCount = 0
             handleResponseDone(json)
             onResponseDone?()
+            flushPendingResponse()
 
         // GA event is response.output_audio.delta; the beta name is kept for safety.
         case "response.output_audio.delta", "response.audio.delta":
+            if discardingAudio { break }
             audioResponseChunks += 1
             if let delta = json["delta"] as? String {
                 onAudioDelta?(delta)
@@ -328,8 +377,18 @@ final class RealtimeClient {
             if let error = json["error"] as? [String: Any] {
                 let errorType = error["type"] as? String ?? "unknown"
                 let message = error["message"] as? String ?? "Unknown error"
+                // A cancel that races a response finishing is harmless -- we
+                // already cleared local state in cancelResponse(). Don't surface it.
+                if message.contains("no active response") || message.contains("Cancellation failed") {
+                    logger.debug("Ignoring benign cancel race: \(message)")
+                    break
+                }
                 logger.error("Realtime API error [\(errorType)]: \(message)")
+                // The in-flight response failed -- release the serialization lock
+                // so a coalesced follow-up can still be sent.
+                responseInFlight = false
                 onError?(errorType, message)
+                flushPendingResponse()
             }
 
         case "response.output_audio_transcript.delta", "response.output_audio_transcript.done",
@@ -413,6 +472,9 @@ final class RealtimeClient {
 
         task = nil
         hasActiveResponse = false
+        responseInFlight = false
+        pendingResponseRequest = false
+        discardingAudio = false
         currentResponseId = nil
 
         guard !isIntentionallyClosed else { return }

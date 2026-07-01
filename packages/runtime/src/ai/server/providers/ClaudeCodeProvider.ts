@@ -99,6 +99,13 @@ import { ClaudeCodeDeps } from './claudeCode/dependencyInjection';
 import { buildSdkOptions, type PromptStreamController } from './claudeCode/sdkOptionsBuilder';
 import { resolveEffectiveSessionMode } from './claudeCode/resolveEffectiveSessionMode';
 import {
+  hasRunningTasks as computeHasRunningTasks,
+  shouldDeferTeardownForSubagents,
+  shouldExitDrain,
+  classifyDrainOutcome,
+  type DrainExitCause,
+} from './claudeCode/subagentDrain';
+import {
   isBunRuntimeSpawnCrash,
   collectSpawnCrashDiagnostics,
   armAgentSdkDebugLogging,
@@ -209,6 +216,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   // `result` chunk. Reset on every subsequent chunk so multi-result turns
   // (compaction, etc.) keep stdin open until the binary truly stops emitting.
   private promptEndTimer: ReturnType<typeof setTimeout> | null = null;
+  // True once the lead turn's `complete` has been emitted but the streaming loop
+  // is still iterating to drain background sub-agents that outlived the turn.
+  // See subagentDrain.ts and NIM-1344 / GitHub #732.
+  private drainingBackgroundTasks: boolean = false;
+  // Why the current streaming loop stopped iterating. Set at each loop-exit point
+  // so finalizeBackgroundDrain() can tell a user stop / supersede (no continuation)
+  // apart from an unexpected sub-agent death (auto-continue). Reset each turn.
+  private drainExitCause: DrainExitCause = 'resolved';
 
   // Teammate management: spawning, messaging, lifecycle, config I/O
   private teammateManager: TeammateManager;
@@ -738,6 +753,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
       this.leadQuery = leadQuery as unknown as Query;
       this.teammateIdleMessagePending = false;
+      // Reset per-turn background-drain state (defensive; also reset in finally).
+      this.drainingBackgroundTasks = false;
+      this.drainExitCause = 'resolved';
       const queryIterator = leadQuery as AsyncIterable<any>;
       const queryCallDuration = Date.now() - queryCallStart;
       if (queryCallDuration > 5000) {
@@ -786,14 +804,22 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // If diagnostic logs still show STREAM_CLOSED_DIAGNOSTIC after
       // RESULT_MESSAGE_RECEIVED on a session with this fix, bump further.
       const PROMPT_GRACE_MS = 30_000;
+      // While a background sub-agent is still running after the lead's turn ended,
+      // stdin must stay open far longer than the 30s task-list grace window. The
+      // timer still resets on every chunk (incl. task_progress), so this is a
+      // no-activity STALL detector, not a blind fixed cap: an actively-working
+      // sub-agent never trips it, while a genuinely stuck one is eventually reaped
+      // (avoiding the #320 "Stream closed" hang). See NIM-1344 / GitHub #732.
+      const SUBAGENT_DRAIN_GRACE_MS = 5 * 60_000;
       const armPromptEndTimer = (reason: string) => {
         if (this.promptEndTimer) {
           clearTimeout(this.promptEndTimer);
         }
+        const delay = this.hasRunningTasks() ? SUBAGENT_DRAIN_GRACE_MS : PROMPT_GRACE_MS;
         this.promptEndTimer = setTimeout(() => {
           this.promptEndTimer = null;
           this.promptController?.end(reason);
-        }, PROMPT_GRACE_MS);
+        }, delay);
       };
       // Track tool calls by ID so we can update them with results
       const toolCallsById: Map<string, any> = new Map();
@@ -835,6 +861,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           // Check for abort signal before each iteration
           if (this.abortController?.signal.aborted) {
             console.log('[CLAUDE-CODE] Abort signal detected in streaming loop, breaking out');
+            this.drainExitCause = 'aborted';
             break;
           }
 
@@ -844,11 +871,15 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
           if (raceResult === 'interrupted') {
             console.log('[CLAUDE-CODE] Interrupt signal received, breaking streaming loop');
+            this.drainExitCause = 'interrupted';
             break;
           }
 
           const iterResult = raceResult as IteratorResult<any>;
-          if (iterResult.done) break;
+          if (iterResult.done) {
+            this.drainExitCause = 'iterator-done';
+            break;
+          }
           const rawChunk = iterResult.value;
 
           const chunk = rawChunk as any;
@@ -956,6 +987,15 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           const parsed = transcriptAdapter?.processChunk(chunk) ?? [];
           let breakOuter = false;
           for (const item of parsed) {
+            // While draining background sub-agents AFTER the lead turn already
+            // emitted `complete`, the only items we still act on are sub-agent
+            // task lifecycle events (system_task → activeTasks). Everything else
+            // here — sub-agent assistant text, tool calls, usage — must NOT be
+            // yielded: the consumer already received isComplete:true and any further
+            // text would mutate the finished parent response. See NIM-1344 / #732 (Medium).
+            if (completeEmitted && this.drainingBackgroundTasks && item.kind !== 'system_task') {
+              continue;
+            }
             switch (item.kind) {
               case 'text':
                 fullContent += item.text;
@@ -1259,6 +1299,16 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
             transcriptAdapter?.turnEnded(usageData, modelUsageData);
 
+            // Decide BEFORE yielding `complete` whether background sub-agents will
+            // keep this turn draining. The consumer runs willResumeAfterCompletion()
+            // synchronously while handling `complete` to decide whether to end the
+            // session; the flag must already be set or the deferral (and any later
+            // continuation) is lost. See NIM-1344 / GitHub #732 (High).
+            const willDrainSubagents = shouldDeferTeardownForSubagents(this.hasRunningTasks());
+            if (willDrainSubagents) {
+              this.drainingBackgroundTasks = true;
+            }
+
             yield {
               type: 'complete',
               isComplete: true,
@@ -1293,6 +1343,26 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             // Teammate drainage at the next block reads from the same
             // leadQuery iterator if pending messages exist, so that flow
             // still works.
+            //
+            // EXCEPTION (NIM-1344 / #732): if a background sub-agent is still
+            // running (activeTasks), do NOT break. The SDK streams that
+            // sub-agent's task_progress/task_notification as later chunks on
+            // this same iterator; breaking here would close stdin and kill it,
+            // and its terminal notification would never reach handleSystemTask.
+            // Keep draining until every task reports a terminal status (or the
+            // loop exits for another reason, handled by finalizeBackgroundDrain).
+            if (willDrainSubagents) {
+              console.log(`[CLAUDE-CODE] SUBAGENT_DRAIN: lead turn complete but ${this.activeTasks.size} sub-agent task(s) still running; deferring teardown to drain`);
+              continue;
+            }
+            break;
+          }
+
+          // While draining background sub-agents after `complete` was emitted,
+          // exit as soon as every task has reported a terminal status.
+          if (shouldExitDrain(completeEmitted, this.drainingBackgroundTasks, this.hasRunningTasks())) {
+            this.drainExitCause = 'resolved';
+            console.log('[CLAUDE-CODE] SUBAGENT_DRAIN: all background sub-agent task(s) resolved; ending drain loop');
             break;
           }
         }
@@ -1300,6 +1370,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         // Don't log abort errors - they're expected when user cancels
         const errMessage = (iterError as Error).message || '';
         const isAbort = (iterError as any).name === 'AbortError' || errMessage.includes('aborted');
+        // Classify for finalizeBackgroundDrain: an abort/supersede while draining
+        // is NOT an unexpected death (no continuation); any other throw is.
+        this.drainExitCause = isAbort ? 'aborted' : 'iterator-error';
         if (!isAbort) {
           console.error('[CLAUDE-CODE] Error during iteration:', iterError);
           console.error('[CLAUDE-CODE] Error stack:', (iterError as Error).stack);
@@ -1625,6 +1698,16 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         this.promptController.end('sendMessage-finally');
         this.promptController = null;
       }
+
+      // Finalize any deferred background sub-agent drain. Runs here — AFTER
+      // leadQuery is nulled and the prompt controller is ended — so the
+      // subagents:drainSettled handler's isLeadBusy() check reads false and can
+      // actually release the deferred session. Reads drainExitCause /
+      // drainingBackgroundTasks, so reset those only afterward. NIM-1344 / #732.
+      this.finalizeBackgroundDrain(sessionId);
+      this.drainingBackgroundTasks = false;
+      this.drainExitCause = 'resolved';
+
       // Note: markMessagesAsHidden is reset at the START of sendMessage to prevent race conditions
 
       this.handlePostLeadTurnTeammateState(sessionId, hideMessages);
@@ -2105,7 +2188,13 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
    * Used by AIService's 'complete' chunk handler.
    */
   public willResumeAfterCompletion(): boolean {
-    return this.teammateIdleMessagePending || this.teammateManager.hasPendingTeammateMessages();
+    return this.teammateIdleMessagePending
+      || this.teammateManager.hasPendingTeammateMessages()
+      // A background sub-agent is still running (or being drained) after the lead's
+      // turn ended. endSession must be deferred so finalizeBackgroundDrain()'s later
+      // continuation / settle isn't dropped for an inactive session. NIM-1344 / #732.
+      || this.drainingBackgroundTasks
+      || this.hasRunningTasks();
   }
 
   /**
@@ -2200,6 +2289,72 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     }
   }
 
+  /** True if any tracked SDK-native sub-agent task is still running. */
+  private hasRunningTasks(): boolean {
+    return computeHasRunningTasks(this.activeTasks.values());
+  }
+
+  /**
+   * Called from the sendMessage finally block. When we deferred teardown to drain
+   * background sub-agents (drainingBackgroundTasks) but the loop exited with tasks
+   * still running, mark those tasks stopped and — only when the death was
+   * unexpected (the SDK iterator ended/threw, not a user stop or supersede) —
+   * nudge the orchestrator with a VISIBLE continuation turn so it doesn't idle
+   * forever waiting for a result that will never arrive. See NIM-1344 / #732.
+   */
+  private finalizeBackgroundDrain(sessionId: string | undefined): void {
+    // Only meaningful when we actually deferred teardown to drain sub-agents.
+    // Normal turns never enter this branch (zero behavior change).
+    if (!this.drainingBackgroundTasks) return;
+
+    const outcome = classifyDrainOutcome({
+      wasDraining: true,
+      hasRunningTasks: this.hasRunningTasks(),
+      cause: this.drainExitCause,
+    });
+
+    if (outcome.markStopped) {
+      const stranded: string[] = [];
+      for (const task of this.activeTasks.values()) {
+        if (task.status === 'running') {
+          task.status = 'stopped';
+          stranded.push(task.description || task.taskId);
+        }
+      }
+      console.warn(`[CLAUDE-CODE] SUBAGENT_DRAIN: loop exited (cause=${this.drainExitCause}) with ${stranded.length} unresolved sub-agent task(s); marking stopped. autoContinue=${outcome.autoContinue}. tasks=[${stranded.join(', ')}]`);
+      this.emitTaskUpdate(sessionId).catch(() => {});
+    }
+
+    if (outcome.autoContinue && sessionId) {
+      // Visible continuation: delivered as a fresh user turn via the idle-message
+      // path, so both the orchestrator and the user see why delegation was
+      // abandoned. teammateIdleMessagePending keeps the (deferred) session alive
+      // until that turn runs and ends it. Not a silent internal nudge.
+      this.teammateIdleMessagePending = true;
+      this.emit('teammate:messageWhileIdle', {
+        sessionId,
+        message:
+          '[System: A sub-agent you launched did not finish — its process was interrupted before returning results. Do not keep waiting for it; continue without it, or retry the delegation if the work still matters.]',
+      });
+      return;
+    }
+
+    // No continuation (clean resolve, or a user stop / supersede). endSession was
+    // deferred while draining (willResumeAfterCompletion), so release it now that
+    // the drain has settled — unless teammate work is still keeping the session
+    // alive (that path ends it via teammates:allCompleted). Emitted from the
+    // finally block AFTER leadQuery is nulled, so the handler's isLeadBusy() check
+    // reads false. See NIM-1344 / GitHub #732 (High).
+    if (
+      sessionId
+      && !this.teammateManager.hasActiveTeammates()
+      && !this.teammateManager.hasPendingTeammateMessages()
+    ) {
+      console.log(`[CLAUDE-CODE] SUBAGENT_DRAIN: drain settled (cause=${this.drainExitCause}); releasing deferred session end for ${sessionId}`);
+      this.emit('subagents:drainSettled', { sessionId });
+    }
+  }
+
   /** Handle system task chunks (task_started, task_progress, task_notification) */
   private handleSystemTask(subtype: string, chunk: any, sessionId: string | undefined): void {
     if (subtype === 'task_started') {
@@ -2214,6 +2369,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         tokenCount: 0,
         durationMs: 0,
       });
+      console.log(`[CLAUDE-CODE] SUBAGENT_TASK started: id=${chunk.task_id} type=${chunk.task_type ?? 'n/a'} desc="${(chunk.description || '').substring(0, 80)}"`);
       this.emitTaskUpdate(sessionId).catch(() => {});
     } else if (subtype === 'task_progress') {
       const existing = this.activeTasks.get(chunk.task_id);
@@ -2234,6 +2390,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           existing.tokenCount = chunk.usage.total_tokens ?? existing.tokenCount;
           existing.durationMs = chunk.usage.duration_ms ?? existing.durationMs;
         }
+        console.log(`[CLAUDE-CODE] SUBAGENT_TASK notification: id=${chunk.task_id} status=${existing.status} draining=${this.drainingBackgroundTasks}`);
         this.emitTaskUpdate(sessionId).catch(() => {});
       }
     }
