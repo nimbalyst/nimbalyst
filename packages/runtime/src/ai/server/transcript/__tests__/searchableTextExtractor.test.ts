@@ -183,6 +183,58 @@ describe('searchableTextExtractor', () => {
       });
       expect(r).toEqual({ searchableText: null, messageKind: 'meta' });
     });
+
+    // App-server transport (production default) wraps notifications as
+    // { method, params } with assistant text at params.item.text. Regression
+    // guard for #692: these must classify as assistant, not meta.
+    it('extracts assistant text from app-server item/completed agentMessage', () => {
+      const r = extractSearchable({
+        source: 'openai-codex',
+        direction: 'output',
+        content: JSON.stringify({
+          method: 'item/completed',
+          params: { item: { type: 'agentMessage', text: 'final answer' } },
+        }),
+        metadata: { transport: 'app-server', eventType: 'item/completed' },
+      });
+      expect(r).toEqual({ searchableText: 'final answer', messageKind: 'assistant' });
+    });
+
+    it('extracts assistant text from app-server item/updated agentMessage', () => {
+      const r = extractSearchable({
+        source: 'openai-codex',
+        direction: 'output',
+        content: JSON.stringify({
+          method: 'item/updated',
+          params: { item: { type: 'agentMessage', text: 'streamed answer' } },
+        }),
+      });
+      expect(r).toEqual({ searchableText: 'streamed answer', messageKind: 'assistant' });
+    });
+
+    it('classifies app-server reasoning items as meta (no assistant prose)', () => {
+      const r = extractSearchable({
+        source: 'openai-codex',
+        direction: 'output',
+        content: JSON.stringify({
+          method: 'item/completed',
+          params: { item: { type: 'reasoning', text: 'thinking out loud' } },
+        }),
+      });
+      expect(r).toEqual({ searchableText: null, messageKind: 'meta' });
+    });
+
+    it('classifies app-server turn/completed bookkeeping as meta', () => {
+      const r = extractSearchable({
+        source: 'openai-codex',
+        direction: 'output',
+        content: JSON.stringify({
+          method: 'turn/completed',
+          params: { usage: { input_tokens: 10, output_tokens: 20 } },
+        }),
+      });
+      expect(r).toEqual({ searchableText: null, messageKind: 'meta' });
+    });
   });
 
   describe('generic providers (claude/openai/lmstudio)', () => {

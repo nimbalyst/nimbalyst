@@ -13,7 +13,7 @@ import { AudioCapture } from '../../utils/audioCapture';
 import { AudioPlayback } from '../../utils/audioPlayback';
 import { voiceModeEnabledAtom } from '../../store/atoms/appSettings';
 import { activeSessionIdAtom } from '../../store/atoms/sessions';
-import { voiceTokenUsageAtom, voiceListenStateAtom, voiceErrorAtom, registerVoiceAudioCallback, registerVoiceInterruptCallback, registerVoiceSubmitPromptCallback, registerVoiceAgentTaskCompleteCallback, registerVoiceStoppedCallback, registerVoiceResponseDoneCallback, registerVoiceAudioActiveQuery } from '../../store/atoms/voiceModeState';
+import { voiceTokenUsageAtom, voiceListenStateAtom, voiceErrorAtom, voiceReconnectingAtom, registerVoiceAudioCallback, registerVoiceInterruptCallback, registerVoiceSubmitPromptCallback, registerVoiceAgentTaskCompleteCallback, registerVoiceStoppedCallback, registerVoiceResponseDoneCallback, registerVoiceAudioActiveQuery } from '../../store/atoms/voiceModeState';
 import { setVoiceActiveSession, clearVoiceActiveSession, persistAndClearVoiceSession, onLinkedSessionChanged, wakeVoiceListening, notifyVoiceAudioPlaybackDrained } from '../../store/listeners/voiceModeListeners';
 import { openSettingsCommandAtom } from '../../store';
 import { HelpTooltip } from '../../help';
@@ -280,6 +280,8 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
 
   // Read error from centralized atom (set by voiceModeListeners.ts)
   const voiceError = useAtomValue(voiceErrorAtom);
+  // Transient reconnect state (socket dropped, backoff reconnect in progress)
+  const isReconnecting = useAtomValue(voiceReconnectingAtom);
 
   // Sync error atom -> local error state and handle auto-disconnect
   useEffect(() => {
@@ -431,13 +433,14 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
   }
 
   const getButtonIcon = () => {
-    if (isConnecting) return 'sync';
+    if (isConnecting || isReconnecting) return 'sync';
     if (isVoiceActive && isSleeping) return 'mic';
     if (isVoiceActive) return 'mic';
     return 'mic_off';
   };
 
   const getButtonTitle = () => {
+    if (isReconnecting) return 'Voice Mode reconnecting...';
     if (isConnecting) return 'Connecting...';
     if (error) return `Error: ${getErrorMessage(error)}`;
     if (isVoiceActive && isSleeping) return 'Voice Mode (sleeping) - Click to wake';
@@ -503,7 +506,7 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
             icon={getButtonIcon()}
             size={20}
             fill={isVoiceActive && !isSleeping}
-            className={isConnecting ? 'animate-spin' : ''}
+            className={(isConnecting || isReconnecting) ? 'animate-spin' : ''}
           />
           {/* Context usage ring overlay */}
           {showRing && (

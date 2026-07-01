@@ -213,7 +213,31 @@ function extractCodexOutput(parsed: unknown, content: string): ExtractedSearchab
     item?: { type?: unknown; items?: unknown; text?: unknown; content?: unknown };
     msg?: { type?: unknown; message?: unknown; text?: unknown; delta?: unknown };
     type?: unknown;
+    method?: unknown;
+    params?: { item?: { type?: unknown; text?: unknown } };
   };
+
+  // App-server transport envelope: production Codex persists notifications as
+  // `JSON.stringify({ method, params })` (see OpenAICodexProvider.storeRawEventIfPresent).
+  // The assistant text lives at `params.item.text` for an `agentMessage` item,
+  // NOT the top-level SDK shapes handled below. Without this branch every
+  // codex assistant reply classifies as `meta`/null, so the read APIs that
+  // query `message_kind = 'assistant'` (e.g. get_session_summary's
+  // fetchLastAssistantResponse) return no last response. Mirrors the canonical
+  // reader (CodexAppServerRawParser.parseItemCompleted) and the meta-agent's
+  // extractCodexText. Fixes #692.
+  if (typeof p.method === 'string' && p.params && typeof p.params === 'object') {
+    if (p.method === 'item/completed' || p.method === 'item/updated') {
+      const item = p.params.item;
+      if (item && typeof item === 'object' && item.type === 'agentMessage'
+        && typeof item.text === 'string' && item.text.trim().length > 0) {
+        return { searchableText: capLen(item.text), messageKind: 'assistant' };
+      }
+    }
+    // turn/completed, item/started (tool calls), reasoning, turn/failed, error
+    // carry no assistant prose -- fall through to meta.
+    return { searchableText: null, messageKind: 'meta' };
+  }
 
   // todo_list item -> rendered as assistant_message text
   if (p.item && typeof p.item === 'object') {

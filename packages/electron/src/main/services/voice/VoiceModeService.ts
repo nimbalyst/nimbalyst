@@ -3,7 +3,7 @@
  */
 
 import { BrowserWindow, ipcMain, systemPreferences } from 'electron';
-import { RealtimeAPIClient, BUILTIN_VOICE_TOOL_NAMES } from './RealtimeAPIClient';
+import { RealtimeAPIClient, BUILTIN_VOICE_TOOL_NAMES, type RealtimeModel, type RealtimeReasoningEffort } from './RealtimeAPIClient';
 import { buildVoiceToolSet } from './voiceToolBridge';
 import { mapAiSessionStatusToTaskStatus } from './taskStatus';
 import {
@@ -16,10 +16,11 @@ import { handleBackendTool, isBackendTool } from '../../mcp/tools/backendToolHan
 import { safeHandle } from '../../utils/ipcRegistry';
 import Store from 'electron-store';
 import { AnalyticsService } from '../analytics/AnalyticsService';
-import { AISessionsRepository, type SessionMeta } from '@nimbalyst/runtime';
-import { SemanticCatalogService } from '../SemanticCatalogService';
+import { AISessionsRepository } from '@nimbalyst/runtime';
+import { searchSessionsForVoice } from './sessionSearch';
+import { getSessionSummaryForVoice } from './sessionSummary';
 import { getDatabase } from '../../database/initialize';
-import { getDefaultAIModel } from '../../utils/store';
+import { getDefaultAIModel, getPreferredAgentLanguage } from '../../utils/store';
 import { randomUUID } from 'crypto';
 
 // Store active voice session info
@@ -40,24 +41,6 @@ function getDurationCategory(durationMs: number): 'short' | 'medium' | 'long' {
   if (durationMs < 60000) return 'short'; // < 1 minute
   if (durationMs < 300000) return 'medium'; // 1-5 minutes
   return 'long'; // > 5 minutes
-}
-
-/**
- * Human-friendly "last active" string for a session timestamp (ms). The voice
- * agent uses this to honor "the most recent session working on X".
- */
-function formatRelativeTime(ms: number): string {
-  const diff = Date.now() - ms;
-  if (diff < 0) return 'just now';
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`;
-  const months = Math.floor(days / 30);
-  return `${months} month${months === 1 ? '' : 's'} ago`;
 }
 
 /**
@@ -205,78 +188,14 @@ export async function getSessionSummary(): Promise<{
   if (!activeVoiceSession) {
     return { success: false, error: 'No active voice session' };
   }
-
-  try {
-    const { sessionId, window, workspacePath } = activeVoiceSession;
-
-    // Load session data from the renderer
-    const session = await window.webContents.executeJavaScript(`
-      window.electronAPI.invoke('ai:loadSession', ${JSON.stringify(sessionId)}, ${JSON.stringify(workspacePath)}, false)
-    `);
-
-    if (!session) {
-      return { success: false, error: 'Session not found' };
-    }
-
-    // session.messages is TranscriptViewMessage[] from the canonical
-    // ai_transcript_events table -- discriminated by `type`, not `role`.
-    const messages = (session.messages || []) as Array<any>;
-    const userMessages = messages.filter(m => m.type === 'user_message');
-    const assistantMessages = messages.filter(m => m.type === 'assistant_message');
-    const sessionName = session.title || session.name || 'Untitled';
-
-    // Calculate session duration
-    const createdAt = session.createdAt || Date.now();
-    const sessionDurationMinutes = Math.round((Date.now() - createdAt) / 60000);
-
-    // Extract recent topics from user messages (last 5)
-    const recentUserMessages = userMessages.slice(-5);
-    const recentTopics = recentUserMessages.map(m => {
-      const text = typeof m.text === 'string' ? m.text : '';
-      return text.length > 80 ? text.substring(0, 80) + '...' : text;
-    }).filter((t: string) => t.trim().length > 0);
-
-    // Tail of the conversation (user + assistant text), useful so the voice
-    // agent can answer "what did we just talk about" with real content.
-    const conversationEvents = messages.filter(
-      m => m.type === 'user_message' || m.type === 'assistant_message'
-    );
-    const conversationTail = conversationEvents.slice(-8).map(m => {
-      const role = m.type === 'user_message' ? 'User' : 'Agent';
-      const text = typeof m.text === 'string' ? m.text : '';
-      if (!text.trim()) return null;
-      const truncated = text.length > 400 ? text.substring(0, 400) + '...' : text;
-      return `${role}: ${truncated}`;
-    }).filter(Boolean) as string[];
-
-    const details = {
-      sessionId,
-      sessionName,
-      messageCount: conversationEvents.length,
-      userMessageCount: userMessages.length,
-      assistantMessageCount: assistantMessages.length,
-      sessionDurationMinutes,
-      recentTopics,
-    };
-
-    // Generate a human-readable summary that includes the actual conversation tail
-    const summaryParts: string[] = [];
-    summaryParts.push(`Session "${sessionName}" has ${userMessages.length} user messages and ${assistantMessages.length} assistant responses over ${sessionDurationMinutes} minutes.`);
-    if (recentTopics.length > 0) {
-      summaryParts.push(`Recent topics: ${recentTopics.join('; ')}`);
-    } else if (conversationEvents.length === 0) {
-      summaryParts.push('No messages yet.');
-    }
-    if (conversationTail.length > 0) {
-      summaryParts.push(`Recent conversation:\n${conversationTail.join('\n')}`);
-    }
-    const summary = summaryParts.join('\n\n');
-
-    return { success: true, summary, details };
-  } catch (error) {
-    console.error('[VoiceModeService] Failed to get session summary:', error);
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  const { sessionId, window, workspacePath } = activeVoiceSession;
+  if (!workspacePath) {
+    return { success: false, error: 'No workspace path available' };
   }
+  // Shared with the mobile voice-tool proxy (mobileVoiceToolHandler) so the iOS
+  // agent gets identical summaries -- including for sessions surfaced by the
+  // desktop-backed semantic list_sessions that aren't in the phone's local DB.
+  return getSessionSummaryForVoice(workspacePath, sessionId, window);
 }
 
 export function initVoiceModeService() {
@@ -503,6 +422,8 @@ export function initVoiceModeService() {
       // Load custom voice agent prompt, turn detection settings, and voice
       const voiceModeSettings = voiceModeSettingsStore.get('voiceMode') as {
         voice?: 'alloy' | 'ash' | 'ballad' | 'coral' | 'echo' | 'sage' | 'shimmer' | 'verse' | 'marin' | 'cedar';
+        model?: RealtimeModel;
+        reasoningEffort?: RealtimeReasoningEffort;
         voiceAgentPrompt?: { prepend?: string; append?: string };
         codingAgentPrompt?: { prepend?: string; append?: string };
         turnDetection?: {
@@ -520,6 +441,12 @@ export function initVoiceModeService() {
         interruptible: true,
       };
       const selectedVoice = voiceModeSettings?.voice || 'alloy';
+      // Old persisted settings predate these fields -- fall back to the defaults.
+      const selectedModel: RealtimeModel = voiceModeSettings?.model ?? 'gpt-realtime-2';
+      const reasoningEffort: RealtimeReasoningEffort = voiceModeSettings?.reasoningEffort ?? 'low';
+      // Pin the voice agent's spoken language to the desktop's configured default
+      // (undefined -> RealtimeAPIClient falls back to English).
+      const preferredLanguage = getPreferredAgentLanguage();
 
       // Core hook 2: let extensions contribute to the voice session context at
       // start (e.g. top-N grounding facts). Appended before the client is built
@@ -538,8 +465,8 @@ export function initVoiceModeService() {
         console.error('[VoiceModeService] Failed to collect extension voice context:', error);
       }
 
-      // Create PoC instance with agent session context, custom prompt, turn detection, and voice
-      const poc = new RealtimeAPIClient(apiKey, sessionId, workspacePath, window, sessionContext, customPrompt, turnDetection, selectedVoice);
+      // Create PoC instance with agent session context, custom prompt, turn detection, voice, model, and reasoning effort
+      const poc = new RealtimeAPIClient(apiKey, sessionId, workspacePath, window, sessionContext, customPrompt, turnDetection, selectedVoice, selectedModel, reasoningEffort, preferredLanguage);
 
       // Core hook 1: expose extension-contributed voice tools to the Realtime
       // session. Must be set before connect() so the tool list ships in the
@@ -680,6 +607,21 @@ export function initVoiceModeService() {
         }
       });
 
+      // Transient reconnect state: surface "reconnecting…" to the renderer
+      // instead of silently dying. A hard voice-mode:error is only emitted
+      // after retries are exhausted (handled by setOnError above).
+      poc.setOnReconnecting((attempt) => {
+        if (window && !window.isDestroyed()) {
+          window.webContents.send('voice-mode:reconnecting', { sessionId: currentSessionId(), attempt });
+        }
+      });
+
+      poc.setOnReconnected(() => {
+        if (window && !window.isDestroyed()) {
+          window.webContents.send('voice-mode:reconnected', { sessionId: currentSessionId() });
+        }
+      });
+
       // Set up callbacks for voice agent tools
       poc.setOnStopSession(() => {
         return stopVoiceSession();
@@ -747,87 +689,13 @@ export function initVoiceModeService() {
       // rather than only session titles, then falls back to title/transcript
       // full-text search so nothing regresses when the engine is unavailable.
       poc.setOnListSessions(async (query?: string) => {
-        try {
-          const wp = activeVoiceSession?.workspacePath;
-          if (!wp) {
-            return { success: false, error: 'No workspace path available' };
-          }
-
-          const trimmed = query?.trim() ?? '';
-
-          // All active sessions, keyed by id, so semantic hits can be enriched
-          // with title + last-active time regardless of the search path.
-          const all = await AISessionsRepository.list(wp);
-          const metaById = new Map(all.map(s => [s.id, s]));
-
-          const ordered: SessionMeta[] = [];
-          const seen = new Set<string>();
-          const push = (meta?: SessionMeta): void => {
-            if (meta && !seen.has(meta.id)) {
-              seen.add(meta.id);
-              ordered.push(meta);
-            }
-          };
-
-          if (trimmed) {
-            // Session-scoped semantic search first (conceptual recall): the
-            // engine's hybrid dense+BM25 retrieval, restricted to the
-            // 'sessions' source class so a topic matches a session even when
-            // its title doesn't contain the words.
-            if (SemanticCatalogService.getInstance().isAvailable(wp)) {
-              const hits = await SemanticCatalogService.getInstance().query(wp, trimmed, 20, [
-                'sessions',
-              ]);
-              for (const hit of hits) {
-                if (hit.refType === 'session') push(metaById.get(hit.refId));
-              }
-            }
-            // Merge FTS over titles + transcripts: catches exact terms and
-            // sessions created/updated since the last index backfill (session
-            // indexing is not live-synced), so "most recent" stays accurate.
-            try {
-              for (const s of await AISessionsRepository.search(wp, trimmed)) {
-                push(metaById.get(s.id) ?? s);
-              }
-            } catch {
-              // FTS is a best-effort supplement.
-            }
-          } else {
-            // No query: most recent sessions.
-            for (const s of all) push(s);
-          }
-
-          const top = ordered.slice(0, 20);
-
-          // Fetch running status from database
-          const ids = top.map(s => s.id);
-          const statusMap = new Map<string, string>();
-          if (ids.length > 0) {
-            try {
-              const db = getDatabase();
-              const { rows } = await db.query<{ id: string; status: string }>(
-                `SELECT id, status FROM ai_sessions WHERE id = ANY($1)`,
-                [ids],
-              );
-              for (const row of rows) {
-                statusMap.set(row.id, row.status);
-              }
-            } catch {
-              // Non-critical
-            }
-          }
-
-          const results = top.map(s => ({
-            id: s.id,
-            title: s.title,
-            status: statusMap.get(s.id) || 'idle',
-            lastActive: formatRelativeTime(s.updatedAt),
-          }));
-
-          return { success: true, sessions: results };
-        } catch (error) {
-          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        const wp = activeVoiceSession?.workspacePath;
+        if (!wp) {
+          return { success: false, error: 'No workspace path available' };
         }
+        // Shared with the mobile voice-tool proxy (mobileVoiceToolHandler) so
+        // the iOS agent gets the identical semantic, memory-backed lookup.
+        return searchSessionsForVoice(wp, query);
       });
 
       // Create a new coding session and switch to it
@@ -1049,20 +917,31 @@ export function initVoiceModeService() {
             return;
           }
 
-          // Build a completion notification from the coding agent's response.
-          // Include enough of the summary for the voice agent to relay what
-          // happened, but truncate to stay within gpt-realtime's limits.
-          let completionMessage: string;
+          // Truncate the summary to stay within the realtime context limits.
+          const trimmed = (data.summary ?? '').trim();
+          const truncatedSummary = trimmed.length > 1500
+            ? trimmed.substring(0, 1500) + '... (truncated)'
+            : trimmed;
 
-          if (data.summary && data.summary.trim().length > 0) {
-            const trimmed = data.summary.trim();
-            const truncated = trimmed.length > 1500
-              ? trimmed.substring(0, 1500) + '... (truncated)'
-              : trimmed;
-            completionMessage = `[INTERNAL: Task complete. Result: ${truncated}]`;
-          } else {
-            completionMessage = '[INTERNAL: Task complete. The coding agent finished but did not produce a text summary.]';
+          // Async (deferred) path (gpt-realtime-2): if a submit_agent_prompt call
+          // is still open, resolve it with the real summary -- the agent receives
+          // the result as the tool's return value and relays it. No injected wake.
+          if (poc.hasDeferredCall()) {
+            const resolved = poc.resolveDeferredCall({
+              success: true,
+              summary: truncatedSummary || 'The coding agent finished but did not produce a text summary.',
+            });
+            if (resolved) {
+              console.log('[VoiceModeService] Resolved deferred submit_agent_prompt with summary');
+              return;
+            }
           }
+
+          // Fallback path (gpt-realtime, or no open deferred call): inject an
+          // [INTERNAL: Task complete] wake message for the voice agent to relay.
+          const completionMessage = truncatedSummary.length > 0
+            ? `[INTERNAL: Task complete. Result: ${truncatedSummary}]`
+            : '[INTERNAL: Task complete. The coding agent finished but did not produce a text summary.]';
 
           console.log('[VoiceModeService] Sending completion to voice agent:', completionMessage.substring(0, 300));
           poc.sendUserMessage(completionMessage);

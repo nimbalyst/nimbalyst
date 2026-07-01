@@ -46,6 +46,8 @@ export type {
   DeviceInfo,
   CreateSessionRequest,
   CreateSessionResponse,
+  VoiceToolRequest,
+  VoiceToolResponse,
   SessionControlMessage,
   SyncedSettings,
   SyncedAvailableModel,

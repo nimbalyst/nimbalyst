@@ -27,9 +27,19 @@ interface TurnDetectionConfig {
 // All available OpenAI Realtime API voices
 type VoiceId = 'alloy' | 'ash' | 'ballad' | 'coral' | 'echo' | 'sage' | 'shimmer' | 'verse' | 'marin' | 'cedar';
 
+// Selectable OpenAI Realtime speech-to-speech models.
+type RealtimeModel = 'gpt-realtime-2' | 'gpt-realtime';
+
+// Realtime reasoning-effort throttle.
+type RealtimeReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+
 interface VoiceModeSettings {
   enabled: boolean;
   voice?: VoiceId;
+  // Realtime speech-to-speech model. Default 'gpt-realtime-2'.
+  model?: RealtimeModel;
+  // Reasoning-effort throttle for the realtime model. Default 'low'.
+  reasoningEffort?: RealtimeReasoningEffort;
   showTranscription?: boolean;
   // Turn detection / VAD settings
   turnDetection?: TurnDetectionConfig;

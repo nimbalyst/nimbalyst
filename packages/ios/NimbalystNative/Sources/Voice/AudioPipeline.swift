@@ -3,79 +3,6 @@
 import AudioToolbox
 import os
 
-// MARK: - Lock-free SPSC Ring Buffer
-
-/// Single-producer single-consumer ring buffer for real-time audio playback.
-/// Producer (main thread) writes 48kHz PCM16 via `write()`.
-/// Consumer (audio thread) reads via `read()`, filling remainder with silence.
-///
-/// Thread safety: Each index is written by exactly one thread and read by the other (SPSC pattern).
-/// On ARM64, naturally-aligned word loads/stores are atomic, which is sufficient for SPSC.
-nonisolated final class PlaybackRingBuffer: @unchecked Sendable {
-    private let storage: UnsafeMutablePointer<Int16>
-    private let capacity: Int
-
-    nonisolated(unsafe) private var writePos: Int = 0
-    nonisolated(unsafe) private var readPos: Int = 0
-
-    init(capacity: Int) {
-        self.capacity = capacity
-        self.storage = .allocate(capacity: capacity)
-        self.storage.initialize(repeating: 0, count: capacity)
-    }
-
-    deinit { storage.deallocate() }
-
-    var availableFrames: Int {
-        let w = writePos, r = readPos
-        return w >= r ? w - r : capacity - r + w
-    }
-
-    /// Write frames. Returns number actually written.
-    func write(_ src: UnsafePointer<Int16>, count: Int) -> Int {
-        let r = readPos, w = writePos
-        let free = r > w ? r - w - 1 : capacity - w + r - 1
-        let n = min(count, free)
-        guard n > 0 else { return 0 }
-
-        let first = min(n, capacity - w)
-        storage.advanced(by: w).update(from: src, count: first)
-        if n > first {
-            storage.update(from: src.advanced(by: first), count: n - first)
-        }
-        writePos = (w + n) % capacity
-        return n
-    }
-
-    /// Read frames into dst. Fills any shortfall with silence. Returns frames of real data read.
-    func read(_ dst: UnsafeMutablePointer<Int16>, count: Int) -> Int {
-        let w = writePos, r = readPos
-        let avail = w >= r ? w - r : capacity - r + w
-        let n = min(count, avail)
-
-        if n > 0 {
-            let first = min(n, capacity - r)
-            dst.update(from: storage.advanced(by: r), count: first)
-            if n > first {
-                dst.advanced(by: first).update(from: storage, count: n - first)
-            }
-            readPos = (r + n) % capacity
-        }
-
-        // Fill remainder with silence
-        if n < count {
-            dst.advanced(by: n).initialize(repeating: 0, count: count - n)
-        }
-
-        return n
-    }
-
-    func reset() {
-        readPos = 0
-        writePos = 0
-    }
-}
-
 // MARK: - AudioPipeline
 
 /// Audio capture and playback for OpenAI Realtime API.
@@ -126,8 +53,15 @@ final class AudioPipeline: @unchecked Sendable {
 
     // MARK: - Playback state
 
-    /// Ring buffer: main thread writes 48kHz PCM16, VPIO bus 0 render callback reads
-    nonisolated(unsafe) private var playbackRingBuffer = PlaybackRingBuffer(capacity: 48000 * 5)
+    /// Ring buffer: main thread writes 48kHz PCM16, VPIO bus 0 render callback reads.
+    ///
+    /// Sized to hold a full reply's worth of lead. gpt-realtime-2 streams output
+    /// audio much FASTER than real time, so a longer reply (a session list, a
+    /// summary) arrives in a burst while the render callback drains at the fixed
+    /// hardware rate. If the buffer is too small it fills and write() drops the
+    /// overflow -- dropped frames are heard as the voice "speeding up"/skipping
+    /// near the end of the reply. 90s @ 48kHz absorbs the burst so nothing drops.
+    nonisolated(unsafe) private var playbackRingBuffer = PlaybackRingBuffer(capacity: 48000 * 90)
 
     /// AVAudioConverter for 24kHz -> 48kHz resampling (playback direction)
     private var playbackConverter: AVAudioConverter?
@@ -450,7 +384,15 @@ final class AudioPipeline: @unchecked Sendable {
 
         // Write resampled 48kHz data to ring buffer
         guard let outputData = outputBuffer.int16ChannelData else { return }
-        _ = playbackRingBuffer.write(outputData[0], count: Int(outputBuffer.frameLength))
+        let toWrite = Int(outputBuffer.frameLength)
+        let written = playbackRingBuffer.write(outputData[0], count: toWrite)
+        if written < toWrite {
+            // Overflow: the realtime consumer can't keep up with the burst, so
+            // frames were dropped -> audible "speed up"/skipping. Logged so the
+            // cause is observable instead of silent. If this fires, the buffer
+            // needs to be larger (or playback needs real back-pressure).
+            logger.error("playback ring overflow: dropped \(toWrite - written)/\(toWrite) frames (avail=\(self.playbackRingBuffer.availableFrames))")
+        }
 
         isPlaying = true
         endOfPlaybackMarked = false
@@ -476,10 +418,56 @@ final class AudioPipeline: @unchecked Sendable {
         }
     }
 
-    func stopPlayback() {
-        playbackRingBuffer.reset()
+    /// Stop playback. On barge-in pass `fadeOut: true` to ramp the buffered audio
+    /// to silence over ~10ms (no click); a full teardown can hard-reset.
+    func stopPlayback(fadeOut: Bool = false) {
+        if fadeOut {
+            // 10ms @ 48kHz
+            playbackRingBuffer.fadeOutAndTruncate(fadeFrames: 480)
+        } else {
+            playbackRingBuffer.reset()
+        }
         endOfPlaybackMarked = false
         isPlaying = false
+    }
+
+    // MARK: - UI Chime
+
+    /// Play a short, soft two-note chime to signal the user that the session is
+    /// connected and it's their turn to talk. Routed through the VPIO playback
+    /// path (same as the agent's voice) so it plays to the active output route
+    /// AND is included in the AEC reference signal -- meaning the mic won't pick
+    /// it up and falsely trigger VAD. A separate AVAudioPlayer would not be in
+    /// the reference and could be heard as user speech.
+    ///
+    /// Must be called after `startCapture()` (the playback converter and ring
+    /// buffer are set up there). Does not call `markEndOfPlayback()`, so it
+    /// won't fire `onPlaybackFinished`.
+    func playReadyChime() {
+        enqueuePlayback(base64Audio: Self.readyChimeBase64PCM())
+    }
+
+    /// Synthesize a soft rising two-note chime as 24kHz PCM16 mono, base64
+    /// encoded (the same wire format as API audio, so it flows through
+    /// `enqueuePlayback`). Each note uses a half-sine envelope (0 -> 1 -> 0) so
+    /// there are no clicks at the boundaries or between notes.
+    private static func readyChimeBase64PCM() -> String {
+        let amplitude = 0.16 // soft
+        // Two ascending notes: G5 -> C6
+        let notes: [(freq: Double, dur: Double)] = [(783.99, 0.13), (1046.50, 0.20)]
+        var samples: [Int16] = []
+        for note in notes {
+            let frameCount = Int(kApiSampleRate * note.dur)
+            guard frameCount > 0 else { continue }
+            samples.reserveCapacity(samples.count + frameCount)
+            for i in 0..<frameCount {
+                let t = Double(i) / kApiSampleRate
+                let env = sin(Double.pi * Double(i) / Double(frameCount))
+                let value = sin(2.0 * Double.pi * note.freq * t) * amplitude * env
+                samples.append(Int16(max(-1.0, min(1.0, value)) * Double(Int16.max)))
+            }
+        }
+        return samples.withUnsafeBytes { Data($0) }.base64EncodedString()
     }
 
     // MARK: - Lifecycle

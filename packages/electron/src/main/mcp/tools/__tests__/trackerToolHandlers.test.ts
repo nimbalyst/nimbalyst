@@ -29,6 +29,7 @@ const {
     listTrackerItems: vi.fn<(...args: any[]) => Promise<any[]>>(async () => []),
     ensureTrackerProjection: vi.fn<(...args: any[]) => Promise<any>>(async () => null),
     updateTrackerItemInFile: vi.fn<(...args: any[]) => Promise<any>>(async () => null),
+    propagateInverseForUpdate: vi.fn<(...args: any[]) => Promise<void>>(async () => undefined),
     archiveTrackerItem: vi.fn<(...args: any[]) => Promise<any>>(async () => null),
     destroy: vi.fn(),
   },
@@ -170,6 +171,33 @@ describe('rowToTrackerItem typeTags normalization', () => {
   it('falls back to [type] when type_tags is missing or unparseable', () => {
     expect(rowToTrackerItem(makeRow({ type_tags: null })).typeTags).toEqual(['bug']);
     expect(rowToTrackerItem(makeRow({ type_tags: 'not json' })).typeTags).toEqual(['bug']);
+  });
+
+  it('un-nests a synced data.customFields bag instead of double-nesting it (NIM-1305 / NIM-1077)', () => {
+    // Synced items store custom + relationship fields NESTED under
+    // data.customFields. Double-nesting here (customFields.customFields) made the
+    // sync round-trip bury sourceDocument/features one level deeper until they
+    // vanished from the flattened read model.
+    const item = rowToTrackerItem(
+      makeRow({
+        type: 'feature-module',
+        type_tags: ['feature-module'],
+        data: JSON.stringify({
+          title: 'Module',
+          status: 'current',
+          customFields: {
+            sourceDocument: 'doc.md',
+            sourceHeading: 'H',
+            features: [{ itemId: 'feat-1' }],
+          },
+        }),
+      })
+    );
+    expect(item.customFields?.sourceDocument).toBe('doc.md');
+    expect(item.customFields?.sourceHeading).toBe('H');
+    expect(item.customFields?.features).toEqual([{ itemId: 'feat-1' }]);
+    // The raw nested bag must NOT be carried through as a nested key.
+    expect(item.customFields?.customFields).toBeUndefined();
   });
 
   it('surfaces data.origin as a top-level field (not buried in customFields)', () => {
@@ -320,6 +348,7 @@ describe('handleTrackerCreate session linking', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDocumentServices.clear();
+    mockGlobalRegistry.get.mockReturnValue(undefined);
     mockGlobalRegistry.validate.mockReturnValue({ valid: true, errors: [] });
   });
 
@@ -780,6 +809,7 @@ describe('handleTrackerUpdate description / collab body', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDocumentServices.clear();
+    mockGlobalRegistry.get.mockReturnValue(undefined);
     mockGlobalRegistry.validate.mockReturnValue({ valid: true, errors: [] });
     // Default: non-collab (local) workspace -- description writes proceed.
     vi.mocked(getEffectiveTrackerSyncPolicy).mockReturnValue({ mode: 'local', scope: 'project' });
@@ -826,6 +856,68 @@ describe('handleTrackerUpdate description / collab body', () => {
     const payload = JSON.parse(result.content[0].text!);
     expect(payload.structured.action).toBe('validationFailed');
     expect(payload.structured.tool).toBe('tracker_update');
+  });
+
+  it('clears nested relationship fields with unsetFields and propagates inverse removals (NIM-1305)', async () => {
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+    (mockGlobalRegistry.get as any).mockReturnValue({
+      sync: { mode: 'local', scope: 'project' },
+      fields: [
+        {
+          name: 'modules',
+          type: 'relationship',
+          relationshipTypeKey: 'belongs-to',
+          inverseFieldId: 'features',
+          inverseRelationshipTypeKey: 'contains',
+          multiValue: true,
+        },
+      ],
+    });
+    const trackerRow = makeRow({
+      id: 'feature_target',
+      type: 'product-feature',
+      type_tags: ['product-feature'],
+      workspace: '/tmp/ws',
+      source: 'native',
+      document_path: '',
+      data: JSON.stringify({
+        title: 'Feature',
+        status: 'to-do',
+        customFields: {
+          modules: [{ itemId: 'module-1' }],
+          sourceDocument: 'features.md',
+        },
+      }),
+    });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [trackerRow] }) // resolveTrackerRowByReference
+      .mockResolvedValueOnce({ rows: [] }) // UPDATE tracker_items SET data
+      .mockResolvedValueOnce({ rows: [trackerRow] }) // notifyTrackerItemUpdated read
+      .mockResolvedValueOnce({ rows: [trackerRow] }) // refreshedRow read for sync block
+      .mockResolvedValueOnce({ rows: [trackerRow] }) // postSyncRow read
+      .mockResolvedValueOnce({ rows: [{ type_tags: ['product-feature'] }] }); // re-read type_tags
+
+    const result = await handleTrackerUpdate(
+      { id: 'NIM-1', unsetFields: ['modules'] },
+      '/tmp/ws',
+    );
+
+    expect(result.isError).toBe(false);
+    const updateCall = mockQuery.mock.calls.find((c) =>
+      String(c[0]).includes('UPDATE tracker_items SET data = $1'),
+    );
+    expect(updateCall).toBeDefined();
+    const writtenData = JSON.parse(updateCall![1]![0] as string);
+    expect(writtenData.customFields).toEqual({ sourceDocument: 'features.md' });
+    expect(writtenData.modules).toBeUndefined();
+    expect(mockDocService.propagateInverseForUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'feature_target', type: 'product-feature' }),
+      { modules: undefined },
+      expect.objectContaining({
+        customFields: expect.objectContaining({ modules: [{ itemId: 'module-1' }] }),
+      }),
+      'local',
+    );
   });
 
   it('writes description to PGLite for local-only items', async () => {
