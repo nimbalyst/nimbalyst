@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-<!-- New features go here -->
+- Claude Sonnet 5 is now selectable across the Claude chat, Claude Agent, and Claude Code CLI providers (Sonnet 4.6 remains available as a pinned choice).
+- Start a new coding session by voice — say "create a new session" on desktop or mobile; on mobile it now opens the new session automatically on the device you asked from.
+- The mobile floating mic shows what the voice agent is doing — an animated ring and a tool icon appear while it runs a tool.
+- Voice mode on mobile can now find sessions by topic, switch sessions, summarize a session (including the agent's latest notes and any question it's waiting on), answer a session's pending question by voice, and send coding tasks to your desktop.
+- Choose the voice model and reasoning level in Voice Mode settings.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -17,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 <!-- Bug fixes go here -->
 - New AI sessions now appear immediately instead of waiting for sync to connect.
+- Linking tracker items now reliably updates both sides and no longer goes stale or drops an item's other links after syncing — including when the AI sets the link.
+- Mobile voice mode now shows clear Pause and Cancel buttons by the floating mic, so a single tap reliably pauses or stops voice mode.
+- Another session can now read an OpenAI Codex session's last reply through the session-summary tools, matching Claude Code sessions.
+- Voice mode now always speaks in your configured preferred language, including on mobile, instead of sometimes starting up in a different language.
+- The iOS voice agent now reliably speaks its response when it wakes up after a coding agent finishes a task.
+- Voice replies no longer speed up or skip near the end of longer responses.
+- Mobile voice replies no longer garble, overlap, or click — responses play one at a time and fade out cleanly when you interrupt.
 
 ### Removed
 <!-- Removed features go here -->

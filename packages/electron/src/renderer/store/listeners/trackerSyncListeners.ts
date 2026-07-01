@@ -29,6 +29,7 @@ import {
 } from '@nimbalyst/runtime';
 import type { TrackerItem, TrackerItemChangeEvent } from '@nimbalyst/runtime';
 import { trackerItemToRecord, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
+import { globalRegistry, isRelationshipField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { trackerSyncConfigChangeAtom, trackerSyncRejectionAtom, type TrackerSyncRejectionCode } from '../atoms/trackerSync';
 import { activeWorkspacePathAtom } from '../atoms/openProjects';
 
@@ -36,6 +37,55 @@ import { activeWorkspacePathAtom } from '../atoms/openProjects';
  *  team rotation window -- by 30s the org-wide write freeze should have
  *  lifted, so the user can stop seeing the banner without manual action. */
 const ROTATION_LOCKED_TTL_MS = 30_000;
+
+/** Trailing debounce for the relationship-field reconcile (NIM-1305). A bulk
+ *  relationship import emits a burst of granular `tracker-items-changed`
+ *  events; collapsing them into one authoritative reload after the burst
+ *  settles avoids reloading per item. */
+const RELATIONSHIP_RECONCILE_DEBOUNCE_MS = 300;
+
+/** A relationship value serializes as a non-empty array of objects each bearing
+ *  an `itemId` (or a single such object). Used as a fallback shape check when the
+ *  item's tracker type is not yet registered in the renderer's `globalRegistry`. */
+function looksLikeRelationshipValue(value: unknown): boolean {
+  const hasItemId = (v: unknown): boolean =>
+    typeof v === 'object' && v !== null && 'itemId' in (v as Record<string, unknown>);
+  if (Array.isArray(value)) return value.length > 0 && value.every(hasItemId);
+  return hasItemId(value);
+}
+
+/**
+ * Whether an incoming tracker item belongs to a type that declares relationship
+ * fields and carries a value for one of them. Granular `tracker-items-changed`
+ * events don't say which field changed and the last-write-wins upsert can be
+ * clobbered by an out-of-order/partial event during a burst, so any
+ * relationship-bearing change triggers a debounced full reconcile from the
+ * authoritative read model (NIM-1305).
+ */
+function itemCarriesRelationshipField(item: TrackerItem): boolean {
+  const fields = globalRegistry.get(item.type)?.fields;
+  if (!fields) {
+    // Custom/workspace tracker types register asynchronously (loadCustomTrackers),
+    // so a relationship change can arrive before the schema is known. Without this
+    // fallback the reconcile would silently no-op for custom types and leave the
+    // panel stale — the exact NIM-1305 symptom. Detect by value shape instead.
+    const custom = item.customFields;
+    if (custom) {
+      for (const value of Object.values(custom)) {
+        if (looksLikeRelationshipValue(value)) return true;
+      }
+    }
+    return false;
+  }
+  for (const def of fields) {
+    if (!isRelationshipField(def)) continue;
+    const name = def.name;
+    const onItem = (item as unknown as Record<string, unknown>)[name];
+    const onCustom = item.customFields?.[name];
+    if (onItem !== undefined || onCustom !== undefined) return true;
+  }
+  return false;
+}
 
 /**
  * Fetch all tracker items from the main-process tracker read model and load
@@ -79,6 +129,20 @@ export function initTrackerSyncListeners(): () => void {
   let disposed = false;
   let initialScanTimer: ReturnType<typeof setTimeout> | null = null;
   let rotationLockedClearTimer: ReturnType<typeof setTimeout> | null = null;
+  let relationshipReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Debounced safety net: after a relationship-bearing change event, reload the
+  // full tracker read model so a partial/out-of-order granular upsert can't
+  // leave relationship fields stale in the panel (NIM-1305).
+  const scheduleRelationshipReconcile = () => {
+    if (disposed) return;
+    if (relationshipReconcileTimer) clearTimeout(relationshipReconcileTimer);
+    relationshipReconcileTimer = setTimeout(() => {
+      relationshipReconcileTimer = null;
+      if (disposed) return;
+      void loadAllTrackerItems();
+    }, RELATIONSHIP_RECONCILE_DEBOUNCE_MS);
+  };
 
   // `tracker-sync:mutation-rejected` is broadcast when the server rejects
   // a write. `staleKeyEpoch + refreshKey succeeds` is silently retried by
@@ -206,16 +270,19 @@ export function initTrackerSyncListeners(): () => void {
             };
 
             // Apply granular updates to the atom map (convert to TrackerRecord)
+            let sawRelationshipChange = false;
             if (change.added?.length) {
               for (const item of change.added) {
                 if (!belongsToThisWorkspace(item)) continue;
                 store.set(upsertTrackerItemAtom, trackerItemToRecord(item));
+                if (itemCarriesRelationshipField(item)) sawRelationshipChange = true;
               }
             }
             if (change.updated?.length) {
               for (const item of change.updated) {
                 if (!belongsToThisWorkspace(item)) continue;
                 store.set(upsertTrackerItemAtom, trackerItemToRecord(item));
+                if (itemCarriesRelationshipField(item)) sawRelationshipChange = true;
               }
             }
             if (change.removed?.length) {
@@ -223,6 +290,11 @@ export function initTrackerSyncListeners(): () => void {
                 store.set(removeTrackerItemAtom, id);
               }
             }
+
+            // Relationship-bearing changes can land via inverse propagation as a
+            // burst of out-of-order partial events; reconcile from the read model
+            // so the detail panel never sticks on stale `No links` (NIM-1305).
+            if (sawRelationshipChange) scheduleRelationshipReconcile();
           }
         )
       );
@@ -262,6 +334,9 @@ export function initTrackerSyncListeners(): () => void {
     }
     if (rotationLockedClearTimer) {
       clearTimeout(rotationLockedClearTimer);
+    }
+    if (relationshipReconcileTimer) {
+      clearTimeout(relationshipReconcileTimer);
     }
     cleanups.forEach((cleanup) => cleanup());
   };

@@ -35,6 +35,8 @@ export type ClientMessage =
   | CreateSessionResponseMessage
   | CreateWorktreeRequestMessage
   | CreateWorktreeResponseMessage
+  | VoiceToolRequestMessage
+  | VoiceToolResponseMessage
   | SessionControlCommandMessage
   | RegisterPushTokenMessage
   | UnregisterPushTokenMessage
@@ -210,6 +212,40 @@ export interface EncryptedCreateWorktreeResponse {
   error?: string;
 }
 
+/** Request a desktop-hosted voice tool from mobile (e.g. project memory) */
+export interface VoiceToolRequestMessage {
+  type: 'voiceToolRequest';
+  request: EncryptedVoiceToolRequest;
+}
+
+/** Response to a voice-tool request from desktop */
+export interface VoiceToolResponseMessage {
+  type: 'voiceToolResponse';
+  response: EncryptedVoiceToolResponse;
+}
+
+/** Encrypted voice-tool request (toolName/args carry project knowledge). */
+export interface EncryptedVoiceToolRequest {
+  requestId: string;
+  encryptedProjectId: string;
+  projectIdIv: string;
+  encryptedToolName: string;
+  toolNameIv: string;
+  encryptedArgs: string;
+  argsIv: string;
+  timestamp: number;
+}
+
+/** Encrypted voice-tool response. */
+export interface EncryptedVoiceToolResponse {
+  requestId: string;
+  success: boolean;
+  encryptedResult?: string;
+  resultIv?: string;
+  encryptedError?: string;
+  errorIv?: string;
+}
+
 /** Generic session control command - the sync layer just passes these through */
 export interface SessionControlCommandMessage {
   type: 'sessionControl';
@@ -306,6 +342,8 @@ export type ServerMessage =
   | CreateSessionResponseBroadcastMessage
   | CreateWorktreeRequestBroadcastMessage
   | CreateWorktreeResponseBroadcastMessage
+  | VoiceToolRequestBroadcastMessage
+  | VoiceToolResponseBroadcastMessage
   | SessionControlBroadcastMessage
   | SettingsSyncBroadcastMessage
   | InboxSyncResponseMessage
@@ -419,6 +457,20 @@ export interface CreateSessionResponseBroadcastMessage {
 export interface CreateWorktreeRequestBroadcastMessage {
   type: 'createWorktreeRequestBroadcast';
   request: EncryptedCreateWorktreeRequest;
+  fromConnectionId?: string;
+}
+
+/** Broadcast voice-tool request to other devices (desktop receives this) */
+export interface VoiceToolRequestBroadcastMessage {
+  type: 'voiceToolRequestBroadcast';
+  request: EncryptedVoiceToolRequest;
+  fromConnectionId?: string;
+}
+
+/** Broadcast voice-tool response to other devices (mobile receives this) */
+export interface VoiceToolResponseBroadcastMessage {
+  type: 'voiceToolResponseBroadcast';
+  response: EncryptedVoiceToolResponse;
   fromConnectionId?: string;
 }
 

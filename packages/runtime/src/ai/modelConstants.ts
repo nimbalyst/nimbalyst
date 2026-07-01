@@ -46,6 +46,16 @@ export const CLAUDE_MODELS: ModelDefinition[] = [
     contextWindow: 200000,
   },
   {
+    id: 'claude-sonnet-5',
+    displayName: 'Claude Sonnet 5 (1M)',
+    shortName: 'Sonnet 5',
+    maxTokens: 8192,
+    // Sonnet 5 ships with a 1M context window natively (dateless alias, pinned
+    // snapshot). Adaptive thinking only; rejects `temperature` (see
+    // ClaudeProvider.supportsTemperature).
+    contextWindow: 1000000,
+  },
+  {
     id: 'claude-sonnet-4-6',
     displayName: 'Claude Sonnet 4.6',
     shortName: 'Sonnet 4.6',
@@ -207,7 +217,7 @@ export const OPENAI_MODELS: ModelDefinition[] = [
  *   the previous-generation Opus selectable after bumping the canonical
  *   `opus` to the next version.
  */
-export type ClaudeCodeVariant = 'fable' | 'opus' | 'sonnet' | 'haiku' | 'opus-4-7' | 'opus-4-6';
+export type ClaudeCodeVariant = 'fable' | 'opus' | 'sonnet' | 'haiku' | 'opus-4-7' | 'opus-4-6' | 'sonnet-4-6';
 export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-4-8' | 'fable-5';
 
 /**
@@ -227,6 +237,7 @@ export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInpu
   'opus-4-7',
   'opus-4-6',
   'sonnet',
+  'sonnet-4-6',
   'haiku',
 ] as const;
 
@@ -238,6 +249,7 @@ const CLAUDE_CODE_VARIANT_INPUT_MAP: Readonly<Record<ClaudeCodeVariantInput, Cla
   'opus-4-7': 'opus-4-7',
   'opus-4-6': 'opus-4-6',
   sonnet: 'sonnet',
+  'sonnet-4-6': 'sonnet-4-6',
   haiku: 'haiku',
 };
 
@@ -248,10 +260,11 @@ export function normalizeClaudeCodeVariant(variant: string): ClaudeCodeVariant |
 export const CLAUDE_CODE_VARIANT_VERSIONS: Record<ClaudeCodeVariant, string> = {
   fable: '5',
   opus: '4.8',
-  sonnet: '4.6',
+  sonnet: '5',
   haiku: '4.5',
   'opus-4-7': '4.7',
   'opus-4-6': '4.6',
+  'sonnet-4-6': '4.6',
 };
 
 export const CLAUDE_CODE_MODEL_LABELS: Record<ClaudeCodeVariant, string> = {
@@ -261,6 +274,7 @@ export const CLAUDE_CODE_MODEL_LABELS: Record<ClaudeCodeVariant, string> = {
   haiku: 'Haiku',
   'opus-4-7': 'Opus',
   'opus-4-6': 'Opus',
+  'sonnet-4-6': 'Sonnet',
 };
 
 /**
@@ -277,6 +291,9 @@ export const CLAUDE_CODE_PINNED_SDK_MODELS: Partial<Record<ClaudeCodeVariant, st
   fable: 'claude-fable-5',
   'opus-4-7': 'claude-opus-4-7',
   'opus-4-6': 'claude-opus-4-6',
+  // Pinned so the previous-generation Sonnet stays selectable after the
+  // canonical `sonnet` alias rolled forward to Sonnet 5.
+  'sonnet-4-6': 'claude-sonnet-4-6',
 };
 
 /**
@@ -295,6 +312,7 @@ export const CLAUDE_CODE_VARIANTS_WITH_1M: readonly ClaudeCodeVariant[] = [
   'sonnet',
   'opus-4-7',
   'opus-4-6',
+  'sonnet-4-6',
 ];
 
 /**

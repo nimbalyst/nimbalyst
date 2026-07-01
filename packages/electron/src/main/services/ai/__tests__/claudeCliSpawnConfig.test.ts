@@ -106,6 +106,19 @@ describe('buildClaudeCliSpawnConfig', () => {
     expect(cfg.env.PATH).toBe('/opt/bin:/usr/bin');
   });
 
+  it('defaults ENABLE_TOOL_SEARCH to auto:2 so MCP tool schemas are deferred (parity with the Agent SDK path)', () => {
+    const cfg = buildClaudeCliSpawnConfig({ ...base, mcpConfigPath: '/tmp/mcp.json' });
+    expect(cfg.env.ENABLE_TOOL_SEARCH).toBe('auto:2');
+  });
+
+  it('lets the user override ENABLE_TOOL_SEARCH from their own env (default does not clobber it)', () => {
+    const cfg = buildClaudeCliSpawnConfig({
+      ...base,
+      baseEnv: { ENABLE_TOOL_SEARCH: 'true' },
+    });
+    expect(cfg.env.ENABLE_TOOL_SEARCH).toBe('true');
+  });
+
   it('merges observation extraEnv (e.g. Phase 3 ANTHROPIC_BASE_URL) but still strips the API key', () => {
     const cfg = buildClaudeCliSpawnConfig({
       ...base,

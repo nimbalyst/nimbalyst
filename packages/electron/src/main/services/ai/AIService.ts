@@ -46,6 +46,7 @@ import {
 // MCP imports removed - no longer using MCP HTTP server
 import { ToolExecutor, toolRegistry, BUILT_IN_TOOLS } from './tools';
 import { initMobileSessionControlHandler } from './MobileSessionControlHandler';
+import { handleMobileVoiceToolCall } from '../voice/mobileVoiceToolHandler';
 import { SoundNotificationService } from '../SoundNotificationService';
 import { getTerminalSessionManager } from '../TerminalSessionManager';
 import { flushNextClaudeCliQueuedPromptForSession } from './claudeCliQueueFlushSingleton';
@@ -122,6 +123,25 @@ import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claud
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 
 const execFileAsync = promisify(execFile);
+
+// Debounced re-sync of the available-models list to mobile. The renderer can
+// send rapid providerSettings slices when toggling providers, so coalesce them
+// into a single mobile sync. Enabling an agent provider (e.g. openai-codex)
+// must refresh the mobile model picker, which otherwise only happens on
+// desktop startup / mobile reconnect / OpenAI-key change (NIM-976).
+let mobileSettingsSyncTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleMobileSettingsSync(): void {
+  if (mobileSettingsSyncTimer) clearTimeout(mobileSettingsSyncTimer);
+  mobileSettingsSyncTimer = setTimeout(() => {
+    mobileSettingsSyncTimer = null;
+    import('../SyncManager').then(({ syncSettingsToMobile }) => {
+      // Pass the stored OpenAI key so we don't drop it from the mobile payload;
+      // mobile keeps its existing key when the field is absent, so either is safe.
+      const apiKeys = new Store<Record<string, unknown>>({ name: 'ai-settings' }).get('apiKeys', {}) as Record<string, string>;
+      syncSettingsToMobile(apiKeys['openai']);
+    }).catch(() => { /* sync manager may not be available */ });
+  }, 500);
+}
 
 export class AIService {
   private sessionManager: SessionManager;
@@ -1236,6 +1256,48 @@ export class AIService {
         // logger.main.info('[AIService] Session creation request handler initialized');
       } else {
         // logger.main.info('[AIService] onCreateSessionRequest not available on sync provider');
+      }
+
+      // Handle voice-tool requests from mobile (e.g. project-memory lookups).
+      // The mobile voice agent proxies desktop-hosted voice tools through here;
+      // we run the tool (gated to voiceAgent:true tools) and return the result.
+      if (syncProvider.onVoiceToolRequest && syncProvider.sendVoiceToolResponse) {
+        syncProvider.onVoiceToolRequest(async (request) => {
+          // Deduplicate - the same request can be delivered more than once.
+          if (this.processingMobileSessionRequests.has(request.requestId)) {
+            return;
+          }
+          this.processingMobileSessionRequests.add(request.requestId);
+          setTimeout(() => {
+            this.processingMobileSessionRequests.delete(request.requestId);
+          }, 60000);
+
+          try {
+            // Static import (top of file): a dynamic import() here re-runs the
+            // electron-log init chain in a separate chunk -> "Attempted to
+            // register a second handler for '__ELECTRON_LOG__'" crash. See the
+            // "No Dynamic Imports in Electron Main Process" rule in CLAUDE.md.
+            // request.projectId is the desktop workspace path.
+            const outcome = await handleMobileVoiceToolCall(
+              request.toolName,
+              request.argsJson,
+              request.projectId,
+            );
+            await syncProvider.sendVoiceToolResponse!({
+              requestId: request.requestId,
+              success: outcome.success,
+              resultJson: outcome.result ? JSON.stringify({ result: outcome.result }) : undefined,
+              error: outcome.error,
+            });
+          } catch (error) {
+            logger.main.error('[AIService] Voice tool request failed:', error);
+            await syncProvider.sendVoiceToolResponse!({
+              requestId: request.requestId,
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
       }
 
       // Handle worktree creation requests from mobile
@@ -2939,6 +3001,10 @@ export class AIService {
         // Provider cache must be invalidated after writes so the next read
         // returns the new value rather than the pre-save snapshot.
         this.cachedNormalizedProviderSettings = null;
+        // Enabling/disabling a provider changes the model list mobile can pick
+        // from (e.g. openai-codex). Push a refreshed list so the iOS picker
+        // updates without waiting for a restart/reconnect (NIM-976).
+        scheduleMobileSettingsSync();
       }
 
       if (settings.showToolCalls !== undefined)        safeSet('ai.showToolCalls', settings.showToolCalls);

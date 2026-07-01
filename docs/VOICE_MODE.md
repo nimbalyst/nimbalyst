@@ -29,7 +29,7 @@ Voice mode is a **dual-agent architecture** layered on top of existing AI sessio
                     │  VoiceModeSettingsHandler    │        │
                     │                              ▼        │
                     │                     OpenAI Realtime   │
-                    │                     API (GPT-4o)     │
+                    │                  API (gpt-realtime-2) │
                     └──────────────────────────────────────┘
 ```
 
@@ -70,7 +70,7 @@ Voice mode does **not** replace the coding session. It augments it. The voice ag
      │
 5. RealtimeAPIClient sends to OpenAI via WebSocket: input_audio_buffer.append
      │
-6. OpenAI VAD detects speech end, transcribes (Whisper), generates response
+6. OpenAI VAD detects speech end, transcribes (streaming gpt-realtime-whisper), generates response
      │
 7. If voice agent calls submit_agent_prompt tool:
      │  a. RealtimeAPIClient.handleFunctionCall() invokes onSubmitPromptCallback
@@ -81,7 +81,9 @@ Voice mode does **not** replace the coding session. It augments it. The voice ag
      │  f. Coding agent (Claude Code) processes the prompt
      │  g. On completion, voiceModeListeners receives onAIStreamResponse with isComplete=true
      │  h. Renderer sends IPC: voice-mode:agent-task-complete with summary
-     │  i. VoiceModeService receives completion, calls poc.sendUserMessage() with [INTERNAL: Task complete...]
+     │  i. VoiceModeService receives completion. On gpt-realtime-2 it resolves the
+     │     still-open submit_agent_prompt call with the summary (async function
+     │     calling); on the gpt-realtime fallback it injects [INTERNAL: Task complete...]
      │  j. Voice agent speaks the result to the user
      │
 8. Voice agent audio response flows back:
@@ -191,7 +193,9 @@ When sleeping:
 | `voice-mode:interrupt` | VAD detected user speech (stop playback) |
 | `voice-mode:speech-stopped` | VAD detected silence after speech |
 | `voice-mode:stopped` | Voice session ended (with final token usage) |
-| `voice-mode:error` | Error (quota, rate limit, connection failure) |
+| `voice-mode:error` | Error (quota, rate limit, connection failure, reconnect exhausted) |
+| `voice-mode:reconnecting` | Socket dropped; backoff reconnect in progress (transient) |
+| `voice-mode:reconnected` | Reconnect succeeded; session config re-applied |
 | `voice-mode:pause-listening` | Voice agent requested mic sleep |
 | `voice-mode:settings-changed` | Settings changed (broadcast to all windows) |
 | `voice-mode:respond-to-prompt` | Voice agent answered an interactive prompt |
@@ -212,7 +216,7 @@ The OpenAI Realtime API session is configured with these function-calling tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `submit_agent_prompt` | Queue a coding task for the coding agent |
+| `submit_agent_prompt` | Queue a coding task for the coding agent. On gpt-realtime-2 this is an async (deferred) call: it stays open and the coding agent's summary is delivered as the tool result when work completes. On the gpt-realtime fallback it returns a synthetic "queued" result and the completion arrives via an injected `[INTERNAL: Task complete]` wake message. |
 | `ask_coding_agent` | Send a synchronous question to the coding agent (60s timeout) |
 | `respond_to_interactive_prompt` | Answer a pending AskUserQuestion, ExitPlanMode, or GitCommitProposal |
 | `stop_voice_session` | End the voice session |
@@ -352,6 +356,8 @@ Voice mode settings are stored in `nimbalyst-settings` electron-store (not `ai-s
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `false` | Show/hide the voice mode button |
 | `voice` | `VoiceId` | `'alloy'` | OpenAI Realtime voice (alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar) |
+| `model` | `RealtimeModel` | `'gpt-realtime-2'` | Realtime speech-to-speech model. Falls back to `gpt-realtime` automatically if the account/region lacks access |
+| `reasoningEffort` | `RealtimeReasoningEffort` | `'low'` | Reasoning throttle (minimal/low/medium/high/xhigh). Higher = smarter but slower. Applies to gpt-realtime-2 |
 | `turnDetection.mode` | `'server_vad' \ | 'push_to_talk'` | `'server_vad'` | Automatic voice detection or manual |
 | `turnDetection.vadThreshold` | `number` | `0.5` | VAD sensitivity (0.0-1.0, higher = less sensitive) |
 | `turnDetection.silenceDuration` | `number` | `500` | Silence duration (ms) before processing |
@@ -379,6 +385,35 @@ Two independent timers manage voice session lifecycle:
 
 2. **Inactivity monitor** (main, `RealtimeAPIClient.ts`): Disconnects the WebSocket entirely after 5 minutes of inactivity (`INACTIVITY_TIMEOUT_MS`). Suspended when listen state is sleeping (renderer notifies via `voice-mode:listen-state-changed`).
 
+## Connection Reliability (Reconnect / Resume)
+
+A dropped socket no longer silently ends voice mode. `RealtimeAPIClient` distinguishes intentional disconnects (`user_stopped`, inactivity `timeout`) from unexpected ones:
+
+- On an unexpected `close`/`error` after the socket was open, it reconnects with bounded exponential backoff (`RECONNECT_BASE_DELAY_MS` 500ms, doubling, capped at `RECONNECT_MAX_DELAY_MS` 8s, up to `MAX_RECONNECT_ATTEMPTS` = 5).
+- On reconnect, `session.created` re-runs `updateSession()` which re-sends the **identical** voice/model/reasoning/instructions, so recovery is inaudible. Token-usage accumulators are instance fields and survive the reconnect (the live indicator doesn't reset).
+- The renderer shows a transient "reconnecting…" state (`voiceReconnectingAtom`, set from `voice-mode:reconnecting`, cleared on `voice-mode:reconnected`). A hard `voice-mode:error` is emitted only after retries are exhausted.
+
+## Model Selection & Fallback
+
+Voice mode defaults to `gpt-realtime-2` (GPT-5-class reasoning, 128K context, more consistent voice rendering). If the initial socket fails to open on `gpt-realtime-2` (no account/region access), the client falls back **once** to `gpt-realtime`, logs a warning, and emits the `voice_model_fallback` analytics event. The fallback model is also manually selectable. `supportsAsyncFunctionCalls()` (true only for gpt-realtime-2) gates the async `submit_agent_prompt` path; the fallback uses the legacy queue + wake path.
+
+The output voice is set once in `session.update` and intentionally **not** re-asserted on each `response.create` — gpt-realtime-2 renders a consistent voice for the whole session. The `session.updated` handler compares the server-reported voice against the requested voice and emits `voice_voice_mismatch` if they diverge, turning drift into a measurable signal.
+
+`createResponse()` guards against an already-active response (`hasActiveResponse`, set optimistically on send and on `response.created`, cleared on `response.done`/cancel). The method is invoked from several async paths (tool results, wake / task-complete messages, interactive-prompt injection); without the guard a trigger arriving mid-turn would start a **second overlapping response**, i.e. two concurrent audio renderings that — under the expressive voices (marin/cedar) — are heard as the voice "switching" mid-turn. This is distinct from the configured voice being wrong: the session and per-response voice are both correctly pinned; the perceived switch comes from overlap.
+
+## Spoken Language
+
+The voice agent's spoken language is pinned to the desktop's **preferred agent language** setting (`preferredAgentLanguage`, configured in AI Models settings) so it never auto-detects or drifts into a different language at startup. The pin is applied as a final `LANGUAGE: Always speak to the user in <language>...` directive appended to the session instructions in `RealtimeAPIClient.updateSession()` (desktop) and `VoiceAgent.buildCompactInstructions()` (iOS). When no preference is set, both fall back to **English**.
+
+On iOS the setting arrives via settings sync: `preferredAgentLanguage` is a top-level field on `SyncedSettings`, persisted into `VoiceModeSettings.language` (UserDefaults) when the desktop pushes settings. Because the directive lives in `updateSession()`, it is re-sent identically on reconnect, like voice/model/reasoning.
+
+## Mobile (iOS) Voice Agent
+
+The iOS app runs its own on-device voice agent (`packages/ios/.../Voice/VoiceAgent.swift` + the floating `VoiceOverlay`), reusing the same tool surface. Two mobile-specific behaviors:
+
+- **Create-session navigation.** `create_session` is fire-and-forget to the desktop over the index sync channel; the desktop replies with a `createSessionResponseBroadcast` carrying the `requestId` + new `sessionId`. `VoiceAgent` remembers the `requestId` it sent and `consumePendingCreateSession(requestId:)` matches the response, so **only the device that asked** navigates. `AppState.navigateWhenSessionAvailable` waits for the session row to arrive via index sync, then sets `voiceNavigationRequest`, which the iPhone stack and iPad split view observe to open the session.
+- **Tool-call indicator.** `VoiceAgent.currentToolCall` is set when `RealtimeClient.onFunctionCall` fires and cleared by the new `onFunctionResultSent(callId)` hook (so async tools stay lit until they finish). While set, `VoiceOverlay` pulses the outer ring (amber) and shows a per-tool SF Symbol badge in the mic's corner.
+
 ## Analytics Events
 
 | Event | Trigger |
@@ -388,6 +423,8 @@ Two independent timers manage voice session lifecycle:
 | `voice_session_started` | Voice WebSocket connection established |
 | `voice_session_ended` | Voice session ends (with reason and duration category) |
 | `voice_prompt_submitted` | Voice agent calls submit_agent_prompt |
+| `voice_model_fallback` | gpt-realtime-2 was unavailable; connection fell back to gpt-realtime |
+| `voice_voice_mismatch` | Server-reported output voice diverged from the requested voice (drift guardrail) |
 
 ## Prerequisites
 
