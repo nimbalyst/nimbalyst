@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.66.7] - 2026-07-01
+
+
+### Added
+<!-- New features go here -->
 - Memory recall/search tool calls now show a transcript card with the query and matched source documents, with click-to-open.
 
 ### Changed
@@ -21,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On Windows, clicking a file link in chat now opens the file instead of a blank window.
 - Claude Code background sub-agents are no longer killed when the lead agent's turn ends; the agent keeps waiting for them and is told if one is interrupted.
 - Tracker status changes now work for custom tracker types that rename their workflow status field.
+- Tracker reference links (`nimbalyst://` chips) in chat no longer render blank.
 
 ### Removed
 <!-- Removed features go here -->
