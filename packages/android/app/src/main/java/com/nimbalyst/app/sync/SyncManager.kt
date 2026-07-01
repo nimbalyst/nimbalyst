@@ -16,11 +16,13 @@ import com.nimbalyst.app.pairing.PairingCredentials
 import com.nimbalyst.app.pairing.PairingStore
 import android.content.Context
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -42,7 +44,35 @@ class SyncManager(
 
     companion object {
         private const val TAG = "SyncManager"
+
+        /**
+         * Gate for applying a remote draft-input update to Room. Returns true only
+         * when [incomingDraftUpdatedAt] is strictly greater than [lastLocalPushAt].
+         *
+         * Purpose: suppress self-echoes and stale second-device broadcasts.
+         *
+         * When the mobile pushes a draft it records the push timestamp in
+         * [lastPushedDraftAt]. The server round-trips the same value back as
+         * [SessionRoomMetadata.encryptedClientMetadata] -> [ClientMetadata.draftUpdatedAt].
+         * That echoed timestamp equals our push timestamp, so this returns false
+         * and the merge step keeps the existing Room value instead of writing the
+         * (stale) echo, which was overwriting local keystrokes mid-typing and
+         * causing dropped-words behavior in [SessionDetailScreen].
+         */
+        @VisibleForTesting
+        internal fun shouldAcceptRemoteDraft(
+            incomingDraftUpdatedAt: Long?,
+            lastLocalPushAt: Long
+        ): Boolean {
+            val incomingTs = incomingDraftUpdatedAt ?: 0L
+            return incomingTs > lastLocalPushAt
+        }
     }
+
+    // Tracks the timestamp of the most recent draft we pushed for a given session.
+    // Used by shouldAcceptRemoteDraft to suppress self-echoes.
+    private val lastPushedDraftAt = ConcurrentHashMap<String, Long>()
+
     private val indexClient = WebSocketClient(scope)
     private val sessionClient = WebSocketClient(scope)
     private val _state = MutableStateFlow(SyncConnectionState())
@@ -600,6 +630,9 @@ class SyncManager(
 
         // Persist locally first
         repository.updateDraftInput(sessionId, storeDraft, now)
+        // Record our push timestamp so shouldAcceptRemoteDraft can suppress the
+        // server's echo of this same value.
+        lastPushedDraftAt[sessionId] = now
 
         // Build encrypted client metadata with draft
         val clientMetadata = ClientMetadata(
@@ -842,6 +875,10 @@ class SyncManager(
         val titleDecrypted = crypto.decryptOrNull(entry.encryptedTitle, entry.titleIv)
         val clientMetadata = decodeClientMetadata(entry.encryptedClientMetadata, entry.clientMetadataIv)
         val draftInput = clientMetadata?.draftInput?.ifBlank { null }
+        val acceptDraft = shouldAcceptRemoteDraft(
+            incomingDraftUpdatedAt = clientMetadata?.draftUpdatedAt,
+            lastLocalPushAt = lastPushedDraftAt[entry.sessionId] ?: 0L
+        )
 
         return ProcessedSessionEntry(
             session = SessionEntity(
@@ -878,8 +915,12 @@ class SyncManager(
                 lastSyncedSeq = existing?.lastSyncedSeq ?: 0,
                 lastReadAt = entry.lastReadAt ?: existing?.lastReadAt,
                 lastMessageAt = entry.lastMessageAt ?: existing?.lastMessageAt,
-                draftInput = draftInput ?: existing?.draftInput,
-                draftUpdatedAt = clientMetadata?.draftUpdatedAt ?: existing?.draftUpdatedAt
+                draftInput = if (acceptDraft) (draftInput ?: existing?.draftInput) else existing?.draftInput,
+                draftUpdatedAt = if (acceptDraft) {
+                    clientMetadata?.draftUpdatedAt ?: existing?.draftUpdatedAt
+                } else {
+                    existing?.draftUpdatedAt
+                }
             ),
             queuedPrompts = decryptQueuedPrompts(entry.sessionId, entry.encryptedQueuedPrompts),
             clearQueuedPrompts = entry.queuedPromptCount == 0 || entry.encryptedQueuedPrompts?.isEmpty() == true
@@ -922,6 +963,11 @@ class SyncManager(
             else -> existing.projectId
         }
 
+        val acceptDraft = shouldAcceptRemoteDraft(
+            incomingDraftUpdatedAt = clientMetadata?.draftUpdatedAt,
+            lastLocalPushAt = lastPushedDraftAt[sessionId] ?: 0L
+        )
+
         repository.upsertSession(
             existing.copy(
                 projectId = projectId,
@@ -937,8 +983,12 @@ class SyncManager(
                 hasQueuedPrompts = clientMetadata?.hasPendingPrompt ?: existing.hasQueuedPrompts,
                 contextTokens = clientMetadata?.currentContext?.tokens ?: existing.contextTokens,
                 contextWindow = clientMetadata?.currentContext?.contextWindow ?: existing.contextWindow,
-                draftInput = draftInput ?: existing.draftInput,
-                draftUpdatedAt = clientMetadata?.draftUpdatedAt ?: existing.draftUpdatedAt
+                draftInput = if (acceptDraft) (draftInput ?: existing.draftInput) else existing.draftInput,
+                draftUpdatedAt = if (acceptDraft) {
+                    clientMetadata?.draftUpdatedAt ?: existing.draftUpdatedAt
+                } else {
+                    existing.draftUpdatedAt
+                }
             )
         )
     }
