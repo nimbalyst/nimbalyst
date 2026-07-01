@@ -26,6 +26,18 @@ describe('importedClaudeCodeModel', () => {
     );
   });
 
+  it('maps a Sonnet 5 turn to claude-code:sonnet-5', () => {
+    expect(importedClaudeCodeModel([assistant('claude-sonnet-5')])).toBe(
+      'claude-code:sonnet-5',
+    );
+  });
+
+  it('maps a Fable 5 turn to claude-code:fable-5', () => {
+    expect(importedClaudeCodeModel([assistant('claude-fable-5')])).toBe(
+      'claude-code:fable-5',
+    );
+  });
+
   it('maps a haiku turn to claude-code:haiku', () => {
     expect(importedClaudeCodeModel([assistant('claude-haiku-4-5-20251001')])).toBe(
       'claude-code:haiku',

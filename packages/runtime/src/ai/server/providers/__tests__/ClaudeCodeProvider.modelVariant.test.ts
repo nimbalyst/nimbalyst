@@ -13,6 +13,14 @@ describe('resolveClaudeCodeModelVariant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:opus', DEFAULT_MODEL)).toBe('opus');
     });
 
+    it('resolves Sonnet 5 to the full SDK model ID', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:sonnet-5', DEFAULT_MODEL)).toBe('claude-sonnet-5');
+    });
+
+    it('resolves Fable 5 to the full SDK model ID', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:fable-5', DEFAULT_MODEL)).toBe('claude-fable-5');
+    });
+
     it('resolves haiku variant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:haiku', DEFAULT_MODEL)).toBe('haiku');
     });
@@ -45,10 +53,17 @@ describe('resolveClaudeCodeModelVariant', () => {
 
   describe('SDK compatibility', () => {
     it('standard variants are valid SDK model values', () => {
-      const validSdkValues = ['sonnet', 'opus', 'haiku'];
-      for (const variant of validSdkValues) {
-        const result = resolveClaudeCodeModelVariant(`claude-code:${variant}`, DEFAULT_MODEL);
-        expect(validSdkValues).toContain(result);
+      const variantCases = [
+        ['sonnet', 'sonnet'],
+        ['opus', 'opus'],
+        ['haiku', 'haiku'],
+        ['sonnet-5', 'claude-sonnet-5'],
+        ['fable-5', 'claude-fable-5'],
+      ] as const;
+
+      for (const [configured, sdkModel] of variantCases) {
+        const result = resolveClaudeCodeModelVariant(`claude-code:${configured}`, DEFAULT_MODEL);
+        expect(result).toBe(sdkModel);
       }
     });
 

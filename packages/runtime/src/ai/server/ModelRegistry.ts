@@ -201,7 +201,7 @@ export class ModelRegistry {
     const parsed = ModelIdentifier.tryParse(model.id);
     const idPart = parsed ? parsed.model : model.id;
     const normalized = idPart.toLowerCase();
-    const variantMatch = normalized.match(/(opus|sonnet|haiku)/);
+    const variantMatch = normalized.match(/(opus|sonnet|haiku|fable)/);
     const dateMatch = normalized.match(/(\d{8})$/);
 
     if (!variantMatch || !dateMatch) {

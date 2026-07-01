@@ -178,7 +178,7 @@ export function shouldBlockStartedSessionProviderSwitch(
  * `opus` alias to 4.7, so users can still choose the previous generation.
  * See CLAUDE_CODE_PINNED_SDK_MODELS in modelConstants.ts.
  */
-export const CLAUDE_CODE_VARIANTS = ['opus', 'opus-4-6', 'sonnet', 'haiku'] as const;
+export const CLAUDE_CODE_VARIANTS = ['opus', 'sonnet-5', 'fable-5', 'opus-4-6', 'sonnet', 'haiku'] as const;
 
 /**
  * Resolves a configured model string to the SDK model value.

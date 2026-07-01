@@ -405,25 +405,29 @@ export class AIService {
   }
 
   /**
-   * Append any claude-code variants that were added after this user's
+   * Append claude-code variants that were added after this user's
    * `providerSettings['claude-code'].models` list was first persisted. Without
-   * this, `ai:getModels` filters out newly-introduced variants (e.g. the
-   * `opus-4-6` pinned variant) because they aren't in the saved list and
-   * there's no UI in ClaudeCodePanel to re-enable them.
+   * this, `ai:getModels` filters out newly-introduced variants because they
+   * aren't in the saved list and there's no UI in ClaudeCodePanel to re-enable
+   * them.
    */
   private migrateClaudeCodeModelList(): void {
-    const MIGRATION_KEY = 'migrations.claudeCodeOpus46Added';
+    const MIGRATION_KEY = 'migrations.claudeCodeSonnet5Fable5Added';
     if (this.settingsStore!.get(MIGRATION_KEY)) return;
     const providerSettings = this.settingsStore!.get('providerSettings', {}) as any;
     const claudeCode = providerSettings?.['claude-code'];
-    if (claudeCode && Array.isArray(claudeCode.models) && !claudeCode.models.includes('claude-code:opus-4-6')) {
+    if (claudeCode && Array.isArray(claudeCode.models)) {
       const opusIndex = claudeCode.models.indexOf('claude-code:opus');
-      const insertAt = opusIndex >= 0 ? opusIndex + 1 : claudeCode.models.length;
-      claudeCode.models = [
-        ...claudeCode.models.slice(0, insertAt),
-        'claude-code:opus-4-6',
-        ...claudeCode.models.slice(insertAt),
-      ];
+      let insertAt = opusIndex >= 0 ? opusIndex + 1 : claudeCode.models.length;
+      for (const id of ['claude-code:sonnet-5', 'claude-code:fable-5', 'claude-code:opus-4-6']) {
+        if (claudeCode.models.includes(id)) continue;
+        claudeCode.models = [
+          ...claudeCode.models.slice(0, insertAt),
+          id,
+          ...claudeCode.models.slice(insertAt),
+        ];
+        insertAt += 1;
+      }
       this.settingsStore!.set('providerSettings', providerSettings);
     }
     this.settingsStore!.set(MIGRATION_KEY, true);
@@ -453,7 +457,7 @@ export class AIService {
                 enabled: true,
                 testStatus: "idle",
                 installStatus: "not-installed",
-                models: ["claude-code:opus", "claude-code:opus-4-6", "claude-code:sonnet", "claude-code:haiku"]
+                models: ["claude-code:opus", "claude-code:sonnet-5", "claude-code:fable-5", "claude-code:opus-4-6", "claude-code:sonnet", "claude-code:haiku"]
               },
               openai: {
                 enabled: false,

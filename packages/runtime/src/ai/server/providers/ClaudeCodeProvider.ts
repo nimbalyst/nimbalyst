@@ -41,6 +41,7 @@ import {
 import {
   CLAUDE_CODE_VARIANT_VERSIONS,
   CLAUDE_CODE_MODEL_LABELS,
+  CLAUDE_CODE_VARIANT_CONTEXT_WINDOWS,
   CLAUDE_CODE_VARIANTS_WITH_1M,
 } from '../../modelConstants';
 import { isBedrockToolSearchError } from '../utils/errorDetection';
@@ -2970,7 +2971,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         name: `Claude Agent · ${CLAUDE_CODE_MODEL_LABELS[variant]} ${CLAUDE_CODE_VARIANT_VERSIONS[variant]}`,
         provider: 'claude-code' as const,
         maxTokens: 8192,
-        contextWindow: 200000
+        contextWindow: CLAUDE_CODE_VARIANT_CONTEXT_WINDOWS[variant]
       });
 
       // Add 1M context variant if the variant supports it.

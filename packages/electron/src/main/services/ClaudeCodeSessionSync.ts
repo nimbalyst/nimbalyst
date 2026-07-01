@@ -229,6 +229,8 @@ export function importedClaudeCodeModel(entries: ClaudeCodeEntry[]): string | un
     const raw = entries[i]?.message?.model;
     if (typeof raw !== 'string' || raw.length === 0) continue;
     const id = raw.toLowerCase();
+    if (id.includes('fable-5')) return 'claude-code:fable-5';
+    if (id.includes('sonnet-5')) return 'claude-code:sonnet-5';
     if (id.includes('opus')) return 'claude-code:opus';
     if (id.includes('sonnet')) return 'claude-code:sonnet';
     if (id.includes('haiku')) return 'claude-code:haiku';

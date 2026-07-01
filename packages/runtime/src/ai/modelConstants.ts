@@ -12,6 +12,20 @@ export interface ModelDefinition {
 
 export const CLAUDE_MODELS: ModelDefinition[] = [
   {
+    id: 'claude-fable-5',
+    displayName: 'Claude Fable 5',
+    shortName: 'Fable 5',
+    maxTokens: 128000,
+    contextWindow: 1000000,
+  },
+  {
+    id: 'claude-sonnet-5',
+    displayName: 'Claude Sonnet 5',
+    shortName: 'Sonnet 5',
+    maxTokens: 128000,
+    contextWindow: 1000000,
+  },
+  {
     id: 'claude-opus-4-7',
     displayName: 'Claude Opus 4.7 (1M)',
     shortName: 'Opus 4.7',
@@ -189,10 +203,12 @@ export const OPENAI_MODELS: ModelDefinition[] = [
  *   the previous-generation Opus selectable after bumping the canonical
  *   `opus` to the next version.
  */
-export type ClaudeCodeVariant = 'opus' | 'sonnet' | 'haiku' | 'opus-4-6';
+export type ClaudeCodeVariant = 'opus' | 'sonnet-5' | 'fable-5' | 'sonnet' | 'haiku' | 'opus-4-6';
 
 export const CLAUDE_CODE_VARIANT_VERSIONS: Record<ClaudeCodeVariant, string> = {
   opus: '4.7',
+  'sonnet-5': '5',
+  'fable-5': '5',
   sonnet: '4.6',
   haiku: '4.5',
   'opus-4-6': '4.6',
@@ -200,6 +216,8 @@ export const CLAUDE_CODE_VARIANT_VERSIONS: Record<ClaudeCodeVariant, string> = {
 
 export const CLAUDE_CODE_MODEL_LABELS: Record<ClaudeCodeVariant, string> = {
   opus: 'Opus',
+  'sonnet-5': 'Sonnet',
+  'fable-5': 'Fable',
   sonnet: 'Sonnet',
   haiku: 'Haiku',
   'opus-4-6': 'Opus',
@@ -212,6 +230,17 @@ export const CLAUDE_CODE_MODEL_LABELS: Record<ClaudeCodeVariant, string> = {
  */
 export const CLAUDE_CODE_PINNED_SDK_MODELS: Partial<Record<ClaudeCodeVariant, string>> = {
   'opus-4-6': 'claude-opus-4-6',
+  'sonnet-5': 'claude-sonnet-5',
+  'fable-5': 'claude-fable-5',
+};
+
+export const CLAUDE_CODE_VARIANT_CONTEXT_WINDOWS: Record<ClaudeCodeVariant, number> = {
+  opus: 200000,
+  'sonnet-5': 1000000,
+  'fable-5': 1000000,
+  sonnet: 200000,
+  haiku: 200000,
+  'opus-4-6': 200000,
 };
 
 /** Variants that support a 1M-context extended picker row. */

@@ -122,6 +122,7 @@ function canDisableThinkingForModel(model: string | undefined): boolean {
   if (!model) return false;
   const normalized = model.toLowerCase();
   if (normalized.includes('fable')) return false;
+  if (normalized.includes('sonnet-5')) return false;
   return normalized === 'opus'
     || normalized === 'sonnet'
     || normalized.includes('opus')
