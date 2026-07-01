@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TranscriptViewMessage } from '../../../../ai/server/transcript/TranscriptProjector';
 import {
+  buildIntermediateProgressCollapsePlan,
   extractEditsFromToolMessage,
   isInteractiveWidgetTool,
   isTranscriptAtBottom,
@@ -412,6 +413,55 @@ describe('transcript auto-scroll thresholds', () => {
 
   it('still auto-scrolls when the transcript was sticky before the new content arrived', () => {
     expect(shouldAutoScrollTranscript(true, 200)).toBe(true);
+  });
+});
+
+describe('intermediate assistant progress collapse planning', () => {
+  const message = (index: number, type: TranscriptViewMessage['type'], text?: string, extra: Partial<TranscriptViewMessage> = {}): TranscriptViewMessage => ({
+    id: index,
+    sequence: index,
+    createdAt: new Date(index),
+    type,
+    text,
+    subagentId: null,
+    ...extra,
+  });
+
+  it('collapses non-final assistant progress in each user turn', () => {
+    const messages: TranscriptViewMessage[] = [
+      message(1, 'user_message', 'start'),
+      message(2, 'assistant_message', 'checking files'),
+      message(3, 'assistant_message', 'running tests'),
+      message(4, 'assistant_message', 'final answer'),
+      message(5, 'user_message', 'next'),
+      message(6, 'assistant_message', 'only answer'),
+    ];
+
+    const plan = buildIntermediateProgressCollapsePlan(messages, true);
+
+    expect([...plan.collapsedIndices]).toEqual([1, 2]);
+    expect(plan.groupsByStartIndex.get(1)).toEqual([1, 2]);
+    expect(plan.collapsedIndices.has(3)).toBe(false);
+    expect(plan.collapsedIndices.has(5)).toBe(false);
+  });
+
+  it('does not collapse when disabled and preserves special assistant messages', () => {
+    const messages: TranscriptViewMessage[] = [
+      message(1, 'user_message', 'start'),
+      message(2, 'assistant_message', 'This session is being continued from a previous conversation.'),
+      message(3, 'assistant_message', '401 from api.openai.com', { isError: true, isAuthError: true }),
+      message(4, 'assistant_message', 'checking files'),
+      message(5, 'assistant_message', 'final answer'),
+    ];
+
+    const disabled = buildIntermediateProgressCollapsePlan(messages, false);
+    expect(disabled.collapsedIndices.size).toBe(0);
+
+    const enabled = buildIntermediateProgressCollapsePlan(messages, true);
+    expect([...enabled.collapsedIndices]).toEqual([3]);
+    expect(enabled.groupsByStartIndex.get(3)).toEqual([3]);
+    expect(enabled.collapsedIndices.has(1)).toBe(false);
+    expect(enabled.collapsedIndices.has(2)).toBe(false);
   });
 });
 

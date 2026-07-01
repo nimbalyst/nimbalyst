@@ -42,7 +42,7 @@ export function AgentFeaturesPanel() {
 
   const [aiDebugSettings] = useAtom(aiDebugSettingsAtom);
   const [, updateAIDebugSettings] = useAtom(setAIDebugSettingsAtom);
-  const { showToolCalls, chatShowToolCalls, aiDebugLogging, showPromptAdditions } = aiDebugSettings;
+  const { showToolCalls, chatShowToolCalls, collapseIntermediateProgress, aiDebugLogging, showPromptAdditions } = aiDebugSettings;
   const [workflowSettingsLoading, setWorkflowSettingsLoading] = useState(false);
   const [preferredAgentLanguage, setPreferredAgentLanguage] = useState<string>('');
   const [workflowSourceSettings, setWorkflowSourceSettings] = useState<WorkflowSourceSettings>({
@@ -271,6 +271,13 @@ export function AgentFeaturesPanel() {
           onChange={(checked) => updateAIDebugSettings({ chatShowToolCalls: checked })}
           name="Show Tool Calls in Chat"
           description="Display tool call rows in the AI chat view. Turn off to hide tool activity and see only the conversational messages."
+        />
+
+        <SettingsToggle
+          checked={collapseIntermediateProgress}
+          onChange={(checked) => updateAIDebugSettings({ collapseIntermediateProgress: checked })}
+          name="Collapse Intermediate Progress"
+          description="Collapse non-final assistant progress updates in each turn while keeping the final answer and required prompts visible."
         />
       </div>
 
