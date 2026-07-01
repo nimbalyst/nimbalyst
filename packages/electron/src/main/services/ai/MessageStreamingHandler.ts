@@ -35,7 +35,7 @@ import {
 } from '@nimbalyst/runtime/ai/server/types';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
-import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { parseThinkingMode, resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
@@ -557,6 +557,9 @@ export class MessageStreamingHandler {
         // Effort level: explicit session value, else the app-wide default the
         // selector displays (Opus 4.6 adaptive reasoning).
         ...(reinitEffortLevel && { effortLevel: reinitEffortLevel }),
+        ...(isProviderClaudeCode ? {
+          thinkingMode: parseThinkingMode((session.metadata as any)?.thinkingMode),
+        } : {}),
       };
 
       // Add baseUrl for LMStudio
@@ -1142,6 +1145,9 @@ export class MessageStreamingHandler {
           maxTokens: (session.providerConfig as any)?.maxTokens,
           temperature: (session.providerConfig as any)?.temperature,
           ...(turnEffortLevel && { effortLevel: turnEffortLevel }),
+          ...(isClaudeCode ? {
+            thinkingMode: parseThinkingMode((session.metadata as any)?.thinkingMode),
+          } : {}),
         });
       }
 

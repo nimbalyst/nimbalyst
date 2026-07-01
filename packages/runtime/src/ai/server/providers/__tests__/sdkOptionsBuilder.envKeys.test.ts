@@ -145,4 +145,34 @@ describe('buildSdkOptions env-key hardening', () => {
     expect(options.env.ENABLE_TOOL_SEARCH).toBe('auto:2');
     expect(options.env.CLAUDE_CODE_ENTRYPOINT).toBe('cli');
   });
+
+  it('disables SDK extended thinking for supported Claude Agent models', async () => {
+    const { options } = await buildSdkOptions(
+      makeDeps({ config: { thinkingMode: 'disabled' } }),
+      makeParams()
+    );
+
+    expect(options.thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('omits the SDK thinking option when extended thinking is enabled', async () => {
+    const { options } = await buildSdkOptions(
+      makeDeps({ config: { thinkingMode: 'enabled' } }),
+      makeParams()
+    );
+
+    expect(options.thinking).toBeUndefined();
+  });
+
+  it('omits the SDK thinking option for unsupported Claude Agent models', async () => {
+    const { options } = await buildSdkOptions(
+      makeDeps({
+        resolveModelVariant: () => 'claude-fable-4-6-20260615',
+        config: { thinkingMode: 'disabled' },
+      }),
+      makeParams()
+    );
+
+    expect(options.thinking).toBeUndefined();
+  });
 });
