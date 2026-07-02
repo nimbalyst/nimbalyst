@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Gemini (Antigravity) agent and meta-agent turns no longer come back empty after the agent runs a tool that returns no results.
 
 ### Removed
 <!-- Removed features go here -->
