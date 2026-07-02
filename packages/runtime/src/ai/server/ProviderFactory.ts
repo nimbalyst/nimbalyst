@@ -64,7 +64,15 @@ export class ProviderFactory {
         provider = new ClaudeCodeCliProvider();
         break;
       case 'openai':
-        provider = new OpenAIProvider();
+      case 'ollama':
+      case 'anythingllm':
+      case 'openrouter':
+      case 'featherless':
+      case 'featherless-official':
+      case 'featherless-sane':
+      case 'featherless-heretic':
+      case 'featherless-keyword':
+        provider = new OpenAIProvider(type);
         break;
       case 'openai-codex':
         provider = new OpenAICodexProvider();

@@ -10,6 +10,14 @@ export type SettingsCategory =
   | 'claude-code'
   | 'claude'
   | 'openai'
+  | 'ollama'
+  | 'anythingllm'
+  | 'openrouter'
+  | 'featherless'
+  | 'featherless-official'
+  | 'featherless-sane'
+  | 'featherless-heretic'
+  | 'featherless-keyword'
   | 'openai-codex'
   | 'opencode'
   | 'copilot-cli'
@@ -231,6 +239,54 @@ Best for quick edits and tasks that do not require multi-file operations.`,
           name: 'OpenAI',
           icon: getProviderIcon('openai', { size: 16 }),
           statusDot: getStatusDot('openai'),
+        },
+        {
+          id: 'ollama',
+          name: 'Ollama',
+          icon: getProviderIcon('lmstudio', { size: 16 }),
+          statusDot: getStatusDot('ollama'),
+        },
+        {
+          id: 'anythingllm',
+          name: 'AnythingLLM',
+          icon: getProviderIcon('openai', { size: 16 }),
+          statusDot: getStatusDot('anythingllm'),
+        },
+        {
+          id: 'openrouter',
+          name: 'OpenRouter Free',
+          icon: getProviderIcon('openai', { size: 16 }),
+          statusDot: getStatusDot('openrouter'),
+        },
+        {
+          id: 'featherless-official',
+          name: 'Featherless Official',
+          icon: getProviderIcon('openai', { size: 16 }),
+          statusDot: getStatusDot('featherless-official'),
+        },
+        {
+          id: 'featherless-sane',
+          name: 'Featherless Sane',
+          icon: getProviderIcon('openai', { size: 16 }),
+          statusDot: getStatusDot('featherless-sane'),
+        },
+        {
+          id: 'featherless',
+          name: 'Featherless Full',
+          icon: getProviderIcon('openai', { size: 16 }),
+          statusDot: getStatusDot('featherless'),
+        },
+        {
+          id: 'featherless-heretic',
+          name: 'Featherless Heretic',
+          icon: getProviderIcon('openai', { size: 16 }),
+          statusDot: getStatusDot('featherless-heretic'),
+        },
+        {
+          id: 'featherless-keyword',
+          name: 'Featherless Keyword',
+          icon: getProviderIcon('openai', { size: 16 }),
+          statusDot: getStatusDot('featherless-keyword'),
         },
         {
           id: 'lmstudio',

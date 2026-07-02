@@ -2,7 +2,7 @@
  * Registry of available AI models with dynamic fetching
  */
 
-import { AIModel, AIProviderType, ModelIdentifier, assertExhaustiveProvider } from './types';
+import { AIModel, AIProviderType, ModelIdentifier, assertExhaustiveProvider, isOpenAICompatibleProvider } from './types';
 
 export class ModelRegistry {
   private static cachedModels: Map<AIProviderType, AIModel[]> = new Map();
@@ -15,7 +15,8 @@ export class ModelRegistry {
   static async getModelsForProvider(
     provider: AIProviderType,
     apiKey?: string,
-    baseUrl?: string
+    baseUrl?: string,
+    modelFilterRegex?: string,
   ): Promise<AIModel[]> {
     // console.log('[ModelRegistry] getModelsForProvider called:', {
     //   provider,
@@ -61,8 +62,16 @@ export class ModelRegistry {
           models = await ClaudeCodeCliProvider.getModels();
           break;
         case 'openai':
+        case 'ollama':
+        case 'anythingllm':
+        case 'openrouter':
+        case 'featherless':
+        case 'featherless-official':
+        case 'featherless-sane':
+        case 'featherless-heretic':
+        case 'featherless-keyword':
           const { OpenAIProvider } = await import('./providers/OpenAIProvider');
-          models = await OpenAIProvider.getModels(apiKey);
+          models = await OpenAIProvider.getModels(apiKey, baseUrl, provider, modelFilterRegex);
           break;
         case 'openai-codex':
           const { OpenAICodexProvider } = await import('./providers/OpenAICodexProvider');
@@ -108,29 +117,45 @@ export class ModelRegistry {
    * @param apiKeys - API keys and config (e.g., anthropic, openai, lmstudio_url)
    * @param enabledProviders - Optional set of enabled provider types. If provided, only these providers are fetched.
    */
-  static async getAllModels(apiKeys: Record<string, string>, enabledProviders?: Set<AIProviderType>): Promise<AIModel[]> {
+  static async getAllModels(
+    apiKeys: Record<string, string>,
+    enabledProviders?: Set<AIProviderType>,
+    modelFilterRegexes: Partial<Record<AIProviderType, string>> = {},
+  ): Promise<AIModel[]> {
     const allModels: AIModel[] = [];
 
     const shouldFetch = (provider: AIProviderType) => !enabledProviders || enabledProviders.has(provider);
 
     // Fetch from each enabled provider in parallel
-    const promises: Promise<AIModel[]>[] = [];
+    const jobs: Array<{ provider: AIProviderType; promise: Promise<AIModel[]> }> = [];
 
-    if (shouldFetch('claude')) promises.push(this.getModelsForProvider('claude', apiKeys['anthropic']));
-    if (shouldFetch('claude-code')) promises.push(this.getModelsForProvider('claude-code'));
-    if (shouldFetch('claude-code-cli')) promises.push(this.getModelsForProvider('claude-code-cli'));
-    if (shouldFetch('openai')) promises.push(this.getModelsForProvider('openai', apiKeys['openai']));
-    if (shouldFetch('openai-codex')) promises.push(this.getModelsForProvider('openai-codex', apiKeys['openai']));
-    if (shouldFetch('openai-codex-acp')) promises.push(this.getModelsForProvider('openai-codex-acp', apiKeys['openai']));
-    if (shouldFetch('opencode')) promises.push(this.getModelsForProvider('opencode'));
-    if (shouldFetch('lmstudio')) promises.push(this.getModelsForProvider('lmstudio', undefined, apiKeys['lmstudio_url']));
-    if (shouldFetch('copilot-cli')) promises.push(this.getModelsForProvider('copilot-cli'));
+    if (shouldFetch('claude')) jobs.push({ provider: 'claude', promise: this.getModelsForProvider('claude', apiKeys['anthropic']) });
+    if (shouldFetch('claude-code')) jobs.push({ provider: 'claude-code', promise: this.getModelsForProvider('claude-code') });
+    if (shouldFetch('claude-code-cli')) jobs.push({ provider: 'claude-code-cli', promise: this.getModelsForProvider('claude-code-cli') });
+    if (shouldFetch('openai')) jobs.push({ provider: 'openai', promise: this.getModelsForProvider('openai', apiKeys['openai'], apiKeys['openai_base_url'], modelFilterRegexes['openai']) });
+    if (shouldFetch('ollama')) jobs.push({ provider: 'ollama', promise: this.getModelsForProvider('ollama', apiKeys['ollama'], apiKeys['ollama_base_url'], modelFilterRegexes['ollama']) });
+    if (shouldFetch('anythingllm')) jobs.push({ provider: 'anythingllm', promise: this.getModelsForProvider('anythingllm', apiKeys['anythingllm'], apiKeys['anythingllm_base_url'], modelFilterRegexes['anythingllm']) });
+    if (shouldFetch('openrouter')) jobs.push({ provider: 'openrouter', promise: this.getModelsForProvider('openrouter', apiKeys['openrouter'], apiKeys['openrouter_base_url'], modelFilterRegexes['openrouter']) });
+    if (shouldFetch('featherless')) jobs.push({ provider: 'featherless', promise: this.getModelsForProvider('featherless', apiKeys['featherless'], apiKeys['featherless_base_url'], modelFilterRegexes['featherless']) });
+    if (shouldFetch('featherless-official')) jobs.push({ provider: 'featherless-official', promise: this.getModelsForProvider('featherless-official', apiKeys['featherless-official'], apiKeys['featherless-official_base_url'], modelFilterRegexes['featherless-official']) });
+    if (shouldFetch('featherless-sane')) jobs.push({ provider: 'featherless-sane', promise: this.getModelsForProvider('featherless-sane', apiKeys['featherless-sane'], apiKeys['featherless-sane_base_url'], modelFilterRegexes['featherless-sane']) });
+    if (shouldFetch('featherless-heretic')) jobs.push({ provider: 'featherless-heretic', promise: this.getModelsForProvider('featherless-heretic', apiKeys['featherless-heretic'], apiKeys['featherless-heretic_base_url'], modelFilterRegexes['featherless-heretic']) });
+    if (shouldFetch('featherless-keyword')) jobs.push({ provider: 'featherless-keyword', promise: this.getModelsForProvider('featherless-keyword', apiKeys['featherless-keyword'], apiKeys['featherless-keyword_base_url'], modelFilterRegexes['featherless-keyword']) });
+    if (shouldFetch('openai-codex')) jobs.push({ provider: 'openai-codex', promise: this.getModelsForProvider('openai-codex', apiKeys['openai']) });
+    if (shouldFetch('openai-codex-acp')) jobs.push({ provider: 'openai-codex-acp', promise: this.getModelsForProvider('openai-codex-acp', apiKeys['openai']) });
+    if (shouldFetch('opencode')) jobs.push({ provider: 'opencode', promise: this.getModelsForProvider('opencode') });
+    if (shouldFetch('lmstudio')) jobs.push({ provider: 'lmstudio', promise: this.getModelsForProvider('lmstudio', undefined, apiKeys['lmstudio_url']) });
+    if (shouldFetch('copilot-cli')) jobs.push({ provider: 'copilot-cli', promise: this.getModelsForProvider('copilot-cli') });
 
-    const results = await Promise.allSettled(promises);
+    const results = await Promise.allSettled(jobs.map(job => job.promise));
 
-    for (const result of results) {
+    for (const [index, result] of results.entries()) {
+      const provider = jobs[index]?.provider ?? 'unknown';
       if (result.status === 'fulfilled') {
         allModels.push(...result.value);
+        console.info(`[ModelRegistry] ${provider} returned ${result.value.length} models`);
+      } else {
+        console.warn(`[ModelRegistry] ${provider} model fetch failed:`, result.reason);
       }
     }
 
@@ -151,8 +176,18 @@ export class ModelRegistry {
         const { ClaudeProvider } = await import('./providers/ClaudeProvider');
         return ClaudeProvider.getDefaultModel();
       case 'openai':
+      case 'ollama':
+      case 'anythingllm':
+      case 'openrouter':
+      case 'featherless':
+      case 'featherless-official':
+      case 'featherless-sane':
+      case 'featherless-heretic':
+      case 'featherless-keyword':
         const { OpenAIProvider } = await import('./providers/OpenAIProvider');
-        return OpenAIProvider.getDefaultModel();
+        return isOpenAICompatibleProvider(provider) && provider !== 'openai'
+          ? `${provider}:local-model`
+          : OpenAIProvider.getDefaultModel();
       case 'claude-code':
         const { ClaudeCodeProvider } = await import('./providers/ClaudeCodeProvider');
         return ClaudeCodeProvider.getDefaultModel();

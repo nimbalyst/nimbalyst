@@ -7,6 +7,11 @@ interface OpenAIPanelProps {
   apiKeys: Record<string, string>;
   availableModels: Model[];
   loading: boolean;
+  providerName?: string;
+  providerDescription?: string;
+  apiKeyName?: string;
+  apiKeyPlaceholder?: string;
+  baseUrlPlaceholder?: string;
   onToggle: (enabled: boolean) => void;
   onApiKeyChange: (key: string, value: string) => void;
   onModelToggle: (modelId: string, enabled: boolean) => void;
@@ -20,6 +25,11 @@ export function OpenAIPanel({
   apiKeys,
   availableModels,
   loading,
+  providerName = 'OpenAI',
+  providerDescription = 'Access to GPT-5.4, GPT-5.3 Chat, GPT-5 mini/nano, GPT-4.1, GPT-4o, and other current OpenAI models. Requires an OpenAI API key from platform.openai.com, or an OpenAI-compatible endpoint.',
+  apiKeyName = 'openai',
+  apiKeyPlaceholder = 'sk-...',
+  baseUrlPlaceholder = 'Optional base URL, e.g. https://openrouter.ai/api/v1',
   onToggle,
   onApiKeyChange,
   onModelToggle,
@@ -30,16 +40,15 @@ export function OpenAIPanel({
   return (
     <div className="provider-panel flex flex-col">
       <div className="provider-panel-header mb-6 pb-4 border-b border-[var(--nim-border)]">
-        <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-2 text-[var(--nim-text)]">OpenAI</h3>
+        <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-2 text-[var(--nim-text)]">{providerName}</h3>
         <p className="provider-panel-description text-sm leading-relaxed text-[var(--nim-text-muted)]">
-          Access to GPT-5.4, GPT-5.3 Chat, GPT-5 mini/nano, GPT-4.1, GPT-4o, and other current OpenAI models.
-          Requires an OpenAI API key from platform.openai.com.
+          {providerDescription}
         </p>
       </div>
 
       <SettingsToggle
         variant="enable"
-        name="Enable OpenAI"
+        name={`Enable ${providerName}`}
         checked={config.enabled}
         onChange={onToggle}
       />
@@ -52,10 +61,10 @@ export function OpenAIPanel({
               <div className="api-key-row flex gap-2 items-center">
                 <input
                   type="password"
-                  value={apiKeys.openai || ''}
-                  onChange={(e) => onApiKeyChange('openai', e.target.value)}
+                  value={apiKeys[apiKeyName] || ''}
+                  onChange={(e) => onApiKeyChange(apiKeyName, e.target.value)}
                   onFocus={(e) => e.target.select()}
-                  placeholder="sk-..."
+                  placeholder={apiKeyPlaceholder}
                   className="api-key-input flex-1 py-2 px-3 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] text-[var(--nim-text)] outline-none font-mono focus:border-[var(--nim-primary)]"
                 />
                 <button
@@ -75,6 +84,16 @@ export function OpenAIPanel({
               {config.testMessage && config.testStatus === 'error' && (
                 <div className="test-error text-xs mt-2 text-[var(--nim-error)]">{config.testMessage}</div>
               )}
+              <div className="api-key-row flex gap-2 items-center mt-3">
+                <input
+                  type="text"
+                  value={config.baseUrl || ''}
+                  onChange={(e) => onConfigChange({ baseUrl: e.target.value })}
+                  onFocus={(e) => e.target.select()}
+                  placeholder={baseUrlPlaceholder}
+                  className="api-key-input flex-1 py-2 px-3 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] text-[var(--nim-text)] outline-none font-mono focus:border-[var(--nim-primary)]"
+                />
+              </div>
             </div>
           </div>
 
@@ -119,7 +138,7 @@ export function OpenAIPanel({
               </div>
             )}
 
-            {!loading && availableModels.length === 0 && apiKeys.openai && (
+            {!loading && availableModels.length === 0 && apiKeys[apiKeyName] && (
               <div className="models-loading text-sm text-[var(--nim-text-muted)] py-2">No models available. Check your API key and connection.</div>
             )}
           </div>

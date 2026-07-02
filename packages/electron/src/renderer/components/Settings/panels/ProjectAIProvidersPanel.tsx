@@ -46,6 +46,14 @@ const PROVIDERS: ProviderInfo[] = [
   { id: 'claude-code', name: 'Claude Agent', subtitle: 'CLI-based MCP', apiKeyField: 'claude-code' },
   { id: 'claude', name: 'Claude', subtitle: 'Anthropic API', apiKeyField: 'anthropic' },
   { id: 'openai', name: 'OpenAI', subtitle: 'GPT Models', apiKeyField: 'openai' },
+  { id: 'ollama', name: 'Ollama', subtitle: 'Local OpenAI-compatible', apiKeyField: 'ollama' },
+  { id: 'anythingllm', name: 'AnythingLLM', subtitle: 'Local OpenAI-compatible', apiKeyField: 'anythingllm' },
+  { id: 'openrouter', name: 'OpenRouter Free', subtitle: 'here be dragons, a house of dragons', apiKeyField: 'openrouter' },
+  { id: 'featherless-official', name: 'Featherless Official', subtitle: 'here be dragons, a house of dragons', apiKeyField: 'featherless-official' },
+  { id: 'featherless-sane', name: 'Featherless Sane', subtitle: 'here be dragons, a house of dragons', apiKeyField: 'featherless-sane' },
+  { id: 'featherless', name: 'Featherless Full', subtitle: 'here be dragons, a house of dragons', apiKeyField: 'featherless' },
+  { id: 'featherless-heretic', name: 'Featherless Heretic', subtitle: 'here be dragons, a house of dragons', apiKeyField: 'featherless-heretic' },
+  { id: 'featherless-keyword', name: 'Featherless Keyword', subtitle: 'here be dragons, a house of dragons', apiKeyField: 'featherless-keyword' },
   { id: 'lmstudio', name: 'LM Studio', subtitle: 'Local Models' },
 ];
 

@@ -30,6 +30,7 @@ export const ProviderConfigSchema = z.object({
   enabled: z.boolean(),
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
+  modelFilterRegex: z.string().optional(),
   models: z.array(z.string()).optional(),
   testStatus: ProviderTestStatusSchema,
   testMessage: z.string().optional(),
@@ -101,6 +102,46 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'providerSettings.openai' },
     { enabled: false, testStatus: 'idle' },
   ),
+  'ai.provider.openrouter': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.openrouter' },
+    { enabled: false, testStatus: 'idle' },
+  ),
+  'ai.provider.ollama': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.ollama' },
+    { enabled: false, baseUrl: 'http://127.0.0.1:11434/v1', testStatus: 'idle' },
+  ),
+  'ai.provider.anythingllm': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.anythingllm' },
+    { enabled: false, baseUrl: 'http://127.0.0.1:3001/api/v1/openai', testStatus: 'idle' },
+  ),
+  'ai.provider.featherless': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.featherless' },
+    { enabled: false, testStatus: 'idle' },
+  ),
+  'ai.provider.featherless-official': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.featherless-official' },
+    { enabled: false, testStatus: 'idle' },
+  ),
+  'ai.provider.featherless-sane': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.featherless-sane' },
+    { enabled: false, testStatus: 'idle' },
+  ),
+  'ai.provider.featherless-heretic': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.featherless-heretic' },
+    { enabled: false, testStatus: 'idle' },
+  ),
+  'ai.provider.featherless-keyword': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.featherless-keyword' },
+    { enabled: false, testStatus: 'idle' },
+  ),
   'ai.provider.openai-codex': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.openai-codex' },
@@ -124,7 +165,7 @@ export const SETTINGS_REGISTRY = {
   'ai.provider.lmstudio': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.lmstudio' },
-    { enabled: false, baseUrl: 'http://127.0.0.1:8234', testStatus: 'idle' },
+    { enabled: false, baseUrl: 'http://127.0.0.1:1234', testStatus: 'idle' },
   ),
 
   // ---- API keys (per-key) ----
@@ -143,6 +184,46 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'apiKeys.openai' },
     '',
   ),
+  'ai.apiKey.openrouter': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.openrouter' },
+    '',
+  ),
+  'ai.apiKey.ollama': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.ollama' },
+    '',
+  ),
+  'ai.apiKey.anythingllm': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.anythingllm' },
+    '',
+  ),
+  'ai.apiKey.featherless': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.featherless' },
+    '',
+  ),
+  'ai.apiKey.featherless-official': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.featherless-official' },
+    '',
+  ),
+  'ai.apiKey.featherless-sane': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.featherless-sane' },
+    '',
+  ),
+  'ai.apiKey.featherless-heretic': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.featherless-heretic' },
+    '',
+  ),
+  'ai.apiKey.featherless-keyword': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.featherless-keyword' },
+    '',
+  ),
   'ai.apiKey.openai-codex': setting(
     z.string(),
     { store: 'ai-settings', path: 'apiKeys.openai-codex' },
@@ -159,7 +240,7 @@ export const SETTINGS_REGISTRY = {
   'ai.apiKey.lmstudio_url': setting(
     z.string(),
     { store: 'ai-settings', path: 'apiKeys.lmstudio_url' },
-    'http://127.0.0.1:8234',
+    'http://127.0.0.1:1234',
   ),
 
   // ---- Other AI-domain settings ----
