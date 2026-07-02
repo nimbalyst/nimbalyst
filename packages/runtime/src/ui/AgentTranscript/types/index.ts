@@ -17,6 +17,7 @@ export interface TranscriptSettings {
   showThinking: boolean;
   compactMode: boolean;
   collapseTools: boolean;
+  collapseIntermediateProgress?: boolean;
   showSessionInit: boolean;
 }
 

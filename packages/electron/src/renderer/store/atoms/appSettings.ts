@@ -873,6 +873,7 @@ export async function initSyncConfig(): Promise<SyncConfig> {
 export interface AIDebugSettings {
   showToolCalls: boolean;
   chatShowToolCalls: boolean;
+  collapseIntermediateProgress: boolean;
   aiDebugLogging: boolean;
   showPromptAdditions: boolean;
 }
@@ -883,6 +884,7 @@ export interface AIDebugSettings {
 const defaultAIDebugSettings: AIDebugSettings = {
   showToolCalls: false,
   chatShowToolCalls: true,
+  collapseIntermediateProgress: false,
   aiDebugLogging: false,
   showPromptAdditions: false,
 };
@@ -901,6 +903,9 @@ onSettingChanged('ai.showToolCalls', (v) => {
 });
 onSettingChanged('ai.chatShowToolCalls', (v) => {
   store.set(aiDebugSettingsAtom, { ...store.get(aiDebugSettingsAtom), chatShowToolCalls: v });
+});
+onSettingChanged('ai.collapseIntermediateProgress', (v) => {
+  store.set(aiDebugSettingsAtom, { ...store.get(aiDebugSettingsAtom), collapseIntermediateProgress: v });
 });
 onSettingChanged('ai.aiDebugLogging', (v) => {
   store.set(aiDebugSettingsAtom, { ...store.get(aiDebugSettingsAtom), aiDebugLogging: v });
@@ -931,6 +936,7 @@ function scheduleAIDebugPersist(settings: AIDebugSettings): void {
     const writes = [
       window.electronAPI.settingsSet('ai.showToolCalls', settings.showToolCalls),
       window.electronAPI.settingsSet('ai.chatShowToolCalls', settings.chatShowToolCalls),
+      window.electronAPI.settingsSet('ai.collapseIntermediateProgress', settings.collapseIntermediateProgress),
       window.electronAPI.settingsSet('ai.aiDebugLogging', settings.aiDebugLogging),
       window.electronAPI.settingsSet('ai.showPromptAdditions', settings.showPromptAdditions),
     ];
@@ -956,6 +962,12 @@ export const showToolCallsAtom = atom((get) => get(aiDebugSettingsAtom).showTool
  * tool rows hidden; default-true preserves UX for everyone else.
  */
 export const chatShowToolCallsAtom = atom((get) => get(aiDebugSettingsAtom).chatShowToolCalls);
+
+/**
+ * 面向用户的转录折叠设置。它只影响渲染，原始消息仍保留在会话中，
+ * 并且可以从折叠行展开查看。
+ */
+export const collapseIntermediateProgressAtom = atom((get) => get(aiDebugSettingsAtom).collapseIntermediateProgress);
 
 /**
  * AI debug logging setting.
@@ -997,6 +1009,7 @@ export async function initAIDebugSettings(): Promise<AIDebugSettings> {
     return {
       showToolCalls: settings?.showToolCalls ?? false,
       chatShowToolCalls: settings?.chatShowToolCalls ?? true,
+      collapseIntermediateProgress: settings?.collapseIntermediateProgress ?? false,
       aiDebugLogging: settings?.aiDebugLogging ?? false,
       showPromptAdditions: settings?.showPromptAdditions ?? false,
     };

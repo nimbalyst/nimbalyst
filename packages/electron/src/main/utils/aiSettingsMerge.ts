@@ -17,6 +17,7 @@ export interface GlobalAISettings {
   apiKeys: Record<string, string>;
   providerSettings: Record<string, ProviderSettings>;
   showToolCalls: boolean;
+  collapseIntermediateProgress: boolean;
   aiDebugLogging: boolean;
   showPromptAdditions: boolean;
   /** Path to a custom Claude Code executable. Empty string means "use bundled SDK". */
@@ -51,6 +52,7 @@ export interface EffectiveAISettings {
   apiKeys: Record<string, string>;
   providerSettings: Record<string, EffectiveProviderSettings>;
   showToolCalls: boolean;
+  collapseIntermediateProgress: boolean;
   aiDebugLogging: boolean;
   showPromptAdditions: boolean;
   customClaudeCodePath?: string;
@@ -172,6 +174,7 @@ export function mergeAISettings(
     apiKeys: { ...globalSettings.apiKeys },
     providerSettings: {},
     showToolCalls: globalSettings.showToolCalls,
+    collapseIntermediateProgress: globalSettings.collapseIntermediateProgress,
     aiDebugLogging: globalSettings.aiDebugLogging,
     showPromptAdditions: globalSettings.showPromptAdditions,
     customClaudeCodePath: globalSettings.customClaudeCodePath,

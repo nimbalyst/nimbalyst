@@ -112,12 +112,14 @@ describe('settings cross-window lockstep (legacy atoms)', () => {
 
     fireBroadcast({ key: 'ai.showToolCalls', value: true });
     fireBroadcast({ key: 'ai.chatShowToolCalls', value: false });
+    fireBroadcast({ key: 'ai.collapseIntermediateProgress', value: true });
     fireBroadcast({ key: 'ai.aiDebugLogging', value: true });
     fireBroadcast({ key: 'ai.showPromptAdditions', value: true });
 
     expect(store.get(aiDebugSettingsAtom)).toMatchObject({
       showToolCalls: true,
       chatShowToolCalls: false,
+      collapseIntermediateProgress: true,
       aiDebugLogging: true,
       showPromptAdditions: true,
     });
