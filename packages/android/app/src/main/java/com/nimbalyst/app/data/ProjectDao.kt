@@ -13,6 +13,12 @@ interface ProjectDao {
     @Query("DELETE FROM projects WHERE id = :projectId")
     suspend fun deleteById(projectId: String)
 
+    @Query("DELETE FROM projects WHERE id NOT IN (:projectIds)")
+    suspend fun deleteNotIn(projectIds: List<String>)
+
+    @Query("DELETE FROM projects")
+    suspend fun deleteAll()
+
     @Query(
         """
         UPDATE projects
