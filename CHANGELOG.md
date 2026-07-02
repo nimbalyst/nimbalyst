@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- OpenCode presets now include GLM 5.2 through the Z.AI and Z.AI Coding Plan providers.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
