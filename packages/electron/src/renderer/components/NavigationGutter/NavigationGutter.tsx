@@ -181,6 +181,12 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
       label: `Files (${getShortcutDisplay(KeyboardShortcuts.view.filesMode)})`,
       contentMode: 'files',
     },
+    {
+      id: 'manage',
+      icon: 'folder_managed',
+      label: 'Manage',
+      contentMode: 'manage',
+    },
   ];
 
   // Content mode buttons - agent section (after spacer)

@@ -125,6 +125,7 @@ import { initWakeupListeners } from './store/listeners/wakeupListener';
 import { TrackerMode } from './components/TrackerMode';
 import { PullRequestMode } from './components/PullRequestMode';
 import { CollabMode, type CollabModeRef } from './components/CollabMode';
+import { ManageMode } from './components/ManageMode/ManageMode';
 import { TerminalBottomPanel } from './components/TerminalBottomPanel';
 import { ProjectRail } from './components/ProjectRail';
 import {
@@ -2210,6 +2211,24 @@ export default function App() {
                     onSwitchToAgentMode={handleSwitchToAgentMode}
                   />
                 </TabsProvider>
+              ) : (
+                <WorkspaceWelcome workspaceName="Open a workspace to get started" />
+              )}
+            </div>
+
+            {/* Manage Mode - always mounted, visibility controlled by display */}
+            <div
+              data-layout="manage-mode-wrapper"
+              className={`flex-1 flex-col overflow-hidden min-h-0 ${
+                activeMode === 'manage' && !isFullscreenPanelActive ? 'flex' : 'hidden'
+              }`}
+            >
+              {workspacePath ? (
+                <ManageMode
+                  workspacePath={workspacePath}
+                  workspaceName={workspaceName}
+                  isActive={activeMode === 'manage'}
+                />
               ) : (
                 <WorkspaceWelcome workspaceName="Open a workspace to get started" />
               )}
