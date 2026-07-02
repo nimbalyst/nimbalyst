@@ -15,6 +15,7 @@ const CLAUDE_CODE_TRANSIENT_SYSTEM_SUBTYPES = new Set([
   'task_started',
   'task_progress',
   'task_notification',
+  'task_updated',
 ]);
 
 const CLAUDE_CODE_TRANSIENT_CHUNK_TYPES = new Set([

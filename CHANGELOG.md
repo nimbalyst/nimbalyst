@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Agent sessions that launch background tasks now wake and continue when those tasks finish, instead of the task being cancelled at the end of the turn.
 - Voice mode no longer interrupts itself from echo of its own speech on open speakers (desktop and iOS).
 - The voice selected in iOS Settings (or synced from desktop) is now actually used by the voice agent.
 
