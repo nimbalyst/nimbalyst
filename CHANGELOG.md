@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Slash commands now work anywhere in a message and appear as clickable pills that show what each command does and open its source file.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

@@ -390,3 +390,18 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   outline: 2px solid var(--nim-primary);
   outline-offset: -2px;
 }
+
+/* Command pills: highlight known /command tokens inside the AI chat input.
+   The overlay text sits over a transparent textarea, so a pill must NOT change
+   glyph advance -- tint via background + box-shadow spread (no padding/border/
+   font-weight change) so the caret stays aligned with the text beneath. */
+.command-pill {
+  color: var(--nim-primary);
+  background-color: color-mix(in srgb, var(--nim-primary) 14%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--nim-primary) 14%, transparent);
+  border-radius: 4px;
+}
+.command-pill:hover {
+  background-color: color-mix(in srgb, var(--nim-primary) 24%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--nim-primary) 24%, transparent);
+}
