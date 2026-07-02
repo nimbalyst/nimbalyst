@@ -11,6 +11,7 @@ import type { DialogConfig } from '../contexts/DialogContext.types';
 import { ProjectSelectionDialog } from '../components/ProjectSelectionDialog/ProjectSelectionDialog';
 import { ErrorDialog } from '../components/ErrorDialog/ErrorDialog';
 import { ConfirmDialog } from '../components/ConfirmDialog/ConfirmDialog';
+import { RewindSessionDialog } from '../components/ConfirmDialog/RewindSessionDialog';
 import { SessionImportDialog } from '../components/AgenticCoding/SessionImportDialog';
 import { BlitzDialog } from '../components/BlitzDialog/BlitzDialog';
 import { DIALOG_IDS } from './registry';
@@ -49,6 +50,14 @@ export interface ConfirmDialogData {
   cancelLabel?: string;
   destructive?: boolean;
   onConfirm: () => void;
+  onCancel: () => void;
+}
+
+export interface RewindSessionData {
+  messageCount: number;
+  fileCount: number;
+  onChatOnly: () => void;
+  onChatAndFiles: () => void;
   onCancel: () => void;
 }
 
@@ -118,6 +127,36 @@ function ConfirmDialogWrapper({
       cancelLabel={data.cancelLabel}
       destructive={data.destructive}
       onConfirm={data.onConfirm}
+      onCancel={data.onCancel}
+    />
+  );
+}
+
+function RewindSessionWrapper({
+  isOpen,
+  onClose: _onClose,
+  data,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  data: RewindSessionData;
+}) {
+  // If the dialog is dismissed via ESC / click-outside path that unmounts it
+  // without a button press, resolve the caller's pending choice as a cancel so
+  // its promise never leaks. onCancel is idempotent (resolve fires at most once).
+  React.useEffect(() => {
+    return () => {
+      data.onCancel();
+    };
+  }, [data]);
+
+  return (
+    <RewindSessionDialog
+      isOpen={isOpen}
+      messageCount={data.messageCount}
+      fileCount={data.fileCount}
+      onChatOnly={data.onChatOnly}
+      onChatAndFiles={data.onChatAndFiles}
       onCancel={data.onCancel}
     />
   );
@@ -200,6 +239,13 @@ export function registerDataDialogs() {
     group: 'alert',
     component: ConfirmDialogWrapper as DialogConfig<ConfirmDialogData>['component'],
     priority: 350, // Confirmations are high priority but below errors
+  });
+
+  registerDialog<RewindSessionData>({
+    id: DIALOG_IDS.REWIND_SESSION,
+    group: 'alert',
+    component: RewindSessionWrapper as DialogConfig<RewindSessionData>['component'],
+    priority: 350,
   });
 
   registerDialog<SessionImportData>({

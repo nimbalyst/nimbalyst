@@ -40,6 +40,24 @@ function isSyntheticCodexLookupId(id: string): boolean {
   return id.startsWith('nimtc|');
 }
 
+/**
+ * Stamp the raw `ai_agent_messages.id` onto every user_message descriptor
+ * parsed from a single raw row. Called by the transformer/projector loops
+ * (which have `msg.id` in scope) so the edit/rewind feature can map a rendered
+ * user message back to its exact raw row. Provider-agnostic — keeps the parsers
+ * unaware of raw ids.
+ */
+export function stampUserMessageRawId(
+  descriptors: CanonicalEventDescriptor[],
+  rawMessageId: number,
+): void {
+  for (const desc of descriptors) {
+    if (desc.type === 'user_message') {
+      desc.rawMessageId = rawMessageId;
+    }
+  }
+}
+
 export async function processDescriptor(
   writer: TranscriptWriter,
   store: ITranscriptEventStore,
@@ -54,6 +72,7 @@ export async function processDescriptor(
         mode: desc.mode,
         attachments: desc.attachments,
         createdAt: desc.createdAt,
+        rawMessageId: desc.rawMessageId,
       });
     }
 
