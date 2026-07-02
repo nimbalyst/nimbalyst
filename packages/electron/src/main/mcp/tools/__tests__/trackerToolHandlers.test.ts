@@ -216,6 +216,27 @@ describe('rowToTrackerItem typeTags normalization', () => {
   });
 });
 
+describe('rowToTrackerItem content decoding', () => {
+  it('parses the JSON-encoded content column back into a plain markdown string', () => {
+    // `content` is stored as JSON.stringify(markdown) (see updateTrackerItemContent /
+    // tracker_create). Reading it back without JSON.parse leaves literal quotes and
+    // escaped \n sequences, which is what rendered as raw text after close/reopen.
+    const markdown = '**Objetivo**: validar\n\n### Links';
+    const item = rowToTrackerItem(makeRow({ content: JSON.stringify(markdown) }));
+    expect(item.content).toBe(markdown);
+  });
+
+  it('passes through non-JSON content unchanged (legacy/plain rows)', () => {
+    const item = rowToTrackerItem(makeRow({ content: 'plain text' }));
+    expect(item.content).toBe('plain text');
+  });
+
+  it('returns undefined when content is null', () => {
+    const item = rowToTrackerItem(makeRow({ content: null }));
+    expect(item.content).toBeUndefined();
+  });
+});
+
 describe('handleTrackerGet', () => {
   beforeEach(() => {
     vi.clearAllMocks();

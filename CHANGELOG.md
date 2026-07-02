@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- Tracker item content no longer renders as raw JSON text after closing and reopening the item.
 
 ### Removed
 <!-- Removed features go here -->

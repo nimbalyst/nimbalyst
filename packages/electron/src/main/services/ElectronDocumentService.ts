@@ -133,6 +133,19 @@ function parseJsonColumn<T>(value: unknown): T | undefined {
   }
 }
 
+/**
+ * `tracker_items.content` is stored as JSON.stringify(markdown) (see
+ * updateTrackerItemContent). Undo that encoding; legacy/plain rows without
+ * JSON quoting pass through unchanged rather than becoming undefined.
+ */
+function parseTrackerContentColumn(raw: string): any {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
 function normalizeTrackerTitle(title: string | undefined): string {
   return (title || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -1680,8 +1693,9 @@ export class ElectronDocumentService implements DocumentService {
       updated: data.updated || row.updated || undefined,
       dueDate: data.dueDate || undefined,
       lastIndexed: new Date(row.last_indexed),
-      // Rich content (Lexical editor state)
-      content: row.content != null ? row.content : undefined,
+      // Rich content (Lexical editor state). Stored as JSON.stringify(markdown);
+      // undo that on read or the raw JSON-quoted string renders as literal text.
+      content: row.content != null ? parseTrackerContentColumn(row.content) : undefined,
       // Archive state
       archived: row.archived ?? false,
       archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
@@ -2250,7 +2264,8 @@ export class ElectronDocumentService implements DocumentService {
       [row.id]
     );
     if (result.rows.length === 0) return null;
-    return result.rows[0].content ?? null;
+    const raw = result.rows[0].content;
+    return raw != null ? parseTrackerContentColumn(raw) : null;
   }
 
   /**
