@@ -71,6 +71,12 @@ fun SessionDetailScreen(
     // Draft sync state
     var isApplyingRemoteDraft by remember { mutableStateOf(false) }
     var lastSubmitAt by remember { mutableLongStateOf(0L) }
+    // Timestamp of the user's most recent keystroke. Guards the remote-apply
+    // LaunchedEffect against overwriting live typing with a stale echo of an
+    // earlier debounced push. Without this, "hello world" → server echoes
+    // "hello wor" back mid-typing → local text jumps back to "hello wor",
+    // producing the dropped-words behavior.
+    var lastLocalEditAt by remember { mutableLongStateOf(0L) }
     var draftDebounceJob by remember { mutableStateOf<Job?>(null) }
     // Delivery timeout state
     var deliveryWarning by remember { mutableStateOf<String?>(null) }
@@ -139,9 +145,14 @@ fun SessionDetailScreen(
     LaunchedEffect(session?.draftInput, session?.draftUpdatedAt) {
         val remoteDraft = session?.draftInput ?: ""
         if (remoteDraft == draftPrompt) return@LaunchedEffect
-        // Reject stale drafts that predate our last submit
         val remoteTs = session?.draftUpdatedAt ?: 0L
-        if (remoteDraft.isNotEmpty() && remoteTs <= lastSubmitAt) return@LaunchedEffect
+        // Reject remote drafts that don't strictly beat both our last submit AND
+        // our most recent keystroke. lastLocalEditAt is the critical guard here:
+        // without it, a stale server echo (which necessarily has an older ts than
+        // the keystrokes typed after the echoed push was sent) would clobber the
+        // in-flight text.
+        val localFrontier = maxOf(lastSubmitAt, lastLocalEditAt)
+        if (remoteDraft.isNotEmpty() && remoteTs <= localFrontier) return@LaunchedEffect
 
         isApplyingRemoteDraft = true
         draftPrompt = remoteDraft
@@ -308,6 +319,9 @@ fun SessionDetailScreen(
                         draftPrompt = newText
                         // Debounced draft sync push (skip if applying remote draft)
                         if (!isApplyingRemoteDraft) {
+                            // Mark the local edit frontier so any concurrent stale
+                            // remote echo is rejected by the remote-apply guard above.
+                            lastLocalEditAt = System.currentTimeMillis()
                             draftDebounceJob?.cancel()
                             draftDebounceJob = coroutineScope.launch {
                                 delay(DRAFT_DEBOUNCE_MS)
