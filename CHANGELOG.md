@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
-<!-- Bug fixes go here -->
+- Android prompt input is no longer hidden by the soft keyboard when typing in a session.
 
 ### Removed
 <!-- Removed features go here -->
