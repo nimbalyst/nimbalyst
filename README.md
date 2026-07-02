@@ -1,29 +1,19 @@
 # Nimbalyst is the visual workspace for building with Codex and Claude Code
+[![GitHub stars](https://img.shields.io/github/stars/Nimbalyst/nimbalyst?style=social)](https://github.com/Nimbalyst/nimbalyst/stargazers)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/FgD9S2MCYB)
+[![Latest release](https://img.shields.io/github/v/release/Nimbalyst/nimbalyst)](https://github.com/Nimbalyst/nimbalyst/releases/latest)
+[![License](https://img.shields.io/github/license/Nimbalyst/nimbalyst)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)]()
 
-[Nimbalyst](https://nimbalyst.com) is a free, local, interactive visual editor & session manager where builders maximize speed, bandwidth, and context with Codex, Claude Code, Opencode (alpha), Copilot (alpha) by collaborating visually on files, sessions, and tasks:
+[Nimbalyst](https://nimbalyst.com) is a free, open-source, local, interactive visual editor & session/task manager for developers, product managers, designers, builders. 
+- Maximize speed, bandwidth, and context with Codex, Claude Code, Opencode (alpha), Copilot (alpha) by collaborating visually on integrated files, sessions, and tasks
 - Iterate visually with coding agents in your markdown, mockups, diagrams, csv, Excalidraw, data models, and code. Approve the coding agent's changes in red/green WYSIWYG, edit, annotate.
 - Manage multiple sessions in parallel and in kanban. Search, resume, link sessions to files and files to sessions. For developers we include git management, AI commit, workstreams, worktrees, and terminal.
 - Manage tasks. Keep track of your plans, bugs, todos, etc. Have the agent edit tasks and items, add them, move them, and execute them. Humans see and edit this as well.
 - Extend Nimbalyst. Build your own custom editors and visual interfaces integrated with the rest of Nimbalyst and your agents.
 - Mobile app. Start, manage, and respond to your Codex and Claude Code sessions while on the go.
 
-![Version](https://img.shields.io/github/v/release/nimbalyst/nimbalyst)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
-
 https://github.com/user-attachments/assets/bfd89552-61f4-4db1-8301-cc2495423b89
-
-## Contributing
-
-- 💡 **Have a vague idea or question?** → [Join the discussion](https://github.com/Nimbalyst/nimbalyst/discussions)
-- 🐛 **Found a bug?** → [Open an issue](https://github.com/Nimbalyst/nimbalyst/issues/new?template=bug_report.yml)
-- 🗺️ **Curious what we're building?** → [See the roadmap](https://github.com/orgs/Nimbalyst/projects/4/views/1)
-- 🤝 **Want to help with roadmap work?** → [Community view](https://github.com/orgs/Nimbalyst/projects/4/views/2)
-- ✨ **Have a concrete feature request?** → [Open an issue](https://github.com/Nimbalyst/nimbalyst/issues/new?template=feature_request.yml)
-- 🌱 **Looking for a smaller place to start?** → [Good first issues](https://github.com/orgs/Nimbalyst/projects/4/views/4)
-
-We rank features and bugs by 👍 reactions. Don't comment "+1" — react with 👍 instead.
-[Sort issues by reactions →](https://github.com/Nimbalyst/nimbalyst/issues?q=is%3Aissue+is%3Aopen+sort%3Areactions-%2B1-desc)
-
 
 ## Features
 **Visual Editors:** Built-in WYSIWYG editors where you and your coding agents collaborate visually. Approve agent changes as red/green diffs, edit, annotate, and iterate.
@@ -154,11 +144,21 @@ For deeper architecture and contributor guidance, see [CLAUDE.md](./CLAUDE.md) a
 
 ## License
 
-This repository is licensed under the **MIT License** — see [LICENSE](./LICENSE).
+- This repository is licensed under the **MIT License** — see [LICENSE](./LICENSE).
+- The collaboration sync server (the Cloudflare Worker that powers `wss://sync.nimbalyst.com`) is a separate project. Clients in this repo talk to it over the wire protocol defined in [`packages/collab-protocol/`](./packages/collab-protocol/).
+- For licensing context and contact information, see [LICENSING.md](./LICENSING.md).
 
-The collaboration sync server (the Cloudflare Worker that powers `wss://sync.nimbalyst.com`) is a separate project. Clients in this repo talk to it over the wire protocol defined in [`packages/collab-protocol/`](./packages/collab-protocol/).
+## Contributing
 
-For licensing context and contact information, see [LICENSING.md](./LICENSING.md).
+- 💡 **Have a vague idea or question?** → [Join the discussion](https://github.com/Nimbalyst/nimbalyst/discussions)
+- 🐛 **Found a bug?** → [Open an issue](https://github.com/Nimbalyst/nimbalyst/issues/new?template=bug_report.yml)
+- 🗺️ **Curious what we're building?** → [See the roadmap](https://github.com/orgs/Nimbalyst/projects/4/views/1)
+- 🤝 **Want to help with roadmap work?** → [Community view](https://github.com/orgs/Nimbalyst/projects/4/views/2)
+- ✨ **Have a concrete feature request?** → [Open an issue](https://github.com/Nimbalyst/nimbalyst/issues/new?template=feature_request.yml)
+- 🌱 **Looking for a smaller place to start?** → [Good first issues](https://github.com/orgs/Nimbalyst/projects/4/views/4)
+
+We rank features and bugs by 👍 reactions. Don't comment "+1" — react with 👍 instead.
+[Sort issues by reactions →](https://github.com/Nimbalyst/nimbalyst/issues?q=is%3Aissue+is%3Aopen+sort%3Areactions-%2B1-desc)
 
 ## Acknowledgments
 
