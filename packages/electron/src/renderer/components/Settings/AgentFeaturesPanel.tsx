@@ -45,6 +45,8 @@ export function AgentFeaturesPanel() {
   const { showToolCalls, chatShowToolCalls, aiDebugLogging, showPromptAdditions } = aiDebugSettings;
   const [workflowSettingsLoading, setWorkflowSettingsLoading] = useState(false);
   const [preferredAgentLanguage, setPreferredAgentLanguage] = useState<string>('');
+  const [apiUpstreamUrl, setApiUpstreamUrl] = useState<string>('');
+  const [apiUpstreamError, setApiUpstreamError] = useState<string | null>(null);
   const [workflowSourceSettings, setWorkflowSourceSettings] = useState<WorkflowSourceSettings>({
     workspaceClaudeCompatibilityEnabled: false,
     includeProjectClaudeSources: false,
@@ -78,6 +80,7 @@ export function AgentFeaturesPanel() {
       try {
         const settings = await window.electronAPI.claudeCode.getSettings();
         const workflowSettings = await window.electronAPI.agentWorkflows.getSettings();
+        setApiUpstreamUrl(settings.apiUpstreamUrl ?? '');
         setWorkflowSourceSettings({
           workspaceClaudeCompatibilityEnabled: workflowSettings.sourceSettings.workspaceClaudeCompatibilityEnabled,
           includeProjectClaudeSources: workflowSettings.sourceSettings.includeProjectClaudeSources ?? settings.projectCommandsEnabled,
@@ -113,6 +116,22 @@ export function AgentFeaturesPanel() {
       console.error('Failed to save preferred agent language:', err);
     }
   }, []);
+
+  // Persist on blur (not per-keystroke) so a half-typed URL doesn't flash a
+  // validation error. The main process re-validates (loopback-only) and returns
+  // the error to surface inline; a value it rejects is NOT saved.
+  const handleApiUpstreamBlur = useCallback(async () => {
+    try {
+      const result = await window.electronAPI.claudeCode.setApiUpstreamUrl(apiUpstreamUrl);
+      if (result.success) {
+        setApiUpstreamError(null);
+      } else {
+        setApiUpstreamError(result.error);
+      }
+    } catch (err) {
+      setApiUpstreamError(err instanceof Error ? err.message : 'Failed to save upstream URL');
+    }
+  }, [apiUpstreamUrl]);
 
   const handleWorkflowSourceToggle = useCallback(async (
     key: keyof WorkflowSourceSettings,
@@ -197,6 +216,42 @@ export function AgentFeaturesPanel() {
           <p className="m-0 text-[13px] text-[var(--nim-text)] leading-snug">
             These features may change, regress, or be removed. Some require a restart to take full effect.
           </p>
+        </div>
+
+        <div className="claude-api-upstream mb-4 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3">
+          <h5 className="text-sm font-semibold mb-1.5 text-[var(--nim-text)]">
+            Custom Claude API upstream
+          </h5>
+          <p className="text-xs leading-relaxed text-[var(--nim-text-muted)] mb-2">
+            Route the Claude Code CLI's API traffic through a local proxy (e.g. a token-compression
+            layer, gateway, or cache) before it reaches Anthropic. Leave blank to connect directly.
+            A base path is honored — e.g. <code>http://127.0.0.1:8787/anthropic</code>.
+          </p>
+          <div className="flex items-start gap-2 p-2 mb-2 rounded border border-[var(--nim-warning)]/30 bg-[var(--nim-warning)]/10">
+            <MaterialSymbol icon="lock" size={14} className="text-[var(--nim-warning)] shrink-0 mt-0.5" />
+            <p className="m-0 text-[12px] text-[var(--nim-text)] leading-snug">
+              This host receives your subscription token and full prompt content, so only loopback
+              addresses (<code>127.0.0.1</code>, <code>localhost</code>) are allowed. Restart sessions to apply.
+            </p>
+          </div>
+          <input
+            type="text"
+            value={apiUpstreamUrl}
+            onChange={(e) => {
+              setApiUpstreamUrl(e.target.value);
+              if (apiUpstreamError) setApiUpstreamError(null);
+            }}
+            onBlur={handleApiUpstreamBlur}
+            placeholder="http://127.0.0.1:8787/anthropic"
+            spellCheck={false}
+            className="w-full py-1.5 px-3 rounded-md text-sm bg-[var(--nim-bg)] border border-[var(--nim-border)] text-[var(--nim-text)] outline-none focus:border-[var(--nim-primary)]"
+            data-testid="claude-api-upstream-input"
+          />
+          {apiUpstreamError && (
+            <p className="claude-api-upstream-error mt-1.5 text-xs text-[var(--nim-error)] leading-snug">
+              {apiUpstreamError}
+            </p>
+          )}
         </div>
 
         <div className="mb-4 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3">

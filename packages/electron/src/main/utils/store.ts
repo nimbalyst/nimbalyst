@@ -112,6 +112,14 @@ interface AppStoreSchema {
     projectCommandsEnabled?: boolean;
     // Enable user-level commands (~/.claude/commands/)
     userCommandsEnabled?: boolean;
+    // Advanced: route the Claude CLI's API traffic through a custom upstream
+    // before it reaches Anthropic. The observation proxy forwards `/v1/messages`
+    // here (a base path like `/anthropic` is honored) instead of straight to
+    // api.anthropic.com — enabling user-supplied middleware (token-compression,
+    // gateways, caching, observability). Empty/unset = direct to Anthropic.
+    // SECURITY: the target receives the CLI's subscription OAuth token + prompt
+    // content, so only loopback hosts are accepted (see setClaudeCodeApiUpstreamUrl).
+    apiUpstreamUrl?: string;
   };
   // OpenAI Codex settings
   openaiCodex?: {
@@ -1718,12 +1726,72 @@ export function setExtensionPermissionGrantsGlobal(
 }
 
 // Claude Code settings
-export function getClaudeCodeSettings(): { projectCommandsEnabled: boolean; userCommandsEnabled: boolean } {
+export function getClaudeCodeSettings(): {
+  projectCommandsEnabled: boolean;
+  userCommandsEnabled: boolean;
+  apiUpstreamUrl?: string;
+} {
   const settings = getAppStore().get('claudeCode', {});
   return {
     projectCommandsEnabled: settings.projectCommandsEnabled ?? true,
     userCommandsEnabled: settings.userCommandsEnabled ?? true,
+    apiUpstreamUrl: settings.apiUpstreamUrl,
   };
+}
+
+/**
+ * Whether a custom Claude API upstream URL is well-formed AND loopback-bound.
+ * The Claude CLI's requests carry the user's subscription OAuth token + full
+ * prompt content; routing them to a non-loopback host would hand that to a
+ * remote third party, so we hard-restrict to loopback (127.0.0.0/8, localhost,
+ * ::1). Returns false for anything else (incl. unparseable input).
+ */
+export function isValidClaudeCodeApiUpstreamUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  const host = parsed.hostname.replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+}
+
+/**
+ * The configured custom upstream for the Claude CLI observation proxy, or
+ * undefined when unset/blank/invalid (→ proxy talks directly to Anthropic). We
+ * re-validate on read so a value that somehow bypassed the setter (hand-edited
+ * store, downgraded build) can never silently route OAuth traffic off-box.
+ */
+export function getClaudeCodeApiUpstreamUrl(): string | undefined {
+  const raw = getAppStore().get('claudeCode', {}).apiUpstreamUrl?.trim();
+  if (!raw) return undefined;
+  if (!isValidClaudeCodeApiUpstreamUrl(raw)) {
+    logger.main.warn(`[store] Ignoring non-loopback claudeCode.apiUpstreamUrl: ${raw}`);
+    return undefined;
+  }
+  return raw;
+}
+
+/**
+ * Persist (or clear, with empty string) the custom Claude API upstream URL.
+ * Throws on a non-empty value that isn't a valid loopback http(s) URL so the
+ * caller (settings IPC) surfaces the error instead of saving a footgun.
+ */
+export function setClaudeCodeApiUpstreamUrl(url: string): void {
+  const trimmed = url.trim();
+  const current = getAppStore().get('claudeCode', {});
+  if (!trimmed) {
+    getAppStore().set('claudeCode', { ...current, apiUpstreamUrl: undefined });
+    return;
+  }
+  if (!isValidClaudeCodeApiUpstreamUrl(trimmed)) {
+    throw new Error(
+      'Claude API upstream URL must be a loopback http(s) URL (e.g. http://127.0.0.1:8787/anthropic).',
+    );
+  }
+  getAppStore().set('claudeCode', { ...current, apiUpstreamUrl: trimmed });
 }
 
 export function setClaudeCodeProjectCommandsEnabled(enabled: boolean): void {

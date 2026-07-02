@@ -700,9 +700,10 @@ interface ElectronAPI {
 
   // Claude Code API
   claudeCode: {
-    getSettings: () => Promise<{ projectCommandsEnabled: boolean; userCommandsEnabled: boolean }>;
+    getSettings: () => Promise<{ projectCommandsEnabled: boolean; userCommandsEnabled: boolean; apiUpstreamUrl?: string }>;
     setProjectCommandsEnabled: (enabled: boolean) => Promise<void>;
     setUserCommandsEnabled: (enabled: boolean) => Promise<void>;
+    setApiUpstreamUrl: (url: string) => Promise<{ success: true } | { success: false; error: string }>;
     getEnv: () => Promise<Record<string, string>>;
     setEnv: (env: Record<string, string>) => Promise<void>;
   };

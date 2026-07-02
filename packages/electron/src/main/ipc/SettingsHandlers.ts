@@ -35,6 +35,7 @@ import {
     isWorktreeOnboardingShown, setWorktreeOnboardingShown,
     getClaudeCodeSettings,
     setClaudeCodeProjectCommandsEnabled, setClaudeCodeUserCommandsEnabled,
+    setClaudeCodeApiUpstreamUrl,
     getAgentWorkflowSourceSettings, getAgentWorkflowExportSettings,
     setAgentWorkflowSourceSettings, setAgentWorkflowExportSettings,
 } from '../utils/store';
@@ -704,6 +705,16 @@ export function registerSettingsHandlers() {
     safeHandle('claudeCode:set-user-commands-enabled', async (_event, enabled: boolean) => {
         setClaudeCodeUserCommandsEnabled(enabled);
         logger.store.info(`[SettingsHandlers] Claude Code user commands ${enabled ? 'enabled' : 'disabled'}`);
+    });
+
+    safeHandle('claudeCode:set-api-upstream-url', async (_event, url: string) => {
+        try {
+            setClaudeCodeApiUpstreamUrl(url ?? '');
+            logger.store.info(`[SettingsHandlers] Claude Code API upstream URL ${url?.trim() ? 'set' : 'cleared'}`);
+            return { success: true as const };
+        } catch (err) {
+            return { success: false as const, error: err instanceof Error ? err.message : String(err) };
+        }
     });
 
     safeHandle('agentWorkflows:set-source-settings', async (_event, updates: {
