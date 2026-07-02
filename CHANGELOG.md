@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Fork an AI chat from a specific message: hover a message and pick "Fork from here" to branch into a new session that continues from that point, leaving the original untouched.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
