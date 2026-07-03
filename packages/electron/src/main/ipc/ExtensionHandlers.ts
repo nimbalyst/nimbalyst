@@ -32,6 +32,7 @@ import {
   getReleaseChannel,
 } from '../utils/store';
 import { registerFileExtension, clearRegisteredExtensions } from '../extensions/RegisteredFileTypes';
+import { getBuiltinExtensionsDirectory } from '../extensions/builtinExtensionsDirectory';
 import {
   startExtensionBackendModules,
   stopExtensionBackendModules,
@@ -253,41 +254,6 @@ export async function getUserExtensionsDirectory(): Promise<string> {
   }
 
   return extensionsPath;
-}
-
-/**
- * Get the path to the built-in extensions directory.
- * Returns null if the directory doesn't exist.
- */
-async function getBuiltinExtensionsDirectory(): Promise<string | null> {
-  // In production, built-in extensions are in resources/extensions
-  // In development, they're in packages/extensions relative to the electron package
-  const possiblePaths = app.isPackaged
-    ? [
-        path.join(process.resourcesPath, 'extensions'),
-        path.join(process.resourcesPath, 'app.asar.unpacked', 'extensions'),
-      ]
-    : [
-        // Development: relative to __dirname (out/main/chunks in vite build)
-        // Go up 4 levels to packages/, then into extensions/
-        path.join(__dirname, '..', '..', '..', '..', 'extensions'),
-        // Fallback: if __dirname is out/main (no chunks)
-        path.join(__dirname, '..', '..', '..', 'extensions'),
-        path.join(__dirname, '..', '..', 'resources', 'extensions'),
-      ];
-
-  for (const possiblePath of possiblePaths) {
-    try {
-      await fs.access(possiblePath);
-      logger.main.debug('[ExtensionHandlers] Built-in extensions directory:', possiblePath);
-      return possiblePath;
-    } catch {
-      // Path doesn't exist, try next
-    }
-  }
-
-  logger.main.debug('[ExtensionHandlers] No built-in extensions directory found');
-  return null;
 }
 
 /**

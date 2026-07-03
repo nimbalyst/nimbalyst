@@ -370,6 +370,19 @@ export function normalizeTypeTags(rawTypeTags: unknown, fallbackType: string): s
   return parsed && parsed.length > 0 ? parsed : [fallbackType];
 }
 
+/**
+ * `content` is stored as JSON.stringify(markdown) (see updateTrackerItemContent /
+ * tracker_create). Undo that encoding on read; legacy/plain rows without JSON
+ * quoting pass through unchanged.
+ */
+export function parseTrackerContent(raw: string): any {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
 /** Convert a raw DB row to a TrackerItem for the renderer */
 export function rowToTrackerItem(row: any): any {
   const data = typeof row.data === 'string' ? JSON.parse(row.data) : row.data || {};
@@ -396,7 +409,7 @@ export function rowToTrackerItem(row: any): any {
     updated: data.updated || row.updated || undefined,
     dueDate: data.dueDate || undefined,
     lastIndexed: new Date(row.last_indexed),
-    content: row.content != null ? row.content : undefined,
+    content: row.content != null ? parseTrackerContent(row.content) : undefined,
     archived: row.archived ?? false,
     archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
     source: row.source || (row.document_path ? 'inline' : 'native'),

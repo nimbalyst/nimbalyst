@@ -15,8 +15,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
+- Tracker item content no longer renders as raw JSON text after closing and reopening the item.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.66.9] - 2026-07-02
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Built-in extensions no longer show the native-code consent prompt; it now only appears for third-party extensions.
+
+### Fixed
 <!-- Bug fixes go here -->
 - Gemini (Antigravity) agent and meta-agent turns no longer come back empty after the agent runs a tool that returns no results.
+- Agent calls to deferred background tools (Monitor et al) no longer fail with schema validation errors.
 
 ### Removed
 <!-- Removed features go here -->

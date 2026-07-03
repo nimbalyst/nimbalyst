@@ -306,7 +306,15 @@ export async function buildSdkOptions(
     // ~100K tokens of tool descriptions are still loaded upfront — we saw
     // ~112K baseline usage on new sessions. `auto:2` (20K on 1M, 4K on 200K)
     // matches the previous lazy-loading behavior we had under Sonnet 4.6.
-    ENABLE_TOOL_SEARCH: 'auto:2',
+    // Default only — a user-set ENABLE_TOOL_SEARCH (settings env vars, shell,
+    // or process env) must win, otherwise the `ENABLE_TOOL_SEARCH = false`
+    // remediation that buildBedrockToolErrorGuidance tells users to apply is
+    // silently clobbered. (NIM-1475)
+    ...(sanitizedProcessEnv.ENABLE_TOOL_SEARCH == null &&
+      sanitizedShellEnv.ENABLE_TOOL_SEARCH == null &&
+      sanitizedSettingsEnv.ENABLE_TOOL_SEARCH == null && {
+        ENABLE_TOOL_SEARCH: 'auto:2',
+      }),
     // The bundled SDK at assistant.mjs sets CLAUDE_CODE_ENTRYPOINT to "sdk-ts"
     // when not already set in the environment. Anthropic's backend treats
     // `cli` traffic as first-party and `sdk-ts` traffic as third-party,
