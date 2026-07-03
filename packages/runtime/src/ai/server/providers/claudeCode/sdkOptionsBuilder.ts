@@ -328,6 +328,19 @@ export async function buildSdkOptions(
     ...(config.effortLevel && config.effortLevel !== DEFAULT_EFFORT_LEVEL && {
       CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel
     }),
+    // The bundled claude binary runs a per-tool idle-timeout watchdog (default
+    // 300s) over MCP servers whose transport is http/sse/ws. ALL Nimbalyst
+    // in-app MCP servers use SSE, and the interactive input tools
+    // (PromptForUserInput, AskUserQuestion) block indefinitely waiting for the
+    // human — so the watchdog aborts them at 300s and the prompt collapses
+    // (#758). Our SSE servers are local in-process, so a "hung" tool is our own
+    // bug rather than a flaky network the watchdog guards against; disable it
+    // by default. A user-set value (settings/shell/process env) still wins.
+    ...(sanitizedProcessEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT == null &&
+      sanitizedShellEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT == null &&
+      sanitizedSettingsEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT == null && {
+        CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: '0',
+      }),
   };
 
   // NIM-376: Overlay enhanced PATH so the Claude Code SDK can find stdio MCP
