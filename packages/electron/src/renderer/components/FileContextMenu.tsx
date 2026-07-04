@@ -205,10 +205,8 @@ export function FileContextMenu({
                   <MaterialSymbol icon="description" size={18} />
                   <span>New Markdown File</span>
                 </div>
-                <div className={menuItemClasses} onClick={() => { onNewFile(filePath, 'mockup'); onClose(); }}>
-                  <MaterialSymbol icon="web" size={18} />
-                  <span>New Mockup</span>
-                </div>
+                {/* Mockup is contributed by the mockuplm extension (.mockup.html);
+                    a hardcoded built-in entry here would duplicate it. */}
                 {extensionFileTypes.map((extType) => (
                   <div
                     key={extType.extension}
