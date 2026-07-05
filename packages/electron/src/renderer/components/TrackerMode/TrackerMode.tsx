@@ -11,9 +11,11 @@ import {
   trackerSavedViewsAtom,
   saveTrackerViewAtom,
   deleteTrackerViewAtom,
+  trackerModeTagFilterAtom,
   type TrackerFilterChip,
 } from '../../store/atoms/trackers';
 import type { SavedView } from './trackerSavedViews';
+import { snapshotViewDefinition } from './trackerSavedViews';
 
 // Ensure built-in trackers are loaded
 loadBuiltinTrackers();
@@ -75,21 +77,25 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
   const savedViews = useAtomValue(trackerSavedViewsAtom);
   const saveView = useSetAtom(saveTrackerViewAtom);
   const deleteView = useSetAtom(deleteTrackerViewAtom);
+  // Live tag filter, shared with TrackerMainView's search bar, so a saved view
+  // captures the active `#tag` chips on save and restores them on apply.
+  const tagFilter = useAtomValue(trackerModeTagFilterAtom);
+  const setTagFilter = useSetAtom(trackerModeTagFilterAtom);
 
   const handleSaveView = useCallback((name: string) => {
     const view: SavedView = {
       id: crypto.randomUUID(),
       name,
-      definition: {
+      definition: snapshotViewDefinition({
         selectedType: modeLayout.selectedType,
         activeFilters: modeLayout.activeFilters,
         viewMode: modeLayout.viewMode,
-        tagFilter: [],
+        tagFilter,
         groupBy: modeLayout.groupBy,
-      },
+      }),
     };
     saveView(view);
-  }, [modeLayout.selectedType, modeLayout.activeFilters, modeLayout.viewMode, modeLayout.groupBy, saveView]);
+  }, [modeLayout.selectedType, modeLayout.activeFilters, modeLayout.viewMode, modeLayout.groupBy, tagFilter, saveView]);
 
   const handleApplyView = useCallback((view: SavedView) => {
     const def = view.definition;
@@ -100,7 +106,9 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
       groupBy: def.groupBy,
       selectedItemId: null,
     });
-  }, [setModeLayout]);
+    // Restore the view's tag filter (empty array clears any live filter).
+    setTagFilter(def.tagFilter ?? []);
+  }, [setModeLayout, setTagFilter]);
 
   const handleDeleteView = useCallback((viewId: string) => {
     deleteView(viewId);

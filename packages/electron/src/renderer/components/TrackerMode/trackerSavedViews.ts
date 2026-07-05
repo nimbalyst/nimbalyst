@@ -69,6 +69,33 @@ export function normalizeViewDefinition(raw: Partial<SavedViewDefinition> | unde
   };
 }
 
+/** The live tracker view state that a saved view captures on save. */
+export interface TrackerViewSnapshot {
+  selectedType: string;
+  activeFilters: TrackerFilterChip[];
+  viewMode: ViewMode;
+  tagFilter: string[];
+  groupBy: TrackerGroupBy;
+}
+
+/**
+ * Build a saved-view definition from the current live view state.
+ *
+ * Centralises the snapshot so every field the view can filter by -- including
+ * the active tag filter -- is captured. The prior inline snapshot hardcoded
+ * `tagFilter: []`, so a saved view never remembered its tags and applying it
+ * left whatever tag filter was live in place (NIM-788 regression).
+ */
+export function snapshotViewDefinition(state: TrackerViewSnapshot): SavedViewDefinition {
+  return {
+    selectedType: state.selectedType,
+    activeFilters: state.activeFilters,
+    viewMode: state.viewMode,
+    tagFilter: state.tagFilter,
+    groupBy: state.groupBy,
+  };
+}
+
 export interface FilterContext {
   /** Current user identity, required for the `mine` chip. */
   identity?: TrackerIdentity | null;

@@ -25,6 +25,7 @@ import { ImportFromSourceDialog } from './ImportFromSourceDialog';
 import {
   trackerModeLayoutAtom,
   setTrackerModeLayoutAtom,
+  trackerModeTagFilterAtom,
   type TrackerFilterChip,
   type TypeColumnConfig,
 } from '../../store/atoms/trackers';
@@ -87,7 +88,9 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   const [sortBy, setSortBy] = useState<TrackerSortColumn>('lastIndexed');
   const [sortDirection, setSortDirection] = useState<TrackerSortDirection>('desc');
   const [searchQuery, setSearchQuery] = useState('');
-  const [tagFilter, setTagFilter] = useState<string[]>([]);
+  // Shared with TrackerMode so saved views can snapshot/restore it (NIM-788).
+  const tagFilter = useAtomValue(trackerModeTagFilterAtom);
+  const setTagFilter = useSetAtom(trackerModeTagFilterAtom);
   // Source filter: provider ids (e.g. 'github-issues') plus 'native'.
   const [sourceFilter, setSourceFilter] = useState<string[]>([]);
   const [quickAddType, setQuickAddType] = useState<string | null>(null);

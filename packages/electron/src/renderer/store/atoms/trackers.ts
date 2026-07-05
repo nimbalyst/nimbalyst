@@ -256,6 +256,17 @@ export const trackerModeGroupByAtom = atom(
 /** Saved view definitions for the current workspace. */
 export const trackerSavedViewsAtom = atom<SavedView[]>([]);
 
+/**
+ * Live tag filter (OR match) applied in the tracker main view's search bar.
+ *
+ * Lifted out of TrackerMainView's local state so saved views can snapshot it on
+ * save and restore it on apply (NIM-788). TrackerMainView reads and writes this
+ * as the source of truth for the `#tag` chips; TrackerMode reads it in
+ * handleSaveView and writes it in handleApplyView. In-memory only (not persisted
+ * to workspace state) -- saved views carry the persisted copy.
+ */
+export const trackerModeTagFilterAtom = atom<string[]>([]);
+
 function persistSavedViews(workspacePath: string, views: SavedView[]): void {
   window.electronAPI
     .invoke('workspace:update-state', workspacePath, { trackerSavedViews: views })

@@ -6,6 +6,7 @@ import {
   groupTrackerItems,
   normalizeViewDefinition,
   createDefaultViewDefinition,
+  snapshotViewDefinition,
 } from '../trackerSavedViews';
 
 function makeItem(
@@ -128,6 +129,43 @@ describe('groupTrackerItems', () => {
     expect(groups.map((g) => g.label)).toEqual(['#ui', '#urgent', 'Untagged']);
     expect(groups[0].items.map((i) => i.id)).toEqual(['1']);
     expect(groups[2].items.map((i) => i.id)).toEqual(['2']);
+  });
+});
+
+describe('snapshotViewDefinition', () => {
+  it('captures the active tag filter so a saved view remembers its tags', () => {
+    // Regression for NIM-788: the tag filter was previously dropped on save,
+    // so every saved view rendered the last-applied tag filter instead of
+    // its own (e.g. clicking "deepc board" showed #backoffice).
+    const def = snapshotViewDefinition({
+      selectedType: 'all',
+      activeFilters: ['high-priority'],
+      viewMode: 'kanban',
+      tagFilter: ['deepc'],
+      groupBy: 'status',
+    });
+    expect(def.tagFilter).toEqual(['deepc']);
+    expect(def).toEqual({
+      selectedType: 'all',
+      activeFilters: ['high-priority'],
+      viewMode: 'kanban',
+      tagFilter: ['deepc'],
+      groupBy: 'status',
+    });
+  });
+
+  it('round-trips through normalizeViewDefinition (persist -> load) preserving tags', () => {
+    const snap = snapshotViewDefinition({
+      selectedType: 'bug',
+      activeFilters: [],
+      viewMode: 'list',
+      tagFilter: ['backoffice', 'nimbalyst'],
+      groupBy: 'none',
+    });
+    // Simulate persist + reload.
+    const loaded = normalizeViewDefinition(JSON.parse(JSON.stringify(snap)));
+    expect(loaded.tagFilter).toEqual(['backoffice', 'nimbalyst']);
+    expect(loaded).toEqual(snap);
   });
 });
 
