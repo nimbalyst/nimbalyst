@@ -152,7 +152,7 @@ For deeper architecture and contributor guidance, see [CLAUDE.md](./CLAUDE.md) a
 - 🐛 **Found a bug?** → Report it in-app with **Send Feedback** (left rail or Help menu). Your agent helps draft the report, and you approve everything before it goes to GitHub.
 - 🗺️ **Curious what we're building?** → [See the roadmap](https://github.com/orgs/Nimbalyst/projects/4/views/1)
 - 🤝 **Want to help with roadmap work?** → [Community view](https://github.com/orgs/Nimbalyst/projects/4/views/2)
-- ✨ **Have a concrete feature request?** → [Open an issue](https://github.com/Nimbalyst/nimbalyst/issues/new?template=feature_request.yml)
+- ✨ **Have a concrete feature request?** → Send it in-app with **Send Feedback** (left rail or Help menu) and your agent will help draft it.
 - 🌱 **Looking for a smaller place to start?** → [Good first issues](https://github.com/orgs/Nimbalyst/projects/4/views/4)
 
 We rank features and bugs by 👍 reactions. Don't comment "+1" — react with 👍 instead.
