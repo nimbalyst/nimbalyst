@@ -146,6 +146,17 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Git ref watcher (detects external git operations)
 - Gitignore-aware file watching
 
+### Pull Request Review Mode
+
+- Integrated GitHub PR view (Cmd+U, developer mode + GitHub remote): list, conversation, files-changed diffs, commits, checks
+- Approve and merge (squash/merge/rebase) from inside the app; `gh` CLI auth, no stored tokens
+- Open a PR in a git worktree with an agent session on its head branch
+- Tracker integration (reference-based, works with any tracker type): status badge + priority marker on list rows, editable status pill and tracker chips in the detail header, dynamic review-status filter chips
+- Jump PR ↔ tracker item ↔ review session in one click from any of the three surfaces
+- Link any tracker item to a PR from the PR detail; opening a worktree auto-links the session to referencing items
+- Merging transitions referencing tracker items via the opt-in `prMergedStatus` schema role (comment-only for types without it); externally merged PRs surface a one-click catch-up hint
+- Tracker kanban cards show an item's external identity (e.g. PR number) via the `externalKey` schema role
+
 ## File Management
 
 - File tree with expand/collapse and keyboard navigation
@@ -169,12 +180,15 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Reopen closed tab (Cmd+Shift+T)
 - Navigate between tabs (Cmd+Option+Left/Right)
 - Close tab (Cmd+W)
+- Double-click a tab to maximize the editor to the whole window (collapses surrounding panels); double-click again to restore — works in Files, Agent, and Shared Docs modes
 - Unified editor header bar
 - Extension-contributed document headers
 
 ## Voice Mode
 
-- Voice control via OpenAI Realtime API
+- Voice control via OpenAI Realtime API (gpt-realtime-2 by default, with automatic fallback to gpt-realtime)
+- Selectable model and reasoning effort in settings
+- Automatic reconnect with backoff on dropped connections (transient "reconnecting" state; voice/model preserved)
 - Live transcription streaming
 - Voice commands with countdown before submit
 - Interactive prompt answering (verbal AskUserQuestion, plan approval, git commit)
@@ -185,7 +199,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Backend-module voice/agent tools — an extension's utility-process can register MCP tools dispatched in-process (no renderer hop), enabling native engines to answer the voice and coding agents sub-second
 - Project-knowledge grounding (Nimbalyst Memory extension) — local hybrid search over your design docs, plans, CLAUDE.md, and notes, available to the voice and coding agents
 - Hands-free brainstorm loop — talk an idea through, kick off a plan (`/design`), have the agent read the written plan back to refine it by voice, then `/implement`; ask "is it done yet?" anytime for live task status
-- Voice agent tool calls (memory lookups, coding-agent questions, and more) are recorded in the voice session transcript and render as tool widgets
+- Voice agent tool calls (memory lookups, coding-agent questions, and more) are recorded in the voice session transcript and render as tool widgets, including a dedicated memory-recall widget showing the query and the returned source documents (title + snippet)
 - Available on both desktop and iOS
 
 ## Mobile (iOS)
@@ -206,7 +220,9 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Context usage display
 - Queued prompt management
 - Hierarchical session navigation (workstream/worktree aware)
-- Mobile voice mode
+- Mobile voice mode (soft chime + haptic cue when the session connects and it's your turn to talk)
+- Mobile voice: asking the voice agent to start a new session opens it automatically on the device that asked
+- Mobile voice: the floating mic shows a tool-call indicator (animated ring + tool-icon badge) while the agent runs a tool
 
 ## Collaboration
 
@@ -332,6 +348,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Claude Code CLI sessions: raw-terminal drawer is vertically resizable and remembers its height and collapsed state per session
 - Claude Code CLI sessions: mid-session model switching from the model picker (drives the CLI's `/model` command; idle turns only)
 - Claude Fable 5 selectable across all Claude providers (chat, Claude Agent, Claude Code CLI)
+- Claude Sonnet 5 selectable across all Claude providers, with the previous Sonnet 4.6 still selectable as a pinned choice
 
 ## Settings
 
@@ -363,6 +380,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Global semantic search (Cmd+Shift+O) — a Quick Open "Search" tab that finds any tracker or document by meaning (hybrid semantic + keyword), powered by the Nimbalyst Memory extension; appears only when that extension is enabled. Optionally indexes AI sessions too (off by default)
 - Mouse back/forward button support
 - Breadcrumb navigation
+- Customizable navigation gutter — hide/show any gutter icon (modes, extension panels, indicators) and drag-to-reorder within a group via a "Customize Gutter" popover (right-click the gutter) or right-click any icon to hide it; preferences are global across projects, and the account/settings button always stays visible
 
 ## Window & Application
 

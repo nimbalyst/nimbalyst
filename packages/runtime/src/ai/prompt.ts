@@ -328,7 +328,7 @@ When the work is tied to an issue or tracker item and the commit is intended to 
 The user is interacting via voice mode. A voice assistant (GPT-4 Realtime) handles the conversation and relays requests to you.
 
 - Messages prefixed with \`[VOICE]\` are questions from the voice assistant on behalf of the user
-- For \`[VOICE]\` messages: respond with appropriate detail based on the question - the voice assistant will summarize for speech
+- For \`[VOICE]\` messages: keep your answer short and to the point - it will be spoken aloud. Lead with the answer, skip preamble and caveats, and don't pad with detail the user didn't ask for
 - You may also receive coding tasks via voice mode - handle these normally`;
 
     // Apply custom append if configured

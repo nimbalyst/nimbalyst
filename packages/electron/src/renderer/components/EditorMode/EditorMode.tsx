@@ -7,6 +7,7 @@ import { fileDeletedAtomFamily } from '../../store/atoms/fileWatch';
 import { pushNavigationEntryAtom, isRestoringNavigationAtom, historyDialogFileAtom } from '../../store';
 import { newBrowserTabRequestAtom, newMockupRequestAtom, toggleAIChatPanelRequestAtom } from '../../store/atoms/appCommands';
 import { useTabNavigation } from '../../hooks/useTabNavigation';
+import { useEditorMaximize } from '../../hooks/useEditorMaximize';
 import { handleWorkspaceFileSelect as handleWorkspaceFileSelectUtil } from '../../utils/workspaceFileOperations';
 import { createInitialFileContent, createMockupContent } from '../../utils/fileUtils';
 import { getFileName } from '../../utils/pathUtils';
@@ -726,6 +727,30 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
     }
   }, [sidebarCollapsed, sidebarWidth, preCollapseWidth]);
 
+  // Double-click a tab to maximize the editor (collapse file tree + AI chat).
+  // Second double-click restores the exact prior collapse state.
+  const { isMaximized: isEditorMaximized, toggle: toggleEditorMaximized, clearMaximize: clearEditorMaximized } =
+    useEditorMaximize<{ sidebar: boolean; chat: boolean }>({
+      scopeKey: workspacePath,
+      snapshot: () => ({ sidebar: sidebarCollapsed, chat: isAIChatCollapsed }),
+      maximize: () => {
+        if (!sidebarCollapsed) toggleSidebarCollapsed();
+        if (!isAIChatCollapsed) setIsAIChatCollapsed(true);
+      },
+      restore: (snap) => {
+        if (sidebarCollapsed !== snap.sidebar) toggleSidebarCollapsed();
+        setIsAIChatCollapsed(snap.chat);
+      },
+    });
+
+  // If the user manually reopens a panel while maximized, drop the stale
+  // restore snapshot so the next double-click re-maximizes from scratch.
+  useEffect(() => {
+    if (isEditorMaximized && !(sidebarCollapsed && isAIChatCollapsed)) {
+      clearEditorMaximized();
+    }
+  }, [isEditorMaximized, sidebarCollapsed, isAIChatCollapsed, clearEditorMaximized]);
+
   // Expose methods to parent via ref
   // CRITICAL: Use tabsRef.current inside closures to avoid stale closure bugs
   // The useImperativeHandle re-runs when tabs changes, but the methods it creates
@@ -1125,6 +1150,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
               isActive={isActive}
               onToggleAIChat={() => setIsAIChatCollapsed(prev => !prev)}
               isAIChatCollapsed={isAIChatCollapsed}
+              onTabDoubleClick={toggleEditorMaximized}
             >
               <TabContent
                 onManualSaveReady={(saveFn) => {

@@ -50,12 +50,12 @@ export async function saveSessionState() {
         lastUpdated: Date.now()
     };
 
-    logger.session.info(`[SAVE] Saving session state: ${sessionWindows.length} window(s): ${sessionWindows.map((w) => w.workspacePath || w.filePath || w.mode).join(', ')}`);
+    logger.session.debug(`[SAVE] Saving session state: ${sessionWindows.length} window(s): ${sessionWindows.map((w) => w.workspacePath || w.filePath || w.mode).join(', ')}`);
     saveToStore(sessionState);
 
     // Verify the save by reading it back
     const verified = getSessionState();
-    logger.session.info(`[SAVE] Verified session state: ${verified?.windows?.length ?? 0} window(s)`);
+    logger.session.debug(`[SAVE] Verified session state: ${verified?.windows?.length ?? 0} window(s)`);
 }
 
 // Restore session state

@@ -69,7 +69,10 @@ import {
 import {
   filesEditedWidthAtom,
   setFilesEditedWidthAtom,
+  sessionHistoryCollapsedAtom,
+  toggleSessionHistoryCollapsedAtom,
 } from '../../store/atoms/agentMode';
+import { useEditorMaximize } from '../../hooks/useEditorMaximize';
 import { ArchiveWorktreeDialog } from './ArchiveWorktreeDialog';
 import { useArchiveWorktreeDialog } from '../../hooks/useArchiveWorktreeDialog';
 import { detectFileType, type SerializableDocumentContext } from '../../hooks/useDocumentContext';
@@ -709,6 +712,40 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
   // Session store for updating archived state
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
 
+  // Session history collapse (global agent-mode sidebar) for full-window maximize
+  const sessionHistoryCollapsed = useAtomValue(sessionHistoryCollapsedAtom);
+  const toggleSessionHistory = useSetAtom(toggleSessionHistoryCollapsedAtom);
+
+  // Double-click a tab to maximize the editor to the whole window: hide the
+  // transcript (layoutMode 'editor'), the files-edited sidebar, and the
+  // session-history sidebar. Second double-click restores the exact prior
+  // layout. The captured layoutMode is always 'editor' or 'split' since editor
+  // tabs are only visible (and double-clickable) in those modes.
+  const { isMaximized: isEditorMaximized, toggle: toggleEditorMaximized, clearMaximize: clearEditorMaximized } =
+    useEditorMaximize<{ layoutMode: WorkstreamLayoutMode; filesSidebar: boolean; historyCollapsed: boolean }>({
+      scopeKey: workstreamId,
+      snapshot: () => ({ layoutMode, filesSidebar: sidebarVisible, historyCollapsed: sessionHistoryCollapsed }),
+      maximize: () => {
+        setLayoutMode({ workstreamId, mode: 'editor' });
+        if (sidebarVisible) toggleSidebar(workstreamId);
+        if (!sessionHistoryCollapsed) toggleSessionHistory();
+      },
+      restore: (snap) => {
+        setLayoutMode({ workstreamId, mode: snap.layoutMode });
+        if (sidebarVisible !== snap.filesSidebar) toggleSidebar(workstreamId);
+        if (sessionHistoryCollapsed !== snap.historyCollapsed) toggleSessionHistory();
+      },
+    });
+
+  // Drop the stale restore snapshot if the maximized layout is broken by a
+  // manual panel toggle (or the auto-switch to transcript when the last tab
+  // closes), so the next double-click re-maximizes from the current layout.
+  useEffect(() => {
+    if (isEditorMaximized && !(layoutMode === 'editor' && !sidebarVisible && sessionHistoryCollapsed)) {
+      clearEditorMaximized();
+    }
+  }, [isEditorMaximized, layoutMode, sidebarVisible, sessionHistoryCollapsed, clearEditorMaximized]);
+
   // Load persisted state when workstream changes
   useEffect(() => {
     loadWorkstreamState(workstreamId);
@@ -1279,6 +1316,7 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
                 isActive={true}
                 onSwitchToAgentMode={onSwitchToAgentMode}
                 onOpenSessionInChat={onOpenSessionInChat}
+                onTabDoubleClick={toggleEditorMaximized}
               />
             </div>
           )}

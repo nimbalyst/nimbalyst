@@ -74,21 +74,6 @@ export interface AgentModeSettings {
 }
 
 /**
- * IDs of gutter buttons that can be hidden via context menu.
- * Mode buttons (files, agent, tracker) and user menu are not hideable.
- */
-export type HideableGutterButton =
-  | 'voice-mode'
-  | 'trust-indicator'
-  | 'sync-status'
-  | 'theme-toggle'
-  | 'feedback'
-  | 'claude-usage'
-  | 'codex-usage'
-  | 'gemini-usage'
-  | 'extension-dev';
-
-/**
  * Complete project state.
  */
 export interface ProjectState {
@@ -101,8 +86,6 @@ export interface ProjectState {
   agentMode: AgentModeSettings;
   lastOpenedFile: string | null;
   recentFiles: string[];
-  /** Gutter buttons hidden by the user via context menu */
-  hiddenGutterButtons: HideableGutterButton[];
 }
 
 /**
@@ -135,7 +118,6 @@ const defaultProjectState: ProjectState = {
   },
   lastOpenedFile: null,
   recentFiles: [],
-  hiddenGutterButtons: [],
 };
 
 /**
@@ -164,13 +146,6 @@ export const fileGutterCollapsedAtom = atom(
  */
 export const agentFileScopeModeAtom = atom(
   (get) => get(projectStateAtom).agentMode.fileScopeMode
-);
-
-/**
- * Which gutter buttons are currently hidden.
- */
-export const hiddenGutterButtonsAtom = atom(
-  (get) => get(projectStateAtom).hiddenGutterButtons ?? []
 );
 
 // === Setter atoms (each persists its own field via workspace:update-state) ===
@@ -260,57 +235,3 @@ export const setAgentFileScopeModeAtom = atom(
   }
 );
 
-/**
- * Set hidden gutter buttons from persisted workspace state.
- * Called on startup hydration.
- */
-export const setHiddenGutterButtonsAtom = atom(
-  null,
-  (get, set, buttons: HideableGutterButton[]) => {
-    const state = get(projectStateAtom);
-    set(projectStateAtom, { ...state, hiddenGutterButtons: buttons });
-  }
-);
-
-/**
- * Toggle a gutter button's hidden state.
- * Persists to workspace state via IPC.
- */
-export const toggleGutterButtonHiddenAtom = atom(
-  null,
-  (get, set, payload: { buttonId: HideableGutterButton; workspacePath: string }) => {
-    const { buttonId, workspacePath } = payload;
-    const state = get(projectStateAtom);
-    const current = state.hiddenGutterButtons ?? [];
-    const hidden = current.includes(buttonId)
-      ? current.filter((id) => id !== buttonId)
-      : [...current, buttonId];
-    set(projectStateAtom, { ...state, hiddenGutterButtons: hidden });
-    if (workspacePath && typeof window !== 'undefined' && window.electronAPI) {
-      window.electronAPI.invoke('workspace:update-state', workspacePath, {
-        hiddenGutterButtons: hidden,
-      }).catch((err: unknown) => {
-        console.error('[projectState] Failed to persist hiddenGutterButtons:', err);
-      });
-    }
-  }
-);
-
-/**
- * Show all hidden gutter buttons (reset).
- * Persists to workspace state via IPC.
- */
-export const showAllGutterButtonsAtom = atom(
-  null,
-  (get, set, workspacePath: string) => {
-    const state = get(projectStateAtom);
-    set(projectStateAtom, { ...state, hiddenGutterButtons: [] });
-    if (workspacePath && typeof window !== 'undefined' && window.electronAPI) {
-      window.electronAPI.invoke('workspace:update-state', workspacePath, {
-        hiddenGutterButtons: [],
-      }).catch((err: unknown) => {
-        console.error('[projectState] Failed to persist hiddenGutterButtons:', err);
-      });
-    }
-  }
-);

@@ -24,6 +24,11 @@ const ROLE_DEFAULTS: Record<TrackerSchemaRole, string> = {
   startDate: 'startDate',
   dueDate: 'dueDate',
   progress: 'progress',
+  // No conventional fallbacks: these roles only apply when a schema declares
+  // them explicitly (externalKey names a field; prMergedStatus names a status
+  // VALUE and must never be resolved through getFieldByRole).
+  externalKey: '',
+  prMergedStatus: '',
 };
 
 /**
@@ -151,6 +156,26 @@ export function getRecordPriority(record: TrackerRecord): string {
  */
 export function getRecordSortOrder(record: TrackerRecord): string | undefined {
   return record.fields.kanbanSortOrder as string | undefined;
+}
+
+/**
+ * Get the display value of the externalKey role, or '' when the type doesn't
+ * declare one. url-type field values ({ url, label }) contribute their label
+ * (falling back to the url); scalars render as-is.
+ */
+export function getRecordExternalKey(record: TrackerRecord): string {
+  const model = globalRegistry.get(record.primaryType);
+  const fieldName = model ? getRoleField(model, 'externalKey') : undefined;
+  if (!fieldName) return '';
+  const value = record.fields[fieldName];
+  if (value == null) return '';
+  if (typeof value === 'object') {
+    const obj = value as { label?: unknown; url?: unknown };
+    if (typeof obj.label === 'string' && obj.label) return obj.label;
+    if (typeof obj.url === 'string') return obj.url;
+    return '';
+  }
+  return String(value);
 }
 
 /**

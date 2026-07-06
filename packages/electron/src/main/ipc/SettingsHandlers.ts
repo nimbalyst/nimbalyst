@@ -47,6 +47,7 @@ import { autoUpdaterService } from '../services/autoUpdater';
 import type { OnboardingState } from '../utils/store';
 import { getCredentials, resetCredentials, generateQRPairingPayload, isUsingSecureStorage } from '../services/CredentialService';
 import { onSyncStatusChange, updateSleepPrevention } from '../services/SyncManager';
+import { getDocSyncStatusForWorkspace } from '../file/WorkspaceWatcher';
 import * as StytchAuth from '../services/StytchAuthService';
 import { getRestartSignalPath } from '../utils/appPaths';
 import { TrayManager } from '../tray/TrayManager';
@@ -1062,6 +1063,22 @@ export function registerSettingsHandlers() {
             docSyncStats,
             userEmail: StytchAuth.getUserEmail(),
         };
+    });
+
+    // Per-project doc (.md file) sync status, for Docs-toggle feedback in the sync panel
+    safeHandle('sync:get-doc-sync-status', async (_event, workspacePath: string) => {
+        if (!workspacePath) {
+            return { success: false, error: 'workspacePath is required' };
+        }
+        try {
+            const config = getSessionSyncConfig();
+            const enabled = (config?.docSyncEnabledProjects ?? []).includes(workspacePath);
+            const status = getDocSyncStatusForWorkspace(workspacePath);
+            return { success: true, enabled, ...status };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to get doc sync status';
+            return { success: false, error: message };
+        }
     });
 
     // Toggle sync for a specific project

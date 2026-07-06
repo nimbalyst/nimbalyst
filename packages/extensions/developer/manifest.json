@@ -1,7 +1,7 @@
 {
   "id": "com.nimbalyst.developer",
   "name": "Developer Tools",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Advanced git operations and developer workflows",
   "author": "Nimbalyst",
   "main": "dist/index.js",

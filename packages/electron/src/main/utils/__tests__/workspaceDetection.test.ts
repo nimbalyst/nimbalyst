@@ -5,6 +5,8 @@ import * as path from 'path';
 import {
   resolveProjectPath,
   isWorktreePath,
+  findNearestAncestor,
+  findProjectRoot,
   getAdditionalDirectoriesForWorkspace,
 } from '../workspaceDetection';
 
@@ -22,6 +24,37 @@ describe('resolveProjectPath', () => {
       .toBe('/Users/dev/my-app');
     expect(resolveProjectPath('/home/user/code/myrepo_worktrees/test-123'))
       .toBe('/home/user/code/myrepo');
+  });
+
+  it('resolves NESTED worktree paths (branch-style names) to parent project', () => {
+    // Regression for re-prompting in worktrees whose branch name contains a
+    // slash (e.g. `feature/foo`), which create nested directories.
+    expect(resolveProjectPath('/path/to/project_worktrees/feature/my-branch'))
+      .toBe('/path/to/project');
+    expect(resolveProjectPath('/Users/dev/Belegify_worktrees/feature/assign-people-on-receipts'))
+      .toBe('/Users/dev/Belegify');
+    expect(resolveProjectPath('/Users/dev/nimbalyst_worktrees/improvement/fix-askme-for-worktrees'))
+      .toBe('/Users/dev/nimbalyst');
+  });
+
+  it('resolves a subfolder inside a nested worktree to the parent project', () => {
+    expect(resolveProjectPath('/path/to/project_worktrees/feature/my-branch/packages/electron'))
+      .toBe('/path/to/project');
+  });
+
+  it('resolves nested worktrees with underscore project names', () => {
+    expect(resolveProjectPath('/path/to/my_cool_project_worktrees/feature/x'))
+      .toBe('/path/to/my_cool_project');
+  });
+
+  it('handles trailing slashes on nested worktree paths', () => {
+    expect(resolveProjectPath('/path/to/project_worktrees/feature/my-branch/'))
+      .toBe('/path/to/project');
+  });
+
+  it('does not resolve a plain subfolder of a non-worktree project (the permission cascade handles that)', () => {
+    expect(resolveProjectPath('/path/to/project/packages/electron'))
+      .toBe('/path/to/project/packages/electron');
   });
 
   it('handles trailing slashes on worktree paths', () => {
@@ -67,6 +100,16 @@ describe('isWorktreePath', () => {
     expect(isWorktreePath('/path/to/project_worktrees/swift-falcon')).toBe(true);
     expect(isWorktreePath('/Users/dev/my-app_worktrees/brave-eagle')).toBe(true);
     expect(isWorktreePath('/home/user/code/myrepo_worktrees/test-123')).toBe(true);
+  });
+
+  it('returns true for NESTED worktree paths (branch-style names)', () => {
+    expect(isWorktreePath('/path/to/project_worktrees/feature/my-branch')).toBe(true);
+    expect(isWorktreePath('/Users/dev/Belegify_worktrees/feature/assign-people')).toBe(true);
+    expect(isWorktreePath('/path/to/project_worktrees/feature/my-branch/packages/electron')).toBe(true);
+  });
+
+  it('does not match the _worktrees_backup decoy with nested children', () => {
+    expect(isWorktreePath('/path/to/project_worktrees_backup/feature/x')).toBe(false);
   });
 
   it('handles trailing slashes', () => {
@@ -138,5 +181,102 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
   it('survives a missing _worktrees directory', () => {
     // No worktrees dir created. Should not throw, just return empty.
     expect(getAdditionalDirectoriesForWorkspace(projectPath)).toEqual([]);
+  });
+});
+
+describe('findNearestAncestor', () => {
+  const trusted = new Set(['/path/to/project']);
+  const pred = (dir: string) => trusted.has(dir);
+
+  it('returns the start path itself when it matches', () => {
+    expect(findNearestAncestor('/path/to/project', pred)).toBe('/path/to/project');
+  });
+
+  it('walks up to the nearest matching ancestor (subfolder cascade)', () => {
+    expect(findNearestAncestor('/path/to/project/packages/electron', pred))
+      .toBe('/path/to/project');
+    expect(findNearestAncestor('/path/to/project/src', pred)).toBe('/path/to/project');
+  });
+
+  it('returns null when no ancestor matches', () => {
+    expect(findNearestAncestor('/some/other/place', pred)).toBe(null);
+  });
+
+  it('returns the most specific matching ancestor when several match', () => {
+    const t2 = new Set(['/a', '/a/b/c']);
+    expect(findNearestAncestor('/a/b/c/d', (d) => t2.has(d))).toBe('/a/b/c');
+  });
+
+  it('handles empty input and trailing slashes', () => {
+    expect(findNearestAncestor('', pred)).toBe(null);
+    expect(findNearestAncestor('/path/to/project/packages/', pred)).toBe('/path/to/project');
+  });
+
+  describe('stopAt boundary', () => {
+    it('still returns a match found at or below the boundary', () => {
+      // boundary === the matching ancestor: it is tested, then the walk stops.
+      expect(findNearestAncestor('/path/to/project/src', pred, '/path/to/project'))
+        .toBe('/path/to/project');
+    });
+
+    it('does NOT climb past the boundary to a higher match', () => {
+      // A trusted grandparent must not be inherited when a nearer boundary caps
+      // the walk - this is the trust-boundary guard for nested projects.
+      const t = new Set(['/root']);
+      const p = (d: string) => t.has(d);
+      expect(findNearestAncestor('/root/child/leaf', p, '/root/child')).toBe(null);
+    });
+
+    it('returns the nearer match even when a farther one also matches', () => {
+      const t = new Set(['/root', '/root/child']);
+      const p = (d: string) => t.has(d);
+      expect(findNearestAncestor('/root/child/leaf', p, '/root/child')).toBe('/root/child');
+    });
+  });
+});
+
+describe('findProjectRoot', () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-projroot-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  // findProjectRoot returns the normalized INPUT path (it does not resolve
+  // symlinks), so compare against the input, not realpathSync.
+  it('returns the start path when it is itself a git repo root', () => {
+    fs.mkdirSync(path.join(tmpRoot, '.git'));
+    expect(findProjectRoot(tmpRoot)).toBe(tmpRoot);
+  });
+
+  it('walks up to the nearest git repo root from a subfolder', () => {
+    fs.mkdirSync(path.join(tmpRoot, '.git'));
+    const sub = path.join(tmpRoot, 'packages', 'electron');
+    fs.mkdirSync(sub, { recursive: true });
+    expect(findProjectRoot(sub)).toBe(tmpRoot);
+  });
+
+  it('stops at a nested repo root rather than the outer repo (fresh-clone case)', () => {
+    // Outer repo contains an independent nested repo with its own .git.
+    fs.mkdirSync(path.join(tmpRoot, '.git'));
+    const nested = path.join(tmpRoot, 'vendored-clone');
+    fs.mkdirSync(path.join(nested, '.git'), { recursive: true });
+    expect(findProjectRoot(nested)).toBe(nested);
+  });
+
+  it('recognizes a .git file (linked worktree) as a repo root', () => {
+    fs.writeFileSync(path.join(tmpRoot, '.git'), 'gitdir: /somewhere/else');
+    expect(findProjectRoot(tmpRoot)).toBe(tmpRoot);
+  });
+
+  it('returns null when no ancestor is a git repo', () => {
+    const sub = path.join(tmpRoot, 'a', 'b');
+    fs.mkdirSync(sub, { recursive: true });
+    // tmpRoot lives under the OS temp dir; none of it should be a git repo.
+    expect(findProjectRoot(sub)).toBe(null);
   });
 });

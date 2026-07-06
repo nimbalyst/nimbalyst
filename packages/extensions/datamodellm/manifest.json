@@ -1,13 +1,14 @@
 {
   "id": "com.nimbalyst.datamodellm",
   "name": "DatamodelLM",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI-assisted data modeling with visual entity-relationship diagrams",
   "author": "Nimbalyst",
   "main": "dist/index.js",
   "styles": "dist/index.css",
   "apiVersion": "1.0.0",
   "marketplace": {
+    "changelog": "1.0.1: Collaborative editing support, light-theme readability fixes, and more reliable external file edits.",
     "categories": ["data"],
     "tags": ["prisma", "database", "schema", "erd", "entity-relationship", "data-model"],
     "icon": "database",

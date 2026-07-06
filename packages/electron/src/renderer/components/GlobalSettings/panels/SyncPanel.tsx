@@ -332,6 +332,49 @@ export function SyncPanel() {
     }
   };
 
+  // Per-project doc sync UI feedback (Docs checkbox): pending while the toggle
+  // is applied, then live status (connected + file count) or an error.
+  interface DocSyncUiStatus {
+    pending: boolean;
+    error: string | null;
+    subscribed?: boolean;
+    connected?: boolean;
+    fileCount?: number;
+  }
+  const [docSyncStatus, setDocSyncStatus] = useState<Record<string, DocSyncUiStatus>>({});
+
+  const updateDocSyncStatus = (projectPath: string, updates: Partial<DocSyncUiStatus>) => {
+    setDocSyncStatus(prev => {
+      const existing: DocSyncUiStatus = prev[projectPath] ?? { pending: false, error: null };
+      return { ...prev, [projectPath]: { ...existing, ...updates } };
+    });
+  };
+
+  const fetchDocSyncStatus = async (projectPath: string): Promise<boolean> => {
+    try {
+      const result = await window.electronAPI.invoke('sync:get-doc-sync-status', projectPath);
+      if (result?.success) {
+        updateDocSyncStatus(projectPath, {
+          subscribed: result.subscribed,
+          connected: result.connected,
+          fileCount: result.fileCount,
+        });
+        return !!result.connected;
+      }
+    } catch {
+      // Non-fatal; leave prior status in place
+    }
+    return false;
+  };
+
+  // Load status for projects that already have doc sync enabled
+  useEffect(() => {
+    for (const projectPath of config.docSyncEnabledProjects ?? []) {
+      fetchDocSyncStatus(projectPath);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleDocSyncToggle = async (projectPath: string, enabled: boolean) => {
     const current = config.docSyncEnabledProjects ?? [];
     const updated = enabled
@@ -340,12 +383,43 @@ export function SyncPanel() {
 
     const newConfig = { ...config, docSyncEnabledProjects: updated };
     setConfig(newConfig);
+    updateDocSyncStatus(projectPath, { pending: true, error: null });
 
     try {
       await window.electronAPI.invoke('sync:set-config', newConfig);
     } catch (error) {
       console.error('[SyncPanel] Failed to toggle doc sync:', error);
+      // Revert the checkbox so the UI reflects what is actually persisted
+      setConfig({ ...config, docSyncEnabledProjects: current });
+      updateDocSyncStatus(projectPath, {
+        pending: false,
+        error: `Failed to ${enabled ? 'enable' : 'disable'} document sync: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
     }
+
+    if (!enabled) {
+      setDocSyncStatus(prev => {
+        const next = { ...prev };
+        delete next[projectPath];
+        return next;
+      });
+      return;
+    }
+
+    // The initial sweep + room connection are async; poll until connected so
+    // the user sees the toggle actually take effect (or an error if it never does).
+    for (const delayMs of [700, 1500, 3000, 5000]) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      if (await fetchDocSyncStatus(projectPath)) {
+        updateDocSyncStatus(projectPath, { pending: false, error: null });
+        return;
+      }
+    }
+    updateDocSyncStatus(projectPath, {
+      pending: false,
+      error: 'Document sync did not connect. Check your connection, then toggle again or restart the app.',
+    });
   };
 
   const handleFieldChange = (field: keyof SyncConfig, value: string | boolean | number) => {
@@ -876,27 +950,60 @@ export function SyncPanel() {
           <div className="bg-nim-secondary rounded-lg overflow-hidden">
             {syncedProjects.map((project) => {
               const docSyncEnabled = (config.docSyncEnabledProjects ?? []).includes(project.path);
+              const status = docSyncStatus[project.path];
               return (
-                <div key={project.path} className="flex items-center gap-2 px-2.5 py-1.5 border-b border-[var(--nim-border)] last:border-b-0 group">
-                  <span className="text-[13px] text-nim truncate flex-1">{project.name}</span>
-                  {isAlpha && (
-                    <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Sync .md files to mobile">
-                      <input
-                        type="checkbox"
-                        checked={docSyncEnabled}
-                        onChange={(e) => handleDocSyncToggle(project.path, e.target.checked)}
-                        className="w-3 h-3 cursor-pointer accent-[var(--nim-primary)]"
-                      />
-                      <span className="text-[10px] text-nim-faint">Docs</span>
-                    </label>
+                <div key={project.path} className="border-b border-[var(--nim-border)] last:border-b-0 group">
+                  <div className="flex items-center gap-2 px-2.5 py-1.5">
+                    <span className="text-[13px] text-nim truncate flex-1">{project.name}</span>
+                    {isAlpha && docSyncEnabled && status && (
+                      status.pending ? (
+                        <span className="flex items-center gap-1 text-[10px] text-nim-faint shrink-0" title="Starting document sync">
+                          <MaterialSymbol icon="progress_activity" size={12} className="animate-spin" />
+                          Syncing...
+                        </span>
+                      ) : status.error ? (
+                        <span className="flex items-center gap-1 text-[10px] text-nim-error shrink-0" title={status.error}>
+                          <MaterialSymbol icon="error" size={12} />
+                          Error
+                        </span>
+                      ) : status.connected ? (
+                        <span
+                          className="flex items-center gap-1 text-[10px] text-nim-faint shrink-0"
+                          title={`Document sync connected (${status.fileCount ?? 0} files)`}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-nim-success" />
+                          {status.fileCount ?? 0} docs
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-[10px] text-nim-warning shrink-0" title="Document sync is enabled but not connected">
+                          <span className="w-1.5 h-1.5 rounded-full bg-nim-warning" />
+                          Not connected
+                        </span>
+                      )
+                    )}
+                    {isAlpha && (
+                      <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Sync .md files to mobile">
+                        <input
+                          type="checkbox"
+                          checked={docSyncEnabled}
+                          disabled={status?.pending}
+                          onChange={(e) => handleDocSyncToggle(project.path, e.target.checked)}
+                          className="w-3 h-3 cursor-pointer accent-[var(--nim-primary)]"
+                        />
+                        <span className="text-[10px] text-nim-faint">Docs</span>
+                      </label>
+                    )}
+                    <button
+                      onClick={() => handleRemoveProject(project.path)}
+                      className="opacity-0 group-hover:opacity-100 p-0.5 bg-transparent border-none text-nim-faint cursor-pointer hover:text-nim-muted shrink-0"
+                      title="Remove from sync"
+                    >
+                      <MaterialSymbol icon="close" size={14} />
+                    </button>
+                  </div>
+                  {isAlpha && status?.error && (
+                    <p className="m-0 px-2.5 pb-1.5 text-[10px] text-nim-error">{status.error}</p>
                   )}
-                  <button
-                    onClick={() => handleRemoveProject(project.path)}
-                    className="opacity-0 group-hover:opacity-100 p-0.5 bg-transparent border-none text-nim-faint cursor-pointer hover:text-nim-muted shrink-0"
-                    title="Remove from sync"
-                  >
-                    <MaterialSymbol icon="close" size={14} />
-                  </button>
                 </div>
               );
             })}

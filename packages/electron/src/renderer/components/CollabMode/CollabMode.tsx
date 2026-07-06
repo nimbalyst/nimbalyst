@@ -16,6 +16,7 @@ import { TabsProvider, useTabsActions, useTabs, type TabData } from '../../conte
 import { TabManager } from '../TabManager/TabManager';
 import { TabContent } from '../TabContent/TabContent';
 import { ChatSidebar } from '../ChatSidebar';
+import { useEditorMaximize } from '../../hooks/useEditorMaximize';
 import { openCollabDocumentViaIPC } from '../../utils/collabDocumentOpener';
 import {
   loadOpenCollabDocs,
@@ -296,6 +297,32 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
     });
   }, [workspacePath, sidebarWidth, chatWidth, sidebarCollapsed]);
 
+  // Double-click a tab to maximize the editor (collapse doc list + AI chat).
+  // Second double-click restores the exact prior collapse state.
+  const { isMaximized: isEditorMaximized, toggle: toggleEditorMaximized, clearMaximize: clearEditorMaximized } =
+    useEditorMaximize<{ sidebar: boolean; chat: boolean }>({
+      scopeKey: workspacePath,
+      snapshot: () => ({ sidebar: sidebarCollapsed, chat: chatCollapsed }),
+      maximize: () => {
+        setSidebarCollapsed(true);
+        setChatCollapsed(true);
+        persistCollabLayout(workspacePath, { sidebarWidth, chatWidth, sidebarCollapsed: true, chatCollapsed: true });
+      },
+      restore: (snap) => {
+        setSidebarCollapsed(snap.sidebar);
+        setChatCollapsed(snap.chat);
+        persistCollabLayout(workspacePath, { sidebarWidth, chatWidth, sidebarCollapsed: snap.sidebar, chatCollapsed: snap.chat });
+      },
+    });
+
+  // If the user manually reopens a panel while maximized, drop the stale
+  // restore snapshot so the next double-click re-maximizes from scratch.
+  useEffect(() => {
+    if (isEditorMaximized && !(sidebarCollapsed && chatCollapsed)) {
+      clearEditorMaximized();
+    }
+  }, [isEditorMaximized, sidebarCollapsed, chatCollapsed, clearEditorMaximized]);
+
   const handleDocumentSelect = useCallback(async (doc: SharedDocument, initialContent?: string) => {
     // Check if already open as a tab
     const existingTab = tabs.find((tab) => {
@@ -517,6 +544,7 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
             isActive={isActive}
             onToggleAIChat={toggleChatCollapsed}
             isAIChatCollapsed={chatCollapsed}
+            onTabDoubleClick={toggleEditorMaximized}
           >
             <TabContent
               workspaceId={workspacePath}

@@ -24,6 +24,9 @@ import { UserAvatar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/
 import { trackerItemByIdAtom, trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import { resolveRelationshipType, isRelationshipField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { refreshSessionListAtom, sessionRegistryAtom, type SessionMeta } from '../../store/atoms/sessions';
+import { resolveLinkedSessions } from '../../utils/resolveLinkedSessions';
+import { prRemoteAtom, navigateToPullRequest } from '../../store/atoms/pullRequests';
+import { getRecordPrReferences } from '@nimbalyst/runtime/plugins/TrackerPlugin/prReferences';
 import { buildTrackerDeepLink } from '../../store/atoms/collabDocuments';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
@@ -353,36 +356,21 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalOrigin?.providerId, workspacePath]);
 
-  // Resolve linked sessions from registry (silently filter deleted ones)
-  // Two sources: 1) tracker item's linkedSessions[] (forward link from DB items)
-  //              2) sessions whose linkedTrackerItemIds contains this item's ID or file path (reverse link)
-  const linkedSessions = useMemo(() => {
-    const sessionSet = new Set<string>();
+  // Resolve linked sessions from registry via the shared resolver so this view
+  // and the PR view surface identical results (see resolveLinkedSessions.ts).
+  const linkedSessions = useMemo(
+    () => resolveLinkedSessions(item, sessionRegistry),
+    [item, sessionRegistry]
+  );
 
-    // Forward: tracker record stores session IDs in system
-    const forwardIds: string[] = item?.system?.linkedSessions || [];
-    for (const id of forwardIds) sessionSet.add(id);
-
-    // Reverse: sessions that link to this item by ID or by file path
-    const trackerItemId = item?.id;
-    const filePath = item?.system?.documentPath;
-    const fileRef = filePath ? `file:${filePath}` : null;
-
-    // console.log('[TrackerItemDetail] reverse lookup:', { trackerItemId, filePath, fileRef });
-
-    sessionRegistry.forEach((session, sessionId) => {
-      const linked = session.linkedTrackerItemIds;
-      if (!linked) return;
-      if (trackerItemId && linked.includes(trackerItemId)) sessionSet.add(sessionId);
-      if (fileRef && linked.includes(fileRef)) sessionSet.add(sessionId);
-    });
-
-    if (sessionSet.size === 0) return [];
-    return Array.from(sessionSet)
-      .map(id => sessionRegistry.get(id))
-      .filter((s): s is SessionMeta => s != null)
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [item, sessionRegistry]);
+  // PR reference on the workspace's detected GitHub remote → "Open PR view"
+  // jump. Reference-based (url-field match or explicit link), any item type.
+  const prRemote = useAtomValue(prRemoteAtom);
+  const prReference = useMemo(() => {
+    if (!item || !prRemote || prRemote.workspacePath !== workspacePath) return null;
+    const wanted = prRemote.remote.toLowerCase();
+    return getRecordPrReferences(item).find((ref) => ref.remote === wanted) ?? null;
+  }, [item, prRemote, workspacePath]);
   const linkedSessionIds = useMemo(() => new Set(linkedSessions.map((session) => session.id)), [linkedSessions]);
   const canLinkExistingSession = Boolean(item && workspacePath);
   const [isLinkingExistingSession, setIsLinkingExistingSession] = useState(false);
@@ -1232,6 +1220,17 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           })()}
         </div>
         <div className="flex items-center gap-1 shrink-0">
+          {prReference && (
+            <button
+              className="flex items-center gap-1 px-2 py-1 rounded text-[12px] font-medium text-nim-muted hover:bg-nim-tertiary"
+              onClick={() => navigateToPullRequest(prReference.remote, prReference.number)}
+              title={`Open #${prReference.number} in the PRs view`}
+              data-testid="tracker-open-pr-view"
+            >
+              <MaterialSymbol icon="merge" size={16} />
+              <span>PR #{prReference.number}</span>
+            </button>
+          )}
           {canToggleShare && (
             <button
               className={`flex items-center gap-1 px-2 py-1 rounded text-[12px] font-medium ${

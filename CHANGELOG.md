@@ -10,12 +10,134 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Double-click an editor tab to maximize the editor area in Files, Agent, and Shared Docs modes, then double-click again to restore the previous layout.
+- Customize the navigation gutter: hide or show any icon and drag to reorder them via a Customize Gutter popover (right-click the gutter), with preferences applied across all projects.
+- The Pull Requests view now connects to trackers and sessions: review-status badges and filter chips, one-click jumps between a PR, its tracker item, and its review session, linking any tracker item to a PR, and merges update linked tracker items automatically.
+- Tracker kanban cards can show an item's external identity (like a PR number) next to its issue key via the new externalKey schema role.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
 - Android interactive widget responses (Commit, Allow, Approve, AskUserQuestion Submit) now reach the desktop session instead of silently doing nothing.
+- Mobile project list no longer holds onto projects that the server has dropped from the sync snapshot, and no longer wipes itself when a transient decryption failure shrinks the snapshot.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.66.10] - 2026-07-04
+
+
+### Added
+<!-- New features go here -->
+- Sync settings now show a per-project document-sync status (connected, file count, or an error) so you can tell whether mobile document sync is working.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- The New File menu now scrolls when long, lists file types by name (Markdown first, the rest alphabetical), and no longer shows a duplicate Mockup entry.
+- Refreshed the extension marketplace: updated all published extensions and added Browser, Calc Sheets, GitHub Issues Importer, and Memory
+- Voice mode: the assistant now replies more briefly and no longer asks you to approve tasks that auto-send after the on-screen countdown.
+
+### Fixed
+- Tracker item content no longer renders as raw JSON text after closing and reopening the item.
+- Interactive input prompts no longer collapse into plain chat if you take longer than 5 minutes to answer.
+- Open custom-editor tabs (e.g. Replicad, Excalidraw) now refresh when an agent edits the file, instead of staying stale until closed and reopened.
+- Claude Code sessions now end with an error instead of spinning forever if the agent stream silently stalls.
+- iOS: session badges now label Fable 5 and Sonnet 5 sessions instead of showing a generic "Claude Agent" fallback.
+- The Claude Code model picker now always shows every available model, so Fable 5 and other variants can no longer go missing.
+- Mobile document sync now propagates `.md` deletions to your other devices and reconnects after you change sync settings, instead of silently leaving later edits unsynced.
+- Clicking a relative file link in a markdown doc now opens the file in a tab instead of a blank white window; external links open in your browser.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.66.9] - 2026-07-02
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Built-in extensions no longer show the native-code consent prompt; it now only appears for third-party extensions.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Gemini (Antigravity) agent and meta-agent turns no longer come back empty after the agent runs a tool that returns no results.
+- Agent calls to deferred background tools (Monitor et al) no longer fail with schema validation errors.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.66.8] - 2026-07-02
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- The iOS voice agent now runs the same gpt-realtime-2 model and session configuration as desktop, with automatic fallback when the model is unavailable.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Built-in extensions are once again included in packaged builds; a dependency regression had silently dropped them from released apps.
+- The memory extension now starts in packaged builds instead of failing to load its bundled dependencies.
+- Agent sessions that launch background tasks now wake and continue when those tasks finish, instead of the task being cancelled at the end of the turn.
+- Voice mode no longer interrupts itself from echo of its own speech on open speakers (desktop and iOS).
+- The voice selected in iOS Settings (or synced from desktop) is now actually used by the voice agent.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.66.7] - 2026-07-01
+
+
+### Added
+<!-- New features go here -->
+- Memory recall/search tool calls now show a transcript card with the query and matched source documents, with click-to-open.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+- Toggling an extension on/off via an AI agent now actually restarts its backend module, and importer crash errors now include the real failure reason instead of just "crashed".
+- Git worktrees with branch-style names (e.g. `feature/x`) and a project's own subfolders now inherit the parent project's agent permissions instead of re-prompting for every tool call, while a separate repository nested inside a trusted folder still prompts on its own.
+- On Windows, clicking a file link in chat now opens the file instead of a blank window.
+- Claude Code background sub-agents are no longer killed when the lead agent's turn ends; the agent keeps waiting for them and is told if one is interrupted.
+- Tracker status changes now work for custom tracker types that rename their workflow status field.
+- Tracker reference links (`nimbalyst://` chips) in chat no longer render blank.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.66.6] - 2026-07-01
+
+
+### Added
+- Nimbalyst-branded Android launcher icon, replacing the generic Android stock icon.
+- Claude Sonnet 5 is now selectable across the Claude chat, Claude Agent, and Claude Code CLI providers (Sonnet 4.6 remains available as a pinned choice).
+- Start a new coding session by voice — say "create a new session" on desktop or mobile; on mobile it now opens the new session automatically on the device you asked from.
+- The mobile floating mic shows what the voice agent is doing — an animated ring and a tool icon appear while it runs a tool.
+- Voice mode on mobile can now find sessions by topic, switch sessions, summarize a session (including the agent's latest notes and any question it's waiting on), answer a session's pending question by voice, and send coding tasks to your desktop.
+- Choose the voice model and reasoning level in Voice Mode settings.
+- Dart syntax highlighting in the Monaco editor.
+
+### Changed
+- Claude Code CLI sessions defer MCP tool schema loading, cutting baseline context usage.
+
+### Fixed
+- New AI sessions now appear immediately instead of waiting for sync to connect.
+- Linking tracker items now reliably updates both sides and no longer goes stale or drops an item's other links after syncing — including when the AI sets the link.
+- Tracker relationship fields no longer get cleared or dropped by concurrent syncs.
+- Structured prompts stay visible in the transcript when tool calls are hidden.
+- Windows: Claude Code CLI sessions launch reliably, including with multi-line system prompts.
+- Mobile voice mode now shows clear Pause and Cancel buttons by the floating mic, so a single tap reliably pauses or stops voice mode.
+- Another session can now read an OpenAI Codex session's last reply through the session-summary tools, matching Claude Code sessions.
+- Voice mode now always speaks in your configured preferred language, including on mobile, instead of sometimes starting up in a different language.
+- The iOS voice agent now reliably speaks its response when it wakes up after a coding agent finishes a task.
+- Voice replies no longer speed up or skip near the end of longer responses.
+- Mobile voice replies no longer garble, overlap, or click — responses play one at a time and fade out cleanly when you interrupt.
 
 ### Removed
 <!-- Removed features go here -->
@@ -55,6 +177,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Committing no longer triggers a burst of slow database queries that briefly hitched the app.
 - Excalidraw drawings shared with the team no longer open blank or render with a light canvas in dark mode.
 - Reopening a shared document in Shared Docs mode no longer instantly closes the tab.
+- Windows: Claude Code CLI chat sessions now start instead of failing immediately on launch. (#684)
 
 ### Removed
 <!-- Removed features go here -->

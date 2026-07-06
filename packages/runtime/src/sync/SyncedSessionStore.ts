@@ -135,13 +135,10 @@ export function createSyncedSessionStore(
       // Create in base store first
       await baseStore.create(payload);
 
-      // Then connect sync and push initial metadata. Build the initial payload
-      // from SYNC_RELEVANT_FIELDS so a new session arrives on iOS with every
-      // sync-relevant column populated -- including sessionType, parentSessionId,
-      // and worktreeId, which used to require an explicit follow-up pushChange
-      // from callers (and which several callers historically forgot).
+      // Push initial metadata immediately, but do not wait for the session-room
+      // WebSocket. metadata_updated can travel through the index channel, and
+      // first render for a new empty session should only depend on local persistence.
       if (shouldSync(payload.id, payload.workspaceId)) {
-        await ensureSyncConnected(payload.id);
         const metadata = buildSyncPayload(payload as unknown as Record<string, unknown>, {
           forceUpdatedAt: true,
         });
@@ -155,6 +152,10 @@ export function createSyncedSessionStore(
           type: 'metadata_updated',
           metadata: metadata as unknown as SyncedSessionMetadata,
         });
+
+        // Keep the original per-session auto-connect behavior in the background
+        // so later room-scoped changes such as message_added can reuse it.
+        void ensureSyncConnected(payload.id);
       }
     },
 

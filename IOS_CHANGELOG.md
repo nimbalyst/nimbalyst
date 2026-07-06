@@ -20,6 +20,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 <!-- Removed features go here -->
 
+## [1.2.0] - 2026-07-03
+
+
+### Added
+- Mobile voice agent can open new sessions, manage existing sessions, and surface and answer a session's pending prompts
+- Voice mode shows live tool-call activity while the agent works
+- Memory recall and search results render as transcript cards
+- Live tracker reference links in transcripts
+- Create a Meta Agent from iOS (alpha-gated, synced from desktop)
+
+### Changed
+- Voice mode is pausable and stoppable from the floating mic
+- Unified iOS voice onto the gpt-realtime model
+- Session transcript images are zoomable, uncropped, and copyable
+- More file paths and links in transcripts are tappable
+
+### Fixed
+- Voice mode no longer interrupts itself when speakers are open
+- Fixed garbled and clicking voice audio on iOS
+- Fixed iOS audio after waking from sleep
+- Voice agent language now stays pinned to the selected language
+- Restored voice mode after OpenAI retired the Realtime Beta API
+- Voice agent summarizes a session by id rather than its title
+- Newly created docs and their transcript links now sync to mobile
+- Self-heal a stale personal sync identity that blocked personal sync
+- Preserve nimbalyst:// tracker reference URNs so links no longer render blank
+- Stop syncing redundant Claude Code raw-log and system/init data to mobile transcripts
+
 ## [1.1.1] - 2026-06-03
 
 Reliability and responsiveness improvements for following and controlling desktop AI sessions from iPhone and iPad.

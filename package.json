@@ -109,12 +109,15 @@
     "zod-to-json-schema": "^3.25.0"
   },
   "overrides": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.186",
+    "@anthropic-ai/claude-agent-sdk": "0.3.198",
     "prismjs": "^1.30.0",
     "vite": "^7.0.0",
     "zod": "^4.0.0",
     "concurrently": {
       "shell-quote": "^1.8.4"
+    },
+    "app-builder-lib": {
+      "minimatch": "^10.2.5"
     }
   }
 }

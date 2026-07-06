@@ -50,6 +50,36 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertEqual(data[1], 0x01)
     }
 
+    /// Barge-in fade: the playback buffer must ramp to silence and discard the
+    /// rest, so an interrupt doesn't cut off with an audible click (and stale
+    /// audio past the fade tail doesn't keep playing).
+    func testFadeOutRampsToSilenceAndTruncates() {
+        let rb = PlaybackRingBuffer(capacity: 4800)
+        var samples = [Int16](repeating: 10000, count: 1000)
+        let written = samples.withUnsafeBufferPointer { rb.write($0.baseAddress!, count: 1000) }
+        XCTAssertEqual(written, 1000)
+        XCTAssertEqual(rb.availableFrames, 1000)
+
+        rb.fadeOutAndTruncate(fadeFrames: 480)
+        // Everything past the faded tail is dropped.
+        XCTAssertEqual(rb.availableFrames, 480)
+
+        var out = [Int16](repeating: 0, count: 480)
+        let read = out.withUnsafeMutableBufferPointer { rb.read($0.baseAddress!, count: 480) }
+        XCTAssertEqual(read, 480)
+        // Starts near full scale, ends at exactly zero (no click), monotonic down.
+        XCTAssertGreaterThan(out[0], 9000)
+        XCTAssertEqual(out[479], 0)
+        for i in 1..<480 { XCTAssertLessThanOrEqual(out[i], out[i - 1]) }
+    }
+
+    /// Fading an empty buffer is a no-op (no crash, nothing to play).
+    func testFadeOutEmptyBufferIsSafe() {
+        let rb = PlaybackRingBuffer(capacity: 4800)
+        rb.fadeOutAndTruncate(fadeFrames: 480)
+        XCTAssertEqual(rb.availableFrames, 0)
+    }
+
     func testDownsample48kTo24k() {
         let srcFrames = 480
         var srcData = Data(count: srcFrames * 2)

@@ -78,7 +78,8 @@ export function getRelativeWorkspacePath(filePath: string, workspacePath: string
 
 /**
  * Check if a path is a worktree path.
- * Matches the pattern: {project}_worktrees/{name}
+ * Matches the pattern: {project}_worktrees/{...name}
+ * The trailing name may be nested (branch-style names like `feature/foo`).
  *
  * Mirrors workspaceDetection.ts isWorktreePath() but uses forward slashes.
  */
@@ -87,13 +88,14 @@ export function isWorktreePath(workspacePath: string): boolean {
     return false;
   }
   const normalized = normalizePath(workspacePath);
-  return /_worktrees\/[^/]+$/.test(normalized);
+  return /_worktrees\/.+$/.test(normalized);
 }
 
 /**
  * Resolve a workspace path to its parent project path.
- * If the path is a worktree (matches {project}_worktrees/{name}/ pattern),
- * returns the parent project path. Otherwise returns the original path.
+ * If the path is a worktree (matches {project}_worktrees/<name> pattern, where
+ * <name> may be nested for branch-style names like `feature/foo`), returns the
+ * parent project path. Otherwise returns the original path.
  *
  * Mirrors workspaceDetection.ts resolveProjectPath() but uses forward slashes.
  */
@@ -102,6 +104,6 @@ export function resolveProjectPath(workspacePath: string): string {
     return workspacePath;
   }
   const normalized = normalizePath(workspacePath);
-  const match = normalized.match(/^(.+)_worktrees\/[^/]+$/);
+  const match = normalized.match(/^(.+)_worktrees\/.+$/);
   return match ? match[1] : workspacePath;
 }

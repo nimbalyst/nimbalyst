@@ -16,6 +16,7 @@ import com.nimbalyst.app.pairing.PairingCredentials
 import com.nimbalyst.app.pairing.PairingStore
 import android.content.Context
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -42,6 +43,52 @@ class SyncManager(
 
     companion object {
         private const val TAG = "SyncManager"
+
+        /**
+         * Applies an index snapshot to [repository], choosing between the
+         * pruning path ([NimbalystRepository.reconcileIndexSnapshot]) and the
+         * safe upsert-only path ([NimbalystRepository.replaceIndexSnapshot]).
+         *
+         * The gate: if [projects].size < [rawProjectCount], one or more entries
+         * failed to decrypt. Pruning in that case would silently wipe
+         * stale-but-valid cache entries. We fall back to upsert-only so those
+         * entries survive until the next clean snapshot arrives.
+         *
+         * Exposed as an [internal] companion function so that unit tests can
+         * drive the routing logic and verify real repository effects without
+         * constructing a [SyncManager] instance (which requires
+         * [com.nimbalyst.app.pairing.PairingStore] ->
+         * [androidx.security.crypto.EncryptedSharedPreferences] ->
+         * Android KeyStore, unavailable in Robolectric unit tests).
+         */
+        @VisibleForTesting
+        internal suspend fun applyIndexSnapshot(
+            repository: NimbalystRepository,
+            projects: List<ProjectEntity>,
+            sessions: List<SessionEntity>,
+            rawProjectCount: Int,
+            syncedAt: Long
+        ) {
+            val canPrune = projects.size == rawProjectCount
+            if (canPrune) {
+                repository.reconcileIndexSnapshot(
+                    projects = projects,
+                    sessions = sessions,
+                    syncedAt = syncedAt
+                )
+            } else {
+                Log.w(
+                    TAG,
+                    "[handleIndexSyncResponse] decrypted ${projects.size}/$rawProjectCount project entries;" +
+                        " skipping prune to avoid wiping stale-but-valid cache entries"
+                )
+                repository.replaceIndexSnapshot(
+                    projects = projects,
+                    sessions = sessions,
+                    syncedAt = syncedAt
+                )
+            }
+        }
     }
     private val indexClient = WebSocketClient(scope)
     private val sessionClient = WebSocketClient(scope)
@@ -677,12 +724,15 @@ class SyncManager(
 
     private suspend fun handleIndexSyncResponse(message: String) {
         val response = parse<IndexSyncResponse>(message) ?: return
+        val rawProjectCount = response.projects.size
         val projects = response.projects.mapNotNull(::processProjectEntry)
         val sessions = response.sessions.mapNotNull { processSessionEntry(it) }
         val syncedAt = System.currentTimeMillis()
-        repository.replaceIndexSnapshot(
+        applyIndexSnapshot(
+            repository = repository,
             projects = projects,
             sessions = sessions.map { it.session },
+            rawProjectCount = rawProjectCount,
             syncedAt = syncedAt
         )
         sessions.forEach { syncQueuedPrompts(it) }

@@ -14,9 +14,11 @@ import {
   registerExtensionEditorComponent,
   setExtensionContributions,
   setExtensionLexicalExtension,
+  setWorkspaceFileLinkOpener,
   useAnchorElem,
 } from '@nimbalyst/runtime';
 import { DocumentLinkPlugin } from '@nimbalyst/runtime/plugins/DocumentLinkPlugin';
+import { resolveDocumentLinkLookupPath } from '@nimbalyst/runtime/plugins/DocumentLinkPlugin/documentLinkPaths';
 import {
   DocumentReferenceNode,
   DocumentReferenceTransformer,
@@ -81,6 +83,31 @@ function DocumentLinkPluginWrapper() {
 }
 
 export function registerDocumentLinkPlugin(): void {
+  // Route file-path links (from the floating link editor and plain LinkNodes)
+  // through the document service instead of window.open, which would spawn a
+  // blank Electron child window (NIM-1487).
+  setWorkspaceFileLinkOpener((rawHref, currentDocumentPath) => {
+    const workspacePath =
+      (window as unknown as { __workspacePath?: string }).__workspacePath ?? null;
+    const resolvedPath = resolveDocumentLinkLookupPath(
+      rawHref,
+      currentDocumentPath,
+      workspacePath,
+    );
+    void (async () => {
+      const resolvedDoc = resolvedPath
+        ? await documentService.getDocumentByPath(resolvedPath)
+        : null;
+      if (resolvedDoc) {
+        await documentService.openDocument(resolvedDoc.id, { path: resolvedDoc.path });
+        return;
+      }
+      await documentService.openDocument('', { path: resolvedPath || rawHref });
+    })().catch((error) => {
+      console.error('Failed to open workspace file link', rawHref, error);
+    });
+  });
+
   setExtensionLexicalExtension(
     SOURCE,
     defineExtension({

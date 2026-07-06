@@ -30,6 +30,13 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Make npm resilient to transient registry socket drops (ECONNRESET) on the
+  # cache-miss path. On a cache hit npm ci is skipped entirely (see below), so
+  # these only matter when the lockfile changed and packages must be fetched.
+  npm_config_fetch_retries: '5'
+  npm_config_fetch_retry_mintimeout: '20000'
+  npm_config_fetch_retry_maxtimeout: '120000'
+  npm_config_fetch_timeout: '300000'
 
 jobs:
   android-build:
@@ -51,8 +58,24 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      # node_modules cache short-circuits `npm ci` when the lockfile is
+      # unchanged, so the common case makes ZERO registry calls and can't hit a
+      # transient network failure. Exact-key match only (no restore-keys) so we
+      # never run against a partially-stale tree -- on miss we just `npm ci`.
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+            packages/extensions/*/node_modules
+          key: node-modules-android-${{ runner.os }}-node22-${{ hashFiles('**/package-lock.json') }}
 
       - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci --ignore-scripts
 
       - name: Setup Java
