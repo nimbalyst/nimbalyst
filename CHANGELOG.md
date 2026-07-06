@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
+- Mockup share links now render full-size in the browser instead of a tiny square.
 - Android prompt input is no longer hidden by the soft keyboard when typing in a session.
 - Android prompt input no longer drops words while typing when the desktop echoes back a synced draft.
 - Android interactive widget responses (Commit, Allow, Approve, AskUserQuestion Submit) now reach the desktop session instead of silently doing nothing.
