@@ -11,6 +11,13 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Make npm resilient to transient registry socket drops (ECONNRESET) on the
+  # cache-miss path: retry individual failed requests instead of aborting the
+  # whole `npm ci`. (Cache hits skip npm ci and make no registry calls at all.)
+  npm_config_fetch_retries: '5'
+  npm_config_fetch_retry_mintimeout: '20000'
+  npm_config_fetch_retry_maxtimeout: '120000'
+  npm_config_fetch_timeout: '300000'
 
 jobs:
   unit-tests:

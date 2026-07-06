@@ -28,6 +28,8 @@ import {
   initNotificationSettings,
   advancedSettingsAtom,
   initAdvancedSettings,
+  gutterCustomizationAtom,
+  initGutterCustomization,
   syncConfigAtom,
   initSyncConfig,
   aiDebugSettingsAtom,
@@ -146,6 +148,9 @@ await Promise.allSettled([
   }),
   initAdvancedSettings().then((settings) => {
     store.set(advancedSettingsAtom, settings);
+  }),
+  initGutterCustomization().then((state) => {
+    store.set(gutterCustomizationAtom, state);
   }),
   initSyncConfig().then((config) => {
     store.set(syncConfigAtom, config);

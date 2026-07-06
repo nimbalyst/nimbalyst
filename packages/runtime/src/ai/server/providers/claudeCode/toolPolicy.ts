@@ -21,7 +21,9 @@ export const INTERNAL_MCP_TOOLS: readonly string[] = [
   'mcp__nimbalyst__display_to_user',
   'mcp__nimbalyst__get_session_edited_files',
   'mcp__nimbalyst__developer_git_commit_proposal',
-  'mcp__nimbalyst__developer_git_log',
+  // git_log is served by the built-in Developer Tools extension, so it carries
+  // the extension prefix (not core). Read-only → safe to auto-allow.
+  'mcp__nimbalyst-developer__developer_git_log',
   // Situational (`nimbalyst-situational`) — voice.
   'mcp__nimbalyst-situational__voice_agent_speak',
   'mcp__nimbalyst-situational__voice_agent_stop',

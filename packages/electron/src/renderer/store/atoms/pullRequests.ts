@@ -83,6 +83,12 @@ export type PrPatchDiffLayout = 'unified' | 'split';
 export interface PrModeLayout {
   /** Active filter chips. `open`/`closed` are mutually exclusive. */
   activeFilters: PrFilterChip[];
+  /**
+   * Active tracker-status filters. Values are workflow-status values of
+   * tracker items referencing listed PRs (chips are derived dynamically from
+   * the statuses actually present — no status vocabulary is hardcoded).
+   */
+  trackerStatusFilters: string[];
   /** Sort order for the list. */
   sortKey: PrSortKey;
   /** Currently selected PR id (opens the detail panel when non-null). */
@@ -101,6 +107,7 @@ export interface PrModeLayout {
 
 const DEFAULT_PR_MODE_LAYOUT: PrModeLayout = {
   activeFilters: ['open'],
+  trackerStatusFilters: [],
   sortKey: 'updated',
   selectedItemId: null,
   activeDetailTab: 'conversation',
@@ -144,6 +151,9 @@ export async function initPrModeLayout(workspacePath: string): Promise<void> {
         activeFilters: Array.isArray(saved.activeFilters)
           ? saved.activeFilters
           : DEFAULT_PR_MODE_LAYOUT.activeFilters,
+        trackerStatusFilters: Array.isArray(saved.trackerStatusFilters)
+          ? saved.trackerStatusFilters
+          : DEFAULT_PR_MODE_LAYOUT.trackerStatusFilters,
         sortKey: saved.sortKey ?? DEFAULT_PR_MODE_LAYOUT.sortKey,
         selectedItemId: saved.selectedItemId ?? DEFAULT_PR_MODE_LAYOUT.selectedItemId,
         activeDetailTab: saved.activeDetailTab ?? DEFAULT_PR_MODE_LAYOUT.activeDetailTab,
@@ -169,3 +179,36 @@ export const setPrModeLayoutAtom = atom(
     }
   },
 );
+
+// ============================================================
+// Navigate-to-PR requests (the PR-view leg of the tracker/session triangle)
+// ============================================================
+
+/**
+ * Pending "select this PR" request, written by the `nimbalyst:navigate-pr`
+ * handler in App.tsx (which also switches to pr-review mode). PullRequestMode
+ * resolves the number to a list row id — immediately when cached, or after
+ * a poll when the PR isn't in the list yet — then clears the request.
+ */
+export interface PrNavigateRequest {
+  remote: string;
+  prNumber: number;
+  version: number;
+}
+
+export const prNavigateRequestAtom = atom<PrNavigateRequest | null>(null);
+
+let prNavigateVersion = 0;
+
+/**
+ * Jump to a PR in the PRs view. Mirrors navigateToTrackerReference(): safe to
+ * call from anywhere in the renderer (tracker detail, session panels, tool
+ * widgets) without importing mode-switching machinery.
+ */
+export function navigateToPullRequest(remote: string, prNumber: number): void {
+  window.dispatchEvent(
+    new CustomEvent('nimbalyst:navigate-pr', {
+      detail: { remote, prNumber, version: ++prNavigateVersion },
+    })
+  );
+}

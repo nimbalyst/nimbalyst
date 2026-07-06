@@ -49,6 +49,10 @@ fun TranscriptWebView(
         onDispose {
             pendingRetry.forEach { retryHandler.removeCallbacks(it) }
             pendingRetry.clear()
+            // Null the relay handler before recycling so the Composable's closure
+            // cannot be invoked after this scope is torn down (defense in depth;
+            // recycle() also nulls it).
+            TranscriptWebViewPool.getRelay(webView)?.handler = null
             TranscriptWebViewPool.recycle(webView)
         }
     }
@@ -62,15 +66,15 @@ fun TranscriptWebView(
                         return request.url?.scheme != "file"
                     }
                 }
-                addJavascriptInterface(
-                    TranscriptBridge { message ->
-                        when (message.type) {
-                            "prompt" -> message.text?.let(onPromptSubmitted)
-                            "interactive_response" -> onInteractiveResponse(message)
-                        }
-                    },
-                    "AndroidBridge"
-                )
+                // The relay was registered on this WebView before loadUrl was called
+                // (inside TranscriptWebViewPool.createBaseWebView), so window.AndroidBridge
+                // is guaranteed to be defined when JS first executes.
+                TranscriptWebViewPool.getRelay(this)?.handler = { message ->
+                    when (message.type) {
+                        "prompt" -> message.text?.let(onPromptSubmitted)
+                        "interactive_response" -> onInteractiveResponse(message)
+                    }
+                }
                 // Try to push payload immediately. If window.nimbalyst doesn't
                 // exist yet (React still mounting), this is a no-op due to ?. operator.
                 // The update block will retry when messages Flow emits real data.

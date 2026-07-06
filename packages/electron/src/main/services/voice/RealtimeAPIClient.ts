@@ -9,6 +9,7 @@ import WebSocket from 'ws';
 import { ipcMain } from 'electron';
 import { AnalyticsService } from '../analytics/AnalyticsService';
 import type { RealtimeFunctionTool } from './voiceToolBridge';
+import { VoiceBargeInPolicy, buildTurnDetection, type NoiseReductionType, type VadDetectionType } from './voiceBargeInPolicy';
 
 interface RealtimeEvent {
   type: string;
@@ -91,6 +92,9 @@ interface SessionConfig {
   type: 'realtime';
   output_modalities: string[];
   instructions: string;
+  // GPT-5-class reasoning throttle. Lives at the session top level as
+  // reasoning.effort (minimal | low | medium | high | xhigh).
+  reasoning?: { effort: RealtimeReasoningEffort };
   audio: {
     input: {
       format: AudioFormat;
@@ -100,7 +104,11 @@ interface SessionConfig {
         threshold?: number;
         prefix_padding_ms?: number;
         silence_duration_ms?: number;
+        eagerness?: string;
+        create_response?: boolean;
+        interrupt_response?: boolean;
       };
+      noise_reduction?: { type: string };
     };
     output: {
       voice: string;
@@ -122,18 +130,50 @@ interface CustomPromptConfig {
 
 interface TurnDetectionConfig {
   mode: 'server_vad' | 'push_to_talk';
+  // Which detection engine drives turn-taking when mode is not push_to_talk.
+  // semantic_vad (default) is model-judged and echo-robust; server_vad is the
+  // amplitude fallback the threshold/silence settings apply to.
+  detection?: VadDetectionType;
   vadThreshold?: number;
   silenceDuration?: number;
   interruptible?: boolean;
+  // Audio-input noise-reduction profile (rides in this settings bag so it
+  // doesn't grow the already-wide constructor). 'far_field' default: live
+  // desktop metrics showed loud open speakers behave far-field; 'near_field'
+  // for close/headset mics; 'off' omits.
+  noiseReduction?: NoiseReductionType;
 }
 
 // All available OpenAI Realtime API voices
 type VoiceId = 'alloy' | 'ash' | 'ballad' | 'coral' | 'echo' | 'sage' | 'shimmer' | 'verse' | 'marin' | 'cedar';
 
+// Selectable OpenAI Realtime speech-to-speech models.
+export type RealtimeModel = 'gpt-realtime-2' | 'gpt-realtime';
+export type RealtimeReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+
+/** Default model and the fallback used when the account/region lacks access. */
+const PRIMARY_MODEL: RealtimeModel = 'gpt-realtime-2';
+const FALLBACK_MODEL: RealtimeModel = 'gpt-realtime';
+
+/**
+ * Streaming transcription model for the GA Realtime API. Natively streaming and
+ * designed for realtime sessions (replaces the legacy post-hoc whisper-1).
+ */
+const TRANSCRIPTION_MODEL = 'gpt-realtime-whisper';
+
+/** Reconnect backoff bounds for unexpected socket drops. */
+const RECONNECT_BASE_DELAY_MS = 500;
+const RECONNECT_MAX_DELAY_MS = 8000;
+const MAX_RECONNECT_ATTEMPTS = 5;
+
 export class RealtimeAPIClient {
   private ws: WebSocket | null = null;
   private apiKey: string;
-  private model: string = 'gpt-realtime';
+  private model: RealtimeModel = PRIMARY_MODEL;
+  private reasoningEffort: RealtimeReasoningEffort = 'low';
+  // True once we've fallen back from gpt-realtime-2 to gpt-realtime for this
+  // client (no account/region access). Prevents an infinite fallback loop.
+  private usedModelFallback: boolean = false;
   private sessionId: string | null = null;
   private connected: boolean = false;
   private onAudioCallback: ((audioBase64: string) => void) | null = null;
@@ -162,6 +202,9 @@ export class RealtimeAPIClient {
   private customPrompt: CustomPromptConfig;
   private turnDetection: TurnDetectionConfig;
   private voice: VoiceId;
+  // Preferred spoken language (desktop's configured default). Pins the voice
+  // agent's language so it doesn't auto-detect/drift. Empty -> English.
+  private language?: string;
 
   // Inactivity tracking
   private lastActivityTime: number = Date.now();
@@ -179,8 +222,43 @@ export class RealtimeAPIClient {
   private hasPendingFunctionCall: boolean = false;
   private isOutputtingAudio: boolean = false;
 
+  // Barge-in / echo instrumentation (echo cancellation round 2, NIM-1314
+  // desktop parity). `playbackActive` mirrors the renderer's audible playback
+  // state via voice-mode:playback-active; the policy classifies VAD triggers
+  // as echo-suspect vs genuine and owns the interrupt decision.
+  private bargeInPolicy = new VoiceBargeInPolicy();
+  private playbackActive: boolean = false;
+  // The conversation item currently streaming (or last streamed) assistant
+  // audio. Kept past response.done because renderer playback outlives the
+  // response; a tail barge-in must truncate THIS item. Cleared once truncated.
+  private currentAssistantItemId: string | null = null;
+  // While agent audio is audibly playing, server VAD responses are gated
+  // (create_response/interrupt_response=false) so residual echo cannot make
+  // the server act on its own voice; the client keeps barge-in control.
+  private serverResponsesGated: boolean = false;
+  // Probation timer for an echo-suspect VAD trigger (min-duration heuristic):
+  // fires onDeferredInterruptTimeout to decide whether the speech outlived
+  // the window (real barge-in) or was an echo blip.
+  private deferredBargeInTimer: NodeJS.Timeout | null = null;
+
   // When true, the inactivity monitor is suspended (e.g. voice is sleeping)
   private listeningPaused: boolean = false;
+
+  // Reconnect / resume state. A dropped socket used to silently end voice mode;
+  // we now reconnect with bounded exponential backoff and re-send the identical
+  // session config so recovery is inaudible (same voice/model/instructions).
+  private intentionalDisconnect: boolean = false;
+  private reconnectAttempts: number = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private onReconnectingCallback: ((attempt: number) => void) | null = null;
+  private onReconnectedCallback: (() => void) | null = null;
+
+  // Deferred (async) function calls: on gpt-realtime-2 a long-running tool call
+  // (submit_agent_prompt) stays open until the coding agent finishes, then is
+  // resolved with the real summary via sendFunctionCallResult(). FIFO of open
+  // call IDs awaiting an agent-task-complete. On the gpt-realtime fallback this
+  // stays empty and the legacy queue + "[INTERNAL: Task complete]" wake is used.
+  private deferredCallIds: string[] = [];
 
   // Extension-contributed voice tools (Core hook 1). Schemas are appended to the
   // session tool list; nameMap maps the realtime-safe name back to the original
@@ -206,7 +284,10 @@ export class RealtimeAPIClient {
     sessionContext?: string,
     customPrompt?: CustomPromptConfig,
     turnDetection?: TurnDetectionConfig,
-    voice?: VoiceId
+    voice?: VoiceId,
+    model?: RealtimeModel,
+    reasoningEffort?: RealtimeReasoningEffort,
+    language?: string
   ) {
     this.apiKey = apiKey;
     this.claudeCodeSessionId = claudeCodeSessionId;
@@ -221,7 +302,24 @@ export class RealtimeAPIClient {
       interruptible: true,
     };
     this.voice = voice || 'alloy';
-    console.log(`[RealtimeAPIClient] Created with voice=${this.voice}`);
+    this.model = model || PRIMARY_MODEL;
+    this.reasoningEffort = reasoningEffort || 'low';
+    this.language = language;
+    console.log(`[RealtimeAPIClient] Created with voice=${this.voice} model=${this.model} reasoningEffort=${this.reasoningEffort}`);
+  }
+
+  /**
+   * Whether the active model supports async (deferred) function calling. Only
+   * gpt-realtime-2 reliably keeps a pending function call open and resolves it
+   * later; the gpt-realtime fallback uses the queue + wake path instead.
+   */
+  supportsAsyncFunctionCalls(): boolean {
+    return this.model === 'gpt-realtime-2';
+  }
+
+  /** The model the client is currently connected with (post-fallback). */
+  getModel(): RealtimeModel {
+    return this.model;
   }
 
   /**
@@ -292,6 +390,22 @@ export class RealtimeAPIClient {
    */
   setOnError(callback: (error: { type: string; message: string }) => void): void {
     this.onErrorCallback = callback;
+  }
+
+  /**
+   * Set callback fired when an unexpected drop triggers a reconnect attempt.
+   * Lets the renderer show a transient "reconnecting…" state instead of dying.
+   */
+  setOnReconnecting(callback: (attempt: number) => void): void {
+    this.onReconnectingCallback = callback;
+  }
+
+  /**
+   * Set callback fired when a reconnect succeeds and the session config has
+   * been re-applied, so the renderer can clear the "reconnecting…" state.
+   */
+  setOnReconnected(callback: () => void): void {
+    this.onReconnectedCallback = callback;
   }
 
   /**
@@ -410,30 +524,68 @@ export class RealtimeAPIClient {
   }
 
   /**
-   * Connect to OpenAI Realtime API via WebSocket
+   * Connect to OpenAI Realtime API via WebSocket.
+   *
+   * Defaults to gpt-realtime-2 with automatic one-shot fallback to gpt-realtime
+   * when the account/region lacks access (the initial socket fails to open).
    */
   async connect(): Promise<void> {
+    this.intentionalDisconnect = false;
+    try {
+      await this.openSocket();
+    } catch (error) {
+      // Automatic model fallback: if gpt-realtime-2 isn't available, retry once
+      // on gpt-realtime so voice mode still works.
+      if (this.model === PRIMARY_MODEL && !this.usedModelFallback) {
+        this.usedModelFallback = true;
+        this.model = FALLBACK_MODEL;
+        console.warn(`[RealtimeAPIClient] ${PRIMARY_MODEL} unavailable, falling back to ${FALLBACK_MODEL}`, { error });
+        try {
+          AnalyticsService.getInstance().sendEvent('voice_model_fallback', {
+            from: PRIMARY_MODEL,
+            to: FALLBACK_MODEL,
+          });
+        } catch { /* analytics is best-effort */ }
+        await this.openSocket();
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Open a WebSocket to the current model and wire its handlers. Resolves on
+   * 'open', rejects if the socket errors/closes before opening (so connect()
+   * can apply the model fallback, and reconnect() can retry).
+   */
+  private openSocket(): Promise<void> {
     return new Promise((resolve, reject) => {
       const url = `wss://api.openai.com/v1/realtime?model=${this.model}`;
-
       console.log('[RealtimeAPIClient] Connecting to OpenAI Realtime API', { url });
 
       // Do NOT send the 'OpenAI-Beta: realtime=v1' header: it selects the retired
       // Beta API shape, which the server now rejects with
       // code=4000 reason=beta_api_shape_disabled. Omitting it selects the GA shape.
-      this.ws = new WebSocket(url, {
+      const ws = new WebSocket(url, {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
         },
       });
+      this.ws = ws;
 
-      this.ws.on('open', () => {
+      let opened = false;
+      let settled = false;
+
+      ws.on('open', () => {
+        opened = true;
+        settled = true;
         this.connected = true;
+        this.reconnectAttempts = 0;
         this.startInactivityMonitor();
         resolve();
       });
 
-      this.ws.on('message', (data: WebSocket.Data) => {
+      ws.on('message', (data: WebSocket.Data) => {
         try {
           const event = JSON.parse(data.toString()) as RealtimeEvent;
           this.handleServerEvent(event);
@@ -442,16 +594,91 @@ export class RealtimeAPIClient {
         }
       });
 
-      this.ws.on('error', (error) => {
+      ws.on('error', (error) => {
         console.error('[RealtimeAPIClient] WebSocket error', { error });
         this.connected = false;
-        reject(error);
+        if (!opened && !settled) {
+          settled = true;
+          reject(error);
+        }
+        // A post-open error is followed by 'close', which drives reconnect.
       });
 
-      this.ws.on('close', (code, reason) => {
+      ws.on('close', (code, reason) => {
         this.connected = false;
+        this.stopInactivityMonitor();
+        if (!opened) {
+          if (!settled) {
+            settled = true;
+            reject(new Error(`Socket closed before open: ${code} ${String(reason)}`));
+          }
+          return;
+        }
+        this.handleUnexpectedClose(code, String(reason));
       });
     });
+  }
+
+  /**
+   * Handle a socket close that happened after a successful open. Unless the
+   * disconnect was intentional (user_stopped / inactivity timeout), schedule a
+   * bounded exponential-backoff reconnect that re-applies the identical config.
+   */
+  private handleUnexpectedClose(code: number, reason: string): void {
+    if (this.intentionalDisconnect) {
+      return;
+    }
+    console.warn(`[RealtimeAPIClient] Unexpected socket close (code=${code} reason=${reason}); will attempt reconnect`);
+    this.scheduleReconnect();
+  }
+
+  /**
+   * Reconnect with bounded exponential backoff. On success, session.created
+   * fires and updateSession() re-sends the identical voice/model/instructions,
+   * so the user hears no change. Token accumulators are instance fields and so
+   * survive the reconnect. After MAX_RECONNECT_ATTEMPTS we surface a hard error.
+   */
+  private scheduleReconnect(): void {
+    if (this.intentionalDisconnect) return;
+
+    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      console.error('[RealtimeAPIClient] Reconnect attempts exhausted; ending voice session');
+      if (this.onErrorCallback) {
+        this.onErrorCallback({
+          type: 'connection_lost',
+          message: 'Voice connection was lost and could not be restored.',
+        });
+      }
+      if (this.onDisconnectCallback) {
+        this.onDisconnectCallback('error');
+      }
+      return;
+    }
+
+    this.reconnectAttempts++;
+    const attempt = this.reconnectAttempts;
+    const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1), RECONNECT_MAX_DELAY_MS);
+    console.log(`[RealtimeAPIClient] Reconnect attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`);
+    if (this.onReconnectingCallback) {
+      this.onReconnectingCallback(attempt);
+    }
+
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      if (this.intentionalDisconnect) return;
+      try {
+        await this.openSocket();
+        // session.created -> updateSession() re-applies the identical config.
+        console.log('[RealtimeAPIClient] Reconnected');
+        if (this.onReconnectedCallback) {
+          this.onReconnectedCallback();
+        }
+      } catch (error) {
+        console.error('[RealtimeAPIClient] Reconnect attempt failed', { error });
+        this.scheduleReconnect();
+      }
+    }, delay);
   }
 
   /**
@@ -469,9 +696,25 @@ export class RealtimeAPIClient {
         this.updateSession();
         break;
 
-      case 'session.updated':
-        console.log(`[RealtimeAPIClient] session.updated: voice=${(event as any).session?.audio?.output?.voice || 'unknown'}`);
+      case 'session.updated': {
+        const serverVoice = (event as any).session?.audio?.output?.voice as string | undefined;
+        console.log(`[RealtimeAPIClient] session.updated: voice=${serverVoice || 'unknown'}`);
+        // Guardrail: the server should echo the voice we requested. A mismatch
+        // means the output voice diverged from settings -- turn "users say it
+        // switches" into a measurable signal and catch regressions from dropping
+        // the per-response voice override.
+        if (serverVoice && serverVoice !== this.voice) {
+          console.warn(`[RealtimeAPIClient] Voice mismatch: requested=${this.voice} server=${serverVoice}`);
+          try {
+            AnalyticsService.getInstance().sendEvent('voice_voice_mismatch', {
+              requested: this.voice,
+              server: serverVoice,
+              model: this.model,
+            });
+          } catch { /* analytics is best-effort */ }
+        }
         break;
+      }
 
       case 'response.created':
         this.currentResponseId = (event as any).response?.id || null;
@@ -506,6 +749,11 @@ export class RealtimeAPIClient {
       case 'response.audio.delta':
         // Received audio chunk from OpenAI
         this.isOutputtingAudio = true;
+        // Remember which conversation item is speaking so a barge-in during
+        // the (renderer-side) playback tail can truncate it server-side.
+        if ((event as any).item_id) {
+          this.currentAssistantItemId = (event as any).item_id as string;
+        }
         const audioDelta = (event as any).delta as string; // base64-encoded PCM16
         this.handleAudioDelta(audioDelta);
         if (this.onAudioCallback) {
@@ -542,22 +790,34 @@ export class RealtimeAPIClient {
         this.handleFunctionCall(callId, name, args);
         break;
 
-      case 'input_audio_buffer.speech_started':
-        console.log('[RealtimeAPIClient] speech_started (VAD detected voice)');
+      case 'input_audio_buffer.speech_started': {
         this.updateActivity();
-        this.cancelCurrentResponse();
-        if (this.onInterruptionCallback) {
-          this.onInterruptionCallback();
+        // Route the barge-in decision through the policy seam: it classifies
+        // echo-suspect (agent audio still audibly playing in the renderer --
+        // residual echo can trip VAD on open speakers, NIM-1314 desktop
+        // parity) vs genuine. Genuine triggers interrupt now; echo-suspect
+        // ones get a probation window (min-duration heuristic) resolved by a
+        // timer in resolveDeferredBargeIn().
+        const decision = this.bargeInPolicy.onSpeechStarted(this.playbackActive);
+        const m = this.bargeInPolicy.metrics;
+        console.log(`[RealtimeAPIClient] [barge-in] speech_started echoSuspect=${decision.echoSuspect} msSincePlayback=${decision.msSincePlaybackStarted ?? 'n/a'} interrupt=${decision.shouldInterrupt} deferMs=${decision.deferInterruptMs ?? 'n/a'} totals=${m.echoSuspectCount}/${m.genuineCount} (echo/genuine)`);
+        if (decision.shouldInterrupt) {
+          this.performBargeInInterrupt(decision.msSincePlaybackStarted);
+        } else if (decision.deferInterruptMs !== null) {
+          this.scheduleDeferredBargeIn(decision.deferInterruptMs);
         }
         break;
+      }
 
-      case 'input_audio_buffer.speech_stopped':
-        console.log('[RealtimeAPIClient] speech_stopped (VAD detected silence)');
+      case 'input_audio_buffer.speech_stopped': {
         this.updateActivity();
+        const durationMs = this.bargeInPolicy.onSpeechStopped();
+        console.log(`[RealtimeAPIClient] [barge-in] speech_stopped durationMs=${durationMs ?? 'n/a'}`);
         if (this.onSpeechStoppedCallback) {
           this.onSpeechStoppedCallback();
         }
         break;
+      }
 
       case 'conversation.item.input_audio_transcription.delta':
         // Streaming transcription delta - shows partial text while user is speaking
@@ -589,11 +849,64 @@ export class RealtimeAPIClient {
         }
         console.error('[RealtimeAPIClient] Server error:', JSON.stringify(errorEvent.error, null, 2));
         console.error('[RealtimeAPIClient] Full error event:', JSON.stringify(errorEvent, null, 2));
+        // Safety valve: an error can mean a response.create we optimistically
+        // marked active was actually rejected (no response.created/response.done
+        // will follow). Leaving hasActiveResponse stuck true would silently
+        // swallow every later createResponse(). Clear it so the session can
+        // recover. hasPendingFunctionCall is cleared for the same reason.
+        this.hasActiveResponse = false;
+        this.hasPendingFunctionCall = false;
         break;
       }
 
       default:
         break;
+    }
+  }
+
+  /**
+   * Stop playback and cancel the in-flight response after a barge-in decision
+   * (immediate genuine trigger, or a deferred echo-suspect one whose speech
+   * outlived the probation window).
+   */
+  private performBargeInInterrupt(msSincePlaybackStarted: number | null): void {
+    // Tell the server how much audio was actually heard before cancelling,
+    // so the model's context matches reality.
+    if (msSincePlaybackStarted !== null) {
+      this.truncatePlayedAudio(msSincePlaybackStarted);
+    }
+    this.cancelCurrentResponse();
+    if (this.onInterruptionCallback) {
+      this.onInterruptionCallback();
+    }
+  }
+
+  /**
+   * Echo-suspect trigger: playback keeps going; after the probation window
+   * the policy decides whether the speech persisted (interrupt late) or was
+   * an echo blip that already ended (suppress -- playback never hiccuped).
+   */
+  private scheduleDeferredBargeIn(deferMs: number): void {
+    if (this.deferredBargeInTimer) clearTimeout(this.deferredBargeInTimer);
+    this.deferredBargeInTimer = setTimeout(() => {
+      this.deferredBargeInTimer = null;
+      this.resolveDeferredBargeIn();
+    }, deferMs);
+  }
+
+  private resolveDeferredBargeIn(): void {
+    const decision = this.bargeInPolicy.onDeferredInterruptTimeout(this.playbackActive);
+    const m = this.bargeInPolicy.metrics;
+    console.log(`[RealtimeAPIClient] [barge-in] deferred ${decision.shouldInterrupt ? 'fired' : 'suppressed'} playbackActive=${this.playbackActive} msSincePlayback=${decision.msSincePlaybackStarted ?? 'n/a'} suppressed=${m.suppressedEchoCount}`);
+    if (decision.shouldInterrupt) {
+      this.performBargeInInterrupt(decision.msSincePlaybackStarted);
+    }
+  }
+
+  private cancelDeferredBargeInTimer(): void {
+    if (this.deferredBargeInTimer) {
+      clearTimeout(this.deferredBargeInTimer);
+      this.deferredBargeInTimer = null;
     }
   }
 
@@ -616,6 +929,8 @@ Architecture:
 
 Session: ${this.sessionContext}
 
+RESPONSE STYLE (critical): This is a spoken conversation. Be extremely brief -- one short sentence by default, often just a few words. Never use more than one sentence unless the user explicitly asks for detail ("explain", "tell me more", "why"). Answer or act, then STOP. No preamble, no recap, no previewing what you're about to do, no caveats, no filler ("Sure!", "Got it", "Great question"). Never read code or file paths aloud.
+
 IMPORTANT: Your knowledge of this codebase is limited to the session context above. You do NOT have current knowledge of this project's code, files, implementation details, or recent changes. Do not assume you know how features work -- look it up. If project-knowledge or memory tools are listed below, prefer them for that lookup; otherwise ask the coding agent.
 
 Tools:
@@ -631,9 +946,10 @@ Tools:
 - get_session_summary: Get a summary of what's been discussed.
 
 Guidelines:
-- Be terse. One short sentence per response. No filler phrases.
+- Be terse (see RESPONSE STYLE above). One short sentence per response by default; no filler, no acknowledgments, no explanations unless the user asks.
 - When the user says "shut up", "stop talking", "be quiet", "stop listening", "shh", or anything similar: IMMEDIATELY call pause_listening. Say ABSOLUTELY NOTHING before or after calling the tool -- not "ok", not "pausing", not any acknowledgment at all. Do not describe what will happen with the mic. Just call the tool silently.
 - For coding tasks: use submit_agent_prompt, say what you did in ~5 words (e.g. "Submitted."), then STOP. Do NOT say anything about waiting, timing out, or checking back. The microphone will go dormant automatically. You will be woken up with an "[INTERNAL: Task complete...]" message when the coding agent finishes. There is NO timeout -- tasks can take minutes. You do NOT need to monitor, wait, or follow up.
+- submit_agent_prompt is not an approval gate: it queues on screen and auto-sends after a short countdown the user controls. Never ask the user to approve or confirm first ("if you approve", "should I send it?"). Only "[INTERACTIVE PROMPT: ...]" messages wait for a spoken yes/no.
 - For questions about this project (how it works, what was decided, what is in flight): if project-knowledge or memory tools (e.g. search_project_knowledge, recall) are listed in your tools, call them FIRST -- they answer in under a second. Only fall back to ask_coding_agent when memory returns nothing or the question needs live code inspection (reading current files, running something). When you do use ask_coding_agent, summarize the result conversationally for the user.
 - Only answer directly for truly general knowledge questions unrelated to this project.
 - Brainstorming and planning: you can be a design partner, not just a relay. Talk an idea through, push back, and when it is fleshed out kick off a written plan with submit_agent_prompt phrased as "/design <the idea>". To start implementation against an approved plan, use submit_agent_prompt phrased as "/implement <plan>". If extra grounding or plan-reading tools are listed in your context above, prefer them for pulling design docs and reading plans back; otherwise fall back to ask_coding_agent.
@@ -650,8 +966,16 @@ When the user says "ask the coding agent..." or "tell the coding agent..." or si
 - User: "Ask Claude what file handles voice mode" -> Pass exactly: "What file handles voice mode?"
 Your job is to be a voice relay, not to interpret or improve the user's requests.`;
 
+    // On gpt-realtime-2, submit_agent_prompt is an async (deferred) call: the
+    // tool result IS the completion summary and arrives only when the coding
+    // agent finishes. Tell the agent so it doesn't expect a separate
+    // "[INTERNAL: Task complete]" message on this model.
+    const asyncToolNote = this.supportsAsyncFunctionCalls()
+      ? `\n\nNOTE on submit_agent_prompt: this is an asynchronous tool. The call stays open and returns its result ONLY when the coding agent finishes (which can take minutes). You will receive the summary as the tool's result, not as a separate "[INTERNAL: Task complete]" message. After calling it, acknowledge in ~5 words (e.g. "On it.") then STOP and wait silently -- the mic sleeps automatically. When the tool result arrives, briefly relay it to the user.`
+      : '';
+
     // Apply custom prepend/append if configured
-    let instructions = baseInstructions;
+    let instructions = baseInstructions + asyncToolNote;
     if (this.customPrompt.prepend) {
       instructions = this.customPrompt.prepend + '\n\n' + instructions;
     }
@@ -659,16 +983,26 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       instructions = instructions + '\n\n' + this.customPrompt.append;
     }
 
+    // Pin the spoken language to the desktop's configured default so the voice
+    // agent never auto-detects/drifts into a different language at startup.
+    // Appended last so it takes precedence over any custom prompt text.
+    const effectiveLanguage = this.language?.trim() || 'English';
+    instructions = instructions + `\n\nLANGUAGE: Always speak to the user in ${effectiveLanguage}, regardless of the language the user speaks in. Begin and conduct the entire conversation in ${effectiveLanguage}.`;
+
     // Build turn detection config based on settings
     // 'push_to_talk' mode uses type: 'none' which disables automatic turn detection
     const turnDetectionConfig = this.turnDetection.mode === 'push_to_talk'
       ? undefined // No automatic turn detection - user must manually commit audio
-      : {
-          type: 'server_vad' as const,
-          threshold: this.turnDetection.vadThreshold ?? 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: this.turnDetection.silenceDuration ?? 500,
-        };
+      : buildTurnDetection({
+          detection: this.turnDetection.detection,
+          vadThreshold: this.turnDetection.vadThreshold,
+          silenceDurationMs: this.turnDetection.silenceDuration,
+          allowServerResponses: !this.serverResponsesGated,
+        });
+
+    // Input noise reduction (echo round 2): 'far_field' by default (loud open
+    // speakers are the echo-prone case); 'off' omits the config entirely.
+    const noiseReduction = this.turnDetection.noiseReduction ?? 'far_field';
 
     // GA Realtime API session shape: audio config is nested under audio.{input,output}
     // with format as an object ({type,rate}), not the flat beta fields. PCM16 @ 24kHz
@@ -677,11 +1011,18 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       type: 'realtime',
       output_modalities: ['audio'],
       instructions,
+      // GPT-5-class reasoning throttle (gpt-realtime-2). The gpt-realtime
+      // fallback ignores an unknown field, so it's safe to always include.
+      reasoning: { effort: this.reasoningEffort },
       audio: {
         input: {
           format: { type: 'audio/pcm', rate: 24000 },
-          transcription: { model: 'whisper-1' },
+          // Streaming transcription (replaces post-hoc whisper-1) -- faster,
+          // more accurate partial captions, still delivered via
+          // conversation.item.input_audio_transcription.{delta,completed}.
+          transcription: { model: TRANSCRIPTION_MODEL },
           ...(turnDetectionConfig ? { turn_detection: turnDetectionConfig } : {}),
+          ...(noiseReduction !== 'off' ? { noise_reduction: { type: noiseReduction } } : {}),
         },
         output: {
           voice: this.voice,
@@ -696,7 +1037,7 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       session: config,
     };
 
-    console.log(`[RealtimeAPIClient] session.update: voice=${config.audio.output.voice}`);
+    console.log(`[RealtimeAPIClient] session.update: voice=${config.audio.output.voice} model=${this.model} reasoning=${this.reasoningEffort} transcription=${TRANSCRIPTION_MODEL}`);
     this.ws.send(JSON.stringify(event));
   }
 
@@ -709,7 +1050,7 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
         {
           type: 'function',
           name: 'submit_agent_prompt',
-          description: 'Queue a coding task for yourself to process. Use this when the user asks you to write code, fix bugs, refactor, or perform any coding task. The work will be queued and you will be notified when it completes.',
+          description: 'Queue a coding task for yourself to process. Use this when the user asks you to write code, fix bugs, refactor, or perform any coding task. The task is queued and sends automatically after a brief on-screen countdown the user controls -- do NOT ask the user to approve or confirm before calling this. You will be notified when it completes.',
           parameters: {
             type: 'object',
             properties: {
@@ -962,6 +1303,29 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
   }
 
   /**
+   * Whether there is an open async (deferred) function call awaiting a result.
+   * VoiceModeService checks this on agent-task-complete to decide between
+   * resolving the open call (gpt-realtime-2) and injecting a wake message.
+   */
+  hasDeferredCall(): boolean {
+    return this.deferredCallIds.length > 0;
+  }
+
+  /**
+   * Resolve the oldest open async function call with the coding agent's result.
+   * Delivers the summary as the function_call_output (which triggers the agent
+   * to speak it) instead of a synthetic success + injected wake message.
+   * Returns true if a deferred call was resolved, false if none was pending.
+   */
+  resolveDeferredCall(result: { success: boolean; summary?: string; error?: string }): boolean {
+    const callId = this.deferredCallIds.shift();
+    if (!callId) return false;
+    console.log(`[RealtimeAPIClient] Resolving deferred call ${callId}`);
+    this.sendFunctionCallResult(callId, result);
+    return true;
+  }
+
+  /**
    * Handle incoming audio delta from OpenAI
    * In a full implementation, this would decode and play the audio
    */
@@ -996,16 +1360,25 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
           // Track prompt submission (no content for privacy)
           AnalyticsService.getInstance().sendEvent('voice_prompt_submitted');
 
-          if (this.onSubmitPromptCallback) {
-            await this.onSubmitPromptCallback(prompt);
-          } else {
+          if (!this.onSubmitPromptCallback) {
             throw new Error('No submit prompt callback registered');
           }
+          await this.onSubmitPromptCallback(prompt);
 
-          this.sendFunctionCallResult(callId, {
-            success: true,
-            message: 'Task queued successfully. You will be notified when it completes.',
-          });
+          if (this.supportsAsyncFunctionCalls()) {
+            // Async (deferred) function calling: keep the call open. The real
+            // summary is delivered via resolveDeferredCall() when the coding
+            // agent finishes (voice-mode:agent-task-complete), instead of
+            // returning a synthetic "queued" and later injecting a wake message.
+            this.deferredCallIds.push(callId);
+            console.log(`[RealtimeAPIClient] submit_agent_prompt deferred (callId=${callId})`);
+          } else {
+            // Fallback model: synthetic success now; legacy queue + wake later.
+            this.sendFunctionCallResult(callId, {
+              success: true,
+              message: 'Task queued; it auto-sends after a short countdown the user controls. You will be notified when it completes.',
+            });
+          }
         } catch (error) {
           console.error('[RealtimeAPIClient] Failed to submit prompt to agent:', error);
           this.sendFunctionCallResult(callId, {
@@ -1326,13 +1699,38 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       }
     }
 
-    // Trigger assistant response
+    // A function-call result ALWAYS warrants a fresh response so the agent can
+    // relay the outcome (e.g. confirm a created session). The response that
+    // emitted the function call has already completed server-side -- a response
+    // cannot emit a tool call and keep streaming audio -- but its response.done
+    // can lag response.function_call_arguments.done by a frame, and on fast
+    // (better-sqlite3-backed) tool callbacks the result is sent before that
+    // done is processed. In that window hasActiveResponse is still
+    // optimistically true, so the overlap guard in createResponse() would
+    // silently swallow the follow-up response and the tool would feel broken
+    // ("create a new session" did nothing). Clear the flag here so the result
+    // always produces a spoken response. The overlap guard still protects the
+    // genuine case (two non-function createResponse() calls racing mid-turn).
+    this.hasActiveResponse = false;
     this.createResponse();
   }
 
   /**
    * Request the assistant to generate a response.
-   * Explicitly includes voice to prevent voice drift after tool calls.
+   *
+   * Voice is set once in session.update and intentionally NOT re-asserted here.
+   * gpt-realtime-2 renders a consistent voice for the whole session; passing a
+   * voice on response.create after audio has started is a no-op at best and can
+   * trigger re-evaluation at worst. The session.updated mismatch guardrail
+   * catches any divergence.
+   *
+   * Active-response guard: createResponse() is called from several async paths
+   * (tool results, wake/task-complete messages, interactive-prompt injection).
+   * If one fires while a response is already generating, the server runs two
+   * overlapping responses -- two concurrent audio renderings that, under the
+   * expressive voices (marin/cedar), sound like the voice "switching" mid-turn.
+   * Skip if a response is already active; hasActiveResponse is set optimistically
+   * on send (and on response.created) and cleared on response.done / cancel.
    */
   private createResponse(): void {
     if (!this.ws || !this.connected) {
@@ -1340,19 +1738,82 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       return;
     }
 
-    // GA response shape: output_modalities + nested audio.output.voice (was modalities + voice).
+    if (this.hasActiveResponse) {
+      console.log('[RealtimeAPIClient] Skipping response.create - a response is already active (would overlap)');
+      return;
+    }
+
     const event = {
       type: 'response.create',
       response: {
         output_modalities: ['audio'],
-        audio: {
-          output: { voice: this.voice },
-        },
       },
     };
 
-    console.log(`[RealtimeAPIClient] response.create: voice=${this.voice}`);
     this.ws.send(JSON.stringify(event));
+    // Optimistically mark active so a rapid second call (before the server's
+    // response.created round-trips) cannot create an overlapping response.
+    this.hasActiveResponse = true;
+  }
+
+  /**
+   * Renderer-reported audible playback state (voice-mode:playback-active).
+   * Drives the barge-in policy's playback clock and gates server VAD
+   * responses while the agent is audibly speaking (NIM-1314 lever 4).
+   */
+  setPlaybackActive(active: boolean): void {
+    if (active === this.playbackActive) return;
+    this.playbackActive = active;
+    if (active) {
+      this.bargeInPolicy.notePlaybackStarted();
+    } else {
+      this.bargeInPolicy.notePlaybackStopped();
+    }
+    this.setServerResponsesGated(active);
+  }
+
+  /**
+   * Gate or un-gate server VAD responses while the agent's audio plays.
+   * Sends a partial session.update touching only turn_detection. No-ops in
+   * push_to_talk mode (no turn detection) and when the state is unchanged.
+   */
+  private setServerResponsesGated(gated: boolean): void {
+    if (gated === this.serverResponsesGated) return;
+    this.serverResponsesGated = gated;
+    if (!this.ws || !this.connected || this.turnDetection.mode === 'push_to_talk') return;
+    this.ws.send(JSON.stringify({
+      type: 'session.update',
+      session: {
+        type: 'realtime',
+        audio: {
+          input: {
+            turn_detection: buildTurnDetection({
+              detection: this.turnDetection.detection,
+              vadThreshold: this.turnDetection.vadThreshold,
+              silenceDurationMs: this.turnDetection.silenceDuration,
+              allowServerResponses: !gated,
+            }),
+          },
+        },
+      },
+    }));
+  }
+
+  /**
+   * Tell the server how much of the current assistant item's audio the user
+   * actually heard before a barge-in, so the model's context matches reality.
+   * Clears the item id so the same item is never truncated twice.
+   */
+  private truncatePlayedAudio(audioEndMs: number): void {
+    if (!this.ws || !this.connected || !this.currentAssistantItemId) return;
+    const itemId = this.currentAssistantItemId;
+    this.currentAssistantItemId = null;
+    this.ws.send(JSON.stringify({
+      type: 'conversation.item.truncate',
+      item_id: itemId,
+      content_index: 0,
+      audio_end_ms: Math.max(0, Math.round(audioEndMs)),
+    }));
   }
 
   /**
@@ -1481,6 +1942,20 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
    * @param reason Optional reason for disconnect (default: 'user_stopped')
    */
   disconnect(reason: 'timeout' | 'error' | 'user_stopped' = 'user_stopped'): void {
+    const m = this.bargeInPolicy.metrics;
+    if (m.speechStartedCount > 0) {
+      console.log(`[RealtimeAPIClient] [barge-in] session summary: speechStarted=${m.speechStartedCount} echoSuspect=${m.echoSuspectCount} genuine=${m.genuineCount} interrupts=${m.interruptCount} suppressedEcho=${m.suppressedEchoCount}`);
+    }
+    this.bargeInPolicy.resetSession();
+    this.cancelDeferredBargeInTimer();
+    // Mark intentional BEFORE closing so the close handler doesn't reconnect.
+    this.intentionalDisconnect = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.deferredCallIds = [];
+
     if (this.ws) {
       this.stopInactivityMonitor();
 
@@ -1495,6 +1970,9 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       this.sessionId = null;
       this.currentResponseId = null;
       this.hasActiveResponse = false;
+      this.currentAssistantItemId = null;
+      this.serverResponsesGated = false;
+      this.playbackActive = false;
     }
   }
 

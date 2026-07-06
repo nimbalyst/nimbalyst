@@ -362,6 +362,9 @@ The `known_error` event uses an `errorId` property to identify specific error co
 | `voice_mode_disabled` | `appSettings.ts:135` | User disables voice mode in settings | None | (pending release) |  |
 | `voice_session_started` | `VoiceModeService.ts:479` | User starts a voice session (clicks mic button) | None | (pending release) |  |
 | `voice_session_ended` | `VoiceModeService.ts:36` | Voice session ends | `reason` (user_stopped/timeout/error)<br/>`durationCategory` (short < 1min / medium 1-5min / long > 5min) | (pending release) |  |
+| `voice_prompt_submitted` | `RealtimeAPIClient.ts` | Voice agent calls submit_agent_prompt | None (no content for privacy) | (pending release) |  |
+| `voice_model_fallback` | `RealtimeAPIClient.ts` | gpt-realtime-2 unavailable; fell back to gpt-realtime | `from`, `to` | (pending release) |  |
+| `voice_voice_mismatch` | `RealtimeAPIClient.ts` | Server output voice diverged from requested voice (drift guardrail) | `requested`, `server`, `model` | (pending release) |  |
 
 ### Mobile App
 

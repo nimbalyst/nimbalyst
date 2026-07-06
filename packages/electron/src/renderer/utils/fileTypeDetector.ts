@@ -127,6 +127,7 @@ export function getMonacoLanguage(filePath: string): string {
     '.kt': 'kotlin',
     '.swift': 'swift',
     '.cs': 'csharp',
+    '.dart': 'dart',
 
     // Scripting
     '.rb': 'ruby',

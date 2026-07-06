@@ -45,6 +45,7 @@ import {
   initPullRequestPollScheduler,
   type PullRequestPollScheduler,
 } from '../services/PullRequestPollScheduler';
+import { applyPrMergeToTrackers } from '../services/PrTrackerLifecycle';
 import type {
   PullRequestRow,
   PullRequestFileRow,
@@ -578,6 +579,14 @@ export function registerPullRequestHandlers(): void {
         // Re-fetch (cache-bypass) so the PR flips to merged in the cache + UI.
         await service.getPullRequest(workspaceId, remote, number, { noCache: true });
         emitPrListUpdated(workspaceId, remote);
+        if (result.merged) {
+          // Tracker lifecycle: prMergedStatus-role transition / merge comment
+          // on referencing items. Best-effort — a tracker failure must not
+          // turn a successful merge into an error.
+          applyPrMergeToTrackers(workspaceId, remote, number).catch((err) => {
+            logger.error('pr:merge tracker lifecycle failed', { remote, number, error: err });
+          });
+        }
         return { success: true, data: { merged: result.merged, sha: result.sha } };
       } catch (error: unknown) {
         logger.error('pr:merge failed', { remote, number, method, error });

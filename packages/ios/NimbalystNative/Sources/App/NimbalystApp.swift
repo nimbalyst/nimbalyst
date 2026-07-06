@@ -277,6 +277,16 @@ public struct MainNavigationView: View {
             navigateToSession(sessionId)
             notificationManager.pendingSessionId = nil
         }
+        #if os(iOS)
+        // Voice agent created a session on this device — open it. iPhone navigates
+        // its stack here; iPad sets selectedSession in IPadNavigationView, which
+        // clears the request. Guard on compact so we don't consume the iPad case.
+        .onChange(of: appState.voiceNavigationRequest) { _, newValue in
+            guard sizeClass != .regular, let sessionId = newValue else { return }
+            navigateToSession(sessionId)
+            appState.voiceNavigationRequest = nil
+        }
+        #endif
         .onAppear {
             let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
             AnalyticsManager.shared.capture("mobile_app_opened", properties: [
@@ -407,6 +417,27 @@ struct IPadNavigationView: View {
         .sheet(isPresented: $showProjectPicker) {
             projectPickerSheet
         }
+        #if os(iOS)
+        .onChange(of: appState.voiceNavigationRequest) { _, newValue in
+            guard let sessionId = newValue else { return }
+            openVoiceCreatedSession(sessionId)
+            appState.voiceNavigationRequest = nil
+        }
+        #endif
+    }
+
+    /// Open a session the voice agent just created (iPad split view): select its
+    /// project if different, then show it in the detail column.
+    private func openVoiceCreatedSession(_ sessionId: String) {
+        guard let db = appState.databaseManager,
+              let session = try? db.session(byId: sessionId) else { return }
+        if selectedProject?.id != session.projectId,
+           let project = try? db.writer.read({ db in try Project.fetchOne(db, id: session.projectId) }) {
+            selectedProject = project
+            configureVoiceForProject(project)
+        }
+        selectedDocument = nil
+        selectedSession = session
     }
 
     private var projectPickerSheet: some View {

@@ -22,6 +22,11 @@ export class AudioPlayback {
   private nextStartTime: number = 0;
   private instanceId: number;
   private onDrainedCallback: (() => void) | null = null;
+  // Fires on every isPlaying transition (true at audible start, false at
+  // drain or stop). Voice mode forwards this to the main process so the
+  // barge-in policy knows whether the assistant is actually audible -- audio
+  // keeps playing after response.done because it streams faster than realtime.
+  private onActiveChangedCallback: ((active: boolean) => void) | null = null;
   // True while stop() is tearing down the queue. Suppresses the natural
   // onended -> onDrained chain so a user interrupt doesn't fire the
   // "playback finished" signal that the listen-window timer is waiting for.
@@ -93,7 +98,7 @@ export class AudioPlayback {
     }
 
     if (!this.isPlaying) {
-      this.isPlaying = true;
+      this.setPlayingState(true);
       // Only reset nextStartTime if it's in the past (or hasn't been set)
       if (this.nextStartTime < this.audioContext.currentTime) {
         this.nextStartTime = this.audioContext.currentTime;
@@ -109,6 +114,18 @@ export class AudioPlayback {
       // Connect to stream destination (routed through <audio> for AEC)
       // instead of audioContext.destination directly
       source.connect(this.streamDestination);
+
+      // Never schedule a chunk in the past. Within a single turn nextStartTime
+      // accumulates by buffer duration while currentTime advances in real time.
+      // If chunk delivery lags realtime over a long response, the cumulative
+      // scheduled duration falls behind elapsed time and nextStartTime drifts
+      // *before* currentTime. Calling source.start() with a past time makes Web
+      // Audio play that buffer immediately, so a backlog of tail chunks all fire
+      // at once and overlap -- heard as the voice "speeding up" (chipmunk) near
+      // the end of a response. Clamp to now so each chunk plays sequentially.
+      if (this.nextStartTime < this.audioContext.currentTime) {
+        this.nextStartTime = this.audioContext.currentTime;
+      }
 
       // Schedule playback
       source.start(this.nextStartTime);
@@ -128,7 +145,7 @@ export class AudioPlayback {
         }
 
         if (this.audioQueue.length === 0 && this.scheduledSources.length === 0) {
-          this.isPlaying = false;
+          this.setPlayingState(false);
           if (this.onDrainedCallback && !this.suppressDrainedCallback) {
             this.onDrainedCallback();
           }
@@ -157,7 +174,7 @@ export class AudioPlayback {
 
     this.scheduledSources = [];
     this.audioQueue = [];
-    this.isPlaying = false;
+    this.setPlayingState(false);
     this.nextStartTime = 0;
 
     // Re-enable the drained callback for the next play() cycle.
@@ -175,6 +192,21 @@ export class AudioPlayback {
    */
   setOnDrained(callback: (() => void) | null): void {
     this.onDrainedCallback = callback;
+  }
+
+  /**
+   * Register a callback fired on every audible-playback transition (true at
+   * start, false at drain or stop). Unlike onDrained this also fires on
+   * stop() and reports starts, so it reflects actual audibility.
+   */
+  setOnActiveChanged(callback: ((active: boolean) => void) | null): void {
+    this.onActiveChangedCallback = callback;
+  }
+
+  private setPlayingState(playing: boolean): void {
+    if (this.isPlaying === playing) return;
+    this.isPlaying = playing;
+    this.onActiveChangedCallback?.(playing);
   }
 
   /**

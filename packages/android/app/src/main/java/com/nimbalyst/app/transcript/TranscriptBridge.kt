@@ -1,37 +1,31 @@
 package com.nimbalyst.app.transcript
 
-import android.webkit.JavascriptInterface
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 
-class TranscriptBridge(
-    private val onMessage: (TranscriptBridgeMessage) -> Unit,
-) {
+object TranscriptBridge {
     private val gson = Gson()
 
-    @JavascriptInterface
-    fun postMessage(payload: String) {
+    fun parse(payload: String): TranscriptBridgeMessage? {
         val json = runCatching {
             gson.fromJson(payload, JsonObject::class.java)
         }.getOrElse { error ->
             System.err.println("TranscriptBridge: failed to decode bridge payload: ${error.message}")
             null
-        } ?: return
+        } ?: return null
 
-        val type = json.get("type")?.takeIf { !it.isJsonNull }?.asString ?: return
+        val type = json.get("type")?.takeIf { !it.isJsonNull }?.asString ?: return null
 
-        onMessage(
-            TranscriptBridgeMessage(
-                type = type,
-                text = json.get("text")?.takeIf { !it.isJsonNull }?.asString,
-                action = json.get("action")?.takeIf { !it.isJsonNull }?.asString,
-                promptId = json.get("promptId")?.takeIf { !it.isJsonNull }?.asString,
-                requestId = json.get("requestId")?.takeIf { !it.isJsonNull }?.asString,
-                questionId = json.get("questionId")?.takeIf { !it.isJsonNull }?.asString,
-                proposalId = json.get("proposalId")?.takeIf { !it.isJsonNull }?.asString,
-                feedback = json.get("feedback")?.takeIf { !it.isJsonNull }?.asString,
-                raw = json
-            )
+        return TranscriptBridgeMessage(
+            type = type,
+            text = json.get("text")?.takeIf { !it.isJsonNull }?.asString,
+            action = json.get("action")?.takeIf { !it.isJsonNull }?.asString,
+            promptId = json.get("promptId")?.takeIf { !it.isJsonNull }?.asString,
+            requestId = json.get("requestId")?.takeIf { !it.isJsonNull }?.asString,
+            questionId = json.get("questionId")?.takeIf { !it.isJsonNull }?.asString,
+            proposalId = json.get("proposalId")?.takeIf { !it.isJsonNull }?.asString,
+            feedback = json.get("feedback")?.takeIf { !it.isJsonNull }?.asString,
+            raw = json
         )
     }
 }

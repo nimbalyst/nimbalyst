@@ -1,13 +1,14 @@
 {
   "id": "com.nimbalyst.pdf-viewer",
   "name": "PDF Viewer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "View PDF files directly in Nimbalyst",
   "author": "Nimbalyst Team",
   "main": "dist/index.mjs",
   "styles": "dist/style.css",
   "apiVersion": "1.0.0",
   "marketplace": {
+    "changelog": "1.0.1: Smaller bundle and more reliable external file edits.",
     "categories": ["data"],
     "tags": ["pdf", "viewer", "document", "reader"],
     "icon": "picture_as_pdf",

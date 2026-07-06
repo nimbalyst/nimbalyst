@@ -206,6 +206,13 @@ interface AppStoreSchema {
   lastKnownVersion?: string;
   // One-shot migration flag: plain fable default bumped to fable-1m (NIM-827)
   fableDefaultMigratedTo1m?: boolean;
+  // Gutter icon visibility/order preferences (GLOBAL). Moved off per-project
+  // workspace state so the preference applies across all projects.
+  hiddenGutterItems?: string[];
+  gutterItemOrder?: Record<string, string[]>;
+  // One-shot migration flag: per-project hiddenGutterButtons unioned into the
+  // global hiddenGutterItems key above.
+  gutterButtonsMigratedToGlobal?: boolean;
   // Extension marketplace install tracking
   marketplaceInstalls?: Record<string, MarketplaceInstallRecord>;
   // Multi-project rail: opt-in flag to host multiple projects in a single
@@ -2451,6 +2458,30 @@ export function runMigrations(currentVersion: string): void {
       getAppStore().set('defaultAIModel', migrated);
     }
     getAppStore().set('fableDefaultMigratedTo1m', true);
+  }
+
+  // One-shot, version-independent migration: gutter icon visibility moved from
+  // per-project workspace state (hiddenGutterButtons) to a single global app
+  // setting (hiddenGutterItems). Union every project's hidden set so a user who
+  // had hidden, say, Voice Mode in one project keeps it hidden everywhere
+  // rather than having it silently reappear. Flag-guarded so it runs once.
+  if (!getAppStore().get('gutterButtonsMigratedToGlobal')) {
+    try {
+      const workspaces = getWorkspaceStore().store;
+      const union = new Set<string>(getAppStore().get('hiddenGutterItems') ?? []);
+      for (const state of Object.values(workspaces ?? {})) {
+        for (const id of state?.hiddenGutterButtons ?? []) {
+          union.add(id);
+        }
+      }
+      if (union.size > 0) {
+        logger.store.info(`[Migrations] Unioning ${union.size} hidden gutter button(s) into global setting`);
+        getAppStore().set('hiddenGutterItems', Array.from(union));
+      }
+    } catch (err) {
+      logger.store.warn('[Migrations] Failed to migrate hiddenGutterButtons to global:', err);
+    }
+    getAppStore().set('gutterButtonsMigratedToGlobal', true);
   }
 
   // Same version - no migration needed

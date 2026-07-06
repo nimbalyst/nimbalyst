@@ -197,6 +197,7 @@ interface TabBarProps {
   isActive?: boolean; // Whether this TabBar should handle keyboard shortcuts
   onToggleAIChat?: () => void; // Toggle AI Chat panel
   isAIChatCollapsed?: boolean; // Whether AI Chat is collapsed
+  onTabDoubleClick?: (tabId: string) => void; // Double-click a tab (e.g. maximize editor)
 }
 
 export const TabBar: React.FC<TabBarProps> = ({
@@ -213,7 +214,8 @@ export const TabBar: React.FC<TabBarProps> = ({
   allowRename = false,
   isActive = true,
   onToggleAIChat,
-  isAIChatCollapsed = false
+  isAIChatCollapsed = false,
+  onTabDoubleClick
 }) => {
   const openHistoryDialog = useSetAtom(historyDialogFileAtom);
   const [contextMenuTab, setContextMenuTab] = useState<string | null>(null);
@@ -252,8 +254,11 @@ export const TabBar: React.FC<TabBarProps> = ({
 
     // Left click handling
     if (e.button === 0) {
-      // Only handle double-click for rename if allowRename is true and onTabRename exists
-      if (allowRename && onTabRename) {
+      // Detect double-click when either rename or a double-click action is wired.
+      // Rename takes precedence when enabled; otherwise the double-click fires
+      // onTabDoubleClick (used to maximize the editor).
+      const wantsDoubleClick = (allowRename && onTabRename) || !!onTabDoubleClick;
+      if (wantsDoubleClick) {
         const clickCount = (clickCountRef.current.get(tabId) || 0) + 1;
         clickCountRef.current.set(tabId, clickCount);
 
@@ -269,19 +274,24 @@ export const TabBar: React.FC<TabBarProps> = ({
         }, 300); // 300ms double-click window
         clickTimerRef.current.set(tabId, timer);
 
-        // Double-click detected - enter edit mode
+        // Double-click detected
         if (clickCount === 2) {
-          const tab = tabs.find(t => t.id === tabId);
-          if (tab) {
-            setEditingTabId(tabId);
-            setEditingValue(tab.fileName);
-            // Focus input on next tick
-            setTimeout(() => {
-              editInputRef.current?.focus();
-              editInputRef.current?.select();
-            }, 0);
-          }
           clickCountRef.current.set(tabId, 0);
+          if (allowRename && onTabRename) {
+            // Enter rename edit mode
+            const tab = tabs.find(t => t.id === tabId);
+            if (tab) {
+              setEditingTabId(tabId);
+              setEditingValue(tab.fileName);
+              // Focus input on next tick
+              setTimeout(() => {
+                editInputRef.current?.focus();
+                editInputRef.current?.select();
+              }, 0);
+            }
+          } else if (onTabDoubleClick) {
+            onTabDoubleClick(tabId);
+          }
           return;
         }
       }
@@ -291,7 +301,7 @@ export const TabBar: React.FC<TabBarProps> = ({
         onTabSelect(tabId);
       }
     }
-  }, [onTabSelect, onTabClose, activeTabId, editingTabId, allowRename, onTabRename, tabs]);
+  }, [onTabSelect, onTabClose, activeTabId, editingTabId, allowRename, onTabRename, onTabDoubleClick, tabs]);
 
   // Handle close button click
   const handleCloseClick = useCallback((e: React.MouseEvent, tabId: string) => {

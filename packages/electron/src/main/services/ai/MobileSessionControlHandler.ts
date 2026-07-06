@@ -19,6 +19,7 @@ import {
 } from './gitCommitProposalPromptUtils';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import { getGitSubprocessEnv } from '../gitEnv';
+import { findWindowByWorkspace } from '../../window/WindowManager';
 
 const log = logger.ai;
 
@@ -52,7 +53,7 @@ interface PromptPayload {
  * Unified prompt response payload.
  * All interactive prompts use this structure.
  */
-interface PromptResponsePayload {
+export interface PromptResponsePayload {
   promptType: 'ask_user_question' | 'exit_plan_mode' | 'tool_permission' | 'git_commit' | 'request_user_input';
   promptId: string;
   response:
@@ -213,6 +214,19 @@ async function handlePromptTrigger(
   } catch (err) {
     log.error('Failed to handle mobile prompt control message:', err);
   }
+}
+
+/**
+ * Resolve an interactive prompt programmatically (e.g. from the voice agent),
+ * reusing the exact same resolution path mobile uses for `prompt_response`
+ * session-control messages. The provider/MCP-waiter/DB-poll fallbacks and the
+ * renderer notifications are all handled by `handlePromptResponse`.
+ */
+export function resolveVoicePromptResponse(
+  sessionId: string,
+  payload: PromptResponsePayload,
+): void {
+  handlePromptResponse(sessionId, payload, findWindowByWorkspace);
 }
 
 /**

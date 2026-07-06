@@ -185,6 +185,7 @@ import { ClaudeSettingsManager } from './services/ClaudeSettingsManager';
 import { TrayManager } from './tray/TrayManager';
 import { pathToFileURL } from 'url';
 import { registerLinuxAppImageProtocolHandler } from './services/LinuxProtocolRegistration';
+import { installWindowOpenGuard } from './window/windowOpenGuard';
 
 // CRITICAL: Hide dock icon when running as background Node process
 // This prevents Terminal icon from appearing when Claude Code spawns child processes
@@ -208,6 +209,11 @@ if (process.platform === 'win32') {
 registerNimAssetSchemeAsPrivileged();
 registerNimPreviewSchemeAsPrivileged();
 registerCollabAssetSchemeAsPrivileged();
+
+// NIM-1487: no window may be spawned by an unhandled window.open — relative
+// file links that slip past the renderer's link routing used to open blank
+// white child windows.
+installWindowOpenGuard();
 
 // NOTE: User data directory configuration is handled in bootstrap.ts
 // which runs BEFORE this file is imported, ensuring electron-store

@@ -3,6 +3,8 @@ import {
   FIRST_PARTY_TOOL_TO_SERVER,
   MCP_EAGER_CONFIG_KEYS,
   MCP_CORE,
+  MCP_TRACKERS,
+  MCP_SITUATIONAL,
   buildToolBudgetReport,
   formatToolBudgetReport,
   type MeasurableToolSchema,
@@ -84,5 +86,39 @@ describe('MCP tool budget characterization (current first-party surface)', () =>
 
   it('confirms core is the only eager server', () => {
     expect(MCP_EAGER_CONFIG_KEYS).toEqual([MCP_CORE]);
+  });
+
+  // Reverse of the mapping test above: guards against topology declaring a tool
+  // that no `ListTools` schema actually provides (phantom entries). This is the
+  // check that was missing when `developer_git_log` (core) and
+  // `applyDiff`/`streamContent` (host) were declared in topology but absent from
+  // any schema.
+  //
+  // Scope: core, trackers, and situational — the servers fully covered by the
+  // leaf schema modules importable in a node test env. The host schema modules
+  // pull in the electron service graph (monaco, etc.) and can't be imported
+  // here; `update_session_meta` (session-naming) is likewise excluded and is
+  // covered by the routing tests.
+  it('every first-party core/trackers/situational topology tool has a real schema', () => {
+    const builtInNames = new Set(collectCurrentFirstPartySchemas().map((t) => t.name));
+    const guardedServers = new Set([MCP_CORE, MCP_TRACKERS, MCP_SITUATIONAL]);
+    // These tools live on guarded servers but their schemas are defined in host
+    // modules (settingsServer / sessionNamingServer) that can't be imported in
+    // this node test env. Their schema-backing is covered by the routing tests.
+    //   - update_session_meta       → sessionNamingServer (core)
+    //   - tracker_set_sync_policy    → settingsServer (trackers, moved in Phase 5)
+    //   - tracker_set_issue_key_prefix → settingsServer (trackers, moved in Phase 5)
+    const excluded = new Set([
+      'update_session_meta',
+      'tracker_set_sync_policy',
+      'tracker_set_issue_key_prefix',
+    ]);
+
+    const phantom = [...FIRST_PARTY_TOOL_TO_SERVER.entries()]
+      .filter(([tool, server]) => guardedServers.has(server) && !excluded.has(tool))
+      .map(([tool]) => tool)
+      .filter((tool) => !builtInNames.has(tool));
+
+    expect(phantom).toEqual([]);
   });
 });

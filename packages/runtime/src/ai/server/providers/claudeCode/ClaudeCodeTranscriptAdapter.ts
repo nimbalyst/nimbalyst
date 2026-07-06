@@ -33,7 +33,7 @@ export type ParsedItem =
   | { kind: 'session_id'; id: string }
   // Lifecycle items (provider handles side effects, not transcript-relevant)
   | { kind: 'system_init'; chunk: any }
-  | { kind: 'system_task'; subtype: 'task_started' | 'task_progress' | 'task_notification'; chunk: any }
+  | { kind: 'system_task'; subtype: 'task_started' | 'task_progress' | 'task_notification' | 'task_updated'; chunk: any }
   | { kind: 'system_compact'; preTokens: string | number }
   | { kind: 'system_message'; text: string }
   | { kind: 'summary'; text: string; isAuthError: boolean; chunk: any }
@@ -457,6 +457,7 @@ export class ClaudeCodeTranscriptAdapter {
       case 'task_started':
       case 'task_progress':
       case 'task_notification':
+      case 'task_updated':
         items.push({ kind: 'system_task', subtype: chunk.subtype, chunk });
         break;
       case 'compact_boundary':

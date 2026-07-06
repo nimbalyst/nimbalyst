@@ -180,6 +180,12 @@ export { screenshotService } from './services/ScreenshotService';
 export type { ScreenshotCapability } from './services/ScreenshotService';
 // Editor context
 export { DocumentPathProvider, useDocumentPath } from './DocumentPathContext';
+// Workspace file link routing (NIM-1487)
+export {
+  isWorkspaceFileHref,
+  openWorkspaceFileLink,
+  setWorkspaceFileLinkOpener,
+} from './editor/utils/workspaceLinkNavigation';
 // Editor wrappers
 export * from './editors';
 // Sync types (for capacitor)

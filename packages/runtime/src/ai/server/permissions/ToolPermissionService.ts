@@ -291,6 +291,10 @@ export class ToolPermissionService {
     }
   }
 
+  hasPendingPermissions(): boolean {
+    return this.pendingPermissions.size > 0;
+  }
+
   /**
    * Check if pattern is already approved in session cache or persisted settings
    *

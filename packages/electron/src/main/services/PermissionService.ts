@@ -17,7 +17,7 @@ import {
 import { logger } from '../utils/logger';
 import { getDatabase } from '../database/initialize';
 import { createWorktreeStore } from './WorktreeStore';
-import { resolveProjectPath, isWorktreePath } from '../utils/workspaceDetection';
+import { resolveProjectPath, isWorktreePath, findNearestAncestor, findProjectRoot } from '../utils/workspaceDetection';
 
 type PermissionMode = 'ask' | 'allow-all' | 'bypass-all';
 
@@ -32,27 +32,68 @@ type PermissionMode = 'ask' | 'allow-all' | 'bypass-all';
  * @returns The parent project path for worktrees, or the original path for regular workspaces
  */
 export async function resolveWorkspacePathForPermissions(workspacePath: string): Promise<string> {
-  // Fast path: if the path doesn't match worktree naming pattern, skip database lookup
-  if (!isWorktreePath(workspacePath)) {
-    return workspacePath;
+  // Step 1: map a worktree (incl. nested/branch-style names) to its parent
+  // project. Prefer the authoritative DB mapping; fall back to the path pattern.
+  let resolved = workspacePath;
+  if (isWorktreePath(workspacePath)) {
+    const db = getDatabase();
+    if (!db) {
+      throw new Error('Database not initialized - cannot resolve worktree path for permissions');
+    }
+
+    const worktreeStore = createWorktreeStore(db);
+    const worktree = await worktreeStore.getByPath(workspacePath);
+
+    if (worktree) {
+      const workspaceName = path.basename(workspacePath) || workspacePath;
+      logger.main.info(`[PermissionService:${workspaceName}] Resolved worktree to parent project: ${worktree.projectPath}`);
+      resolved = worktree.projectPath;
+    } else {
+      // Path looks like a worktree but not in database - pattern-based fallback.
+      resolved = resolveProjectPath(workspacePath);
+    }
   }
 
-  const db = getDatabase();
-  if (!db) {
-    throw new Error('Database not initialized - cannot resolve worktree path for permissions');
-  }
+  // Step 2: subfolder cascade - inherit settings from the nearest ancestor that
+  // has an explicit permission mode (the project the user trusted), matching the
+  // sync read-path resolution. Bounded to the enclosing git project so a distinct
+  // repo nested under a trusted parent directory does not inherit its trust.
+  const boundary = findProjectRoot(resolved) ?? resolved;
+  return (
+    findNearestAncestor(resolved, (dir) => getAgentPermissions(dir)?.permissionMode != null, boundary) ??
+    resolved
+  );
+}
 
-  const worktreeStore = createWorktreeStore(db);
-  const worktree = await worktreeStore.getByPath(workspacePath);
-
-  if (worktree) {
-    const workspaceName = path.basename(workspacePath) || workspacePath;
-    logger.main.info(`[PermissionService:${workspaceName}] Resolved worktree to parent project: ${worktree.projectPath}`);
-    return worktree.projectPath;
-  }
-
-  // Path looks like a worktree but not in database - use pattern-based resolution as fallback
-  return resolveProjectPath(workspacePath);
+/**
+ * Resolve the path whose stored permissions apply when READING permission state.
+ *
+ * 1. Map a worktree (including nested/branch-style names) to its parent project.
+ * 2. Walk up to the nearest ancestor that has an explicit permission mode, so a
+ *    subfolder inherits the project's trust the same way a worktree does. The
+ *    walk is bounded to the enclosing git project (findProjectRoot): a distinct
+ *    project nested under a trusted parent directory (e.g. a freshly-cloned repo
+ *    under a once-trusted `~/code`) must NOT inherit that trust, or it would
+ *    silently skip the trust prompt.
+ *
+ * Falls back to the worktree-resolved path when no trusted ancestor exists
+ * (preserving today's "untrusted -> prompt" behavior for brand-new projects).
+ *
+ * Writes deliberately do NOT use this (they stay on resolveProjectPath) so a
+ * mode set on a subfolder never silently overwrites an ancestor's mode.
+ */
+function resolvePermissionReadPath(workspacePath: string): string {
+  const projectPath = resolveProjectPath(workspacePath);
+  // Upper-bound the trust walk at the enclosing git repo root. When the path is
+  // not inside any git repo, fall back to the project path itself (no cascade)
+  // rather than climbing into an unrelated trusted ancestor.
+  const boundary = findProjectRoot(projectPath) ?? projectPath;
+  const trustedAncestor = findNearestAncestor(
+    projectPath,
+    (dir) => getAgentPermissions(dir)?.permissionMode != null,
+    boundary,
+  );
+  return trustedAncestor ?? projectPath;
 }
 
 /**
@@ -118,8 +159,8 @@ export class PermissionService {
    * Check if a workspace is trusted
    */
   public isWorkspaceTrusted(workspacePath: string): boolean {
-    // Resolve worktree paths to parent project so trust is shared
-    const projectPath = resolveProjectPath(workspacePath);
+    // Resolve worktrees + subfolders to the project whose trust applies
+    const projectPath = resolvePermissionReadPath(workspacePath);
     const stored = getAgentPermissions(projectPath);
     return stored?.permissionMode !== null && stored?.permissionMode !== undefined;
   }
@@ -135,8 +176,8 @@ export class PermissionService {
       return testMode;
     }
 
-    // Resolve worktree paths to parent project so trust is shared
-    const projectPath = resolveProjectPath(workspacePath);
+    // Resolve worktrees + subfolders to the project whose trust applies
+    const projectPath = resolvePermissionReadPath(workspacePath);
     const stored = getAgentPermissions(projectPath);
     return stored?.permissionMode ?? null;
   }
@@ -160,7 +201,7 @@ export class PermissionService {
    * (issue #628). Off by default — "Allow All" is literal allow-all.
    */
   public getAllowAllUsesClassifier(workspacePath: string): boolean {
-    const projectPath = resolveProjectPath(workspacePath);
+    const projectPath = resolvePermissionReadPath(workspacePath);
     const stored = getAgentPermissions(projectPath);
     return stored?.allowAllUsesClassifier === true;
   }

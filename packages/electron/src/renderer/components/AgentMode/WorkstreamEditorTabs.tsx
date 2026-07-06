@@ -197,6 +197,7 @@ interface WorkstreamEditorTabsProps {
   isActive?: boolean;
   onSwitchToAgentMode?: (planDocumentPath?: string, sessionId?: string) => void;
   onOpenSessionInChat?: (sessionId: string) => void;
+  onTabDoubleClick?: (tabId: string) => void; // Double-click a tab (e.g. maximize editor)
 }
 
 /**
@@ -210,10 +211,11 @@ interface WorkstreamEditorTabsInnerProps {
   isActive: boolean;
   onSwitchToAgentMode?: (planDocumentPath?: string, sessionId?: string) => void;
   onOpenSessionInChat?: (sessionId: string) => void;
+  onTabDoubleClick?: (tabId: string) => void;
 }
 
 const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, WorkstreamEditorTabsInnerProps>(
-  function WorkstreamEditorTabsInner({ workstreamId, workspacePath, basePath, isActive, onSwitchToAgentMode, onOpenSessionInChat }, ref) {
+  function WorkstreamEditorTabsInner({ workstreamId, workspacePath, basePath, isActive, onSwitchToAgentMode, onOpenSessionInChat, onTabDoubleClick }, ref) {
     const { tabs, activeTabId } = useTabs();
     const tabsActions = useTabsActions();
     const setTabCount = useSetAtom(setSessionTabCountAtom);
@@ -429,6 +431,7 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
             onNewTab={handleNewTab}
             hideTabBar={false}
             isActive={isActive}
+            onTabDoubleClick={onTabDoubleClick}
           >
             <></>
           </TabManager>
@@ -450,7 +453,7 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
  * Tab state is persisted to workstreamEditorStates in workspace state.
  */
 export const WorkstreamEditorTabs = forwardRef<WorkstreamEditorTabsRef, WorkstreamEditorTabsProps>(
-  function WorkstreamEditorTabs({ workstreamId, workspacePath, basePath, isActive = true, onSwitchToAgentMode, onOpenSessionInChat }, ref) {
+  function WorkstreamEditorTabs({ workstreamId, workspacePath, basePath, isActive = true, onSwitchToAgentMode, onOpenSessionInChat, onTabDoubleClick }, ref) {
     const innerRef = useRef<WorkstreamEditorTabsRef>(null);
     // Use basePath if provided, otherwise fall back to workspacePath
     const effectiveBasePath = basePath || workspacePath;
@@ -474,6 +477,7 @@ export const WorkstreamEditorTabs = forwardRef<WorkstreamEditorTabsRef, Workstre
           isActive={isActive}
           onSwitchToAgentMode={onSwitchToAgentMode}
           onOpenSessionInChat={onOpenSessionInChat}
+          onTabDoubleClick={onTabDoubleClick}
         />
       </TabsProvider>
     );
