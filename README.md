@@ -1,9 +1,4 @@
 # Nimbalyst is the visual workspace for building with Codex and Claude Code
-[![GitHub stars](https://img.shields.io/github/stars/Nimbalyst/nimbalyst?style=social)](https://github.com/Nimbalyst/nimbalyst/stargazers)
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/FgD9S2MCYB)
-[![Latest release](https://img.shields.io/github/v/release/Nimbalyst/nimbalyst)](https://github.com/Nimbalyst/nimbalyst/releases/latest)
-[![License](https://img.shields.io/github/license/Nimbalyst/nimbalyst)](./LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)]()
 
 [Nimbalyst](https://nimbalyst.com) is a free, open-source, local, interactive visual editor & session/task manager for developers, product managers, designers, builders. 
 - Maximize speed, bandwidth, and context with Codex, Claude Code, Opencode (alpha), Copilot (alpha) by collaborating visually on integrated files, sessions, and tasks
@@ -12,6 +7,9 @@
 - Manage tasks. Keep track of your plans, bugs, todos, etc. Have the agent edit tasks and items, add them, move them, and execute them. Humans see and edit this as well.
 - Extend Nimbalyst. Build your own custom editors and visual interfaces integrated with the rest of Nimbalyst and your agents.
 - Mobile app. Start, manage, and respond to your Codex and Claude Code sessions while on the go.
+
+![Version](https://img.shields.io/github/v/release/nimbalyst/nimbalyst)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 
 https://github.com/user-attachments/assets/bfd89552-61f4-4db1-8301-cc2495423b89
 
@@ -151,7 +149,7 @@ For deeper architecture and contributor guidance, see [CLAUDE.md](./CLAUDE.md) a
 ## Contributing
 
 - 💡 **Have a vague idea or question?** → [Join the discussion](https://github.com/Nimbalyst/nimbalyst/discussions)
-- 🐛 **Found a bug?** → [Open an issue](https://github.com/Nimbalyst/nimbalyst/issues/new?template=bug_report.yml)
+- 🐛 **Found a bug?** → Report it in-app with **Send Feedback** (left rail or Help menu). Your agent helps draft the report, and you approve everything before it goes to GitHub.
 - 🗺️ **Curious what we're building?** → [See the roadmap](https://github.com/orgs/Nimbalyst/projects/4/views/1)
 - 🤝 **Want to help with roadmap work?** → [Community view](https://github.com/orgs/Nimbalyst/projects/4/views/2)
 - ✨ **Have a concrete feature request?** → [Open an issue](https://github.com/Nimbalyst/nimbalyst/issues/new?template=feature_request.yml)
