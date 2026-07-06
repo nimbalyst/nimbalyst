@@ -30,6 +30,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.annotation.VisibleForTesting
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -56,6 +57,26 @@ import kotlinx.coroutines.launch
 private const val DRAFT_DEBOUNCE_MS = 500L
 private const val DELIVERY_TIMEOUT_MS = 10_000L
 
+@VisibleForTesting
+internal fun shouldApplyRemoteDraft(
+    currentDraft: String,
+    remoteDraft: String,
+    remoteDraftUpdatedAt: Long?,
+    lastSubmitAt: Long,
+    lastLocalEditAt: Long
+): Boolean {
+    if (remoteDraft == currentDraft) return false
+    if (remoteDraft.isNotEmpty() && currentDraft.startsWith(remoteDraft) && currentDraft.length > remoteDraft.length) {
+        return false
+    }
+
+    val remoteTs = remoteDraftUpdatedAt ?: 0L
+    if (remoteDraft.isNotEmpty() && remoteTs <= lastSubmitAt) return false
+    if (lastLocalEditAt > 0L && remoteTs <= lastLocalEditAt) return false
+
+    return true
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionDetailScreen(
@@ -72,6 +93,7 @@ fun SessionDetailScreen(
     // Draft sync state
     var isApplyingRemoteDraft by remember { mutableStateOf(false) }
     var lastSubmitAt by remember { mutableLongStateOf(0L) }
+    var lastLocalEditAt by remember { mutableLongStateOf(0L) }
     var draftDebounceJob by remember { mutableStateOf<Job?>(null) }
     // Delivery timeout state
     var deliveryWarning by remember { mutableStateOf<String?>(null) }
@@ -139,10 +161,16 @@ fun SessionDetailScreen(
     // Apply incoming remote draft updates
     LaunchedEffect(session?.draftInput, session?.draftUpdatedAt) {
         val remoteDraft = session?.draftInput ?: ""
-        if (remoteDraft == draftPrompt) return@LaunchedEffect
-        // Reject stale drafts that predate our last submit
-        val remoteTs = session?.draftUpdatedAt ?: 0L
-        if (remoteDraft.isNotEmpty() && remoteTs <= lastSubmitAt) return@LaunchedEffect
+        if (!shouldApplyRemoteDraft(
+                currentDraft = draftPrompt,
+                remoteDraft = remoteDraft,
+                remoteDraftUpdatedAt = session?.draftUpdatedAt,
+                lastSubmitAt = lastSubmitAt,
+                lastLocalEditAt = lastLocalEditAt
+            )
+        ) {
+            return@LaunchedEffect
+        }
 
         isApplyingRemoteDraft = true
         draftPrompt = remoteDraft
@@ -310,6 +338,7 @@ fun SessionDetailScreen(
                         draftPrompt = newText
                         // Debounced draft sync push (skip if applying remote draft)
                         if (!isApplyingRemoteDraft) {
+                            lastLocalEditAt = System.currentTimeMillis()
                             draftDebounceJob?.cancel()
                             draftDebounceJob = coroutineScope.launch {
                                 delay(DRAFT_DEBOUNCE_MS)

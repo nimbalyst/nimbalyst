@@ -22,6 +22,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -89,7 +90,25 @@ class SyncManager(
                 )
             }
         }
+
+        /**
+         * Returns true only when a remote draft update is newer than the last
+         * draft push this device sent for the same session. Equal timestamps are
+         * self-echoes from the server round trip and must not overwrite local
+         * typing.
+         */
+        @VisibleForTesting
+        internal fun shouldAcceptRemoteDraft(
+            incomingDraftUpdatedAt: Long?,
+            lastLocalPushAt: Long
+        ): Boolean {
+            val incomingTs = incomingDraftUpdatedAt ?: 0L
+            return incomingTs > lastLocalPushAt
+        }
     }
+
+    private val lastPushedDraftAt = ConcurrentHashMap<String, Long>()
+
     private val indexClient = WebSocketClient(scope)
     private val sessionClient = WebSocketClient(scope)
     private val _state = MutableStateFlow(SyncConnectionState())
@@ -647,6 +666,7 @@ class SyncManager(
 
         // Persist locally first
         repository.updateDraftInput(sessionId, storeDraft, now)
+        lastPushedDraftAt[sessionId] = now
 
         // Build encrypted client metadata with draft
         val clientMetadata = ClientMetadata(
@@ -891,7 +911,12 @@ class SyncManager(
         val existing = repository.getSession(entry.sessionId)
         val titleDecrypted = crypto.decryptOrNull(entry.encryptedTitle, entry.titleIv)
         val clientMetadata = decodeClientMetadata(entry.encryptedClientMetadata, entry.clientMetadataIv)
-        val draftInput = clientMetadata?.draftInput?.ifBlank { null }
+        val remoteDraftInput = clientMetadata?.draftInput
+        val draftInput = remoteDraftInput?.ifBlank { null }
+        val acceptDraft = remoteDraftInput != null && shouldAcceptRemoteDraft(
+            incomingDraftUpdatedAt = clientMetadata?.draftUpdatedAt,
+            lastLocalPushAt = lastPushedDraftAt[entry.sessionId] ?: 0L
+        )
 
         return ProcessedSessionEntry(
             session = SessionEntity(
@@ -928,8 +953,12 @@ class SyncManager(
                 lastSyncedSeq = existing?.lastSyncedSeq ?: 0,
                 lastReadAt = entry.lastReadAt ?: existing?.lastReadAt,
                 lastMessageAt = entry.lastMessageAt ?: existing?.lastMessageAt,
-                draftInput = draftInput ?: existing?.draftInput,
-                draftUpdatedAt = clientMetadata?.draftUpdatedAt ?: existing?.draftUpdatedAt
+                draftInput = if (acceptDraft) draftInput else existing?.draftInput,
+                draftUpdatedAt = if (acceptDraft) {
+                    clientMetadata?.draftUpdatedAt ?: existing?.draftUpdatedAt
+                } else {
+                    existing?.draftUpdatedAt
+                }
             ),
             queuedPrompts = decryptQueuedPrompts(entry.sessionId, entry.encryptedQueuedPrompts),
             clearQueuedPrompts = entry.queuedPromptCount == 0 || entry.encryptedQueuedPrompts?.isEmpty() == true
@@ -960,7 +989,8 @@ class SyncManager(
         val existing = repository.getSession(sessionId) ?: return
         val crypto = crypto ?: return
         val clientMetadata = decodeClientMetadata(metadata.encryptedClientMetadata, metadata.clientMetadataIv)
-        val draftInput = clientMetadata?.draftInput?.ifBlank { null }
+        val remoteDraftInput = clientMetadata?.draftInput
+        val draftInput = remoteDraftInput?.ifBlank { null }
         val titleDecrypted = if (metadata.title != null) {
             metadata.title
         } else {
@@ -971,6 +1001,10 @@ class SyncManager(
                 crypto.decryptOrNull(metadata.encryptedProjectId, metadata.projectIdIv) ?: existing.projectId
             else -> existing.projectId
         }
+        val acceptDraft = remoteDraftInput != null && shouldAcceptRemoteDraft(
+            incomingDraftUpdatedAt = clientMetadata?.draftUpdatedAt,
+            lastLocalPushAt = lastPushedDraftAt[sessionId] ?: 0L
+        )
 
         repository.upsertSession(
             existing.copy(
@@ -987,8 +1021,12 @@ class SyncManager(
                 hasQueuedPrompts = clientMetadata?.hasPendingPrompt ?: existing.hasQueuedPrompts,
                 contextTokens = clientMetadata?.currentContext?.tokens ?: existing.contextTokens,
                 contextWindow = clientMetadata?.currentContext?.contextWindow ?: existing.contextWindow,
-                draftInput = draftInput ?: existing.draftInput,
-                draftUpdatedAt = clientMetadata?.draftUpdatedAt ?: existing.draftUpdatedAt
+                draftInput = if (acceptDraft) draftInput else existing.draftInput,
+                draftUpdatedAt = if (acceptDraft) {
+                    clientMetadata?.draftUpdatedAt ?: existing.draftUpdatedAt
+                } else {
+                    existing.draftUpdatedAt
+                }
             )
         )
     }
