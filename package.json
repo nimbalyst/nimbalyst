@@ -116,8 +116,6 @@
     "concurrently": {
       "shell-quote": "^1.8.4"
     },
-    "app-builder-lib": {
-      "minimatch": "^10.2.5"
-    }
+    "minimatch@^10.0.0": "^10.2.5"
   }
 }
