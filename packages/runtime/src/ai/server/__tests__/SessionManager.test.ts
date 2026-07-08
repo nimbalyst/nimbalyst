@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SessionManager } from '../SessionManager';
 import type {
   SessionStore,
@@ -6,7 +6,19 @@ import type {
   SessionMeta,
   UpdateSessionMetadataPayload,
 } from '../../adapters/sessionStore';
-import { shouldBlockStartedSessionProviderSwitch, type SessionData, type TranscriptViewMessage } from '../types';
+import {
+  shouldBlockStartedSessionProviderSwitch,
+  type SessionData,
+  type TranscriptViewMessage,
+  type AgentMessage,
+  type CreateAgentMessageInput,
+} from '../types';
+import {
+  AgentMessagesRepository,
+  type AgentMessagesStore,
+} from '../../../storage/repositories/AgentMessagesRepository';
+import { TranscriptMigrationRepository } from '../../../storage/repositories/TranscriptMigrationRepository';
+import type { TranscriptMigrationService } from '../transcript/TranscriptMigrationService';
 
 class InMemorySessionStore implements SessionStore {
   private sessions = new Map<string, SessionData>();
@@ -123,6 +135,40 @@ class InMemorySessionStore implements SessionStore {
   }
 }
 
+class InMemoryAgentMessagesStore implements AgentMessagesStore {
+  private rows: AgentMessage[] = [];
+  private nextId = 1;
+
+  async create(message: CreateAgentMessageInput): Promise<void> {
+    this.rows.push({
+      id: this.nextId++,
+      sessionId: message.sessionId,
+      source: message.source,
+      direction: message.direction,
+      content: message.content,
+      metadata: message.metadata,
+      hidden: message.hidden ?? false,
+      createdAt: message.createdAt ? new Date(message.createdAt) : new Date(),
+      providerMessageId: message.providerMessageId,
+    });
+  }
+
+  async createMany(messages: CreateAgentMessageInput[]): Promise<void> {
+    for (const message of messages) {
+      await this.create(message);
+    }
+  }
+
+  async list(
+    sessionId: string,
+    options?: { limit?: number; offset?: number; includeHidden?: boolean }
+  ): Promise<AgentMessage[]> {
+    return this.rows
+      .filter((r) => r.sessionId === sessionId && (options?.includeHidden ? true : !r.hidden))
+      .sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+  }
+}
+
 describe('SessionManager (runtime server)', () => {
   let store: InMemorySessionStore;
   let manager: SessionManager;
@@ -186,6 +232,61 @@ describe('SessionManager (runtime server)', () => {
     expect(shouldBlockStartedSessionProviderSwitch('claude-code', 'claude', true)).toBe(true);
     expect(shouldBlockStartedSessionProviderSwitch('claude', 'openai', true)).toBe(false);
     expect(shouldBlockStartedSessionProviderSwitch('claude-code', 'openai-codex', false)).toBe(false);
+  });
+
+  describe('branchSession (fork from message)', () => {
+    let agentMessages: InMemoryAgentMessagesStore;
+
+    beforeEach(() => {
+      agentMessages = new InMemoryAgentMessagesStore();
+      AgentMessagesRepository.setStore(agentMessages);
+      // loadSession() projects the canonical transcript; stub it (the fork copy
+      // works off the raw ai_agent_messages rows, which we assert on directly).
+      TranscriptMigrationRepository.setService({
+        getViewMessages: async () => [],
+      } as unknown as TranscriptMigrationService);
+    });
+
+    afterEach(() => {
+      AgentMessagesRepository.clearStore();
+      TranscriptMigrationRepository.clearService();
+    });
+
+    it('copies parent messages up to the branch point for a chat provider', async () => {
+      const parent = await manager.createSession('claude', { content: 'text' }, 'ws');
+      await AgentMessagesRepository.createMany([
+        { sessionId: parent.id, source: 'claude', direction: 'input', content: 'q1' },
+        { sessionId: parent.id, source: 'claude', direction: 'output', content: 'a1' },
+        { sessionId: parent.id, source: 'claude', direction: 'input', content: 'q2' },
+        { sessionId: parent.id, source: 'claude', direction: 'output', content: 'a2' },
+      ]);
+      const parentRows = await AgentMessagesRepository.list(parent.id, { includeHidden: true });
+      const branchPointId = parentRows[1].id!; // through 'a1'
+
+      const branch = await manager.branchSession(parent.id, branchPointId, 'ws');
+
+      const copied = await AgentMessagesRepository.list(branch.id, { includeHidden: true });
+      expect(copied.map((m) => m.content)).toEqual(['q1', 'a1']);
+      expect(branch.branchedFromSessionId).toBe(parent.id);
+      expect(branch.branchPointMessageId).toBe(branchPointId);
+    });
+
+    it('clamps agent-provider forks to the whole conversation (latest only)', async () => {
+      const parent = await manager.createSession('claude-code', { content: 'text' }, 'ws');
+      await AgentMessagesRepository.createMany([
+        { sessionId: parent.id, source: 'claude-code', direction: 'input', content: 'q1' },
+        { sessionId: parent.id, source: 'claude-code', direction: 'output', content: 'a1' },
+        { sessionId: parent.id, source: 'claude-code', direction: 'input', content: 'q2' },
+      ]);
+      const parentRows = await AgentMessagesRepository.list(parent.id, { includeHidden: true });
+      const earlyPoint = parentRows[0].id!; // earlier than the latest message
+
+      const branch = await manager.branchSession(parent.id, earlyPoint, 'ws');
+
+      const copied = await AgentMessagesRepository.list(branch.id, { includeHidden: true });
+      expect(copied.map((m) => m.content)).toEqual(['q1', 'a1', 'q2']);
+      expect(branch.branchPointMessageId).toBeUndefined();
+    });
   });
 
 });

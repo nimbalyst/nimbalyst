@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { SessionData } from '../../../ai/server/types';
+import type { SessionData, TranscriptViewMessage } from '../../../ai/server/types';
 import type { TranscriptSettings, PromptMarker, FileEditSummary } from '../types';
 import { RichTranscriptView } from './RichTranscriptView';
 import { TranscriptSidebar } from './TranscriptSidebar';
@@ -86,6 +86,8 @@ interface AgentTranscriptPanelProps {
   externalEditorName?: string;
   /** Optional: Callback to trigger /compact command */
   onCompact?: () => void;
+  /** Optional: Fork a new session starting from this message (branch point) */
+  onForkFromMessage?: (message: TranscriptViewMessage, index: number) => void;
   /** Optional: Prompt additions for debugging (system prompt, user message, and attachments) */
   promptAdditions?: {
     systemPromptAddition: string | null;
@@ -144,6 +146,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   onOpenInExternalEditor,
   externalEditorName,
   onCompact,
+  onForkFromMessage,
   promptAdditions,
   appStartTime,
   renderEmbeddedFile,
@@ -383,6 +386,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
           onOpenFile={onFileClick}
           onOpenSession={onOpenSession}
           onCompact={onCompact}
+          onForkFromMessage={onForkFromMessage}
           promptAdditions={promptAdditions}
           currentTeammates={currentTeammates ?? sessionData.metadata?.currentTeammates as Array<{ agentId: string; status: 'running' | 'completed' | 'errored' | 'idle' }> | undefined}
           waitingForNoun={waitingForNoun}
