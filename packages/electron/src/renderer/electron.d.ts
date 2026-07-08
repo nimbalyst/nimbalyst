@@ -131,7 +131,29 @@ interface PullRequestListFilters {
   search?: string;
 }
 
+interface SemanticSearchResult {
+  refType: string;
+  refId: string;
+  sourceClass: string;
+  sourcePath: string;
+  title: string;
+  snippet: string;
+  score: number;
+  signals: { dense: boolean; sparse: boolean };
+}
+
 interface ElectronAPI {
+  // Global semantic search (nimbalyst-memory). Empty/false when memory is off.
+  semanticSearch: {
+    isAvailable: (workspacePath: string) => Promise<boolean>;
+    query: (
+      workspacePath: string,
+      query: string,
+      k?: number,
+      sourceClasses?: string[],
+    ) => Promise<SemanticSearchResult[]>;
+  };
+
   // File menu callbacks
   onFileNew: (callback: () => void) => () => void;
   onFileNewInWorkspace: (callback: () => void) => () => void;
@@ -883,6 +905,8 @@ interface ElectronAPI {
         orgKeyBase64: string;
         /** Legacy org key for reading pre-migration rows in server-managed mode (NIM-878). */
         legacyOrgKeyBase64?: string;
+        /** All candidate legacy org-key epochs for pre-migration rows that may span rotations (NIM-959). */
+        legacyOrgKeysBase64?: string[];
         orgKeyFingerprint?: string;
         serverUrl: string;
         userId: string;
@@ -907,6 +931,10 @@ interface ElectronAPI {
       documentType: string,
       content: string
     ) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    registerCollabAdapterDescriptor: (descriptor: unknown) => Promise<{
       success: boolean;
       error?: string;
     }>;
@@ -1024,6 +1052,8 @@ interface ElectronAPI {
         resolvedPath: string | null;
       } | null;
       migration?: { okCount: number; failedCount: number };
+      lastEditorId?: string | null;
+      lastEditedAt?: number | null;
     }>;
     findLocalOriginLink: (workspacePath: string, sourceFilePath: string) => Promise<{
       success: boolean;
@@ -1048,7 +1078,7 @@ interface ElectronAPI {
       } | null;
       error?: string;
     }>;
-    getJwt: (orgId: string) => Promise<{
+    getJwt: (orgId: string, forceRefresh?: boolean) => Promise<{
       success: boolean;
       jwt?: string;
       error?: string;

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import type { TrackerItemType } from '@nimbalyst/runtime';
-import { trackerItemCountByTypeAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin';
+import { trackerItemCountByTypeAtom, trackerDataLoadedAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import type { TrackerDataModel } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import type { TrackerFilterChip } from '../../store/atoms/trackers';
 import type { ViewMode } from './TrackerMainView';
@@ -40,7 +40,13 @@ const FILTER_CHIPS: { id: TrackerFilterChip; label: string; icon: string }[] = [
 
 /** Small component so each sidebar row subscribes to its own atom */
 function SidebarTypeCount({ type }: { type: TrackerItemType }) {
+  const loaded = useAtomValue(trackerDataLoadedAtom);
   const count = useAtomValue(trackerItemCountByTypeAtom(type));
+  // NIM-631: before the tracker atoms finish hydrating, the count map is empty,
+  // so populated types would flash "0" during a sync reconnect + renderer
+  // reload. Suppress the badge until hydration completes rather than showing a
+  // misleading zero.
+  if (!loaded) return null;
   return <>{count}</>;
 }
 

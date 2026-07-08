@@ -14,6 +14,72 @@ describe('truncateContentForSync', () => {
     expect(result.stats.elidedBytes).toBeGreaterThan(30 * 1024);
   });
 
+  it('truncates the top-level tool_use_result so Edit results do not hit the whole-message marker', () => {
+    // Claude Code attaches a `tool_use_result` sibling to message.content on
+    // Edit/Write tool-result messages (filePath, oldString, newString,
+    // originalFile, structuredPatch). For a large-file edit it is tens of KB and
+    // lives OUTSIDE message.content, so per-block truncation never touches it --
+    // the message then trips MAX_SYNC_MESSAGE_BYTES and gets replaced by the
+    // opaque "[Full claude-code message elided...]" marker, which mobile renders
+    // as a stray text bubble. The tool_result block content itself is tiny.
+    const raw = JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            tool_use_id: 'toolu_x',
+            type: 'tool_result',
+            content: 'The file /a/b/MarkdownRenderer.tsx has been updated successfully.',
+          },
+        ],
+      },
+      parent_tool_use_id: null,
+      session_id: 'abc',
+      tool_use_result: {
+        filePath: '/a/b/MarkdownRenderer.tsx',
+        oldString: 'x'.repeat(6 * 1024),
+        newString: 'y'.repeat(6 * 1024),
+        originalFile: 'z'.repeat(20 * 1024),
+        structuredPatch: Array.from({ length: 200 }, (_, i) => ({ line: i, text: 'patch'.repeat(8) })),
+        userModified: false,
+      },
+    });
+
+    const result = truncateContentForSync(raw, 'claude-code');
+
+    expect(result.stats.bytesAfter).toBeLessThanOrEqual(16 * 1024);
+    expect(result.content).not.toContain('Full claude-code message elided');
+    // Still valid JSON with the small tool_result intact (so mobile renders the
+    // tool completion, not a stray bubble).
+    const parsed = JSON.parse(result.content);
+    expect(parsed.message.content[0].content).toContain('has been updated successfully');
+    expect(parsed.tool_use_result.filePath).toBe('/a/b/MarkdownRenderer.tsx');
+  });
+
+  it('strips the dead thinking signature blob from sync but keeps the thinking text', () => {
+    const raw = JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: 'msg_1',
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'short reasoning', signature: 'A'.repeat(12 * 1024) },
+          { type: 'text', text: 'Done.' },
+        ],
+      },
+    });
+
+    const result = truncateContentForSync(raw, 'claude-code');
+    const parsed = JSON.parse(result.content);
+    const thinkingBlock = parsed.message.content[0];
+
+    expect(thinkingBlock.signature).toBeUndefined();
+    expect(thinkingBlock.thinking).toBe('short reasoning');
+    expect(parsed.message.content[1].text).toBe('Done.');
+    expect(result.stats.elidedBytes).toBeGreaterThan(11 * 1024);
+  });
+
   it('caps known-provider sync rows even after per-block truncation', () => {
     const raw = JSON.stringify({
       message: {
@@ -90,6 +156,16 @@ describe('truncateContentForSync', () => {
     ).toBe(false);
   });
 
+  it('skips claude-code thinking_tokens progress ticks from sync', () => {
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'claude-code',
+        undefined,
+        JSON.stringify({ type: 'system', subtype: 'thinking_tokens', estimated_tokens: 150 }),
+      ),
+    ).toBe(false);
+  });
+
   it('skips transient Claude Code system subtypes (hooks, tasks)', () => {
     expect(
       shouldSyncMessageForSessionRoom(
@@ -108,6 +184,22 @@ describe('truncateContentForSync', () => {
     ).toBe(false);
   });
 
+  it('drops the large non-rendering system/init chunk from sync', () => {
+    // system/init is ~17 KB of tools/mcp_servers/slash_commands metadata that
+    // no transcript consumer (desktop or mobile) renders. Syncing it wasted
+    // bytes and -- worse -- the whole-message clamp rewrote it into a bare
+    // "[Full claude-code message elided...]" marker string. On mobile that
+    // string fails JSON.parse and falls through to the plain-text branch,
+    // surfacing as a stray assistant bubble that desktop never shows.
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'claude-code',
+        undefined,
+        JSON.stringify({ type: 'system', subtype: 'init', session_id: 'abc', tools: [] }),
+      ),
+    ).toBe(false);
+  });
+
   it('keeps durable Claude Code chunks syncable', () => {
     expect(
       shouldSyncMessageForSessionRoom(
@@ -122,14 +214,6 @@ describe('truncateContentForSync', () => {
         'claude-code',
         undefined,
         JSON.stringify({ type: 'result', subtype: 'success', num_turns: 1 }),
-      ),
-    ).toBe(true);
-
-    expect(
-      shouldSyncMessageForSessionRoom(
-        'claude-code',
-        undefined,
-        JSON.stringify({ type: 'system', subtype: 'init', session_id: 'abc' }),
       ),
     ).toBe(true);
 

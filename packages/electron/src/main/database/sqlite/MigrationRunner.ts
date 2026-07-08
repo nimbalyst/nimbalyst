@@ -116,6 +116,11 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'collab_local_origins_project_id',
       sqlFile: path.join(schemaDir, '0015_collab_local_origins_project_id.sql'),
     },
+    {
+      version: 16,
+      name: 'read_receipts',
+      sqlFile: path.join(schemaDir, '0016_read_receipts.sql'),
+    },
   ];
 }
 

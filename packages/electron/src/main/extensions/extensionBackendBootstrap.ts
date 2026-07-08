@@ -106,6 +106,13 @@ function detectTransport(): Transport {
 export interface BackendServices {
   workspacePath: string;
   extensionPath: string;
+  /**
+   * Per-(extension, workspace) writable directory under the app's userData.
+   * Persist machine-local, rebuildable state here (caches, shadow indexes) so
+   * nothing is written into the user's project tree. The host creates it before
+   * init. See {@link BackendRuntimeContext.dataDir}.
+   */
+  dataDir: string;
   log: (level: 'debug' | 'info' | 'warn' | 'error', message: string, data?: unknown) => void;
   /**
    * Throws if `permissionId` is not in the granted set. Modules can use this
@@ -323,6 +330,7 @@ function buildServices(ctx: BackendRuntimeContext, send: SendToHost): BackendSer
   return {
     workspacePath: ctx.workspacePath,
     extensionPath: ctx.extensionPath,
+    dataDir: ctx.dataDir,
     log: (level, message, data) => {
       send({ kind: 'log', level, message, data });
     },

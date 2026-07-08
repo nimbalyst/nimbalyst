@@ -22,6 +22,14 @@ import type {
 // Tool names that represent sub-agent spawns
 const SUBAGENT_TOOLS = new Set(['Task', 'Agent']);
 
+// Matches the sync layer's whole-message elision marker (see
+// makeWholeMessageMarker in syncContentTruncator.ts), e.g.
+// "[Full claude-code message elided from mobile sync: 29.2 KB raw. View on
+// desktop for the full content.]". Such a marker arrives only on mobile (the
+// sync truncator replaced an oversized message); it is a sync artifact, not
+// model output, and must not render as an assistant bubble.
+const WHOLE_MESSAGE_ELISION_MARKER = /^\[Full .+ message elided from mobile sync:.*\]$/;
+
 export class ClaudeCodeRawParser implements IRawMessageParser {
   /**
    * Track API message IDs that have had text content processed.
@@ -372,9 +380,17 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
         }
       }
     } catch {
-      // Not JSON -- treat as plain text assistant message
+      // Not JSON -- treat as plain text assistant message.
       const content = String(msg.content ?? '');
-      if (content.trim()) {
+      // ...unless it's the sync layer's whole-message elision marker. The sync
+      // truncator (syncContentTruncator.ts) replaces an oversized claude-code
+      // message with a bare "[Full claude-code message elided from mobile sync:
+      // N raw. View on desktop...]" string. That string is not JSON, so it lands
+      // here and -- before this guard -- rendered as a stray assistant bubble on
+      // mobile that desktop never shows. Desktop builds its transcript from the
+      // full local raw and shows nothing (or the tool widget) for these, so drop
+      // the marker to match.
+      if (content.trim() && !WHOLE_MESSAGE_ELISION_MARKER.test(content.trim())) {
         descriptors.push({
           type: 'assistant_message',
           text: content,

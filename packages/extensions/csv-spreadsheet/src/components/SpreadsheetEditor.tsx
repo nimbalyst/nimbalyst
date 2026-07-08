@@ -242,6 +242,14 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   // ---- EditorHost lifecycle (loading, echo detection, file changes, save, theme) ----
   const { isLoading, error: loadError, theme, markDirty: _markDirty } = useEditorLifecycle(host, {
     applyContent: (content: string) => {
+      // Collab guard (NIM-1529): once the collab binding is active the Y.Doc
+      // owns the content. A reopen of a shared doc has no file bytes, so the
+      // lifecycle loads '' here -- applying it would blank pendingDataRef
+      // after the binding already staged the synced content, and the next
+      // grid->Y.Text poll would push a delete-all into the shared room.
+      if (collabActiveRef.current && !content) {
+        return;
+      }
       loadedCsvContentRef.current = content;
       // Parse CSV and set RevoGrid source imperatively
       const { data } = parseCSV(content);

@@ -62,7 +62,22 @@ const CLAUDE_CODE_TRANSIENT_SYSTEM_SUBTYPES = new Set([
   'task_started',
   'task_progress',
   'task_notification',
+  // Live "estimated thinking tokens" progress ticks. A long turn emits dozens
+  // (190 in one observed session, ~37 KB + 190 extra synced rows). They drive a
+  // live in-memory indicator only and produce no descriptor on reparse, so they
+  // are pure waste on the wire.
+  'thinking_tokens',
 ]);
+
+// System subtypes that ARE persisted locally (so the desktop's own transcript
+// build can read e.g. the SDK session_id) but must NOT cross the sync wire.
+// `system/init` is ~17 KB of tools / mcp_servers / slash_commands metadata that
+// no transcript consumer renders (the raw-message parsers ignore it entirely).
+// Worse, it tripped MAX_SYNC_MESSAGE_BYTES and the whole-message clamp rewrote
+// it into a bare "[Full claude-code message elided...]" marker string. On
+// mobile that string fails JSON.parse and falls through to the plain-text
+// assistant branch, rendering a stray bubble desktop never shows. Drop it.
+const CLAUDE_CODE_NON_SYNCED_SYSTEM_SUBTYPES = new Set(['init']);
 
 export interface PerMessageTruncationStats {
   bytesBefore: number;
@@ -102,7 +117,10 @@ export function shouldSyncMessageForSessionRoom(
       try {
         const parsed = JSON.parse(content) as { type?: string; subtype?: string };
         if (parsed?.type === 'system' && typeof parsed.subtype === 'string') {
-          return !CLAUDE_CODE_TRANSIENT_SYSTEM_SUBTYPES.has(parsed.subtype);
+          return (
+            !CLAUDE_CODE_TRANSIENT_SYSTEM_SUBTYPES.has(parsed.subtype)
+            && !CLAUDE_CODE_NON_SYNCED_SYSTEM_SUBTYPES.has(parsed.subtype)
+          );
         }
         if (typeof parsed?.type === 'string') {
           return !CLAUDE_CODE_TRANSIENT_CHUNK_TYPES.has(parsed.type);
@@ -415,8 +433,30 @@ function truncateBlocksInPlace(
   if (!Array.isArray(blocks)) return false;
 
   let modified = false;
-  for (const block of blocks as Array<{ type?: string; content?: unknown }>) {
-    if (!block || block.type !== 'tool_result') continue;
+  for (const block of blocks as Array<{ type?: string; content?: unknown; signature?: unknown }>) {
+    if (!block) continue;
+
+    // Extended-thinking blocks arrive as { type:'thinking', thinking, signature }.
+    // The `signature` is a ~12 KB base64 blob used only for Anthropic API
+    // continuation; mobile renders `thinking` text and never touches the
+    // signature, and claude-code resume is driven by the SDK's own session
+    // state, not this synced copy. Drop it -- it's the single largest source of
+    // dead weight after tool_use_result (often the whole block, since the
+    // thinking text is frequently empty/redacted).
+    if (block.type === 'thinking' && typeof block.signature === 'string' && block.signature.length > 0) {
+      const sigBytes = utf8ByteLen(block.signature);
+      delete block.signature;
+      stats.blocksTruncated++;
+      stats.elidedBytes += sigBytes;
+      if (sigBytes > stats.largestBlockElidedBytes) {
+        stats.largestBlockElidedBytes = sigBytes;
+      }
+      blockBytesBefore.push(sigBytes);
+      modified = true;
+      continue;
+    }
+
+    if (block.type !== 'tool_result') continue;
     const result = truncateBlockContent(block.content);
     if (!result) continue;
     block.content = result.content;
@@ -428,6 +468,72 @@ function truncateBlocksInPlace(
     }
     blockBytesBefore.push(result.originalBytes);
     modified = true;
+  }
+  return modified;
+}
+
+/**
+ * Claude Code attaches a top-level `tool_use_result` object to Edit/Write/Read
+ * tool-result user messages (filePath, oldString, newString, originalFile,
+ * structuredPatch, ...). It lives OUTSIDE `message.content`, so the tool_result
+ * block truncation above never touches it. For a large-file edit it can be tens
+ * of KB (the full originalFile + patch) even though the tool_result block itself
+ * is tiny ("The file ... has been updated"). That pushes the whole message past
+ * MAX_SYNC_MESSAGE_BYTES and into the opaque whole-message marker -- which the
+ * mobile parser, unable to JSON.parse it, renders as a stray assistant bubble
+ * desktop never shows. No transcript consumer reads tool_use_result, so trim its
+ * oversized fields here while keeping the small ones (filePath, userModified)
+ * and the surrounding message structure parseable.
+ */
+function truncateClaudeToolUseResultInPlace(
+  parsed: unknown,
+  stats: PerMessageTruncationStats,
+  blockBytesBefore: number[],
+): boolean {
+  if (!parsed || typeof parsed !== 'object') return false;
+  const tur = (parsed as { tool_use_result?: unknown }).tool_use_result;
+  if (!tur || typeof tur !== 'object') return false;
+
+  const turObj = tur as Record<string, unknown>;
+  let modified = false;
+
+  for (const key of Object.keys(turObj)) {
+    const value = turObj[key];
+    let replacement: string | null = null;
+    let originalBytes = 0;
+    let truncatedBytes = 0;
+
+    if (typeof value === 'string') {
+      const result = truncateBlockContent(value);
+      if (result && typeof result.content === 'string') {
+        replacement = result.content;
+        originalBytes = result.originalBytes;
+        truncatedBytes = result.truncatedBytes;
+      }
+    } else if (value && typeof value === 'object') {
+      // Structured fields (e.g. structuredPatch arrays). Collapse to a compact
+      // marker when oversized; the renderer doesn't consume them.
+      const json = JSON.stringify(value);
+      const bytes = utf8ByteLen(json);
+      if (bytes > TRUNCATE_THRESHOLD_BYTES) {
+        const marker = `[... ${formatBytes(bytes)} elided from mobile sync; view on desktop for full output]`;
+        replacement = marker;
+        originalBytes = bytes;
+        truncatedBytes = utf8ByteLen(marker);
+      }
+    }
+
+    if (replacement !== null) {
+      turObj[key] = replacement;
+      const elided = originalBytes - truncatedBytes;
+      stats.blocksTruncated++;
+      stats.elidedBytes += elided;
+      if (elided > stats.largestBlockElidedBytes) {
+        stats.largestBlockElidedBytes = elided;
+      }
+      blockBytesBefore.push(originalBytes);
+      modified = true;
+    }
   }
   return modified;
 }
@@ -524,9 +630,16 @@ export function truncateContentForSync(
   }
 
   const blockBytesBefore: number[] = [];
-  const modified = isClaudeCode
-    ? truncateBlocksInPlace(parsed, stats, blockBytesBefore)
-    : truncateCodexItemInPlace(parsed, stats, blockBytesBefore);
+  let modified: boolean;
+  if (isClaudeCode) {
+    // Run both: tool_result blocks live in message.content, tool_use_result is a
+    // top-level sibling. Either can be the oversized part.
+    const blocksModified = truncateBlocksInPlace(parsed, stats, blockBytesBefore);
+    const turModified = truncateClaudeToolUseResultInPlace(parsed, stats, blockBytesBefore);
+    modified = blocksModified || turModified;
+  } else {
+    modified = truncateCodexItemInPlace(parsed, stats, blockBytesBefore);
+  }
   const providerContent = modified ? JSON.stringify(parsed) : rawContent;
   const wholeClamp = clampWholeMessage(providerContent, sourceKey);
   stats.bytesAfter = wholeClamp.bytesAfter;

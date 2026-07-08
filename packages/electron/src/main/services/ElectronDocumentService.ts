@@ -23,6 +23,8 @@ import {
 } from './tracker/trackerRelationshipIndexStore';
 import { propagateInverseRelationships } from './tracker/inverseRelationshipWrites';
 import { applyRelationshipFieldWrites } from './tracker/relationshipFieldWrite';
+import { nestRelationshipFieldsIntoCustomFields } from './tracker/relationshipFieldStorage';
+import { projectionWouldChange } from './tracker/projectionUpdateGuard';
 import { extractFrontmatter, extractCommonFields } from '../utils/frontmatterReader';
 import { VIRTUAL_DOCS, isVirtualPath } from '@nimbalyst/runtime';
 import {
@@ -49,6 +51,7 @@ import {
 } from './TrackerPolicyService';
 import { computeFrontmatterTrackerTransition } from './tracker/frontmatterTrackerTransition';
 import { applyHeadlessBodyMarkdown } from './MainBodyDocService';
+import { getWorkspaceState } from '../utils/store';
 
 export interface ParsedInlineTrackerCandidate extends Omit<TrackerItem, 'id'> {
   id?: string;
@@ -128,6 +131,35 @@ function parseJsonColumn<T>(value: unknown): T | undefined {
     return JSON.parse(value) as T;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Parse a frontmatter date value (string/number/Date) into a valid Date, or
+ * undefined if absent/unparseable. Used as a STABLE fallback for a
+ * frontmatter tracker's timestamp so we never fabricate scan-time `new Date()`
+ * (NIM-1559).
+ */
+function parseStableDate(value: unknown): Date | undefined {
+  if (value === null || value === undefined) return undefined;
+  const d = value instanceof Date
+    ? value
+    : typeof value === 'number'
+      ? new Date(value)
+      : new Date(String(value));
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+/**
+ * `tracker_items.content` is stored as JSON.stringify(markdown) (see
+ * updateTrackerItemContent). Undo that encoding; legacy/plain rows without
+ * JSON quoting pass through unchanged rather than becoming undefined.
+ */
+function parseTrackerContentColumn(raw: string): any {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
   }
 }
 
@@ -827,7 +859,11 @@ export class ElectronDocumentService implements DocumentService {
     };
   }
 
-  async openDocument(documentId: string, fallback?: DocumentOpenOptions): Promise<void> {
+  async openDocument(
+    documentId: string,
+    fallback?: DocumentOpenOptions,
+    requester?: Electron.WebContents,
+  ): Promise<void> {
     let doc: Document | null = null;
 
     if (documentId) {
@@ -852,10 +888,16 @@ export class ElectronDocumentService implements DocumentService {
       );
     }
 
-    // Send message to renderer to open the document
-    const window = BrowserWindow.getFocusedWindow();
-    if (window) {
-      window.webContents.send('open-document', {
+    // Send message to renderer to open the document. Prefer the requesting
+    // webContents — the focused window can be a different window (or none at
+    // all, e.g. the app is in the background), which used to silently drop
+    // the open.
+    const target =
+      requester && !requester.isDestroyed()
+        ? requester
+        : BrowserWindow.getFocusedWindow()?.webContents;
+    if (target) {
+      target.send('open-document', {
         path: path.join(this.workspacePath, doc.path)
       });
     }
@@ -1135,7 +1177,20 @@ export class ElectronDocumentService implements DocumentService {
         updated: trackerData.updated ? String(trackerData.updated) : undefined,
         dueDate: trackerData.dueDate ? String(trackerData.dueDate) : undefined,
         progress: typeof trackerData.progress === 'number' ? trackerData.progress : undefined,
-        lastIndexed: metadata.lastModified || metadata.lastIndexed || new Date(),
+        // NIM-1559: this value drives the tracker table's "Updated" column/sort
+        // (which uses `updatedAt || createdAt || lastIndexed`) for a plan with
+        // no frontmatter `updated`/`created`. It must be a STABLE timestamp, so
+        // it must NOT come from a scan-time source. `metadata.lastIndexed` is
+        // the doc-scan timestamp (≈ now during cold-open, before the file mtime
+        // is read) -- using it made every undated plan jump to the top as "just
+        // now" on every restart. Prefer file mtime, then frontmatter dates, and
+        // epoch as a last resort so undated plans sort to the bottom, not the
+        // top. Never `metadata.lastIndexed` / `new Date()`.
+        lastIndexed:
+          metadata.lastModified
+          || parseStableDate(trackerData.updated)
+          || parseStableDate(trackerData.created)
+          || new Date(0),
         archived: false,
         source: 'frontmatter',
         sourceRef: metadata.path,
@@ -1678,8 +1733,9 @@ export class ElectronDocumentService implements DocumentService {
       updated: data.updated || row.updated || undefined,
       dueDate: data.dueDate || undefined,
       lastIndexed: new Date(row.last_indexed),
-      // Rich content (Lexical editor state)
-      content: row.content != null ? row.content : undefined,
+      // Rich content (Lexical editor state). Stored as JSON.stringify(markdown);
+      // undo that on read or the raw JSON-quoted string renders as literal text.
+      content: row.content != null ? parseTrackerContentColumn(row.content) : undefined,
       // Archive state
       archived: row.archived ?? false,
       archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
@@ -1800,6 +1856,14 @@ export class ElectronDocumentService implements DocumentService {
       data[key] = value;
     }
 
+    const writtenFields = new Set(Object.keys(updates).filter((key) => key !== 'typeTags'));
+
+    // Relationship values must live under data.customFields (the durable synced
+    // shape). Route any relationship-typed field into the nested bag, preserving
+    // sibling custom fields and clearing the top-level shadow, so the value
+    // survives the sync re-serialization and inverse-write reads find it (NIM-1305).
+    nestRelationshipFieldsIntoCustomFields(data, globalRegistry.get(row.type)?.fields ?? [], { writtenFields });
+
     await database.query(
       `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
       [JSON.stringify(data), row.id]
@@ -1820,6 +1884,60 @@ export class ElectronDocumentService implements DocumentService {
     this.trackerItemWatchers.forEach(callback => callback(changeEvent));
 
     return updated;
+  }
+
+  /**
+   * Materialize inverse relationship fields on target items after a source item's
+   * relationship field changed (Phase 3). Shared by the IPC update handler and the
+   * MCP `tracker_update` path so the two can't drift (NIM-1305 Defect A).
+   *
+   * Each inverse target write goes through `updateTrackerItem` (which nests the
+   * value under data.customFields and broadcasts a complete record), then the same
+   * sync gate + relationship reindex as the source. `propagateInverseRelationships`
+   * reads the target's existing inverse array customFields-aware, so adding one
+   * link preserves the target's other links. Loop-safe: targets are written via
+   * `updateTrackerItem`, never by re-entering this method.
+   */
+  async propagateInverseForUpdate(
+    source: { id: string; type: string; issueKey?: string; title?: string },
+    changedFields: Record<string, unknown>,
+    oldData: Record<string, unknown>,
+    syncMode?: string,
+  ): Promise<void> {
+    await propagateInverseRelationships(
+      source,
+      changedFields,
+      oldData,
+      {
+        loadItem: async (id) => {
+          const row = await database.query<any>(`SELECT id, type, data FROM tracker_items WHERE id = $1`, [id]);
+          if (!row.rows[0]) return null;
+          return {
+            id: row.rows[0].id,
+            type: row.rows[0].type,
+            data: parseJsonColumn<Record<string, unknown>>(row.rows[0].data) ?? {},
+          };
+        },
+        applyTargetUpdate: async (targetId, fieldName, value) => {
+          const target = await this.updateTrackerItem(targetId, { [fieldName]: value });
+          const targetPolicy = getEffectiveTrackerSyncPolicy(target.workspace, target.type, syncMode);
+          if (shouldSyncTrackerItem(targetPolicy, target)) {
+            if (isTrackerSyncActive(target.workspace)) {
+              await syncTrackerItem(target);
+            } else {
+              await this.updateTrackerItemSyncStatus(target.id, 'pending');
+            }
+          }
+          const targetDefs = globalRegistry.get(target.type)?.fields ?? [];
+          const targetData = await database.query<any>(`SELECT data, updated FROM tracker_items WHERE id = $1`, [target.id]);
+          const td = parseJsonColumn<Record<string, unknown>>(targetData.rows[0]?.data) ?? {};
+          const updatedAt = targetData.rows[0]?.updated
+            ? (typeof targetData.rows[0].updated === 'string' ? targetData.rows[0].updated : new Date(targetData.rows[0].updated).toISOString())
+            : null;
+          await reindexItemRelationships(target.workspace, target.id, td, targetDefs, updatedAt, database as any);
+        },
+      },
+    );
   }
 
   /**
@@ -2186,7 +2304,8 @@ export class ElectronDocumentService implements DocumentService {
       [row.id]
     );
     if (result.rows.length === 0) return null;
-    return result.rows[0].content ?? null;
+    const raw = result.rows[0].content;
+    return raw != null ? parseTrackerContentColumn(raw) : null;
   }
 
   /**
@@ -2564,17 +2683,42 @@ export class ElectronDocumentService implements DocumentService {
 
     const contentJson = markdownBody ? JSON.stringify(markdownBody) : null;
 
-    // Insert into database
-    await database.query(
-      `INSERT INTO tracker_items (
-        id, type, data, workspace, document_path, line_number,
-        created, updated, last_indexed, sync_status,
-        content, archived, source, source_ref
-      ) VALUES ($1, $2, $3, $4, $6, NULL, NOW(), NOW(), NOW(), 'local', $5, FALSE, 'frontmatter', $6)
-      ON CONFLICT (id) DO UPDATE SET
-        data = tracker_items.data || $3, content = $5, source = 'frontmatter', source_ref = $6, document_path = $6, updated = NOW()`,
-      [id, trackerType, JSON.stringify(data), this.workspacePath, contentJson, relativePath]
+    // NIM-1559: don't bump `updated` on a no-op re-import. A cold-open scan
+    // re-imports every tracker markdown file; without this guard each one
+    // re-stamps `updated = NOW()` even when nothing changed (and a shared
+    // `fm:` item then re-syncs that bogus timestamp to the whole org). Read
+    // the existing projection row and only advance `updated` when a projected
+    // field or the body actually changed; otherwise refresh `last_indexed`
+    // (the scan timestamp) alone.
+    const existingRow = await database.query<any>(
+      `SELECT data, content FROM tracker_items WHERE id = $1`,
+      [id]
     );
+    const hadRow = existingRow.rows.length > 0;
+    const changed = !hadRow || projectionWouldChange(
+      parseJsonColumn<Record<string, unknown>>(existingRow.rows[0].data) ?? {},
+      data,
+      existingRow.rows[0].content,
+      contentJson,
+    );
+
+    if (hadRow && !changed) {
+      await database.query(
+        `UPDATE tracker_items SET last_indexed = NOW() WHERE id = $1`,
+        [id]
+      );
+    } else {
+      await database.query(
+        `INSERT INTO tracker_items (
+          id, type, data, workspace, document_path, line_number,
+          created, updated, last_indexed, sync_status,
+          content, archived, source, source_ref
+        ) VALUES ($1, $2, $3, $4, $6, NULL, NOW(), NOW(), NOW(), 'local', $5, FALSE, 'frontmatter', $6)
+        ON CONFLICT (id) DO UPDATE SET
+          data = tracker_items.data || $3, content = $5, source = 'frontmatter', source_ref = $6, document_path = $6, updated = NOW(), last_indexed = NOW()`,
+        [id, trackerType, JSON.stringify(data), this.workspacePath, contentJson, relativePath]
+      );
+    }
 
     const result = await database.query<any>(
       `SELECT * FROM tracker_items WHERE id = $1`,
@@ -2730,15 +2874,23 @@ export class ElectronDocumentService implements DocumentService {
     // Per-item decision (NIM-876): hybrid types only sync flagged items.
     const syncStatus = getInitialTrackerSyncStatus(syncPolicy, data);
 
+    // NIM-454: persist the tracker-type tag on the row so the item reliably
+    // appears in its type view and syncs correctly, instead of relying on a
+    // read-time fallback. Mirrors the MCP create path (typeTags always includes
+    // the primary type). The DB layer maps a JS array to TEXT[] on PGLite / a
+    // JSON string on better-sqlite3.
+    const typeTags: string[] = [payload.type];
+
     await database.query(
       `INSERT INTO tracker_items (
-        id, type, data, workspace, document_path, line_number,
+        id, type, type_tags, data, workspace, document_path, line_number,
         created, updated, last_indexed, sync_status,
         content, archived, source, source_ref
-      ) VALUES ($1, $2, $3, $4, '', NULL, NOW(), NOW(), NOW(), $5, $6, FALSE, $7, $8)`,
+      ) VALUES ($1, $2, $3, $4, $5, '', NULL, NOW(), NOW(), NOW(), $6, $7, FALSE, $8, $9)`,
       [
         payload.id,
         payload.type,
+        typeTags,
         JSON.stringify(data),
         payload.workspace,
         syncStatus,
@@ -2747,6 +2899,26 @@ export class ElectronDocumentService implements DocumentService {
         payload.sourceRef || null,
       ]
     );
+
+    // NIM-363: allocate a NIM-### issue key for items created through the
+    // native/UI path (quick-add) the same way the MCP create path does, so
+    // every type -- including ideas -- gets a key. Without this, manual creates
+    // had no issue key while MCP creates did.
+    try {
+      const prefix = getWorkspaceState(payload.workspace).issueKeyPrefix || 'NIM';
+      const maxResult = await database.query<{ max_num: number | null }>(
+        `SELECT MAX(issue_number) as max_num FROM tracker_items WHERE workspace = $1`,
+        [payload.workspace]
+      );
+      const nextNum = (maxResult.rows[0]?.max_num ?? 0) + 1;
+      const issueKey = `${prefix}-${nextNum}`;
+      await database.query(
+        `UPDATE tracker_items SET issue_number = $1, issue_key = $2 WHERE id = $3`,
+        [nextNum, issueKey, payload.id]
+      );
+    } catch (issueKeyError) {
+      console.error('[DocumentService] Local issue key allocation failed:', issueKeyError);
+    }
 
     const result = await database.query<any>(
       `SELECT * FROM tracker_items WHERE id = $1`,
@@ -2935,7 +3107,7 @@ export class ElectronDocumentService implements DocumentService {
       // Get existing items for this module
       // console.log(`[DocumentService] Querying database for existing tracker items...`);
       const existingResult = await database.query<any>(
-        `SELECT id, type, line_number, title
+        `SELECT id, type, line_number, title, data, updated
          FROM tracker_items
          WHERE workspace = $1 AND document_path = $2`,
         [this.workspacePath, relativePath]
@@ -2944,6 +3116,26 @@ export class ElectronDocumentService implements DocumentService {
       const existingIds = new Set(existingResult.rows.map(row => row.id));
       const items = resolveInlineTrackerIds(parsedItems, existingResult.rows, relativePath);
       const newIds = new Set(items.map(item => item.id));
+
+      // NIM-1559: look up each existing row BY ID across the workspace, not
+      // scoped to this file's `document_path`. The same inline `#id[...]`
+      // marker can appear in two files (e.g. a plan and its aggregated
+      // `__plans.md`); the row is keyed by its unique id, so a per-file lookup
+      // misses it (`document_path` currently belongs to the other file) and
+      // the item looks brand-new. That made each file's scan re-home the row
+      // and bump `updated`, ping-ponging it every re-index. Keyed by id, the
+      // guard sees the real row and preserves `updated` when content matches.
+      const resolvedIds = items.map(item => item.id).filter(Boolean) as string[];
+      const existingById = new Map<string, any>();
+      if (resolvedIds.length > 0) {
+        const byIdResult = await database.query<any>(
+          `SELECT id, type, line_number, data, updated
+           FROM tracker_items
+           WHERE workspace = $1 AND id = ANY($2)`,
+          [this.workspacePath, resolvedIds]
+        );
+        for (const row of byIdResult.rows) existingById.set(row.id, row);
+      }
 
       // Find items to remove (existed before but not anymore)
       const removedIds = Array.from(existingIds).filter(id => !newIds.has(id));
@@ -2957,53 +3149,96 @@ export class ElectronDocumentService implements DocumentService {
         );
       }
 
-      // Upsert new/updated items
-      // console.log(`[DocumentService] Upserting ${items.length} tracker items to database`);
-      for (const item of items) {
-        // Build JSONB data object
-        const data = {
-          title: item.title,
-          description: item.description,
-          status: item.status,
-          priority: item.priority,
-          owner: item.owner,
-          tags: item.tags || [],
-          dueDate: item.dueDate,
-          created: item.created,
-          updated: item.updated
-        };
-
-        const isArchived = item.archived === true;
-
-        // console.log(`[DocumentService] Inserting tracker item: ${item.id} (${item.type})`);
-        // Only set archived on INSERT (new items default to false).
-        // On UPDATE: only set archived=true if the file explicitly says so.
-        // Never reset archived to false from re-indexing -- the DB is the authority
-        // for archive state when the file doesn't have an archived prop.
-        // On conflict: merge file-derived fields INTO existing JSONB (preserves
-        // system metadata like authorIdentity, createdByAgent, linkedSessions,
-        // activity, comments that the indexer doesn't know about).
-        const result = await database.query(
-          `INSERT INTO tracker_items (
-            id, type, data, workspace, document_path, line_number, created, updated, last_indexed, archived, archived_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), $7, $8, $9)
-          ON CONFLICT (id) DO UPDATE SET
-            type = $2, data = tracker_items.data || $3, workspace = $4, document_path = $5, line_number = $6, updated = NOW(), last_indexed = $7,
-            archived = CASE WHEN $8 = TRUE THEN TRUE ELSE tracker_items.archived END,
-            archived_at = CASE WHEN $8 = TRUE THEN $9 ELSE tracker_items.archived_at END`,
-          [
+      // Upsert new/updated items.
+      //
+      // NIM-875: a cold open treats every markdown file as changed and used to
+      // run one awaited INSERT ... ON CONFLICT per tracker item in a sequential
+      // loop. On a tracker-heavy project that serial N+1 flooded the single DB
+      // worker and starved the session-list query, hanging the window. Batch
+      // each file's items into a single multi-row upsert (chunked to stay under
+      // the SQLite bound-variable limit) so one file is one round-trip.
+      //
+      // Only set archived on INSERT (new items default to false). On UPDATE:
+      // only set archived=true if the file explicitly says so. Never reset
+      // archived to false from re-indexing -- the DB is the authority for
+      // archive state when the file doesn't have an archived prop. On conflict:
+      // merge file-derived fields INTO existing JSONB (preserves system metadata
+      // like authorIdentity, createdByAgent, linkedSessions, activity, comments
+      // that the indexer doesn't know about).
+      // NIM-1559: `updated` is a per-row bound param (not an inlined NOW()) so
+      // an item whose projected fields are unchanged on this re-index keeps
+      // its existing `updated`, while `last_indexed` still advances. Editing
+      // one line of a file must not re-stamp every tracker item in it.
+      const scanNow = new Date().toISOString();
+      const COLS_PER_ROW = 10; // params per row; created NOW() is inlined
+      const UPSERT_CHUNK = 90; // 900 bound vars/chunk, safely under SQLite's limit
+      for (let offset = 0; offset < items.length; offset += UPSERT_CHUNK) {
+        const chunk = items.slice(offset, offset + UPSERT_CHUNK);
+        const valuesClauses: string[] = [];
+        const params: any[] = [];
+        for (let i = 0; i < chunk.length; i++) {
+          const item = chunk[i];
+          const data = {
+            title: item.title,
+            description: item.description,
+            status: item.status,
+            priority: item.priority,
+            owner: item.owner,
+            tags: item.tags || [],
+            dueDate: item.dueDate,
+            created: item.created,
+            updated: item.updated
+          };
+          const existing = existingById.get(item.id);
+          // Only a change to projected CONTENT (or the item's type) advances
+          // `updated`. Positional metadata -- line number, which file owns the
+          // marker -- is written but must NOT bump `updated` (NIM-1559).
+          const changed =
+            !existing ||
+            existing.type !== item.type ||
+            projectionWouldChange(
+              parseJsonColumn<Record<string, unknown>>(existing.data) ?? {},
+              data,
+            );
+          const updatedValue = changed
+            ? scanNow
+            : (existing.updated != null
+                ? new Date(existing.updated).toISOString()
+                : scanNow);
+          const isArchived = item.archived === true;
+          const b = i * COLS_PER_ROW;
+          valuesClauses.push(
+            `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, NOW(), $${b + 7}, $${b + 8}, $${b + 9}, $${b + 10})`
+          );
+          params.push(
             item.id,
             item.type,
             JSON.stringify(data),
             item.workspace,
             item.module, // document_path
             item.lineNumber || null,
+            updatedValue,
             item.lastIndexed,
             isArchived,
             isArchived ? new Date().toISOString() : null
-          ]
+          );
+        }
+        await database.query(
+          `INSERT INTO tracker_items (
+            id, type, data, workspace, document_path, line_number, created, updated, last_indexed, archived, archived_at
+          ) VALUES ${valuesClauses.join(', ')}
+          ON CONFLICT (id) DO UPDATE SET
+            type = EXCLUDED.type,
+            data = tracker_items.data || EXCLUDED.data,
+            workspace = EXCLUDED.workspace,
+            document_path = EXCLUDED.document_path,
+            line_number = EXCLUDED.line_number,
+            updated = EXCLUDED.updated,
+            last_indexed = EXCLUDED.last_indexed,
+            archived = CASE WHEN EXCLUDED.archived = TRUE THEN TRUE ELSE tracker_items.archived END,
+            archived_at = CASE WHEN EXCLUDED.archived = TRUE THEN EXCLUDED.archived_at ELSE tracker_items.archived_at END`,
+          params
         );
-        // console.log(`[DocumentService] Insert result:`, result);
       }
 
       // Notify watchers if there are changes.
@@ -3241,7 +3476,7 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
   safeHandle('document-service:open', async (event, payload: { documentId: string; fallback?: DocumentOpenOptions }) => {
     try {
       const { documentId, fallback } = payload ?? { documentId: '' };
-      return await requireDocumentService(event).openDocument(documentId, fallback);
+      return await requireDocumentService(event).openDocument(documentId, fallback, event.sender);
     } catch (error) {
       console.error('[DocumentService] open failed:', error);
       throw error;
@@ -3556,43 +3791,15 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
         // console.log('[DocumentService] update-tracker-item no sync: effective mode =', syncPolicy.mode);
       }
 
-      // Phase 3: materialize inverse relationship fields on target items. Applies
-      // each target write through the same update+sync+reindex flow as the source
-      // (never re-entering this handler, so no inverse-of-inverse loop).
+      // Phase 3: materialize inverse relationship fields on target items via the
+      // shared, customFields-aware helper (same path the MCP tracker_update handler
+      // uses, so the two can't drift — NIM-1305 Defect A).
       try {
-        await propagateInverseRelationships(
+        await svc.propagateInverseForUpdate(
           { id: item.id, type: item.type, issueKey: item.issueKey, title: item.title },
           updates,
           oldData,
-          {
-            loadItem: async (id) => {
-              const row = await database.query<any>(`SELECT id, type, data FROM tracker_items WHERE id = $1`, [id]);
-              if (!row.rows[0]) return null;
-              return {
-                id: row.rows[0].id,
-                type: row.rows[0].type,
-                data: parseJsonColumn<Record<string, unknown>>(row.rows[0].data) ?? {},
-              };
-            },
-            applyTargetUpdate: async (targetId, fieldName, value) => {
-              const target = await svc.updateTrackerItem(targetId, { [fieldName]: value });
-              const targetPolicy = getEffectiveTrackerSyncPolicy(target.workspace, target.type, payload.syncMode);
-              if (shouldSyncTrackerItem(targetPolicy, target)) {
-                if (isTrackerSyncActive(target.workspace)) {
-                  await syncTrackerItem(target);
-                } else {
-                  await svc.updateTrackerItemSyncStatus(target.id, 'pending');
-                }
-              }
-              const targetDefs = globalRegistry.get(target.type)?.fields ?? [];
-              const targetData = await database.query<any>(`SELECT data, updated FROM tracker_items WHERE id = $1`, [target.id]);
-              const td = parseJsonColumn<Record<string, unknown>>(targetData.rows[0]?.data) ?? {};
-              const updatedAt = targetData.rows[0]?.updated
-                ? (typeof targetData.rows[0].updated === 'string' ? targetData.rows[0].updated : new Date(targetData.rows[0].updated).toISOString())
-                : null;
-              await reindexItemRelationships(target.workspace, target.id, td, targetDefs, updatedAt, database as any);
-            },
-          },
+          payload.syncMode,
         );
       } catch (invErr) {
         console.error('[DocumentService] inverse relationship propagation failed:', invErr);

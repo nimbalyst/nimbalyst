@@ -157,7 +157,7 @@ describe('McpConfigService', () => {
   });
 
   describe('Built-in Server Merging', () => {
-    it('registers the eager core nimbalyst server when port + workspace are set', async () => {
+    it('registers the core nimbalyst server when port + workspace are set', async () => {
       service = new McpConfigService(mockDeps);
       const config = await service.getMcpServersConfig({
         sessionId: 'session123',
@@ -165,16 +165,18 @@ describe('McpConfigService', () => {
       });
 
       // The legacy monolith `nimbalyst-mcp` is retired; the unified server's
-      // eager core endpoint is `/mcp/core` on the same port.
+      // core endpoint is `/mcp/core` on the same port.
       expect(config['nimbalyst-mcp']).toBeUndefined();
       expect(config['nimbalyst']).toEqual(
         expect.objectContaining({
           type: 'sse',
           transport: 'sse',
-          alwaysLoad: true,
           url: 'http://127.0.0.1:3000/mcp/core?workspacePath=%2Ftest%2Fworkspace&sessionId=session123',
         }),
       );
+      // Eagerness is per-tool (_meta on the core ListTools subset), never
+      // server-level — that would force display/screenshot eager too.
+      expect(config['nimbalyst'].alwaysLoad).toBeUndefined();
     });
 
     it('folds session metadata into the eager core; no standalone session-naming server (Phase 5)', async () => {
@@ -191,10 +193,10 @@ describe('McpConfigService', () => {
       expect(config['nimbalyst-session-context']).toBeUndefined();
       expect(config['nimbalyst-meta-agent']).toBeUndefined();
       expect(config['nimbalyst-settings']).toBeUndefined();
-      // update_session_meta rides on the eager core `nimbalyst` server.
+      // update_session_meta rides on the core `nimbalyst` server (always-load
+      // via per-tool _meta, not server-level alwaysLoad).
       expect(config['nimbalyst']).toEqual(
         expect.objectContaining({
-          alwaysLoad: true,
           url: expect.stringContaining('/mcp/core'),
         }),
       );

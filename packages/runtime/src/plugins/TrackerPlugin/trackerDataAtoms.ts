@@ -87,6 +87,24 @@ export const trackerItemByIdAtom = atomFamily((id: string) =>
 );
 
 /**
+ * A single tracker record by reference key — an issue key (NIM-123) or the
+ * internal record id. Used by inline tracker reference chips, which store only
+ * a reference key and resolve the live record here. Returns null when no record
+ * matches (unknown / not yet synced / different workspace).
+ */
+export const trackerItemByReferenceKeyAtom = atomFamily((referenceKey: string) =>
+  atom((get) => {
+    const map = get(trackerItemsMapAtom);
+    const direct = map.get(referenceKey);
+    if (direct) return direct;
+    for (const record of map.values()) {
+      if (record.issueKey === referenceKey) return record;
+    }
+    return null;
+  })
+);
+
+/**
  * Count of non-archived records per type.
  */
 export const trackerItemCountByTypeAtom = atomFamily((type: string) =>

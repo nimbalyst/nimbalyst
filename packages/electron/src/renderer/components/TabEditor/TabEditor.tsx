@@ -1219,6 +1219,14 @@ export const TabEditor: React.FC<TabEditorProps> = ({
           onDirtyChange?.(false);
           try {
             await handle.resolveDiff(true);
+            // resolveDiff's notifyFileChanged fired while our diff guards were
+            // still set, so the subscribeToFileChanges wrapper dropped it -- and
+            // onDiffResolved excludes the resolving editor, so nothing else
+            // clears the pending tag. Without these two lines the open custom
+            // editor never sees this edit and stays deaf to every subsequent
+            // file change until the tab is reopened (NIM-1484).
+            setPendingAIEditTag(null);
+            editorHostFileChangeCallbackRef.current?.(newContent);
           } catch (err) {
             logger.ui.error('[TabEditor] Auto-accept diff failed for no-diff-view custom editor:', err);
           }

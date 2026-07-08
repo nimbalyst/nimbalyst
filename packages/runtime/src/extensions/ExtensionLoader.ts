@@ -37,8 +37,10 @@ import type {
   ChatCompletionStreamHandle,
   ChatCompletionStreamChunk,
   ExtensionAIModel,
+  VoiceContextProvider,
 } from './types';
 import type { CollabContentAdapter } from '@nimbalyst/extension-sdk';
+import { registerVoiceContextProvider } from './VoiceContextProviderRegistry';
 import { MONACO_BASE_THEMES } from '@nimbalyst/extension-sdk';
 import { getExtensionPlatformService } from './ExtensionPlatformService';
 import { registerThemeContribution } from '../editor/themes/registry';
@@ -889,6 +891,14 @@ function createExtensionContext(
           },
         };
       },
+      registerVoiceContextProvider: (provider: VoiceContextProvider): Disposable => {
+        // Core hook 2: contributes text to the voice agent's session context at
+        // start. The disposable is tracked in subscriptions so it's removed when
+        // the extension is unloaded/disabled.
+        const disposable = registerVoiceContextProvider(provider, manifest.id);
+        subscriptions.push(disposable);
+        return disposable;
+      },
       sendPrompt: async (options: {
         prompt: string;
         sessionName?: string;
@@ -900,6 +910,31 @@ function createExtensionContext(
           throw new Error('electronAPI not available for sendPrompt');
         }
         return electronAPI.invoke('extensions:ai-send-prompt', options);
+      },
+      getTaskStatus: async (workspacePath?: string) => {
+        const electronAPI = (window as any).electronAPI;
+        if (!electronAPI) {
+          throw new Error('electronAPI not available for getTaskStatus');
+        }
+        return electronAPI.invoke('extensions:ai-get-task-status', { workspacePath });
+      },
+      callBackendTool: async (
+        toolName: string,
+        args?: Record<string, unknown>,
+        workspacePath?: string
+      ) => {
+        const electronAPI = (window as any).electronAPI;
+        if (!electronAPI) {
+          throw new Error('electronAPI not available for callBackendTool');
+        }
+        return electronAPI.invoke('extensions:ai-call-backend-tool', {
+          toolName,
+          args: args ?? {},
+          workspacePath,
+          // Host-injected caller identity (not from extension code) so main can
+          // enforce the tool belongs to THIS extension's backend module.
+          callerExtensionId: manifest.id,
+        });
       },
       listModels: async (): Promise<ExtensionAIModel[]> => {
         const electronAPI = (window as any).electronAPI;

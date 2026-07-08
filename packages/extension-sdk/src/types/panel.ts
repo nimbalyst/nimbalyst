@@ -735,4 +735,18 @@ export interface SettingsPanelProps {
    * Current application theme.
    */
   theme: string;
+
+  /**
+   * Call one of this extension's backend-module MCP tools and return its parsed
+   * JSON result. Pass the advertised, namespaced tool name (`<extShort>.<tool>`,
+   * e.g. `memory.status`). Mirrors {@link ExtensionAIService.callBackendTool};
+   * present only for extensions whose backend module registers MCP tools. Lets a
+   * settings panel show live state (index status, stored facts) and trigger
+   * maintenance actions (rebuild). Throws if the tool errors or the module is
+   * not running.
+   */
+  callBackendTool?: (
+    toolName: string,
+    args?: Record<string, unknown>
+  ) => Promise<unknown>;
 }

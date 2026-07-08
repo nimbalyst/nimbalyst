@@ -17,9 +17,15 @@ export { MarkdownEditor } from './MarkdownEditor';
 export type { MarkdownEditorProps, MarkdownEditorConfig } from './MarkdownEditor';
 
 export { MonacoEditor } from './MonacoEditor';
-export type { MonacoEditorProps, MonacoEditorConfig } from './MonacoEditor';
+export type { MonacoEditorProps, MonacoEditorConfig, MonacoEditorCollabConfig } from './MonacoEditor';
 
 export { MonacoCodeEditor } from './MonacoCodeEditor';
 export type { MonacoCodeEditorProps, MonacoDiffModeConfig } from './MonacoCodeEditor';
 
 export { getMonacoTheme, getMonacoLanguage, toMonacoExtensionThemeName } from './monacoUtils';
+
+export { createMonacoCollabBinding } from './monacoCollabBinding';
+export type {
+  MonacoCollabBindingOptions,
+  MonacoCollabBindingHandle,
+} from './monacoCollabBinding';

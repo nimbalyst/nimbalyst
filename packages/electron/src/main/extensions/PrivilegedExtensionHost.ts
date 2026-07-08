@@ -35,6 +35,8 @@
 import { EventEmitter } from 'events';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { mkdirSync } from 'fs';
+import { createHash } from 'crypto';
 import { app, utilityProcess, UtilityProcess } from 'electron';
 import { Worker } from 'worker_threads';
 import type {
@@ -62,6 +64,7 @@ import {
   type PermissionPromptKind,
 } from './permissionPrompt';
 import { getPermissionUsageTracker } from './permissionUsageTracker';
+import { isBuiltinExtensionPath } from './builtinExtensionsDirectory';
 import type {
   BackendRuntimeContext,
   BackendToHostMessage,
@@ -75,9 +78,10 @@ import type {
 } from './extensionBackendRpc';
 import { serializeError } from './extensionBackendRpc';
 import { AgentMessagesRepository } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
-import { store as appSettingsStore } from '../utils/store';
+import { getProviderApiKeyFromSettings } from '../utils/store';
 import { dispatchMetaAgentTool } from '../mcp/metaAgentServer';
 import { dispatchDevAgentTool } from '../mcp/devAgentTools';
+import { registerBackendTools } from '../mcp/backendToolRegistry';
 
 /**
  * Authoritative map from broker method name to its required catalog permission.
@@ -200,6 +204,12 @@ interface ManagedModule {
   nextRpcId: number;
   /** Set while a spawn is in flight; resolved on `running`, rejected on failure. */
   ready?: ReadyGate | null;
+  /**
+   * The in-flight `startModule` attempt, if any. Concurrent callers await this
+   * instead of launching a parallel attempt (prevents double-spawning while the
+   * first attempt is parked on a consent/trust prompt).
+   */
+  startInFlight?: Promise<ModuleHandle>;
 }
 
 const HOST_EVENT_STATE_CHANGED = 'state-changed';
@@ -270,6 +280,17 @@ export class PrivilegedExtensionHost extends EventEmitter {
   async startModule(args: StartModuleArgs): Promise<ModuleHandle> {
     const key = moduleKey(args.extensionId, args.module.id, args.workspacePath);
     let managed = this.modules.get(key);
+
+    // Coalesce concurrent starts. A single attempt may be parked on an async
+    // consent/trust prompt (state 'awaiting-consent'/'awaiting-trust'), which
+    // the status checks below do NOT treat as in-flight — so two near-
+    // simultaneous callers (e.g. the set-enable IPC and the workspace-open
+    // sweep) would each launch a runtime, double-spawning the utility process.
+    // Track the in-flight attempt and have later callers await it instead.
+    if (managed?.startInFlight) {
+      return managed.startInFlight;
+    }
+
     if (!managed) {
       managed = {
         args,
@@ -294,6 +315,24 @@ export class PrivilegedExtensionHost extends EventEmitter {
       managed.args = args;
     }
 
+    const attempt = this.runStartAttempt(managed, args);
+    managed.startInFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      managed.startInFlight = undefined;
+    }
+  }
+
+  /**
+   * The actual start sequence (trust → consent → grant → spawn). Always invoked
+   * through `startModule`, which guards against concurrent attempts via
+   * `managed.startInFlight`.
+   */
+  private async runStartAttempt(
+    managed: ManagedModule,
+    args: StartModuleArgs
+  ): Promise<ModuleHandle> {
     this.setState(managed, { status: 'starting' });
 
     // 1. Workspace trust + already-granted check. Note that canModuleStart
@@ -347,6 +386,24 @@ export class PrivilegedExtensionHost extends EventEmitter {
       });
       logger.main.info(
         `[PrivilegedExtensionHost] dev auto-grant ${args.extensionId}/${args.module.id}: ${declared.join(', ')}`
+      );
+    }
+
+    // Built-in extensions ship inside the app bundle and pass the
+    // backend-module allowlist unconditionally -- they are the same trust
+    // domain as the app itself, so a first-use consent prompt would be
+    // warning the user about code they already installed. Auto-grant
+    // globally so the prompt below never raises for built-ins; marketplace
+    // and sideloaded extensions still go through the full consent flow.
+    if (await isBuiltinExtensionPath(args.extensionPath)) {
+      grantModulePermissions({
+        extensionId: args.extensionId,
+        moduleId: args.module.id,
+        permissions: declared,
+        scope: 'global',
+      });
+      logger.main.info(
+        `[PrivilegedExtensionHost] built-in auto-grant ${args.extensionId}/${args.module.id}`
       );
     }
 
@@ -850,7 +907,34 @@ export class PrivilegedExtensionHost extends EventEmitter {
       grantedPermissions: [...managed.grantedPermissions],
       entryFilePath: path.join(managed.args.extensionPath, managed.args.module.entry),
       extensionPath: managed.args.extensionPath,
+      dataDir: this.resolveBackendDataDir(
+        managed.args.extensionId,
+        managed.args.workspacePath
+      ),
     };
+  }
+
+  /**
+   * Per-(extension, workspace) data directory under the app's userData. Backend
+   * modules persist machine-local, rebuildable state here so nothing is ever
+   * written into the user's project tree. The workspace path is hashed (not
+   * embedded) to keep the path short and free of path-illegal characters; the
+   * extension id is sanitized to a safe segment. Created synchronously so it
+   * exists by the time the module receives `init`.
+   */
+  private resolveBackendDataDir(extensionId: string, workspacePath: string): string {
+    const safeExtId = extensionId.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const wsHash = createHash('sha256').update(workspacePath).digest('hex').slice(0, 16);
+    const dir = path.join(app.getPath('userData'), 'extension-data', safeExtId, wsHash);
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch (err) {
+      logger.main.warn(
+        `[PrivilegedExtensionHost] failed to create data dir ${dir}:`,
+        err
+      );
+    }
+    return dir;
   }
 
   private async spawnRuntime(managed: ManagedModule): Promise<void> {
@@ -1263,15 +1347,11 @@ export class PrivilegedExtensionHost extends EventEmitter {
       case 'getApiKey': {
         const payload = rawPayload as BrokerPayloads['getApiKey'];
         // Per CLAUDE.md "Never Use Environment Variables as Implicit API Key
-        // Sources": the broker reads ONLY from the explicit Nimbalyst settings
-        // store. Never falls back to process.env.
-        const apiKeys = appSettingsStore.get('apiKeys') as
-          | Record<string, string>
-          | undefined;
-        const key = apiKeys?.[payload.providerId];
-        const result: BrokerResults['getApiKey'] = {
-          key: typeof key === 'string' && key.length > 0 ? key : null,
-        };
+        // Sources": read ONLY from the explicit Nimbalyst settings — the
+        // `ai-settings` store's `apiKeys` (where provider keys actually live,
+        // NOT `app-settings`) plus per-workspace overrides. Never process.env.
+        const key = getProviderApiKeyFromSettings(payload.providerId, ctx.workspacePath);
+        const result: BrokerResults['getApiKey'] = { key };
         return result;
       }
       case 'readWorkspaceFile': {
@@ -1292,15 +1372,20 @@ export class PrivilegedExtensionHost extends EventEmitter {
       }
       case 'registerMcpTools': {
         const payload = rawPayload as BrokerPayloads['registerMcpTools'];
-        // Stub. McpConfigService integration is the next follow-up. The gate
-        // + wire protocol are functional; the host-side fan-out into the
-        // unified MCP surface is not yet wired here.
-        logger.main.info(
-          `[PrivilegedExtensionHost] broker.registerMcpTools stub: ${ctx.extensionId}/${ctx.moduleId} registering ${payload.tools.length} tool(s)`
+        // Fan the registered tools into the main-side backend tool registry,
+        // keyed by the workspace this module was started for. The coding-agent
+        // and voice tool surfaces read from that registry; execution routes
+        // back to this module via `handleBackendTool` -> `request`.
+        const registered = registerBackendTools(
+          ctx.workspacePath,
+          ctx.extensionId,
+          ctx.moduleId,
+          payload.tools
         );
-        const result: BrokerResults['registerMcpTools'] = {
-          registered: payload.tools.map((t) => t.name),
-        };
+        logger.main.info(
+          `[PrivilegedExtensionHost] broker.registerMcpTools: ${ctx.extensionId}/${ctx.moduleId} registered ${registered.length} tool(s) for ${ctx.workspacePath}`
+        );
+        const result: BrokerResults['registerMcpTools'] = { registered };
         return result;
       }
       case 'toolExecutor': {

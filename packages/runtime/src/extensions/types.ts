@@ -45,6 +45,8 @@ export type {
   ExtensionAIService,
   ExtensionConfigurationService,
   ExtensionContextProvider,
+  VoiceContextProvider,
+  VoiceContextProviderInput,
   Disposable,
   PanelContribution,
   SettingsPanelContribution,

@@ -16,7 +16,7 @@ import {
   LEGACY_KEY_TO_TYPE,
   buildFullDocumentTrackerId,
 } from '../documentHeader/frontmatterUtils';
-import { getRecordTitle, getRecordStatus, getRecordPriority, getFieldByRole, resolveRoleFieldName } from '../trackerRecordAccessors';
+import { getRecordTitle, getRecordStatus, getRecordPriority, getFieldByRole, resolveRoleFieldName, getItemShareState } from '../trackerRecordAccessors';
 import { globalRegistry, parseDate, normalizeRelationshipValue } from '../models';
 import {usePostHog} from "posthog-js/react";
 import {
@@ -32,6 +32,7 @@ import {
   type TypeColumnConfig,
 } from './trackerColumns';
 import { UserAvatar } from './UserAvatar';
+import { TrackerUnreadDot } from '../../../readReceipts/TrackerUnreadDot';
 import { DisplayOptionsPanel } from './DisplayOptionsPanel';
 import { useTrackerRows } from './useTrackerRows';
 
@@ -604,6 +605,25 @@ export function renderCell(
         return <span className="text-[var(--nim-text-faint)] text-xs">{isNaN(d.getTime()) ? value : formatRelativeDate(d)}</span>;
       }
       return <span className="text-[var(--nim-text-faint)] text-xs">{formatRelativeDate(value as Date)}</span>;
+
+    case 'shared': {
+      // Read-only share indicator. `n/a` (sync mode `local`) renders nothing.
+      const shareState = getItemShareState(item);
+      if (shareState === 'n/a') return null;
+      const shared = shareState === 'shared';
+      const shareColor = shared ? '#22c55e' : '#6b7280';
+      return (
+        <span
+          className="shared-badge inline-flex items-center gap-1 py-0.5 px-2 rounded-[10px] text-[11px] font-medium border"
+          style={{ backgroundColor: `${shareColor}20`, color: shareColor, borderColor: shareColor }}
+          data-testid="tracker-shared-badge"
+          title={shared ? 'Shared with the team' : 'Local to this device'}
+        >
+          <span className="material-symbols-outlined text-[13px]">{shared ? 'group' : 'person'}</span>
+          {shared ? 'Shared' : 'Local'}
+        </span>
+      );
+    }
 
     default: {
       // Generic field rendering -- dispatch by col.render type
@@ -1282,6 +1302,9 @@ export function TrackerTable({
                 onDoubleClick={() => { if (item.system.documentPath) openItemInEditor(item); }}
                 onContextMenu={(e) => handleContextMenu(e, item, index)}
               >
+                {/* Unread dot (nothing when read) */}
+                <TrackerUnreadDot itemId={item.id} className="w-2" />
+
                 {/* Type icon - fixed width for alignment */}
                 <span className="shrink-0 w-5 flex items-center justify-center" style={{ color: getTypeColor(item.primaryType), opacity: 0.7 }}>
                   <span className="material-symbols-outlined" style={{ fontSize: '16px', fontVariationSettings: "'wght' 300" }}>{getTypeIcon(item.primaryType)}</span>

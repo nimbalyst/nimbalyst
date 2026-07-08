@@ -176,30 +176,37 @@ export function CommonFileActions({
     // Seed the room before the doc is announced in the shared-doc index.
     // Otherwise a teammate can open the link before the sharer’s auto-open
     // tab writes the first Yjs update, and they see an empty doc.
+    //
+    // The seeding orchestrator owns the strategy order (renderer-headless codec
+    // -> main adapter). It works for EXTERNAL, STRUCTURED editors (mindmap)
+    // that can supply a renderer codec but no main-process adapter -- the case
+    // that used to throw "No collab content adapter is registered". Warn
+    // whenever the pre-announcement seed is not confirmed. A renderer
+    // codec means the auto-open tab can retry, but that retry has its own
+    // server-ack failure path; suppressing this warning made blank-room seed
+    // failures silent for external structured editors.
     let seedError: string | null = null;
-    if (
-      workspacePath &&
-      typeof migratedContent === 'string' &&
-      documentSync?.seedSharedDocument
-    ) {
-      try {
-        const seedResult = await documentSync.seedSharedDocument(
-          workspacePath,
+    if (workspacePath && typeof migratedContent === 'string') {
+      const { seedSharedDocument } = await import('../utils/documentSeedOrchestrator');
+      const seedResult = await seedSharedDocument({
+        workspacePath,
+        documentId,
+        documentType,
+        title: shareTitle,
+        content: migratedContent,
+      });
+      if (!seedResult.ok) {
+        seedError =
+          seedResult.error ||
+          (seedResult.hasRendererCodec
+            ? 'The renderer codec is available, but the initial shared content was not confirmed by the server before registration.'
+            : 'No collaborative codec is available to write this document type into the shared room.');
+        console.warn('[ShareToTeam] Seed did not confirm before registration:', {
           documentId,
           documentType,
-          migratedContent,
-        );
-        if (!seedResult.success) {
-          seedError = seedResult.error || 'Failed to seed shared document content.';
-        }
-      } catch (error) {
-        seedError = error instanceof Error ? error.message : String(error);
-      }
-      if (seedError) {
-        console.warn('[ShareToTeam] Failed to seed shared document before registration:', {
-          documentId,
-          documentType,
-          error: seedError,
+          strategy: seedResult.strategy,
+          hasRendererCodec: seedResult.hasRendererCodec,
+          error: seedResult.error,
         });
       }
     }

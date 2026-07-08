@@ -8,7 +8,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { homedir } from 'os';
-import type { SessionStore } from '@nimbalyst/runtime';
+import { type SessionStore, slimClaudeCodeChunkForStorage } from '@nimbalyst/runtime';
 import type { AgentMessagesStore } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
 import { DEFAULT_MODELS } from '@nimbalyst/runtime/ai/modelConstants';
 import { logger } from '../utils/logger';
@@ -340,16 +340,19 @@ function entryToMessage(entry: ClaudeCodeEntry): { direction: 'input' | 'output'
       entry.message.content.some((p: any) => p.type === 'tool_result');
 
     if (hasToolResults) {
-      // Tool result - store in the standard agent message format
+      // Tool result - store in the standard agent message format. Slim the
+      // tool_use_result sidecar (originalFile / patch / redundant old/new strings)
+      // the same way the live persistence path does -- nothing reads it and it's
+      // the bulk of claude-code raw-log bloat.
       return {
         direction: 'output',
-        content: JSON.stringify({
+        content: JSON.stringify(slimClaudeCodeChunkForStorage({
           type: 'user',
           message: entry.message,
           session_id: entry.sessionId,
           uuid: entry.uuid,
           tool_use_result: (entry as any).toolUseResult,
-        }),
+        })),
         timestamp,
         metadata: null,
       };

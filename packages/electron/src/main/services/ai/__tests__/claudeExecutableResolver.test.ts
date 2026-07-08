@@ -73,3 +73,50 @@ describe('isClaudeExecutableInstalled', () => {
     expect(installed([HOMEBREW])).toBe(true);
   });
 });
+
+// #684: on Windows the launchable claude is claude.exe/claude.cmd, not the
+// extensionless Unix sh-shim npm drops alongside them. The old resolver returned
+// the shim, which node-pty cannot spawn (error 193 ERROR_BAD_EXE_FORMAT). Paths
+// are built with the same path.join the resolver uses so the strings match on a
+// Linux CI runner regardless of separator.
+const WIN_HOME = 'C:\\Users\\tester';
+const winMake = (existing: string[], enhancedPath?: string) =>
+  resolveClaudeExecutablePath({
+    homedir: WIN_HOME,
+    pathExists: (p: string) => existing.includes(p),
+    enhancedPath,
+    pathDelimiter: ';',
+    platform: 'win32',
+  });
+
+describe('resolveClaudeExecutablePath on Windows (#684)', () => {
+  const localBinBase = path.join(WIN_HOME, '.claude', 'local', 'node_modules', '.bin', 'claude');
+  const dotLocalBase = path.join(WIN_HOME, '.local', 'bin', 'claude');
+  const npmGlobalCmd = path.join(WIN_HOME, 'AppData', 'Roaming', 'npm', 'claude') + '.cmd';
+
+  it('prefers claude.cmd over the extensionless sh-shim in ~/.claude/local', () => {
+    expect(winMake([localBinBase, localBinBase + '.cmd'])).toBe(localBinBase + '.cmd');
+  });
+
+  it('prefers claude.exe over claude.cmd when both exist', () => {
+    expect(winMake([localBinBase + '.cmd', localBinBase + '.exe'])).toBe(localBinBase + '.exe');
+  });
+
+  it('resolves claude.cmd from ~/.local/bin even when the sh-shim is also present', () => {
+    // The exact #684 repro: where claude lists the shim first, next to claude.cmd.
+    expect(winMake([dotLocalBase, dotLocalBase + '.cmd'])).toBe(dotLocalBase + '.cmd');
+  });
+
+  it('resolves claude.cmd from the Windows npm-global dir (AppData/Roaming/npm)', () => {
+    expect(winMake([npmGlobalCmd])).toBe(npmGlobalCmd);
+  });
+
+  it('resolves claude.exe from a PATH entry', () => {
+    const dir = 'C:\\tools\\bin';
+    expect(winMake([path.join(dir, 'claude') + '.exe'], dir)).toBe(path.join(dir, 'claude') + '.exe');
+  });
+
+  it('still falls back to the bare command when nothing is on disk', () => {
+    expect(winMake([], 'C:\\nowhere;C:\\also-nowhere')).toBe('claude');
+  });
+});

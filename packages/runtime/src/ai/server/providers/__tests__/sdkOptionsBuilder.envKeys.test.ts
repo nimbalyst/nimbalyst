@@ -72,11 +72,13 @@ describe('buildSdkOptions env-key hardening', () => {
   let originalAnthropic: string | undefined;
   let originalOpenAI: string | undefined;
   let originalEntrypoint: string | undefined;
+  let originalToolSearch: string | undefined;
 
   beforeEach(() => {
     originalAnthropic = process.env.ANTHROPIC_API_KEY;
     originalOpenAI = process.env.OPENAI_API_KEY;
     originalEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
+    originalToolSearch = process.env.ENABLE_TOOL_SEARCH;
   });
 
   afterEach(() => {
@@ -94,6 +96,11 @@ describe('buildSdkOptions env-key hardening', () => {
       delete process.env.CLAUDE_CODE_ENTRYPOINT;
     } else {
       process.env.CLAUDE_CODE_ENTRYPOINT = originalEntrypoint;
+    }
+    if (originalToolSearch === undefined) {
+      delete process.env.ENABLE_TOOL_SEARCH;
+    } else {
+      process.env.ENABLE_TOOL_SEARCH = originalToolSearch;
     }
   });
 
@@ -138,11 +145,29 @@ describe('buildSdkOptions env-key hardening', () => {
 
   it('sets the base env flags buildSdkOptions applies to every spawn', async () => {
     delete process.env.CLAUDE_CODE_ENTRYPOINT;
+    delete process.env.ENABLE_TOOL_SEARCH;
 
     const { options } = await buildSdkOptions(makeDeps(), makeParams());
 
     // Flags buildSdkOptions always composes onto the spawned session env.
-    expect(options.env.ENABLE_TOOL_SEARCH).toBe('auto:2');
+    // 'true' = unconditional tool-search deferral: every MCP server except the
+    // alwaysLoad core defers regardless of the model's context window. The old
+    // 'auto:2' default meant a 20K-token eager floor on 1M-context models.
+    expect(options.env.ENABLE_TOOL_SEARCH).toBe('true');
     expect(options.env.CLAUDE_CODE_ENTRYPOINT).toBe('cli');
+  });
+
+  it('lets a user-configured ENABLE_TOOL_SEARCH override the default', async () => {
+    // NIM-1475: the hardcoded default used to be spread after settingsEnv,
+    // silently clobbering the ENABLE_TOOL_SEARCH=false remediation our own
+    // Bedrock error guidance tells users to apply.
+    delete process.env.ENABLE_TOOL_SEARCH;
+
+    const { options } = await buildSdkOptions(
+      makeDeps(),
+      makeParams({ settingsEnv: { ENABLE_TOOL_SEARCH: 'false' } })
+    );
+
+    expect(options.env.ENABLE_TOOL_SEARCH).toBe('false');
   });
 });

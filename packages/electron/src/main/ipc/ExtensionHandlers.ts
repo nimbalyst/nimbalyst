@@ -32,6 +32,12 @@ import {
   getReleaseChannel,
 } from '../utils/store';
 import { registerFileExtension, clearRegisteredExtensions } from '../extensions/RegisteredFileTypes';
+import { getBuiltinExtensionsDirectory } from '../extensions/builtinExtensionsDirectory';
+import {
+  startExtensionBackendModules,
+  stopExtensionBackendModules,
+  getDefaultBackendModuleLifecycleDeps,
+} from '../extensions/backendModuleLifecycle';
 import { validateBackendModules } from '@nimbalyst/extension-sdk';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import type { ReleaseChannel } from '../utils/store';
@@ -251,41 +257,6 @@ export async function getUserExtensionsDirectory(): Promise<string> {
 }
 
 /**
- * Get the path to the built-in extensions directory.
- * Returns null if the directory doesn't exist.
- */
-async function getBuiltinExtensionsDirectory(): Promise<string | null> {
-  // In production, built-in extensions are in resources/extensions
-  // In development, they're in packages/extensions relative to the electron package
-  const possiblePaths = app.isPackaged
-    ? [
-        path.join(process.resourcesPath, 'extensions'),
-        path.join(process.resourcesPath, 'app.asar.unpacked', 'extensions'),
-      ]
-    : [
-        // Development: relative to __dirname (out/main/chunks in vite build)
-        // Go up 4 levels to packages/, then into extensions/
-        path.join(__dirname, '..', '..', '..', '..', 'extensions'),
-        // Fallback: if __dirname is out/main (no chunks)
-        path.join(__dirname, '..', '..', '..', 'extensions'),
-        path.join(__dirname, '..', '..', 'resources', 'extensions'),
-      ];
-
-  for (const possiblePath of possiblePaths) {
-    try {
-      await fs.access(possiblePath);
-      logger.main.debug('[ExtensionHandlers] Built-in extensions directory:', possiblePath);
-      return possiblePath;
-    } catch {
-      // Path doesn't exist, try next
-    }
-  }
-
-  logger.main.debug('[ExtensionHandlers] No built-in extensions directory found');
-  return null;
-}
-
-/**
  * Get all extension directories (both user and built-in).
  */
 export async function getAllExtensionDirectories(): Promise<string[]> {
@@ -301,6 +272,114 @@ export async function getAllExtensionDirectories(): Promise<string[]> {
   }
 
   return dirs;
+}
+
+/**
+ * An extension's surviving (post validate + allowlist scrub) backend-module
+ * declarations, plus the disk path the entry file resolves against. Returned
+ * by the backend-module scan that the start-on-enable lifecycle consumes.
+ */
+export interface ResolvedExtensionBackendModules {
+  extensionId: string;
+  extensionName: string;
+  extensionPath: string;
+  modules: BackendModuleContribution[];
+  /**
+   * Module ids referenced by this extension's `aiAgentProviders` contributions
+   * (each provider's `backendModuleId`). The backend-module lifecycle skips these
+   * for eager auto-start — they start lazily via the extensionAgentBridge on
+   * first use of the provider.
+   */
+  agentProviderModuleIds: string[];
+}
+
+/**
+ * Scan every extension directory (user first, then built-in) and return, for
+ * each extension that declares backend modules surviving the validate +
+ * allowlist scrub and is visible for the current release channel, its resolved
+ * path + module list. Does NOT consult enabled-state — the lifecycle caller
+ * filters on `getExtensionEnabled`. Mirrors the `extensions:list-installed`
+ * scan but only retains backend-module-bearing extensions.
+ */
+export async function listExtensionBackendModules(): Promise<ResolvedExtensionBackendModules[]> {
+  const out: ResolvedExtensionBackendModules[] = [];
+  const seenExtensionIds = new Set<string>();
+  const currentChannel = getReleaseChannel();
+  const extensionDirs = await getAllExtensionDirectories();
+
+  for (let i = 0; i < extensionDirs.length; i++) {
+    const extensionsDir = extensionDirs[i];
+    const isBuiltinDir = i > 0; // First directory is user extensions
+    let subdirs;
+    try {
+      subdirs = await fs.readdir(extensionsDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const subdir of subdirs) {
+      let isDir = subdir.isDirectory();
+      const isSymlink = subdir.isSymbolicLink();
+      if (!isDir && isSymlink) {
+        try {
+          isDir = (await fs.stat(path.join(extensionsDir, subdir.name))).isDirectory();
+        } catch {
+          continue;
+        }
+      }
+      if (!isDir) continue;
+
+      const extensionPath = path.join(extensionsDir, subdir.name);
+      try {
+        const manifest = JSON.parse(
+          await fs.readFile(path.join(extensionPath, 'manifest.json'), 'utf-8')
+        ) as ExtensionManifest & { id?: string; name?: string };
+        const extensionId = manifest.id || subdir.name;
+        if (seenExtensionIds.has(extensionId)) continue;
+        seenExtensionIds.add(extensionId);
+        if (!isExtensionVisibleForChannel(manifest, currentChannel)) continue;
+
+        // Strip invalid / disallowed backend modules in place, exactly as the
+        // list-installed scan does, so we only start what is actually allowed.
+        validateAndScrubBackendModules(manifest as unknown as Record<string, unknown>, extensionId, {
+          isBuiltin: isBuiltinDir,
+          isSymlink,
+        });
+
+        const modules = (manifest.contributions?.backendModules ?? []) as BackendModuleContribution[];
+        if (modules.length === 0) continue;
+
+        const agentProviderModuleIds = (
+          (manifest.contributions?.aiAgentProviders ?? []) as Array<{ backendModuleId?: string }>
+        )
+          .map((p) => p.backendModuleId)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0);
+
+        out.push({
+          extensionId,
+          extensionName: manifest.name || extensionId,
+          extensionPath,
+          modules,
+          agentProviderModuleIds,
+        });
+      } catch {
+        // Skip directories without a valid manifest
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Resolve the surviving backend modules for a single extension id, or null if
+ * the extension is not installed / declares none.
+ */
+export async function resolveExtensionBackendModules(
+  extensionId: string
+): Promise<ResolvedExtensionBackendModules | null> {
+  const all = await listExtensionBackendModules();
+  return all.find((e) => e.extensionId === extensionId) ?? null;
 }
 
 /**
@@ -1104,6 +1183,21 @@ export function registerExtensionHandlers(): void {
     try {
       setExtensionEnabled(extensionId, enabled);
       logger.main.info(`[ExtensionHandlers] Extension ${extensionId} ${enabled ? 'enabled' : 'disabled'}`);
+
+      // Start/stop any backend modules the extension declares. Fire-and-forget so
+      // the toggle returns promptly (startModule awaits utility-process readiness,
+      // up to 15s); errors are logged, not surfaced to the toggle.
+      const lifecycleDeps = getDefaultBackendModuleLifecycleDeps();
+      if (enabled) {
+        void startExtensionBackendModules(extensionId, lifecycleDeps).catch((err) =>
+          logger.main.error(`[ExtensionHandlers] backend-module start failed for ${extensionId}:`, err)
+        );
+      } else {
+        void stopExtensionBackendModules(extensionId, lifecycleDeps).catch((err) =>
+          logger.main.error(`[ExtensionHandlers] backend-module stop failed for ${extensionId}:`, err)
+        );
+      }
+
       return { success: true };
     } catch (error) {
       logger.main.error(`[ExtensionHandlers] Failed to set enabled state for ${extensionId}:`, error);

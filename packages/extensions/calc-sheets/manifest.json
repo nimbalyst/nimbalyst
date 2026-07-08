@@ -41,7 +41,10 @@
         "supportsDiffMode": false,
         "supportsSourceMode": true,
         "showDocumentHeader": false,
-        "supportsTranscriptEmbed": true
+        "supportsTranscriptEmbed": true,
+        "collaboration": {
+          "supported": true
+        }
       }
     ],
     "fileIcons": {

@@ -24,6 +24,8 @@ import {
 } from '../../store/atoms/pullRequests';
 import { getPullRequestService } from '../../services/RendererPullRequestService';
 import { PullRequestRow } from './PullRequestRow';
+import { getRecordStatus } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
+import { usePrTrackerReferences, useSessionCountsByTrackerItem } from './usePrTrackerContext';
 
 interface PullRequestListViewProps {
   workspaceId: string;
@@ -56,7 +58,10 @@ export function PullRequestListView({
 
   const [search, setSearch] = useState('');
 
-  const { activeFilters, sortKey, selectedItemId } = layout;
+  const trackerReferences = usePrTrackerReferences(remote);
+  const sessionCountsByItem = useSessionCountsByTrackerItem();
+
+  const { activeFilters, trackerStatusFilters, sortKey, selectedItemId } = layout;
   const stateParam: 'open' | 'closed' = activeFilters.includes('closed') ? 'closed' : 'open';
   const awaitingMyReview = activeFilters.includes('awaiting-review');
 
@@ -98,6 +103,12 @@ export function PullRequestListView({
     if (activeFilters.includes('draft')) {
       rows = rows.filter((r) => r.isDraft);
     }
+    if (trackerStatusFilters.length > 0) {
+      rows = rows.filter((r) => {
+        const items = trackerReferences.get(r.number);
+        return items?.some((item) => trackerStatusFilters.includes(getRecordStatus(item)));
+      });
+    }
     const q = search.trim().toLowerCase();
     if (q) {
       rows = rows.filter(
@@ -110,7 +121,7 @@ export function PullRequestListView({
       return b.updatedAt - a.updatedAt;
     });
     return rows;
-  }, [prList, activeFilters, ghStatus?.user, search, sortKey]);
+  }, [prList, activeFilters, trackerStatusFilters, trackerReferences, ghStatus?.user, search, sortKey]);
 
   const sortMenu = useFloatingMenu({ placement: 'bottom-end' });
   const activeSortLabel = SORT_OPTIONS.find((o) => o.id === sortKey)?.label ?? 'Last activity';
@@ -229,14 +240,26 @@ export function PullRequestListView({
             )}
           </div>
         ) : (
-          visibleRows.map((pr) => (
-            <PullRequestRow
-              key={pr.id}
-              pr={pr}
-              selected={pr.id === selectedItemId}
-              onSelect={handleSelect}
-            />
-          ))
+          visibleRows.map((pr) => {
+            const items = trackerReferences.get(pr.number);
+            const hasSessions = Boolean(
+              items?.some(
+                (item) =>
+                  (item.system.linkedSessions?.length ?? 0) > 0 ||
+                  sessionCountsByItem.has(item.id),
+              ),
+            );
+            return (
+              <PullRequestRow
+                key={pr.id}
+                pr={pr}
+                selected={pr.id === selectedItemId}
+                onSelect={handleSelect}
+                trackerItem={items?.[0] ?? null}
+                hasSessions={hasSessions}
+              />
+            );
+          })
         )}
       </div>
     </div>

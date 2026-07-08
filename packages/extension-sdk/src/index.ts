@@ -49,6 +49,13 @@ export {
   type UseCollaborativeEditorResult,
 } from './useCollaborativeEditor.js';
 
+export {
+  createTextCollabContentAdapter,
+  reconstructCollabContentAdapterFromDescriptor,
+  TEXT_COLLAB_DEFAULT_FIELD,
+  type TextCollabContentAdapterOptions,
+} from './collab/createTextCollabContentAdapter.js';
+
 // Re-export host-provided editor context and UI helpers for extensions.
 export {
   useDocumentPath,

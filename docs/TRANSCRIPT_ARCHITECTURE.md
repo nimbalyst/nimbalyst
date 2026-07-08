@@ -12,6 +12,8 @@ How AI session transcripts are stored, transformed, and rendered.
 
 The raw `ai_agent_messages` log is the sole persisted source of truth. Canonical events are derived from it on first access and never written to disk.
 
+One deliberate exception to "shapes preserved exactly": Claude Code chunks are run through `slimClaudeCodeChunkForStorage` at write time, which drops dead-weight the transcript pipeline never reads — the SDK's `tool_use_result` sidecar (the entire pre-edit `originalFile`, `structuredPatch`, and old/new strings already present on the tool_use call we render) and the ~12 KB `signature` on each thinking block. `filePath` and other small scalars are kept. This is safe because no parser/UI consumer reads those fields and Claude Code resume uses the SDK's own `history.jsonl`, not our log. It was ~60% of the claude-code raw-log bytes. `database/reclaimClaudeCodeRawLog.ts` backfills the same trim onto pre-existing rows.
+
 ## Data flow
 
 ```

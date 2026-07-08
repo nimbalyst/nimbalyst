@@ -9,6 +9,7 @@ import {
   isOpenProjectsAtCapAtom,
   attachWorkspaceSwitchCleanup,
   resolveInitialOpenProjectsState,
+  selectProjectsToRegister,
   type OpenProject,
 } from '../openProjects';
 import { activeSessionIdAtom, selectedWorkstreamAtom } from '../sessions';
@@ -291,6 +292,29 @@ describe('openProjects atoms', () => {
         paths: ['/ws/a'],
         activePath: '/ws/a',
       });
+    });
+  });
+
+  // NIM-757 (#548): restored non-primary rail projects must be registered with
+  // the main process so a later rail click can rescope the (path-less) Trackers
+  // panel. The primary is already registered at bootstrap.
+  describe('selectProjectsToRegister', () => {
+    it('returns the non-primary restored projects', () => {
+      expect(selectProjectsToRegister(['/ws/a', '/ws/b', '/ws/c'], '/ws/a')).toEqual([
+        '/ws/b',
+        '/ws/c',
+      ]);
+    });
+
+    it('returns nothing for a single-project (primary-only) rail', () => {
+      expect(selectProjectsToRegister(['/ws/a'], '/ws/a')).toEqual([]);
+    });
+
+    it('dedups and registers all when the primary is unknown', () => {
+      expect(selectProjectsToRegister(['/ws/a', '/ws/a', '/ws/b'], undefined)).toEqual([
+        '/ws/a',
+        '/ws/b',
+      ]);
     });
   });
 });

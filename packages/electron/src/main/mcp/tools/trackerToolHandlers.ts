@@ -19,6 +19,9 @@ import {
 import { isTrackerSyncActive, syncTrackerItem } from '../../services/TrackerSyncManager';
 import { applyHeadlessBodyMarkdown } from '../../services/MainBodyDocService';
 import { applyRelationshipFieldWrites } from '../../services/tracker/relationshipFieldWrite';
+import { extractItemCustomFields } from '../../services/tracker/trackerRowCustomFields';
+import { nestRelationshipFieldsIntoCustomFields, readStoredFieldValue } from '../../services/tracker/relationshipFieldStorage';
+import { isRelationshipField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { getWorkspaceState } from '../../utils/store';
 import { getVisibleTrackerLinkedSessions, shouldPersistTrackerLinkedSessions } from '../../../shared/trackerSessionLinks';
 import {
@@ -367,6 +370,19 @@ export function normalizeTypeTags(rawTypeTags: unknown, fallbackType: string): s
   return parsed && parsed.length > 0 ? parsed : [fallbackType];
 }
 
+/**
+ * `content` is stored as JSON.stringify(markdown) (see updateTrackerItemContent /
+ * tracker_create). Undo that encoding on read; legacy/plain rows without JSON
+ * quoting pass through unchanged.
+ */
+export function parseTrackerContent(raw: string): any {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
 /** Convert a raw DB row to a TrackerItem for the renderer */
 export function rowToTrackerItem(row: any): any {
   const data = typeof row.data === 'string' ? JSON.parse(row.data) : row.data || {};
@@ -393,7 +409,7 @@ export function rowToTrackerItem(row: any): any {
     updated: data.updated || row.updated || undefined,
     dueDate: data.dueDate || undefined,
     lastIndexed: new Date(row.last_indexed),
-    content: row.content != null ? row.content : undefined,
+    content: row.content != null ? parseTrackerContent(row.content) : undefined,
     archived: row.archived ?? false,
     archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
     source: row.source || (row.document_path ? 'inline' : 'native'),
@@ -435,15 +451,15 @@ export function rowToTrackerItem(row: any): any {
       ? Number(row.body_version)
       : undefined,
   };
-  // Pass through all extra JSONB data fields (activity, comments, kanbanSortOrder, etc.)
-  // as customFields so they survive the TrackerItem -> TrackerRecord conversion.
-  // Uses the result object's own keys as the "known" set -- no hardcoded list.
-  const resultKeys = new Set(Object.keys(result));
-  const extra: Record<string, any> = {};
-  for (const [k, v] of Object.entries(data)) {
-    if (v !== undefined && !resultKeys.has(k)) extra[k] = v;
-  }
-  if (Object.keys(extra).length > 0) result.customFields = extra;
+  // Pass through all extra JSONB data fields (activity, comments, kanbanSortOrder,
+  // relationship fields, etc.) as customFields so they survive the TrackerItem ->
+  // TrackerRecord conversion. Synced items NEST these under data.customFields, so
+  // un-nest via extractItemCustomFields rather than copying the raw `customFields`
+  // key through (which double-nested it and dropped the fields on the sync
+  // round-trip -- NIM-1305 / NIM-1077). Uses the result object's own keys as the
+  // "known" set -- no hardcoded list.
+  const cf = extractItemCustomFields(data, new Set(Object.keys(result)));
+  if (cf) result.customFields = cf;
   return result;
 }
 
@@ -707,6 +723,11 @@ export const trackerToolSchemas = [
         id: {
           type: "string",
           description: "The tracker item ID or issue key to update",
+        },
+        linkSession: {
+          type: "boolean",
+          description:
+            "If true, link the current AI session to this item as part of the update. Defaults to false -- updating an item does NOT auto-link the session.",
         },
         title: {
           type: "string",
@@ -1916,6 +1937,23 @@ export async function handleTrackerUpdate(
   sessionId?: string | undefined
 ): Promise<McpToolResult> {
   try {
+    // NIM-438: a description delivered via the generic fields bag
+    // (fields.description) must update the canonical visible body the same way
+    // a top-level `description` does. The body-seed path keys off
+    // args.description, so hoist fields.description up to the top level (and
+    // drop it from the bag to avoid a redundant data.description write) before
+    // any field processing runs.
+    if (
+      args &&
+      args.fields &&
+      typeof args.fields === 'object' &&
+      args.fields.description !== undefined &&
+      args.description === undefined
+    ) {
+      args.description = args.fields.description;
+      delete args.fields.description;
+    }
+
     const { getDatabase } = await import("../../database/initialize");
     const db = getDatabase();
     // Make custom (.nimbalyst/trackers/*.yaml) types visible so primaryType
@@ -2118,7 +2156,10 @@ export async function handleTrackerUpdate(
           (await resolveTrackerItemFromDocumentService(docService, publicTrackerId)) || item;
         const storageRowId = row?.id || publicTrackerId;
 
-        if (sessionId) {
+        // NIM-879: linking is opt-in on update, matching tracker_create (NIM-408).
+        // Without this gate, every status/field update silently linked the ambient
+        // session, polluting sessions with unrelated items the agent merely touched.
+        if (sessionId && args.linkSession === true) {
           const linked = await createBidirectionalLink(publicTrackerId, sessionId, {
             trackerRowId: storageRowId,
           });
@@ -2206,6 +2247,10 @@ export async function handleTrackerUpdate(
         typeof row.data === "string"
           ? JSON.parse(row.data)
           : row.data || {};
+      // Snapshot the pre-update data (deep copy) so inverse relationship
+      // propagation can diff added/dropped targets after `data` is mutated below.
+      // The diff read is customFields-aware, so the nested synced shape is fine.
+      const oldDataSnapshot: Record<string, unknown> = JSON.parse(JSON.stringify(data));
       data.lastModifiedBy = getCurrentIdentity(workspacePath);
 
       const rf = (role: string, fallback: string) => getTrackerRoleField(row.type, role as any) ?? fallback;
@@ -2221,6 +2266,8 @@ export async function handleTrackerUpdate(
       ];
 
       const changes: Record<string, { from: any; to: any }> = {};
+      const explicitlyWrittenFields = new Set<string>();
+      const explicitlyUnsetFields = new Set<string>();
 
       if (args.tags !== undefined && !Array.isArray(args.tags)) {
         args.tags = [];
@@ -2232,6 +2279,7 @@ export async function handleTrackerUpdate(
           const oldVal = data[fieldName];
           changes[fieldName] = { from: oldVal, to: args[argName] };
           data[fieldName] = args[argName];
+          explicitlyWrittenFields.add(fieldName);
         }
       }
 
@@ -2241,6 +2289,7 @@ export async function handleTrackerUpdate(
           const ownerField = rf('assignee', 'owner');
           changes[ownerField] = { from: data[ownerField], to: args.assigneeEmail };
           data[ownerField] = args.assigneeEmail;
+          explicitlyWrittenFields.add(ownerField);
         }
       }
       if (args.description !== undefined) {
@@ -2259,19 +2308,24 @@ export async function handleTrackerUpdate(
       if (args.fields && typeof args.fields === 'object') {
         for (const [key, value] of Object.entries(args.fields)) {
           if (value === undefined) continue;
-          const oldVal = data[key];
+          const oldVal = readStoredFieldValue(data, key);
           if (oldVal !== value) {
             changes[key] = { from: oldVal, to: value };
           }
           data[key] = value;
+          explicitlyWrittenFields.add(key);
         }
       }
       if (args.unsetFields && Array.isArray(args.unsetFields)) {
         for (const key of args.unsetFields) {
-          if (data[key] !== undefined) {
-            changes[key] = { from: data[key], to: undefined };
-            delete data[key];
+          const oldVal = readStoredFieldValue(data, key);
+          if (oldVal === undefined) continue;
+          changes[key] = { from: oldVal, to: undefined };
+          delete data[key];
+          if (data.customFields && typeof data.customFields === 'object' && !Array.isArray(data.customFields)) {
+            delete (data.customFields as Record<string, unknown>)[key];
           }
+          explicitlyUnsetFields.add(key);
         }
       }
 
@@ -2308,6 +2362,23 @@ export async function handleTrackerUpdate(
       if (!validationResult.valid) {
         return buildTrackerSchemaValidationError('tracker_update', row.type, validationResult.errors);
       }
+
+      // Capture which relationship fields actually changed (canonical NEW values,
+      // still top-level here) so inverse propagation runs below — then route the
+      // source's relationship writes into data.customFields (the durable synced
+      // shape) so they survive sync re-serialization and the inverse read finds
+      // them (NIM-1305). Non-relationship custom fields are left as-is.
+      const updateDefs = globalRegistry.get(row.type)?.fields ?? [];
+      const relChangedFields: Record<string, unknown> = {};
+      for (const def of updateDefs) {
+        if (!isRelationshipField(def)) continue;
+        if (explicitlyUnsetFields.has(def.name)) {
+          relChangedFields[def.name] = undefined;
+        } else if (explicitlyWrittenFields.has(def.name)) {
+          relChangedFields[def.name] = data[def.name];
+        }
+      }
+      nestRelationshipFieldsIntoCustomFields(data, updateDefs, { writtenFields: explicitlyWrittenFields });
 
       const modifierIdentity = getCurrentIdentity(workspacePath);
       for (const [field, change] of Object.entries(changes)) {
@@ -2400,7 +2471,8 @@ export async function handleTrackerUpdate(
         }
       }
 
-      if (sessionId) {
+      // NIM-879: linking is opt-in on update, matching tracker_create (NIM-408).
+      if (sessionId && args.linkSession === true) {
         const linked = await createBidirectionalLink(publicTrackerId, sessionId, {
           trackerRowId: row.id,
         });
@@ -2436,6 +2508,28 @@ export async function handleTrackerUpdate(
           }
         }
       }
+      // Defect A (NIM-1305): materialize inverse relationship fields on target
+      // items, mirroring the IPC update handler via the shared, customFields-aware
+      // service helper. Without this, an agent setting `modules`/`parentModule`
+      // via MCP never wrote the inverse `features`/`submodules` on the target.
+      if (docService && Object.keys(relChangedFields).length > 0) {
+        try {
+          await docService.propagateInverseForUpdate(
+            {
+              id: row.id,
+              type: row.type,
+              issueKey: row.issue_key ?? undefined,
+              title: (data[rf('title', 'title')] as string) ?? row.title,
+            },
+            relChangedFields,
+            oldDataSnapshot,
+            globalRegistry.get(row.type)?.sync?.mode,
+          );
+        } catch (invErr) {
+          console.error('[MCP Server] tracker_update inverse propagation failed:', invErr);
+        }
+      }
+
       const postSyncRow = await resolveTrackerRowByReference(db, row.id, workspacePath);
 
       const updateSummaryParts: string[] = [];

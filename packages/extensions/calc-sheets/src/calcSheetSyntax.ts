@@ -101,11 +101,6 @@ function scanUnit(line: string, start: number): { start: number; end: number } |
   };
 }
 
-function isIdentifierBoundary(line: string, index: number): boolean {
-  const char = line[index];
-  return !char || !/[A-Za-z0-9_]/.test(char);
-}
-
 function nextNonWhitespaceIndex(line: string, start: number): number {
   let cursor = start;
   while (cursor < line.length && /\s/.test(line[cursor])) {

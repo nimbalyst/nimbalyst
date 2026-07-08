@@ -25,6 +25,7 @@ import type {
   DocRevisionMetadata,
   DocRevisionPayload,
 } from '@nimbalyst/collab-protocol';
+import { encodeDocumentRoomId } from './collabDocumentId';
 
 const REVISION_PURPOSE = 'doc-revision';
 const REVISION_ENCODING_VERSION = 1;
@@ -80,7 +81,9 @@ export class CollabHistoryClient {
 
   constructor(private readonly config: CollabHistoryClientConfig) {
     this.httpBase = toHttpUrl(config.serverUrl);
-    this.roomId = `org:${config.orgId}:doc:${config.documentId}`;
+    // documentId is URL-encoded for the path; AAD below still binds to the raw
+    // config.documentId, matching the server.
+    this.roomId = encodeDocumentRoomId(config.orgId, config.documentId);
   }
 
   async listRevisions(opts: { cursor?: string | null; limit?: number } = {}): Promise<DocRevisionListResponse> {

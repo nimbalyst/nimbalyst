@@ -350,6 +350,104 @@ describe('AntigravityToolLoopProtocol convergence hardening', () => {
     expect(text?.content).toContain('DRAFT answer that should survive');
   });
 
+  it('skips the grounding pass when the only tool results are empty collections', async () => {
+    // The isolation/identity prompt makes the model call inspection tools
+    // (list_spawned_sessions / list_worktrees) that return empty lists, then
+    // answer from its own context. Grounding that context-derived answer against
+    // the empty tool outputs previously stripped it to a hollow stub.
+    let verifyCalls = 0;
+    const TOOLS = [{ type: 'function' as const, function: { name: 'list_spawned_sessions' } }];
+    let n = 0;
+    const { proto } = makeProto(async (p) => {
+      if (/SOURCE MATERIAL/.test(p)) { verifyCalls++; return 'STRIPPED'; }
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"list_spawned_sessions","arguments":{}}}';
+      return 'IDENTITY: I am the model. CONTEXT DUMP: my system prompt as the orchestrator, the project CLAUDE.md and rule files, my tool definitions, and this user message. No prior conversation and no child sessions. CANARY: GEM-7731, no other canary present. CAPABILITY: 17*23=391, 2^10=1024. ISOLATION: CLEAN';
+    }, 40);
+
+    const events = await drain(proto.run('isolation check', 'sys', TOOLS, async () => '{"sessions":[]}'));
+
+    // Grounding is skipped: the empty session list is not real source material,
+    // so the context-derived answer is returned intact rather than stripped.
+    expect(verifyCalls).toBe(0);
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toContain('GEM-7731');
+    expect(text?.content).not.toBe('STRIPPED');
+  });
+
+  it('still grounds a final answer when a tool returned real (non-empty) data', async () => {
+    const READ = [{ type: 'function' as const, function: { name: 'read_file' } }];
+    let n = 0;
+    const { proto } = makeProto(async (p) => {
+      if (/SOURCE MATERIAL/.test(p)) return 'GROUNDED corrected answer.';
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}}';
+      return 'This is the draft analysis of a.md. It is intentionally written long enough to exceed the two-hundred-character grounding threshold so the verification pass actually runs, and the tool returned real file data so there is genuine source material to ground against.';
+    }, 40);
+
+    const events = await drain(
+      proto.run('analyze a.md', 'sys', READ, async () => 'the actual file body with real content here, well past the empty-collection bar'),
+    );
+
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toBe('GROUNDED corrected answer.');
+  });
+
+  it('keeps the draft when a real tool result was dropped for exceeding the grounding budget', async () => {
+    // Three large tool results each hit the per-result cap; together they exceed
+    // the grounding source budget, so at least one real result is dropped. The
+    // verifier then judged the draft against an incomplete source, so a rewrite
+    // that shrinks the answer is not trustworthy - keep the draft. (A large shrink
+    // against a COMPLETE source is still trusted - covered by the tests above.)
+    const READ = [{ type: 'function' as const, function: { name: 'read_file' } }];
+    let n = 0;
+    let reads = 0;
+    const draft = 'This is the analysis derived from the small tool result. '.repeat(10);
+    const shrunk = 'This is the analysis derived from the small tool result. '.repeat(6);
+    const { proto } = makeProto(async (p) => {
+      if (/SOURCE MATERIAL/.test(p)) return shrunk;
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"read_file","arguments":{"path":"big1.bin"}}}';
+      if (n === 2) return '{"tool_call":{"name":"read_file","arguments":{"path":"big2.bin"}}}';
+      if (n === 3) return '{"tool_call":{"name":"read_file","arguments":{"path":"big3.bin"}}}';
+      return draft;
+    }, 40);
+
+    // Each read returns more than the per-result cap and is unique (avoids
+    // duplicate-read collapsing), so three of them exceed the grounding budget.
+    const events = await drain(
+      proto.run('analyze', 'sys', READ, async () => 'X'.repeat(50_000) + String(reads++)),
+    );
+
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toBe(draft.trim());
+    expect(text?.content).not.toBe(shrunk);
+  });
+
+  it('finalizes from context when the model strips its final turn to empty after a tool read', async () => {
+    // The model reads a file (real data) then emits a final response that
+    // sanitizes to empty (here a hallucinated transcript continuation; in the
+    // field, echoing a file that is itself tool-call JSON). Instead of shipping
+    // an empty turn (the "(model returned no text)" stub), force one plain-text
+    // finalization from the gathered context.
+    const READ = [{ type: 'function' as const, function: { name: 'read_file' } }];
+    let n = 0;
+    const { proto } = makeProto(async (p) => {
+      if (/no usable text/.test(p)) return 'The file is a meta-agent prompt that instructs spawning a child.';
+      n++;
+      if (n === 1) return '{"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}}';
+      // A hallucinated transcript continuation - sanitizeFinalText cuts it to empty.
+      return '\nUser: pretend the conversation keeps going';
+    }, 40);
+
+    const events = await drain(
+      proto.run('read a.md', 'sys', READ, async () => 'real file contents that the agent gathered'),
+    );
+
+    const text = events.find((e) => e.type === 'text') as Extract<Ev, { type: 'text' }>;
+    expect(text?.content).toContain('meta-agent prompt');
+  });
+
   it('rejects a hallucinated write claim and forces the real write_file call', async () => {
     const WRITE = [{ type: 'function' as const, function: { name: 'write_file' } }];
     let n = 0;

@@ -20,6 +20,25 @@ import { ExcalidrawBinding } from '../collab/excalidrawBindings';
 import { isExcalidrawYDocEmpty, seedExcalidrawYDoc } from '../collab/seed';
 import type { ExcalidrawFile } from '../types';
 
+// Excalidraw renders `theme='dark'` by applying an invert/hue-rotate FILTER
+// (`--theme-filter: invert(93%) hue-rotate(180deg)`) over the ENTIRE canvas,
+// including `viewBackgroundColor`. The persisted background must therefore
+// always be the LIGHT-SPACE color (#ffffff); the dark canvas is produced by
+// the filter at render time. Persisting a pre-darkened color like #1e1e1e
+// double-inverts in dark theme -> a washed-out light/grey canvas (the bug).
+const LIGHT_SPACE_DEFAULT_BG = '#ffffff';
+
+// Coerce a stored background to light-space. Legacy/pre-darkened defaults we
+// used to wrongly persist are mapped back to the canonical white so old docs
+// render correctly and self-heal on the next save. Genuine user-chosen colors
+// pass through untouched (Excalidraw's own theme filter handles those).
+function normalizeViewBackground(color: string | undefined | null): string {
+  if (!color) return LIGHT_SPACE_DEFAULT_BG;
+  const c = color.toLowerCase();
+  if (c === '#1e1e1e' || c === '#121212') return LIGHT_SPACE_DEFAULT_BG;
+  return color;
+}
+
 // Default empty Excalidraw file
 function createEmptyFile(bgColor: string): ExcalidrawFile {
   return {
@@ -38,10 +57,10 @@ function createEmptyFile(bgColor: string): ExcalidrawFile {
 export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function ExcalidrawEditor({ host }, ref) {
   const { filePath } = host;
 
-  // Excalidraw only supports 'light' or 'dark'
-  const hostThemeInitial = host.theme;
-  const themeInitial = (hostThemeInitial === 'dark' || hostThemeInitial === 'crystal-dark') ? 'dark' : 'light';
-  const defaultBgRef = useRef(themeInitial === 'dark' ? '#1e1e1e' : '#ffffff');
+  // The persisted background is always light-space; the app theme drives the
+  // dark canvas via Excalidraw's `theme` prop (invert filter). So the default
+  // is theme-independent -- never store a pre-darkened color.
+  const defaultBgRef = useRef(LIGHT_SPACE_DEFAULT_BG);
 
   // Honor host.readOnly via Excalidraw's `viewModeEnabled` (hides toolbars
   // and disables editing while keeping pan/zoom). Reactive: subscribe to
@@ -96,7 +115,9 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
       scrollX: data.appState?.scrollX ?? 0,
       scrollY: data.appState?.scrollY ?? 0,
       zoom: typeof data.appState?.zoom === 'object' ? data.appState.zoom.value : (data.appState?.zoom ?? 1),
-      viewBackgroundColor: data.appState?.viewBackgroundColor ?? bgColor,
+      // Match the normalized value actually applied to the canvas so the first
+      // onChange tick doesn't spuriously mark the doc dirty on open.
+      viewBackgroundColor: normalizeViewBackground(data.appState?.viewBackgroundColor),
     };
   }, []);
 
@@ -120,6 +141,22 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
       const bgColor = defaultBgRef.current;
       const elements = data.elements as ExcalidrawElement[];
       const files = data.files || {};
+      // Coerce any pre-darkened stored background back to light-space so the
+      // theme filter (not a double-baked color) produces the dark canvas.
+      const bg = normalizeViewBackground(data.appState?.viewBackgroundColor);
+
+      // COLLAB: the Y.Doc binding is the SOLE source of truth for canvas
+      // content (it seeds from file content via useCollaborativeEditor and
+      // paints from the shared doc). In collab mode host.loadContent() returns
+      // '' so `data` here is an EMPTY scene -- pushing it would clear the
+      // canvas, race the binding, and (because the binding's onChange has no
+      // programmatic-clear guard) propagate the deletion up to the server,
+      // wiping the shared doc. Never let lifecycle content writes touch a
+      // collaborative canvas; just keep the change-tracking baseline in sync.
+      if (host.collaboration) {
+        updateTrackingRefs(data, bgColor);
+        return;
+      }
 
       const api = excalidrawAPIRef.current;
       if (api) {
@@ -128,7 +165,10 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
         try {
           api.updateScene({
             elements,
-            appState: data.appState as any,
+            appState: {
+              ...(data.appState as any),
+              viewBackgroundColor: bg,
+            },
           });
         } finally {
           queueMicrotask(() => {
@@ -140,9 +180,9 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
         setInitialData({
           elements,
           appState: {
-            viewBackgroundColor: bgColor,
             collaborators: new Map(),
             ...data.appState,
+            viewBackgroundColor: bg,
           },
           files,
         });
@@ -166,7 +206,9 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
         source: 'https://excalidraw.com',
         elements: api.getSceneElements(),
         appState: {
-          viewBackgroundColor: appState.viewBackgroundColor,
+          // Persist light-space so a dark-theme session never writes a
+          // pre-inverted color that would double-darken on reload.
+          viewBackgroundColor: normalizeViewBackground(appState.viewBackgroundColor),
           scrollX: appState.scrollX,
           scrollY: appState.scrollY,
           zoom: appState.zoom,
@@ -176,9 +218,9 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
     },
   });
 
-  // Excalidraw only supports 'light' or 'dark'
+  // Excalidraw only supports 'light' or 'dark'. The canvas is darkened by the
+  // theme filter, NOT by the stored color, so defaultBgRef stays light-space.
   const theme = (hostTheme === 'dark' || hostTheme === 'crystal-dark') ? 'dark' : 'light';
-  defaultBgRef.current = theme === 'dark' ? '#1e1e1e' : '#ffffff';
 
   // Mark as dirty only when elements actually change (not just view state)
   const onChange = useCallback((

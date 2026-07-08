@@ -24,25 +24,25 @@ export function getEditorToolSchemas(sessionId: string | undefined) {
     {
       name: "capture_editor_screenshot",
       description:
-        "Capture a screenshot of any editor view. Works with all file types including custom editors (Excalidraw, CSV, mockups), markdown, code, etc. Use this to visually verify UI, diagrams, or any editor content.",
+        "Capture a screenshot of any editor view (all file types, including custom editors like Excalidraw, CSV, and mockups). Use to visually verify UI, diagrams, or editor content.",
       inputSchema: {
         type: "object",
         properties: {
           file_path: {
             type: "string",
             description:
-              "The absolute path to the file being edited (optional, uses active file if not specified)",
+              "Absolute path of the file to capture (defaults to the active file)",
           },
           selector: {
             type: "string",
             description:
-              "CSS selector to capture a specific element (optional, captures full editor area if not specified)",
+              "CSS selector for a specific element (defaults to the full editor area)",
           },
           theme: {
             type: "string",
             enum: ["dark", "light"],
             description:
-              "Theme to use for the screenshot (optional, uses the app's current theme if not specified). Useful for capturing both dark and light mode versions.",
+              "Theme for the screenshot (defaults to the app's current theme)",
           },
         },
       },

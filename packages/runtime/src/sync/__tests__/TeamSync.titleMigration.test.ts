@@ -46,7 +46,12 @@ function serverManagedProvider(legacyOrgKeys?: CryptoKey[]): TeamSyncProvider {
   return new TeamSyncProvider(config);
 }
 
-function encEntry(documentId: string, encryptedTitle: string, titleIv: string) {
+function encEntry(
+  documentId: string,
+  encryptedTitle: string,
+  titleIv: string,
+  lastWriterUserId: string | null = null,
+) {
   return {
     documentId,
     encryptedTitle,
@@ -55,14 +60,16 @@ function encEntry(documentId: string, encryptedTitle: string, titleIv: string) {
     createdBy: 'user-1',
     createdAt: 1,
     updatedAt: 1,
+    lastWriterUserId,
   };
 }
 
 describe('TeamSync doc-index title server-managed migration read path', () => {
   it('passes through plaintext titles with the empty-iv sentinel', async () => {
     const provider = serverManagedProvider();
-    const entry = await (provider as any).decryptEntry(encEntry('doc-1', 'My Plain Title', ''));
+    const entry = await (provider as any).decryptEntry(encEntry('doc-1', 'My Plain Title', '', 'writer-1'));
     expect(entry.title).toBe('My Plain Title');
+    expect(entry.lastWriterUserId).toBe('writer-1');
     expect(entry.decryptFailed).toBeFalsy();
     provider.destroy();
   });

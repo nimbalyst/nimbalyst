@@ -15,6 +15,7 @@ export * from './ai/tools';
 export * from './ai/modelConstants';
 export * from './ai/adapters/sessionStore';
 export { SessionManager } from './ai/server/SessionManager';
+export { slimClaudeCodeChunkForStorage } from './ai/server/providers/claudeCode/toolChunkUtils';
 export {
   DocumentContextService,
   type IDocumentContextService,
@@ -37,6 +38,20 @@ export type { EditorInstance } from './ai/EditorRegistry';
 // Plugins
 export { DocumentLinkPlugin } from './plugins/DocumentLinkPlugin';
 export { DocumentReferenceNode, DocumentReferenceTransformer, LegacyDocumentReferenceTransformer, $createDocumentReferenceNode, $isDocumentReferenceNode } from './plugins/DocumentLinkPlugin/DocumentLinkNode';
+export {
+  TrackerReferenceNode,
+  TrackerReferenceTransformer,
+  TrackerReferenceChip,
+  $createTrackerReferenceNode,
+  $isTrackerReferenceNode,
+  TRACKER_REFERENCE_URN_SCHEME,
+  useResolvedTrackerReference,
+  navigateToTrackerReference,
+} from './plugins/TrackerLinkPlugin';
+export type {
+  ResolvedTrackerReference,
+  SerializedTrackerReferenceNode,
+} from './plugins/TrackerLinkPlugin';
 // `DiffApprovalBarPlugin` / `DiffApprovalBar` were dropped -- the live diff approval UI is
 // `UnifiedDiffHeader` in the electron renderer, fed by `useLexicalDiffState`.
 export { useLexicalDiffState } from './plugins/DiffApprovalBar/useLexicalDiffState';
@@ -67,6 +82,7 @@ export {
   trackerDataLoadedAtom,
   trackerItemsArrayAtom,
   trackerItemsByTypeAtom,
+  trackerItemByReferenceKeyAtom,
   trackerItemCountByTypeAtom,
   upsertTrackerItemAtom,
   removeTrackerItemAtom,
@@ -164,9 +180,37 @@ export { screenshotService } from './services/ScreenshotService';
 export type { ScreenshotCapability } from './services/ScreenshotService';
 // Editor context
 export { DocumentPathProvider, useDocumentPath } from './DocumentPathContext';
+// Workspace file link routing (NIM-1487)
+export {
+  isWorkspaceFileHref,
+  openWorkspaceFileLink,
+  setWorkspaceFileLinkOpener,
+} from './editor/utils/workspaceLinkNavigation';
 // Editor wrappers
 export * from './editors';
 // Sync types (for capacitor)
 export type { SessionIndexEntry } from './sync/types';
+// Read receipts (unread indicators for trackers/docs)
+export {
+  isEntityUnread,
+  mergeReceipt,
+  receiptAdvances,
+} from './readReceipts/readReceipts';
+export type {
+  ReadReceipt,
+  ReadReceiptEntityKind,
+  SyncedReadReceipt,
+  UnreadEntitySnapshot,
+} from './readReceipts/readReceipts';
+export {
+  trackerUnreadAtom,
+  trackerUnreadByWorkspaceAtom,
+  trackerReceiptsAtom,
+  setTrackerUnreadAtom,
+  recomputeTrackerUnreadAtom,
+  applyTrackerReceiptAtom,
+  trackerSnapshot,
+} from './readReceipts/trackerUnreadAtoms';
+export { TrackerUnreadDot } from './readReceipts/TrackerUnreadDot';
 // Themes
 export * from './themes';

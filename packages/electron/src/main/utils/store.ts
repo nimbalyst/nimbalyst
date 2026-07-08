@@ -214,6 +214,13 @@ interface AppStoreSchema {
   lastKnownVersion?: string;
   // One-shot migration flag: plain fable default bumped to fable-1m (NIM-827)
   fableDefaultMigratedTo1m?: boolean;
+  // Gutter icon visibility/order preferences (GLOBAL). Moved off per-project
+  // workspace state so the preference applies across all projects.
+  hiddenGutterItems?: string[];
+  gutterItemOrder?: Record<string, string[]>;
+  // One-shot migration flag: per-project hiddenGutterButtons unioned into the
+  // global hiddenGutterItems key above.
+  gutterButtonsMigratedToGlobal?: boolean;
   // Extension marketplace install tracking
   marketplaceInstalls?: Record<string, MarketplaceInstallRecord>;
   // Multi-project rail: opt-in flag to host multiple projects in a single
@@ -1090,6 +1097,41 @@ export function saveAgentFileScopeMode(workspacePath: string, mode: AgentFileSco
 export function getAIProviderOverrides(workspacePath: string): AIProviderOverrides | undefined {
   const overrides = getWorkspaceState(workspacePath).aiProviderOverrides;
   return normalizeAIProviderOverrides(overrides);
+}
+
+/**
+ * Lazily-opened `ai-settings` electron-store (where provider API keys live —
+ * `apiKeys`). Separate from the `app-settings` store exported as `store`.
+ */
+let _aiSettingsStore: Store<Record<string, unknown>> | null = null;
+function getAiSettingsStore(): Store<Record<string, unknown>> {
+  if (!_aiSettingsStore) {
+    _aiSettingsStore = new Store<Record<string, unknown>>({ name: 'ai-settings' });
+  }
+  return _aiSettingsStore;
+}
+
+/**
+ * Resolve a provider API key from EXPLICIT settings only — a per-workspace
+ * project override if present, else the global `ai-settings` `apiKeys[providerId]`.
+ * NEVER reads `process.env` (CLAUDE.md no-implicit-env-key rule). Returns null
+ * when not configured. Mirrors `AIService.getApiKeyForProvider` so the
+ * backend-module `getApiKey` broker hands an extension engine the same key the
+ * AI providers use (the key lives in `ai-settings`, NOT `app-settings`).
+ */
+export function getProviderApiKeyFromSettings(
+  providerId: string,
+  workspacePath?: string
+): string | null {
+  if (workspacePath) {
+    const overrideKey = getAIProviderOverrides(workspacePath)?.providers?.[providerId]?.apiKey;
+    if (typeof overrideKey === 'string' && overrideKey.length > 0) {
+      return overrideKey;
+    }
+  }
+  const apiKeys = getAiSettingsStore().get('apiKeys') as Record<string, string> | undefined;
+  const key = apiKeys?.[providerId];
+  return typeof key === 'string' && key.length > 0 ? key : null;
 }
 
 export function saveAIProviderOverrides(workspacePath: string, overrides: AIProviderOverrides | undefined): void {
@@ -2484,6 +2526,30 @@ export function runMigrations(currentVersion: string): void {
       getAppStore().set('defaultAIModel', migrated);
     }
     getAppStore().set('fableDefaultMigratedTo1m', true);
+  }
+
+  // One-shot, version-independent migration: gutter icon visibility moved from
+  // per-project workspace state (hiddenGutterButtons) to a single global app
+  // setting (hiddenGutterItems). Union every project's hidden set so a user who
+  // had hidden, say, Voice Mode in one project keeps it hidden everywhere
+  // rather than having it silently reappear. Flag-guarded so it runs once.
+  if (!getAppStore().get('gutterButtonsMigratedToGlobal')) {
+    try {
+      const workspaces = getWorkspaceStore().store;
+      const union = new Set<string>(getAppStore().get('hiddenGutterItems') ?? []);
+      for (const state of Object.values(workspaces ?? {})) {
+        for (const id of state?.hiddenGutterButtons ?? []) {
+          union.add(id);
+        }
+      }
+      if (union.size > 0) {
+        logger.store.info(`[Migrations] Unioning ${union.size} hidden gutter button(s) into global setting`);
+        getAppStore().set('hiddenGutterItems', Array.from(union));
+      }
+    } catch (err) {
+      logger.store.warn('[Migrations] Failed to migrate hiddenGutterButtons to global:', err);
+    }
+    getAppStore().set('gutterButtonsMigratedToGlobal', true);
   }
 
   // Same version - no migration needed

@@ -301,12 +301,21 @@ export async function buildSdkOptions(
     ...sanitizedProcessEnv,
     ...sanitizedShellEnv,
     ...sanitizedSettingsEnv,
-    // `auto:N` defers MCP tools when their descriptions exceed N% of the
-    // context window. With Opus 4.7's 1M-context default, `auto:10` means
-    // ~100K tokens of tool descriptions are still loaded upfront — we saw
-    // ~112K baseline usage on new sessions. `auto:2` (20K on 1M, 4K on 200K)
-    // matches the previous lazy-loading behavior we had under Sonnet 4.6.
-    ENABLE_TOOL_SEARCH: 'auto:2',
+    // 'true' = unconditional tool-search deferral: every MCP tool defers
+    // regardless of the model's context window, except the core subset marked
+    // always-load via per-tool _meta (CORE_ALWAYS_LOAD_TOOLS). The CLI's `auto:N` mode is all-or-nothing against a
+    // threshold of N% of the context window (integer N only), so the previous
+    // `auto:2` default meant a 20K-token eager floor on 1M-context models —
+    // any tool corpus under that loaded entirely upfront on every session.
+    // Default only — a user-set ENABLE_TOOL_SEARCH (settings env vars, shell,
+    // or process env) must win, otherwise the `ENABLE_TOOL_SEARCH = false`
+    // remediation that buildBedrockToolErrorGuidance tells users to apply is
+    // silently clobbered. (NIM-1475)
+    ...(sanitizedProcessEnv.ENABLE_TOOL_SEARCH == null &&
+      sanitizedShellEnv.ENABLE_TOOL_SEARCH == null &&
+      sanitizedSettingsEnv.ENABLE_TOOL_SEARCH == null && {
+        ENABLE_TOOL_SEARCH: 'true',
+      }),
     // The bundled SDK at assistant.mjs sets CLAUDE_CODE_ENTRYPOINT to "sdk-ts"
     // when not already set in the environment. Anthropic's backend treats
     // `cli` traffic as first-party and `sdk-ts` traffic as third-party,
@@ -320,6 +329,19 @@ export async function buildSdkOptions(
     ...(config.effortLevel && config.effortLevel !== DEFAULT_EFFORT_LEVEL && {
       CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel
     }),
+    // The bundled claude binary runs a per-tool idle-timeout watchdog (default
+    // 300s) over MCP servers whose transport is http/sse/ws. ALL Nimbalyst
+    // in-app MCP servers use SSE, and the interactive input tools
+    // (PromptForUserInput, AskUserQuestion) block indefinitely waiting for the
+    // human — so the watchdog aborts them at 300s and the prompt collapses
+    // (#758). Our SSE servers are local in-process, so a "hung" tool is our own
+    // bug rather than a flaky network the watchdog guards against; disable it
+    // by default. A user-set value (settings/shell/process env) still wins.
+    ...(sanitizedProcessEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT == null &&
+      sanitizedShellEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT == null &&
+      sanitizedSettingsEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT == null && {
+        CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: '0',
+      }),
   };
 
   // NIM-376: Overlay enhanced PATH so the Claude Code SDK can find stdio MCP

@@ -24,6 +24,7 @@ import {
   voiceLastReportedFileAtom,
   voiceListenStateAtom,
   voiceErrorAtom,
+  voiceReconnectingAtom,
   voiceModePreviewAudioAtom,
   getVoiceAudioCallback,
   getVoiceInterruptCallback,
@@ -36,7 +37,7 @@ import {
   type VoiceTokenUsage,
 } from '../atoms/voiceModeState';
 import { voiceModeSettingsAtom, type VoiceModeSettings } from '../atoms/appSettings';
-import { activeSessionIdAtom, sessionRegistryAtom, sessionHasPendingInteractivePromptAtom, sessionPendingPromptsAtom, respondToPromptAtom } from '../atoms/sessions';
+import { activeSessionIdAtom, sessionRegistryAtom, sessionHasPendingInteractivePromptAtom, sessionPendingPromptsAtom, respondToPromptAtom, refreshSessionListAtom, reloadSessionDataAtom } from '../atoms/sessions';
 import { windowModeAtom } from '../atoms/windowMode';
 
 /**
@@ -172,6 +173,35 @@ export function sleepVoiceListening(): void {
 
 
 /**
+ * Refresh the open transcript for the active voice DB session.
+ *
+ * Voice messages (speech turns, [system] diagnostics, and voiceToolCall
+ * entries) are written straight to ai_agent_messages via
+ * voice-mode:appendMessage. Unlike provider streaming, that path emits NO
+ * `transcript:event`, so the TranscriptStreamAccumulator never sees them and
+ * the open transcript wouldn't reflect new entries until the session is
+ * reloaded for some other reason. That's why voice tool calls (memory
+ * lookups, ask_coding_agent, etc.) "didn't show up" live even though they
+ * were persisted correctly and project fine on reload.
+ *
+ * Reloading from the DB re-runs the same canonical projection (VoiceRawParser
+ * -> tool_call_started/completed), so tool widgets and speech appear live.
+ * Debounced (trailing edge) so a started+completed tool-call burst that lands
+ * a few ms apart coalesces into a single reload that picks up both rows.
+ */
+let voiceTranscriptRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleVoiceTranscriptRefresh(): void {
+  if (voiceTranscriptRefreshTimer) return;
+  voiceTranscriptRefreshTimer = setTimeout(() => {
+    voiceTranscriptRefreshTimer = null;
+    const sessionId = store.get(voiceDbSessionIdAtom);
+    const workspacePath = store.get(voiceWorkspacePathAtom);
+    if (!sessionId || !workspacePath) return;
+    void store.set(reloadSessionDataAtom, { sessionId, workspacePath });
+  }, 250);
+}
+
+/**
  * Write a single transcript entry to the database.
  * Fire-and-forget -- errors are logged but don't block the UI.
  */
@@ -185,9 +215,11 @@ function writeTranscriptEntry(entry: VoiceTranscriptEntry): void {
     content: entry.text,
     entryId: entry.id,
     timestamp: entry.timestamp,
-  }).catch(error => {
-    console.error('[voiceModeListeners] Failed to write transcript entry:', error);
-  });
+  })
+    .then(scheduleVoiceTranscriptRefresh)
+    .catch(error => {
+      console.error('[voiceModeListeners] Failed to write transcript entry:', error);
+    });
 }
 
 /**
@@ -205,9 +237,57 @@ function writeDiagnosticEntry(message: string): void {
     content: `[system] ${message}`,
     entryId: `diag-${Date.now()}`,
     timestamp: Date.now(),
-  }).catch(error => {
-    console.error('[voiceModeListeners] Failed to write diagnostic entry:', error);
-  });
+  })
+    .then(scheduleVoiceTranscriptRefresh)
+    .catch(error => {
+      console.error('[voiceModeListeners] Failed to write diagnostic entry:', error);
+    });
+}
+
+/**
+ * A function/tool call event forwarded from the voice agent (main process).
+ * Mirrors VoiceToolCallEvent in RealtimeAPIClient.ts.
+ */
+type VoiceToolCallEvent =
+  | {
+      phase: 'started';
+      callId: string;
+      name: string;
+      displayName: string;
+      args: Record<string, unknown>;
+    }
+  | {
+      phase: 'completed';
+      callId: string;
+      name: string;
+      displayName: string;
+      success: boolean;
+      summary?: string;
+    };
+
+/**
+ * Write a voice-agent tool call to the session transcript. Persisted as a JSON
+ * payload (direction 'output') that the VoiceRawParser turns into a real
+ * tool_call event so it renders with the standard tool widget. Without this,
+ * voice tool calls (memory lookups, ask_coding_agent, etc.) are invisible.
+ */
+function writeToolCallEntry(event: VoiceToolCallEvent): void {
+  const dbSessionId = store.get(voiceDbSessionIdAtom);
+  if (!dbSessionId) return;
+
+  const content = JSON.stringify({ kind: 'voiceToolCall', ...event });
+
+  window.electronAPI.invoke('voice-mode:appendMessage', {
+    sessionId: dbSessionId,
+    direction: 'output',
+    content,
+    entryId: `tool-${event.phase}-${event.callId}`,
+    timestamp: Date.now(),
+  })
+    .then(scheduleVoiceTranscriptRefresh)
+    .catch(error => {
+      console.error('[voiceModeListeners] Failed to write tool-call entry:', error);
+    });
 }
 
 /**
@@ -248,6 +328,7 @@ function resetVoiceAtoms(): void {
   store.set(voiceDbSessionIdAtom, null);
   store.set(voiceLastReportedFileAtom, null);
   store.set(voiceErrorAtom, null);
+  store.set(voiceReconnectingAtom, false);
 }
 
 /**
@@ -553,7 +634,31 @@ export function initVoiceModeListeners(): () => void {
       error: { type: string; message: string };
     }) => {
       if (!isVoiceActive()) return;
+      // Retries exhausted -- clear the transient reconnect state and surface the
+      // hard error.
+      store.set(voiceReconnectingAtom, false);
       store.set(voiceErrorAtom, payload.error);
+    })
+  );
+
+  // =========================================================================
+  // Reconnect (transient socket drop -> backoff reconnect)
+  // =========================================================================
+  cleanups.push(
+    window.electronAPI.on('voice-mode:reconnecting', (_payload: {
+      sessionId: string;
+      attempt: number;
+    }) => {
+      if (!isVoiceActive()) return;
+      store.set(voiceReconnectingAtom, true);
+    })
+  );
+  cleanups.push(
+    window.electronAPI.on('voice-mode:reconnected', (_payload: {
+      sessionId: string;
+    }) => {
+      if (!isVoiceActive()) return;
+      store.set(voiceReconnectingAtom, false);
     })
   );
 
@@ -660,6 +765,26 @@ export function initVoiceModeListeners(): () => void {
         store.set(voiceTranscriptEntriesAtom, [...entries, entry]);
         pendingAssistantEntry = entry;
       }
+    })
+  );
+
+  // =========================================================================
+  // Tool Calls -- persist voice-agent tool calls so they're visible in the
+  // session transcript (rendered via VoiceRawParser as real tool widgets).
+  // =========================================================================
+  cleanups.push(
+    window.electronAPI.on('voice-mode:tool-call', (payload: {
+      sessionId: string;
+      event: VoiceToolCallEvent;
+    }) => {
+      if (!isVoiceActive()) return;
+      // Flush any in-progress assistant entry first so transcript ordering is
+      // preserved (the tool call happened before the next spoken reply).
+      if (pendingAssistantEntry) {
+        writeTranscriptEntry(pendingAssistantEntry);
+        pendingAssistantEntry = null;
+      }
+      writeToolCallEntry(payload.event);
     })
   );
 
@@ -1083,7 +1208,7 @@ export function initVoiceModeListeners(): () => void {
 }
 
 /** How long before a voice session is considered "expired" and a new one is created */
-const VOICE_SESSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const VOICE_SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
  * Set the active voice session ID and create or resume the DB session row.
@@ -1141,6 +1266,11 @@ export async function setVoiceActiveSession(sessionId: string, workspacePath?: s
     id: dbSessionId,
     workspacePath: wp,
     linkedSessionId: sessionId,
+  }).then(() => {
+    // Refresh the session-history list so the new voice session appears
+    // immediately instead of only after a manual refresh. The DB row exists
+    // now; re-query the registry from the database.
+    void store.set(refreshSessionListAtom);
   }).catch(error => {
     console.error('[voiceModeListeners] Failed to create voice session in DB:', error);
   });

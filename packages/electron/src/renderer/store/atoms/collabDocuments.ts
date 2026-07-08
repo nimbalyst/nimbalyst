@@ -30,6 +30,11 @@ export interface SharedDocument {
   createdAt: number;
   updatedAt: number;
   /**
+   * User id of whoever most recently changed this doc (title OR content).
+   * Drives the sidebar unread dot's self-edit suppression. Null for legacy rows.
+   */
+  lastWriterUserId?: string | null;
+  /**
    * True when the doc index entry's encrypted title could not be decrypted.
    * Rendered as a locked placeholder in the sidebar; not openable.
    */
@@ -57,6 +62,22 @@ const workspaceHasTeamAtomFamily = atomFamily((_workspacePath: string) =>
 const teamOrgIdAtomFamily = atomFamily((_workspacePath: string) =>
   atom<string | null>(null)
 );
+
+/**
+ * The current user's TEAM member id for the active workspace's org. Used by the
+ * doc unread indicator to suppress the user's own edits (compared against a
+ * doc's `lastWriterUserId`). Set from the resolved collab config.
+ */
+const teamUserIdAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<string | null>(null)
+);
+
+/** The current user's team member id for the active workspace's org. */
+export const activeTeamUserIdAtom = atom<string | null>((get) => {
+  const path = get(activeWorkspacePathAtom);
+  if (!path) return null;
+  return get(teamUserIdAtomFamily(path));
+});
 
 // ============================================================
 // Public atoms — derived from the active workspace
@@ -351,6 +372,7 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
     store.set(workspaceHasTeamAtomFamily(workspacePath), true);
     const { orgId, teamProjectId, keyCustody, orgKeyBase64, legacyOrgKeysBase64, orgKeyFingerprint, serverUrl, userId, personalOrgId } = result.config;
     store.set(teamOrgIdAtomFamily(workspacePath), orgId);
+    store.set(teamUserIdAtomFamily(workspacePath), userId ?? null);
 
     const { TeamSyncProvider } = await import('@nimbalyst/runtime/sync');
 
@@ -421,6 +443,7 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
             createdBy: d.createdBy,
             createdAt: d.createdAt,
             updatedAt: d.updatedAt,
+            lastWriterUserId: d.lastWriterUserId,
             decryptFailed: d.decryptFailed,
           })));
         }
@@ -434,6 +457,7 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
           createdBy: d.createdBy,
           createdAt: d.createdAt,
           updatedAt: d.updatedAt,
+          lastWriterUserId: d.lastWriterUserId,
           decryptFailed: d.decryptFailed,
         })));
       },
@@ -448,6 +472,7 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
             createdBy: document.createdBy,
             createdAt: document.createdAt,
             updatedAt: document.updatedAt,
+            lastWriterUserId: document.lastWriterUserId,
             decryptFailed: document.decryptFailed,
           }, ...filtered];
         });

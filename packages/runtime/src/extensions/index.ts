@@ -90,6 +90,15 @@ export {
 } from './ExtensionAIToolsBridge';
 export type { MCPToolDefinition } from './ExtensionAIToolsBridge';
 
+// Voice context provider registry (Core hook 2)
+export {
+  registerVoiceContextProvider,
+  unregisterVoiceContextProvidersForExtension,
+  collectVoiceSessionContext,
+  _clearVoiceContextProvidersForTest,
+} from './VoiceContextProviderRegistry';
+export type { CollectVoiceContextOptions } from './VoiceContextProviderRegistry';
+
 // Extension Editor API Registry
 export {
   registerEditorAPI,
@@ -129,6 +138,18 @@ export type {
   UseCollaborativeEditorConfig,
   UseCollaborativeEditorResult,
 } from './useCollaborativeEditor';
+
+// Collab content adapter factory + cross-process reconstruction (re-exported
+// from the SDK so the Electron main process can use them via @nimbalyst/runtime
+// without depending on @nimbalyst/extension-sdk directly).
+export {
+  createTextCollabContentAdapter,
+  reconstructCollabContentAdapterFromDescriptor,
+  TEXT_COLLAB_DEFAULT_FIELD,
+  type TextCollabContentAdapterOptions,
+  type CollabAdapterDescriptor,
+  type TextCollabAdapterDescriptor,
+} from '@nimbalyst/extension-sdk';
 
 // Extension Storage
 export {

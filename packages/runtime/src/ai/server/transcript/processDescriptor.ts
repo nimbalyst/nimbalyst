@@ -220,7 +220,7 @@ export async function processDescriptor(
 
 export function selectRawParser(
   provider: string,
-): 'codex' | 'codex-acp' | 'copilot' | 'claude-code' | 'opencode' {
+): 'codex' | 'codex-acp' | 'copilot' | 'claude-code' | 'opencode' | 'voice' {
   if (provider === 'copilot-cli') {
     return 'copilot';
   }
@@ -232,6 +232,9 @@ export function selectRawParser(
   }
   if (provider === 'opencode') {
     return 'opencode';
+  }
+  if (provider === 'openai-realtime') {
+    return 'voice';
   }
   // `claude-code` and `claude-code-cli` (genuine CLI on subscription) both drive
   // the same Claude agent and emit the same raw message shape, so both

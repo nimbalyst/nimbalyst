@@ -1,11 +1,12 @@
 {
   "id": "com.nimbalyst.planning",
   "name": "Planning",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Structured planning and tracking with YAML frontmatter",
   "author": "Nimbalyst",
   "apiVersion": "1.0.0",
   "marketplace": {
+    "changelog": "1.0.1: Session spawning improvements: sibling sessions, isolated mode, model and worktree inheritance.",
     "categories": ["ai-tools"],
     "tags": ["planning", "tracker", "implementation", "frontmatter", "workflow"],
     "icon": "checklist",

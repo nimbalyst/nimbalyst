@@ -1,13 +1,14 @@
 {
   "id": "com.nimbalyst.csv-spreadsheet",
   "name": "CSV Spreadsheet",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Edit CSV files with a spreadsheet interface and formula support",
   "author": "Nimbalyst",
   "main": "dist/index.js",
   "styles": "dist/index.css",
   "apiVersion": "1.0.0",
   "marketplace": {
+    "changelog": "1.0.1: Collaborative editing support, currency/percent/number cell formatting, and full ISO date rendering.",
     "categories": ["data"],
     "tags": ["csv", "tsv", "spreadsheet", "data", "table", "formula"],
     "icon": "table_chart",

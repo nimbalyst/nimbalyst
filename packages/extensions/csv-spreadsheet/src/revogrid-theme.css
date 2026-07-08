@@ -1,3 +1,8 @@
+/* Tailwind utilities used by this extension's components. In-app the host
+   stylesheet also provides them, but the web share viewer loads this bundle
+   standalone and needs them included. */
+@tailwind utilities;
+
 /**
  * RevoGrid Theme and Diff Mode Styles
  *

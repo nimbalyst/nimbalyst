@@ -75,6 +75,27 @@ describe('SettingsService', () => {
     expect(svc.get('ai.defaultProvider')).toBe('claude-code');
     expect(svc.get('ai.chatShowToolCalls')).toBe(true);
     expect(svc.get('ai.apiKey.anthropic')).toBe('');
+    // Subscription CLI is a registered provider key, default-enabled like the SDK.
+    expect(svc.get('ai.provider.claude-code-cli')).toMatchObject({ enabled: true });
+  });
+
+  it('persists a claude-code-cli hidden-model denylist round-trip', async () => {
+    const { getSettingsService } = await import('../SettingsService');
+    const svc = getSettingsService();
+
+    // The picker-trim feature stores hidden model ids per provider. Persisting
+    // the CLI provider must not be rejected as an unknown key, and hiddenModels
+    // must survive the round-trip.
+    svc.set('ai.provider.claude-code-cli', {
+      enabled: false,
+      hiddenModels: ['claude-code-cli:haiku'],
+    } as any);
+    expect(svc.get('ai.provider.claude-code-cli')).toMatchObject({
+      enabled: false,
+      hiddenModels: ['claude-code-cli:haiku'],
+    });
+    // Independent from the SDK provider.
+    expect(svc.get('ai.provider.claude-code')).toMatchObject({ enabled: true });
   });
 
   it('round-trips a per-key write without touching other keys', async () => {

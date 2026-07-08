@@ -23,6 +23,7 @@ export type SettingsCategory =
   | 'agent-features'
   | 'beta-features'
   | 'mcp-servers'
+  | 'tools-mcp'
   | 'installed-extensions'
   | 'privileged-extensions'
   | 'claude-plugins'
@@ -323,6 +324,11 @@ Best for quick edits and tasks that do not require multi-file operations.`,
           id: 'mcp-servers',
           name: 'MCP Servers',
           icon: <MaterialSymbol icon="dns" size={16} />,
+        },
+        {
+          id: 'tools-mcp',
+          name: 'Tools & Token Cost',
+          icon: <MaterialSymbol icon="data_usage" size={16} />,
         },
       ],
     },

@@ -189,6 +189,27 @@ function getWindowBootstrapState(initialState: unknown): InitialWorkspaceWindowS
   return candidate;
 }
 
+/**
+ * NIM-757: which restored rail projects must be registered with the main
+ * process via `workspace:register-additional`. The window's primary workspace
+ * is already registered at bootstrap, so only the non-primary restored paths
+ * need it (deduped). A missing primary path means single-project mode -- in
+ * which case there is nothing extra to register beyond the primary itself.
+ */
+export function selectProjectsToRegister(
+  initialPaths: string[],
+  primaryPath: string | undefined,
+): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const path of initialPaths) {
+    if (path === primaryPath || seen.has(path)) continue;
+    seen.add(path);
+    result.push(path);
+  }
+  return result;
+}
+
 export function resolveInitialOpenProjectsState({
   persistedPaths,
   persistedActivePath,
@@ -261,11 +282,12 @@ export async function initOpenProjects(): Promise<void> {
     store.set(multiProjectModeAtom, !!mode);
     store.set(restorePreviousProjectsAtom, !!restorePrev);
 
+    const windowState = getWindowBootstrapState(initialState);
     const { paths: initialPaths, activePath: initialActivePath } = resolveInitialOpenProjectsState({
       persistedPaths: paths,
       persistedActivePath: activePath,
       restorePreviousProjects: !!restorePrev,
-      windowState: getWindowBootstrapState(initialState),
+      windowState,
     });
 
     if (initialPaths.length > 0) {
@@ -275,6 +297,27 @@ export async function initOpenProjects(): Promise<void> {
         openedAt: Date.now(),
       }));
       store.set(openProjectsAtom, projects);
+
+      // NIM-757 (#548 / reopen #441): register restored non-primary projects
+      // with the main process BEFORE flipping the active path. The "+"-add flow
+      // calls workspace:register-additional, but restored rail projects never
+      // did -- so the main process knew only the startup primary,
+      // workspace:set-active later rejected the unregistered path, and the
+      // path-less tracker-items-list IPC stayed pinned to the startup project's
+      // document service. Registering here seeds additionalWorkspacePaths and
+      // the per-path document service so a later rail click rescopes correctly.
+      const toRegister = selectProjectsToRegister(initialPaths, windowState?.workspacePath);
+      if (toRegister.length > 0) {
+        await Promise.all(
+          toRegister.map((workspacePath) =>
+            window.electronAPI!
+              .invoke('workspace:register-additional', { workspacePath })
+              .catch((err: unknown) => {
+                console.error('[openProjects] register-additional failed for', workspacePath, err);
+              }),
+          ),
+        );
+      }
 
       if (initialActivePath && initialPaths.includes(initialActivePath)) {
         store.set(activeWorkspacePathAtom, initialActivePath);

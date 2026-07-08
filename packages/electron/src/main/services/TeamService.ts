@@ -26,6 +26,7 @@ import { logger } from '../utils/logger';
 import { getNormalizedGitRemote } from '../utils/gitUtils';
 import { resolveTeamForRemoteHash } from './teamProjectResolver';
 import { getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
+import { assertJwtMatchesOrg, getJwtExp, AuthContextMismatchError } from './jwtOrg';
 import {
   getAccounts,
   getSessionJwt,
@@ -76,6 +77,7 @@ import {
   getMemberTrustStatus,
   markMemberVerified,
   fingerprintIdentityKey,
+  fetchTeamKeyStatus,
 } from './OrgKeyService';
 import { performKeyRotation, cleanupOrphanedDocuments, reEncryptTrackerFromLocal } from './KeyRotationService';
 // TrackerSyncManager already imports from this module (findTeamForWorkspace).
@@ -204,31 +206,28 @@ const orgJwtCache = new Map<string, CachedOrgJwt>();
 const JWT_REFRESH_BUFFER_MS = 60 * 1000;
 
 /**
- * Extract the `exp` claim from a JWT without verifying it.
- * Returns epoch seconds, or null if parsing fails.
- */
-function getJwtExp(jwt: string): number | null {
-  try {
-    const parts = jwt.split('.');
-    if (parts.length !== 3) return null;
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
-    return typeof payload.exp === 'number' ? payload.exp : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Get an org-scoped JWT via session exchange. Caches per-org.
  * This does NOT touch the global auth state -- the personal org session is preserved.
  *
  * Cache TTL is derived from the actual JWT `exp` claim (minus a 60s buffer)
  * so we never serve an expired token.
+ *
+ * NIM-949: the exchanged token is asserted to actually be scoped to `orgId`
+ * (its `organization_id` claim). A session refresh can demote a team session
+ * toward the personal org, in which case `/switch` may hand back a personal-org
+ * token; serving that for a team document room causes the room to reject the ws
+ * upgrade (400) and the doc renders blank. We throw AuthContextMismatchError
+ * rather than cache/serve a wrong-org token. Pass `forceRefresh` to bypass the
+ * cache and re-exchange (used by reconnect after an auth-style rejection).
  */
-export async function getOrgScopedJwt(orgId: string, accountOrgId?: string): Promise<string> {
+export async function getOrgScopedJwt(
+  orgId: string,
+  accountOrgId?: string,
+  forceRefresh = false,
+): Promise<string> {
   // Check cache
   const cached = orgJwtCache.get(orgId);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
     return cached.jwt;
   }
   // logger.main.info(`[TeamService] Org JWT cache miss for ${orgId}, exchanging session...`);
@@ -305,6 +304,22 @@ export async function getOrgScopedJwt(orgId: string, accountOrgId?: string): Pro
 
   if (!data.sessionJwt) {
     throw new Error('Session exchange returned no JWT');
+  }
+
+  // NIM-949: never cache/serve a token scoped to a different org than requested.
+  // A demoted (personal-org) token here is the root cause of server-only docs
+  // rendering blank: the team room rejects it on the ws upgrade.
+  try {
+    assertJwtMatchesOrg(data.sessionJwt, orgId);
+  } catch (err) {
+    if (err instanceof AuthContextMismatchError) {
+      orgJwtCache.delete(orgId);
+      logger.main.warn(
+        `[TeamService] getOrgScopedJwt: exchange returned wrong-org token for ${orgId} ` +
+          `(token org: ${err.tokenOrgId ?? '(none)'}); refusing to serve it`,
+      );
+    }
+    throw err;
   }
 
   // Stytch session exchange replaces the session token -- the old one is now
@@ -1181,6 +1196,19 @@ function startAutoWrapPolling(orgId: string): void {
       return;
     }
 
+    // Epic H2: stop polling for server-managed teams -- they have no key
+    // envelopes, so autoWrapForNewMembers is a no-op every iteration.
+    try {
+      const orgJwt = await getOrgScopedJwt(orgId);
+      if ((await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed') {
+        clearInterval(interval);
+        autoWrapIntervals.delete(orgId);
+        return;
+      }
+    } catch {
+      // Could not determine mode -- continue with legacy wrapping below.
+    }
+
     try {
       await autoWrapForNewMembers(orgId);
     } catch (err) {
@@ -1279,6 +1307,18 @@ export async function autoWrapForNewMembers(orgId: string): Promise<void> {
   if (!localFp) return; // No local key at all
 
   const orgJwt = await getOrgScopedJwt(orgId);
+
+  // Epic H2: server-managed teams have no per-member key envelopes -- the server
+  // holds the per-team DEK and sync paths skip the ECDH unwrap entirely. Wrapping
+  // org keys for members is dead work here (and noisily fails with "Public key not
+  // found" for members who never uploaded an identity key). Skip it.
+  try {
+    if ((await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed') {
+      return;
+    }
+  } catch {
+    // Could not determine custody mode -- fall through to legacy wrapping (safe default).
+  }
 
   try {
     const fpResp = await fetchTeamApi(`/api/teams/${orgId}/org-key-fingerprint`, 'GET', undefined, orgId) as { fingerprint: string | null };

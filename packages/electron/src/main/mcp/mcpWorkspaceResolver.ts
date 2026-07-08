@@ -1,5 +1,10 @@
 import { BrowserWindow } from "electron";
 import { findWindowByWorkspace } from "../window/WindowManager";
+import {
+  getBackendTools as registryGetBackendTools,
+  getVoiceEnabledBackendTools as registryGetVoiceBackendTools,
+  type BackendToolDefinition,
+} from "./backendToolRegistry";
 
 // Store document state PER SESSION to avoid cross-window contamination
 export const documentStateBySession = new Map<string, any>();
@@ -24,6 +29,8 @@ export interface ExtensionToolDefinition {
   extensionId: string;
   scope: "global" | "editor";
   editorFilePatterns?: string[];
+  /** When true, the tool is also exposed to the voice agent (OpenAI Realtime). */
+  voiceAgent?: boolean;
 }
 const extensionToolsByWorkspace = new Map<string, ExtensionToolDefinition[]>();
 
@@ -247,6 +254,17 @@ export function registerWorkspaceWindow(
 }
 
 /**
+ * Snapshot the workspace paths that currently have a window registered. Used by
+ * the backend-module lifecycle to decide which workspaces a module should run
+ * in (per-workspace keying). De-duplicated; best-effort (reflects what the MCP
+ * routing layer has been told about, which is exactly the set where backend
+ * tools need to resolve).
+ */
+export function getRegisteredWorkspacePaths(): string[] {
+  return Array.from(workspaceToWindowMap.keys());
+}
+
+/**
  * Remove a window from the workspace mapping when it's closed
  */
 export function unregisterWindow(windowId: number) {
@@ -406,11 +424,65 @@ export async function getAvailableExtensionTools(
 }
 
 /**
+ * Get the extension tools opted in to the voice agent (`voiceAgent: true`) for a
+ * workspace. Resolves worktree paths to their project path. Unlike
+ * getAvailableExtensionTools this does NOT inject a `filePath` parameter -- voice
+ * tools are global/self-contained, and dispatch resolves the active file from
+ * session state when needed. Returns the registered (namespaced, dotted) tool
+ * definitions; the voice tool bridge converts them to Realtime schemas.
+ */
+export async function getVoiceEnabledExtensionTools(
+  workspacePath: string | undefined
+): Promise<ExtensionToolDefinition[]> {
+  if (!workspacePath) return [];
+  const resolvedPath = await resolveExtensionToolsWorkspacePath(workspacePath);
+  const tools = extensionToolsByWorkspace.get(resolvedPath) || [];
+  return tools.filter((t) => t.voiceAgent === true);
+}
+
+/**
+ * Backend-module-registered MCP tools for a workspace (resolves worktree paths
+ * to the project path the module was started for). These are executed by the
+ * backend module via `handleBackendTool`, not the renderer.
+ */
+export async function getAvailableBackendTools(
+  workspacePath: string | undefined,
+  _filePath?: string | undefined
+): Promise<BackendToolDefinition[]> {
+  if (!workspacePath) return [];
+  const resolvedPath = await resolveExtensionToolsWorkspacePath(workspacePath);
+  return registryGetBackendTools(resolvedPath);
+}
+
+/**
+ * Resolve a (possibly worktree) workspace path to the project path under which
+ * backend tools / modules are keyed. Use before a registry lookup or a
+ * `PrivilegedExtensionHost.request` so worktree sessions reach the module the
+ * parent project started.
+ */
+export async function resolveBackendWorkspacePath(
+  workspacePath: string
+): Promise<string> {
+  return resolveExtensionToolsWorkspacePath(workspacePath);
+}
+
+/** Backend tools opted in to the voice agent for a workspace (worktree-aware). */
+export async function getVoiceEnabledBackendToolsForWorkspace(
+  workspacePath: string | undefined
+): Promise<BackendToolDefinition[]> {
+  if (!workspacePath) return [];
+  const resolvedPath = await resolveExtensionToolsWorkspacePath(workspacePath);
+  return registryGetVoiceBackendTools(resolvedPath);
+}
+
+/**
  * Distinct short-names of extensions that currently contribute MCP tools for a
  * workspace (e.g. `['excalidraw', 'slides']`). Each becomes its own deferred
- * `nimbalyst-<ext>` MCP server (MCP consolidation Phase 3).
+ * `nimbalyst-<ext>` MCP server (MCP consolidation Phase 3). Includes extensions
+ * that contribute tools ONLY via a backend module (e.g. the memory engine), so
+ * those get an endpoint even without any renderer-declared `aiTools`.
  *
- * Synchronous (reads the in-memory registry) so it can be called from
+ * Synchronous (reads the in-memory registries) so it can be called from
  * `getMcpServersConfig`. Resolves worktree paths to their project path via the
  * sync cache; an un-cached worktree returns the project's tools only after the
  * first async resolution elsewhere has warmed the cache.
@@ -420,12 +492,17 @@ export function getActiveExtensionShortNames(
 ): string[] {
   if (!workspacePath) return [];
   const resolvedPath = resolveExtensionToolsWorkspacePathSync(workspacePath);
-  const tools = extensionToolsByWorkspace.get(resolvedPath) || [];
   const shortNames = new Set<string>();
-  for (const tool of tools) {
-    const parts = tool.extensionId.split(".");
-    const shortName = parts[parts.length - 1] || tool.extensionId;
+  const addFrom = (extensionId: string) => {
+    const parts = extensionId.split(".");
+    const shortName = parts[parts.length - 1] || extensionId;
     if (shortName) shortNames.add(shortName);
+  };
+  for (const tool of extensionToolsByWorkspace.get(resolvedPath) || []) {
+    addFrom(tool.extensionId);
+  }
+  for (const tool of registryGetBackendTools(resolvedPath)) {
+    addFrom(tool.extensionId);
   }
   return Array.from(shortNames);
 }

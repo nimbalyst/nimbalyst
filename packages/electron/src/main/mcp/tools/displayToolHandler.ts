@@ -10,14 +10,12 @@ export const displayToolSchemas = [
   {
     name: "display_to_user",
     description:
-      'Display visual content inline in the conversation. Use this to show images or charts to the user. Provide an array of items, where each item has a description and exactly one content type: either "image" (for displaying a LOCAL file) or "chart" (for data visualizations). IMPORTANT: For images, you must provide an ABSOLUTE path to a LOCAL file on disk (e.g., "/Users/name/project/image.png"). URLs and relative paths are NOT supported. If a file does not exist, that specific image will show an error while other valid images still display.',
+      'Display images or charts inline in the conversation. Each item has a description and exactly one content type: "image" (a LOCAL file — ABSOLUTE path required; URLs and relative paths are NOT supported) or "chart" (data visualization). A missing image file errors individually; other items still display.',
     inputSchema: {
       type: "object",
       properties: {
         items: {
           type: "array",
-          description:
-            "Array of visual items to display. Each item must have a description and exactly one content type (image or chart).",
           minItems: 1,
           items: {
             type: "object",
@@ -30,12 +28,12 @@ export const displayToolSchemas = [
               image: {
                 type: "object",
                 description:
-                  "Display a LOCAL image file from disk. Provide this OR chart, not both. The file must exist locally.",
+                  "A LOCAL image file to display. Provide this OR chart, not both.",
                 properties: {
                   path: {
                     type: "string",
                     description:
-                      'ABSOLUTE path to a LOCAL image file on disk (e.g., "/Users/name/project/screenshot.png"). URLs and relative paths are NOT supported. The file must exist.',
+                      "ABSOLUTE path to an existing LOCAL image file. URLs and relative paths are NOT supported.",
                   },
                 },
                 required: ["path"],
@@ -43,23 +41,22 @@ export const displayToolSchemas = [
               chart: {
                 type: "object",
                 description:
-                  "Display a data chart. Provide this OR image, not both.",
+                  "A data chart to render. Provide this OR image, not both.",
                 properties: {
                   chartType: {
                     type: "string",
                     enum: ["bar", "line", "pie", "area", "scatter"],
-                    description: "The type of chart to render",
                   },
                   data: {
                     type: "array",
                     items: { type: "object" },
                     description:
-                      "Array of data objects with keys matching xAxisKey and yAxisKey",
+                      "Data objects with keys matching xAxisKey and yAxisKey",
                   },
                   xAxisKey: {
                     type: "string",
                     description:
-                      "Key in data objects for x-axis labels (or pie chart segment names)",
+                      "Key for x-axis labels (or pie segment names)",
                   },
                   yAxisKey: {
                     oneOf: [
@@ -67,42 +64,39 @@ export const displayToolSchemas = [
                       { type: "array", items: { type: "string" } },
                     ],
                     description:
-                      "Key(s) in data objects for y-axis values. String for single series, array for multi-series",
+                      "Key(s) for y-axis values; array for multi-series",
                   },
                   colors: {
                     type: "array",
                     items: { type: "string" },
                     description:
-                      "Optional colors for chart series (hex codes or CSS color names)",
+                      "Optional per-series colors (hex or CSS names)",
                   },
                   errorBars: {
                     type: "object",
                     description:
-                      "Optional error bars configuration. Supports bar, line, area, and scatter charts.",
+                      "Optional error bars (bar, line, area, scatter). Keys name fields in the data objects.",
                     properties: {
                       dataKey: {
                         type: "string",
                         description:
-                          "Key in data objects for the y-axis series to add error bars to (required when yAxisKey is an array)",
+                          "Series to attach error bars to (required when yAxisKey is an array)",
                       },
                       errorKey: {
                         type: "string",
-                        description:
-                          "Key in data objects containing error values (symmetric errors)",
+                        description: "Symmetric error values",
                       },
                       errorKeyLower: {
                         type: "string",
-                        description:
-                          "Key in data objects for lower error values (asymmetric errors)",
+                        description: "Asymmetric lower error values",
                       },
                       errorKeyUpper: {
                         type: "string",
-                        description:
-                          "Key in data objects for upper error values (asymmetric errors)",
+                        description: "Asymmetric upper error values",
                       },
                       strokeWidth: {
                         type: "number",
-                        description: "Width of error bar lines (default: 2)",
+                        description: "Line width (default: 2)",
                       },
                     },
                   },

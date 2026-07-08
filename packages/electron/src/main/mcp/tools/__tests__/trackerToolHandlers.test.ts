@@ -29,6 +29,7 @@ const {
     listTrackerItems: vi.fn<(...args: any[]) => Promise<any[]>>(async () => []),
     ensureTrackerProjection: vi.fn<(...args: any[]) => Promise<any>>(async () => null),
     updateTrackerItemInFile: vi.fn<(...args: any[]) => Promise<any>>(async () => null),
+    propagateInverseForUpdate: vi.fn<(...args: any[]) => Promise<void>>(async () => undefined),
     archiveTrackerItem: vi.fn<(...args: any[]) => Promise<any>>(async () => null),
     destroy: vi.fn(),
   },
@@ -172,6 +173,33 @@ describe('rowToTrackerItem typeTags normalization', () => {
     expect(rowToTrackerItem(makeRow({ type_tags: 'not json' })).typeTags).toEqual(['bug']);
   });
 
+  it('un-nests a synced data.customFields bag instead of double-nesting it (NIM-1305 / NIM-1077)', () => {
+    // Synced items store custom + relationship fields NESTED under
+    // data.customFields. Double-nesting here (customFields.customFields) made the
+    // sync round-trip bury sourceDocument/features one level deeper until they
+    // vanished from the flattened read model.
+    const item = rowToTrackerItem(
+      makeRow({
+        type: 'feature-module',
+        type_tags: ['feature-module'],
+        data: JSON.stringify({
+          title: 'Module',
+          status: 'current',
+          customFields: {
+            sourceDocument: 'doc.md',
+            sourceHeading: 'H',
+            features: [{ itemId: 'feat-1' }],
+          },
+        }),
+      })
+    );
+    expect(item.customFields?.sourceDocument).toBe('doc.md');
+    expect(item.customFields?.sourceHeading).toBe('H');
+    expect(item.customFields?.features).toEqual([{ itemId: 'feat-1' }]);
+    // The raw nested bag must NOT be carried through as a nested key.
+    expect(item.customFields?.customFields).toBeUndefined();
+  });
+
   it('surfaces data.origin as a top-level field (not buried in customFields)', () => {
     // Regression: origin landing in customFields made item.origin undefined, so
     // the TrackerRecord write-back dropped data.origin and the URN index went
@@ -185,6 +213,27 @@ describe('rowToTrackerItem typeTags normalization', () => {
     );
     expect(item.origin).toEqual(origin);
     expect(item.customFields?.origin).toBeUndefined();
+  });
+});
+
+describe('rowToTrackerItem content decoding', () => {
+  it('parses the JSON-encoded content column back into a plain markdown string', () => {
+    // `content` is stored as JSON.stringify(markdown) (see updateTrackerItemContent /
+    // tracker_create). Reading it back without JSON.parse leaves literal quotes and
+    // escaped \n sequences, which is what rendered as raw text after close/reopen.
+    const markdown = '**Objetivo**: validar\n\n### Links';
+    const item = rowToTrackerItem(makeRow({ content: JSON.stringify(markdown) }));
+    expect(item.content).toBe(markdown);
+  });
+
+  it('passes through non-JSON content unchanged (legacy/plain rows)', () => {
+    const item = rowToTrackerItem(makeRow({ content: 'plain text' }));
+    expect(item.content).toBe('plain text');
+  });
+
+  it('returns undefined when content is null', () => {
+    const item = rowToTrackerItem(makeRow({ content: null }));
+    expect(item.content).toBeUndefined();
   });
 });
 
@@ -320,6 +369,7 @@ describe('handleTrackerCreate session linking', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDocumentServices.clear();
+    mockGlobalRegistry.get.mockReturnValue(undefined);
     mockGlobalRegistry.validate.mockReturnValue({ valid: true, errors: [] });
   });
 
@@ -780,6 +830,7 @@ describe('handleTrackerUpdate description / collab body', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDocumentServices.clear();
+    mockGlobalRegistry.get.mockReturnValue(undefined);
     mockGlobalRegistry.validate.mockReturnValue({ valid: true, errors: [] });
     // Default: non-collab (local) workspace -- description writes proceed.
     vi.mocked(getEffectiveTrackerSyncPolicy).mockReturnValue({ mode: 'local', scope: 'project' });
@@ -828,6 +879,68 @@ describe('handleTrackerUpdate description / collab body', () => {
     expect(payload.structured.tool).toBe('tracker_update');
   });
 
+  it('clears nested relationship fields with unsetFields and propagates inverse removals (NIM-1305)', async () => {
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+    (mockGlobalRegistry.get as any).mockReturnValue({
+      sync: { mode: 'local', scope: 'project' },
+      fields: [
+        {
+          name: 'modules',
+          type: 'relationship',
+          relationshipTypeKey: 'belongs-to',
+          inverseFieldId: 'features',
+          inverseRelationshipTypeKey: 'contains',
+          multiValue: true,
+        },
+      ],
+    });
+    const trackerRow = makeRow({
+      id: 'feature_target',
+      type: 'product-feature',
+      type_tags: ['product-feature'],
+      workspace: '/tmp/ws',
+      source: 'native',
+      document_path: '',
+      data: JSON.stringify({
+        title: 'Feature',
+        status: 'to-do',
+        customFields: {
+          modules: [{ itemId: 'module-1' }],
+          sourceDocument: 'features.md',
+        },
+      }),
+    });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [trackerRow] }) // resolveTrackerRowByReference
+      .mockResolvedValueOnce({ rows: [] }) // UPDATE tracker_items SET data
+      .mockResolvedValueOnce({ rows: [trackerRow] }) // notifyTrackerItemUpdated read
+      .mockResolvedValueOnce({ rows: [trackerRow] }) // refreshedRow read for sync block
+      .mockResolvedValueOnce({ rows: [trackerRow] }) // postSyncRow read
+      .mockResolvedValueOnce({ rows: [{ type_tags: ['product-feature'] }] }); // re-read type_tags
+
+    const result = await handleTrackerUpdate(
+      { id: 'NIM-1', unsetFields: ['modules'] },
+      '/tmp/ws',
+    );
+
+    expect(result.isError).toBe(false);
+    const updateCall = mockQuery.mock.calls.find((c) =>
+      String(c[0]).includes('UPDATE tracker_items SET data = $1'),
+    );
+    expect(updateCall).toBeDefined();
+    const writtenData = JSON.parse(updateCall![1]![0] as string);
+    expect(writtenData.customFields).toEqual({ sourceDocument: 'features.md' });
+    expect(writtenData.modules).toBeUndefined();
+    expect(mockDocService.propagateInverseForUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'feature_target', type: 'product-feature' }),
+      { modules: undefined },
+      expect.objectContaining({
+        customFields: expect.objectContaining({ modules: [{ itemId: 'module-1' }] }),
+      }),
+      'local',
+    );
+  });
+
   it('writes description to PGLite for local-only items', async () => {
     setupUpdateQueueWithDescription();
 
@@ -871,6 +984,32 @@ describe('handleTrackerUpdate description / collab body', () => {
       'bug_target',
       1,
       JSON.stringify('phase 5 body bump'),
+    ]);
+  });
+
+  it('seeds the body when description arrives via the fields bag (NIM-438)', async () => {
+    setupUpdateQueueWithDescription();
+
+    const result = await handleTrackerUpdate(
+      { id: 'NIM-1', fields: { description: 'body via fields bag' } },
+      '/tmp/ws',
+    );
+
+    expect(result.isError).toBe(false);
+
+    const updateContentSql = mockQuery.mock.calls.find(
+      (c) => /UPDATE tracker_items[\s\S]+SET content[\s\S]+body_version/.test(String(c[0])),
+    );
+    expect(updateContentSql).toBeDefined();
+
+    const cacheInsert = mockQuery.mock.calls.find(
+      (c) => /INSERT INTO tracker_body_cache/.test(String(c[0])),
+    );
+    expect(cacheInsert).toBeDefined();
+    expect(cacheInsert![1]).toEqual([
+      'bug_target',
+      1,
+      JSON.stringify('body via fields bag'),
     ]);
   });
 
@@ -1031,5 +1170,51 @@ describe('session metadata parsing on SQLite (NIM-829)', () => {
     expect(updateCall).toBeTruthy();
     const written = JSON.parse(updateCall![1]![0] as string);
     expect(written.linkedTrackerItemIds).toEqual(['bug_b']);
+  });
+});
+
+// NIM-879: tracker_create made session-linking opt-in (NIM-408), but
+// tracker_update was left auto-linking the ambient session on every field
+// change, re-polluting sessions with unrelated items. Linking on update must
+// now require an explicit linkSession: true.
+describe('handleTrackerUpdate session linking (NIM-879)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDocumentServices.clear();
+    mockGlobalRegistry.validate.mockReturnValue({ valid: true, errors: [] });
+    vi.mocked(getEffectiveTrackerSyncPolicy).mockReturnValue({ mode: 'local', scope: 'project' });
+    vi.mocked(shouldSyncTrackerItem).mockReturnValue(false);
+    vi.mocked(isTrackerSyncActive).mockReturnValue(false);
+  });
+
+  it('does NOT link the ambient session on a status update when linkSession is omitted', async () => {
+    // Catch-all: every read returns a consistent native row so the handler walks
+    // its update path without us hand-counting each query.
+    mockQuery.mockResolvedValue({ rows: [makeRow({ id: 'bug_target', workspace: '/tmp/ws', source: 'native', document_path: '' })] });
+
+    const result = await handleTrackerUpdate(
+      { id: 'NIM-1', status: 'in-progress' },
+      '/tmp/ws',
+      'session_abc',
+    );
+
+    expect(result.isError).toBe(false);
+    const sqls = mockQuery.mock.calls.map((c) => String(c[0]));
+    expect(sqls.some((s) => s.includes('UPDATE ai_sessions'))).toBe(false);
+    expect(sqls.some((s) => s.includes('SELECT metadata FROM ai_sessions'))).toBe(false);
+  });
+
+  it('links the ambient session on update when linkSession: true', async () => {
+    mockQuery.mockResolvedValue({ rows: [makeRow({ id: 'bug_target', workspace: '/tmp/ws', source: 'native', document_path: '', metadata: '{}', data: '{}' })] });
+
+    const result = await handleTrackerUpdate(
+      { id: 'NIM-1', status: 'in-progress', linkSession: true },
+      '/tmp/ws',
+      'session_abc',
+    );
+
+    expect(result.isError).toBe(false);
+    const sqls = mockQuery.mock.calls.map((c) => String(c[0]));
+    expect(sqls.some((s) => s.includes('UPDATE ai_sessions'))).toBe(true);
   });
 });

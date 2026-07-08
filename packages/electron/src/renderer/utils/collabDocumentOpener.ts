@@ -36,8 +36,15 @@ export interface CollabDocumentConfig {
    * still AES-ciphertext and must be decrypted with the original org key.
    */
   legacyDocumentKey?: CryptoKey;
+  /**
+   * NIM-959: all candidate legacy org-key epochs for server-managed reads. A
+   * team that rotated its org key while still legacy-e2e can have content rows
+   * spanning epochs; DocumentSync tries each. Mirrors the doc-index multi-epoch
+   * fix (NIM-906/910).
+   */
+  legacyDocumentKeys?: CryptoKey[];
   serverUrl: string;
-  getJwt: () => Promise<string>;
+  getJwt: (opts?: { forceRefresh?: boolean }) => Promise<string>;
   /** Optional extra query appended to revision-history HTTP requests. */
   urlExtraQuery?: string;
   userId: string;
@@ -88,6 +95,37 @@ export function getCollabConfig(uri: string): CollabDocumentConfig | undefined {
  */
 export function removeCollabConfig(uri: string): void {
   collabConfigRegistry.delete(uri);
+}
+
+/**
+ * Register a resolved collab config without opening a tab. Used by headless
+ * flows (and the Playwright test helpers) that need a room connection but no
+ * editor: the config becomes discoverable by documentId for seed/export/
+ * re-upload passes.
+ */
+export function registerCollabConfig(config: CollabDocumentConfig): string {
+  const uri = buildCollabUri(config.orgId, config.documentId);
+  collabConfigRegistry.set(uri, config);
+  return uri;
+}
+
+/**
+ * Find an already-resolved config for a document regardless of the URI it was
+ * registered under. Seed/export/re-upload flows address rooms as
+ * `collab://seed/<documentId>` before they know the orgId; when the document
+ * was opened this session its resolved config -- keys, server URL, websocket
+ * factory -- is directly reusable.
+ */
+export function findCollabConfigByDocumentId(
+  workspacePath: string,
+  documentId: string,
+): CollabDocumentConfig | undefined {
+  for (const config of collabConfigRegistry.values()) {
+    if (config.documentId === documentId && config.workspacePath === workspacePath) {
+      return config;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -147,6 +185,21 @@ async function importOrgKeyFromBase64(base64: string): Promise<CryptoKey> {
     false,
     ['encrypt', 'decrypt']
   );
+}
+
+/**
+ * Import every candidate legacy org-key epoch for server-managed reads (NIM-959).
+ * Prefers the multi-epoch array; falls back to the singular legacy key for older
+ * main-process handlers. Returns [] when none are available.
+ */
+async function importLegacyOrgKeys(
+  legacyOrgKeysBase64: string[] | undefined,
+  legacyOrgKeyBase64: string | undefined,
+): Promise<CryptoKey[]> {
+  const raws = legacyOrgKeysBase64 && legacyOrgKeysBase64.length > 0
+    ? legacyOrgKeysBase64
+    : (legacyOrgKeyBase64 ? [legacyOrgKeyBase64] : []);
+  return Promise.all(raws.map((b64) => importOrgKeyFromBase64(b64)));
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +386,12 @@ export async function resolveCollabConfigForUri(
   const existing = collabConfigRegistry.get(uri);
   if (existing) return existing;
 
+  // A seed/export/re-upload caller may only know the documentId (its URI is
+  // `collab://seed/<documentId>`); reuse the config resolved when the doc was
+  // opened rather than re-running the IPC resolution.
+  const byDocument = findCollabConfigByDocumentId(workspacePath, documentId);
+  if (byDocument) return byDocument;
+
   try {
     const result = await window.electronAPI.documentSync.open(
       workspacePath,
@@ -346,15 +405,16 @@ export async function resolveCollabConfigForUri(
       return null;
     }
 
-    const { orgId, title: resolvedTitle, orgKeyBase64, legacyOrgKeyBase64, orgKeyFingerprint, serverUrl, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+    const { orgId, title: resolvedTitle, orgKeyBase64, legacyOrgKeyBase64, legacyOrgKeysBase64, orgKeyFingerprint, serverUrl, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
     const resolvedDocumentType = documentType ?? result.config.documentType;
     const serverManaged = result.config.keyCustody === 'server-managed';
     const documentKey = serverManaged ? undefined : await importOrgKeyFromBase64(orgKeyBase64);
     // Server-managed docs may still serve PRE-MIGRATION legacy-e2e rows; import
-    // the legacy org key (when provided) so those old rows can be decrypted (NIM-878).
-    const legacyDocumentKey = serverManaged && legacyOrgKeyBase64
-      ? await importOrgKeyFromBase64(legacyOrgKeyBase64)
-      : undefined;
+    // every candidate legacy org-key epoch so old rows (possibly written under a
+    // rotated-away key) can be decrypted (NIM-878 / NIM-959).
+    const legacyDocumentKeys = serverManaged
+      ? await importLegacyOrgKeys(legacyOrgKeysBase64, legacyOrgKeyBase64)
+      : [];
     const hasWsProxy = !!window.electronAPI?.documentSync?.wsConnect;
 
     const config: CollabDocumentConfig = {
@@ -365,7 +425,8 @@ export async function resolveCollabConfigForUri(
       documentType: resolvedDocumentType,
       keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
       documentKey,
-      legacyDocumentKey,
+      legacyDocumentKey: legacyDocumentKeys[0],
+      legacyDocumentKeys,
       orgKeyFingerprint,
       serverUrl,
       userId,
@@ -373,8 +434,8 @@ export async function resolveCollabConfigForUri(
       userEmail,
       pendingUpdateBase64,
       createWebSocket: hasWsProxy ? createProxiedWebSocket : undefined,
-      getJwt: async () => {
-        const jwtResult = await window.electronAPI.documentSync.getJwt(orgId);
+      getJwt: async (opts) => {
+        const jwtResult = await window.electronAPI.documentSync.getJwt(orgId, opts?.forceRefresh);
         if (!jwtResult.success || !jwtResult.jwt) {
           throw new Error(`Failed to get JWT: ${jwtResult.error}`);
         }
@@ -434,16 +495,17 @@ export async function openCollabDocumentViaIPC(options: {
     throw new Error(result.error || 'Failed to resolve collaborative document config');
   }
 
-  const { orgId, documentId, title, orgKeyBase64, legacyOrgKeyBase64, serverUrl, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+  const { orgId, documentId, title, orgKeyBase64, legacyOrgKeyBase64, legacyOrgKeysBase64, serverUrl, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
   const documentType = options.documentType ?? result.config.documentType;
   const serverManaged = result.config.keyCustody === 'server-managed';
 
   // Reconstruct CryptoKey from raw base64 (legacy only; server-managed has none)
   const documentKey = serverManaged ? undefined : await importOrgKeyFromBase64(orgKeyBase64);
-  // Legacy org key for reading pre-migration rows in server-managed mode (NIM-878).
-  const legacyDocumentKey = serverManaged && legacyOrgKeyBase64
-    ? await importOrgKeyFromBase64(legacyOrgKeyBase64)
-    : undefined;
+  // Every candidate legacy org-key epoch for reading pre-migration rows in
+  // server-managed mode -- rows may span rotated epochs (NIM-878 / NIM-959).
+  const legacyDocumentKeys = serverManaged
+    ? await importLegacyOrgKeys(legacyOrgKeysBase64, legacyOrgKeyBase64)
+    : [];
 
   // Build the real URI now that we have orgId
   const realUri = buildCollabUri(orgId, documentId);
@@ -461,7 +523,8 @@ export async function openCollabDocumentViaIPC(options: {
     documentType,
     keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
     documentKey,
-    legacyDocumentKey,
+    legacyDocumentKey: legacyDocumentKeys[0],
+    legacyDocumentKeys,
     serverUrl,
     userId,
     userName,
@@ -469,8 +532,8 @@ export async function openCollabDocumentViaIPC(options: {
     initialContent: options.initialContent,
     pendingUpdateBase64,
     createWebSocket: hasWsProxy ? createProxiedWebSocket : undefined,
-    getJwt: async () => {
-      const jwtResult = await window.electronAPI.documentSync.getJwt(orgId);
+    getJwt: async (opts) => {
+      const jwtResult = await window.electronAPI.documentSync.getJwt(orgId, opts?.forceRefresh);
       if (!jwtResult.success || !jwtResult.jwt) {
         throw new Error(`Failed to get JWT: ${jwtResult.error}`);
       }

@@ -42,7 +42,7 @@ export function getInteractiveToolSchemas(sessionId: string | undefined) {
     {
       name: "AskUserQuestion",
       description:
-        "Prompt the user with one or more multiple-choice questions and wait for their response before continuing. Use this when you need explicit confirmation or disambiguation.",
+        "Prompt the user with one or more multiple-choice questions and wait for their response. Use for explicit confirmation or disambiguation.",
       inputSchema: {
         type: "object",
         properties: {
@@ -50,7 +50,7 @@ export function getInteractiveToolSchemas(sessionId: string | undefined) {
             type: "array",
             minItems: 1,
             description:
-              "List of questions to ask the user. Each question should provide 2-3 options.",
+              "Questions to ask; each should offer 2-3 options.",
             items: {
               type: "object",
               properties: {
@@ -96,29 +96,11 @@ export function getInteractiveToolSchemas(sessionId: string | undefined) {
     },
     {
       name: "developer_git_commit_proposal",
-      description: `Propose files and commit message for a git commit.
+      description: `Propose files and commit message for a git commit; the user reviews and adjusts the proposal in an interactive widget before committing.
 
-IMPORTANT: Before calling this tool, you MUST:
-1. Call get_session_edited_files to get ALL files edited in this session
-2. Cross-reference with git status to find which session files have uncommitted changes
-3. Include ALL session-edited files that have changes - do not cherry-pick a subset
+IMPORTANT: First call get_session_edited_files, cross-reference with git status, and include ALL session-edited files that have uncommitted changes — do not cherry-pick a subset.
 
-This tool will present an interactive widget to the user where they can review
-and adjust your proposal before committing.
-
-The commit message should follow these guidelines:
-- Start with type prefix: feat:, fix:, refactor:, docs:, test:, chore:
-- Focus on IMPACT and WHY, not implementation details
-- Title describes user-visible outcome or bug fixed
-- Use bullet points (dash prefix) only for multiple distinct changes
-- Keep lines under 72 characters
-- No emojis
-- Lead with problem solved or capability added, not technique used
-- If the commit resolves a referenced issue or tracker item, include the
-  appropriate tracker reference in the proposed message using the canonical
-  closing syntax for that system (for example: Fixes #123, Closes ABC-123).
-  If the correct closing syntax is unclear, include a neutral reference
-  line instead of omitting the tracker entirely`,
+Commit message: type prefix (feat:/fix:/refactor:/docs:/test:/chore:), title states the user-visible outcome, focus on impact and why (not technique), lines under 72 chars, no emojis, dash bullets only for multiple distinct changes. If the commit resolves an issue or tracker item, include its canonical closing reference (e.g. Fixes #123, Closes ABC-123), or a neutral reference line if the closing syntax is unclear.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -1209,7 +1191,7 @@ const REQUEST_USER_INPUT_FIELD_SCHEMA = {
     },
     id: {
       type: "string",
-      description: "Stable key the agent uses to find this field's answer in the response payload.",
+      description: "Key for this field's answer in the response payload.",
     },
     label: { type: "string", description: "Short label shown above the control." },
     description: { type: "string", description: "Optional longer explanation." },
@@ -1227,7 +1209,7 @@ const REQUEST_USER_INPUT_FIELD_SCHEMA = {
           id: { type: "string" },
           title: { type: "string" },
           subtitle: { type: "string" },
-          badge: { type: "string", description: "multiSelect only: short label like '3 unread' or 'abandoned'." },
+          badge: { type: "string", description: "multiSelect only: short badge label." },
           defaultChecked: { type: "boolean", description: "multiSelect only: pre-check this item." },
           removable: { type: "boolean", description: "reorder only: show a delete affordance for this item." },
         },
@@ -1281,35 +1263,11 @@ function requestUserInputSchema() {
     // that collides with a Codex CLI built-in tool gated to Plan mode and the
     // agent gets refused with "request_user_input is unavailable in Default mode".
     name: "PromptForUserInput",
-    description: `Ask the user for structured input via a composable widget. One prompt can carry multiple typed fields, all rendered together; the agent receives one answer payload keyed by field id.
+    description: `Ask the user for structured input via a composable widget with typed fields; the answer payload is keyed by field id. The "fields" argument is an ARRAY OF OBJECTS ({ type, id, label, ... }), never an array of strings — per-type required properties are documented on the field schema.
 
-Each field is an object with { type, id, label, description?, ... }. The "fields" argument is an ARRAY OF OBJECTS, never an array of strings.
+Field types: multiSelect (pick a subset), singleSelect (branching choice), reorder (drag-to-reorder with optional delete), editText (edit a seeded draft), confirm (yes/no).
 
-Field types and per-type required properties:
-- multiSelect — checkbox list with rich rows. Required: items: [{ id, title, subtitle?, badge?, defaultChecked? }, ...]. Optional: minSelected, maxSelected. Use for "pick a subset".
-- singleSelect — radio group. Required: options: [{ id, label, description? }, ...]. Optional: allowOther: true to show an "Other" textarea. Use for branching choices.
-- reorder — drag-to-reorder list with optional per-item delete. Required: items: [{ id, title, subtitle?, removable? }, ...]. Optional: minItems (floor when items are removable). Use when the user expresses a permutation.
-- editText — inline rich-text editor seeded with a draft. Required: initialText. Optional: format ("markdown" | "plain", default "markdown"), placeholder, minLength, maxLength. Use when you have a draft the user should edit before send.
-- confirm — yes/no toggle. Optional: defaultValue. Use for binary confirmations.
-
-Example call:
-  PromptForUserInput({
-    title: "Cleanup sessions",
-    intro: "Found 3 stale sessions.",
-    fields: [
-      {
-        type: "multiSelect",
-        id: "sessionsToArchive",
-        label: "Sessions",
-        items: [
-          { id: "s1", title: "Refactor settings", subtitle: "47d ago", defaultChecked: true },
-          { id: "s2", title: "Sync warning", subtitle: "33d ago" }
-        ]
-      }
-    ]
-  })
-
-Prefer this tool over AskUserQuestion when input is richer than a flat list of options (order, removal, freeform edits, items with subtitles/badges, or multi-field composition).`,
+Prefer this tool over AskUserQuestion when input is richer than a flat list of options (order, removal, freeform edits, or multi-field composition).`,
     inputSchema: {
       type: "object",
       properties: {

@@ -29,7 +29,7 @@ Voice mode is a **dual-agent architecture** layered on top of existing AI sessio
                     │  VoiceModeSettingsHandler    │        │
                     │                              ▼        │
                     │                     OpenAI Realtime   │
-                    │                     API (GPT-4o)     │
+                    │                  API (gpt-realtime-2) │
                     └──────────────────────────────────────┘
 ```
 
@@ -50,6 +50,9 @@ Voice mode does **not** replace the coding session. It augments it. The voice ag
 | `packages/electron/src/renderer/utils/audioPlayback.ts` | Renderer | PCM16 playback via AudioBufferSourceNode, echo-cancellation-aware routing through MediaStreamDestination |
 | `packages/runtime/src/ai/prompt.ts` | Runtime | `buildClaudeCodeSystemPrompt()` injects voice mode section when `isVoiceMode` flag is set |
 | `packages/electron/src/main/mcp/httpServer.ts` | Main | MCP tools `voice_agent_speak` and `voice_agent_stop` exposed to coding agent |
+| `packages/electron/src/main/services/voice/voiceToolBridge.ts` | Main | Pure: converts extension AI tools (`voiceAgent: true`) into Realtime function-tool schemas + a realtime↔namespaced name map |
+| `packages/runtime/src/extensions/VoiceContextProviderRegistry.ts` | Renderer | Registry where extensions register voice session-context providers; produces the capped concatenated context |
+| `packages/runtime/src/ai/server/transcript/parsers/VoiceRawParser.ts` | Runtime | Parses `openai-realtime` raw messages (user/assistant speech, `[system]` diagnostics, and `voiceToolCall` JSON) into canonical transcript events, so voice-agent tool calls render as real tool widgets |
 
 ## Data Flow
 
@@ -67,7 +70,7 @@ Voice mode does **not** replace the coding session. It augments it. The voice ag
      │
 5. RealtimeAPIClient sends to OpenAI via WebSocket: input_audio_buffer.append
      │
-6. OpenAI VAD detects speech end, transcribes (Whisper), generates response
+6. OpenAI VAD detects speech end, transcribes (streaming gpt-realtime-whisper), generates response
      │
 7. If voice agent calls submit_agent_prompt tool:
      │  a. RealtimeAPIClient.handleFunctionCall() invokes onSubmitPromptCallback
@@ -78,7 +81,9 @@ Voice mode does **not** replace the coding session. It augments it. The voice ag
      │  f. Coding agent (Claude Code) processes the prompt
      │  g. On completion, voiceModeListeners receives onAIStreamResponse with isComplete=true
      │  h. Renderer sends IPC: voice-mode:agent-task-complete with summary
-     │  i. VoiceModeService receives completion, calls poc.sendUserMessage() with [INTERNAL: Task complete...]
+     │  i. VoiceModeService receives completion. On gpt-realtime-2 it resolves the
+     │     still-open submit_agent_prompt call with the summary (async function
+     │     calling); on the gpt-realtime fallback it injects [INTERNAL: Task complete...]
      │  j. Voice agent speaks the result to the user
      │
 8. Voice agent audio response flows back:
@@ -188,7 +193,9 @@ When sleeping:
 | `voice-mode:interrupt` | VAD detected user speech (stop playback) |
 | `voice-mode:speech-stopped` | VAD detected silence after speech |
 | `voice-mode:stopped` | Voice session ended (with final token usage) |
-| `voice-mode:error` | Error (quota, rate limit, connection failure) |
+| `voice-mode:error` | Error (quota, rate limit, connection failure, reconnect exhausted) |
+| `voice-mode:reconnecting` | Socket dropped; backoff reconnect in progress (transient) |
+| `voice-mode:reconnected` | Reconnect succeeded; session config re-applied |
 | `voice-mode:pause-listening` | Voice agent requested mic sleep |
 | `voice-mode:settings-changed` | Settings changed (broadcast to all windows) |
 | `voice-mode:respond-to-prompt` | Voice agent answered an interactive prompt |
@@ -209,7 +216,7 @@ The OpenAI Realtime API session is configured with these function-calling tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `submit_agent_prompt` | Queue a coding task for the coding agent |
+| `submit_agent_prompt` | Queue a coding task for the coding agent. On gpt-realtime-2 this is an async (deferred) call: it stays open and the coding agent's summary is delivered as the tool result when work completes. On the gpt-realtime fallback it returns a synthetic "queued" result and the completion arrives via an injected `[INTERNAL: Task complete]` wake message. |
 | `ask_coding_agent` | Send a synchronous question to the coding agent (60s timeout) |
 | `respond_to_interactive_prompt` | Answer a pending AskUserQuestion, ExitPlanMode, or GitCommitProposal |
 | `stop_voice_session` | End the voice session |
@@ -219,6 +226,36 @@ The OpenAI Realtime API session is configured with these function-calling tools:
 | `navigate_to_session` | Switch the UI to a specific AI session |
 | `create_session` | Create a new coding session and switch to it. The voice agent's linked session updates automatically via `voiceModeListeners.syncLinkedSession`. |
 | `propose_commit` | Trigger the "Commit with AI" feature. Sends `voice-mode:propose-commit` to the renderer, which runs the same logic as the Smart Commit button in `GitOperationsPanel`: pre-fetches files via `git:get-commit-context`, then dispatches an `ai:sendMessage` with the canonical `Use the developer_git_commit_proposal tool to create a commit.` prefix so the `CommitRequestCard` widget appears in the transcript. The resulting `git_commit_proposal_request` interactive prompt flows back to the voice agent through the existing interactive-prompt forwarding for verbal approve/reject. |
+
+## Extension Voice Tools & Context Providers (general core hooks)
+
+Any extension can contribute to the voice agent, not just a dedicated grounding extension. There are two general hooks, both bridging the renderer (where extension code runs) to the main process (where the voice session runs).
+
+### Core hook 1 — Extension voice tools
+
+An extension AI tool opts in by setting `voiceAgent: true` on its `ExtensionAITool`. The same tool shape/handler/`inputSchema` serves both the coding agent and the voice agent.
+
+- The flag is threaded through the existing tool registry: `MCPToolDefinition` (renderer, `ExtensionAIToolsBridge`) → `ExtensionToolDefinition` (main, `mcpWorkspaceResolver`). `getVoiceEnabledExtensionTools(workspacePath)` returns the opted-in tools for a workspace.
+- At voice session start, `VoiceModeService` queries those tools, converts each via `buildVoiceToolSet()` (`voiceToolBridge.ts`) into a Realtime function-tool schema (tool names are sanitized `.`→`_` because Realtime function names disallow dots; built-in tool names are reserved so they can't be shadowed), and hands them to `RealtimeAPIClient.setExtensionVoiceTools()`. The client appends them to the session `tools` array (`buildSessionTools()`).
+- Dispatch: any function call whose name is not a built-in routes through `RealtimeAPIClient`'s generic `onExtensionVoiceTool(namespacedName, args)` callback. `VoiceModeService` invokes the tool through the **existing extension execution path** (`handleExtensionTool`, the same route MCP uses), so the tool runs in the renderer with an `AIToolContext` (workspacePath, activeFilePath) mirroring the coding path.
+
+Voice tools should generally be `scope: 'global'` and self-contained (low latency, no required editor mount) since the voice agent has no reliable active-file context.
+
+### Core hook 2 — Voice session context providers
+
+An extension registers `context.services.ai.registerVoiceContextProvider((ctx) => string | Promise<string>)` to inject text into the voice agent's session context at start (e.g. top-N grounding facts). Providers live in the renderer-side `VoiceContextProviderRegistry`; on voice session start the main process requests the concatenated, capped output over a one-shot request/response IPC (`voice-mode:collect-extension-context`) and appends it to `sessionContext` in `loadSessionContext`. Each provider's output and the combined total are capped (the Realtime context window is expensive); providers run highest-priority-first and a throwing provider is isolated.
+
+Use a context provider for zero-latency grounding the agent should know up front; expose on-demand lookups as `voiceAgent: true` tools instead.
+
+### Core hook 3 — Backend-module voice tools (no renderer hop)
+
+Extension **backend modules** (utility-process runtimes) can also contribute voice/agent tools, without running their handler in the renderer. A backend module calls `services.registerMcpTools([{ name, description, inputSchema, voiceAgent }])`; the host stores them in a workspace-keyed `backendToolRegistry` (advertised as `<ext-short>.<name>`) and merges them into both the coding-agent MCP surface (`httpServer` ListTools/CallTool) and the voice tool set. A voice (or coding) call to a backend tool is dispatched **main→backend** via `handleBackendTool` → `PrivilegedExtensionHost.request(...)` — no renderer round-trip — so a native engine (e.g. better-sqlite3 + embeddings) answers in-process. Backend modules start/stop with the extension via `extensions/backendModuleLifecycle.ts` (start-on-enable, stop-on-disable, start-on-workspace-open).
+
+### Grounding extension — Nimbalyst Memory (`com.nimbalyst.memory`)
+
+The flagship consumer of the hooks above. Its backend module hosts the host-agnostic `MemoryEngine` (markdown indexer → rebuildable SQLite shadow index → hybrid dense+BM25+RRF retrieval) and registers `search_project_knowledge` / `recall` / `remember` (voice + coding) plus `expand` / `read_doc` / `status` (coding). Embeddings use OpenAI `text-embedding-3-small`, keyed only from the user's configured Nimbalyst OpenAI key (the `getApiKey` broker — never `process.env`). It indexes `design/**`, `docs/**`, `nimbalyst-local/plans/**`, the `CLAUDE.md` tree, and `nimbalyst-local/voice-memory/**`. A renderer-side voice context provider injects a short "you have a project memory — use these tools" note at session start (v1: static note; live top-N facts await a renderer→backend read bridge). This replaces the slow `ask_coding_agent` round-trip for grounded answers with a sub-second in-process lookup. Dev note: backend modules only auto-grant (no consent UI) when `npm run dev` runs with `NIMBALYST_ALLOW_DEV_BACKEND_MODULES=1` in a non-packaged build.
+
+**Brainstorm-loop tools (Phase 4).** The extension also closes the talk-it-through-on-a-bike-ride loop. Two host-agnostic backend voice tools — `get_latest_plan` (read back the most recently edited plan to summarize aloud) and `read_plan` (a plan by bare name or path) — let the agent summarize a just-written plan verbally; both cap their body for the Realtime budget. One Nimbalyst-specific renderer voice tool — `get_task_status` — answers "is it done yet?" by reading the active voice-linked session's `ai_sessions.status` (`running` / `waiting_for_input` / `idle` / `error`) through a new host API (`extensions:ai-get-task-status` → `ExtensionAIService.getTaskStatus()`), so the agent never blocks on the coding agent to report progress. Kickoff itself reuses the built-in `submit_agent_prompt` tool (the agent phrases `/design` and `/implement`); the extension's voice context provider injects the brainstorm→design→summarize→refine→implement choreography so the core voice prompt never assumes the memory tools exist.
 
 ## MCP Tools for Coding Agent
 
@@ -267,8 +304,9 @@ Voice mode maintains two separate but linked sessions in the database:
 - Created with ID format `voice-{timestamp}-{random}` and provider `openai-realtime`
 - Transcript entries stored in `ai_agent_messages` incrementally as they arrive
 - Metadata (linked coding session ID, token usage, duration) stored in the session's metadata JSONB field
-- Sessions can be **resumed**: if a voice session for the same workspace was updated within the last 10 minutes (`VOICE_SESSION_TIMEOUT_MS`), new transcript entries append to it instead of creating a new session
+- Sessions can be **resumed**: if a voice session for the same workspace was updated within the last 30 minutes (`VOICE_SESSION_TIMEOUT_MS`), new transcript entries append to it instead of creating a new session
 - Diagnostic entries (file changes, state transitions) are written with `[system]` prefix and `diag-` ID prefix
+- Tool calls the voice agent makes (memory lookups, `ask_coding_agent`, etc.) are written as `voiceToolCall` JSON entries with a `tool-` ID prefix — emitted from `RealtimeAPIClient.handleFunctionCall` (started) and `sendFunctionCallResult` (completed), forwarded via `voice-mode:tool-call` IPC, and rendered as real tool widgets by `VoiceRawParser`. Previously these executed silently and were invisible in the transcript.
 
 ### Linked Coding Session (ai_sessions)
 
@@ -310,6 +348,12 @@ Audio is gated by listen state in `VoiceModeButton`: the callback only sends IPC
 
 Playback is interrupted on `voice-mode:interrupt` events (VAD detected user speech) by stopping all scheduled sources and clearing the queue.
 
+### Echo Cancellation on iOS (native)
+
+The native iOS voice agent does not rely on browser AEC. `packages/ios/NimbalystNative/Sources/Voice/AudioPipeline.swift` runs a single `kAudioUnitSubType_VoiceProcessingIO` (VPIO) audio unit: microphone capture comes in on bus 1 (48kHz PCM16), and assistant playback is rendered through a render callback on bus 0. Because playback flows through the same unit that captures, VPIO uses the bus 0 output signal as its echo-cancellation reference, so Apple's AEC subtracts the assistant's own voice from the mic — enabling barge-in without the agent interrupting itself.
+
+Because AEC is imperfect on open speakers, both platforms route every VAD `speech_started` through a shared barge-in policy (`voiceBargeInPolicy.ts` / `BargeInPolicy.swift`, NIM-1314). A trigger while agent audio is audibly playing is **echo-suspect**: instead of interrupting immediately, playback continues through a 500ms probation window; if the speech ends inside it (an echo blip) nothing happens, and if it persists (a real barge-in) the interrupt fires with truncation measured at fire time. Triggers while silent interrupt immediately. Server-side, responses are gated (`create_response`/`interrupt_response=false`) while agent audio plays. All decisions are logged with `[barge-in]` tags including a per-session summary (echo-suspect vs genuine vs suppressed counts).
+
 ## Settings
 
 Voice mode settings are stored in `nimbalyst-settings` electron-store (not `ai-settings`) under the `voiceMode` key.
@@ -318,6 +362,8 @@ Voice mode settings are stored in `nimbalyst-settings` electron-store (not `ai-s
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `false` | Show/hide the voice mode button |
 | `voice` | `VoiceId` | `'alloy'` | OpenAI Realtime voice (alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar) |
+| `model` | `RealtimeModel` | `'gpt-realtime-2'` | Realtime speech-to-speech model. Falls back to `gpt-realtime` automatically if the account/region lacks access |
+| `reasoningEffort` | `RealtimeReasoningEffort` | `'low'` | Reasoning throttle (minimal/low/medium/high/xhigh). Higher = smarter but slower. Applies to gpt-realtime-2 |
 | `turnDetection.mode` | `'server_vad' \ | 'push_to_talk'` | `'server_vad'` | Automatic voice detection or manual |
 | `turnDetection.vadThreshold` | `number` | `0.5` | VAD sensitivity (0.0-1.0, higher = less sensitive) |
 | `turnDetection.silenceDuration` | `number` | `500` | Silence duration (ms) before processing |
@@ -345,6 +391,39 @@ Two independent timers manage voice session lifecycle:
 
 2. **Inactivity monitor** (main, `RealtimeAPIClient.ts`): Disconnects the WebSocket entirely after 5 minutes of inactivity (`INACTIVITY_TIMEOUT_MS`). Suspended when listen state is sleeping (renderer notifies via `voice-mode:listen-state-changed`).
 
+## Connection Reliability (Reconnect / Resume)
+
+A dropped socket no longer silently ends voice mode. `RealtimeAPIClient` distinguishes intentional disconnects (`user_stopped`, inactivity `timeout`) from unexpected ones:
+
+- On an unexpected `close`/`error` after the socket was open, it reconnects with bounded exponential backoff (`RECONNECT_BASE_DELAY_MS` 500ms, doubling, capped at `RECONNECT_MAX_DELAY_MS` 8s, up to `MAX_RECONNECT_ATTEMPTS` = 5).
+- On reconnect, `session.created` re-runs `updateSession()` which re-sends the **identical** voice/model/reasoning/instructions, so recovery is inaudible. Token-usage accumulators are instance fields and survive the reconnect (the live indicator doesn't reset).
+- The renderer shows a transient "reconnecting…" state (`voiceReconnectingAtom`, set from `voice-mode:reconnecting`, cleared on `voice-mode:reconnected`). A hard `voice-mode:error` is emitted only after retries are exhausted.
+
+## Model Selection & Fallback
+
+Voice mode defaults to `gpt-realtime-2` (GPT-5-class reasoning, 128K context, more consistent voice rendering). If the initial socket fails to open on `gpt-realtime-2` (no account/region access), the client falls back **once** to `gpt-realtime`, logs a warning, and emits the `voice_model_fallback` analytics event. The fallback model is also manually selectable. `supportsAsyncFunctionCalls()` (true only for gpt-realtime-2) gates the async `submit_agent_prompt` path; the fallback uses the legacy queue + wake path.
+
+The output voice is set once in `session.update` and intentionally **not** re-asserted on each `response.create` — gpt-realtime-2 renders a consistent voice for the whole session. The `session.updated` handler compares the server-reported voice against the requested voice and emits `voice_voice_mismatch` if they diverge, turning drift into a measurable signal.
+
+`createResponse()` guards against an already-active response (`hasActiveResponse`, set optimistically on send and on `response.created`, cleared on `response.done`/cancel). The method is invoked from several async paths (tool results, wake / task-complete messages, interactive-prompt injection); without the guard a trigger arriving mid-turn would start a **second overlapping response**, i.e. two concurrent audio renderings that — under the expressive voices (marin/cedar) — are heard as the voice "switching" mid-turn. This is distinct from the configured voice being wrong: the session and per-response voice are both correctly pinned; the perceived switch comes from overlap.
+
+## Spoken Language
+
+The voice agent's spoken language is pinned to the desktop's **preferred agent language** setting (`preferredAgentLanguage`, configured in AI Models settings) so it never auto-detects or drifts into a different language at startup. The pin is applied as a final `LANGUAGE: Always speak to the user in <language>...` directive appended to the session instructions in `RealtimeAPIClient.updateSession()` (desktop) and `VoiceAgent.buildCompactInstructions()` (iOS). When no preference is set, both fall back to **English**.
+
+On iOS the setting arrives via settings sync: `preferredAgentLanguage` is a top-level field on `SyncedSettings`, persisted into `VoiceModeSettings.language` (UserDefaults) when the desktop pushes settings. Because the directive lives in `updateSession()`, it is re-sent identically on reconnect, like voice/model/reasoning.
+
+## Mobile (iOS) Voice Agent
+
+The iOS app runs its own on-device voice agent (`packages/ios/.../Voice/VoiceAgent.swift` + the floating `VoiceOverlay`), reusing the same tool surface.
+
+`RealtimeClient.swift` mirrors the desktop Realtime session config: `gpt-realtime-2` with the same one-shot fallback to `gpt-realtime` (a connection that dies before `session.created` retries once on the fallback), `gpt-realtime-whisper` streaming transcription, `reasoning.effort=low`, semantic_vad turn detection with response gating, and far-field noise reduction. The output voice comes from `VoiceModeSettings.voice` (Settings picker, or synced from the desktop's voice preference). Intentional divergences, each commented in code: the instructions length cap is model-aware (8000 chars on gpt-realtime-2, 2000 on the fallback where longer instructions crash audio generation); `submit_agent_prompt` is never a deferred call (the prompt relays over the sync channel and completion arrives as a separate broadcast, so the call can't stay open); and there is no exponential-backoff reconnect (connection loss tears down voice mode; the user re-taps the mic).
+
+Two mobile-specific behaviors:
+
+- **Create-session navigation.** `create_session` is fire-and-forget to the desktop over the index sync channel; the desktop replies with a `createSessionResponseBroadcast` carrying the `requestId` + new `sessionId`. `VoiceAgent` remembers the `requestId` it sent and `consumePendingCreateSession(requestId:)` matches the response, so **only the device that asked** navigates. `AppState.navigateWhenSessionAvailable` waits for the session row to arrive via index sync, then sets `voiceNavigationRequest`, which the iPhone stack and iPad split view observe to open the session.
+- **Tool-call indicator.** `VoiceAgent.currentToolCall` is set when `RealtimeClient.onFunctionCall` fires and cleared by the new `onFunctionResultSent(callId)` hook (so async tools stay lit until they finish). While set, `VoiceOverlay` pulses the outer ring (amber) and shows a per-tool SF Symbol badge in the mic's corner.
+
 ## Analytics Events
 
 | Event | Trigger |
@@ -354,6 +433,8 @@ Two independent timers manage voice session lifecycle:
 | `voice_session_started` | Voice WebSocket connection established |
 | `voice_session_ended` | Voice session ends (with reason and duration category) |
 | `voice_prompt_submitted` | Voice agent calls submit_agent_prompt |
+| `voice_model_fallback` | gpt-realtime-2 was unavailable; connection fell back to gpt-realtime |
+| `voice_voice_mismatch` | Server-reported output voice diverged from the requested voice (drift guardrail) |
 
 ## Prerequisites
 

@@ -36,7 +36,7 @@ import { FilePathBreadcrumb } from '../common/FilePathBreadcrumb';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
 import type { ShareDialogData } from '../../dialogs';
 import { useLocalFileSharedDocLink } from '../../hooks/useCollabLocalOrigin';
-import { sharedDocumentsAtom, pendingCollabDocumentAtom } from '../../store/atoms/collabDocuments';
+import { sharedDocumentsAtom, pendingCollabDocumentAtom, activeTeamOrgIdAtom, buildSharedDocumentDeepLink } from '../../store/atoms/collabDocuments';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
 import { getCollabNodeName, getCollabParentPath, normalizeCollabPath } from '../CollabMode/collabTree';
 
@@ -194,6 +194,7 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   const sharedDocMenu = useFloatingMenu({ placement: 'bottom-end' });
   const sharedDocLink = useLocalFileSharedDocLink(workspaceId ?? '', filePath);
   const sharedDocuments = useAtomValue(sharedDocumentsAtom);
+  const teamOrgId = useAtomValue(activeTeamOrgIdAtom);
   const setWindowMode = useSetAtom(setWindowModeAtom);
   const setPendingCollabDoc = useSetAtom(pendingCollabDocumentAtom);
 
@@ -236,6 +237,21 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
     setPendingCollabDoc,
     sharedDocMenu,
   ]);
+
+  // Copy a deep link to the linked shared document (only meaningful for shared docs)
+  const sharedDocDeepLinkAvailable = Boolean(sharedDocLink.binding?.documentId && teamOrgId);
+  const handleCopyDeepLink = useCallback(async () => {
+    const documentId = sharedDocLink.binding?.documentId;
+    if (!documentId || !teamOrgId) return;
+    const url = buildSharedDocumentDeepLink(documentId, teamOrgId);
+    try {
+      await copyToClipboard(url);
+      console.log('[UnifiedHeaderBar] Shared document link copied to clipboard');
+    } catch (err) {
+      console.error('[UnifiedHeaderBar] Failed to copy shared document link:', err);
+    }
+    setShowActionsMenu(false);
+  }, [sharedDocLink.binding?.documentId, teamOrgId, setShowActionsMenu]);
 
   // Dev mode check
   const isDevMode = import.meta.env.DEV;
@@ -764,11 +780,11 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
           <div className="unified-header-dropdown-container relative">
             <button
               ref={sharedDocMenu.refs.setReference}
-              className={`unified-header-button nim-btn-icon w-7 h-7 rounded border-none bg-transparent cursor-pointer flex items-center justify-center transition-all duration-150 text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)] ${
-                sharedDocMenu.isOpen ? 'active bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)]' : ''
+              className={`unified-header-button unified-header-shared-linked nim-btn-icon w-7 h-7 rounded border-none bg-transparent cursor-pointer flex items-center justify-center transition-all duration-150 text-[var(--nim-primary)] hover:bg-[var(--nim-bg-hover)] ${
+                sharedDocMenu.isOpen ? 'active bg-[var(--nim-bg-tertiary)]' : ''
               }`}
               onClick={() => sharedDocMenu.setIsOpen(!sharedDocMenu.isOpen)}
-              title="Shared to Team"
+              title="Linked to team shared document"
               {...sharedDocMenu.getReferenceProps()}
             >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -898,6 +914,20 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
                     <polyline points="12 6 12 12 16 14"/>
                   </svg>
                   View History
+                </button>
+              )}
+
+              {/* Copy link (shared docs only) */}
+              {sharedDocDeepLinkAvailable && (
+                <button
+                  className="dropdown-item copy-shared-doc-link w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
+                  onClick={handleCopyDeepLink}
+                >
+                  <svg className="w-4 h-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                  </svg>
+                  Copy link
                 </button>
               )}
 

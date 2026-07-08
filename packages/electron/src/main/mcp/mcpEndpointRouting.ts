@@ -16,6 +16,8 @@ import {
   MCP_FIRST_PARTY_TOPOLOGY,
   MCP_EXTENSION_ENDPOINT_PREFIX,
   FIRST_PARTY_TOOL_TO_SERVER,
+  MCP_CORE,
+  CORE_ALWAYS_LOAD_TOOLS,
 } from "@nimbalyst/runtime/ai/server";
 
 /** Which server a given endpoint path is serving. */
@@ -90,6 +92,33 @@ export function selectFirstPartyToolsForEndpoint<T extends NamedToolSchema>(
 ): T[] {
   return allBuiltInTools.filter(
     (tool) => FIRST_PARTY_TOOL_TO_SERVER.get(tool.name) === configKey,
+  );
+}
+
+/**
+ * Per-tool eager marker honored by the Claude CLI: a tool whose ListTools
+ * entry carries `_meta['anthropic/alwaysLoad'] = true` is always included in
+ * the prompt, even when its server defers behind tool search.
+ */
+export const ALWAYS_LOAD_META_KEY = 'anthropic/alwaysLoad';
+
+/**
+ * On the core endpoint, mark the CORE_ALWAYS_LOAD_TOOLS subset eager via
+ * per-tool `_meta`. The core server config no longer sets server-level
+ * `alwaysLoad` (which would force ALL its tools eager); this is how the
+ * interactive/session tools stay in the prompt while display_to_user and
+ * capture_editor_screenshot defer without leaving the `nimbalyst` config-key.
+ */
+export function applyCoreAlwaysLoadMeta<T extends NamedToolSchema>(
+  tools: T[],
+  configKey: string,
+): T[] {
+  if (configKey !== MCP_CORE) return tools;
+  const eager = new Set(CORE_ALWAYS_LOAD_TOOLS);
+  return tools.map((tool) =>
+    eager.has(tool.name)
+      ? { ...tool, _meta: { [ALWAYS_LOAD_META_KEY]: true } }
+      : tool,
   );
 }
 

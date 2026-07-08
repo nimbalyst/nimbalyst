@@ -196,6 +196,84 @@ class NimbalystDaoTest {
         assertEquals(2, byId["/p/b"]!!.sessionCount)
     }
 
+    @Test
+    fun `deleteNotIn removes only projects whose id is absent from the list`() = runTest {
+        projectDao.upsertAll(
+            listOf(project(id = "/p/a"), project(id = "/p/b"), project(id = "/p/c"))
+        )
+
+        projectDao.deleteNotIn(listOf("/p/a", "/p/b"))
+
+        val remaining = projectDao.observeAll().first().map { it.id }.toSet()
+        assertEquals(setOf("/p/a", "/p/b"), remaining)
+    }
+
+    @Test
+    fun `deleteAll clears every project`() = runTest {
+        projectDao.upsertAll(listOf(project(id = "/p/a"), project(id = "/p/b")))
+
+        projectDao.deleteAll()
+
+        assertTrue(projectDao.observeAll().first().isEmpty())
+    }
+
+    // ---------------------------------------------------------------------
+    // NimbalystRepository.reconcileIndexSnapshot
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `reconcileIndexSnapshot prunes projects missing from the incoming list`() = runTest {
+        val repo = NimbalystRepository(db)
+        projectDao.upsertAll(
+            listOf(project(id = "/p/a"), project(id = "/p/b"), project(id = "/p/c"))
+        )
+
+        repo.reconcileIndexSnapshot(
+            projects = listOf(project(id = "/p/a"), project(id = "/p/b")),
+            sessions = emptyList(),
+            syncedAt = 1_700_000_500_000L
+        )
+
+        val remaining = projectDao.observeAll().first().map { it.id }.toSet()
+        assertEquals(setOf("/p/a", "/p/b"), remaining)
+    }
+
+    @Test
+    fun `reconcileIndexSnapshot with empty project list clears the table`() = runTest {
+        val repo = NimbalystRepository(db)
+        projectDao.upsertAll(listOf(project(id = "/p/a"), project(id = "/p/b")))
+
+        repo.reconcileIndexSnapshot(
+            projects = emptyList(),
+            sessions = emptyList(),
+            syncedAt = 1_700_000_500_000L
+        )
+
+        assertTrue(projectDao.observeAll().first().isEmpty())
+    }
+
+    @Test
+    fun `reconcileIndexSnapshot upserts new entries and records the sync watermark`() = runTest {
+        val repo = NimbalystRepository(db)
+        projectDao.upsertAll(listOf(project(id = "/p/a", name = "Old A")))
+
+        repo.reconcileIndexSnapshot(
+            projects = listOf(
+                project(id = "/p/a", name = "New A"),
+                project(id = "/p/d", name = "Delta")
+            ),
+            sessions = emptyList(),
+            syncedAt = 1_700_000_500_000L
+        )
+
+        val byId = projectDao.observeAll().first().associateBy { it.id }
+        assertEquals(setOf("/p/a", "/p/d"), byId.keys)
+        assertEquals("New A", byId["/p/a"]!!.name)
+
+        val state = syncStateDao.getByRoomId(NimbalystRepository.INDEX_SYNC_ROOM_ID)!!
+        assertEquals(1_700_000_500_000L, state.lastSyncedAt)
+    }
+
     // ---------------------------------------------------------------------
     // SessionDao
     // ---------------------------------------------------------------------

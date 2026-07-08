@@ -31,6 +31,7 @@ export const ProviderConfigSchema = z.object({
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
   models: z.array(z.string()).optional(),
+  hiddenModels: z.array(z.string()).optional(),
   testStatus: ProviderTestStatusSchema,
   testMessage: z.string().optional(),
   installed: z.boolean().optional(),
@@ -95,6 +96,11 @@ export const SETTINGS_REGISTRY = {
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.claude-code' },
     { enabled: true, testStatus: 'idle', installStatus: 'not-installed' },
+  ),
+  'ai.provider.claude-code-cli': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.claude-code-cli' },
+    { enabled: true, testStatus: 'idle' },
   ),
   'ai.provider.openai': setting(
     ProviderConfigSchema,

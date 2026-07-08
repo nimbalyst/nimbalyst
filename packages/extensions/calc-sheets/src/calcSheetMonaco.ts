@@ -1,4 +1,6 @@
-import type { editor as MonacoEditorType, languages, Monaco } from 'monaco-editor';
+import type { editor as MonacoEditorType, languages } from 'monaco-editor';
+
+type Monaco = typeof import('monaco-editor');
 import { tokenizeCalcSheetLine, type CalcSheetSyntaxTokenKind } from './calcSheetSyntax';
 
 const CALC_SHEET_LANGUAGE_ID = 'calc-sheet';
@@ -33,7 +35,9 @@ function isDarkTheme(theme: string | undefined): boolean {
 }
 
 function registerCalcSheetLanguage(monaco: Monaco): void {
-  const registered = monaco.languages.getLanguages().some((entry) => entry.id === CALC_SHEET_LANGUAGE_ID);
+  const registered = monaco.languages
+    .getLanguages()
+    .some((entry: languages.ILanguageExtensionPoint) => entry.id === CALC_SHEET_LANGUAGE_ID);
   if (!registered) {
     monaco.languages.register({ id: CALC_SHEET_LANGUAGE_ID });
     monaco.languages.setTokensProvider(CALC_SHEET_LANGUAGE_ID, {

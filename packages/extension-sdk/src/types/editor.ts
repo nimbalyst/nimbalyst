@@ -104,10 +104,40 @@ export interface CollaborationContext {
   loadInitialContent(): Promise<string | ArrayBuffer>;
 
   /**
-   * Ask the host transport to flush the current Y.Doc state upstream.
+   * Flush the current Y.Doc state upstream and resolve ONLY after the server
+   * confirms it persisted the update (not merely after the socket write).
    *
-   * The SDK uses this after seeding a first-open collaborative document from
-   * in-memory share payloads. Most editors should not call it directly.
+   * The SDK awaits this after seeding a first-open collaborative document so the
+   * seed is durably on the server before the provider can tear down. Resolves
+   * `true` on a server-acked persist, `false` on timeout / not-yet-connected —
+   * the host surfaces a failed flush to the user (pending-seed machinery)
+   * rather than silently losing the seed. Required on the collab context: a
+   * host that can't guarantee the flush would reintroduce the seed data-loss
+   * race that made this method necessary.
+   */
+  flushWithAck(timeoutMs?: number): Promise<boolean>;
+
+  /**
+   * True when the transport skipped server payloads it could not decode
+   * (stale key epoch, corruption). An "empty" Y.Doc then does NOT mean the
+   * room is empty — the SDK must not run the first-open seed, or a default
+   * document gets written over real-but-unreadable content for every client.
+   */
+  hasUndecodedContent?(): boolean;
+
+  /**
+   * Host-level reporting hook for first-open seed durability. The SDK calls
+   * this when seeding succeeds, throws, or its server-persisted flush is not
+   * confirmed, so extension authors do not have to wire their own toast to
+   * avoid silent blank-room failures.
+   */
+  reportSeedOutcome?(outcome: { ok: boolean; error?: unknown }): void;
+
+  /**
+   * @deprecated Use {@link flushWithAck}, which awaits a server-persisted ack.
+   * `flushLocalState` fires-and-forgets (resolves after the socket write, not
+   * the server ack) and rode in the mindmap seed data-loss race. Retained only
+   * so existing callers keep compiling.
    */
   flushLocalState?(): Promise<void>;
 

@@ -52,6 +52,14 @@ export interface BackendRuntimeContext {
    * may resolve assets relative to this. Read-only - not a write target.
    */
   extensionPath: string;
+  /**
+   * Per-(extension, workspace) writable directory under the app's userData.
+   * This is where a backend module persists machine-local, rebuildable state
+   * (caches, shadow indexes) so it NEVER lands inside the user's project tree.
+   * The host creates the directory before init. Isolated per extension and per
+   * workspace, so two extensions (or two projects) never share a data dir.
+   */
+  dataDir: string;
 }
 
 /** Messages the host sends to the backend. */
@@ -190,6 +198,9 @@ export interface BrokerPayloads {
       name: string;
       description?: string;
       inputSchema?: unknown;
+      /** When true, the tool is also exposed to the voice agent (Realtime). */
+      voiceAgent?: boolean;
+      scope?: 'global' | 'editor';
     }>;
   };
   toolExecutor: {

@@ -110,6 +110,99 @@ function formatRelativeTime(timestamp: string): string {
   return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
 }
 
+interface ReclaimResult {
+  scanned: number;
+  rewritten: number;
+  bytesSaved: number;
+  vacuumed: boolean;
+  vacuumError?: string;
+  durationMs: number;
+}
+
+/**
+ * One-time maintenance: rewrite bloated claude-code raw rows (the SDK's
+ * tool_use_result original-file/patch sidecar + thinking signatures that nothing
+ * reads) and optionally VACUUM to return the space to disk.
+ */
+function RawLogMaintenanceCard() {
+  const [candidateRows, setCandidateRows] = useState<number | null>(null);
+  const [vacuum, setVacuum] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<ReclaimResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const preview = async () => {
+    setError(null);
+    setResult(null);
+    const res = await window.electronAPI.invoke('database:reclaimRawLog:preview');
+    if (res.success) setCandidateRows(res.candidateRows);
+    else setError(res.error || 'Preview failed');
+  };
+
+  const run = async () => {
+    setRunning(true);
+    setError(null);
+    try {
+      const res = await window.electronAPI.invoke('database:reclaimRawLog:run', { vacuum });
+      if (res.success) setResult(res.result);
+      else setError(res.error || 'Reclaim failed');
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div className="p-4 rounded-lg border border-[var(--nim-border)] bg-nim-secondary database-raw-log-maintenance">
+      <div className="text-sm font-semibold mb-1">Reclaim Claude Code raw-log space</div>
+      <div className="text-xs text-[var(--nim-text-muted)] mb-3">
+        Rewrites old Claude Code messages to drop the SDK&apos;s redundant original-file copies,
+        patches, and thinking signatures that nothing renders. Optionally VACUUMs to shrink the
+        database file (locks the DB for several minutes). Back up first.
+      </div>
+
+      {candidateRows !== null && (
+        <div className="text-xs text-[var(--nim-text-muted)] mb-2">
+          {candidateRows.toLocaleString()} rows still carry trimmable data.
+        </div>
+      )}
+
+      <label className="flex items-center gap-2 text-xs mb-3 cursor-pointer">
+        <input type="checkbox" checked={vacuum} onChange={(e) => setVacuum(e.target.checked)} />
+        VACUUM after rewrite (reclaims disk; locks DB several minutes)
+      </label>
+
+      <div className="flex items-center gap-2">
+        <button
+          onClick={preview}
+          disabled={running}
+          className="py-1 px-3 rounded text-sm border border-[var(--nim-border)] bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] disabled:opacity-50"
+        >
+          Preview
+        </button>
+        <button
+          onClick={run}
+          disabled={running}
+          className="py-1 px-3 rounded text-sm border border-[var(--nim-border)] bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] disabled:opacity-50"
+        >
+          {running ? 'Running...' : 'Reclaim space'}
+        </button>
+      </div>
+
+      {error && <div className="text-xs text-[var(--nim-error)] mt-2">{error}</div>}
+      {result && (
+        <div className="text-xs text-[var(--nim-text-muted)] mt-2">
+          Rewrote {result.rewritten.toLocaleString()} of {result.scanned.toLocaleString()} rows,
+          saved {formatBytes(result.bytesSaved)} of content
+          {result.vacuumed ? ', VACUUM complete' : result.vacuumError ? `, VACUUM failed: ${result.vacuumError}` : ''}
+          {' '}({(result.durationMs / 1000).toFixed(1)}s).
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DatabaseDashboard({ onTableSelect }: Props) {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -325,6 +418,9 @@ export function DatabaseDashboard({ onTableSelect }: Props) {
             </div>
           </div>
         </div>
+
+        {/* Maintenance */}
+        <RawLogMaintenanceCard />
       </div>
     </div>
   );

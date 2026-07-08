@@ -433,8 +433,14 @@ export class TeamSyncProvider {
   private async handleTeamSyncResponse(msg: TeamSyncResponseMessage): Promise<void> {
     const server: ServerTeamState = msg.team;
 
-    // Decrypt document titles
-    const documents = await this.decryptDocuments(server.documents);
+    // Decrypt document titles. NIM-910: in server-managed mode this teamSync
+    // path returns titles RAW (DEK-ciphertext the client cannot read); the
+    // immediately-following docIndexSync is authoritative. Suppress the
+    // per-entry locked-title warnings here so they don't spam the log on every
+    // reconnect -- docIndexSync logs loudly for any genuinely-locked title.
+    const documents = await this.decryptDocuments(server.documents, {
+      quietLockedWarnings: this.serverManaged,
+    });
 
     this.teamState = {
       metadata: server.metadata,
@@ -578,6 +584,7 @@ export class TeamSyncProvider {
         createdBy: msg.document.createdBy,
         createdAt: msg.document.createdAt,
         updatedAt: msg.document.updatedAt,
+        lastWriterUserId: msg.document.lastWriterUserId ?? null,
         decryptFailed: true,
       };
     }
@@ -614,7 +621,10 @@ export class TeamSyncProvider {
   // Internal Helpers
   // --------------------------------------------------------------------------
 
-  private async decryptDocuments(encrypted: EncryptedDocIndexEntry[]): Promise<DocIndexEntry[]> {
+  private async decryptDocuments(
+    encrypted: EncryptedDocIndexEntry[],
+    opts?: { quietLockedWarnings?: boolean },
+  ): Promise<DocIndexEntry[]> {
     // NIM-910: characterize what the server is actually sending, so a sync/collab
     // bug is diagnosed from SERVER state (empty-iv = server-decrypted plaintext;
     // non-empty-iv = legacy ciphertext passed through) rather than the local view.
@@ -625,6 +635,7 @@ export class TeamSyncProvider {
         'legacy-ciphertext; legacyKeyEpochs=', this.config.legacyOrgKeys?.length ?? 0);
     }
     const results: DocIndexEntry[] = [];
+    let quietLockedCount = 0;
     for (const e of encrypted) {
       try {
         results.push(await this.decryptEntry(e));
@@ -632,11 +643,15 @@ export class TeamSyncProvider {
         // Preserve the entry as a locked placeholder so the user can see
         // that a doc exists and take action (refresh keys, ask admin to
         // rewrap), rather than the entry disappearing without trace.
-        console.warn(
-          '[TeamSync] Title decrypt failed; surfacing as locked entry:',
-          e.documentId,
-          err,
-        );
+        if (opts?.quietLockedWarnings) {
+          quietLockedCount++;
+        } else {
+          console.warn(
+            '[TeamSync] Title decrypt failed; surfacing as locked entry:',
+            e.documentId,
+            err,
+          );
+        }
         results.push({
           documentId: e.documentId,
           title: '',
@@ -644,9 +659,15 @@ export class TeamSyncProvider {
           createdBy: e.createdBy,
           createdAt: e.createdAt,
           updatedAt: e.updatedAt,
+          lastWriterUserId: e.lastWriterUserId ?? null,
           decryptFailed: true,
         });
       }
+    }
+    if (quietLockedCount > 0) {
+      console.log(
+        `[TeamSync] teamSync raw path: ${quietLockedCount}/${encrypted.length} titles pending docIndexSync (server-managed; expected)`,
+      );
     }
     return results;
   }
@@ -664,6 +685,7 @@ export class TeamSyncProvider {
       createdBy: encrypted.createdBy,
       createdAt: encrypted.createdAt,
       updatedAt: encrypted.updatedAt,
+      lastWriterUserId: encrypted.lastWriterUserId ?? null,
     };
   }
 

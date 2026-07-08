@@ -32,7 +32,7 @@ import {
 import { CopilotACPProtocol } from '../protocols/CopilotACPProtocol';
 import { ProtocolEvent, ProtocolSession } from '../protocols/ProtocolInterface';
 import { McpConfigService } from '../services/McpConfigService';
-import { getMcpConfigService, isInternalMcpServerEnabled } from '../services/mcpServerConfig';
+import { getMcpConfigService, isInternalMcpServerEnabled, areTrackerToolsEnabled, resolveTrackersWorkspacePath } from '../services/mcpServerConfig';
 import { MCPServerConfig } from '../../../types/MCPServerConfig';
 import { safeJSONSerialize } from '../../../utils/serialization';
 import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
@@ -433,6 +433,7 @@ export class CopilotCLIProvider extends BaseAgentProvider {
       worktreePath,
       isVoiceMode: false,
       enableAgentTeams: false,
+      trackersEnabled: areTrackerToolsEnabled(resolveTrackersWorkspacePath(documentContext)),
     });
   }
 

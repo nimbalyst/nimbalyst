@@ -38,8 +38,12 @@ export interface DocumentSyncConfig {
   /** WebSocket server URL (e.g., wss://sync.nimbalyst.com) */
   serverUrl: string;
 
-  /** Function to get fresh JWT for WebSocket auth */
-  getJwt: () => Promise<string>;
+  /**
+   * Function to get a fresh JWT for WebSocket auth.
+   * `forceRefresh` (NIM-949) bypasses any cached org-scoped token so a reconnect
+   * after an auth-style rejection (HTTP 400 wrong-org/expired) re-exchanges.
+   */
+  getJwt: (opts?: { forceRefresh?: boolean }) => Promise<string>;
 
   /** B2B organization ID */
   orgId: string;
@@ -70,6 +74,17 @@ export interface DocumentSyncConfig {
    * the legacy envelope is unavailable (those rows then skip, never crash).
    */
   legacyDocumentKey?: CryptoKey;
+
+  /**
+   * NIM-959: every candidate legacy org-key epoch for reading PRE-MIGRATION
+   * rows in `server-managed` mode. A team that rotated its org key while still
+   * legacy-e2e can have content rows spanning multiple epochs; the doc-content
+   * read path must try each (the doc INDEX path already does this for titles,
+   * NIM-906/910). `decryptFromWire` tries these in order until one succeeds, so
+   * a snapshot written under a now-archived epoch still decrypts instead of
+   * blanking the document body. Superset of `legacyDocumentKey` when present.
+   */
+  legacyDocumentKeys?: CryptoKey[];
 
   /** Current user's ID */
   userId: string;

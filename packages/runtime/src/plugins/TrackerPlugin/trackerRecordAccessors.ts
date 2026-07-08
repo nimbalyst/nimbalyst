@@ -24,6 +24,11 @@ const ROLE_DEFAULTS: Record<TrackerSchemaRole, string> = {
   startDate: 'startDate',
   dueDate: 'dueDate',
   progress: 'progress',
+  // No conventional fallbacks: these roles only apply when a schema declares
+  // them explicitly (externalKey names a field; prMergedStatus names a status
+  // VALUE and must never be resolved through getFieldByRole).
+  externalKey: '',
+  prMergedStatus: '',
 };
 
 /**
@@ -37,6 +42,56 @@ export function resolveRoleFieldName(type: string, role: TrackerSchemaRole): str
     if (explicit) return explicit;
   }
   return ROLE_DEFAULTS[role];
+}
+
+/**
+ * Whether a tracker item is shared with the team.
+ * - `shared`: item participates in team collaboration.
+ * - `local`: item stays on this device / project only.
+ * - `n/a`: the tracker type never syncs (sync mode `local`), so sharing
+ *   doesn't apply.
+ */
+export type TrackerItemShareState = 'shared' | 'local' | 'n/a';
+
+/**
+ * Determine whether a tracker item is shared with the team.
+ *
+ * - `shared`-mode types: every item is always shared.
+ * - `local`-mode types: sharing never applies (returns `n/a`).
+ * - `hybrid`-mode types: per-item, driven by the explicit `share` flag
+ *   (surfaced under `fields` as `{ status, body }` or the legacy
+ *   `fields.shared === true`). Items pushed to a room before the explicit flag
+ *   existed (syncStatus `synced`/`pending`) count as shared so they keep
+ *   collaborating.
+ *
+ * Pure (no React/host deps) so the table column, the item detail view, and
+ * non-React code all agree on one definition.
+ */
+export function getItemShareState(record: TrackerRecord): TrackerItemShareState {
+  const mode = globalRegistry.get(record.primaryType ?? '')?.sync?.mode ?? 'local';
+  if (mode === 'shared') return 'shared';
+  if (mode === 'local') return 'n/a';
+  // hybrid: per-item
+  const f = (record.fields ?? {}) as Record<string, any>;
+  const share = f.share && typeof f.share === 'object' ? f.share : null;
+  // An EXPLICIT flag is authoritative -- trust it immediately (so an unshare
+  // reads as local even before the room state propagates).
+  const hasExplicit =
+    f.shared === true ||
+    (share && (share.status === 'team' || share.status === 'private' || share.body === 'team' || share.body === 'private'));
+  if (hasExplicit) {
+    return (f.shared === true || share?.status === 'team' || share?.body === 'team') ? 'shared' : 'local';
+  }
+  // No explicit flag: a legacy item already pushed to the room counts as shared.
+  return (record.syncStatus === 'synced' || record.syncStatus === 'pending') ? 'shared' : 'local';
+}
+
+/**
+ * Convenience boolean: is this item actively shared with the team?
+ * `local` and `n/a` both read as not-shared.
+ */
+export function isItemSharedWithTeam(record: TrackerRecord): boolean {
+  return getItemShareState(record) === 'shared';
 }
 
 /**
@@ -101,6 +156,26 @@ export function getRecordPriority(record: TrackerRecord): string {
  */
 export function getRecordSortOrder(record: TrackerRecord): string | undefined {
   return record.fields.kanbanSortOrder as string | undefined;
+}
+
+/**
+ * Get the display value of the externalKey role, or '' when the type doesn't
+ * declare one. url-type field values ({ url, label }) contribute their label
+ * (falling back to the url); scalars render as-is.
+ */
+export function getRecordExternalKey(record: TrackerRecord): string {
+  const model = globalRegistry.get(record.primaryType);
+  const fieldName = model ? getRoleField(model, 'externalKey') : undefined;
+  if (!fieldName) return '';
+  const value = record.fields[fieldName];
+  if (value == null) return '';
+  if (typeof value === 'object') {
+    const obj = value as { label?: unknown; url?: unknown };
+    if (typeof obj.label === 'string' && obj.label) return obj.label;
+    if (typeof obj.url === 'string') return obj.url;
+    return '';
+  }
+  return String(value);
 }
 
 /**

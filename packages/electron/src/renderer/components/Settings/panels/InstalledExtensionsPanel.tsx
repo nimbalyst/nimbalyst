@@ -68,6 +68,7 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
   const [error, setError] = useState<string | null>(null);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Get extension settings panels from the loader
   const extensionSettingsPanels = useMemo(() => {
@@ -149,7 +150,7 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
               : 'local';
         return {
           ...ext,
-          enabled: extSettings?.enabled ?? true,
+          enabled: extSettings?.enabled ?? (ext.manifest.defaultEnabled !== false),
           claudePluginEnabled: extSettings?.claudePluginEnabled ?? claudePlugin?.enabledByDefault ?? true,
           agentWorkflowsEnabled: extSettings?.agentWorkflowsEnabled ?? agentWorkflows?.enabledByDefault ?? true,
           source,
@@ -173,7 +174,7 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
     }
   };
 
-  const handleToggle = useCallback(async (extensionId: string, enabled: boolean) => {
+  const handleToggle = useCallback(async (extensionId: string, enabled: boolean, extensionPath?: string) => {
     setProcessingId(extensionId);
     setError(null);
 
@@ -184,7 +185,17 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
       // Update runtime state in ExtensionLoader
       const loader = getExtensionLoader();
       if (enabled) {
-        loader.enableExtension(extensionId);
+        // enableExtension only flips a flag on an already-loaded extension.
+        // If it was skipped at startup (e.g. defaultEnabled: false), it isn't
+        // loaded yet, so load it from disk now to register its panels/editors.
+        if (loader.getExtension(extensionId) || !extensionPath) {
+          loader.enableExtension(extensionId);
+        } else {
+          const result = await loader.loadExtensionFromPath(extensionPath);
+          if (!result.success) {
+            throw new Error(result.error || `Failed to load extension ${extensionId}`);
+          }
+        }
       } else {
         loader.disableExtension(extensionId);
       }
@@ -308,6 +319,18 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
   const totalCount = extensions.length;
   const updateCount = extensions.filter(ext => ext.availableUpdate && ext.registryEntry).length;
 
+  const filteredExtensions = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return extensions;
+    return extensions.filter((ext) => {
+      const name = ext.manifest.name?.toLowerCase() ?? '';
+      const author = ext.manifest.author?.toLowerCase() ?? '';
+      const description = ext.manifest.description?.toLowerCase() ?? '';
+      const id = ext.id.toLowerCase();
+      return name.includes(q) || author.includes(q) || description.includes(q) || id.includes(q);
+    });
+  }, [extensions, searchQuery]);
+
   const sourceLabel = (s: ExtensionSource) => {
     switch (s) {
       case 'marketplace': return 'Marketplace';
@@ -383,8 +406,41 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
                 )}
               </span>
             </div>
+            <div className="px-2 py-2 border-b border-[var(--nim-border)] flex-shrink-0">
+              <div className="relative" role="search">
+                <MaterialSymbol
+                  icon="search"
+                  size={16}
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--nim-text-faint)] pointer-events-none"
+                />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search extensions..."
+                  aria-label="Search installed extensions"
+                  data-testid="installed-extensions-search"
+                  className="w-full py-1.5 pl-8 pr-7 rounded border border-[var(--nim-border)] bg-[var(--nim-bg)] text-[var(--nim-text)] text-sm outline-none focus:border-[var(--nim-primary)] placeholder:text-[var(--nim-text-faint)]"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    data-testid="installed-extensions-search-clear"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center text-[var(--nim-text-muted)] hover:text-[var(--nim-text)]"
+                    onClick={() => setSearchQuery('')}
+                  >
+                    <MaterialSymbol icon="close" size={16} />
+                  </button>
+                )}
+              </div>
+            </div>
             <div className="flex-1 overflow-y-auto min-h-0">
-              {extensions.map((ext) => (
+              {filteredExtensions.length === 0 ? (
+                <div className="px-3 py-6 text-center text-xs text-[var(--nim-text-faint)]">
+                  No extensions match &ldquo;{searchQuery}&rdquo;
+                </div>
+              ) : filteredExtensions.map((ext) => (
                 <div
                   key={ext.id}
                   className={`flex items-center gap-2.5 px-3 py-2.5 cursor-pointer border-b border-[var(--nim-border)] transition-colors ${
@@ -411,7 +467,7 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
                   <span className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>
                     <ToggleSwitch
                       checked={ext.enabled}
-                      onChange={(checked) => handleToggle(ext.id, checked)}
+                      onChange={(checked) => handleToggle(ext.id, checked, ext.path)}
                       disabled={processingId === ext.id}
                     />
                   </span>
@@ -670,9 +726,20 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
                   {selectedExtension.enabled && extensionSettingsPanels.has(selectedExtension.id) && (() => {
                     const SettingsComponent = extensionSettingsPanels.get(selectedExtension.id)!;
                     const storage = createExtensionStorage(selectedExtension.id);
+                    // READ bridge to the extension's backend-module MCP tools
+                    // (e.g. live index status, facts list). The IPC handler
+                    // resolves the active workspace from this window.
+                    const callBackendTool = (toolName: string, args?: Record<string, unknown>) =>
+                      window.electronAPI.invoke('extensions:ai-call-backend-tool', {
+                        toolName,
+                        args: args ?? {},
+                        // Host-injected caller identity (not from extension code)
+                        // so main can enforce the tool belongs to THIS extension.
+                        callerExtensionId: selectedExtension.id,
+                      });
                     return (
                       <div className="pt-4 border-t border-[var(--nim-border)]">
-                        <SettingsComponent storage={storage} theme={theme} />
+                        <SettingsComponent storage={storage} theme={theme} callBackendTool={callBackendTool} />
                       </div>
                     );
                   })()}

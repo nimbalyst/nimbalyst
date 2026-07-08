@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol, TrackerUnreadDot } from '@nimbalyst/runtime';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import type { TrackerItemType } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { getRecordTitle, getRecordPriority, getFieldByRole } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
@@ -129,6 +129,7 @@ export const TagBoard: React.FC<TagBoardProps> = ({
                         className="w-2 h-2 rounded-full mt-1.5 shrink-0"
                         style={{ backgroundColor: PRIORITY_COLORS[getRecordPriority(item) || 'medium'] || '#6b7280' }}
                       />
+                      <TrackerUnreadDot itemId={item.id} className="mt-1" />
                       <div className="flex-1 min-w-0">
                         {item.issueKey && (
                           <div className="text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-nim-faint mb-0.5">

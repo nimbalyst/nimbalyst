@@ -637,6 +637,18 @@ describe('ClaudeCodeRawParser', () => {
         text: 'Plain text response',
       });
     });
+
+    it('drops the sync whole-message elision marker instead of rendering a stray bubble', async () => {
+      const parser = new ClaudeCodeRawParser();
+      const msg = makeRawMessage({
+        content:
+          '[Full claude-code message elided from mobile sync: 29.2 KB raw. View on desktop for the full content.]',
+      });
+
+      const descriptors = await parser.parseMessage(msg, makeContext());
+
+      expect(descriptors).toHaveLength(0);
+    });
   });
 
   describe('Claude Code 2.1.x format additions', () => {

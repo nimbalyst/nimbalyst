@@ -46,6 +46,8 @@ export type {
   DeviceInfo,
   CreateSessionRequest,
   CreateSessionResponse,
+  VoiceToolRequest,
+  VoiceToolResponse,
   SessionControlMessage,
   SyncedSettings,
   SyncedAvailableModel,
@@ -70,6 +72,11 @@ export {
   DocumentSyncProvider,
   createDocumentSyncProvider,
 } from './DocumentSync';
+
+export {
+  isValidCollabDocumentId,
+  encodeDocumentRoomId,
+} from './collabDocumentId';
 
 export {
   CollabLexicalProvider,

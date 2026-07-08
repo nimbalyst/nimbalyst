@@ -156,8 +156,11 @@ public struct SettingsView: View {
     // MARK: - Voice Mode
 
     #if os(iOS)
+    // Full GA Realtime voice list (desktop parity); marin and cedar are the
+    // gpt-realtime-2 flagship voices.
     private static let voiceOptions = [
         "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse",
+        "marin", "cedar",
     ]
 
     private var voiceModeSection: some View {

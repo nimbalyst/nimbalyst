@@ -43,7 +43,7 @@ import type {
   TrackerSyncResponseMessage,
   TrackerItemPayload,
 } from '@nimbalyst/runtime/sync';
-import { encryptTrackerPayload, decryptTrackerEnvelope, appendSyncClientParams } from '@nimbalyst/runtime/sync';
+import { encryptTrackerPayload, decryptTrackerEnvelope, appendSyncClientParams, encodeDocumentRoomId } from '@nimbalyst/runtime/sync';
 
 // ============================================================================
 // Types
@@ -348,7 +348,7 @@ async function downloadDocumentState(
   orgKey: CryptoKey,
   jwt: string
 ): Promise<DecryptedDocContent> {
-  const roomId = `org:${orgId}:doc:${documentId}`;
+  const roomId = encodeDocumentRoomId(orgId, documentId);
   const wsUrl = serverUrl.replace(/^http/, 'ws');
   const url = appendSyncClientParams(`${wsUrl}/sync/${roomId}?token=${encodeURIComponent(jwt)}`);
 
@@ -1505,7 +1505,7 @@ export async function cleanupOrphanedDocuments(
     const httpUrl = serverUrl.replace('wss://', 'https://').replace('ws://', 'http://');
     for (const documentId of removed) {
       try {
-        const roomId = `org:${orgId}:doc:${documentId}`;
+        const roomId = encodeDocumentRoomId(orgId, documentId);
         const resp = await net.fetch(`${httpUrl}/sync/${roomId}/delete?token=${encodeURIComponent(orgJwt)}`, {
           method: 'DELETE',
         });

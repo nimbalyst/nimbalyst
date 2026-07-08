@@ -42,6 +42,8 @@ export interface MCPToolDefinition {
   access?: ExtensionAIToolAccess;
   /** Legacy read-only flag. Prefer `access`. */
   readOnly?: boolean;
+  /** When true, the tool is also exposed to the voice agent (OpenAI Realtime). */
+  voiceAgent?: boolean;
 }
 
 const missingAccessWarnings = new Set<string>();
@@ -135,6 +137,7 @@ export function getMCPToolDefinitions(): MCPToolDefinition[] {
         editorFilePatterns,
         access: resolveToolAccess(tool),
         readOnly: tool.readOnly,
+        voiceAgent: tool.voiceAgent === true,
       });
     }
   }

@@ -424,8 +424,18 @@ function rewriteJsonConcats(sql: string): string {
   // The bare-identifier alternative now uses a negative lookahead so a name
   // followed by `(` only matches via the function-call branches above it.
   const NESTED_PAREN_BODY = String.raw`\([^()]*(?:\([^()]*\)[^()]*)*\)`;
+  // A balanced parenthesized group up to three levels deep. The previous
+  // `\([^()]+\)` only matched a single level, so a left operand like
+  // `(json_remove(COALESCE(metadata, '{}'), '$.k'))` — produced when a
+  // `(col - 'k') || $1` subtract-then-merge is rewritten — was not recognized
+  // as an operand. The `||` then stayed as SQLite *string concatenation*,
+  // silently corrupting jsonb into e.g. `{...}{}` (NIM-829). Three levels
+  // covers every jsonb operator expression the stores emit.
+  const PAREN_L1 = String.raw`\([^()]*\)`;
+  const PAREN_L2 = String.raw`\((?:[^()]|${PAREN_L1})*\)`;
+  const PAREN_L3 = String.raw`\((?:[^()]|${PAREN_L2})*\)`;
   const OPERAND = String.raw`(?:` +
-    String.raw`\([^()]+\)|` +
+    `${PAREN_L3}|` +
     `json_remove${NESTED_PAREN_BODY}|` +
     `json_patch${NESTED_PAREN_BODY}|` +
     `jsonb_strip_nulls${NESTED_PAREN_BODY}|` +

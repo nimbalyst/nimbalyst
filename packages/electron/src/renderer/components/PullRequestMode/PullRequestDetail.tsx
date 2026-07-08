@@ -19,6 +19,7 @@ import {
 } from '../../store/atoms/pullRequests';
 import type { PullRequestRow } from '../../services/RendererPullRequestService';
 import { PullRequestActions } from './PullRequestActions';
+import { PrTrackerStrip } from './PrTrackerStrip';
 import { ConversationTab } from './tabs/ConversationTab';
 import { FilesChangedTab } from './tabs/FilesChangedTab';
 import { CommitsTab } from './tabs/CommitsTab';
@@ -115,6 +116,16 @@ export function PullRequestDetail({
               </button>
             )}
           </div>
+        </div>
+
+        {/* Tracker / session context for this PR */}
+        <div className="mt-1.5">
+          <PrTrackerStrip
+            workspacePath={workspaceId}
+            remote={remote}
+            prNumber={pr.number}
+            prState={pr.state}
+          />
         </div>
 
         {/* Tab bar */}

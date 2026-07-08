@@ -15,10 +15,40 @@
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import type * as Y from 'yjs';
 import { MonacoCodeEditor } from './MonacoCodeEditor';
+import { createMonacoCollabBinding } from './monacoCollabBinding';
+import { useCollaborativeEditor } from '../extensions/useCollaborativeEditor';
 import type { EditorHost } from '../extensions/editorHost';
 import type { ConfigTheme } from '../editor';
 import type { editor as MonacoEditorType } from 'monaco-editor';
+
+/**
+ * Opt-in collaboration config for MonacoEditor. When provided AND the host
+ * exposes `host.collaboration`, MonacoEditor binds its model to a shared
+ * `Y.Text` (via `createMonacoCollabBinding`) and SKIPS its local
+ * load/save/file-change handling -- the binding + sync layer own content.
+ *
+ * The bound `Y.Text` field MUST match the document's CollabContentAdapter
+ * (use `createTextCollabContentAdapter` with the same `textField`).
+ */
+export interface MonacoEditorCollabConfig {
+  /** Y.Text field to bind. Default 'content'. */
+  textField?: string;
+  /** Override the empty-check used to decide whether to seed. Default: the
+   *  bound field has zero length. */
+  isEmpty?: (yDoc: Y.Doc) => boolean;
+  /** Seed an empty shared doc from this client's file content. Default:
+   *  insert the decoded text into the bound field once. */
+  initializeFromContent?: (yDoc: Y.Doc, content: string | ArrayBuffer) => void;
+  /** Called once the live binding is attached -- lets the host editor do
+   *  binding-time setup (e.g. hide a frontmatter region via setHiddenAreas). */
+  onBindingReady?: (ctx: {
+    editor: MonacoEditorType.IStandaloneCodeEditor;
+    monaco: typeof import('monaco-editor');
+    yText: Y.Text;
+  }) => void;
+}
 
 export interface MonacoEditorConfig {
   /** Theme for the editor */
@@ -50,6 +80,10 @@ export interface MonacoEditorProps {
   /** Optional configuration */
   config?: MonacoEditorConfig;
 
+  /** Opt-in collaboration. When set and `host.collaboration` is active, the
+   *  model is bound to a shared Y.Text and local load/save are skipped. */
+  collab?: MonacoEditorCollabConfig;
+
   /** Callback when editor is ready (passes editor instance with diff controls) */
   onEditorReady?: (editor: any) => void;
 
@@ -74,12 +108,19 @@ export function MonacoEditor({
   host,
   fileName,
   config = {},
+  collab,
   onEditorReady,
   onGetContent: onGetContentProp,
   onDiffChangeCountUpdate,
 }: MonacoEditorProps): React.ReactElement {
   const transformLoadContent = config.transformLoadContent;
   const transformSaveContent = config.transformSaveContent;
+
+  // Collaborative when a collab config is supplied AND the host stood up a
+  // collaboration channel. In that mode the Y.Text binding owns content, so we
+  // skip local load/save/file-change handling (which would fight the binding).
+  const collaborative = !!host.collaboration && !!collab;
+  const collabField = collab?.textField ?? 'content';
 
   // Loading state - we load content via host.loadContent()
   const [isLoading, setIsLoading] = useState(true);
@@ -92,8 +133,60 @@ export function MonacoEditor({
   // Function to get current content from editor
   const getContentFnRef = useRef<(() => string) | null>(null);
 
-  // Load initial content on mount
+  // Promise that resolves with the editor wrapper once Monaco has mounted, so
+  // the collab binding can defer until a model exists (createBinding may fire
+  // before or after onEditorReady, depending on sync timing).
+  const editorReadyRef = useRef<{
+    promise: Promise<any>;
+    resolve: (wrapper: any) => void;
+  } | null>(null);
+  if (!editorReadyRef.current) {
+    let resolve!: (wrapper: any) => void;
+    const promise = new Promise<any>((r) => {
+      resolve = r;
+    });
+    editorReadyRef.current = { promise, resolve };
+  }
+
+  // Live collaborative binding (no-op when host.collaboration is undefined).
+  useCollaborativeEditor(host, {
+    isEmpty: collab?.isEmpty,
+    initializeFromContent:
+      collab?.initializeFromContent ??
+      ((yDoc, content) => {
+        const yText = yDoc.getText(collabField);
+        if (yText.length > 0) return;
+        const text =
+          typeof content === 'string'
+            ? content
+            : new TextDecoder('utf-8').decode(content);
+        if (text) yText.insert(0, text);
+      }),
+    createBinding: async ({ yDoc, awareness }) => {
+      if (!collab) return { destroy: () => {} };
+      const wrapper = await editorReadyRef.current!.promise;
+      const editor = wrapper?.editor as MonacoEditorType.IStandaloneCodeEditor;
+      if (!editor) return { destroy: () => {} };
+      const yText = yDoc.getText(collabField);
+      const handle = createMonacoCollabBinding({ yText, editor, awareness });
+      try {
+        collab.onBindingReady?.({ editor, monaco: wrapper.monaco, yText });
+      } catch (err) {
+        console.error('[MonacoEditor] collab onBindingReady failed:', err);
+      }
+      return { destroy: () => handle.destroy() };
+    },
+  });
+
+  // Load initial content on mount (skipped in collab mode: the binding fills
+  // the model from the shared Y.Text once sync completes).
   useEffect(() => {
+    if (collaborative) {
+      setInitialContent('');
+      setIsLoading(false);
+      return;
+    }
+
     let mounted = true;
 
     const loadContent = async () => {
@@ -117,10 +210,12 @@ export function MonacoEditor({
     return () => {
       mounted = false;
     };
-  }, [host, transformLoadContent]);
+  }, [host, transformLoadContent, collaborative]);
 
-  // Subscribe to save requests from host (autosave timer, manual Cmd+S)
+  // Subscribe to save requests from host (autosave timer, manual Cmd+S).
+  // Skipped in collab mode -- persistence flows through the sync layer.
   useEffect(() => {
+    if (collaborative) return;
     const handleSaveRequest = async () => {
       if (!getContentFnRef.current) {
         console.warn('[MonacoEditor] No getContent function available for save');
@@ -137,10 +232,12 @@ export function MonacoEditor({
 
     const unsubscribe = host.onSaveRequested(handleSaveRequest);
     return unsubscribe;
-  }, [host, transformSaveContent]);
+  }, [host, transformSaveContent, collaborative]);
 
-  // Subscribe to file changes (external edits)
+  // Subscribe to file changes (external edits). Skipped in collab mode -- the
+  // binding is the source of truth; a local-file echo would clobber it.
   useEffect(() => {
+    if (collaborative) return;
     const handleFileChanged = (newContent: string) => {
       // Use editor's setContent method to update content
       if (editorWrapperRef.current?.setContent) {
@@ -150,7 +247,7 @@ export function MonacoEditor({
 
     const unsubscribe = host.onFileChanged(handleFileChanged);
     return unsubscribe;
-  }, [host, transformLoadContent]);
+  }, [host, transformLoadContent, collaborative]);
 
   // NOTE: We intentionally do NOT subscribe to diff requests here.
   // Monaco diff handling is fully implemented in TabEditor.tsx which calls
@@ -181,6 +278,8 @@ export function MonacoEditor({
   const handleEditorReady = useCallback(
     (editorWrapper: any) => {
       editorWrapperRef.current = editorWrapper;
+      // Unblock any pending collab binding waiting for the model to exist.
+      editorReadyRef.current?.resolve(editorWrapper);
       onEditorReady?.(editorWrapper);
     },
     [onEditorReady]

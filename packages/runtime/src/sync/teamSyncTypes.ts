@@ -210,6 +210,12 @@ export interface DocIndexEntry {
   createdAt: number;
   updatedAt: number;
   /**
+   * User id of whoever most recently changed this document (title OR content).
+   * Lets the sidebar's unread indicator suppress the user's own edits without
+   * opening the doc. Null/undefined for legacy rows.
+   */
+  lastWriterUserId?: string | null;
+  /**
    * True when the server returned a doc index entry whose encrypted title
    * could not be decrypted with the current org key. Preserved in the list
    * so the user can see something exists rather than the entry vanishing

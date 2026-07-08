@@ -75,6 +75,48 @@ describe('SyncedSessionStore', () => {
     }
   });
 
+  it('create() returns after local persistence even when sync connect is slow', async () => {
+    // Regression coverage for GitHub #705: creating a new empty session should
+    // only wait for local persistence, not for the session-room WebSocket.
+    let resolveConnect!: () => void;
+    const connectPromise = new Promise<void>(resolve => {
+      resolveConnect = resolve;
+    });
+    mockSyncProvider.connect = vi.fn().mockReturnValue(connectPromise);
+
+    const syncedStore = createSyncedSessionStore(mockBaseStore, mockSyncProvider, {
+      autoConnect: true,
+    });
+
+    let createResolved = false;
+    const createPromise = syncedStore.create({
+      id: 'slow-sync-session',
+      title: 'Slow Sync Session',
+      provider: 'claude-code',
+      workspaceId: 'workspace-1',
+    } as any).then(() => {
+      createResolved = true;
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(mockBaseStore.create).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'slow-sync-session',
+    }));
+    expect(mockSyncProvider.connect).toHaveBeenCalledWith('slow-sync-session');
+    expect(createResolved).toBe(true);
+    expect(capturedChanges).toHaveLength(1);
+    expect(capturedChanges[0].sessionId).toBe('slow-sync-session');
+
+    resolveConnect();
+    await connectPromise;
+    await Promise.resolve();
+
+    expect(capturedChanges).toHaveLength(1);
+
+    await createPromise;
+  });
+
   it('should pass title when updating metadata', async () => {
     const syncedStore = createSyncedSessionStore(mockBaseStore, mockSyncProvider, {
       autoConnect: true,

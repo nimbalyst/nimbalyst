@@ -24,6 +24,7 @@ import { CodexRawParserDispatcher } from './parsers/CodexRawParserDispatcher';
 import { CodexACPRawParser } from './parsers/CodexACPRawParser';
 import { CopilotRawParser } from './parsers/CopilotRawParser';
 import { OpenCodeRawParser } from './parsers/OpenCodeRawParser';
+import { VoiceRawParser } from './parsers/VoiceRawParser';
 import type {
   IRawMessageParser,
   ParseContext,
@@ -478,6 +479,9 @@ export class TranscriptTransformer {
     }
     if (provider === 'opencode') {
       return new OpenCodeRawParser();
+    }
+    if (provider === 'openai-realtime') {
+      return new VoiceRawParser();
     }
     return new ClaudeCodeRawParser();
   }

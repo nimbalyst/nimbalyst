@@ -51,6 +51,33 @@ import { toDbBoolean } from './trackerDbValue';
 const LOCAL_ONLY_DATA_KEYS = ['linkedSessions'] as const;
 
 /**
+ * Normalize a payload timestamp (epoch ms number, ISO string, or Date) into
+ * epoch milliseconds. Returns undefined when the value is missing or
+ * unparseable so callers can fall back. Used to honor an item's authoritative
+ * `updatedAt` when writing the `updated` column (NIM-1559).
+ */
+function toEpochMs(value: unknown): number | undefined {
+  if (value == null) return undefined;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (value instanceof Date) {
+    const t = value.getTime();
+    return Number.isNaN(t) ? undefined : t;
+  }
+  if (typeof value === 'string') {
+    const t = Date.parse(value);
+    return Number.isNaN(t) ? undefined : t;
+  }
+  return undefined;
+}
+
+function toIsoTimestamp(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value === 'string') return value;
+  const t = toEpochMs(value);
+  return t !== undefined ? new Date(t).toISOString() : undefined;
+}
+
+/**
  * Build a JSONB expression that merges `newData` with the local-only subset
  * of `existingData`. Inline because PGLite does not support stored
  * procedures and we want this to be a single SQL statement.
@@ -279,7 +306,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
         $6, $7, $8, $9,
         'synced', $10, $11, NULL,
         $12, $13, $14, $15::jsonb,
-        NOW(), NOW(), NOW()
+        NOW(), to_timestamp($16 / 1000.0), NOW()
       )
       ON CONFLICT (id) DO UPDATE SET
         type = EXCLUDED.type,
@@ -297,7 +324,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
         source = COALESCE(tracker_items.source, EXCLUDED.source),
         source_ref = COALESCE(tracker_items.source_ref, EXCLUDED.source_ref),
         content = EXCLUDED.content,
-        updated = NOW(),
+        updated = EXCLUDED.updated,
         last_indexed = NOW()`,
       [
         item.id,
@@ -315,6 +342,12 @@ export class TrackerPGLiteStore implements TrackerPersistence {
         item.source || 'native',
         item.sourceRef ?? null,
         item.content != null ? JSON.stringify(item.content) : null,
+        // NIM-1559: honor the sender's authoritative updatedAt instead of
+        // stamping NOW() on every accepted delta. A bootstrap/echo re-apply
+        // of an unchanged envelope then writes back the SAME timestamp rather
+        // than advancing `updated` to the receive time. `last_indexed` still
+        // reflects local receive time.
+        envelope.updatedAt ?? Date.now(),
       ],
     );
   }
@@ -360,6 +393,15 @@ export class TrackerPGLiteStore implements TrackerPersistence {
     const item = trackerRecordToItem(record);
     item.labelsMap = payload.labels;
 
+    // NIM-1559: honor the payload's authoritative updatedAt instead of
+    // stamping NOW(). A pending transaction is re-driven through
+    // applyOptimistic on every startup (loadPendingTransactions); the stored
+    // payload's `system.updatedAt` is frozen at enqueue time, so re-applying
+    // it writes the SAME timestamp each restart rather than advancing
+    // `updated` to the restart time. A genuine new edit still carries a fresh
+    // updatedAt from the producer.
+    const optimisticUpdatedAtMs = toEpochMs(payload.system?.updatedAt) ?? Date.now();
+
     const dataJson: Record<string, unknown> = { ...item };
     delete dataJson.id;
     delete dataJson.type;
@@ -386,7 +428,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
         $6, $7, $8, $9,
         'pending', $10, $11, NULL,
         $12, $13, $14, $15::jsonb,
-        NOW(), NOW(), NOW()
+        NOW(), to_timestamp($16 / 1000.0), NOW()
       )
       ON CONFLICT (id) DO UPDATE SET
         type = EXCLUDED.type,
@@ -400,7 +442,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
         deleted_at = NULL,
         archived = EXCLUDED.archived,
         body_version = EXCLUDED.body_version,
-        updated = NOW()`,
+        updated = EXCLUDED.updated`,
       [
         item.id,
         item.type,
@@ -417,6 +459,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
         item.source || 'native',
         item.sourceRef ?? null,
         item.content != null ? JSON.stringify(item.content) : null,
+        optimisticUpdatedAtMs,
       ],
     );
 
@@ -448,12 +491,13 @@ export class TrackerPGLiteStore implements TrackerPersistence {
     // Restore the prior payload. Synthesize an envelope at the existing
     // sync_id (the server-confirmed state we want to roll back TO).
     if (snapshot.payload !== null) {
+      const restoredUpdatedAt = toEpochMs(snapshot.payload.system?.updatedAt) ?? Date.now();
       const envelope: EncryptedTrackerItemEnvelope = {
         itemId,
         syncId: snapshot.syncId ?? 0,
         encryptedPayload: 'restored',
         iv: 'restored-iv',
-        updatedAt: Date.now(),
+        updatedAt: restoredUpdatedAt,
         deletedAt: null,
         orgKeyFingerprint: null,
       };
@@ -752,15 +796,11 @@ function pgliteRowToPayload(row: PGLiteTrackerItemRow): TrackerItemPayload {
       createdAt:
         typeof data.created === 'string'
           ? data.created
-          : row.created instanceof Date
-            ? row.created.toISOString()
-            : undefined,
+          : toIsoTimestamp(row.created),
       updatedAt:
         typeof data.updated === 'string'
           ? data.updated
-          : row.updated instanceof Date
-            ? row.updated.toISOString()
-            : undefined,
+          : toIsoTimestamp(row.updated),
       origin: data.origin as TrackerItemPayload['system']['origin'],
     },
   };
@@ -804,15 +844,11 @@ function pgliteRowToTrackerItem(row: PGLiteTrackerItemRow, workspacePath: string
     created:
       typeof data.created === 'string'
         ? data.created
-        : row.created instanceof Date
-          ? row.created.toISOString()
-          : undefined,
+        : toIsoTimestamp(row.created),
     updated:
       typeof data.updated === 'string'
         ? data.updated
-        : row.updated instanceof Date
-          ? row.updated.toISOString()
-          : undefined,
+        : toIsoTimestamp(row.updated),
     dueDate: data.dueDate as string | undefined,
     progress: data.progress as number | undefined,
     lastIndexed: row.last_indexed instanceof Date ? row.last_indexed : new Date(),

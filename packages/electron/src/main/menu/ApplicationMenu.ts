@@ -410,7 +410,6 @@ export async function createApplicationMenu() {
                 },
                 {
                     label: 'Open Project...',
-                    accelerator: KeyboardShortcuts.file.openFolder,
                     click: async () => {
                         // Track menu action
                         AnalyticsService.getInstance().sendEvent('menu_action_used', {
@@ -1036,6 +1035,15 @@ export async function createApplicationMenu() {
                     click: () => {
                         const focused = getFocusedWindow();
                         if (focused) focused.webContents.send('open-navigation-dialog', 'content-search');
+                    }
+                },
+                {
+                    label: 'Global Search',
+                    accelerator: KeyboardShortcuts.window.globalSearch,
+                    registerAccelerator: false, // Handled by renderer keyboard handler
+                    click: () => {
+                        const focused = getFocusedWindow();
+                        if (focused) focused.webContents.send('open-navigation-dialog', 'global-search');
                     }
                 },
                 { type: 'separator' },

@@ -6,6 +6,7 @@
  */
 
 import type { AgentMessage } from '../ai/server/types';
+import type { SyncedReadReceipt } from '../readReceipts/readReceipts';
 
 export interface SyncConfig {
   /** WebSocket server URL (e.g., ws://localhost:8787 or wss://sync.nimbalyst.com) */
@@ -250,6 +251,18 @@ export interface SyncProvider {
   /** Subscribe to session creation responses (for mobile to receive response from desktop) */
   onCreateSessionResponse?(callback: (response: CreateSessionResponse) => void): () => void;
 
+  /** Subscribe to voice-tool requests from other devices (desktop runs the tool). */
+  onVoiceToolRequest?(callback: (request: VoiceToolRequest) => void): () => void;
+
+  /** Send a voice-tool result back to the requesting device (desktop -> mobile). */
+  sendVoiceToolResponse?(response: VoiceToolResponse): Promise<void>;
+
+  /** Send a voice-tool request (mobile -> desktop). */
+  sendVoiceToolRequest?(request: VoiceToolRequest): Promise<void>;
+
+  /** Subscribe to voice-tool responses (mobile receives the desktop result). */
+  onVoiceToolResponse?(callback: (response: VoiceToolResponse) => void): () => void;
+
   /** Subscribe to worktree creation requests from other devices (e.g., mobile) */
   onCreateWorktreeRequest?(callback: (request: CreateWorktreeRequest) => void): () => void;
 
@@ -286,6 +299,19 @@ export interface SyncProvider {
    * Used by mobile to receive settings from desktop.
    */
   onSettingsSync?(callback: (settings: SyncedSettings) => void): () => void;
+
+  /**
+   * Push a personal read receipt (unread-indicator state for a tracker/doc) to
+   * the user's other devices over the personal channel. Personal data only —
+   * never routed through team rooms.
+   */
+  syncReadReceipt?(receipt: SyncedReadReceipt): Promise<void>;
+
+  /**
+   * Subscribe to read receipts arriving from the user's other devices (and the
+   * server replay on connect). Advance-only; callers merge into local state.
+   */
+  onReadReceipt?(callback: (receipt: SyncedReadReceipt) => void): () => void;
 
   /**
    * Attempt to reconnect the index connection.
@@ -341,6 +367,10 @@ export interface SessionIndexData {
   parentSessionId?: string;
   /** Worktree ID for git worktree association */
   worktreeId?: string;
+  /** Agent role marker (e.g. 'meta-agent', 'standard'); drives mobile meta-agent grouping. */
+  agentRole?: string;
+  /** Meta-agent parent session ID for spawned children; drives mobile meta-agent grouping. */
+  createdBySessionId?: string | null;
   /** Whether the session is archived */
   isArchived?: boolean;
   /** Whether the session is pinned */
@@ -413,6 +443,10 @@ export interface SyncedSessionMetadata {
   parentSessionId?: string;
   /** Worktree association (mirrored from ai_sessions.worktree_id). */
   worktreeId?: string;
+  /** Agent role marker (e.g. 'meta-agent', 'standard'); drives mobile meta-agent grouping. */
+  agentRole?: string;
+  /** Meta-agent parent session ID for spawned children; drives mobile meta-agent grouping. */
+  createdBySessionId?: string;
   provider?: string;
   model?: string;
   workspaceId?: string;
@@ -471,6 +505,10 @@ export interface SessionIndexEntry {
   parentSessionId?: string;
   /** Worktree ID for git worktree association */
   worktreeId?: string;
+  /** Agent role marker (e.g. 'meta-agent', 'standard'); drives mobile meta-agent grouping. */
+  agentRole?: string;
+  /** Meta-agent parent session ID for spawned children; drives mobile meta-agent grouping. */
+  createdBySessionId?: string;
   /** Whether the session is archived */
   isArchived?: boolean;
   /** Whether the session is pinned */
@@ -587,6 +625,41 @@ export interface CreateSessionResponse {
 }
 
 /**
+ * Generic voice-tool RPC: a mobile voice agent asks the desktop to run a
+ * voice-enabled tool (e.g. the Nimbalyst Memory extension's
+ * search_project_knowledge / recall / remember) and return the result.
+ * Sent via index WebSocket, processed by desktop. The desktop gates execution
+ * to tools flagged voiceAgent:true. toolName/args/result are E2E-encrypted on
+ * the wire (they carry project knowledge).
+ */
+export interface VoiceToolRequest {
+  /** Unique request ID for correlation */
+  requestId: string;
+  /** Project/workspace this call targets */
+  projectId: string;
+  /** Tool name (realtime-safe, e.g. "search_project_knowledge") */
+  toolName: string;
+  /** JSON-stringified tool arguments */
+  argsJson: string;
+  /** Timestamp when request was created */
+  timestamp: number;
+}
+
+/**
+ * Response to a voice-tool request. Sent by desktop after the tool runs.
+ */
+export interface VoiceToolResponse {
+  /** Request ID this is responding to */
+  requestId: string;
+  /** Whether the tool ran successfully */
+  success: boolean;
+  /** JSON-stringified tool result (success message / data), if any */
+  resultJson?: string;
+  /** Error message if the tool failed or was not permitted */
+  error?: string;
+}
+
+/**
  * Request to create a new git worktree from mobile.
  * Sent via index WebSocket, processed by desktop.
  */
@@ -654,6 +727,13 @@ export interface SyncedSettings {
   defaultModel?: string;
   /** Whether the desktop "meta-agent" alpha feature is enabled (gates the mobile Meta Agent UI) */
   metaAgentEnabled?: boolean;
+  /**
+   * Desktop's preferred agent language (BCP-47 or common language name). The
+   * voice agent pins its spoken language to this so mobile never starts up in a
+   * different language than the desktop is configured for. Empty/omitted means
+   * no preference -> the voice agent falls back to English.
+   */
+  preferredAgentLanguage?: string;
   /** Version for handling future upgrades */
   version: number;
 }
@@ -684,4 +764,25 @@ export interface EncryptedSettingsPayload {
   timestamp: number;
   /** Version to handle upgrades */
   version: number;
+}
+
+/**
+ * Encrypted read-receipt payload for the personal sync channel. The
+ * `receiptKey` (hash of entityKind|entityId|scope) is plaintext so the server
+ * can last-writer-wins dedup per entity without learning the id/scope; the
+ * entity id/scope + watermark live inside the encrypted blob.
+ */
+export interface EncryptedReadReceiptPayload {
+  /** Opaque per-entity routing/LWW key: hex(sha256(entityKind|entityId|scope)). */
+  receiptKey: string;
+  /** Encrypted JSON SyncedReadReceipt (base64). */
+  encryptedReceipt: string;
+  /** IV for receipt decryption (base64). */
+  receiptIv: string;
+  /** Device id of sender. */
+  deviceId: string;
+  /** Advance-only LWW version — the receipt's `lastViewedAt` (epoch ms). */
+  version: number;
+  /** Timestamp of the sync (epoch ms). */
+  timestamp: number;
 }

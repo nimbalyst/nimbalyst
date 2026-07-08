@@ -41,6 +41,7 @@ import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { store } from '../../store';
 import { useFloatingMenu } from '../../hooks/useFloatingMenu';
 import { buildTrackerTagOptions, filterTrackerItemsByTags } from './trackerTagFilterUtils';
+import { useTrackerUnread } from '../../hooks/useTrackerUnread';
 
 export type ViewMode = 'list' | 'table' | 'kanban' | 'tag-board';
 
@@ -114,6 +115,9 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
       if (result?.success) setCurrentIdentity(result.identity);
     });
   }, []);
+
+  // Drive the per-item "unread" dots from the local read-receipt store.
+  useTrackerUnread(workspacePath, currentIdentity?.email ?? null);
 
   // Selected item for detail panel
   const modeLayout = useAtomValue(trackerModeLayoutAtom);
@@ -306,12 +310,18 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     }
 
     if (activeFilters.includes('recently-updated')) {
+      // NIM-1559: sort by the item's logical `updatedAt` (real change time),
+      // NOT `lastIndexed` (the re-scan/re-index timestamp). lastIndexed bumps
+      // on every cold-open scan, so sorting by it reshuffled the whole list
+      // on every restart and made "recently updated" meaningless. Mirror the
+      // table's own updatedAt || createdAt || lastIndexed precedence.
+      const recencyTime = (r: TrackerRecord): number => {
+        const src = r.system.updatedAt || r.system.createdAt || r.system.lastIndexed;
+        const t = src ? new Date(src).getTime() : 0;
+        return Number.isNaN(t) ? 0 : t;
+      };
       items = [...items]
-        .sort((a, b) => {
-          const aTime = a.system.lastIndexed ? new Date(a.system.lastIndexed).getTime() : 0;
-          const bTime = b.system.lastIndexed ? new Date(b.system.lastIndexed).getTime() : 0;
-          return bTime - aTime;
-        })
+        .sort((a, b) => recencyTime(b) - recencyTime(a))
         .slice(0, 50);
     }
 

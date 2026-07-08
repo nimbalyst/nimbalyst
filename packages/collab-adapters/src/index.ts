@@ -1,4 +1,6 @@
 export type {
+  CollabCodec,
+  CollabCodecMigration,
   CollabContentAdapter,
   CollabContentAdapterMigration,
   FileSource,

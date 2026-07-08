@@ -28,7 +28,7 @@ import {
 } from '../types';
 import { OpenCodeSDKProtocol } from '../protocols/OpenCodeSDKProtocol';
 import { McpConfigService } from '../services/McpConfigService';
-import { getMcpConfigService, isInternalMcpServerEnabled } from '../services/mcpServerConfig';
+import { getMcpConfigService, isInternalMcpServerEnabled, areTrackerToolsEnabled, resolveTrackersWorkspacePath } from '../services/mcpServerConfig';
 import { MCPServerConfig } from '../../../types/MCPServerConfig';
 import { safeJSONSerialize } from '../../../utils/serialization';
 import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
@@ -250,10 +250,11 @@ export class OpenCodeProvider extends BaseAgentProvider {
   /**
    * Build system prompt for the OpenCode session.
    */
-  protected buildSystemPrompt(_documentContext?: DocumentContext): string {
+  protected buildSystemPrompt(documentContext?: DocumentContext): string {
     return buildClaudeCodeSystemPrompt({
       hasSessionNaming: isInternalMcpServerEnabled(),
       toolReferenceStyle: 'opencode' as any,
+      trackersEnabled: areTrackerToolsEnabled(resolveTrackersWorkspacePath(documentContext)),
     });
   }
 

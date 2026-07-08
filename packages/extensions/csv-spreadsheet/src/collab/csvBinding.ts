@@ -149,6 +149,16 @@ export class CsvBinding {
     if (this.destroyed) return;
     if (current === this.lastSyncedContent) return;
 
+    // Wipe guard (NIM-1529): an empty serialization against a non-empty
+    // baseline is the bootstrap race (grid polled before its data loaded),
+    // not a user edit -- a real select-all-delete still serializes rows of
+    // delimiters. Pushing it would delete the whole shared document for
+    // every client.
+    if (current.trim() === '' && this.lastSyncedContent.trim() !== '') {
+      console.warn('[CsvBinding] Skipping push of empty grid state over non-empty shared doc (bootstrap race guard).');
+      return;
+    }
+
     const prev = this.lastSyncedContent;
     // Common-prefix / common-suffix shortcut: most CSV edits are local
     // (one cell, one column resize, one row insert). Sending the whole

@@ -133,7 +133,7 @@ export function parseTrackerYAML(yamlString: string): TrackerDataModel {
   if (data.roles && typeof data.roles === 'object') {
     const validRoles: TrackerSchemaRole[] = [
       'title', 'workflowStatus', 'priority', 'assignee', 'reporter',
-      'tags', 'startDate', 'dueDate', 'progress',
+      'tags', 'startDate', 'dueDate', 'progress', 'externalKey', 'prMergedStatus',
     ];
     const roles: Partial<Record<TrackerSchemaRole, string>> = {};
     for (const [key, value] of Object.entries(data.roles)) {

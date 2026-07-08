@@ -9,10 +9,21 @@ const runtimeRequire = createRequire(
 const lexicalDir = path.dirname(runtimeRequire.resolve('lexical'));
 const lexicalScopeDir = path.join(path.dirname(lexicalDir), '@lexical');
 
+// `monaco-editor`'s ESM entry statically imports `.css`, which vitest's node
+// loader cannot handle. No unit test exercises real Monaco, so alias the
+// package (and its deep `esm/.../editor.api.js` entry, used by `y-monaco`) to a
+// lightweight stub. `y-monaco` must be inlined (see `server.deps.inline`) so
+// this alias is applied to its transitive monaco import.
+const monacoStub = path.resolve(__dirname, './test-utils/monacoStub.ts');
+
 const alias = [
   {
     find: '@nimbalyst/runtime',
     replacement: path.resolve(__dirname, './packages/runtime/src'),
+  },
+  {
+    find: /^monaco-editor(\/.*)?$/,
+    replacement: monacoStub,
   },
   {
     find: /^@\//,
@@ -73,6 +84,9 @@ export default defineConfig({
           setupFiles,
           include,
           exclude: [...baseExclude, ...nodeOnly],
+          // Inline so vite transforms it and our monaco-editor stub alias
+          // applies to its transitive `monaco-editor/esm/.../editor.api.js`.
+          server: { deps: { inline: [/y-monaco/] } },
         },
       },
       {
@@ -88,6 +102,7 @@ export default defineConfig({
             'packages/runtime/src/ai/**/__tests__/**/*.{test,spec}.{ts,tsx}',
           ],
           exclude: baseExclude,
+          server: { deps: { inline: [/y-monaco/] } },
         },
       },
     ],

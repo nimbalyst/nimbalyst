@@ -101,6 +101,16 @@ export interface DocSyncResponseMessage {
   snapshot?: EncryptedDocSnapshot;
   hasMore: boolean;
   cursor: number;
+  /**
+   * The room-authed userId of whoever applied the most recent content update,
+   * and when (server clock, ms). Plaintext metadata (the writer identity is not
+   * secret to team members; the content stays encrypted). Used to tell a user
+   * who/when last edited a shared doc before their push overwrites it. Null when
+   * the document has no updates yet. Derived from the latest `encrypted_updates`
+   * row, so it reflects the last *content* edit (not title/index changes).
+   */
+  lastWriterUserId?: string | null;
+  lastUpdatedAt?: number | null;
 }
 
 /** Broadcast an encrypted Yjs update to other connections */

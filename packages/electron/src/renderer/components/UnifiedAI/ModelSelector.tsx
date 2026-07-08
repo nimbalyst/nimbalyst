@@ -147,6 +147,11 @@ export function ModelSelector({
   };
 
   const getCurrentModelName = () => {
+    // Voice sessions run the OpenAI Realtime voice agent, not the Claude
+    // model the session row defaults its `model` field to. Label it by
+    // provider so the chip doesn't misreport e.g. "Sonnet 4.6".
+    if (currentProvider === 'openai-realtime') return 'OpenAI Voice Agent';
+
     if (!currentModel) return 'Select Model';
 
     // Find the model in our list
@@ -229,8 +234,9 @@ export function ModelSelector({
   }, {} as Record<'agents' | 'models', Record<string, Model[]>>);
 
   // Read-only chip: show the running provider/model without a dropdown. Used by
-  // committed claude-code-cli sessions where the model is fixed at spawn.
-  if (readOnly) {
+  // committed claude-code-cli sessions where the model is fixed at spawn, and
+  // by voice sessions (openai-realtime) whose model isn't user-selectable.
+  if (readOnly || currentProvider === 'openai-realtime') {
     return (
       <div className="model-selector inline-block">
         <span

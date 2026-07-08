@@ -20,6 +20,7 @@ import { CodexRawParserDispatcher } from './parsers/CodexRawParserDispatcher';
 import { CodexACPRawParser } from './parsers/CodexACPRawParser';
 import { CopilotRawParser } from './parsers/CopilotRawParser';
 import { OpenCodeRawParser } from './parsers/OpenCodeRawParser';
+import { VoiceRawParser } from './parsers/VoiceRawParser';
 import type { IRawMessageParser, ParseContext } from './parsers/IRawMessageParser';
 import type { RawMessage } from './TranscriptTransformer';
 import type { TranscriptEvent } from './types';
@@ -36,6 +37,7 @@ function createParser(provider: string): IRawMessageParser {
   if (kind === 'codex-acp') return new CodexACPRawParser();
   if (kind === 'copilot') return new CopilotRawParser();
   if (kind === 'opencode') return new OpenCodeRawParser();
+  if (kind === 'voice') return new VoiceRawParser();
   return new ClaudeCodeRawParser();
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/extension-sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "SDK for building Nimbalyst extensions",
   "repository": {
     "type": "git",

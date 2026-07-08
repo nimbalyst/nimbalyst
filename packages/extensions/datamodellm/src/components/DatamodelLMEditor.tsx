@@ -67,6 +67,13 @@ export function DatamodelLMEditor({ host }: EditorHostProps) {
 
     // Push: load data into the Zustand store
     applyContent: (data: DataModelFile) => {
+      // In collab mode the binding owns the store content: it loads the
+      // authoritative Y.Doc state on mount and diffs store edits back into
+      // the Y.Doc. A lifecycle load here (reopen of a shared doc parses ''
+      // to an empty model) would replace the store and the store-diff would
+      // push entity deletes into the shared room. Same rule as MockupEditor.
+      // NIM-1529.
+      if (host.collaboration) return;
       store.getState().loadFromFile(data);
       store.getState().markClean();
     },

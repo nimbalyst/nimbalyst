@@ -1,7 +1,35 @@
 import { safeHandle } from '../utils/ipcRegistry';
 import { database } from '../database/initialize';
+import {
+    previewReclaimClaudeCodeRawLog,
+    reclaimClaudeCodeRawLog,
+} from '../database/reclaimClaudeCodeRawLog';
 
 export function registerDatabaseBrowserHandlers() {
+    // Maintenance: preview how many claude-code rows still carry trimmable
+    // tool_use_result / thinking-signature dead weight.
+    safeHandle('database:reclaimRawLog:preview', async () => {
+        try {
+            const { candidateRows } = await previewReclaimClaudeCodeRawLog(database);
+            return { success: true, candidateRows };
+        } catch (error) {
+            console.error('[DatabaseBrowserHandlers] reclaim preview failed:', error);
+            return { success: false, error: String(error) };
+        }
+    });
+
+    // Maintenance: rewrite bloated claude-code rows and optionally VACUUM.
+    // Heavy, deliberate, user-triggered. VACUUM exclusively locks the DB.
+    safeHandle('database:reclaimRawLog:run', async (_event, opts?: { vacuum?: boolean }) => {
+        try {
+            const result = await reclaimClaudeCodeRawLog(database, { vacuum: opts?.vacuum ?? false });
+            return { success: true, result };
+        } catch (error) {
+            console.error('[DatabaseBrowserHandlers] reclaim run failed:', error);
+            return { success: false, error: String(error) };
+        }
+    });
+
     // Get list of all tables in the database
     safeHandle('database:getTables', async () => {
         try {

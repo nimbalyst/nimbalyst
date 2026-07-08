@@ -924,6 +924,20 @@ export interface ExtensionAITool {
    */
   readOnly?: boolean;
 
+  /**
+   * Opt the tool in to the voice agent (OpenAI Realtime), in addition to the
+   * coding agent. When `true`, the host converts this tool's `inputSchema` into
+   * a Realtime function-tool and exposes it during a voice session; calls are
+   * dispatched through the same execution path as the coding agent. The same
+   * `handler`/`inputSchema` serves both agents. Defaults to `false` -- tools
+   * target only the coding agent unless they opt in.
+   *
+   * Voice tools should generally be `scope: 'global'` and self-contained (low
+   * latency, no required editor mount), since the voice agent has no reliable
+   * active-file context.
+   */
+  voiceAgent?: boolean;
+
   /** Handler function */
   handler: (
     params: Record<string, unknown>,
@@ -1072,12 +1086,73 @@ export interface ExtensionUIService {
   showError(message: string): void;
 }
 
+/**
+ * Status of the agent task the voice agent is driving (see
+ * {@link ExtensionAIService.getTaskStatus}).
+ */
+export interface AgentTaskStatus {
+  /** The coding session id the voice agent targets. */
+  sessionId: string;
+  /** Session title, if one has been set. */
+  title: string | null;
+  /** Raw session status. */
+  status: 'idle' | 'running' | 'waiting_for_input' | 'error';
+  /** True while the agent is actively working. */
+  running: boolean;
+  /** True when the agent has paused for an interactive prompt. */
+  waitingForInput: boolean;
+}
+
 export interface ExtensionAIService {
   /** Register an AI tool */
   registerTool(tool: ExtensionAITool): Disposable;
 
   /** Register a context provider */
   registerContextProvider(provider: ExtensionContextProvider): Disposable;
+
+  /**
+   * Register a provider that contributes text to the voice agent's session
+   * context at session start (e.g. top-N grounding facts). The host calls every
+   * registered provider when a voice session begins, caps each provider's output,
+   * and appends the concatenated result to the voice agent's instructions. Use
+   * this for zero-latency grounding the agent should know up front; expose
+   * on-demand lookups as `voiceAgent: true` tools instead.
+   */
+  registerVoiceContextProvider(provider: VoiceContextProvider): Disposable;
+
+  /**
+   * Report the status of the agent task the voice agent is currently driving in
+   * this workspace — the coding session it targets with `submit_agent_prompt`
+   * for `/design` / `/implement`. Lets a `voiceAgent: true` tool answer "is that
+   * still running?" or "is it done yet?" verbally without blocking on the agent.
+   *
+   * Returns `null` when there is no active voice-linked session. `running` is
+   * true while the agent is working; `waitingForInput` is true when it has
+   * paused for an interactive prompt.
+   */
+  getTaskStatus(workspacePath?: string): Promise<AgentTaskStatus | null>;
+
+  /**
+   * Call one of this extension's own backend-module MCP tools from the renderer
+   * and return its parsed JSON result.
+   *
+   * Backend modules run in a utility process the renderer cannot reach directly;
+   * voiceAgent / coding-agent tool calls route main->backend without a renderer
+   * hop, but a settings panel or voice context provider sometimes needs READ
+   * access to the same tools (e.g. live index status, listing stored facts).
+   * This is that read bridge: pass the advertised, namespaced tool name
+   * (`<extShort>.<tool>`, e.g. `memory.status`) and its arguments; the host
+   * resolves the active workspace, routes to the backend module, and returns the
+   * tool's result. Throws if the tool errors or the module is not running.
+   *
+   * Requires the `ai` manifest permission. `workspacePath` is optional — the
+   * host falls back to the window's active workspace when omitted.
+   */
+  callBackendTool(
+    toolName: string,
+    args?: Record<string, unknown>,
+    workspacePath?: string
+  ): Promise<unknown>;
 
   /** Send a prompt to the AI and get a response. Defaults to claude-code provider. Creates a session. */
   sendPrompt(options: {
@@ -1221,6 +1296,35 @@ export interface ExtensionContextProvider {
 
   /** Generate context string */
   provideContext(): Promise<string>;
+}
+
+/**
+ * Information passed to a voice context provider when a voice session starts.
+ */
+export interface VoiceContextProviderInput {
+  /** Path to the current workspace, if one is open. */
+  workspacePath?: string;
+  /** Path to the active file, if any. */
+  activeFilePath?: string;
+  /** The voice (Realtime) session id. */
+  voiceSessionId?: string;
+  /** The linked coding session id voice commands target. */
+  codingSessionId?: string;
+}
+
+/**
+ * A voice session context provider contributed by an extension. Returns a
+ * string (sync or async) to inject into the voice agent's session context at
+ * start. Keep output small -- the host caps each provider's contribution and the
+ * Realtime context window is expensive.
+ */
+export interface VoiceContextProvider {
+  /** Provider identifier (namespaced per extension by the host). */
+  id: string;
+  /** Priority (higher = earlier in the injected context). Defaults to 0. */
+  priority?: number;
+  /** Produce the context string for this session. */
+  provideContext(input: VoiceContextProviderInput): string | Promise<string>;
 }
 
 export interface Disposable {

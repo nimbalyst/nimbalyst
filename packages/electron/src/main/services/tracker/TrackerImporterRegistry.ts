@@ -57,13 +57,16 @@ class TrackerImporterRegistry {
       workspacePath,
     });
     if (handle.state.status !== 'running') {
-      const status = handle.state.status;
+      const state = handle.state;
+      const status = state.status;
       const detail =
         status === 'awaiting-consent' || status === 'denied'
           ? 'Enable the importer when prompted to continue.'
           : status === 'awaiting-trust'
             ? 'Trust this workspace to use importers.'
-            : `Importer backend is ${status}.`;
+            : status === 'crashed'
+              ? `Importer backend crashed${state.exitCode !== null ? ` (exit code ${state.exitCode})` : ''}${state.error ? `: ${state.error.message}` : '.'}`
+              : `Importer backend is ${status}.`;
       throw new Error(
         `Importer '${importer.contribution.displayName}' is not ready (${status}). ${detail}`
       );

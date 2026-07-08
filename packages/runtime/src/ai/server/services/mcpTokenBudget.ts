@@ -62,12 +62,18 @@ export function measureToolList(tools: MeasurableToolSchema[]): { bytes: number;
  *
  * @param serverTools  config-key → that server's tool schemas
  * @param eagerConfigKeys  which servers are `alwaysLoad` (charged eagerly)
+ * @param alwaysLoadToolNames  when provided, eagerness is per-TOOL: within an
+ *   eager server, only tools in this set are charged to `eagerEstTokens`
+ *   (mirrors the per-tool `_meta['anthropic/alwaysLoad']` marking on the core
+ *   endpoint). Omit for the legacy whole-server accounting.
  */
 export function buildToolBudgetReport(
   serverTools: Record<string, MeasurableToolSchema[]>,
   eagerConfigKeys: readonly string[],
+  alwaysLoadToolNames?: readonly string[],
 ): ToolBudgetReport {
   const eager = new Set(eagerConfigKeys);
+  const alwaysLoad = alwaysLoadToolNames ? new Set(alwaysLoadToolNames) : null;
   const servers: ServerToolBudget[] = [];
   let totalToolCount = 0;
   let totalBytes = 0;
@@ -80,7 +86,11 @@ export function buildToolBudgetReport(
     totalToolCount += tools.length;
     totalBytes += bytes;
     totalEstTokens += estTokens;
-    if (eager.has(configKey)) eagerEstTokens += estTokens;
+    if (eager.has(configKey)) {
+      eagerEstTokens += alwaysLoad
+        ? measureToolList(tools.filter((t) => alwaysLoad.has(t.name))).estTokens
+        : estTokens;
+    }
   }
 
   servers.sort((a, b) => b.estTokens - a.estTokens);

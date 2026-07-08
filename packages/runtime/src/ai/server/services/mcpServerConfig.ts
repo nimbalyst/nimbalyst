@@ -18,6 +18,7 @@
  */
 
 import { McpConfigService, McpConfigServiceDeps } from './McpConfigService';
+import type { DocumentContext } from '../types';
 
 /**
  * MCP-enablement deps shared across every agent provider. Mutated in place by
@@ -62,6 +63,32 @@ export function configureMcpServers(partial: Partial<SharedMcpServerConfig>): vo
  */
 export function isInternalMcpServerEnabled(): boolean {
   return shared.mcpServerPort !== null;
+}
+
+/**
+ * True when tracker agent tools are enabled for the workspace. Providers use
+ * this to skip tracker-related system-prompt guidance when the workspace has
+ * trackers disabled (no loader wired = enabled, matching McpConfigService).
+ */
+/**
+ * Workspace path for tracker-enablement lookups from a session's document
+ * context. Prefers the MCP config path (parent project for worktrees), same
+ * scope `McpConfigService.getMcpServersConfig` keys the trackers opt-out on.
+ */
+export function resolveTrackersWorkspacePath(documentContext?: DocumentContext): string | undefined {
+  return (
+    documentContext?.mcpConfigWorkspacePath ??
+    documentContext?.worktreeProjectPath ??
+    documentContext?.worktreePath
+  );
+}
+
+export function areTrackerToolsEnabled(workspacePath?: string): boolean {
+  try {
+    return !shared.trackersAgentToolsDisabledLoader?.(workspacePath);
+  } catch {
+    return true;
+  }
 }
 
 /** Build a `McpConfigService` from the shared config + the provider's own loaders. */

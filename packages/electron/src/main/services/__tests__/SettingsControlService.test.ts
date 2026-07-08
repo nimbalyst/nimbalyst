@@ -58,13 +58,26 @@ vi.mock('../../window/WindowManager', () => ({
 vi.mock('../../utils/logger', () => ({
   logger: {
     store: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    main: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   },
+}));
+
+const { startExtensionBackendModules, stopExtensionBackendModules } = vi.hoisted(() => ({
+  startExtensionBackendModules: vi.fn().mockResolvedValue(undefined),
+  stopExtensionBackendModules: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../extensions/backendModuleLifecycle', () => ({
+  startExtensionBackendModules,
+  stopExtensionBackendModules,
+  getDefaultBackendModuleLifecycleDeps: vi.fn(() => ({})),
 }));
 
 import {
   ALLOWED_APP_KEYS,
   ALLOWED_WORKSPACE_KEYS,
   DENIED_APP_KEYS,
+  SettingsControlService,
 } from '../SettingsControlService';
 
 describe('SettingsControlService allowlist invariants', () => {
@@ -112,6 +125,33 @@ describe('SettingsControlService allowlist invariants', () => {
   it('only allows curated workspace-level keys', () => {
     expect([...ALLOWED_WORKSPACE_KEYS].sort()).toEqual(
       ['agentPermissions', 'issueKeyPrefix', 'trackerSyncPolicies'].sort(),
+    );
+  });
+});
+
+describe('SettingsControlService.setExtensionEnabled', () => {
+  it('starts backend modules when enabling, mirroring the Settings UI IPC path', async () => {
+    const service = SettingsControlService.getInstance();
+    await service.setExtensionEnabled('session-1', {
+      extensionId: 'com.nimbalyst.github-issues-importer',
+      enabled: true,
+    });
+    expect(startExtensionBackendModules).toHaveBeenCalledWith(
+      'com.nimbalyst.github-issues-importer',
+      expect.anything(),
+    );
+    expect(stopExtensionBackendModules).not.toHaveBeenCalled();
+  });
+
+  it('stops backend modules when disabling', async () => {
+    const service = SettingsControlService.getInstance();
+    await service.setExtensionEnabled('session-1', {
+      extensionId: 'com.nimbalyst.github-issues-importer',
+      enabled: false,
+    });
+    expect(stopExtensionBackendModules).toHaveBeenCalledWith(
+      'com.nimbalyst.github-issues-importer',
+      expect.anything(),
     );
   });
 });

@@ -3,6 +3,9 @@ import {
   FIRST_PARTY_TOOL_TO_SERVER,
   MCP_EAGER_CONFIG_KEYS,
   MCP_CORE,
+  MCP_TRACKERS,
+  MCP_SITUATIONAL,
+  CORE_ALWAYS_LOAD_TOOLS,
   buildToolBudgetReport,
   formatToolBudgetReport,
   type MeasurableToolSchema,
@@ -53,7 +56,9 @@ describe('MCP tool budget characterization (current first-party surface)', () =>
       (byServer[server] ??= []).push(tool);
     }
 
-    const report = buildToolBudgetReport(byServer, MCP_EAGER_CONFIG_KEYS);
+    // Per-tool eagerness: only CORE_ALWAYS_LOAD_TOOLS are charged eagerly
+    // (display_to_user / capture_editor_screenshot stay on core but defer).
+    const report = buildToolBudgetReport(byServer, MCP_EAGER_CONFIG_KEYS, CORE_ALWAYS_LOAD_TOOLS);
 
     // Visible in test output for before/after comparison across phases.
     // eslint-disable-next-line no-console
@@ -63,10 +68,12 @@ describe('MCP tool budget characterization (current first-party surface)', () =>
     );
 
     expect(report.totalToolCount).toBeGreaterThan(0);
-    // The eager surface should be a clear minority of the total once trackers,
-    // host config, and extensions defer. Generous ceiling guards regressions.
+    // The always-load core subset is the fixed tool floor every session pays;
+    // trimmed schemas + per-tool deferral landed it ~1.5K (2026-07-07).
+    // Ceiling leaves headroom for description churn but catches a fat schema
+    // creeping back in.
     expect(report.eagerEstTokens).toBeGreaterThan(0);
-    expect(report.eagerEstTokens).toBeLessThan(12000);
+    expect(report.eagerEstTokens).toBeLessThan(2500);
   });
 
   it('maps every current first-party tool to a topology server (except known IPC-only names)', () => {
@@ -84,5 +91,39 @@ describe('MCP tool budget characterization (current first-party surface)', () =>
 
   it('confirms core is the only eager server', () => {
     expect(MCP_EAGER_CONFIG_KEYS).toEqual([MCP_CORE]);
+  });
+
+  // Reverse of the mapping test above: guards against topology declaring a tool
+  // that no `ListTools` schema actually provides (phantom entries). This is the
+  // check that was missing when `developer_git_log` (core) and
+  // `applyDiff`/`streamContent` (host) were declared in topology but absent from
+  // any schema.
+  //
+  // Scope: core, trackers, and situational — the servers fully covered by the
+  // leaf schema modules importable in a node test env. The host schema modules
+  // pull in the electron service graph (monaco, etc.) and can't be imported
+  // here; `update_session_meta` (session-naming) is likewise excluded and is
+  // covered by the routing tests.
+  it('every first-party core/trackers/situational topology tool has a real schema', () => {
+    const builtInNames = new Set(collectCurrentFirstPartySchemas().map((t) => t.name));
+    const guardedServers = new Set([MCP_CORE, MCP_TRACKERS, MCP_SITUATIONAL]);
+    // These tools live on guarded servers but their schemas are defined in host
+    // modules (settingsServer / sessionNamingServer) that can't be imported in
+    // this node test env. Their schema-backing is covered by the routing tests.
+    //   - update_session_meta       → sessionNamingServer (core)
+    //   - tracker_set_sync_policy    → settingsServer (trackers, moved in Phase 5)
+    //   - tracker_set_issue_key_prefix → settingsServer (trackers, moved in Phase 5)
+    const excluded = new Set([
+      'update_session_meta',
+      'tracker_set_sync_policy',
+      'tracker_set_issue_key_prefix',
+    ]);
+
+    const phantom = [...FIRST_PARTY_TOOL_TO_SERVER.entries()]
+      .filter(([tool, server]) => guardedServers.has(server) && !excluded.has(tool))
+      .map(([tool]) => tool)
+      .filter((tool) => !builtInNames.has(tool));
+
+    expect(phantom).toEqual([]);
   });
 });

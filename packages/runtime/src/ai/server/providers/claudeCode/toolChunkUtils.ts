@@ -15,6 +15,7 @@ const CLAUDE_CODE_TRANSIENT_SYSTEM_SUBTYPES = new Set([
   'task_started',
   'task_progress',
   'task_notification',
+  'task_updated',
 ]);
 
 const CLAUDE_CODE_TRANSIENT_CHUNK_TYPES = new Set([
@@ -31,6 +32,78 @@ export function isTransientClaudeCodeChunk(chunk: unknown): boolean {
     return CLAUDE_CODE_TRANSIENT_SYSTEM_SUBTYPES.has(c.subtype);
   }
   return typeof c.type === 'string' && CLAUDE_CODE_TRANSIENT_CHUNK_TYPES.has(c.type);
+}
+
+// Fields on a chunk that are pure dead weight in the persisted raw log:
+//   - tool_use_result.{originalFile, oldString, newString, structuredPatch, ...}
+//     The Claude Agent SDK attaches a `tool_use_result` sidecar to Edit/Write/Read
+//     tool-result messages. It re-stores the edit (already present on the tool_use
+//     CALL, which is what the UI renders) PLUS the entire pre-edit file. Nothing in
+//     the transcript pipeline, UI, or resume path reads it (resume uses the SDK's
+//     own history.jsonl). On a real workload it is ~60% of the claude-code raw log.
+//   - assistant thinking block `signature`: a ~12 KB base64 blob used only for
+//     Anthropic API continuation; the SDK keeps its own copy, ours is never resent.
+//
+// We keep small scalar tool_use_result fields (filePath, userModified, replaceAll)
+// for forensics and leave the message structure parseable.
+const STORAGE_KEEP_SCALAR_MAX_CHARS = 512;
+
+/**
+ * Return a storage-slimmed clone of a raw Claude Code SDK chunk: drops the heavy
+ * tool_use_result fields and thinking-block signatures. Does NOT mutate the input
+ * (the live dispatch loop keeps using the original chunk, incl. its uuid). Returns
+ * the input unchanged when there is nothing to trim.
+ */
+export function slimClaudeCodeChunkForStorage(chunk: unknown): unknown {
+  if (!chunk || typeof chunk !== 'object') return chunk;
+  const c = chunk as Record<string, unknown>;
+  let clone: Record<string, unknown> | null = null;
+  const ensureClone = (): Record<string, unknown> => (clone ??= { ...c });
+
+  // 1) Slim the tool_use_result sidecar: keep only small scalars.
+  const tur = c.tool_use_result;
+  if (tur && typeof tur === 'object' && !Array.isArray(tur)) {
+    const turObj = tur as Record<string, unknown>;
+    let trimmed = false;
+    const slim: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(turObj)) {
+      const isSmallScalar =
+        v == null ||
+        typeof v === 'boolean' ||
+        typeof v === 'number' ||
+        (typeof v === 'string' && v.length <= STORAGE_KEEP_SCALAR_MAX_CHARS);
+      if (isSmallScalar) {
+        slim[k] = v;
+      } else {
+        trimmed = true;
+      }
+    }
+    if (trimmed) {
+      ensureClone().tool_use_result = slim;
+    }
+  }
+
+  // 2) Strip signatures from assistant thinking blocks.
+  const message = c.message as { content?: unknown } | undefined;
+  if (message && typeof message === 'object' && Array.isArray(message.content)) {
+    const blocks = message.content as Array<Record<string, unknown>>;
+    const hasSignature = blocks.some(
+      (b) => b && b.type === 'thinking' && typeof b.signature === 'string' && (b.signature as string).length > 0,
+    );
+    if (hasSignature) {
+      const slimBlocks = blocks.map((b) => {
+        if (b && b.type === 'thinking' && typeof b.signature === 'string') {
+          const { signature, ...rest } = b;
+          return rest;
+        }
+        return b;
+      });
+      const cloned = ensureClone();
+      cloned.message = { ...(message as object), content: slimBlocks };
+    }
+  }
+
+  return clone ?? chunk;
 }
 
 export function isSearchableAssistantChunk(chunk: any): boolean {

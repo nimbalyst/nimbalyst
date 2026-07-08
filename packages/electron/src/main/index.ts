@@ -42,6 +42,7 @@ import { registerMultiProjectRailHandlers } from './ipc/MultiProjectRailHandlers
 import { registerUsageAnalyticsHandlers } from './ipc/UsageAnalyticsHandlers';
 import { registerWorktreeHandlers } from './ipc/WorktreeHandlers';
 import { registerPullRequestHandlers, stopPullRequestPollScheduler } from './ipc/PullRequestHandlers';
+import { registerReadReceiptHandlers } from './ipc/ReadReceiptHandlers';
 import { registerWakeupHandlers } from './ipc/WakeupHandlers';
 import { registerBlitzHandlers } from './ipc/BlitzHandlers';
 import { registerProjectMigrationHandlers } from './ipc/ProjectMigrationHandlers';
@@ -79,6 +80,8 @@ import { registerMCPConfigHandlers } from './ipc/MCPConfigHandlers';
 import { getOpenCodeConfigService, registerOpenCodeConfigHandlers } from './ipc/OpenCodeConfigHandlers';
 import { registerClaudeCodePluginHandlers } from './ipc/ClaudeCodePluginHandlers';
 import { registerExportHandlers } from './ipc/ExportHandlers';
+import { registerSemanticSearchHandlers } from './ipc/SemanticSearchHandlers';
+import { SemanticCatalogService } from './services/SemanticCatalogService';
 import { registerShareHandlers } from './ipc/ShareHandlers';
 import { MCPConfigService } from './services/MCPConfigService';
 import { setMcpConfigServiceGetter } from './mcpConfigServiceRef';
@@ -92,6 +95,11 @@ import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesF
 import { cliManager, initEnhancedPath, getEnhancedPath, getShellEnvironment } from './services/CLIManager';
 import { registerWorkspaceWindow, registerExtensionTools, shutdownHttpServer, startMcpHttpServer, updateDocumentState, getActiveExtensionShortNames } from './mcp/httpServer';
 import { writeMcpEndpointDescriptor, removeMcpEndpointDescriptor, type EndpointWorkspace } from './mcp/mcpEndpointDescriptor';
+import {
+  startWorkspaceBackendModules,
+  syncEnabledBackendModulesOnStartup,
+  getDefaultBackendModuleLifecycleDeps,
+} from './extensions/backendModuleLifecycle';
 // MCP consolidation Phase 7: sessionContextServer / settingsServer no longer run
 // as standalone HTTP servers; their tool dispatch + schemas are imported by the
 // unified httpServer instead. Nothing to start/shutdown from here.
@@ -178,6 +186,7 @@ import { ClaudeSettingsManager } from './services/ClaudeSettingsManager';
 import { TrayManager } from './tray/TrayManager';
 import { pathToFileURL } from 'url';
 import { registerLinuxAppImageProtocolHandler } from './services/LinuxProtocolRegistration';
+import { installWindowOpenGuard } from './window/windowOpenGuard';
 
 // CRITICAL: Hide dock icon when running as background Node process
 // This prevents Terminal icon from appearing when Claude Code spawns child processes
@@ -201,6 +210,11 @@ if (process.platform === 'win32') {
 registerNimAssetSchemeAsPrivileged();
 registerNimPreviewSchemeAsPrivileged();
 registerCollabAssetSchemeAsPrivileged();
+
+// NIM-1487: no window may be spawned by an unhandled window.open — relative
+// file links that slip past the renderer's link routing used to open blank
+// white child windows.
+installWindowOpenGuard();
 
 // NOTE: User data directory configuration is handled in bootstrap.ts
 // which runs BEFORE this file is imported, ensuring electron-store
@@ -876,6 +890,47 @@ async function handleDeepLink(url: string): Promise<void> {
  * endpoint descriptor. Best-effort and de-duplicated; falls back to recent
  * workspaces if no windows are open yet.
  */
+/**
+ * Workspaces we've already kicked backend-module startup for, so the per-document
+ * `mcp:updateDocumentState` events don't re-scan extension dirs on every update.
+ */
+const backendModulesStartedForWorkspace = new Set<string>();
+
+/**
+ * Start the backend modules of every enabled extension across the workspaces of
+ * all currently-open windows, derived from `windowStates` (main-side, NOT the
+ * renderer). The per-workspace `mcp:updateDocumentState` hook only fires once
+ * the renderer pushes document state — which is driven by MCP/agent usage — so a
+ * freshly-restarted app with an enabled engine would otherwise not start it
+ * until something touched that window's MCP surface. This sweep (run shortly
+ * after startup and on window focus) makes enabled engines come up promptly.
+ * Idempotent: workspaces already swept are skipped, and `startModule` itself is
+ * idempotent.
+ */
+async function sweepOpenWindowsForBackendModules(): Promise<boolean> {
+    const seen = new Set<string>();
+    const workspaces: string[] = [];
+    for (const state of windowStates.values()) {
+        const candidates = [
+            resolveActiveWorkspacePath(state),
+            state?.workspacePath,
+            ...(state?.additionalWorkspacePaths ?? []),
+        ];
+        for (const p of candidates) {
+            if (p && !seen.has(p)) {
+                seen.add(p);
+                workspaces.push(p);
+            }
+        }
+    }
+    const fresh = workspaces.filter((p) => !backendModulesStartedForWorkspace.has(p));
+    if (fresh.length === 0) return false;
+    for (const p of fresh) backendModulesStartedForWorkspace.add(p);
+    const deps = { ...getDefaultBackendModuleLifecycleDeps(), collectWorkspaces: () => fresh };
+    await syncEnabledBackendModulesOnStartup(deps);
+    return true;
+}
+
 function collectOpenWorkspaces(): EndpointWorkspace[] {
     const seen = new Set<string>();
     const out: EndpointWorkspace[] = [];
@@ -1454,6 +1509,7 @@ app.whenReady().then(async () => {
     registerGitHandlers();
     registerWorktreeHandlers();
     registerPullRequestHandlers();
+    registerReadReceiptHandlers();
     registerWakeupHandlers();
     registerBlitzHandlers();
     registerProjectMigrationHandlers();
@@ -1477,6 +1533,10 @@ app.whenReady().then(async () => {
     registerExportHandlers();
     registerShareHandlers();
     registerTrackerSyncHandlers();
+    registerSemanticSearchHandlers();
+    // Reactively catalog trackers into the memory engine (when enabled) and
+    // serve Quick Open semantic search.
+    SemanticCatalogService.getInstance().start();
     initTrackerSchemaService(); // Register IPC handlers + load built-in schemas
 
     // Initialize commit-tracker linking (listens to GitRefWatcher for all commits)
@@ -1784,7 +1844,13 @@ app.whenReady().then(async () => {
     // common dir from a worktree, and (for Codex) escape its workspace-write
     // sandbox when an orchestrator session needs to edit sibling worktrees.
     // Issue #37 problem 1.
-    ClaudeCodeProvider.setAdditionalDirectoriesLoader(getAdditionalDirectoriesForWorkspace);
+    // Claude opts out of sibling worktrees: the Claude CLI loads .claude/commands
+    // skills from every additional directory, so N worktrees = N duplicate
+    // copies of every project skill in the system prompt (~7K tokens wasted per
+    // session). Claude has no Codex-style sandbox; cross-worktree file access
+    // still works through the normal permission flow.
+    ClaudeCodeProvider.setAdditionalDirectoriesLoader((workspacePath: string) =>
+      getAdditionalDirectoriesForWorkspace(workspacePath, { includeSiblingWorktrees: false }));
     OpenAICodexProvider.setAdditionalDirectoriesLoader(getAdditionalDirectoriesForWorkspace);
 
     // Wire the Codex PreToolUse hook (LEGACY -- only consulted by the SDK
@@ -2115,6 +2181,34 @@ app.whenReady().then(async () => {
         } catch (descriptorError) {
             logger.mcp.error('Failed to publish MCP endpoint descriptor:', descriptorError);
         }
+
+        // Backend modules: sweep open windows after startup so enabled extension
+        // engines (e.g. project-memory) come up without waiting for an agent to
+        // touch the window's MCP surface (which is what drives the renderer
+        // mcp:updateDocumentState the per-workspace hook relies on). `windowStates`
+        // populates as windows finish restoring — AFTER this point — so retry on a
+        // short interval until a sweep finds open workspaces, then stop (later
+        // opens are covered by the focus listener + per-workspace hook). Capped so
+        // a windowless run doesn't poll forever. All paths are idempotent.
+        let backendSweepAttempts = 0;
+        const backendSweepTimer = setInterval(() => {
+            backendSweepAttempts += 1;
+            void sweepOpenWindowsForBackendModules()
+                .then((sweptAny) => {
+                    if (sweptAny || backendSweepAttempts >= 20) {
+                        clearInterval(backendSweepTimer);
+                    }
+                })
+                .catch((err) => {
+                    logger.mcp.error('Startup backend-module sweep failed:', err);
+                    if (backendSweepAttempts >= 20) clearInterval(backendSweepTimer);
+                });
+        }, 3000);
+        app.on('browser-window-focus', () => {
+            void sweepOpenWindowsForBackendModules().catch((err) =>
+                logger.mcp.error('Focus backend-module sweep failed:', err)
+            );
+        });
     } catch (error) {
             logger.mcp.error('Failed to start MCP SSE server:', error);
     }
@@ -2200,6 +2294,20 @@ app.whenReady().then(async () => {
         if (state?.workspacePath && windowId) {
             // logger.mcp.info(`Registering workspace ${state.workspacePath} -> window ${windowId}`);
             registerWorkspaceWindow(state.workspacePath, windowId);
+
+            // First time we see this workspace, start the backend modules of any
+            // enabled extension in it. This is the reliable "workspace is open in
+            // a window" signal (the renderer reports document state after init),
+            // so it doubles as the startup path for already-enabled extensions
+            // and the open-path for newly-opened workspaces. startModule is
+            // idempotent, so the guard is only an efficiency measure.
+            if (!backendModulesStartedForWorkspace.has(state.workspacePath)) {
+                backendModulesStartedForWorkspace.add(state.workspacePath);
+                const ws = state.workspacePath;
+                void startWorkspaceBackendModules(ws, getDefaultBackendModuleLifecycleDeps()).catch(
+                    (err) => logger.mcp.error(`Backend-module start failed for workspace ${ws}:`, err)
+                );
+            }
             // Issue #146: also allow `nim-asset://` to serve images from the
             // workspace. addNimAssetRoot is idempotent.
             addNimAssetRoot(state.workspacePath);

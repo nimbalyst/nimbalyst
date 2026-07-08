@@ -974,9 +974,10 @@ export class ClaudeProvider extends BaseAIProvider {
    * same pattern.
    *
    * Strategy: denylist of known-rejecting prefixes. Today that is
-   * `claude-opus-4-N` for N >= 7. Everything else -- all Sonnet variants
-   * (3.x and 4.x), all Haiku variants, Opus 4 / 4.1 / 4.5 / 4.6, and any
-   * `claude-3-*` Opus model -- still accepts `temperature`.
+   * `claude-opus-4-N` for N >= 7 and `claude-sonnet-N` for N >= 5 (Sonnet 5
+   * adopted the same deprecation). Everything else -- Sonnet 3.x / 4.x, all
+   * Haiku variants, Opus 4 / 4.1 / 4.5 / 4.6, and any `claude-3-*` Opus model
+   * -- still accepts `temperature`.
    *
    * The denylist is intentionally narrow. The fail-open default preserves
    * user-configured `temperature` for new Claude models; if Anthropic
@@ -1002,6 +1003,19 @@ export class ClaudeProvider extends BaseAIProvider {
     if (opusMinor) {
       const minor = parseInt(opusMinor[1], 10);
       return minor < 7;
+    }
+
+    // Sonnet 5+ adopted the same deprecation as Opus 4.7+ (adaptive thinking,
+    // effort parameter, no sampling parameters) -- `temperature` returns HTTP
+    // 400. The leading-number capture distinguishes the dateless
+    // `claude-sonnet-5` generation (major >= 5, rejects) from the older
+    // minor-versioned `claude-sonnet-4-N` ids (major 4, still accepts). The
+    // legacy `claude-3-7-sonnet` form has `sonnet` later in the string and so
+    // doesn't match this anchored prefix -- it falls through to `true`.
+    const sonnetMajor = id.match(/^claude-sonnet-(\d{1,2})(?:-|$)/);
+    if (sonnetMajor) {
+      const major = parseInt(sonnetMajor[1], 10);
+      return major < 5;
     }
 
     return true;

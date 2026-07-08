@@ -13,6 +13,30 @@ import { resolve } from 'node:path';
  */
 export default defineConfig({
   plugins: [
+    // Stub the Anthropic SDK's Node-only agent-toolset out of this browser
+    // bundle. @nimbalyst/runtime value-imports @anthropic-ai/sdk (ai/models.ts,
+    // for the model picker); the SDK's beta-sessions code in turn dynamically
+    // imports `tools/agent-toolset/node` -- server-side file tools built on
+    // node:fs/path/crypto. Those make named Node-builtin imports (randomUUID,
+    // realpath, ...) that Vite externalizes to __vite-browser-external (no named
+    // exports), which is a hard build error. The agent-toolset has no place in a
+    // WKWebView and never runs there, so resolve it to an empty module.
+    {
+      name: 'stub-anthropic-agent-toolset',
+      enforce: 'pre' as const,
+      resolveId(source: string) {
+        if (source.includes('tools/agent-toolset')) {
+          return '\0anthropic-agent-toolset-stub';
+        }
+        return null;
+      },
+      load(id: string) {
+        if (id === '\0anthropic-agent-toolset-stub') {
+          return 'export default {};';
+        }
+        return null;
+      },
+    },
     react({
       jsxRuntime: 'automatic',
       include: [

@@ -356,7 +356,6 @@ export const HelpContent: Record<string, HelpEntry> = {
   'project-manager-open': {
     title: 'Open Project',
     body: 'Open a project folder from your computer.',
-    shortcut: KeyboardShortcuts.file.openFolder,
   },
   'project-manager-recent': {
     title: 'Recent Projects',

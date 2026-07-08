@@ -67,7 +67,8 @@ export function getRelativeWorkspacePath(filePath: string, workspacePath: string
 
 /**
  * Resolve a workspace path to its parent project path.
- * If the path is a worktree (matches {project}_worktrees/{name}/ pattern),
+ * If the path is a worktree (matches {project}_worktrees/<name> pattern, where
+ * <name> may be nested for branch-style worktree names like `feature/foo`),
  * returns the parent project path. Otherwise returns the original path.
  *
  * This is used by the permission system to ensure worktrees inherit
@@ -84,10 +85,13 @@ export function resolveProjectPath(workspacePath: string): string {
   // Normalize the path to remove trailing slashes for consistent matching
   const normalizedPath = normalizeWorkspacePath(workspacePath);
 
-  // Match pattern: /{project}_worktrees/{name}
-  // This matches our worktree creation pattern in GitWorktreeService
-  // Use [\\/] to match both forward and backslash (Windows and Unix)
-  const match = normalizedPath.match(/^(.+)_worktrees[\\/][^\\/]+$/);
+  // Match pattern: /{project}_worktrees/{...name}
+  // The trailing segment may itself contain slashes: branch-style worktree
+  // names like `feature/foo` create nested directories
+  // (`{project}_worktrees/feature/foo`). Match the whole remainder, not a
+  // single segment, so those resolve to the project too. The greedy (.+)
+  // anchors on the last `_worktrees/`. Use [\\/] for forward+backslash.
+  const match = normalizedPath.match(/^(.+)_worktrees[\\/].+$/);
   return match ? match[1] : normalizedPath;
 }
 
@@ -103,8 +107,72 @@ export function isWorktreePath(workspacePath: string): boolean {
   }
 
   const normalizedPath = normalizeWorkspacePath(workspacePath);
-  // Use [\\/] to match both forward and backslash (Windows and Unix)
-  return /_worktrees[\\/][^\\/]+$/.test(normalizedPath);
+  // Use [\\/] to match both forward and backslash (Windows and Unix).
+  // `.+$` (not `[^\\/]+$`) so nested/branch-style worktree names match too.
+  return /_worktrees[\\/].+$/.test(normalizedPath);
+}
+
+/**
+ * Walk up the directory tree from `startPath` (inclusive) and return the first
+ * ancestor for which `predicate` is true, or null if none match.
+ *
+ * If `stopAt` is provided, the walk is bounded above by that directory
+ * (inclusive): `stopAt` is still tested, but the walk never climbs past it.
+ * Otherwise the walk is bounded only by the filesystem root.
+ *
+ * Used by the permission layer so a subfolder inherits the agent permissions of
+ * the nearest ancestor directory that has them explicitly set (the project the
+ * user trusted), while `stopAt` keeps that inheritance from crossing a project
+ * boundary. Pure and synchronous — the caller supplies the lookup.
+ */
+export function findNearestAncestor(
+  startPath: string,
+  predicate: (dir: string) => boolean,
+  stopAt?: string,
+): string | null {
+  if (!startPath) {
+    return null;
+  }
+
+  let current = normalizeWorkspacePath(startPath);
+  const root = path.parse(current).root;
+  const boundary = stopAt ? normalizeWorkspacePath(stopAt) : null;
+
+  // Bounded by `stopAt` (if given) and the filesystem root; dirname() converges.
+  while (true) {
+    if (predicate(current)) {
+      return current;
+    }
+    // Reached the inclusive upper boundary without a match - do not climb past it.
+    if (boundary && current === boundary) {
+      return null;
+    }
+    const parent = path.dirname(current);
+    if (parent === current || current === root) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+/**
+ * Walk up from `startPath` (inclusive) to the nearest directory that is a git
+ * repository root (contains a `.git` directory or file), or null if none is
+ * found up to the filesystem root.
+ *
+ * The permission cascade uses this as the upper bound of its trust walk: a real
+ * project is a git repo, so bounding the walk here means a subfolder inherits
+ * its OWN project's trust, but a distinct project (its own `.git`) nested under
+ * a trusted parent directory does not silently inherit that parent's trust.
+ */
+export function findProjectRoot(startPath: string): string | null {
+  return findNearestAncestor(startPath, (dir) => {
+    try {
+      return fs.existsSync(path.join(dir, '.git'));
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**
@@ -318,15 +386,26 @@ export function getExtensionSDKDocsPath(): string | null {
 }
 
 /**
- * Gets additional directories that should be accessible to Claude for the given workspace.
- * This includes:
+ * Gets additional directories that should be accessible to the agent for the
+ * given workspace. This includes:
  * - Extension SDK documentation when working on an extension project
  * - Parent project directory when working in a worktree
+ * - Sibling worktrees (unless opted out — see includeSiblingWorktrees)
  *
  * @param workspacePath - The current workspace path
- * @returns Array of additional directory paths Claude should have access to
+ * @param options.includeSiblingWorktrees - default true. The Claude Code
+ *   loader passes false: the Claude CLI discovers `.claude/commands` skills in
+ *   every additional directory, so with N sibling worktrees every project
+ *   skill appears N+1 times in the system prompt (~7K tokens of duplicates per
+ *   session in a many-worktree repo). Codex keeps true — its workspace-write
+ *   sandbox blocks sibling-worktree edits without `--add-dir`, and it loads no
+ *   skills from those directories.
+ * @returns Array of additional directory paths the agent should have access to
  */
-export function getAdditionalDirectoriesForWorkspace(workspacePath: string): string[] {
+export function getAdditionalDirectoriesForWorkspace(
+  workspacePath: string,
+  options?: { includeSiblingWorktrees?: boolean },
+): string[] {
   const additionalDirs = new Set<string>();
   const projectPath = resolveProjectPath(workspacePath);
 
@@ -344,10 +423,12 @@ export function getAdditionalDirectoriesForWorkspace(workspacePath: string): str
   // CLI invocation. Listing the filesystem keeps this sync and self-contained
   // (no DB query) and matches the existing worktree directory convention used
   // by GitWorktreeService.
-  const siblingWorktrees = listSiblingWorktreePaths(projectPath);
-  for (const siblingPath of siblingWorktrees) {
-    if (siblingPath !== workspacePath) {
-      additionalDirs.add(siblingPath);
+  if (options?.includeSiblingWorktrees !== false) {
+    const siblingWorktrees = listSiblingWorktreePaths(projectPath);
+    for (const siblingPath of siblingWorktrees) {
+      if (siblingPath !== workspacePath) {
+        additionalDirs.add(siblingPath);
+      }
     }
   }
 

@@ -19,6 +19,7 @@
 import type { AgentMessage } from '../ai/server/types';
 import { shouldSyncMessageForSessionRoom, truncateContentForSync } from './syncContentTruncator';
 import { appendSyncClientParams } from './syncClientInfo';
+import { buildSyncedSessionIndexFields } from './sessionIndexEntryFields';
 import type {
   SyncConfig,
   SyncStatus,
@@ -33,12 +34,16 @@ import type {
   CreateSessionResponse,
   CreateWorktreeRequest,
   CreateWorktreeResponse,
+  VoiceToolRequest,
+  VoiceToolResponse,
   EncryptedSettingsPayload,
+  EncryptedReadReceiptPayload,
   SyncedSettings,
   SessionControlMessage,
   EncryptedAttachment,
   FileIndexData,
 } from './types';
+import type { SyncedReadReceipt } from '../readReceipts/readReceipts';
 
 // ============================================================================
 // CollabV3 Protocol Types (matches server)
@@ -146,6 +151,10 @@ interface SessionIndexEntry {
   parentSessionId?: string;
   /** Worktree ID for git worktree association (plaintext UUID) */
   worktreeId?: string;
+  /** Agent role marker (e.g. 'meta-agent', 'standard'). Plaintext - drives mobile meta-agent grouping. */
+  agentRole?: string;
+  /** Meta-agent parent session ID for spawned children (plaintext UUID). Drives mobile meta-agent grouping. */
+  createdBySessionId?: string;
   /** Whether the session is archived */
   isArchived?: boolean;
   /** Whether the session is pinned */
@@ -237,6 +246,28 @@ interface EncryptedCreateWorktreeResponse {
   error?: string;
 }
 
+/** Encrypted voice-tool request for wire protocol (toolName/args carry project knowledge). */
+interface EncryptedVoiceToolRequest {
+  requestId: string;
+  encryptedProjectId: string;
+  projectIdIv: string;
+  encryptedToolName: string;
+  toolNameIv: string;
+  encryptedArgs: string;
+  argsIv: string;
+  timestamp: number;
+}
+
+/** Encrypted voice-tool response for wire protocol. */
+interface EncryptedVoiceToolResponse {
+  requestId: string;
+  success: boolean;
+  encryptedResult?: string;
+  resultIv?: string;
+  encryptedError?: string;
+  errorIv?: string;
+}
+
 interface IndexClientMetadataPatch {
   sessionId: string;
   encryptedClientMetadata?: string;
@@ -260,9 +291,12 @@ type ClientMessage =
   | { type: 'createSessionResponse'; response: EncryptedCreateSessionResponse }
   | { type: 'createWorktreeRequest'; request: EncryptedCreateWorktreeRequest }
   | { type: 'createWorktreeResponse'; response: EncryptedCreateWorktreeResponse }
+  | { type: 'voiceToolRequest'; request: EncryptedVoiceToolRequest }
+  | { type: 'voiceToolResponse'; response: EncryptedVoiceToolResponse }
   | { type: 'sessionControl'; message: { sessionId: string; messageType: string; payload?: Record<string, unknown>; timestamp: number; sentBy: 'desktop' | 'mobile' } }
   | { type: 'requestMobilePush'; sessionId: string; title: string; body: string; requestingDeviceId?: string }
   | { type: 'settingsSync'; settings: EncryptedSettingsPayload }
+  | { type: 'readReceipt'; receipt: EncryptedReadReceiptPayload }
   | { type: 'fileIndexUpdate'; file: EncryptedFileIndexEntry }
   | { type: 'fileIndexDelete'; docId: string };
 
@@ -307,8 +341,11 @@ type ServerMessage =
   | { type: 'createSessionResponseBroadcast'; response: EncryptedCreateSessionResponse; fromConnectionId?: string }
   | { type: 'createWorktreeRequestBroadcast'; request: EncryptedCreateWorktreeRequest; fromConnectionId?: string }
   | { type: 'createWorktreeResponseBroadcast'; response: EncryptedCreateWorktreeResponse; fromConnectionId?: string }
+  | { type: 'voiceToolRequestBroadcast'; request: EncryptedVoiceToolRequest; fromConnectionId?: string }
+  | { type: 'voiceToolResponseBroadcast'; response: EncryptedVoiceToolResponse; fromConnectionId?: string }
   | { type: 'sessionControlBroadcast'; message: { sessionId: string; messageType: string; payload?: Record<string, unknown>; timestamp: number; sentBy: 'desktop' | 'mobile' }; fromConnectionId?: string }
   | { type: 'settingsSyncBroadcast'; settings: EncryptedSettingsPayload; fromConnectionId?: string }
+  | { type: 'readReceiptBroadcast'; receipt: EncryptedReadReceiptPayload; fromConnectionId?: string }
   | { type: 'error'; code: string; message: string };
 
 // ============================================================================
@@ -427,6 +464,18 @@ async function decrypt(
   );
 
   return new TextDecoder().decode(decrypted);
+}
+
+/**
+ * Hex SHA-256 of a string. Used to derive an opaque, id-hiding routing key for
+ * read receipts (so the server can dedup per entity without learning the id).
+ */
+async function sha256Hex(input: string): Promise<string> {
+  const bytes = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 // ============================================================================
@@ -770,6 +819,10 @@ interface CachedSessionIndex {
   parentSessionId?: string;
   /** Worktree ID for git worktree association */
   worktreeId?: string;
+  /** Agent role marker (e.g. 'meta-agent', 'standard'); drives mobile meta-agent grouping. */
+  agentRole?: string;
+  /** Meta-agent parent session ID for spawned children; drives mobile meta-agent grouping. */
+  createdBySessionId?: string;
   isArchived?: boolean;
   isPinned?: boolean;
   branchedFromSessionId?: string;
@@ -1050,6 +1103,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // Listeners for worktree creation requests (from mobile)
   const createWorktreeRequestListeners = new Set<(request: CreateWorktreeRequest) => void>();
 
+  // Listeners for voice-tool requests (from mobile; desktop runs the tool)
+  const voiceToolRequestListeners = new Set<(request: VoiceToolRequest) => void>();
+
+  // Listeners for voice-tool responses (for mobile to receive the desktop result)
+  const voiceToolResponseListeners = new Set<(response: VoiceToolResponse) => void>();
+
   // Listeners for generic session control messages (cancel, question_response, etc.)
   const sessionControlMessageListeners = new Set<(message: SessionControlMessage) => void>();
 
@@ -1059,6 +1118,9 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   // Settings sync listeners (for receiving synced settings from other devices)
   const settingsSyncListeners = new Set<(settings: SyncedSettings) => void>();
+
+  // Read-receipt listeners (unread-indicator state arriving from other devices)
+  const readReceiptListeners = new Set<(receipt: SyncedReadReceipt) => void>();
 
   // Notify all device status listeners
   function notifyDeviceStatusChange(): void {
@@ -1099,6 +1161,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       sessionType: baseEntry.sessionType,
       parentSessionId: baseEntry.parentSessionId,
       worktreeId: baseEntry.worktreeId,
+      agentRole: baseEntry.agentRole,
+      createdBySessionId: baseEntry.createdBySessionId,
       isArchived: baseEntry.isArchived,
       isPinned: baseEntry.isPinned,
       messageCount: baseEntry.messageCount,
@@ -1180,6 +1244,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       sessionType: 'sessionType' in pending ? pending.sessionType : cached.sessionType,
       parentSessionId: 'parentSessionId' in pending ? pending.parentSessionId : cached.parentSessionId,
       worktreeId: 'worktreeId' in pending ? pending.worktreeId : cached.worktreeId,
+      agentRole: cached.agentRole,
+      createdBySessionId: cached.createdBySessionId,
       isArchived: 'isArchived' in pending ? pending.isArchived : cached.isArchived,
       isPinned: 'isPinned' in pending ? pending.isPinned : cached.isPinned,
       messageCount: cached.messageCount,
@@ -1445,6 +1511,18 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
     // Decrypt and emit messages as remote changes
     if (session.encryptionKey && response.messages.length > 0) {
+      // Collapse per-message decrypt failures into one summary. A burst here
+      // means the server holds messages written under a PRIOR personal-key
+      // seed epoch (keychain reset / reinstall / an unpaired device): the seed
+      // is a local random 32 bytes (CredentialService) and the key is
+      // PBKDF2(seed, 'nimbalyst:'+personalUserId) -- a different seed/user can't
+      // authenticate them (AES-GCM OperationError). Unrecoverable without the
+      // old seed. Record sessionId + createdAt range so the affected session and
+      // epoch boundary are identifiable instead of 45 anonymous error lines.
+      let decryptFailures = 0;
+      let oldestFailedAt: number | null = null;
+      let newestFailedAt: number | null = null;
+      let firstFailedId = '';
       for (const encrypted of response.messages) {
         try {
           const decrypted = await decryptMessage(encrypted, session.encryptionKey);
@@ -1453,9 +1531,22 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           session.changeListeners.forEach((cb) =>
             cb({ type: 'message_added', message: decrypted })
           );
-        } catch (err) {
-          console.error('[CollabV3] Failed to decrypt message:', err);
+        } catch {
+          if (decryptFailures === 0) firstFailedId = encrypted.id;
+          decryptFailures++;
+          const at = new Date(encrypted.createdAt).getTime();
+          if (!Number.isNaN(at)) {
+            if (oldestFailedAt === null || at < oldestFailedAt) oldestFailedAt = at;
+            if (newestFailedAt === null || at > newestFailedAt) newestFailedAt = at;
+          }
         }
+      }
+      if (decryptFailures > 0) {
+        console.warn(
+          `[CollabV3] ${decryptFailures}/${response.messages.length} messages undecryptable for session ${sessionId} ` +
+          `(prior personal-key seed epoch; unrecoverable). firstId=${firstFailedId} ` +
+          `createdAt=${oldestFailedAt ? new Date(oldestFailedAt).toISOString() : '?'}..${newestFailedAt ? new Date(newestFailedAt).toISOString() : '?'}`,
+        );
       }
     }
 
@@ -1819,6 +1910,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                     sessionType: entry.sessionType,
                     parentSessionId: entry.parentSessionId,
                     worktreeId: entry.worktreeId,
+                    agentRole: entry.agentRole,
+                    createdBySessionId: entry.createdBySessionId,
                     isArchived: entry.isArchived,
                     isPinned: entry.isPinned,
                     branchedFromSessionId: entry.branchedFromSessionId,
@@ -1848,6 +1941,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                     sessionType: decrypted.sessionType,
                     parentSessionId: decrypted.parentSessionId,
                     worktreeId: decrypted.worktreeId,
+                    agentRole: decrypted.agentRole,
+                    createdBySessionId: decrypted.createdBySessionId,
                     isArchived: decrypted.isArchived,
                     isPinned: decrypted.isPinned,
                     branchedFromSessionId: decrypted.branchedFromSessionId,
@@ -1972,6 +2067,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               sessionType: entry.sessionType,
               parentSessionId: entry.parentSessionId,
               worktreeId: entry.worktreeId,
+              // Carry the meta-agent grouping fields off the wire so an
+              // incremental broadcast keeps the local cache groupable (parity
+              // with the indexResponse decrypt path above).
+              agentRole: entry.agentRole,
+              createdBySessionId: entry.createdBySessionId,
               isArchived: entry.isArchived,
               isPinned: entry.isPinned,
               branchedFromSessionId: entry.branchedFromSessionId,
@@ -2162,6 +2262,82 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
             break;
           }
 
+          case 'voiceToolRequestBroadcast': {
+            // Another device (mobile) asked the desktop to run a voice tool.
+            if (!config.encryptionKey) {
+              console.error('[CollabV3] Cannot handle voice tool request - no encryption key');
+              break;
+            }
+            try {
+              const projectId = await decryptProjectId(
+                message.request.encryptedProjectId,
+                message.request.projectIdIv,
+                config.encryptionKey,
+              );
+              const toolName = await decrypt(
+                message.request.encryptedToolName,
+                message.request.toolNameIv,
+                config.encryptionKey,
+              );
+              const argsJson = await decrypt(
+                message.request.encryptedArgs,
+                message.request.argsIv,
+                config.encryptionKey,
+              );
+              const decryptedRequest: VoiceToolRequest = {
+                requestId: message.request.requestId,
+                projectId,
+                toolName,
+                argsJson,
+                timestamp: message.request.timestamp,
+              };
+              voiceToolRequestListeners.forEach((callback) => {
+                try {
+                  callback(decryptedRequest);
+                } catch (err) {
+                  console.error('[CollabV3] Error in voice tool request listener:', err);
+                }
+              });
+            } catch (err) {
+              console.error('[CollabV3] Failed to decrypt voice tool request:', err);
+            }
+            break;
+          }
+
+          case 'voiceToolResponseBroadcast': {
+            // Desktop responded to our voice tool request.
+            if (!config.encryptionKey) {
+              console.error('[CollabV3] Cannot handle voice tool response - no encryption key');
+              break;
+            }
+            let resultJson: string | undefined;
+            let error: string | undefined;
+            try {
+              if (message.response.encryptedResult && message.response.resultIv) {
+                resultJson = await decrypt(message.response.encryptedResult, message.response.resultIv, config.encryptionKey);
+              }
+              if (message.response.encryptedError && message.response.errorIv) {
+                error = await decrypt(message.response.encryptedError, message.response.errorIv, config.encryptionKey);
+              }
+            } catch (err) {
+              console.error('[CollabV3] Failed to decrypt voice tool response:', err);
+            }
+            const response: VoiceToolResponse = {
+              requestId: message.response.requestId,
+              success: message.response.success,
+              resultJson,
+              error,
+            };
+            voiceToolResponseListeners.forEach((callback) => {
+              try {
+                callback(response);
+              } catch (err) {
+                console.error('[CollabV3] Error in voice tool response listener:', err);
+              }
+            });
+            break;
+          }
+
           case 'createWorktreeRequestBroadcast': {
             // Another device (mobile) requested worktree creation
             let projectId: string;
@@ -2259,6 +2435,40 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               });
             } catch (err) {
               console.error('[CollabV3] Failed to decrypt settings:', err);
+            }
+            break;
+          }
+
+          case 'readReceiptBroadcast': {
+            // A read receipt from another device (or the server replay on
+            // connect). Personal, single-user channel — decrypt + hand to
+            // listeners which merge advance-only into local state.
+            const payload = message.receipt;
+
+            const ourDeviceId = config.getDeviceInfo?.()?.deviceId ?? config.deviceInfo?.deviceId;
+            if (ourDeviceId && payload.deviceId === ourDeviceId) {
+              break;
+            }
+            if (!config.encryptionKey) {
+              console.error('[CollabV3] Cannot decrypt read receipt - no encryption key');
+              break;
+            }
+            try {
+              const json = await decrypt(
+                payload.encryptedReceipt,
+                payload.receiptIv,
+                config.encryptionKey,
+              );
+              const receipt: SyncedReadReceipt = JSON.parse(json);
+              readReceiptListeners.forEach((callback) => {
+                try {
+                  callback(receipt);
+                } catch (err) {
+                  console.error('[CollabV3] Error in read receipt listener:', err);
+                }
+              });
+            } catch (err) {
+              console.error('[CollabV3] Failed to decrypt read receipt:', err);
             }
             break;
           }
@@ -2512,14 +2722,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         provider: session.provider,
         model: session.model,
         mode: session.mode as SessionIndexEntry['mode'],
-        sessionType: session.sessionType,
-        parentSessionId: session.parentSessionId,
-        worktreeId: session.worktreeId,
-        isArchived: session.isArchived,
-        isPinned: session.isPinned,
-        branchedFromSessionId: session.branchedFromSessionId,
-        branchPointMessageId: session.branchPointMessageId,
-        branchedAt: session.branchedAt,
+        // Plaintext relationship/flag fields (incl. agentRole + createdBySessionId
+        // for mobile meta-agent grouping). Single source of truth + regression lock:
+        // sessionIndexEntryFields.ts / __tests__/sessionIndexEntryFields.test.ts.
+        ...buildSyncedSessionIndexFields(session),
         messageCount: session.messageCount,
         lastMessageAt: session.updatedAt,
         createdAt: session.createdAt,
@@ -2578,6 +2784,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         sessionType: session.sessionType,
         parentSessionId: session.parentSessionId,
         worktreeId: session.worktreeId,
+        agentRole: session.agentRole,
+        createdBySessionId: session.createdBySessionId ?? undefined,
         isArchived: session.isArchived,
         isPinned: session.isPinned,
         branchedFromSessionId: session.branchedFromSessionId,
@@ -2999,6 +3207,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               sessionType: 'sessionType' in meta ? (meta as any).sessionType : cached.sessionType,
               parentSessionId: 'parentSessionId' in meta ? meta.parentSessionId : cached.parentSessionId,
               worktreeId: 'worktreeId' in meta ? (meta as any).worktreeId : cached.worktreeId,
+              // Meta-agent grouping fields: apply when the update carries them,
+              // otherwise preserve the cached value (also held by the `...cached`
+              // spread above). createdBySessionId is normalized null -> undefined.
+              agentRole: 'agentRole' in meta ? meta.agentRole : cached.agentRole,
+              createdBySessionId: 'createdBySessionId' in meta ? (meta.createdBySessionId ?? undefined) : cached.createdBySessionId,
               isArchived: 'isArchived' in meta ? meta.isArchived : cached.isArchived,
               isPinned: 'isPinned' in meta ? (meta as any).isPinned : cached.isPinned,
               lastMessageAt: updatedAt ?? cached.lastMessageAt,
@@ -3032,6 +3245,13 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               sessionType: meta.sessionType,
               parentSessionId: meta.parentSessionId,
               worktreeId: (meta as any).worktreeId,
+              // Meta-agent grouping fields (parity with bulk path's
+              // buildSyncedSessionIndexFields + sendIndexUpdate). Without these a
+              // freshly-created meta agent/child reaches the server/phone ungrouped
+              // until the next full bulk resync. createdBySessionId is normalized
+              // null -> undefined to match the helper.
+              agentRole: meta.agentRole,
+              createdBySessionId: meta.createdBySessionId ?? undefined,
               isArchived: meta.isArchived,
               isPinned: (meta as any).isPinned,
               messageCount: 0,
@@ -3351,6 +3571,103 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       };
     },
 
+    /** Subscribe to voice-tool requests from other devices (desktop runs the tool). */
+    onVoiceToolRequest(callback: (request: VoiceToolRequest) => void): () => void {
+      voiceToolRequestListeners.add(callback);
+      return () => {
+        voiceToolRequestListeners.delete(callback);
+      };
+    },
+
+    /** Send a voice-tool result back to the requesting device (desktop -> mobile). */
+    async sendVoiceToolResponse(response: VoiceToolResponse): Promise<void> {
+      if (!indexWs || !indexConnected) {
+        try {
+          await connectToIndex();
+        } catch (err) {
+          console.error('[CollabV3] Failed to connect before sending voice tool response:', err);
+          return;
+        }
+      }
+      if (!indexWs || !indexConnected) {
+        console.error('[CollabV3] Cannot send voice tool response - not connected');
+        return;
+      }
+      if (!config.encryptionKey) {
+        console.error('[CollabV3] Cannot send voice tool response - no encryption key');
+        return;
+      }
+
+      const wireResponse: EncryptedVoiceToolResponse = {
+        requestId: response.requestId,
+        success: response.success,
+      };
+      try {
+        if (response.resultJson) {
+          const { encrypted, iv } = await encrypt(response.resultJson, config.encryptionKey);
+          wireResponse.encryptedResult = encrypted;
+          wireResponse.resultIv = iv;
+        }
+        if (response.error) {
+          const { encrypted, iv } = await encrypt(response.error, config.encryptionKey);
+          wireResponse.encryptedError = encrypted;
+          wireResponse.errorIv = iv;
+        }
+      } catch (err) {
+        console.error('[CollabV3] Failed to encrypt voice tool response:', err);
+        return;
+      }
+
+      const msg: ClientMessage = { type: 'voiceToolResponse', response: wireResponse };
+      indexWs.send(JSON.stringify(msg));
+    },
+
+    /** Send a voice-tool request (mobile -> desktop). */
+    async sendVoiceToolRequest(request: VoiceToolRequest): Promise<void> {
+      if (!indexWs || !indexConnected) {
+        try {
+          await connectToIndex();
+        } catch (err) {
+          console.error('[CollabV3] Failed to connect before sending voice tool request:', err);
+          return;
+        }
+      }
+      if (!indexWs || !indexConnected) {
+        console.error('[CollabV3] Cannot send voice tool request - not connected');
+        return;
+      }
+      if (!config.encryptionKey) {
+        console.error('[CollabV3] Cannot send voice tool request - no encryption key');
+        return;
+      }
+
+      const { encryptedProjectId, projectIdIv } = await encryptProjectId(request.projectId, config.encryptionKey);
+      const toolNameEnc = await encrypt(request.toolName, config.encryptionKey);
+      const argsEnc = await encrypt(request.argsJson, config.encryptionKey);
+
+      const wireRequest: EncryptedVoiceToolRequest = {
+        requestId: request.requestId,
+        encryptedProjectId,
+        projectIdIv,
+        encryptedToolName: toolNameEnc.encrypted,
+        toolNameIv: toolNameEnc.iv,
+        encryptedArgs: argsEnc.encrypted,
+        argsIv: argsEnc.iv,
+        timestamp: request.timestamp,
+      };
+
+      const msg: ClientMessage = { type: 'voiceToolRequest', request: wireRequest };
+      indexWs.send(JSON.stringify(msg));
+    },
+
+    /** Subscribe to voice-tool responses (mobile receives the desktop result). */
+    onVoiceToolResponse(callback: (response: VoiceToolResponse) => void): () => void {
+      voiceToolResponseListeners.add(callback);
+      return () => {
+        voiceToolResponseListeners.delete(callback);
+      };
+    },
+
     /** Subscribe to worktree creation requests from other devices (e.g., mobile) */
     onCreateWorktreeRequest(callback: (request: CreateWorktreeRequest) => void): () => void {
       createWorktreeRequestListeners.add(callback);
@@ -3496,6 +3813,52 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       settingsSyncListeners.add(callback);
       return () => {
         settingsSyncListeners.delete(callback);
+      };
+    },
+
+    /** Push a personal read receipt to the user's other devices. */
+    async syncReadReceipt(receipt: SyncedReadReceipt): Promise<void> {
+      if (!indexWs || !indexConnected) {
+        try {
+          await connectToIndex();
+        } catch (err) {
+          console.error('[CollabV3] Failed to connect to index before syncing read receipt:', err);
+          return;
+        }
+      }
+      if (!indexWs || !indexConnected || indexWs.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      if (!config.encryptionKey) {
+        console.error('[CollabV3] Cannot sync read receipt - no encryption key');
+        return;
+      }
+      try {
+        const deviceId = config.getDeviceInfo?.()?.deviceId ?? config.deviceInfo?.deviceId ?? 'unknown';
+        const receiptKey = await sha256Hex(
+          `${receipt.entityKind}|${receipt.entityId}|${receipt.scope}`,
+        );
+        const { encrypted, iv } = await encrypt(JSON.stringify(receipt), config.encryptionKey);
+        const payload: EncryptedReadReceiptPayload = {
+          receiptKey,
+          encryptedReceipt: encrypted,
+          receiptIv: iv,
+          deviceId,
+          version: receipt.lastViewedAt,
+          timestamp: Date.now(),
+        };
+        const msg: ClientMessage = { type: 'readReceipt', receipt: payload };
+        indexWs.send(JSON.stringify(msg));
+      } catch (err) {
+        console.error('[CollabV3] Failed to encrypt/send read receipt:', err);
+      }
+    },
+
+    /** Subscribe to read receipts arriving from the user's other devices. */
+    onReadReceipt(callback: (receipt: SyncedReadReceipt) => void): () => void {
+      readReceiptListeners.add(callback);
+      return () => {
+        readReceiptListeners.delete(callback);
       };
     },
 

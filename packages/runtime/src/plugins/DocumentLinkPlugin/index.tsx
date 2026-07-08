@@ -18,6 +18,7 @@ import { $createEmbeddedFileNode } from '../../editor/plugins/EmbedPlugin/Embedd
 import { isEmbeddableUrl } from '../../editor/plugins/EmbedPlugin/embeddableExtensions';
 import { useDocumentPath } from '../../DocumentPathContext';
 import { resolveDocumentLinkLookupPath } from './documentLinkPaths';
+import { isWorkspaceFileHref } from '../../editor/utils/workspaceLinkNavigation';
 
 const DOCUMENT_REFERENCE_STYLE_ID = 'document-reference-styles';
 
@@ -73,6 +74,29 @@ function getDocumentReferenceElement(target: Node): Element | null {
   return targetElement?.closest('.document-reference') ?? null;
 }
 
+/**
+ * Plain `<a>` links whose raw href is a file path (relative markdown links
+ * that were imported as LinkNodes rather than DocumentReferenceNodes, e.g.
+ * when the link text carries inline-code formatting). These must be opened
+ * through the document service like reference chips; letting them reach
+ * Lexical's ClickableLink handling ends in `window.open('./x')` and a blank
+ * Electron child window (NIM-1487).
+ */
+function getWorkspaceFileAnchor(target: Node): HTMLAnchorElement | null {
+  const targetElement =
+    typeof Element !== 'undefined' && target instanceof Element
+      ? target
+      : target.parentElement;
+
+  const anchor = targetElement?.closest('a[href]');
+  if (!(anchor instanceof HTMLAnchorElement)) {
+    return null;
+  }
+  // getAttribute keeps the authored href; anchor.href would be resolved
+  // against the renderer origin and always look external.
+  return isWorkspaceFileHref(anchor.getAttribute('href')) ? anchor : null;
+}
+
 interface DocumentLinkPluginProps {
   documentService: DocumentService;
   TypeaheadMenuPlugin: React.ComponentType<any>;
@@ -107,14 +131,27 @@ export function DocumentLinkPlugin({
         return;
       }
 
+      let documentId: string | null = null;
+      let documentPath: string | undefined;
+      let documentName: string | undefined;
+
       const referenceElement = getDocumentReferenceElement(target);
-      if (!referenceElement) {
-        return;
+      if (referenceElement) {
+        documentId = referenceElement.getAttribute('data-document-id');
+        documentPath = referenceElement.getAttribute('data-path') || undefined;
+        documentName = referenceElement.getAttribute('data-name') || referenceElement.textContent || undefined;
+      } else {
+        const anchor = getWorkspaceFileAnchor(target);
+        if (!anchor) {
+          return;
+        }
+        documentPath = anchor.getAttribute('href') || undefined;
+        documentName = anchor.textContent || undefined;
+        // Keep the event away from ClickableLink / Lexical's CLICK_COMMAND —
+        // both end in window.open for LinkNodes.
+        event.stopPropagation();
       }
 
-      const documentId = referenceElement.getAttribute('data-document-id');
-      const documentPath = referenceElement.getAttribute('data-path') || undefined;
-      const documentName = referenceElement.getAttribute('data-name') || referenceElement.textContent || undefined;
       if (!documentId && !documentPath) {
         return;
       }

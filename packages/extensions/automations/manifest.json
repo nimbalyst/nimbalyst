@@ -1,13 +1,14 @@
 {
   "id": "com.nimbalyst.automations",
   "name": "Automations",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Schedule recurring AI-powered tasks with file-based automation definitions",
   "author": "Nimbalyst",
   "main": "dist/index.js",
   "styles": "dist/index.css",
   "apiVersion": "1.0.0",
   "marketplace": {
+    "changelog": "1.0.1: Reliable automation status detection on Windows and consistent skill namespacing.",
     "categories": ["ai-tools"],
     "tags": ["automation", "scheduled-tasks", "agent", "workflow", "recurring"],
     "icon": "schedule",

@@ -96,6 +96,7 @@ export function NavigationDialogKeyboardHandler({
       if (e.shiftKey && (e.key === 'P' || e.key === 'p')) initialTab = 'projects';
       else if (e.shiftKey && (e.key === 'F' || e.key === 'f')) initialTab = 'in-files';
       else if (e.shiftKey && (e.key === 'L' || e.key === 'l')) initialTab = 'prompts';
+      else if (e.shiftKey && (e.key === 'O' || e.key === 'o')) initialTab = 'search';
       else if (!e.shiftKey && e.key === 'o') initialTab = 'files';
       else if (!e.shiftKey && e.key === 'l') initialTab = 'sessions';
 
@@ -133,6 +134,9 @@ export function NavigationDialogKeyboardHandler({
         break;
       case 'content-search':
         initialTab = 'in-files';
+        break;
+      case 'global-search':
+        initialTab = 'search';
         break;
       case 'quick-open':
       default:

@@ -142,6 +142,8 @@ export interface ClaudeCliSpawnInput {
   pluginDirs?: string[];
   /** Extra CLI args appended verbatim (escape hatch for flags we pass through). */
   extraArgs?: string[];
+  /** Platform (process.platform); injectable for cross-platform tests. */
+  platform?: NodeJS.Platform;
 }
 
 export interface ClaudeCliSpawnConfig {
@@ -328,6 +330,19 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
   merged.TERM = 'xterm-256color';
   merged.COLORTERM = 'truecolor';
   merged.LANG = merged.LANG || 'en_US.UTF-8';
+  // Defer MCP tool descriptions out of the upfront context, matching the Agent
+  // SDK path (sdkOptionsBuilder.ts sets the same 'true'). Without this the
+  // genuine CLI loads EVERY enabled server's full tool schema into the system
+  // prompt on turn 1: with Nimbalyst's core MCP servers in the `--mcp-config`
+  // snapshot that is ~30K+ tokens of "MCP tools" baseline (observed via
+  // `/context`) — whereas the SDK session shows the same servers as deferred
+  // (~800 active). 'true' defers unconditionally (the CORE_ALWAYS_LOAD_TOOLS
+  // subset stays eager); the CLI's `auto:N` mode is all-or-nothing against N% of the
+  // context window, which on 1M-context models left a 20K-token eager floor.
+  // Set as a default the user can still override via their own shell/`baseEnv`.
+  if (merged.ENABLE_TOOL_SEARCH == null) {
+    merged.ENABLE_TOOL_SEARCH = 'true';
+  }
   if (input.extraEnv) {
     Object.assign(merged, input.extraEnv);
   }
@@ -345,5 +360,17 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
     }
   }
 
-  return { executable, args, env };
+  // On Windows, node-pty runs a `.cmd`/`.bat` through cmd.exe, which is
+  // line-oriented: a newline inside an argument truncates the command line at
+  // that point, dropping everything after it. Nimbalyst passes a multi-line
+  // `--append-system-prompt`, so collapse CR/LF runs to a single space for the
+  // `.cmd`/`.bat` launch path. The append is plain instructions, so single-lining
+  // is semantically harmless; a real `.exe` or the SDK path is unaffected. (#684)
+  const platform = input.platform ?? process.platform;
+  const launchArgs =
+    platform === 'win32' && /\.(cmd|bat)$/i.test(executable)
+      ? args.map((arg) => arg.replace(/[\r\n]+/g, ' '))
+      : args;
+
+  return { executable, args: launchArgs, env };
 }

@@ -246,11 +246,9 @@ export async function startProjectFileSync(workspacePath: string): Promise<void>
     },
     onUnlink: (filePath) => {
       if (!filePath.endsWith('.md')) return;
-      // Need to look up syncId for this file -- but file is already deleted
-      // getSyncId reads from disk, so for deleted files we can't get it.
-      // The sync service tracks syncId -> filePath in its state map.
-      // For now, deletions are handled by the next sync sweep.
-      // TODO: Track filePath -> syncId mapping in ProjectFileSyncService for deletion
+      // Skip deletes the sync service itself just performed (remote delete echo)
+      if (service.isRecentlyWrittenFromRemote(filePath)) return;
+      service.handleFileDeletedByPath(filePath, workspacePath, projectId);
     },
   });
 
@@ -295,4 +293,32 @@ function stopProjectFileSync(workspacePath: string): void {
   projectSyncSubscriptions.delete(workspacePath);
 
   getProjectFileSyncService().disconnectProject(hashProjectId(workspacePath));
+}
+
+/**
+ * Stop ALL project file sync subscriptions.
+ *
+ * Must be called whenever sync is torn down (SyncManager.shutdownSync), not
+ * just at window close: a sync reinitialize (any sync:set-config) creates a
+ * new provider with no room connections, and startProjectFileSync would
+ * otherwise early-return on the stale subscription entry and never reconnect
+ * the project — leaving every later save queued to a room that never opens.
+ */
+export function stopAllProjectFileSync(): void {
+  for (const workspacePath of [...projectSyncSubscriptions.keys()]) {
+    stopProjectFileSync(workspacePath);
+  }
+}
+
+/**
+ * Doc sync status for a workspace, for settings-UI feedback on the Docs toggle.
+ */
+export function getDocSyncStatusForWorkspace(workspacePath: string): {
+  subscribed: boolean;
+  connected: boolean;
+  fileCount: number;
+} {
+  const subscribed = projectSyncSubscriptions.has(workspacePath);
+  const stats = getProjectFileSyncService().getProjectStats(hashProjectId(workspacePath));
+  return { subscribed, ...stats };
 }

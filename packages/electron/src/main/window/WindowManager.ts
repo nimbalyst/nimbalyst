@@ -27,6 +27,7 @@ import { getMcpConfigService } from '../mcpConfigServiceRef';
 import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
 import { addNimPreviewWorkspaceRoot } from '../protocols/nimPreviewProtocol';
 import { windows, windowStates, anyWindowReferencesWorkspace, resolveDocumentServicePath } from './windowState';
+import { shouldSaveSessionOnWindowClose } from './sessionSaveOnClose';
 
 // Window management
 export { windows, windowStates };
@@ -404,10 +405,17 @@ export function createWindow(
 
             // Save global session state (will not include this window since we removed it from windowStates)
             // This ensures closed windows are not restored on next launch
-            // SKIP during restart - session state was already saved before windows close
+            // SKIP during quit/restart - the complete state was already saved in
+            // before-quit; re-saving here as Electron tears the windows down would
+            // persist a shrinking list ending at `{ windows: [] }`, so the next
+            // launch would restore nothing (NIM-1518, same clobber as NIM-869)
+            if (!shouldSaveSessionOnWindowClose({ isQuitting, isRestarting: false })) {
+                console.log('[MAIN] Skipping session save during quit (session already saved)');
+                return;
+            }
             import('../index').then(({ isRestarting }) => {
-                if (isRestarting()) {
-                    console.log('[MAIN] Skipping session save during restart (session already saved)');
+                if (!shouldSaveSessionOnWindowClose({ isQuitting, isRestarting: isRestarting() })) {
+                    console.log('[MAIN] Skipping session save during quit/restart (session already saved)');
                     return;
                 }
                 import('../session/SessionState').then(({ saveSessionState }) => {

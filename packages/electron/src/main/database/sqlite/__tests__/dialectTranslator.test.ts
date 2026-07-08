@@ -251,6 +251,24 @@ describe('translateSql - jsonb concat (||) with positional params', () => {
       `(json_patch(json_remove(EXCLUDED.data, '$.linkedSessions'), jsonb_strip_nulls(json_object('linkedSessions', tracker_items.data->'linkedSessions'))))`,
     );
   });
+
+  // Regression (NIM-829): removeBidirectionalLink emits an *individually
+  // parenthesized* subtract as the left concat operand —
+  // `(COALESCE(metadata, '{}') - 'key') || $1`. After the delete rewrite that
+  // is `(json_remove(COALESCE(metadata, '{}'), '$.key')) || $1`, whose left
+  // operand is a balanced paren group three levels deep. The old one-level
+  // paren operand could not match it, so `||` survived as SQLite *string
+  // concatenation* and corrupted session metadata into `{...}{}` — which then
+  // threw "Unexpected non-whitespace character after JSON" on the next read.
+  it('rewrites (col - key) || $N (parenthesized subtract operand) into json_patch', () => {
+    const r = translateSql(
+      `UPDATE ai_sessions SET metadata = (COALESCE(metadata, '{}'::jsonb) - 'linkedTrackerItemIds') || $1::jsonb WHERE id = $2`,
+    );
+    expect(r.sql).toContain(
+      `json_patch((json_remove(COALESCE(metadata, '{}'), '$.linkedTrackerItemIds')), $p1)`,
+    );
+    expect(r.sql).not.toMatch(/\)\s*\|\|/);
+  });
 });
 
 describe('translateSql - param-free statements', () => {

@@ -14,6 +14,7 @@ import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl, getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
 import { isAuthenticated, getStytchUserId, getUserEmail, getAuthState, getPersonalOrgId, getPersonalSessionJwt, refreshPersonalSession } from '../services/StytchAuthService';
 import { findTeamForWorkspace, getOrgScopedJwt } from '../services/TeamService';
+import { getOrgIdFromJwt, getJwtExp } from '../services/jwtOrg';
 import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIdentityKeyToOrg, fetchAndUnwrapOrgKey, clearOrgKey, fetchTeamKeyStatus, getArchivedOrgKeys } from '../services/OrgKeyService';
 import { getWorkspaceState, updateWorkspaceState } from '../utils/store';
 import { getPersonalDocSyncConfig, isSyncEnabled } from '../services/SyncManager';
@@ -41,6 +42,8 @@ import {
   reuploadFromLocalOrigin,
   seedSharedDocumentFromContent,
 } from '../services/CollabLocalOriginService';
+import { registerCollabContentAdapterFromDescriptor } from '../services/collabContentAdapterRegistration';
+import type { CollabAdapterDescriptor } from '@nimbalyst/runtime';
 import WebSocket from 'ws';
 
 /** Max concurrent uploads in a single migrate-local-assets pass. Keeps a    */
@@ -208,9 +211,11 @@ export function registerDocumentSyncHandlers(): void {
     const keyStart = Date.now();
     let orgKeyBase64 = '';
     let orgKeyFp: string | undefined;
-    // NIM-878: legacy org key for reading PRE-MIGRATION rows in server-managed
-    // mode (rows written before the flip are still AES-ciphertext).
-    let legacyOrgKeyBase64 = '';
+    // NIM-878/959: every candidate legacy org-key epoch for reading PRE-MIGRATION
+    // rows in server-managed mode (rows written before the flip are still AES-
+    // ciphertext, and may span multiple epochs if the org key was rotated while
+    // the team was still legacy-e2e).
+    const legacyOrgKeysBase64: string[] = [];
     if (!serverManaged) {
       let encryptionKey = await getOrgKey(orgId);
       if (!encryptionKey) {
@@ -247,25 +252,44 @@ export function registerDocumentSyncHandlers(): void {
       orgKeyFp = getOrgKeyFingerprint(orgId) ?? undefined;
     } else {
       logger.main.info('[DocumentSyncHandlers] team', orgId, 'is server-managed; skipping ECDH org-key unwrap');
-      // NIM-878: documents created before this team migrated to server-managed
-      // still have legacy-e2e AES-ciphertext rows on the server (passed through
-      // with their original iv). Best-effort fetch the legacy org key so the
-      // renderer can decrypt those old rows. If unavailable (no envelope), the
-      // old rows are simply skipped on read -- never a crash.
+      // NIM-878/959: documents created before this team migrated to server-
+      // managed still have legacy-e2e AES-ciphertext rows on the server (passed
+      // through with their original iv), and those rows may span multiple org-
+      // key epochs if the key was rotated while the team was still legacy-e2e.
+      // Gather EVERY candidate epoch (fresh current + cached current + all
+      // archived) so the renderer can decrypt old rows regardless of which
+      // epoch wrote them -- mirroring the doc-index multi-epoch path (NIM-906/
+      // 910). If none are available, those rows simply skip on read -- never a
+      // crash.
+      const seen = new Set<string>();
+      const pushKey = async (key: CryptoKey | null | undefined) => {
+        if (!key) return;
+        const raw = Buffer.from(await crypto.subtle.exportKey('raw', key)).toString('base64');
+        if (!seen.has(raw)) { seen.add(raw); legacyOrgKeysBase64.push(raw); }
+      };
       try {
-        let legacyKey = await getOrgKey(orgId);
-        if (!legacyKey) {
+        // Refresh to the CURRENT org key from the server (the cached one may be
+        // a stale epoch that predates a rotation).
+        try {
           const orgJwt = await getOrgScopedJwt(orgId);
           await getOrCreateIdentityKeyPair();
-          legacyKey = await fetchAndUnwrapOrgKey(orgId, orgJwt);
+          await pushKey(await fetchAndUnwrapOrgKey(orgId, orgJwt));
+        } catch (fetchErr) {
+          logger.main.info('[DocumentSyncHandlers] could not refresh current org key for doc:', fetchErr);
         }
-        if (legacyKey) {
-          const rawBytes = await crypto.subtle.exportKey('raw', legacyKey);
-          legacyOrgKeyBase64 = Buffer.from(rawBytes).toString('base64');
+        // Cached current key (may differ from the freshly fetched one).
+        await pushKey(await getOrgKey(orgId));
+        // All archived epochs from prior rotations.
+        for (const archived of getArchivedOrgKeys(orgId)) {
+          if (!seen.has(archived.rawKeyBase64)) {
+            seen.add(archived.rawKeyBase64);
+            legacyOrgKeysBase64.push(archived.rawKeyBase64);
+          }
         }
       } catch (err) {
-        logger.main.info('[DocumentSyncHandlers] no legacy org key for server-managed migration read (pre-migration rows may not load):', err);
+        logger.main.info('[DocumentSyncHandlers] no legacy org keys for server-managed migration read (pre-migration rows may not load):', err);
       }
+      logger.main.info('[DocumentSyncHandlers] doc server-managed legacy key epochs available:', legacyOrgKeysBase64.length);
     }
     logPhase('total', handlerStart);
 
@@ -322,7 +346,10 @@ export function registerDocumentSyncHandlers(): void {
         documentType: resolvedDocumentType,
         keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
         orgKeyBase64,
-        legacyOrgKeyBase64,
+        // NIM-959: all candidate legacy epochs; keep the singular field for
+        // back-compat with any caller still reading it (first epoch).
+        legacyOrgKeyBase64: legacyOrgKeysBase64[0] ?? '',
+        legacyOrgKeysBase64,
         orgKeyFingerprint: orgKeyFp,
         serverUrl,
         userId,
@@ -579,6 +606,18 @@ export function registerDocumentSyncHandlers(): void {
     }
   });
 
+  // Renderer forwards serializable adapter descriptors for any installed
+  // extension (marketplace or built-in) so the main process can rebuild the
+  // adapter and reach parity (seed/reupload/history) for that documentType.
+  safeHandle('collab-adapter:register-descriptor', async (_event, descriptor: CollabAdapterDescriptor) => {
+    try {
+      const ok = registerCollabContentAdapterFromDescriptor(descriptor);
+      return { success: ok };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
   safeHandle('document-sync:get-local-origin', async (_event, payload: {
     workspacePath: string;
     documentId: string;
@@ -665,9 +704,11 @@ export function registerDocumentSyncHandlers(): void {
    * Get a fresh org-scoped JWT for an org.
    * Called by the renderer's getJwt() callback during WebSocket reconnects.
    */
-  safeHandle('document-sync:get-jwt', async (_event, payload: { orgId: string }) => {
+  safeHandle('document-sync:get-jwt', async (_event, payload: { orgId: string; forceRefresh?: boolean }) => {
     try {
-      const jwt = await getOrgScopedJwt(payload.orgId);
+      // NIM-949: forceRefresh bypasses the org-JWT cache so a reconnect after an
+      // auth-style rejection re-exchanges instead of replaying a rejected token.
+      const jwt = await getOrgScopedJwt(payload.orgId, undefined, payload.forceRefresh);
       return { success: true, jwt };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -704,6 +745,24 @@ export function registerDocumentSyncHandlers(): void {
       }
     }
 
+    // NIM-949: decode the room org + the presented token so a rejected upgrade
+    // (HTTP 400) reports *why* instead of just "Unexpected server response: 400".
+    let roomOrgId: string | null = null;
+    let tokenOrgId: string | null = null;
+    let tokenExp: number | null = null;
+    try {
+      const parsed = new URL(payload.url);
+      const roomMatch = parsed.pathname.match(/org:([^:]+):doc:/);
+      roomOrgId = roomMatch ? roomMatch[1] : null;
+      const token = parsed.searchParams.get('token');
+      if (token) {
+        tokenOrgId = getOrgIdFromJwt(token);
+        tokenExp = getJwtExp(token);
+      }
+    } catch {
+      // best-effort diagnostics only
+    }
+
     try {
       const ws = new WebSocket(payload.url);
       proxiedWebSockets.set(wsId, ws);
@@ -717,6 +776,36 @@ export function registerDocumentSyncHandlers(): void {
         // Forward as string (our protocol is JSON text)
         const msg = typeof data === 'string' ? data : data.toString();
         safeSend({ wsId, type: 'message', data: msg });
+      });
+
+      // NIM-949: the server rejected the upgrade with a non-101 status (e.g. 400
+      // for a wrong-org / expired token). The `ws` 'error' event only carries
+      // "Unexpected server response: <status>"; read the body here, log the auth
+      // context, and forward the status so the client can force a fresh JWT.
+      ws.on('unexpected-response', (_req, res) => {
+        const status = res.statusCode ?? 0;
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const body = Buffer.concat(chunks).toString().slice(0, 512);
+          const orgMismatch = !!roomOrgId && !!tokenOrgId && roomOrgId !== tokenOrgId;
+          logger.main.warn('[DocumentSyncHandlers] WS proxy upgrade rejected', {
+            wsId,
+            status,
+            roomOrgId,
+            tokenOrgId,
+            tokenExp,
+            orgMismatch,
+            expired: tokenExp ? tokenExp * 1000 < Date.now() : null,
+            body,
+          });
+          safeSend({ wsId, type: 'unexpected-response', status, roomOrgId, tokenOrgId });
+          // Surface as a close so the client's reconnect path runs. The reason
+          // encodes the auth status so DocumentSync can force a JWT refresh.
+          safeSend({ wsId, type: 'close', code: 1006, reason: `auth-rejected:${status}` });
+          proxiedWebSockets.delete(wsId);
+          try { ws.terminate(); } catch { /* already closed */ }
+        });
       });
 
       ws.on('close', (code: number, reason: Buffer) => {

@@ -33,6 +33,7 @@ import { findWindowByWorkspace } from "../window/WindowManager";
 import { getRestartSignalPath, getPackageRoot } from "../utils/appPaths";
 import { requireMcpAuth } from "./mcpAuth";
 import { selectFocusedRestartSessions } from "./restartContinuationSelection";
+import { tailFile, grepTailFile } from "./logTail";
 
 // ============================================================================
 // Restart continuation
@@ -80,47 +81,6 @@ async function selectFocusedRestartContinuationSessions(
   );
 
   return selectFocusedRestartSessions(runningSessionIds, viewingBySession);
-}
-
-// ============================================================================
-// File Utilities
-// ============================================================================
-
-/**
- * Efficiently read the last N lines from a file.
- * Reads from the end of the file in chunks to avoid loading entire file into memory.
- */
-function tailFile(filePath: string, maxLines: number): string[] {
-  const stats = fs.statSync(filePath);
-  const fileSize = stats.size;
-
-  if (fileSize === 0) {
-    return [];
-  }
-
-  // For small files, just read the whole thing
-  if (fileSize < 1024 * 1024) {
-    // 1MB
-    const content = fs.readFileSync(filePath, "utf-8");
-    const lines = content.split("\n").filter((line) => line.length > 0);
-    return lines.slice(-maxLines);
-  }
-
-  // For larger files, read from the end in chunks
-  const chunkSize = Math.min(1024 * 1024, fileSize); // 1MB or file size
-  const fd = fs.openSync(filePath, "r");
-  const buffer = Buffer.alloc(chunkSize);
-
-  try {
-    const position = Math.max(0, fileSize - chunkSize);
-    fs.readSync(fd, buffer, 0, chunkSize, position);
-
-    const content = buffer.toString("utf-8");
-    const lines = content.split("\n").filter((line) => line.length > 0);
-    return lines.slice(-maxLines);
-  } finally {
-    fs.closeSync(fd);
-  }
 }
 
 // ============================================================================
@@ -1118,7 +1078,7 @@ function createExtensionDevMcpServer(
               searchTerm: {
                 type: "string",
                 description:
-                  "Search for specific text in logs (case-insensitive)",
+                  "Search for specific text in logs (case-insensitive substring). When set, the ENTIRE log file is scanned (grep-parity), and lastLines becomes the max number of matches returned (most recent).",
               },
             },
           },
@@ -1152,7 +1112,7 @@ function createExtensionDevMcpServer(
               searchTerm: {
                 type: "string",
                 description:
-                  "Search for specific text in logs (case-insensitive)",
+                  "Search for specific text in logs (case-insensitive substring). When set, the ENTIRE session log file is scanned (grep-parity), and lastLines becomes the max number of matches returned (most recent).",
               },
             },
           },
@@ -2007,44 +1967,40 @@ function createExtensionDevMcpServer(
         }
 
         try {
-          // Read and tail the file efficiently
-          const lines = tailFile(mainLogPath, lastLines * 2); // Read extra for filtering
+          const levelPatterns: Record<string, string[]> = {
+            error: ["[error]"],
+            warn: ["[error]", "[warn]"],
+            info: ["[error]", "[warn]", "[info]"],
+            debug: ["[error]", "[warn]", "[info]", "[debug]"],
+          };
+          const componentPattern = component
+            ? `[${component.toUpperCase()}]`
+            : undefined;
+          const levelMatch = logLevel ? levelPatterns[logLevel] || [] : undefined;
+          const lowerSearch = searchTerm ? searchTerm.toLowerCase() : undefined;
 
-          // Filter lines
-          let filteredLines = lines;
+          const matchesFilters = (line: string): boolean => {
+            if (componentPattern && !line.includes(componentPattern)) {
+              return false;
+            }
+            if (levelMatch) {
+              const lower = line.toLowerCase();
+              if (!levelMatch.some((p) => lower.includes(p))) {
+                return false;
+              }
+            }
+            if (lowerSearch && !line.toLowerCase().includes(lowerSearch)) {
+              return false;
+            }
+            return true;
+          };
 
-          // Filter by component (e.g., [FILE_WATCHER])
-          if (component) {
-            const componentPattern = `[${component.toUpperCase()}]`;
-            filteredLines = filteredLines.filter((line) =>
-              line.includes(componentPattern)
-            );
-          }
-
-          // Filter by log level
-          if (logLevel) {
-            const levelPatterns: Record<string, string[]> = {
-              error: ["[error]"],
-              warn: ["[error]", "[warn]"],
-              info: ["[error]", "[warn]", "[info]"],
-              debug: ["[error]", "[warn]", "[info]", "[debug]"],
-            };
-            const patterns = levelPatterns[logLevel] || [];
-            filteredLines = filteredLines.filter((line) =>
-              patterns.some((p) => line.toLowerCase().includes(p))
-            );
-          }
-
-          // Filter by search term
-          if (searchTerm) {
-            const lowerSearch = searchTerm.toLowerCase();
-            filteredLines = filteredLines.filter((line) =>
-              line.toLowerCase().includes(lowerSearch)
-            );
-          }
-
-          // Take last N lines after filtering
-          filteredLines = filteredLines.slice(-lastLines);
+          // When a filter/search is active, scan the WHOLE file for the last
+          // N matches (grep-parity); otherwise just tail the recent lines.
+          const hasFilter = !!(componentPattern || levelMatch || lowerSearch);
+          const filteredLines = hasFilter
+            ? grepTailFile(mainLogPath, matchesFilters, lastLines)
+            : tailFile(mainLogPath, lastLines);
 
           // Build header
           const filterDesc = [
@@ -2145,44 +2101,36 @@ function createExtensionDevMcpServer(
         }
 
         try {
-          // Read and tail the file efficiently
-          const lines = tailFile(logPath, lastLines * 2); // Read extra for filtering
+          const levelPatterns: Record<string, string[]> = {
+            error: ["[ERROR]"],
+            warn: ["[ERROR]", "[WARN]"],
+            info: ["[ERROR]", "[WARN]", "[INFO]"],
+            debug: ["[ERROR]", "[WARN]", "[INFO]", "[DEBUG]"],
+          };
+          const windowPattern =
+            windowId !== undefined ? `[Window ${windowId}]` : undefined;
+          const levelMatch = logLevel ? levelPatterns[logLevel] || [] : undefined;
+          const lowerSearch = searchTerm ? searchTerm.toLowerCase() : undefined;
 
-          // Filter lines
-          let filteredLines = lines;
+          const matchesFilters = (line: string): boolean => {
+            if (windowPattern && !line.includes(windowPattern)) {
+              return false;
+            }
+            if (levelMatch && !levelMatch.some((p) => line.includes(p))) {
+              return false;
+            }
+            if (lowerSearch && !line.toLowerCase().includes(lowerSearch)) {
+              return false;
+            }
+            return true;
+          };
 
-          // Filter by window ID (format: [Window N])
-          if (windowId !== undefined) {
-            const windowPattern = `[Window ${windowId}]`;
-            filteredLines = filteredLines.filter((line) =>
-              line.includes(windowPattern)
-            );
-          }
-
-          // Filter by log level
-          if (logLevel) {
-            const levelPatterns: Record<string, string[]> = {
-              error: ["[ERROR]"],
-              warn: ["[ERROR]", "[WARN]"],
-              info: ["[ERROR]", "[WARN]", "[INFO]"],
-              debug: ["[ERROR]", "[WARN]", "[INFO]", "[DEBUG]"],
-            };
-            const patterns = levelPatterns[logLevel] || [];
-            filteredLines = filteredLines.filter((line) =>
-              patterns.some((p) => line.includes(p))
-            );
-          }
-
-          // Filter by search term
-          if (searchTerm) {
-            const lowerSearch = searchTerm.toLowerCase();
-            filteredLines = filteredLines.filter((line) =>
-              line.toLowerCase().includes(lowerSearch)
-            );
-          }
-
-          // Take last N lines after filtering
-          filteredLines = filteredLines.slice(-lastLines);
+          // When a filter/search is active, scan the WHOLE file for the last
+          // N matches (grep-parity); otherwise just tail the recent lines.
+          const hasFilter = !!(windowPattern || levelMatch || lowerSearch);
+          const filteredLines = hasFilter
+            ? grepTailFile(logPath, matchesFilters, lastLines)
+            : tailFile(logPath, lastLines);
 
           // Build header
           const sessionDesc =

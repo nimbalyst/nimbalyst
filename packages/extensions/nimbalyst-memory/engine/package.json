@@ -1,0 +1,34 @@
+{
+  "name": "@nimbalyst/memory-engine",
+  "version": "0.1.0",
+  "description": "Host-agnostic project-knowledge + facts engine. Markdown indexer, pluggable embedders, hybrid retrieval (dense cosine + BM25 + RRF + expand-to-section), rebuildable SQLite shadow store, and an MCP server. ZERO host-app imports — this is the extraction seam, publishable standalone.",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "nimbalyst-memory-engine": "dist/serve.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "serve": "node dist/serve.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "better-sqlite3": "12.11.1",
+    "chokidar": "4.0.3",
+    "fast-glob": "3.3.3",
+    "js-yaml": "4.2.0",
+    "picomatch": "4.0.4"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "*",
+    "@types/js-yaml": "*",
+    "@types/node": "*",
+    "typescript": "^5.0.0"
+  }
+}

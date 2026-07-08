@@ -1,4 +1,3 @@
-import chokidar, { FSWatcher } from 'chokidar';
 import * as path from 'path';
 import * as fs from 'fs';
 import simpleGit, { SimpleGit } from 'simple-git';
@@ -6,9 +5,16 @@ import { BrowserWindow } from 'electron';
 import { logger } from '../utils/logger';
 import { clearGitStatusCache } from '../ipc/GitStatusHandlers';
 
+type NativeFileWatchListener = (curr: fs.Stats, prev: fs.Stats) => void;
+
+interface NativeFileWatcher {
+  filePath: string;
+  listener: NativeFileWatchListener;
+}
+
 interface WatcherEntry {
-  refWatcher: FSWatcher;
-  indexWatcher: FSWatcher;
+  refWatcher: NativeFileWatcher;
+  indexWatcher: NativeFileWatcher;
   lastCommitHash: string;
   currentBranch: string;
   git: SimpleGit;
@@ -33,6 +39,51 @@ interface GitDirInfo {
   gitDir: string;
   /** The common git directory where refs/heads are stored (same as gitDir for regular repos) */
   commonDir: string;
+}
+
+const GIT_FILE_WATCH_INTERVAL_MS = 500;
+
+function statsRepresentExistingFile(stats: fs.Stats): boolean {
+  return stats.nlink > 0 || stats.mtimeMs > 0 || stats.ctimeMs > 0 || stats.size > 0;
+}
+
+function statsChanged(curr: fs.Stats, prev: fs.Stats): boolean {
+  return (
+    curr.mtimeMs !== prev.mtimeMs ||
+    curr.ctimeMs !== prev.ctimeMs ||
+    curr.size !== prev.size ||
+    curr.ino !== prev.ino ||
+    curr.nlink !== prev.nlink
+  );
+}
+
+function watchGitFile(
+  filePath: string,
+  onChange: (created: boolean) => void | Promise<void>,
+  onError: (error: unknown) => void,
+): NativeFileWatcher {
+  const listener: NativeFileWatchListener = (curr, prev) => {
+    try {
+      if (!statsChanged(curr, prev)) return;
+      const currExists = statsRepresentExistingFile(curr);
+      const prevExists = statsRepresentExistingFile(prev);
+      if (!currExists && !prevExists) return;
+      void Promise.resolve(onChange(currExists && !prevExists)).catch(onError);
+    } catch (error) {
+      onError(error);
+    }
+  };
+
+  fs.watchFile(filePath, {
+    interval: GIT_FILE_WATCH_INTERVAL_MS,
+    persistent: false,
+  }, listener);
+
+  return { filePath, listener };
+}
+
+function unwatchGitFile(watcher: NativeFileWatcher): void {
+  fs.unwatchFile(watcher.filePath, watcher.listener);
 }
 
 /**
@@ -183,57 +234,34 @@ export class GitRefWatcher {
       // Watch refs/heads/<current-branch> for commit detection
       // Use commonDir for refs (in worktrees, refs are in the shared parent .git dir)
       const branchRefPath = path.join(commonDir, 'refs/heads', currentBranch);
-      const refWatcher = chokidar.watch(branchRefPath, {
-        ignoreInitial: true,
-        persistent: true,
-        usePolling: false,
-        awaitWriteFinish: {
-          stabilityThreshold: 50,
-          pollInterval: 10,
+      const refWatcher = watchGitFile(
+        branchRefPath,
+        async (created) => {
+          if (created) {
+            logger.main.info('[GitRefWatcher] Ref file added:', {
+              workspace: path.basename(workspacePath),
+              branch: currentBranch,
+            });
+          }
+          await this.handleRefChange(workspacePath);
         },
-      });
-
-      refWatcher.on('change', async () => {
-        // logger.main.info('[GitRefWatcher] Ref file changed:', {
-        //   workspace: path.basename(workspacePath),
-        //   branch: currentBranch,
-        // });
-        await this.handleRefChange(workspacePath);
-      });
-
-      refWatcher.on('add', async () => {
-        // Handle case where ref file is recreated (e.g., after branch switch)
-        logger.main.info('[GitRefWatcher] Ref file added:', {
-          workspace: path.basename(workspacePath),
-          branch: currentBranch,
-        });
-        await this.handleRefChange(workspacePath);
-      });
-
-      refWatcher.on('error', (error) => {
-        logger.main.error('[GitRefWatcher] Ref watcher error:', error);
-      });
+        (error) => {
+          logger.main.error('[GitRefWatcher] Ref watcher error:', error);
+        },
+      );
 
       // Watch index for staging changes
       // Use the resolved gitDir for the actual index file location
       const indexPath = path.join(gitDir, 'index');
-      const indexWatcher = chokidar.watch(indexPath, {
-        ignoreInitial: true,
-        persistent: true,
-        usePolling: false,
-        awaitWriteFinish: {
-          stabilityThreshold: 50,
-          pollInterval: 10,
+      const indexWatcher = watchGitFile(
+        indexPath,
+        () => {
+          this.handleIndexChangeDebounced(workspacePath);
         },
-      });
-
-      indexWatcher.on('change', () => {
-        this.handleIndexChangeDebounced(workspacePath);
-      });
-
-      indexWatcher.on('error', (error) => {
-        logger.main.error('[GitRefWatcher] Index watcher error:', error);
-      });
+        (error) => {
+          logger.main.error('[GitRefWatcher] Index watcher error:', error);
+        },
+      );
 
       this.watchers.set(workspacePath, {
         refWatcher,
@@ -260,8 +288,8 @@ export class GitRefWatcher {
   async stop(workspacePath: string): Promise<void> {
     const entry = this.watchers.get(workspacePath);
     if (entry) {
-      await entry.refWatcher.close();
-      await entry.indexWatcher.close();
+      unwatchGitFile(entry.refWatcher);
+      unwatchGitFile(entry.indexWatcher);
       this.watchers.delete(workspacePath);
 
       // Clear any pending debounce timer
@@ -451,23 +479,13 @@ export class GitRefWatcher {
         }
       }
 
-      if (approvedCount > 0) {
-        // logger.main.info('[GitRefWatcher] Auto-approved pending reviews:', {
-        //   workspace: path.basename(workspacePath),
-        //   count: approvedCount,
-        // });
-
-        // Emit pending count changed event to update UI
-        // The historyManager.updateTagStatus already emits this, but we emit
-        // a final one to ensure the UI is up to date
-        const count = await historyManager.getPendingCount(workspacePath);
-        this.emitToAllWindows('history:pending-count-changed', {
-          workspacePath,
-          count,
-        });
-      } else {
+      if (approvedCount === 0) {
         logger.main.info('[GitRefWatcher] No pending reviews found for committed files');
       }
+      // No explicit pending-count emit here: each updateTagStatus above schedules
+      // a trailing-debounced broadcast in HistoryManager, which fires once after
+      // this whole sweep settles with the final count. Emitting again would just
+      // run a redundant ~100ms count scan.
     } catch (error) {
       logger.main.error('[GitRefWatcher] Error auto-approving pending reviews:', error);
     }

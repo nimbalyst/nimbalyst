@@ -94,8 +94,12 @@ if [ -f "$EXTENSION_PATH/README.md" ]; then
   cp "$EXTENSION_PATH/README.md" "$TEMP_DIR/README.md"
 fi
 
-# Create output directory
+# Create output directory. Resolve to an absolute path BEFORE the `cd
+# "$TEMP_DIR"` below, or a relative --output-dir (the default `./dist`) would
+# be interpreted relative to the temp dir and the .nimext would be written into
+# the soon-deleted temp tree instead of dist/.
 mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
 # Create the .nimext zip
 NIMEXT_FILE="$OUTPUT_DIR/${EXT_ID}-${EXT_VERSION}.nimext"

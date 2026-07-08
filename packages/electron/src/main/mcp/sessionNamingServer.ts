@@ -102,13 +102,13 @@ export function setGetSessionPhaseFn(
  * `getWorkspaceTagsFn`). Async because the tag lookup is async.
  */
 export async function buildSessionMetaToolSchemas(aiSessionId: string): Promise<any[]> {
-  let addTagDescription = 'Tags to add to the session. Use for type of work (bug-fix, feature, refactor), area/module (electron, runtime, ios), status, or any relevant category.';
+  let addTagDescription = 'Tags to add: type of work (bug-fix, feature, refactor) and area/module (electron, runtime, ios).';
   if (getWorkspaceTagsFn) {
     try {
       const existingTags = await getWorkspaceTagsFn(aiSessionId);
       if (existingTags.length > 0) {
         const tagList = existingTags.slice(0, 20).map(t => `${t.name} (${t.count})`).join(', ');
-        addTagDescription += ` Existing tags in this workspace: ${tagList}. Use existing tags for consistency, or create new ones as needed.`;
+        addTagDescription += ` Prefer existing workspace tags: ${tagList}.`;
       }
     } catch {
       // Ignore - just use default description
@@ -119,14 +119,14 @@ export async function buildSessionMetaToolSchemas(aiSessionId: string): Promise<
     {
       name: "update_session_meta",
       description:
-        "Update session metadata. On the first call, set name, tags, and phase. On subsequent calls, update tags and/or phase. The name CAN be changed on later calls, but you should generally not rename a session once it has been named unless the user explicitly asks for a different name. Always returns the full current session metadata.",
+        "Update session metadata. Set name, tags, and phase on the first call; update tags/phase on later calls. Do not rename an already-named session unless the user asks. Returns the full current metadata.",
       inputSchema: {
         type: "object",
         properties: {
           name: {
             type: "string",
             description:
-              'A concise session name (2-5 words) with descriptive part first. Examples: "Authentication bug fix", "Dark mode implementation", "Database layer refactor". Only set this on the first call, or when the user explicitly asks you to rename the session.',
+              'Concise session name (2-5 words), descriptive part first (e.g. "Dark mode implementation"). Set on the first call only, unless the user asks for a rename.',
           },
           add: {
             type: "array",
@@ -142,13 +142,13 @@ export async function buildSessionMetaToolSchemas(aiSessionId: string): Promise<
             type: "string",
             enum: ["backlog", "planning", "implementing", "validating", "complete"],
             description:
-              'The current phase of work. Controls which kanban column the session appears in. Use "planning" for exploration/design, "implementing" for coding, "validating" for testing/review. IMPORTANT: Never set "complete" without explicit user approval -- use "validating" when work is finished. Only the user decides when work is complete.',
+              'Kanban phase: "planning" for exploration/design, "implementing" for coding, "validating" for testing/review. NEVER set "complete" without explicit user approval — only the user decides when work is complete.',
           },
           workflowPreset: {
             type: "string",
             enum: ["default", "implement-review-test", "research"],
             description:
-              'The meta-agent workflow mode for this session. "default" is the standard autonomous loop. "implement-review-test" runs an autonomous implement/review/test loop in one worktree. "research" decomposes a research question across child sessions and synthesizes findings. Takes effect on the next turn (the persona is rebuilt each turn).',
+              'Meta-agent workflow mode: "default" autonomous loop, "implement-review-test" implement/review/test loop in one worktree, "research" decomposes across child sessions. Takes effect next turn.',
           },
         },
       },

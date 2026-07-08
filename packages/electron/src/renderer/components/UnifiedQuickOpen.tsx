@@ -53,6 +53,7 @@ const isMac =
 // -----------------------------------------------------------------------------
 
 export type UnifiedQuickOpenTab =
+  | 'search'
   | 'files'
   | 'in-files'
   | 'sessions'
@@ -72,6 +73,14 @@ interface DisabledTabSpec {
   label: string;
   soon: true;
 }
+
+// Global semantic-search tab. Prepended to the tab strip only when the
+// nimbalyst-memory engine is running (soft launch — hidden otherwise).
+const SEARCH_TAB_SPEC: TabSpec = {
+  id: 'search',
+  label: 'Search',
+  shortcut: KeyboardShortcuts.window.globalSearch,
+};
 
 const TAB_SPECS: TabSpec[] = [
   { id: 'files', label: 'Files', shortcut: KeyboardShortcuts.file.open },
@@ -245,6 +254,14 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
   const [trackerTypeFilter, setTrackerTypeFilter] = usePersistedFilterValue(SELECTED_TRACKER_TYPE_KEY);
   const inputRef = useRef<HTMLInputElement>(null);
   const trackerTypeFilterRef = useRef<FilterChipHandle>(null);
+  // Whether the nimbalyst-memory engine is running for this workspace. `null`
+  // until the async check resolves (so we don't bounce off the Search tab while
+  // it's still being determined). When false, the Search tab is hidden entirely.
+  const [searchAvailable, setSearchAvailable] = useState<boolean | null>(null);
+  const visibleTabs = useMemo(
+    () => (searchAvailable === true ? [SEARCH_TAB_SPEC, ...TAB_SPECS] : TAB_SPECS),
+    [searchAvailable],
+  );
 
   // Recent-history dropdowns (persisted to app-settings).
   const fileExtHistory = useRecentHistory(RECENT_FILE_EXT_KEY);
@@ -278,6 +295,33 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
     }
   }, [isOpen, initialTab]);
 
+  // Probe memory-engine availability each time the dialog opens so the Search
+  // tab appears/disappears with the extension's enabled state.
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    window.electronAPI.semanticSearch
+      ?.isAvailable(workspacePath)
+      .then((ok) => {
+        if (!cancelled) setSearchAvailable(!!ok);
+      })
+      .catch(() => {
+        if (!cancelled) setSearchAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, workspacePath]);
+
+  // If we opened straight onto the Search tab (Cmd+Shift+O) but memory turned
+  // out to be off, fall back to Files rather than showing an empty pane. Only
+  // fires once the check has resolved (false, not null).
+  useEffect(() => {
+    if (activeTab === 'search' && searchAvailable === false) {
+      setActiveTab('files');
+    }
+  }, [activeTab, searchAvailable]);
+
   // Switch tabs without losing focus on the input.
   const switchTab = useCallback((tab: UnifiedQuickOpenTab) => {
     setActiveTab(tab);
@@ -310,11 +354,11 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
           setSessionContentNonce((n) => n + 1);
           return;
         }
-        const idx = TAB_SPECS.findIndex((t) => t.id === activeTab);
+        const idx = visibleTabs.findIndex((t) => t.id === activeTab);
         const nextIdx = e.shiftKey
-          ? (idx - 1 + TAB_SPECS.length) % TAB_SPECS.length
-          : (idx + 1) % TAB_SPECS.length;
-        switchTab(TAB_SPECS[nextIdx].id);
+          ? (idx - 1 + visibleTabs.length) % visibleTabs.length
+          : (idx + 1) % visibleTabs.length;
+        switchTab(visibleTabs[nextIdx].id);
         return;
       }
 
@@ -356,6 +400,13 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
         switchTab('prompts');
         return;
       }
+      // Cmd+Shift+O → Search (only when memory is available)
+      if (e.shiftKey && (e.key === 'O' || e.key === 'o')) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (searchAvailable === true) switchTab('search');
+        return;
+      }
       // Cmd+O → Files
       if (!e.shiftKey && e.key === 'o') {
         e.preventDefault();
@@ -374,7 +425,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isOpen, activeTab, switchTab, query, openTrackerTypeFilter]);
+  }, [isOpen, activeTab, switchTab, query, openTrackerTypeFilter, visibleTabs, searchAvailable]);
 
   if (!isOpen) return null;
 
@@ -384,15 +435,17 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
     activeTab === 'sessions' && !!query.trim() && !query.startsWith('@');
 
   const placeholder =
-    activeTab === 'projects'
-      ? 'Search projects...'
-      : activeTab === 'in-files'
-        ? 'Search in file contents...'
-        : activeTab === 'sessions'
-          ? 'Search sessions... (@ to filter by file edited)'
-          : activeTab === 'prompts'
-            ? 'Search your prompts...'
-            : 'Search files...';
+    activeTab === 'search'
+      ? 'Search everything by meaning — trackers, docs, sessions...'
+      : activeTab === 'projects'
+        ? 'Search projects...'
+        : activeTab === 'in-files'
+          ? 'Search in file contents...'
+          : activeTab === 'sessions'
+            ? 'Search sessions... (@ to filter by file edited)'
+            : activeTab === 'prompts'
+              ? 'Search your prompts...'
+              : 'Search files...';
 
   return (
     <>
@@ -410,7 +463,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
           className="unified-quick-open-tabs flex items-stretch border-b border-nim bg-nim-secondary"
           role="tablist"
         >
-          {TAB_SPECS.map((tab) => {
+          {visibleTabs.map((tab) => {
             const active = tab.id === activeTab;
             return (
               <button
@@ -532,6 +585,20 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
         {/* Active pane — others are mounted but hidden so their data stays
             loaded and re-activating a tab is instant. */}
         <div className="unified-quick-open-results flex-1 overflow-hidden flex flex-col min-h-[260px]">
+          {searchAvailable === true && (
+            <div className={activeTab === 'search' ? 'contents' : 'hidden'}>
+              <SearchPane
+                isOpen={isOpen}
+                isActive={activeTab === 'search'}
+                query={activeTab === 'search' ? query : ''}
+                workspacePath={workspacePath}
+                onTrackerSelect={handleTrackerSelectDefault}
+                onFileSelect={onFileSelect}
+                onSessionSelect={onSessionSelect}
+                onClose={onClose}
+              />
+            </div>
+          )}
           <div className={activeTab === 'files' ? 'contents' : 'hidden'}>
             <FilesPane
               isOpen={isOpen}
@@ -2000,6 +2067,222 @@ const ProjectsPane: React.FC<ProjectsPaneProps> = memo(({
                   {project.path}
                 </div>
               </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+});
+
+// =============================================================================
+// SearchPane — global semantic search across trackers / docs / sessions
+// =============================================================================
+
+interface SearchPaneProps {
+  isOpen: boolean;
+  isActive: boolean;
+  query: string;
+  workspacePath: string;
+  onTrackerSelect: (trackerId: string) => void;
+  onFileSelect: (filePath: string) => void;
+  onSessionSelect: (sessionId: string) => void;
+  onClose: () => void;
+}
+
+function refTypeLabel(result: SemanticSearchResult): string {
+  switch (result.refType) {
+    case 'tracker':
+      return 'Tracker';
+    case 'session':
+      return 'Session';
+    case 'doc-file':
+      return 'Document';
+    default:
+      return result.sourceClass || result.refType;
+  }
+}
+
+function refTypeIcon(refType: string): string {
+  switch (refType) {
+    case 'tracker':
+      return 'label';
+    case 'session':
+      return 'forum';
+    case 'doc-file':
+      return 'description';
+    default:
+      return 'search';
+  }
+}
+
+const SearchPane: React.FC<SearchPaneProps> = memo(({
+  isOpen,
+  isActive,
+  query,
+  workspacePath,
+  onTrackerSelect,
+  onFileSelect,
+  onSessionSelect,
+  onClose,
+}) => {
+  const [results, setResults] = useState<SemanticSearchResult[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [mouseHasMoved, setMouseHasMoved] = useState(false);
+  const listRef = useRef<HTMLUListElement>(null);
+  // Guards against out-of-order responses clobbering a newer query's results.
+  const latestReq = useRef(0);
+  const visibleQuery = isActive ? query : '';
+
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [visibleQuery]);
+
+  // Debounced query → engine. Embedding the query is per-submit, not per
+  // keystroke, so a short debounce keeps the dialog responsive.
+  useEffect(() => {
+    if (!isOpen || !isActive) return;
+    const q = visibleQuery.trim();
+    if (!q) {
+      setResults([]);
+      setIsLoading(false);
+      return;
+    }
+    setIsLoading(true);
+    const reqId = ++latestReq.current;
+    const timer = setTimeout(() => {
+      window.electronAPI.semanticSearch
+        .query(workspacePath, q, 25)
+        .then((res) => {
+          if (reqId === latestReq.current) setResults(Array.isArray(res) ? res : []);
+        })
+        .catch(() => {
+          if (reqId === latestReq.current) setResults([]);
+        })
+        .finally(() => {
+          if (reqId === latestReq.current) setIsLoading(false);
+        });
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [isOpen, isActive, visibleQuery, workspacePath]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onMove = () => setMouseHasMoved(true);
+    window.addEventListener('mousemove', onMove);
+    return () => window.removeEventListener('mousemove', onMove);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!listRef.current) return;
+    const els = listRef.current.querySelectorAll('.unified-quick-open-item');
+    const el = els[selectedIndex] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [selectedIndex]);
+
+  const handleSelect = useCallback(
+    (result: SemanticSearchResult) => {
+      if (result.refType === 'tracker') {
+        onTrackerSelect(result.refId);
+      } else if (result.refType === 'session') {
+        onSessionSelect(result.refId);
+      } else {
+        // doc-file: refId is the engine's workspace-relative POSIX path, but the
+        // file opener needs an absolute path — resolve it against workspacePath.
+        const rel = result.refId;
+        const isAbsolute = rel.startsWith('/') || /^[A-Za-z]:[\\/]/.test(rel);
+        const abs = isAbsolute
+          ? rel
+          : `${workspacePath.replace(/[\\/]+$/, '')}/${rel.replace(/^[\\/]+/, '')}`;
+        onFileSelect(abs);
+      }
+      onClose();
+    },
+    [onTrackerSelect, onSessionSelect, onFileSelect, onClose, workspacePath],
+  );
+
+  useEffect(() => {
+    if (!isOpen || !isActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault();
+          setSelectedIndex((i) => (i < results.length - 1 ? i + 1 : i));
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          setSelectedIndex((i) => (i > 0 ? i - 1 : i));
+          break;
+        case 'Enter':
+          e.preventDefault();
+          if (results[selectedIndex]) handleSelect(results[selectedIndex]);
+          break;
+        case 'Escape':
+          e.preventDefault();
+          onClose();
+          break;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, isActive, results, selectedIndex, handleSelect, onClose]);
+
+  const hasQuery = !!visibleQuery.trim();
+
+  return (
+    <div className="search-pane flex-1 overflow-y-auto">
+      {results.length === 0 ? (
+        <div className="p-10 text-center text-nim-faint">
+          {!hasQuery
+            ? 'Search trackers, documents, and sessions by meaning'
+            : isLoading
+              ? 'Searching...'
+              : 'No semantic matches'}
+        </div>
+      ) : (
+        <ul
+          ref={listRef}
+          className={`list-none m-0 p-0 ${mouseHasMoved ? '' : 'pointer-events-none'}`}
+        >
+          {results.map((result, index) => (
+            <li
+              key={`${result.refType}:${result.refId}`}
+              className={`unified-quick-open-item flex items-start gap-3 py-2.5 px-4 cursor-pointer border-l-[3px] transition-all duration-100 ${
+                index === selectedIndex
+                  ? 'selected bg-nim-selected border-l-nim-primary'
+                  : 'border-transparent hover:bg-nim-hover'
+              }`}
+              onClick={() => handleSelect(result)}
+              onMouseEnter={() => {
+                if (mouseHasMoved) setSelectedIndex(index);
+              }}
+            >
+              <div className="shrink-0 mt-0.5 text-nim-muted">
+                <MaterialSymbol icon={refTypeIcon(result.refType)} size={16} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-nim flex items-center gap-2 overflow-hidden text-ellipsis whitespace-nowrap">
+                  <span className="shrink-0 text-[10px] uppercase tracking-wide py-0.5 px-1.5 rounded bg-nim-secondary text-nim-faint">
+                    {refTypeLabel(result)}
+                  </span>
+                  <span className="truncate">
+                    {result.title || result.sourcePath || result.refId}
+                  </span>
+                </div>
+                {result.snippet && (
+                  <div className="text-xs text-nim-faint mt-0.5 truncate">{result.snippet}</div>
+                )}
+              </div>
+              {result.signals?.dense && (
+                <div
+                  className="shrink-0 mt-0.5 text-nim-faint"
+                  title="Semantic match"
+                >
+                  <MaterialSymbol icon="auto_awesome" size={13} />
+                </div>
+              )}
             </li>
           ))}
         </ul>

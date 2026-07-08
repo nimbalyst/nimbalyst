@@ -70,6 +70,14 @@ export interface ReuploadLocalOriginResult {
     okCount: number;
     failedCount: number;
   };
+  /**
+   * On a `conflict`, who last edited the shared doc and when (server clock, ms),
+   * so the overwrite confirm can name who/when the push will clobber. Sourced
+   * from the DocumentRoom's last content update (not the title-index timestamp).
+   * `lastEditorId` is a room-authed userId the renderer resolves to a member.
+   */
+  lastEditorId?: string | null;
+  lastEditedAt?: number | null;
 }
 
 interface CollabLocalOriginRow {
@@ -420,6 +428,29 @@ async function readSharedDocText(
   });
 }
 
+interface SharedDocReadResult {
+  text: string;
+  lastWriterUserId: string | null;
+  lastUpdatedAt: number | null;
+}
+
+/**
+ * Read the shared doc's plaintext plus the server's last-writer attribution in
+ * a single provider connection (so the overwrite confirm can name who/when last
+ * edited it without a second round-trip). Returns null if the doc can't be read.
+ */
+async function readSharedDocWithMeta(
+  workspacePath: string,
+  documentId: string,
+  adapter: CollabContentAdapter,
+): Promise<SharedDocReadResult | null> {
+  return withSharedDocument(workspacePath, documentId, async ({ yDoc, provider }) => ({
+    text: adapter.toPlainText(yDoc),
+    lastWriterUserId: provider.getLastWriterUserId(),
+    lastUpdatedAt: provider.getLastUpdatedAt(),
+  }));
+}
+
 async function overwriteSharedDocFromSource(
   workspacePath: string,
   documentId: string,
@@ -667,8 +698,8 @@ export async function reuploadFromLocalOrigin(params: {
   try {
     const sourceBuffer = await fs.readFile(binding.resolvedPath);
     const sourceText = sourceBuffer.toString('utf8');
-    const sharedText = await readSharedDocText(params.workspacePath, params.documentId, adapter);
-    if (sharedText === null) {
+    const sharedRead = await readSharedDocWithMeta(params.workspacePath, params.documentId, adapter);
+    if (sharedRead === null) {
       return {
         success: false,
         status: 'error',
@@ -676,6 +707,7 @@ export async function reuploadFromLocalOrigin(params: {
         binding,
       };
     }
+    const sharedText = sharedRead.text;
 
     const sourceHash = hashText(sourceText);
     const sharedHash = hashText(sharedText);
@@ -704,6 +736,8 @@ export async function reuploadFromLocalOrigin(params: {
         status: 'conflict',
         conflictKind,
         binding,
+        lastEditorId: sharedRead.lastWriterUserId,
+        lastEditedAt: sharedRead.lastUpdatedAt,
       };
     }
 
@@ -805,9 +839,15 @@ export async function seedSharedDocumentFromContent(params: {
 }): Promise<boolean> {
   const adapter = resolveAdapterForSharedDocumentType(params.documentType);
   if (!adapter) {
-    throw new Error(
-      `No collab content adapter is registered for document type '${params.documentType}'.`,
+    // The main-process adapter is now an OPTIONAL cache, not a requirement.
+    // External, structured editors (mindmap) supply a renderer codec but no
+    // main adapter -- the renderer-side seeding orchestrator handles those.
+    // Returning false (instead of throwing) lets the orchestrator treat a
+    // missing main adapter as "main can't seed this type", not a hard error.
+    logger.main.info(
+      `[CollabLocalOrigin] No main-process adapter for document type '${params.documentType}'; deferring seed to the renderer.`,
     );
+    return false;
   }
 
   return overwriteSharedDocFromSource(

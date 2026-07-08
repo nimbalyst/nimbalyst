@@ -68,6 +68,15 @@ export class HistoryManager {
     }
   }
 
+  // Trailing-debounce for the pending-count broadcast. getPendingCount is a
+  // 100ms-ish full scan (no index serves file_path LIKE + status without a
+  // sessionId), and a single git commit auto-approves N tags back-to-back --
+  // each tag update used to fire its own count query, producing an N+1 burst
+  // of identical scans. Coalesce them: invalidate the files cache immediately
+  // (correctness), but run the count+emit once after the burst settles.
+  private pendingCountEmitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly PENDING_COUNT_EMIT_DEBOUNCE_MS = 50;
+
   constructor() {}
 
   /**
@@ -85,12 +94,31 @@ export class HistoryManager {
   }
 
   /**
-   * Emit pending count changed event to all windows for a workspace
+   * Schedule a pending-count-changed broadcast for a workspace.
+   *
+   * Cache invalidation is immediate (so getPendingFilesForSession never serves
+   * stale data), but the expensive count query + IPC emit are trailing-debounced
+   * so a burst of tag mutations (e.g. commit auto-approval over N files)
+   * collapses into a single count query instead of N.
    */
-  private async emitPendingCountChanged(workspacePath: string): Promise<void> {
+  private emitPendingCountChanged(workspacePath: string): void {
     // Any code path that mutates pending state ends up here, so this is the
     // single invalidation point for the getPendingFilesForSession cache.
     this.invalidatePendingFilesForWorkspace(workspacePath);
+
+    const existing = this.pendingCountEmitTimers.get(workspacePath);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.pendingCountEmitTimers.delete(workspacePath);
+      void this.flushPendingCountChanged(workspacePath);
+    }, this.PENDING_COUNT_EMIT_DEBOUNCE_MS);
+    // Don't keep the process alive just for a pending count broadcast.
+    timer.unref?.();
+    this.pendingCountEmitTimers.set(workspacePath, timer);
+  }
+
+  /** Run the actual count query and broadcast it to all windows. */
+  private async flushPendingCountChanged(workspacePath: string): Promise<void> {
     try {
       const count = await this.getPendingCount(workspacePath);
       const windows = BrowserWindow.getAllWindows();
@@ -943,12 +971,21 @@ export class HistoryManager {
         await database.initialize();
       }
 
+      // The status predicate must textually match the partial index
+      // idx_history_one_pending_per_file or the planner falls back to a full
+      // table scan (~100ms). SQLite indexes the json_extract form; PGLite the
+      // ->> form. A ->> query does NOT match a json_extract index on SQLite.
+      const isSqlite = database.getEngine() === 'sqlite';
+      const statusExpr = isSqlite
+        ? `json_extract(metadata, '$.status')`
+        : `metadata->>'status'`;
+
       // Use file_path LIKE to match all files within the workspace directory
       const result = await database.query<{ count: string }>(`
         SELECT COUNT(DISTINCT file_path) as count
         FROM document_history
         WHERE file_path LIKE $1
-          AND metadata->>'status' = 'pending-review'
+          AND ${statusExpr} = 'pending-review'
       `, [workspacePath + '%']);
 
       return parseInt(result.rows[0]?.count || '0', 10);

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useAtomValue } from 'jotai';
+import { useAtom, useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { InputModal } from '../InputModal';
 import { WorkspaceSummaryHeader } from '../WorkspaceSummaryHeader';
@@ -31,6 +31,17 @@ import { useCollabLocalOrigin } from '../../hooks/useCollabLocalOrigin';
 import { useSetAtom } from 'jotai';
 import { historyDialogFileAtom } from '../../store/atoms/historyDialog';
 import { buildCollabUri } from '../../utils/collabUri';
+import { DocUnreadDot } from './DocUnreadDot';
+import { useDocUnread, markDocViewed } from '../../hooks/useDocUnread';
+import {
+  collabTreeFilterAtom,
+  showUnreadBubblesAtom,
+  collabFavoritesAtom,
+  changedDocIdsAtom,
+  toggleFavoriteDoc,
+  markAllSharedDocsViewed,
+  type CollabTreeFilter,
+} from '../../store/atoms/collabDiscovery';
 
 // ---------------------------------------------------------------------------
 // TeamSync status indicator -- shown in the header subtitle slot
@@ -60,17 +71,34 @@ interface CollabSidebarProps {
   workspacePath: string;
   onDocumentSelect: (doc: SharedDocument) => void;
   activeDocumentId?: string | null;
+  /** Open the discovery hub (center pane). Shown as a Home action. */
+  onShowHome?: () => void;
+  /** Highlight the Home action when the hub is the active surface. */
+  homeActive?: boolean;
 }
 
 export const CollabSidebar: React.FC<CollabSidebarProps> = ({
   workspacePath,
   onDocumentSelect,
   activeDocumentId,
+  onShowHome,
+  homeActive,
 }) => {
   const sharedDocuments = useAtomValue(sharedDocumentsAtom);
   const teamSyncStatus = useAtomValue(teamSyncStatusAtom);
   const teamOrgId = useAtomValue(activeTeamOrgIdAtom);
   const workspaceHasTeam = useAtomValue(workspaceHasTeamAtom);
+
+  // Discovery: favorites, tree filter, and unread-bubble visibility.
+  const [treeFilter, setTreeFilter] = useAtom(collabTreeFilterAtom);
+  const [showUnreadBubbles, setShowUnreadBubbles] = useAtom(showUnreadBubblesAtom);
+  const favorites = useAtomValue(collabFavoritesAtom);
+  const changedDocIds = useAtomValue(changedDocIdsAtom);
+  const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+
+  // Drive the per-doc "unread" dots from the local read-receipt store.
+  useDocUnread();
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -98,15 +126,34 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
   // collapsed parents the user has never opened.
   const [userTouchedExpansion, setUserTouchedExpansion] = useState(false);
 
+  // Full tree (all docs + custom folders) — used for path-collision checks and
+  // auto-expand, independent of the active filter.
   const tree = useMemo(
     () => buildCollabTree(sharedDocuments, customFolders),
     [sharedDocuments, customFolders]
   );
+
+  // Docs visible under the active segmented filter (All / Favorites / Updated).
+  const visibleDocuments = useMemo(() => {
+    if (treeFilter === 'favorites') {
+      return sharedDocuments.filter((d) => favoriteSet.has(d.documentId));
+    }
+    if (treeFilter === 'updated') {
+      return sharedDocuments.filter((d) => changedDocIds.has(d.documentId));
+    }
+    return sharedDocuments;
+  }, [sharedDocuments, treeFilter, favoriteSet, changedDocIds]);
+
+  // Rendered tree — filtered docs; drop empty custom folders in filtered views.
+  const displayTree = useMemo(
+    () => buildCollabTree(visibleDocuments, treeFilter === 'all' ? customFolders : []),
+    [visibleDocuments, customFolders, treeFilter]
+  );
   const trimmedSearchQuery = searchQuery.trim();
   const hasActiveSearch = trimmedSearchQuery.length > 0;
   const filteredTree = useMemo(
-    () => filterCollabTree(tree, trimmedSearchQuery),
-    [tree, trimmedSearchQuery]
+    () => filterCollabTree(displayTree, trimmedSearchQuery),
+    [displayTree, trimmedSearchQuery]
   );
 
   const existingPaths = useMemo(() => {
@@ -153,6 +200,28 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
       if (!open) setContextMenu(null);
     },
   });
+
+  const overflowMenu = useFloatingMenu({
+    placement: 'bottom-end',
+    open: overflowOpen,
+    onOpenChange: setOverflowOpen,
+  });
+
+  const handleMarkAllRead = useCallback(() => {
+    setOverflowOpen(false);
+    if (teamOrgId) {
+      void markAllSharedDocsViewed(teamOrgId);
+    }
+  }, [teamOrgId]);
+
+  const handleToggleFavorite = useCallback((document: SharedDocument) => {
+    toggleFavoriteDoc(document.documentId);
+  }, []);
+
+  const handleMarkDocRead = useCallback((document: SharedDocument) => {
+    if (!teamOrgId) return;
+    void markDocViewed(document.documentId, teamOrgId, document.updatedAt ?? null);
+  }, [teamOrgId]);
 
   useEffect(() => {
     setHasLoadedState(false);
@@ -579,10 +648,12 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
         );
       }
 
+      const isFavorite = favoriteSet.has(node.document.documentId);
+
       return (
         <button
           key={node.id}
-          className={`w-full flex items-center text-left file-tree-file${isActive ? ' active' : ''}`}
+          className={`group w-full flex items-center text-left file-tree-file${isActive ? ' active' : ''}`}
           style={{ paddingLeft: indent }}
           onClick={() => {
             setSelectedFolderPath(getCollabParentPath(node.path));
@@ -610,6 +681,27 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
             <MaterialSymbol icon="description" size={16} />
           </span>
           <span className="file-tree-name">{node.name}</span>
+          <span
+            role="button"
+            tabIndex={-1}
+            aria-label={isFavorite ? 'Unfavorite' : 'Favorite'}
+            aria-pressed={isFavorite}
+            title={isFavorite ? 'Unfavorite' : 'Favorite'}
+            className={`collab-fav-star ml-auto mr-0.5 flex items-center justify-center cursor-pointer transition-opacity ${
+              isFavorite
+                ? 'text-[var(--nim-warning)] opacity-100'
+                : 'text-[var(--nim-text-faint)] opacity-0 group-hover:opacity-70 hover:!opacity-100'
+            }`}
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleFavoriteDoc(node.document.documentId);
+            }}
+          >
+            <MaterialSymbol icon="star" size={14} fill={isFavorite} />
+          </span>
+          {showUnreadBubbles && (
+            <DocUnreadDot documentId={node.document.documentId} className="mr-1" />
+          )}
         </button>
       );
     });
@@ -624,6 +716,8 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     selectedFolderPath,
     hasActiveSearch,
     toggleFolder,
+    favoriteSet,
+    showUnreadBubbles,
   ]);
 
   const selectedFolderLabel = selectedFolderPath ? getCollabNodeName(selectedFolderPath) : 'Shared Docs';
@@ -646,6 +740,22 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
         actionsClassName="gap-1"
         actions={
           <>
+            {onShowHome && (
+              <button
+                type="button"
+                className={`workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)] ${
+                  homeActive ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-faint)]'
+                }`}
+                title="Discovery home"
+                aria-label="Discovery home"
+                onClick={() => {
+                  onShowHome();
+                  setContextMenu(null);
+                }}
+              >
+                <MaterialSymbol icon="grid_view" size={16} />
+              </button>
+            )}
             <button
               type="button"
               className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
@@ -668,9 +778,59 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
             >
               <MaterialSymbol icon="create_new_folder" size={16} />
             </button>
+            <button
+              ref={overflowMenu.refs.setReference}
+              {...overflowMenu.getReferenceProps()}
+              type="button"
+              className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+              title="Shared document options"
+              aria-label="Shared document options"
+              onClick={() => {
+                setOverflowOpen((open) => !open);
+                setContextMenu(null);
+              }}
+            >
+              <MaterialSymbol icon="more_horiz" size={16} />
+            </button>
           </>
         }
       />
+
+      {/* Segmented filter: All / Favorites / Updated */}
+      <div className="collab-tree-filter px-3 py-2 border-b border-[var(--nim-border)] shrink-0">
+        <div className="flex bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-md p-0.5">
+          {([
+            { key: 'all', label: 'All', icon: null },
+            { key: 'favorites', label: 'Favorites', icon: 'star' },
+            { key: 'updated', label: 'Updated', icon: 'circle' },
+          ] as { key: CollabTreeFilter; label: string; icon: string | null }[]).map((seg) => {
+            const active = treeFilter === seg.key;
+            return (
+              <button
+                key={seg.key}
+                type="button"
+                className={`flex-1 flex items-center justify-center gap-1 text-[11.5px] py-1 px-1.5 rounded transition-colors ${
+                  active
+                    ? 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)]'
+                    : 'text-[var(--nim-text-faint)] hover:text-[var(--nim-text-muted)]'
+                }`}
+                aria-pressed={active}
+                onClick={() => setTreeFilter(seg.key)}
+              >
+                {seg.icon && (
+                  <MaterialSymbol
+                    icon={seg.icon}
+                    size={13}
+                    fill={seg.key === 'favorites' && active}
+                    className={active && seg.key !== 'all' ? 'text-[var(--nim-warning)]' : undefined}
+                  />
+                )}
+                {seg.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       <div className="session-history-search px-3 py-2 border-b border-[var(--nim-border)] shrink-0 relative">
           <input
@@ -765,7 +925,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               </div>
             );
           }
-          if (filteredTree.length === 0) {
+          if (filteredTree.length === 0 && hasActiveSearch) {
             return (
               <div className="px-2 py-4 text-center">
                 <MaterialSymbol icon="search_off" size={32} className="text-nim-faint mb-2" />
@@ -778,9 +938,66 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               </div>
             );
           }
+          if (filteredTree.length === 0 && treeFilter === 'favorites') {
+            return (
+              <div className="px-2 py-4 text-center">
+                <MaterialSymbol icon="star" size={32} className="text-nim-faint mb-2" />
+                <p className="text-xs text-nim-faint m-0">No favorites yet.</p>
+                <p className="text-xs text-nim-faint mt-1 m-0">
+                  Star a document to pin it here.
+                </p>
+              </div>
+            );
+          }
+          if (filteredTree.length === 0 && treeFilter === 'updated') {
+            return (
+              <div className="px-2 py-4 text-center">
+                <MaterialSymbol icon="mark_email_read" size={32} className="text-nim-faint mb-2" />
+                <p className="text-xs text-nim-faint m-0">You're all caught up.</p>
+                <p className="text-xs text-nim-faint mt-1 m-0">
+                  No documents changed since you last viewed them.
+                </p>
+              </div>
+            );
+          }
           return <div>{renderTree(filteredTree)}</div>;
         })()}
       </div>
+
+      {/* Header overflow menu: unread-bubble visibility + mark all read */}
+      {overflowMenu.isOpen && (
+        <FloatingPortal>
+          <div
+            ref={overflowMenu.refs.setFloating}
+            style={overflowMenu.floatingStyles}
+            {...overflowMenu.getFloatingProps()}
+            className="min-w-[224px] rounded-md z-[10000] text-[13px] p-1 bg-nim-secondary border border-nim text-nim backdrop-blur-[10px] shadow-lg"
+          >
+            <button
+              type="button"
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover"
+              onClick={() => setShowUnreadBubbles(!showUnreadBubbles)}
+            >
+              <MaterialSymbol icon="notifications" size={18} />
+              <span className="flex-1">Show unread bubbles</span>
+              <MaterialSymbol
+                icon={showUnreadBubbles ? 'toggle_on' : 'toggle_off'}
+                size={20}
+                className={showUnreadBubbles ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-faint)]'}
+              />
+            </button>
+            <button
+              type="button"
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!teamOrgId || changedDocIds.size === 0}
+              onClick={handleMarkAllRead}
+            >
+              <MaterialSymbol icon="done_all" size={18} />
+              <span>Mark all as read</span>
+            </button>
+          </div>
+        </FloatingPortal>
+      )}
 
       {/* Context menu */}
       {contextMenu && (
@@ -823,6 +1040,43 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               >
                 <MaterialSymbol icon="open_in_new" size={18} />
                 <span>Open</span>
+              </button>
+              <button
+                type="button"
+                className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover"
+                onClick={() => {
+                  if (!contextDocument) return;
+                  handleToggleFavorite(contextDocument);
+                  setContextMenu(null);
+                }}
+              >
+                <MaterialSymbol
+                  icon="star"
+                  size={18}
+                  fill={contextDocument ? favoriteSet.has(contextDocument.documentId) : false}
+                />
+                <span>
+                  {contextDocument && favoriteSet.has(contextDocument.documentId)
+                    ? 'Unfavorite'
+                    : 'Favorite'}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={
+                  !teamOrgId ||
+                  !contextDocument ||
+                  !changedDocIds.has(contextDocument.documentId)
+                }
+                onClick={() => {
+                  if (!contextDocument) return;
+                  handleMarkDocRead(contextDocument);
+                  setContextMenu(null);
+                }}
+              >
+                <MaterialSymbol icon="mark_email_read" size={18} />
+                <span>Mark as read</span>
               </button>
               <button
                 type="button"

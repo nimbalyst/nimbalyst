@@ -117,6 +117,7 @@ import { initThemeListener } from './store/listeners/themeListeners';
 import { initThemeFallbackListener } from './store/listeners/themeFallbackListeners';
 import { initTrackerSyncListeners } from './store/listeners/trackerSyncListeners';
 import { initPullRequestListeners } from './store/listeners/pullRequestListeners';
+import { initReadReceiptListeners } from './store/listeners/readReceiptListeners';
 import { initWorktreeListeners } from './store/listeners/worktreeListeners';
 import { initBlitzListeners } from './store/listeners/blitzListeners';
 import { initUpdateListeners } from './store/listeners/updateListeners';
@@ -133,6 +134,7 @@ import {
   addOpenProjectAtom as addOpenProjectAction,
 } from './store/atoms/openProjects';
 import { registerDocumentLinkPlugin } from './plugins/registerDocumentLinkPlugin';
+import { registerTrackerLinkPlugin } from './plugins/registerTrackerLinkPlugin';
 import { registerAIChatPlugin } from './plugins/registerAIChatPlugin';
 import { registerTrackerPlugin } from './plugins/registerTrackerPlugin';
 import { registerSearchReplacePlugin } from './plugins/registerSearchReplacePlugin';
@@ -163,7 +165,7 @@ import {
 import { setStorageBackend, getExtensionEditorAPI } from '@nimbalyst/runtime';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { extensionPanelAIContextAtom } from './store/atoms/extensionPanels';
-import { setDiffTreeGroupByDirectoryAtom, setAgentFileScopeModeAtom, setHiddenGutterButtonsAtom, hydrateFileGutterCollapsedAtom } from './store/atoms/projectState';
+import { setDiffTreeGroupByDirectoryAtom, setAgentFileScopeModeAtom, hydrateFileGutterCollapsedAtom } from './store/atoms/projectState';
 import { toggleSessionHistoryCollapsedAtom, scrollToMessageAtom, initAgentModeLayout } from './store/atoms/agentMode';
 import {
   developerModeAtom,
@@ -194,6 +196,7 @@ import {
   initTrackerPanelLayout,
   trackerModeLayoutAtom,
 } from './store/atoms/trackers';
+import { prNavigateRequestAtom } from './store/atoms/pullRequests';
 import {
   terminalPanelVisibleAtom,
   terminalPanelHeightAtom,
@@ -232,6 +235,7 @@ const LOG_CONFIG = {
 let pluginsRegistered = false;
 if (!pluginsRegistered) {
   registerDocumentLinkPlugin();
+  registerTrackerLinkPlugin();
   registerTrackerPlugin(null); // Load built-in trackers now, custom trackers loaded in AppLayout
   registerAIChatPlugin();
   registerSearchReplacePlugin(); // Search/replace bar in fixed tab header
@@ -322,6 +326,7 @@ export default function App() {
     const cleanupTrackerSync = initTrackerSyncListeners();
     const cleanupWorktree = initWorktreeListeners();
     const cleanupPullRequest = initPullRequestListeners();
+    const cleanupReadReceipts = initReadReceiptListeners();
     const cleanupBlitz = initBlitzListeners();
     const cleanupUpdate = initUpdateListeners();
     const cleanupWalkthrough = initWalkthroughListeners();
@@ -350,6 +355,7 @@ export default function App() {
       cleanupTrackerSync?.();
       cleanupWorktree?.();
       cleanupPullRequest?.();
+      cleanupReadReceipts?.();
       cleanupBlitz?.();
       cleanupUpdate?.();
       cleanupWalkthrough?.();
@@ -510,7 +516,6 @@ export default function App() {
   // Workspace state hydration setters
   const setDiffTreeGroupByDirectory = useSetAtom(setDiffTreeGroupByDirectoryAtom);
   const setAgentFileScopeMode = useSetAtom(setAgentFileScopeModeAtom);
-  const setHiddenGutterButtons = useSetAtom(setHiddenGutterButtonsAtom);
   const hydrateFileGutterCollapsed = useSetAtom(hydrateFileGutterCollapsedAtom);
 
   // Check if a fullscreen extension panel is active (hides other content modes)
@@ -693,10 +698,10 @@ export default function App() {
         if (state?.agentFileScopeMode !== undefined) {
           setAgentFileScopeMode({ fileScopeMode: state.agentFileScopeMode, workspacePath });
         }
-        // Hydrate hidden gutter buttons into Jotai atom
-        if (state?.hiddenGutterButtons?.length) {
-          setHiddenGutterButtons(state.hiddenGutterButtons);
-        }
+        // Gutter icon visibility is now a GLOBAL preference (see
+        // appSettings gutterCustomizationAtom, hydrated at startup); the
+        // legacy per-project hiddenGutterButtons is only read by the one-shot
+        // migration in main. Do not hydrate it here.
         // Hydrate FileGutter collapsed state per type into Jotai atom
         if (state?.fileGutterCollapsed) {
           hydrateFileGutterCollapsed(state.fileGutterCollapsed);
@@ -705,7 +710,7 @@ export default function App() {
       .catch(error => {
         console.error('[App] Failed to load workspace state:', error);
       });
-  }, [workspacePath, setDiffTreeGroupByDirectory, setAgentFileScopeMode, setHiddenGutterButtons, hydrateFileGutterCollapsed]);
+  }, [workspacePath, setDiffTreeGroupByDirectory, setAgentFileScopeMode, hydrateFileGutterCollapsed]);
 
   // Save active mode when it changes
   useEffect(() => {
@@ -1494,6 +1499,69 @@ export default function App() {
     return () => window.removeEventListener('nimbalyst:navigate-tracker-item', handleNavigateTrackerItem);
   }, [setActiveMode]);
 
+  // Listen for PR navigation events (from tracker detail / session panels) —
+  // the PR-view leg of the PR ↔ tracker ↔ session navigation triangle.
+  useEffect(() => {
+    const handleNavigatePr = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (typeof detail?.remote === 'string' && typeof detail?.prNumber === 'number') {
+        setActiveMode('pr-review');
+        store.set(prNavigateRequestAtom, {
+          remote: detail.remote,
+          prNumber: detail.prNumber,
+          version: detail.version ?? Date.now(),
+        });
+      }
+    };
+
+    window.addEventListener('nimbalyst:navigate-pr', handleNavigatePr);
+    return () => window.removeEventListener('nimbalyst:navigate-pr', handleNavigatePr);
+  }, [setActiveMode]);
+
+  // Host hook for converting a legacy inline tracker embed into a real tracked
+  // item. The runtime TrackerPlugin (platform-agnostic) calls this to create
+  // the canonical item, then replaces the inline node with a reference chip.
+  // Mirrors the quick-add creation path in TrackerMainView.
+  useEffect(() => {
+    if (!workspacePath) {
+      delete (window as any).__nimbalystCreateTrackerItem;
+      return;
+    }
+    (window as any).__nimbalystCreateTrackerItem = async (item: {
+      type: string;
+      title: string;
+      status?: string;
+      priority?: string;
+      description?: string;
+      owner?: string;
+      tags?: string[];
+    }): Promise<{ id: string; issueKey?: string } | null> => {
+      try {
+        const prefix = (item.type || 'itm').substring(0, 3);
+        const id = `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`;
+        const result = await window.electronAPI.documentService.createTrackerItem({
+          id,
+          type: item.type,
+          title: item.title || `New ${item.type}`,
+          status: item.status || 'to-do',
+          priority: item.priority || 'medium',
+          description: item.description,
+          owner: item.owner,
+          tags: item.tags,
+          workspace: workspacePath,
+        });
+        if (!result.success || !result.item) return null;
+        return { id: result.item.id ?? id, issueKey: result.item.issueKey };
+      } catch (error) {
+        console.error('[App] Convert inline tracker -> create failed:', error);
+        return null;
+      }
+    };
+    return () => {
+      delete (window as any).__nimbalystCreateTrackerItem;
+    };
+  }, [workspacePath]);
+
   // Listen for open-ai-session events (from rebase/merge conflict resolution)
   useEffect(() => {
     const handleOpenAiSession = async (event: CustomEvent<{ sessionId: string; workspacePath: string; draftInput?: string }>) => {
@@ -2091,6 +2159,9 @@ export default function App() {
         }}
         onToggleAgentCollapsed={() => {
           toggleAgentCollapsed();
+        }}
+        onToggleCollabCollapsed={() => {
+          collabModeRef.current?.toggleSidebarCollapsed();
         }}
       />
 

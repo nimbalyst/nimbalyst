@@ -235,6 +235,12 @@ export interface EncryptedDocIndexEntry {
    * primary project at read time).
    */
   projectId?: string | null;
+  /**
+   * User id of whoever most recently changed this document (title OR content).
+   * Drives the doc-list "unread" indicator's self-edit suppression without
+   * opening the doc. Null for legacy rows / never-written index entries.
+   */
+  lastWriterUserId?: string | null;
 }
 
 /** Full team state snapshot sent on teamSync */

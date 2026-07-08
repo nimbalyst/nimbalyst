@@ -10,7 +10,7 @@
 import type { TrackerRecord } from '../../../core/TrackerRecord';
 import type { TrackerSchemaRole, FieldDefinition } from '../models/TrackerDataModel';
 import { globalRegistry } from '../models';
-import { resolveRoleFieldName, getFieldByRole } from '../trackerRecordAccessors';
+import { resolveRoleFieldName, getFieldByRole, getItemShareState } from '../trackerRecordAccessors';
 
 // ============================================================================
 // Types
@@ -61,6 +61,7 @@ const STRUCTURAL_COLUMNS: TrackerColumnDef[] = [
   { id: 'key', label: 'Key', width: 90, sortable: true, render: 'text', defaultVisible: true, sortKey: 'issueKey', builtin: true },
   { id: 'updated', label: 'Updated', width: 100, sortable: true, render: 'date', defaultVisible: true, sortKey: 'lastIndexed', builtin: true },
   { id: 'module', label: 'Source', width: 150, minWidth: 100, sortable: true, render: 'module', defaultVisible: false, builtin: true },
+  { id: 'shared', label: 'Shared', width: 90, minWidth: 70, sortable: true, render: 'badge', defaultVisible: false, builtin: true },
 ];
 
 /**
@@ -278,6 +279,7 @@ export function getCellValue(record: TrackerRecord, columnId: string): any {
     case 'key': return record.issueKey ?? '';
     case 'updated': return record.system.lastIndexed ? new Date(record.system.lastIndexed) : undefined;
     case 'module': return record.system.documentPath;
+    case 'shared': return getItemShareState(record);
     default: return record.fields[columnId];
   }
 }

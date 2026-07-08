@@ -139,7 +139,20 @@ export type TrackerSchemaRole =
   | 'tags'
   | 'startDate'
   | 'dueDate'
-  | 'progress';
+  | 'progress'
+  /**
+   * Field carrying the item's external identity (e.g. a PR number or imported
+   * issue key). Shown next to the local issue key on compact surfaces like
+   * kanban cards. url-type fields contribute their display label.
+   */
+  | 'externalKey'
+  /**
+   * Unlike the other roles, this maps to a STATUS VALUE (not a field name):
+   * the workflow status to set when a pull request referenced by an item of
+   * this type is merged from the PR view. Types that omit it get an activity
+   * comment on merge instead of a status transition.
+   */
+  | 'prMergedStatus';
 
 export interface TrackerSyncPolicy {
   /** How items sync: local (never), shared (always), hybrid (per-item choice) */

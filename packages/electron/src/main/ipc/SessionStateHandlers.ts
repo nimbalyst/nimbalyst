@@ -338,36 +338,59 @@ export async function registerSessionStateHandlers() {
 }
 
 /**
+ * Push a session lifecycle event's execution state (isExecuting) to the mobile
+ * sync channel. The sync provider is resolved per-event by the caller rather
+ * than captured once, so this works regardless of whether sync was ready when
+ * the subscription was registered, and survives provider swaps from
+ * `reinitializeSyncWithNewConfig`.
+ *
+ * NIM-945: when sync is not yet ready (provider null), we skip just this event
+ * and leave the subscription live — a stale "isExecuting=true" on mobile is
+ * otherwise never cleared, pinning the mobile spinner on "Thinking..." forever.
+ */
+export function pushExecutionStateToMobile(
+  event: SessionStateEvent,
+  syncProvider: import('@nimbalyst/runtime/sync').SyncProvider | null,
+): void {
+  if (
+    event.type !== 'session:started' &&
+    event.type !== 'session:completed' &&
+    event.type !== 'session:interrupted'
+  ) {
+    return;
+  }
+  if (!syncProvider) {
+    // Sync not enabled/ready yet for this event; the subscription stays live so
+    // future lifecycle events still reach mobile once the provider exists.
+    return;
+  }
+
+  const isExecuting = event.type === 'session:started';
+  const sessionId = event.sessionId;
+
+  console.log(`[SessionStateHandlers] Syncing execution state to mobile: sessionId=${sessionId} isExecuting=${isExecuting}`);
+
+  syncProvider.pushChange(sessionId, {
+    type: 'metadata_updated',
+    metadata: {
+      isExecuting,
+      updatedAt: Date.now(),
+    },
+  });
+}
+
+/**
  * Setup sync subscription to push execution state changes to mobile
  */
 function setupSyncSubscription(stateManager: ReturnType<typeof getSessionStateManager>): void {
-  // Lazy load sync manager to avoid circular dependencies
+  // Lazy load sync manager to avoid circular dependencies.
+  // The subscription is ALWAYS registered (even if sync is not yet ready) and
+  // resolves the provider per-event via getSyncProvider() — see NIM-945.
   import('../services/SyncManager').then(({ getSyncProvider }) => {
-    const syncProvider = getSyncProvider();
-    if (!syncProvider) {
-      console.log('[SessionStateHandlers] Sync not enabled, skipping execution state sync');
-      return;
-    }
-
     console.log('[SessionStateHandlers] Setting up execution state sync to mobile');
 
     const unsubscribe = stateManager.subscribe((event: SessionStateEvent) => {
-      // Sync execution state changes to mobile
-      if (event.type === 'session:started' || event.type === 'session:completed' || event.type === 'session:interrupted') {
-        const isExecuting = event.type === 'session:started';
-        const sessionId = event.sessionId;
-
-        console.log('[SessionStateHandlers] Syncing execution state:', { sessionId, isExecuting });
-
-        // Push metadata update with isExecuting state
-        syncProvider.pushChange(sessionId, {
-          type: 'metadata_updated',
-          metadata: {
-            isExecuting,
-            updatedAt: Date.now(),
-          },
-        });
-      }
+      pushExecutionStateToMobile(event, getSyncProvider());
     });
 
     syncSubscriptionCleanup = unsubscribe;

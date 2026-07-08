@@ -833,6 +833,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  // Global semantic search (nimbalyst-memory engine). Returns empty / false when
+  // the memory extension is disabled so the Quick Open Search tab can hide.
+  semanticSearch: {
+    isAvailable: (workspacePath: string) =>
+      ipcRenderer.invoke('semantic-search:available', workspacePath) as Promise<boolean>,
+    query: (workspacePath: string, query: string, k?: number, sourceClasses?: string[]) =>
+      ipcRenderer.invoke('semantic-search:query', workspacePath, query, k, sourceClasses) as Promise<
+        Array<{
+          refType: string;
+          refId: string;
+          sourceClass: string;
+          sourcePath: string;
+          title: string;
+          snippet: string;
+          score: number;
+          signals: { dense: boolean; sparse: boolean };
+        }>
+      >,
+  },
+
   // Tracker Schema (main-process authority)
   trackerSchema: {
     getAll: () => ipcRenderer.invoke('tracker-schema:get-all') as Promise<any[]>,
@@ -895,6 +915,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
         documentType,
         content,
       }) as Promise<{ success: boolean; error?: string }>,
+    // Forward a serializable collab adapter descriptor so the main process can
+    // rebuild the adapter (dynamic main-process adapters for any extension).
+    registerCollabAdapterDescriptor: (descriptor: unknown) =>
+      ipcRenderer.invoke('collab-adapter:register-descriptor', descriptor) as Promise<{
+        success: boolean;
+        error?: string;
+      }>,
     getLocalOrigin: (workspacePath: string, documentId: string) =>
       ipcRenderer.invoke('document-sync:get-local-origin', {
         workspacePath,
@@ -1045,8 +1072,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         } | null;
         error?: string;
       }>,
-    getJwt: (orgId: string) =>
-      ipcRenderer.invoke('document-sync:get-jwt', { orgId }) as Promise<{
+    getJwt: (orgId: string, forceRefresh?: boolean) =>
+      ipcRenderer.invoke('document-sync:get-jwt', { orgId, forceRefresh }) as Promise<{
         success: boolean;
         jwt?: string;
         error?: string;

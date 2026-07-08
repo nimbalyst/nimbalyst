@@ -109,7 +109,7 @@ describe('getMcpServersConfig consolidated topology', () => {
 
   // ---- Landed (Phases 2-3) ----
 
-  it('registers the eager core server as `nimbalyst` with alwaysLoad', async () => {
+  it('registers the core server as `nimbalyst` WITHOUT server-level alwaysLoad', async () => {
     const config = await new McpConfigService(baseDeps()).getMcpServersConfig({
       sessionId: 'session123',
       workspacePath: '/test/workspace',
@@ -117,7 +117,11 @@ describe('getMcpServersConfig consolidated topology', () => {
 
     expect(MCP_CORE).toBe('nimbalyst');
     expect(config[MCP_CORE]).toBeDefined();
-    expect(config[MCP_CORE].alwaysLoad).toBe(true);
+    // Eagerness is per-tool (`_meta['anthropic/alwaysLoad']` on the core
+    // ListTools subset — applyCoreAlwaysLoadMeta), not server-level. A
+    // server-level flag would force display_to_user/capture_editor_screenshot
+    // eager too.
+    expect(config[MCP_CORE].alwaysLoad).toBeUndefined();
     expect(config[MCP_CORE].url).toContain('/mcp/core');
     // Carries the long timeout (git_commit_proposal / AskUserQuestion block on input).
     expect(config[MCP_CORE].tool_timeout_sec).toBeGreaterThan(60);

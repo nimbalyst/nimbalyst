@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { IDisposable } from 'monaco-editor';
 import type { EditorHostProps } from '@nimbalyst/extension-sdk';
-import { MonacoEditor } from '@nimbalyst/runtime';
+import { MonacoEditor, type MonacoEditorCollabConfig } from '@nimbalyst/runtime';
 import { applyCalcSheetMonaco } from './calcSheetMonaco';
 import { evaluateCalcSheet } from './evaluator';
 import { parseCalcSheetDocument } from './parser';
@@ -59,6 +59,36 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
   const [contentHeight, setContentHeight] = useState(0);
   const editorLineHeight = 30;
 
+  // Collaborative when the host stood up a sync channel. In that mode the whole
+  // file (frontmatter + body) lives in a single shared Y.Text bound to the
+  // Monaco model; we visually hide the frontmatter lines so the body-only UX is
+  // preserved while the frontmatter still syncs.
+  const collaborative = !!host.collaboration;
+
+  // Hide the leading frontmatter block in the editor pane (it stays in the
+  // model so it syncs). `bodyStartLine` is the count of frontmatter lines.
+  const applyFrontmatterHide = useCallback(
+    (editor: any, monaco: any) => {
+      if (!editor || !monaco || typeof editor.setHiddenAreas !== 'function') return;
+      const offset = parseCalcSheetDocument(editor.getValue()).bodyStartLine;
+      editor.setHiddenAreas(offset > 0 ? [new monaco.Range(1, 1, offset, 1)] : []);
+    },
+    [],
+  );
+
+  const collabConfig = useMemo<MonacoEditorCollabConfig | undefined>(
+    () =>
+      collaborative
+        ? {
+            textField: 'content',
+            onBindingReady: ({ editor, monaco }) => {
+              applyFrontmatterHide(editor, monaco);
+            },
+          }
+        : undefined,
+    [collaborative, applyFrontmatterHide],
+  );
+
   useEffect(() => {
     setReadOnly(host.readOnly ?? false);
     return host.onReadOnlyChanged?.((next) => {
@@ -93,6 +123,11 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
 
   const parsed = useMemo(() => parseCalcSheetDocument(rawContent ?? ''), [rawContent]);
   frontmatterBlockRef.current = parsed.frontmatterBlock;
+
+  // The result gutter overlays the editor and is positioned by model line.
+  // Locally the model is body-only (offset 0); in collab mode the model holds
+  // the whole file, so body line N sits at model line bodyStartLine + N.
+  const gutterLineOffset = collaborative ? parsed.bodyStartLine : 0;
 
   const evaluation = useMemo(
     () => evaluateCalcSheet(parsed.lines, parsed.frontmatter, parsed.lines.length),
@@ -173,8 +208,13 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
     }
 
     contentListenerRef.current = editor.onDidChangeModelContent(() => {
-      setRawContent(composeRawContent(editor.getValue()));
+      // In collab mode the model already holds the WHOLE file (frontmatter +
+      // body), so use it verbatim; locally the model is body-only and the
+      // frontmatter is re-prepended.
+      const value = editor.getValue();
+      setRawContent(collaborative ? value : composeRawContent(value));
       refreshLayout(editor);
+      if (collaborative) applyFrontmatterHide(editor, monaco);
     });
 
     scrollListenerRef.current = editor.onDidScrollChange(() => {
@@ -189,13 +229,16 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
     layoutListenerRef.current = editor.onDidLayoutChange(() => {
       refreshLayout(editor);
     });
-  }, [refreshLayout, composeRawContent, host.theme]);
+  }, [refreshLayout, composeRawContent, host.theme, collaborative, applyFrontmatterHide]);
 
   useEffect(() => {
+    // In collab mode the binding (shared Y.Text) is the source of truth; a
+    // local-file echo would clobber the synced content.
+    if (collaborative) return;
     return host.onFileChanged((nextRawContent) => {
       setRawContent(nextRawContent);
     });
-  }, [host]);
+  }, [host, collaborative]);
 
   useEffect(() => {
     if (editorRef.current?.editor && editorRef.current?.monaco) {
@@ -230,6 +273,7 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
             fileName={host.fileName}
             onEditorReady={attachEditor}
             config={editorConfig}
+            collab={collabConfig}
           />
         </div>
 
@@ -257,7 +301,7 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
                   key={line.index}
                   className={className}
                   title={lineTitle(line, evaluation)}
-                  style={{ top: lineTops[line.index] ?? line.index * editorLineHeight, height: editorLineHeight }}
+                  style={{ top: lineTops[gutterLineOffset + line.index] ?? (gutterLineOffset + line.index) * editorLineHeight, height: editorLineHeight }}
                 >
                   <span className="calc-sheets__result-value">
                     {line.kind === 'section' ? '' : output}

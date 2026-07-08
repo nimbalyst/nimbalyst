@@ -16,7 +16,7 @@ import { $getRoot } from 'lexical';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import type { FieldDefinition } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel';
-import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordField, isSameIdentity } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
+import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordField, isSameIdentity, isItemSharedWithTeam } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import type { TrackerIdentity } from '@nimbalyst/runtime';
 import { TrackerFieldEditor, type TeamMemberOption } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
 import type { RelationshipCandidate } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/RelationshipFieldEditor';
@@ -24,10 +24,14 @@ import { UserAvatar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/
 import { trackerItemByIdAtom, trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import { resolveRelationshipType, isRelationshipField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { refreshSessionListAtom, sessionRegistryAtom, type SessionMeta } from '../../store/atoms/sessions';
+import { resolveLinkedSessions } from '../../utils/resolveLinkedSessions';
+import { prRemoteAtom, navigateToPullRequest } from '../../store/atoms/pullRequests';
+import { getRecordPrReferences } from '@nimbalyst/runtime/plugins/TrackerPlugin/prReferences';
 import { buildTrackerDeepLink } from '../../store/atoms/collabDocuments';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { useTrackerContentCollab } from '../../hooks/useTrackerContentCollab';
+import { useMarkTrackerViewed } from '../../hooks/useTrackerUnread';
 import { reconcileExternalFieldChanges } from './trackerDetailFieldSync';
 
 interface TrackerItemDetailProps {
@@ -197,6 +201,10 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
 
   const model = useMemo(() => globalRegistry.get(item?.primaryType ?? ''), [item?.primaryType]);
 
+  // Mark this item read while it is open (debounced; refires when a newer
+  // version arrives). Clears its unread dot in the list/board views.
+  useMarkTrackerViewed(item, workspacePath);
+
   // Detect whether this workspace has a team. The team check feeds the
   // content editor mode (collab vs local); the member list feeds the
   // assignee picker. NIM-638: these are split into two effects so a slow
@@ -241,7 +249,18 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     setTeamMembers([]);
     (async () => {
       try {
-        const teamResult = await window.electronAPI.invoke('team:find-for-workspace', workspacePath);
+        // NIM-638: bound the team lookup with a client-side timeout. Without it,
+        // a hung `team:find-for-workspace` IPC leaves teamOrgId === undefined
+        // (pending) forever, so the content editor stays stuck on "Connecting...".
+        // On timeout, degrade to local mode (null) -- the body still paints from
+        // the cold cache instead of spinning indefinitely.
+        const TEAM_LOOKUP_TIMEOUT_MS = 12_000;
+        const teamResult = await Promise.race([
+          window.electronAPI.invoke('team:find-for-workspace', workspacePath),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('team:find-for-workspace timed out')), TEAM_LOOKUP_TIMEOUT_MS),
+          ),
+        ]);
         if (cancelled) return;
         const orgId: string | null = teamResult?.success && teamResult.team?.orgId
           ? teamResult.team.orgId
@@ -342,36 +361,21 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalOrigin?.providerId, workspacePath]);
 
-  // Resolve linked sessions from registry (silently filter deleted ones)
-  // Two sources: 1) tracker item's linkedSessions[] (forward link from DB items)
-  //              2) sessions whose linkedTrackerItemIds contains this item's ID or file path (reverse link)
-  const linkedSessions = useMemo(() => {
-    const sessionSet = new Set<string>();
+  // Resolve linked sessions from registry via the shared resolver so this view
+  // and the PR view surface identical results (see resolveLinkedSessions.ts).
+  const linkedSessions = useMemo(
+    () => resolveLinkedSessions(item, sessionRegistry),
+    [item, sessionRegistry]
+  );
 
-    // Forward: tracker record stores session IDs in system
-    const forwardIds: string[] = item?.system?.linkedSessions || [];
-    for (const id of forwardIds) sessionSet.add(id);
-
-    // Reverse: sessions that link to this item by ID or by file path
-    const trackerItemId = item?.id;
-    const filePath = item?.system?.documentPath;
-    const fileRef = filePath ? `file:${filePath}` : null;
-
-    // console.log('[TrackerItemDetail] reverse lookup:', { trackerItemId, filePath, fileRef });
-
-    sessionRegistry.forEach((session, sessionId) => {
-      const linked = session.linkedTrackerItemIds;
-      if (!linked) return;
-      if (trackerItemId && linked.includes(trackerItemId)) sessionSet.add(sessionId);
-      if (fileRef && linked.includes(fileRef)) sessionSet.add(sessionId);
-    });
-
-    if (sessionSet.size === 0) return [];
-    return Array.from(sessionSet)
-      .map(id => sessionRegistry.get(id))
-      .filter((s): s is SessionMeta => s != null)
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [item, sessionRegistry]);
+  // PR reference on the workspace's detected GitHub remote → "Open PR view"
+  // jump. Reference-based (url-field match or explicit link), any item type.
+  const prRemote = useAtomValue(prRemoteAtom);
+  const prReference = useMemo(() => {
+    if (!item || !prRemote || prRemote.workspacePath !== workspacePath) return null;
+    const wanted = prRemote.remote.toLowerCase();
+    return getRecordPrReferences(item).find((ref) => ref.remote === wanted) ?? null;
+  }, [item, prRemote, workspacePath]);
   const linkedSessionIds = useMemo(() => new Set(linkedSessions.map((session) => session.id)), [linkedSessions]);
   const canLinkExistingSession = Boolean(item && workspacePath);
   const [isLinkingExistingSession, setIsLinkingExistingSession] = useState(false);
@@ -583,24 +587,9 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // 'synced'/'pending') count as shared so they keep collaborating.
   const isItemShared = useMemo(() => {
     if (!item) return false;
-    if (syncMode === 'shared') return true;
-    if (syncMode === 'local') return false;
-    // Custom fields (including the `share` flag) are merged into `fields` on
-    // the TrackerRecord.
-    const f: any = item.fields ?? {};
-    const share = f.share && typeof f.share === 'object' ? f.share : null;
-    // An EXPLICIT flag is authoritative -- trust it immediately (so an unshare
-    // reads as local even before the room state propagates).
-    const hasExplicit =
-      f.shared === true ||
-      (share && (share.status === 'team' || share.status === 'private' || share.body === 'team' || share.body === 'private'));
-    if (hasExplicit) {
-      return f.shared === true || share?.status === 'team' || share?.body === 'team';
-    }
-    // No explicit flag: a legacy item already pushed to the room (sync_status
-    // 'synced'/'pending') counts as shared so it keeps collaborating.
-    return item.syncStatus === 'synced' || item.syncStatus === 'pending';
-  }, [item, syncMode]);
+    // Single source of truth shared with the tracker table's "Shared" column.
+    return isItemSharedWithTeam(item);
+  }, [item]);
 
   const contentMode = useMemo(() => {
     if (!item || !isNativeItem(item)) return 'file-backed' as const;
@@ -1236,6 +1225,17 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           })()}
         </div>
         <div className="flex items-center gap-1 shrink-0">
+          {prReference && (
+            <button
+              className="flex items-center gap-1 px-2 py-1 rounded text-[12px] font-medium text-nim-muted hover:bg-nim-tertiary"
+              onClick={() => navigateToPullRequest(prReference.remote, prReference.number)}
+              title={`Open #${prReference.number} in the PRs view`}
+              data-testid="tracker-open-pr-view"
+            >
+              <MaterialSymbol icon="merge" size={16} />
+              <span>PR #{prReference.number}</span>
+            </button>
+          )}
           {canToggleShare && (
             <button
               className={`flex items-center gap-1 px-2 py-1 rounded text-[12px] font-medium ${
@@ -1334,9 +1334,112 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+        {/* Linked Sessions -- kept at the top so they're visible without scrolling */}
+        {(linkedSessions.length > 0 || onLaunchSession || canLinkExistingSession || isLinkingExistingSession) && (
+          <div className="tracker-sessions-section">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px]">
+                Sessions{linkedSessions.length > 0 ? ` (${linkedSessions.length})` : ''}
+              </label>
+              <div className="flex items-center gap-1">
+                {canLinkExistingSession && (
+                  <button
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
+                    onClick={() => {
+                      setLinkSessionError(null);
+                      setSessionSearchQuery('');
+                      void refreshSessionList();
+                      setIsLinkingExistingSession((prev) => !prev);
+                    }}
+                    title="Link an existing AI session to this item"
+                  >
+                    <MaterialSymbol icon="link" size={14} />
+                    {isLinkingExistingSession ? 'Cancel' : 'Link Existing'}
+                  </button>
+                )}
+                {onLaunchSession && (
+                  <button
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
+                    onClick={() => onLaunchSession(item.id)}
+                    title="Launch a new AI session for this item"
+                  >
+                    <MaterialSymbol icon="add" size={14} />
+                    Launch Session
+                  </button>
+                )}
+              </div>
+            </div>
+            {isLinkingExistingSession && (
+              <div className="tracker-session-linker mb-2 rounded border border-nim bg-nim-tertiary p-2">
+                <input
+                  className="w-full rounded border border-nim bg-nim px-2 py-1.5 text-xs text-nim outline-none focus:border-nim-focus"
+                  type="text"
+                  value={sessionSearchQuery}
+                  onChange={(e) => setSessionSearchQuery(e.target.value)}
+                  placeholder={`Search ${availableSessions.length} existing session${availableSessions.length === 1 ? '' : 's'}`}
+                />
+                <div className="mt-2 space-y-1">
+                  {filteredAvailableSessions.length > 0 ? (
+                    filteredAvailableSessions.map((session) => (
+                      <button
+                        key={session.id}
+                        className="tracker-session-linker-option w-full rounded px-2 py-1.5 text-left hover:bg-nim-hover transition-colors disabled:opacity-60"
+                        onClick={() => handleLinkExistingSession(session.id)}
+                        disabled={linkingSessionId !== null}
+                        title={`Link session: ${session.title || 'Untitled session'}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <ProviderIcon provider={session.provider || 'claude'} size={14} />
+                          <span className="flex-1 truncate text-xs text-nim">
+                            {session.title || 'Untitled session'}
+                          </span>
+                          <span className="shrink-0 text-[10px] text-nim-faint">
+                            {linkingSessionId === session.id ? 'Linking...' : getRelativeTimeString(session.updatedAt)}
+                          </span>
+                        </div>
+                      </button>
+                    ))
+                  ) : (
+                    <p className="m-0 text-[11px] text-nim-faint">
+                      {availableSessions.length === 0
+                        ? 'No unlinked sessions available.'
+                        : 'No sessions match that search.'}
+                    </p>
+                  )}
+                </div>
+                {linkSessionError && (
+                  <p className="mt-2 mb-0 text-[11px] text-nim-error">{linkSessionError}</p>
+                )}
+              </div>
+            )}
+            {linkedSessions.length > 0 ? (
+              <div className="space-y-1">
+                {linkedSessions.map((session) => (
+                  <button
+                    key={session.id}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-nim-tertiary transition-colors group"
+                    onClick={() => onSwitchToAgentMode?.(session.id)}
+                    title={`Open session: ${session.title}`}
+                  >
+                    <ProviderIcon provider={session.provider || 'claude'} size={14} />
+                    <span className="flex-1 text-xs text-nim truncate">
+                      {session.title || 'Untitled session'}
+                    </span>
+                    <span className="text-[10px] text-nim-faint shrink-0">
+                      {getRelativeTimeString(session.updatedAt)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[11px] text-nim-faint m-0">No linked sessions</p>
+            )}
+          </div>
+        )}
+
         {/* Primary fields grid (status, priority, owner) */}
         {primaryFields.length > 0 && (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-3 pt-1 border-t border-nim">
             {primaryFields.map((field) => (
               <div key={field.name}>
                 {editable ? (
@@ -1474,109 +1577,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
             <p className="text-sm text-nim-faint m-0">No content</p>
           )}
         </div>
-
-        {/* Linked Sessions */}
-        {(linkedSessions.length > 0 || onLaunchSession || canLinkExistingSession || isLinkingExistingSession) && (
-          <div className="pt-1 border-t border-nim">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px]">
-                Sessions{linkedSessions.length > 0 ? ` (${linkedSessions.length})` : ''}
-              </label>
-              <div className="flex items-center gap-1">
-                {canLinkExistingSession && (
-                  <button
-                    className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
-                    onClick={() => {
-                      setLinkSessionError(null);
-                      setSessionSearchQuery('');
-                      void refreshSessionList();
-                      setIsLinkingExistingSession((prev) => !prev);
-                    }}
-                    title="Link an existing AI session to this item"
-                  >
-                    <MaterialSymbol icon="link" size={14} />
-                    {isLinkingExistingSession ? 'Cancel' : 'Link Existing'}
-                  </button>
-                )}
-                {onLaunchSession && (
-                  <button
-                    className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
-                    onClick={() => onLaunchSession(item.id)}
-                    title="Launch a new AI session for this item"
-                  >
-                    <MaterialSymbol icon="add" size={14} />
-                    Launch Session
-                  </button>
-                )}
-              </div>
-            </div>
-            {isLinkingExistingSession && (
-              <div className="tracker-session-linker mb-2 rounded border border-nim bg-nim-tertiary p-2">
-                <input
-                  className="w-full rounded border border-nim bg-nim px-2 py-1.5 text-xs text-nim outline-none focus:border-nim-focus"
-                  type="text"
-                  value={sessionSearchQuery}
-                  onChange={(e) => setSessionSearchQuery(e.target.value)}
-                  placeholder={`Search ${availableSessions.length} existing session${availableSessions.length === 1 ? '' : 's'}`}
-                />
-                <div className="mt-2 space-y-1">
-                  {filteredAvailableSessions.length > 0 ? (
-                    filteredAvailableSessions.map((session) => (
-                      <button
-                        key={session.id}
-                        className="tracker-session-linker-option w-full rounded px-2 py-1.5 text-left hover:bg-nim-hover transition-colors disabled:opacity-60"
-                        onClick={() => handleLinkExistingSession(session.id)}
-                        disabled={linkingSessionId !== null}
-                        title={`Link session: ${session.title || 'Untitled session'}`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <ProviderIcon provider={session.provider || 'claude'} size={14} />
-                          <span className="flex-1 truncate text-xs text-nim">
-                            {session.title || 'Untitled session'}
-                          </span>
-                          <span className="shrink-0 text-[10px] text-nim-faint">
-                            {linkingSessionId === session.id ? 'Linking...' : getRelativeTimeString(session.updatedAt)}
-                          </span>
-                        </div>
-                      </button>
-                    ))
-                  ) : (
-                    <p className="m-0 text-[11px] text-nim-faint">
-                      {availableSessions.length === 0
-                        ? 'No unlinked sessions available.'
-                        : 'No sessions match that search.'}
-                    </p>
-                  )}
-                </div>
-                {linkSessionError && (
-                  <p className="mt-2 mb-0 text-[11px] text-nim-error">{linkSessionError}</p>
-                )}
-              </div>
-            )}
-            {linkedSessions.length > 0 ? (
-              <div className="space-y-1">
-                {linkedSessions.map((session) => (
-                  <button
-                    key={session.id}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-nim-tertiary transition-colors group"
-                    onClick={() => onSwitchToAgentMode?.(session.id)}
-                    title={`Open session: ${session.title}`}
-                  >
-                    <ProviderIcon provider={session.provider || 'claude'} size={14} />
-                    <span className="flex-1 text-xs text-nim truncate">
-                      {session.title || 'Untitled session'}
-                    </span>
-                    <span className="text-[10px] text-nim-faint shrink-0">
-                      {getRelativeTimeString(session.updatedAt)}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <p className="text-[11px] text-nim-faint m-0">No linked sessions</p>
-            )}
-          </div>
-        )}
 
         {/* Linked Commits */}
         {item.system.linkedCommits && item.system.linkedCommits.length > 0 && (

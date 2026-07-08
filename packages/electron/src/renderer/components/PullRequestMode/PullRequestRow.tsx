@@ -7,13 +7,19 @@
  */
 
 import { MaterialSymbol } from '@nimbalyst/runtime';
+import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import type { PullRequestRow as PullRequestRowData } from '../../services/RendererPullRequestService';
 import { formatRelative } from './prFormat';
+import { PrTrackerBadge } from './PrTrackerBadge';
 
 interface PullRequestRowProps {
   pr: PullRequestRowData;
   selected: boolean;
   onSelect: (id: string) => void;
+  /** Primary tracker item referencing this PR (badge source); null when untracked. */
+  trackerItem?: TrackerRecord | null;
+  /** Whether any session is linked to this PR's tracker items. */
+  hasSessions?: boolean;
 }
 
 function stateBadge(
@@ -45,7 +51,7 @@ function ciIcon(ci: PullRequestRowData['ciStatus']): { icon: string; className: 
   }
 }
 
-export function PullRequestRow({ pr, selected, onSelect }: PullRequestRowProps): JSX.Element {
+export function PullRequestRow({ pr, selected, onSelect, trackerItem, hasSessions }: PullRequestRowProps): JSX.Element {
   const badge = stateBadge(pr);
   const ci = ciIcon(pr.ciStatus);
   const conflicting = pr.mergeable === 'conflicting';
@@ -84,6 +90,15 @@ export function PullRequestRow({ pr, selected, onSelect }: PullRequestRowProps):
             </span>
           )}
           <span className="ml-auto shrink-0 flex items-center gap-2">
+            {hasSessions && (
+              <MaterialSymbol
+                icon="smart_toy"
+                size={13}
+                className="text-nim-accent"
+                title="Has linked review sessions"
+              />
+            )}
+            {trackerItem && <PrTrackerBadge record={trackerItem} compact />}
             {ci && (
               <MaterialSymbol icon={ci.icon} size={14} className={ci.className} />
             )}

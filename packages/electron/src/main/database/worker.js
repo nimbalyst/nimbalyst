@@ -2718,6 +2718,34 @@ class PGLiteWorker {
       console.error('[PGLite Worker] Failed to add worktrees pr_* columns:', error);
       throw error;
     }
+
+    // Migration: read receipts for unread indicators (trackers + collab docs,
+    // schema version 16). Personal per-user state ABOUT team objects; NEVER
+    // stored on a tracker/document row and synced only on the PERSONAL channel.
+    // Mirror of SQLite migration 0016_read_receipts.sql -- keep the two in sync.
+    // BIGINT (not INTEGER) here because epoch-ms / sync_id overflow int4.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS read_receipts (
+          user_email        TEXT NOT NULL,
+          entity_kind       TEXT NOT NULL,
+          entity_id         TEXT NOT NULL,
+          scope             TEXT NOT NULL,
+          last_viewed_at    BIGINT NOT NULL,
+          last_seen_version BIGINT,
+          updated_at        BIGINT NOT NULL,
+          PRIMARY KEY (user_email, entity_kind, entity_id, scope)
+        );
+      `);
+      await this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_read_receipts_lookup
+          ON read_receipts (user_email, entity_kind, scope);
+      `);
+      console.log('[PGLite Worker] read_receipts table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create read_receipts table:', error);
+      throw error;
+    }
   }
 
   async query(message) {
