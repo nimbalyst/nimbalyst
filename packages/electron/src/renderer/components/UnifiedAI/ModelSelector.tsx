@@ -223,7 +223,7 @@ export function ModelSelector({
     return getProviderIcon(provider, { size });
   };
 
-  const CHAT_MODEL_PROVIDERS = new Set(['claude', 'openai', 'ollama', 'anythingllm', 'openrouter', 'featherless', 'featherless-official', 'featherless-sane', 'featherless-heretic', 'featherless-keyword', 'openai-codex', 'lmstudio']);
+  const CHAT_MODEL_PROVIDERS = new Set(['claude', 'openai', 'ollama', 'anythingllm', 'openrouter', 'featherless', 'featherless-official', 'featherless-sane', 'featherless-heretic', 'featherless-keyword', 'lmstudio']);
   const getProviderType = (provider: string): ProviderType => {
     if (CHAT_MODEL_PROVIDERS.has(provider)) return 'model';
     if (isAgentProvider(provider)) return 'agent';

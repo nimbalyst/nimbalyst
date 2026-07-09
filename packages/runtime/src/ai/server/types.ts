@@ -397,10 +397,7 @@ export interface SessionData {
 
   // Provider-specific data
   providerSessionId?: string;  // For Claude Code's internal session ID
-  providerConfig?: {
-    model?: string;
-    apiKey?: string;  // If using per-session keys
-  };
+  providerConfig?: Partial<ProviderConfig>;
 }
 
 export interface ProviderConfig {

@@ -141,8 +141,8 @@ export class ModelRegistry {
     if (shouldFetch('featherless-sane')) jobs.push({ provider: 'featherless-sane', promise: this.getModelsForProvider('featherless-sane', apiKeys['featherless-sane'], apiKeys['featherless-sane_base_url'], modelFilterRegexes['featherless-sane']) });
     if (shouldFetch('featherless-heretic')) jobs.push({ provider: 'featherless-heretic', promise: this.getModelsForProvider('featherless-heretic', apiKeys['featherless-heretic'], apiKeys['featherless-heretic_base_url'], modelFilterRegexes['featherless-heretic']) });
     if (shouldFetch('featherless-keyword')) jobs.push({ provider: 'featherless-keyword', promise: this.getModelsForProvider('featherless-keyword', apiKeys['featherless-keyword'], apiKeys['featherless-keyword_base_url'], modelFilterRegexes['featherless-keyword']) });
-    if (shouldFetch('openai-codex')) jobs.push({ provider: 'openai-codex', promise: this.getModelsForProvider('openai-codex', apiKeys['openai']) });
-    if (shouldFetch('openai-codex-acp')) jobs.push({ provider: 'openai-codex-acp', promise: this.getModelsForProvider('openai-codex-acp', apiKeys['openai']) });
+    if (shouldFetch('openai-codex')) jobs.push({ provider: 'openai-codex', promise: this.getModelsForProvider('openai-codex', apiKeys['openai-codex']) });
+    if (shouldFetch('openai-codex-acp')) jobs.push({ provider: 'openai-codex-acp', promise: this.getModelsForProvider('openai-codex-acp', apiKeys['openai-codex']) });
     if (shouldFetch('opencode')) jobs.push({ provider: 'opencode', promise: this.getModelsForProvider('opencode') });
     if (shouldFetch('lmstudio')) jobs.push({ provider: 'lmstudio', promise: this.getModelsForProvider('lmstudio', undefined, apiKeys['lmstudio_url']) });
     if (shouldFetch('copilot-cli')) jobs.push({ provider: 'copilot-cli', promise: this.getModelsForProvider('copilot-cli') });
