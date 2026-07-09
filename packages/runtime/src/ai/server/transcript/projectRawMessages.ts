@@ -24,7 +24,7 @@ import { VoiceRawParser } from './parsers/VoiceRawParser';
 import type { IRawMessageParser, ParseContext } from './parsers/IRawMessageParser';
 import type { RawMessage } from './TranscriptTransformer';
 import type { TranscriptEvent } from './types';
-import { processDescriptor, selectRawParser } from './processDescriptor';
+import { processDescriptor, selectRawParser, stampUserMessageRawId } from './processDescriptor';
 
 function createParser(provider: string): IRawMessageParser {
   const kind = selectRawParser(provider);
@@ -73,6 +73,7 @@ export async function rawMessagesToCanonicalEvents(
   for (const msg of rawMessages) {
     try {
       const descriptors = await parser.parseMessage(msg, context);
+      stampUserMessageRawId(descriptors, msg.id);
       for (const desc of descriptors) {
         await processDescriptor(
           writer,

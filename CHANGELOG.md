@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Edit a message you already sent and rewind the conversation to it: fix or redirect it, discard everything after, and re-run from that point — with an option to also undo file changes made since. The agent keeps the earlier context.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

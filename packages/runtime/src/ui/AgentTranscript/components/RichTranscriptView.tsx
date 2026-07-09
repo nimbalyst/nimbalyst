@@ -490,6 +490,10 @@ interface RichTranscriptViewProps {
   onOpenSession?: (sessionId: string) => void;
   /** Optional: Callback to trigger /compact command */
   onCompact?: () => void;
+  /** Optional: Edit a previously-sent user message and rewind the conversation to it.
+   * `hasDownstream` is true when messages follow the edited one (so the host can
+   * confirm the destructive truncation). */
+  onEditUserMessage?: (rawMessageId: number, currentText: string, hasDownstream: boolean) => void;
   /** Optional: Prompt additions for debugging (system prompt, user message, and attachments) */
   promptAdditions?: {
     systemPromptAddition: string | null;
@@ -1093,11 +1097,14 @@ export const extractEditsFromToolMessage = (message: TranscriptViewMessage): any
 export const RichTranscriptView = React.forwardRef<
   { scrollToMessage: (index: number) => void; scrollToTop: () => void },
   RichTranscriptViewProps
->(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, appStartTime, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, persistScrollState = true }, ref) => {
+>(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, onEditUserMessage, promptAdditions, currentTeammates, waitingForNoun, appStartTime, renderEmbeddedFile, canEmbedFile, onSearchBarVisibilityChange, persistScrollState = true }, ref) => {
   const [collapsedMessages, setCollapsedMessages] = useState<Set<number>>(new Set());
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollButtonRef = useRef<HTMLDivElement>(null);
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
+  // Edit/rewind: which user message (by raw id) is being edited inline, plus its draft.
+  const [editingRawMessageId, setEditingRawMessageId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState('');
   const [showSearchBar, setShowSearchBar] = useState(false);
 
   // Subscribe to the transcript tool-widget registry so extension
@@ -1530,6 +1537,20 @@ export const RichTranscriptView = React.forwardRef<
       return next;
     });
   };
+
+  const cancelMessageEdit = useCallback(() => {
+    setEditingRawMessageId(null);
+    setEditDraft('');
+  }, []);
+
+  const submitMessageEdit = useCallback((rawMessageId: number, indexInList: number) => {
+    if (!onEditUserMessage) return;
+    const text = editDraft;
+    const hasDownstream = indexInList < messages.length - 1;
+    setEditingRawMessageId(null);
+    setEditDraft('');
+    onEditUserMessage(rawMessageId, text, hasDownstream);
+  }, [onEditUserMessage, editDraft, messages.length]);
 
   const toggleToolExpand = useCallback((toolId: string) => {
     setExpandedTools(prev => {
@@ -2257,8 +2278,17 @@ export const RichTranscriptView = React.forwardRef<
         })()}
 
         <div className={`rich-transcript-message-content relative ${isNewGroup ? 'ml-6' : 'no-indent ml-0'}`}>
-          {/* Copy button - shows on hover */}
-          <div className="rich-transcript-message-copy-action absolute -top-1 right-0 z-[1]">
+          {/* Edit (user messages) + Copy buttons - show on hover */}
+          <div className="rich-transcript-message-copy-action absolute -top-1 right-0 z-[1] flex items-center gap-1">
+            {isUser && message.rawMessageId != null && onEditUserMessage && editingRawMessageId == null && (
+              <button
+                onClick={() => { setEditingRawMessageId(message.rawMessageId!); setEditDraft(message.text ?? ''); }}
+                className="rich-transcript-edit-button p-1.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)]"
+                title="Edit message & rewind"
+              >
+                <MaterialSymbol icon="edit" size={16} className="text-[var(--nim-text-faint)]" />
+              </button>
+            )}
             <button
               onClick={() => copyTranscriptViewMessageContent(message, index)}
               className={`rich-transcript-copy-button p-1.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)] ${copiedMessageIndex === index ? 'copied' : ''}`}
@@ -2271,23 +2301,59 @@ export const RichTranscriptView = React.forwardRef<
               )}
             </button>
           </div>
-          <MessageSegment
-            message={message}
-            isUser={isUser}
-            isCollapsed={isCollapsed}
-            showToolCalls={false}
-            showThinking={settings.showThinking}
-            expandedTools={expandedTools}
-            onToggleToolExpand={toggleToolExpand}
-            documentContext={documentContext}
-            shouldShowLoginWidget={shouldShowLoginWidgetForIndex(index)}
-            sessionId={sessionId}
-            isLastMessage={index === messages.length - 1}
-            onOpenFile={onOpenFile}
-            onOpenSession={onOpenSession}
-            onCompact={onCompact}
-            provider={provider}
-          />
+          {editingRawMessageId != null && message.rawMessageId === editingRawMessageId ? (
+            <div className="rich-transcript-edit-form flex flex-col gap-2 select-text">
+              <textarea
+                className="w-full min-h-[3rem] rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-2 text-sm text-[var(--nim-text)] outline-none focus:border-[var(--nim-primary)] resize-y"
+                value={editDraft}
+                onChange={(e) => setEditDraft(e.target.value)}
+                autoFocus
+                rows={Math.min(12, Math.max(2, editDraft.split('\n').length + 1))}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    if (editDraft.trim()) submitMessageEdit(message.rawMessageId!, index);
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelMessageEdit();
+                  }
+                }}
+              />
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  onClick={cancelMessageEdit}
+                  className="px-2.5 py-1 rounded-md text-xs bg-transparent border border-[var(--nim-border)] text-[var(--nim-text-muted)] cursor-pointer hover:bg-[var(--nim-bg-secondary)]"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => submitMessageEdit(message.rawMessageId!, index)}
+                  disabled={!editDraft.trim()}
+                  className="rich-transcript-edit-save px-2.5 py-1 rounded-md text-xs bg-[var(--nim-primary)] border-none text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Save &amp; rewind
+                </button>
+              </div>
+            </div>
+          ) : (
+            <MessageSegment
+              message={message}
+              isUser={isUser}
+              isCollapsed={isCollapsed}
+              showToolCalls={false}
+              showThinking={settings.showThinking}
+              expandedTools={expandedTools}
+              onToggleToolExpand={toggleToolExpand}
+              documentContext={documentContext}
+              shouldShowLoginWidget={shouldShowLoginWidgetForIndex(index)}
+              sessionId={sessionId}
+              isLastMessage={index === messages.length - 1}
+              onOpenFile={onOpenFile}
+              onOpenSession={onOpenSession}
+              onCompact={onCompact}
+              provider={provider}
+            />
+          )}
         </div>
 
         {/* Show elapsed time at the end of a completed assistant turn */}

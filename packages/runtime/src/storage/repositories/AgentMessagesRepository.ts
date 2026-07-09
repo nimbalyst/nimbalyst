@@ -11,6 +11,23 @@ export interface AgentMessagesStore {
   list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]>;
   /** Get message counts for multiple sessions in a single query */
   getMessageCounts?(sessionIds: string[]): Promise<Map<string, number>>;
+  /** Get a single raw message by its id, scoped to the session. Null if absent. */
+  getMessageById?(sessionId: string, messageId: number): Promise<AgentMessage | null>;
+  /** Id of the most recent user-input message (`message_kind = 'user'`), or null. */
+  getLastUserMessageId?(sessionId: string): Promise<number | null>;
+  /**
+   * Edit/rewind truncation primitive: delete every raw message with `id > afterId`
+   * for the session. The `ai_tool_call_file_edits.message_id` FK cascade removes
+   * matching file-edit links and the FTS delete trigger clears the search mirror.
+   * Returns the deleted raw ids (ascending) so callers can clean up dependents.
+   */
+  deleteMessagesAfter?(sessionId: string, afterId: number): Promise<{ deletedIds: number[] }>;
+  /**
+   * Overwrite a message's `content` and `searchable_text` in place (used when a
+   * user edits a previously-sent message). The FTS update trigger reindexes the
+   * row. Does NOT touch `message_kind` (an edited user message stays 'user').
+   */
+  updateMessageContent?(sessionId: string, messageId: number, content: string, searchableText: string | null): Promise<void>;
 }
 
 let storeInstance: AgentMessagesStore | null = null;
@@ -73,5 +90,44 @@ export const AgentMessagesRepository = {
       counts.set(sessionId, messages.length);
     }
     return counts;
+  },
+
+  async getMessageById(sessionId: string, messageId: number): Promise<AgentMessage | null> {
+    const store = requireStore();
+    if (store.getMessageById) {
+      return await store.getMessageById(sessionId, messageId);
+    }
+    // Fallback for stores without a targeted lookup.
+    const messages = await store.list(sessionId, { includeHidden: true });
+    return messages.find((m) => m.id === messageId) ?? null;
+  },
+
+  async getLastUserMessageId(sessionId: string): Promise<number | null> {
+    const store = requireStore();
+    if (!store.getLastUserMessageId) {
+      throw new Error('Agent messages store does not support getLastUserMessageId');
+    }
+    return await store.getLastUserMessageId(sessionId);
+  },
+
+  async deleteMessagesAfter(sessionId: string, afterId: number): Promise<{ deletedIds: number[] }> {
+    const store = requireStore();
+    if (!store.deleteMessagesAfter) {
+      throw new Error('Agent messages store does not support deleteMessagesAfter');
+    }
+    return await store.deleteMessagesAfter(sessionId, afterId);
+  },
+
+  async updateMessageContent(
+    sessionId: string,
+    messageId: number,
+    content: string,
+    searchableText: string | null,
+  ): Promise<void> {
+    const store = requireStore();
+    if (!store.updateMessageContent) {
+      throw new Error('Agent messages store does not support updateMessageContent');
+    }
+    await store.updateMessageContent(sessionId, messageId, content, searchableText);
   },
 };

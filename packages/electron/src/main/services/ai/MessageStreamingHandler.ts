@@ -132,6 +132,8 @@ interface AIServiceInternal {
   processingQueuedPromptIds: Set<string>;
   matchDebounceTimers: Map<string, ReturnType<typeof setTimeout>>;
   sessionsProcessingQueue: Set<string>;
+  /** One-shot per-session context prefix staged by a rewind, consumed on next send. */
+  pendingRewindContext: Map<string, string>;
   documentContextService: DocumentContextService;
   hooklessWatcher: HooklessAgentFileWatcher;
 
@@ -1222,7 +1224,19 @@ export class MessageStreamingHandler {
 
       // Attach @ mentioned files for non-agent providers
       const { enhancedMessage, attachedFiles } = await attachMentionedFiles(message, workspacePath, provider);
-      const messageToSend = enhancedMessage;
+      let messageToSend = enhancedMessage;
+
+      // Edit/rewind context replay: a rewind reset this agent provider's session,
+      // so it has no memory of the earlier conversation. Prepend the one-shot
+      // reconstructed prefix to the provider-bound message ONLY -- the user
+      // message logged above stays clean so the prefix never shows in the UI.
+      // Chat providers replay their full message array each turn and skip this.
+      const rewindPrefix = this.svc.pendingRewindContext.get(session.id);
+      if (rewindPrefix && isAgentProvider(session.provider)) {
+        messageToSend = `${rewindPrefix}${messageToSend}`;
+        this.svc.pendingRewindContext.delete(session.id);
+        logger.main.info(`[AIService] Injected rewind context prefix (${rewindPrefix.length} chars) for session ${session.id}`);
+      }
 
       if (attachedFiles.length > 0) {
         logger.main.info(`[AIService] Attached ${attachedFiles.length} files via @ mentions`, {

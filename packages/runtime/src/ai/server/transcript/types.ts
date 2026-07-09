@@ -27,6 +27,13 @@ export type TranscriptEventType =
 export interface UserMessagePayload {
   mode: 'agent' | 'planning' | 'auto';
   inputType: 'user' | 'system_message';
+  /**
+   * Raw `ai_agent_messages.id` this user_message was projected from. Threaded
+   * through so the UI can target the exact raw row for edit/rewind (the
+   * canonical event `id` is an in-memory sequence, NOT the raw row id). Absent
+   * on old in-memory events until the session is reparsed.
+   */
+  rawMessageId?: number;
   attachments?: Array<{
     id: string;
     filename: string;

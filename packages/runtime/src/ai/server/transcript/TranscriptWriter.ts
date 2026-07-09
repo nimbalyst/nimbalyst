@@ -55,11 +55,13 @@ export class TranscriptWriter {
       inputType?: 'user' | 'system_message';
       attachments?: UserMessagePayload['attachments'];
       createdAt?: Date;
+      rawMessageId?: number;
     },
   ): Promise<TranscriptEvent> {
     const payload: UserMessagePayload = {
       mode: options?.mode ?? 'agent',
       inputType: options?.inputType ?? 'user',
+      ...(options?.rawMessageId != null ? { rawMessageId: options.rawMessageId } : {}),
       ...(options?.attachments ? { attachments: options.attachments } : {}),
     };
 
