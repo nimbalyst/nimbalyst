@@ -64,7 +64,7 @@
     "@nimbalyst/extension-datamodellm": "*",
     "@nimbalyst/mockuplm": "*",
     "@nimbalyst/runtime": "*",
-    "@openai/codex-sdk": "^0.136.0",
+    "@openai/codex-sdk": "^0.142.5",
     "@types/glob": "^8.1.0",
     "@types/js-yaml": "^4.0.9",
     "@types/marked": "^5.0.2",
