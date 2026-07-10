@@ -12,6 +12,7 @@ import { getDatabase } from '../database/initialize';
 import {
   categorizeDownloadDuration,
   classifyUpdateError,
+  isUpdateVersionNewer,
   isWindowsRenameLockError,
 } from './autoUpdaterUtils';
 import { installAtomFeedFilter } from './electronUpdaterPatch';
@@ -47,6 +48,7 @@ export class AutoUpdaterService {
   private pendingUpdateInfo: { version: string; releaseNotes?: string; releaseDate?: string } | null = null;
   private downloadStartTime: number | null = null; // Track download start time for duration analytics
   private downloadRetryAttempted = false; // Windows EPERM rename retry guard (one retry per user-initiated download)
+  private readonly canInstallUpdates: boolean;
   // Dedup `update_error` analytics: the hourly background check produces a
   // fresh `error` event every poll on networks that can't reach the update
   // endpoint, which buries any real signal. Only emit when the
@@ -58,11 +60,20 @@ export class AutoUpdaterService {
     log.transports.file.level = 'info';
     autoUpdater.logger = log;
 
+    this.canInstallUpdates = this.detectCanInstallUpdates();
+
     // Configure auto-updater. autoDownload=true: both background polls and the
     // manual "Check for Updates" trigger download immediately, then surface a
     // single "Ready to install" toast. Per maintainer direction on #327.
-    autoUpdater.autoDownload = true;
+    //
+    // Local unpacked builds intentionally have no app-update.yml, so keep those
+    // check-only: they should notify about newer official releases but not try
+    // to download/install into the side-by-side dev/Yogi tree.
+    autoUpdater.autoDownload = this.canInstallUpdates;
     autoUpdater.autoInstallOnAppQuit = true;
+    if (!this.canInstallUpdates) {
+      log.info('[autoUpdater] Running in update check-only mode; app-update.yml is not available');
+    }
 
     // Configure feed URL based on release channel
     this.configureFeedURL();
@@ -88,6 +99,18 @@ export class AutoUpdaterService {
       autoUpdater.channel = 'latest';
       autoUpdater.setFeedURL(GITHUB_UPDATE_PROVIDER);
     }
+
+    // electron-updater's `channel` setter implicitly flips allowDowngrade=true.
+    // Nimbalyst channels are not a request to downgrade an ahead-of-stable local
+    // build, so reset this explicitly after every channel assignment.
+    autoUpdater.allowDowngrade = false;
+  }
+
+  private detectCanInstallUpdates(): boolean {
+    if (!app.isPackaged) {
+      return false;
+    }
+    return fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'));
   }
 
   private setupEventHandlers() {
@@ -101,7 +124,20 @@ export class AutoUpdaterService {
       log.info('Update available:', info);
       this.isCheckingForUpdate = false;
       this.lastUpdateErrorKey = null;
+      const wasManualCheck = this.isManualCheck;
       this.isManualCheck = false;
+      const currentVersion = app.getVersion();
+
+      if (!isUpdateVersionNewer(info.version, currentVersion)) {
+        log.warn(
+          `[autoUpdater] Ignoring non-newer update ${info.version}; current version is ${currentVersion}`
+        );
+        if (wasManualCheck) {
+          this.sendToFrontmostWindow('update-toast:up-to-date');
+        }
+        this.sendToAllWindows('update-not-available', info);
+        return;
+      }
 
       let releaseNotes = info.releaseNotes as string | undefined;
       const channel = getReleaseChannel();
@@ -116,11 +152,18 @@ export class AutoUpdaterService {
         releaseDate: info.releaseDate
       };
 
-      // With autoDownload=true the download starts immediately. Per maintainer
-      // direction on #327 we no longer surface an "Update Available" toast - the
-      // download runs in the background and only the "Ready to install" toast
-      // (update-downloaded) is shown. The update-available event is still
-      // broadcast so renderer state stays in sync.
+      // With autoDownload=true the download starts immediately, but still show
+      // the existing "Update Available" toast so users know a new version was
+      // found before the download either progresses or finishes.
+      this.sendToFrontmostWindow('update-toast:show-available', {
+        currentVersion,
+        newVersion: info.version,
+        releaseNotes: releaseNotes || '',
+        releaseDate: info.releaseDate,
+        releaseChannel: channel,
+        isManualCheck: wasManualCheck,
+      });
+
       this.sendToAllWindows('update-available', info);
     });
 
@@ -435,6 +478,13 @@ export class AutoUpdaterService {
     safeOn('update-toast:download', async () => {
       try {
         log.info('Update toast: Starting download...');
+        if (!this.canInstallUpdates) {
+          const version = this.pendingUpdateInfo?.version || 'the latest version';
+          this.sendToFrontmostWindow('update-toast:error', {
+            message: `Nimbalyst ${version} is available, but this unpacked build cannot install updates directly. Rebuild the Yogi app from the new official source.`
+          });
+          return;
+        }
 
         // Track download started (user action tracking is done in renderer)
         this.downloadStartTime = Date.now();

@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest';
 // Electron app global. CI caught this on the first push - prior to the
 // extraction, this test file was the only failed file across 229 passing
 // tests. See #245.
-import { classifyUpdateError } from '../autoUpdaterUtils';
+import { classifyUpdateError, compareAppVersions, isUpdateVersionNewer } from '../autoUpdaterUtils';
 
 // Regression coverage for nimbalyst#245. adambhenry reported the auto-update
 // flow failing on macOS arm64 with "The command is disabled and cannot be
@@ -108,5 +108,22 @@ describe('classifyUpdateError (issue #245)', () => {
     // reorder does not silently change behaviour.
     const err = new Error('Network timeout - command is disabled');
     expect(classifyUpdateError(err)).toBe('network');
+  });
+});
+
+describe('update version ordering', () => {
+  it('does not treat an older stable release as an available update', () => {
+    expect(isUpdateVersionNewer('0.65.4', '0.66.5')).toBe(false);
+  });
+
+  it('treats newer releases as available updates', () => {
+    expect(isUpdateVersionNewer('0.66.6', '0.66.5')).toBe(true);
+    expect(isUpdateVersionNewer('v0.67.0', '0.66.5')).toBe(true);
+  });
+
+  it('compares semver-like build strings by major, minor, and patch', () => {
+    expect(compareAppVersions('1.0.0', '0.99.99')).toBe(1);
+    expect(compareAppVersions('0.66.5+dev.20260628', '0.66.5')).toBe(0);
+    expect(compareAppVersions('0.66.4', '0.66.5')).toBe(-1);
   });
 });
