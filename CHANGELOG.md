@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 <!-- New features go here -->
 - OpenCode presets now include GLM 5.2 through the Z.AI and Z.AI Coding Plan providers.
+- GPT-5.6 is available in the OpenAI and Codex model pickers and is now the default OpenAI model.
 
 ### Changed
 - Any extension can now enable a native-code backend module, approved once via a single consent prompt instead of an allowlist or a per-workspace dialog.
@@ -19,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Bug fixes go here -->
 - Bundled Codex runtime updated to 0.142.5 so the Codex Chrome plugin can start in Nimbalyst with the current Codex plugin protocol.
 - Editing a markdown file with em dashes or curly quotes no longer corrupts the text into `â` symbols or traps it in a reload loop.
+- File links to paths with spaces (e.g. `My Project`) now stay clickable in chat instead of breaking at the first space.
 
 ### Removed
 <!-- Removed features go here -->

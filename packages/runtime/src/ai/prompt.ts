@@ -236,7 +236,7 @@ Consider which diagram type best suits the data you want to convey.
 
 ## File References
 
-When you mention a specific file in your chat replies, write it as a markdown link so the user can click it open: \`[relativeName](/absolute/path/to/file.ext)\`. Use the file's absolute path as the link target. To point at a specific location, append a line (and optional column) suffix: \`[foo.ts:42](/abs/path/foo.ts:42)\`. Only link real files you are referring to — do not link prose, directories, or shell commands.`;
+When you mention a specific file in your chat replies, write it as a markdown link so the user can click it open: \`[relativeName](/absolute/path/to/file.ext)\`. Use the file's absolute path as the link target. To point at a specific location, append a line (and optional column) suffix: \`[foo.ts:42](/abs/path/foo.ts:42)\`. If the path contains spaces, percent-encode them as \`%20\` (e.g. \`[design.md](/D:/My%20Project/design.md)\`) so the link target isn't truncated at the first space. Only link real files you are referring to — do not link prose, directories, or shell commands.`;
 
   // Tracker guidance only makes sense when the workspace has tracker tools.
   if (trackersEnabled) {

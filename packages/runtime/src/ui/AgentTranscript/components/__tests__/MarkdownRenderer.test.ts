@@ -23,6 +23,20 @@ describe('resolveTranscriptFilePathFromHref', () => {
     );
   });
 
+  it('decodes percent-encoded spaces in a plain unix path (NIM-964)', () => {
+    // `encodeMarkdownLinkPath` produces this form; the href react-markdown
+    // hands back must decode to the real on-disk path with a space.
+    expect(resolveTranscriptFilePathFromHref('/Users/test/My%20Project/design.md')).toBe(
+      '/Users/test/My Project/design.md'
+    );
+  });
+
+  it('decodes percent-encoded spaces and parens in a Windows drive path (NIM-964)', () => {
+    expect(
+      resolveTranscriptFilePathFromHref('/D:/Program%20Files%20%28x86%29/App/notes%20file.md')
+    ).toBe('D:/Program Files (x86)/App/notes file.md');
+  });
+
   it('returns null for external web links', () => {
     expect(resolveTranscriptFilePathFromHref('https://nimbalyst.com/docs')).toBeNull();
   });

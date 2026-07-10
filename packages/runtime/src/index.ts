@@ -134,6 +134,7 @@ export * from './ui/icons/fileIcons';
 // Utils
 export * from './utils/clipboard';
 export * from './utils/dateUtils';
+export * from './utils/markdownLink';
 export * from './utils/fuzzyMatch';
 export * from './utils/documentDiff';
 export * from './utils/localAssetUrl';

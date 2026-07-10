@@ -3,7 +3,7 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import { GenericTypeahead, TypeaheadOption } from '../Typeahead/GenericTypeahead';
 import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type SlashTypeaheadScope, TriggerMatch } from '../Typeahead/typeaheadUtils';
 import { buildSlashCommandOptions, fetchSlashCommandEntries, type SlashCommandEntry } from '../Typeahead/slashCommandAutocomplete';
-import { readClipboard, type ChatAttachment } from '@nimbalyst/runtime';
+import { readClipboard, encodeMarkdownLinkPath, type ChatAttachment } from '@nimbalyst/runtime';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
 import type { EffortLevel } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
@@ -1104,7 +1104,10 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         // Claude Code, etc.) can resolve it unambiguously on the first try.
         // Bare `@workspace-relative` paths caused Codex to guess sibling
         // directories before finding cwd-relative files.
-        const mention = `[${displayName}](${absolutePath})`;
+        // Encode the destination so paths with spaces/parens (e.g. Windows
+        // `My Project` or `Program Files (x86)`) don't truncate the markdown
+        // link at the first space (GH #693 / NIM-964).
+        const mention = `[${displayName}](${encodeMarkdownLinkPath(absolutePath)})`;
         // Insert at cursor position, or append with space separator
         const textarea = textareaRef.current;
         const cursorPos = textarea?.selectionStart ?? value.length;
