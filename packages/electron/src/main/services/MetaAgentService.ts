@@ -16,7 +16,6 @@ import { getDatabase } from '../database/initialize';
 import { gitRefWatcher } from '../file/GitRefWatcher';
 import { AIService } from './ai/AIService';
 import { setMetaAgentToolFns } from '../mcp/metaAgentServer';
-import { notificationService } from './NotificationService';
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 
@@ -963,6 +962,7 @@ export class MetaAgentService {
     }
 
     const boundedBody = body.length > 1000 ? `${body.slice(0, 997)}...` : body;
+    const { notificationService } = await import('./NotificationService');
     const result = await notificationService.showNotificationWithResult({
       title: title.length > 120 ? `${title.slice(0, 117)}...` : title,
       body: boundedBody,
