@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Android release tags now publish the release APK and AAB to GitHub Releases.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

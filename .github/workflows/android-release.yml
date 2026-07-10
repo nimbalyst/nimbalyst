@@ -1,0 +1,78 @@
+# Android Release
+#
+# Publishes the Android release APK and AAB to a GitHub Release whenever a
+# release tag created by scripts/android-release.sh (`android/vX.Y.Z`) is
+# pushed. The build itself is delegated to android-build.yml as a reusable
+# workflow, so this file and android-build.yml never drift apart on build
+# steps -- this only adds the "attach the artifacts to a Release" step.
+#
+# Deliberately triggered on tags only, with no `paths` filter: a release tag
+# push is a deliberate, infrequent, maintainer-only action, so there's no CI
+# minutes to save by filtering it, and `paths` filters are unreliable for
+# newly-created tag refs.
+
+name: Android Release
+
+on:
+  push:
+    tags:
+      - 'android/v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/android-build.yml
+    secrets: inherit
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-artifacts
+
+      - name: Extract version and release notes
+        id: notes
+        run: |
+          # Tag is `android/vX.Y.Z` -- strip the `android/v` prefix.
+          VERSION="${GITHUB_REF_NAME#android/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Pull the matching `## [X.Y.Z]` section out of ANDROID_CHANGELOG.md.
+          # String equality (not regex) so literal dots in the version don't
+          # act as wildcards.
+          awk -v header="## [$VERSION]" '
+            $0 == header { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' ANDROID_CHANGELOG.md > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            echo "Android release notes for $VERSION." > release-notes.md
+          fi
+
+          echo "=== Release notes ==="
+          cat release-notes.md
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Android v${{ steps.notes.outputs.version }}
+          body_path: release-notes.md
+          files: |
+            release-artifacts/android-release-apk/*.apk
+            release-artifacts/android-release-aab/*.aab
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
