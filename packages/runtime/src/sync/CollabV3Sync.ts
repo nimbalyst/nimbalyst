@@ -853,6 +853,8 @@ interface CachedSessionIndex {
   isExecuting?: boolean;
   /** Decrypted queued prompts (stored locally after decryption) */
   queuedPrompts?: PlaintextQueuedPrompt[];
+  /** Durable queue size, including explicit zero when prompt payloads are omitted. */
+  queuedPromptCount?: number;
   /** Current context usage (from /context command for Claude Code) */
   currentContext?: {
     tokens: number;
@@ -1188,6 +1190,26 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // Key: sessionId, Value: partial metadata to merge when session is cached
   const pendingMetadataUpdates = new Map<string, Partial<SyncedSessionMetadata>>();
 
+  async function attachQueuedPromptsToIndexEntry(
+    indexEntry: SessionIndexEntry,
+    queuedPrompts: PlaintextQueuedPrompt[] | undefined,
+    queuedPromptCount: number | undefined
+  ): Promise<void> {
+    const resolvedCount = queuedPrompts?.length ?? queuedPromptCount;
+    if (resolvedCount !== undefined) {
+      indexEntry.queuedPromptCount = resolvedCount;
+    }
+    if (queuedPrompts === undefined) return;
+    if (queuedPrompts.length === 0) {
+      indexEntry.encryptedQueuedPrompts = [];
+      return;
+    }
+    if (!config.encryptionKey) {
+      throw new Error('[CollabV3] Cannot send queued prompts: no encryption key available');
+    }
+    indexEntry.encryptedQueuedPrompts = await encryptQueuedPrompts(queuedPrompts, config.encryptionKey);
+  }
+
   async function sendIndexUpdate(baseEntry: CachedSessionIndex): Promise<void> {
     if (!indexWs || !config.encryptionKey) {
       console.error('[CollabV3] Cannot send session update: index socket or encryption key missing');
@@ -1225,6 +1247,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       indexEntry.titleIv = titleIv;
     }
 
+    await attachQueuedPromptsToIndexEntry(
+      indexEntry,
+      baseEntry.queuedPrompts,
+      baseEntry.queuedPromptCount,
+    );
+
     const clientMeta = buildClientMetadataFromCacheEntry(baseEntry);
     if (clientMeta) {
       const { encryptedClientMetadata, clientMetadataIv } = await encryptClientMetadata(clientMeta, config.encryptionKey);
@@ -1232,7 +1260,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       indexEntry.clientMetadataIv = clientMetadataIv;
     }
 
-    sessionIndexCache.set(baseEntry.sessionId, baseEntry);
+    sessionIndexCache.set(baseEntry.sessionId, {
+      ...baseEntry,
+      queuedPromptCount: baseEntry.queuedPrompts?.length ?? baseEntry.queuedPromptCount,
+    });
     const indexMsg: ClientMessage = { type: 'indexUpdate', session: indexEntry };
     indexWs.send(JSON.stringify(indexMsg));
   }
@@ -1299,6 +1330,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       updatedAt: pending.updatedAt ?? cached.updatedAt,
       pendingExecution: 'pendingExecution' in pending ? pending.pendingExecution : cached.pendingExecution,
       isExecuting: 'isExecuting' in pending ? pending.isExecuting : cached.isExecuting,
+      queuedPrompts: 'queuedPrompts' in pending ? pending.queuedPrompts : cached.queuedPrompts,
+      queuedPromptCount: 'queuedPrompts' in pending
+        ? pending.queuedPrompts?.length ?? 0
+        : cached.queuedPromptCount,
       currentContext: 'currentContext' in pending ? pending.currentContext : cached.currentContext,
       hasPendingPrompt: 'hasPendingPrompt' in pending ? pending.hasPendingPrompt : cached.hasPendingPrompt,
       phase: 'phase' in pending ? (pending as any).phase : cached.phase,
@@ -1702,8 +1737,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         console.error('[CollabV3] Failed to decrypt queued prompts:', err);
         // Can't decrypt - don't update queued prompts
       }
+    } else if (Array.isArray(broadcast.metadata.encryptedQueuedPrompts)) {
+      metadata.queuedPrompts = [];
     }
-    // If no encryptedQueuedPrompts field, don't update queued prompts
+    // If no encryptedQueuedPrompts field, don't update queued prompts.
 
     // console.log('[CollabV3] Notifying', session.changeListeners.size, 'change listeners with queuedPrompts:', metadata.queuedPrompts?.length ?? 0);
 
@@ -1924,6 +1961,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                       // Non-fatal: queued prompts are transient, just skip
                       console.warn(`[CollabV3] Failed to decrypt queued prompts for session ${entry.sessionId}, skipping`);
                     }
+                  } else if (
+                    entry.queuedPromptCount === 0 ||
+                    Array.isArray(entry.encryptedQueuedPrompts)
+                  ) {
+                    queuedPrompts = [];
                   }
 
                   // Decrypt client metadata (context usage, pending prompt state, phase, tags, draft, etc.)
@@ -2005,6 +2047,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                     pendingExecution: decrypted.pendingExecution,
                     isExecuting: decrypted.isExecuting,
                     queuedPrompts: decrypted.queuedPrompts,
+                    queuedPromptCount: decrypted.queuedPromptCount,
                     currentContext: decrypted.currentContext,
                     phase,
                     tags,
@@ -2133,6 +2176,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               updatedAt: entry.updatedAt,
               pendingExecution: entry.pendingExecution,
               isExecuting: entry.isExecuting,
+              queuedPromptCount: entry.queuedPromptCount,
               hasPendingPrompt: entry.hasPendingPrompt,
               lastReadAt: entry.lastReadAt,
             };
@@ -2176,6 +2220,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               } catch (err) {
                 console.error('[CollabV3] Failed to decrypt index entry queued prompts:', err);
               }
+            } else if (
+              entry.queuedPromptCount === 0 ||
+              Array.isArray(entry.encryptedQueuedPrompts)
+            ) {
+              decryptedEntry.queuedPrompts = [];
             } else {
               // console.log('[CollabV3] DEBUG no encrypted prompts to decrypt:', {
               //   hasEncryptedPrompts: !!entry.encryptedQueuedPrompts,
@@ -2792,6 +2841,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       const cachedIsExecuting = pending?.isExecuting ?? existingCache?.isExecuting;
       const cachedHasPendingPrompt = pending?.hasPendingPrompt ?? existingCache?.hasPendingPrompt;
       const cachedLastReadAt = pending?.lastReadAt ?? existingCache?.lastReadAt;
+      const cachedQueuedPrompts = pending && 'queuedPrompts' in pending
+        ? pending.queuedPrompts
+        : existingCache?.queuedPrompts;
+      const cachedQueuedPromptCount = cachedQueuedPrompts?.length ?? existingCache?.queuedPromptCount;
 
       const entry: SessionIndexEntry = {
         sessionId: session.id,
@@ -2809,6 +2862,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
         isExecuting: cachedIsExecuting,
+        queuedPromptCount: cachedQueuedPromptCount,
         lastReadAt: cachedLastReadAt,
       };
 
@@ -2818,6 +2872,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         entry.encryptedTitle = encryptedTitle;
         entry.titleIv = titleIv;
       }
+
+      await attachQueuedPromptsToIndexEntry(entry, cachedQueuedPrompts, cachedQueuedPromptCount);
 
       // Encrypt client metadata (context usage, pending prompt state, etc.)
       const rawClientMeta = buildClientMetadataFromRaw(session.metadata, {
@@ -2875,6 +2931,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         updatedAt: session.updatedAt,
         currentContext: clientMeta?.currentContext,
         isExecuting: cachedIsExecuting,
+        queuedPrompts: cachedQueuedPrompts,
+        queuedPromptCount: cachedQueuedPromptCount,
         hasPendingPrompt: cachedHasPendingPrompt,
         phase: clientMeta?.phase,
         tags: clientMeta?.tags,
@@ -3196,7 +3254,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               }
               metadata.encryptedQueuedPrompts = await encryptQueuedPrompts(change.metadata.queuedPrompts, config.encryptionKey);
             } else {
-              metadata.encryptedQueuedPrompts = undefined;
+              metadata.encryptedQueuedPrompts = [];
             }
           }
           // Encrypt client metadata (context usage, pending prompt state, phase, tags, draft, etc.)
@@ -3298,6 +3356,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               updatedAt: updatedAt ?? cached.updatedAt,
               pendingExecution: 'pendingExecution' in meta ? meta.pendingExecution : cached.pendingExecution,
               isExecuting: 'isExecuting' in meta ? meta.isExecuting : cached.isExecuting,
+              queuedPrompts: 'queuedPrompts' in meta ? meta.queuedPrompts : cached.queuedPrompts,
+              queuedPromptCount: 'queuedPrompts' in meta
+                ? meta.queuedPrompts?.length ?? 0
+                : cached.queuedPromptCount,
               currentContext: 'currentContext' in meta ? meta.currentContext : cached.currentContext,
               hasPendingPrompt: 'hasPendingPrompt' in meta ? meta.hasPendingPrompt : cached.hasPendingPrompt,
               phase: 'phase' in meta ? (meta as any).phase : cached.phase,
@@ -3340,6 +3402,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               updatedAt: now,
               pendingExecution: meta.pendingExecution,
               isExecuting: meta.isExecuting,
+              queuedPrompts: meta.queuedPrompts,
+              queuedPromptCount: meta.queuedPrompts?.length,
               currentContext: meta.currentContext,
               hasPendingPrompt: meta.hasPendingPrompt,
               phase: (meta as any).phase,
@@ -3364,6 +3428,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               'worktreeId' in meta ||
               'isArchived' in meta ||
               'isPinned' in meta ||
+              'queuedPrompts' in meta ||
               'currentContext' in meta ||
               'hasPendingPrompt' in meta ||
               'phase' in meta ||
@@ -3384,6 +3449,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               if ('worktreeId' in meta) existing.worktreeId = (meta as any).worktreeId;
               if ('isArchived' in meta) existing.isArchived = meta.isArchived;
               if ('isPinned' in meta) existing.isPinned = (meta as any).isPinned;
+              if ('queuedPrompts' in meta) existing.queuedPrompts = meta.queuedPrompts;
               if ('currentContext' in meta) existing.currentContext = meta.currentContext;
               if ('hasPendingPrompt' in meta) existing.hasPendingPrompt = meta.hasPendingPrompt;
               if ('phase' in meta) (existing as any).phase = (meta as any).phase;
