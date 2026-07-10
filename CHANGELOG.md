@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - MCP servers disabled in Settings no longer load in Claude Code (SDK) sessions; the disable toggle now governs both the CLI and SDK paths.
+- Group by directory now groups session-edited files correctly on Windows.
 
 ### Removed
 <!-- Removed features go here -->
