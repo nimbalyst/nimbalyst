@@ -345,6 +345,7 @@ test('surfaces delegated child sessions through the meta-agent MCP tools', async
   const toolNames = await listMcpTools(metaAgentClient);
   expect(toolNames.length).toBeGreaterThan(0);
   expect(toolNames).toContain('list_queued_prompts');
+  expect(toolNames).toContain('notify_user');
 
   const created = await createChildSessionWithMetaAgent('Investigate parser edge cases');
   await insertUserPrompt(page, created.sessionId, 'Investigate parser edge cases');

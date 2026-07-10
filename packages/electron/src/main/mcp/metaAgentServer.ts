@@ -77,6 +77,15 @@ type ListQueuedPromptsArgs = {
   includePromptText?: boolean;
 };
 
+type NotifyUserArgs = {
+  title: string;
+  body: string;
+  sessionId?: string;
+  bypassFocusCheck?: boolean;
+  silent?: boolean;
+  urgency?: "normal" | "critical" | "low";
+};
+
 interface MetaAgentToolFns {
   listWorktrees: (
     metaSessionId: string,
@@ -114,6 +123,11 @@ interface MetaAgentToolFns {
     workspaceId: string,
     targetSessionId: string,
     prompt: string
+  ) => Promise<string>;
+  notifyUser: (
+    metaSessionId: string,
+    workspaceId: string,
+    args: NotifyUserArgs
   ) => Promise<string>;
   respondToPrompt: (
     metaSessionId: string,
@@ -335,6 +349,44 @@ export const META_AGENT_TOOL_DEFS: Array<{
     },
   },
   {
+    name: "notify_user",
+    description:
+      "Show a local OS/system notification to get the human's attention. Use this for explicitly authorized asynchronous attention signals when chat may be missed. This is separate from voice mode; it respects the user's OS notification setting and returns JSON explaining whether the notification was shown or skipped.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Required short notification title.",
+        },
+        body: {
+          type: "string",
+          description: "Required notification body. Keep it concise and action-oriented.",
+        },
+        sessionId: {
+          type: "string",
+          description:
+            "Optional session to open when the user clicks the notification. Defaults to the calling session.",
+        },
+        bypassFocusCheck: {
+          type: "boolean",
+          description:
+            "Optional. If true, bypass in-app focus/session-visible suppression while still respecting the OS notification setting. Use only when the user asked agents to get their attention.",
+        },
+        silent: {
+          type: "boolean",
+          description: "Optional. If true, request a silent OS notification.",
+        },
+        urgency: {
+          type: "string",
+          enum: ["normal", "critical", "low"],
+          description: "Optional OS urgency hint. Defaults to normal.",
+        },
+      },
+      required: ["title", "body"],
+    },
+  },
+  {
     name: "respond_to_prompt",
     description:
       "Answer a child session's interactive prompt such as AskUserQuestion, ExitPlanMode, or ToolPermission.",
@@ -402,6 +454,7 @@ const EXTENSION_META_AGENT_ALLOWED_TOOLS = new Set<string>([
   "get_session_result",
   "list_queued_prompts",
   "send_prompt",
+  "notify_user",
   "respond_to_prompt",
   "list_spawned_sessions",
 ]);
@@ -482,6 +535,8 @@ export async function dispatchMetaAgentTool(
         (args?.sessionId as string) ?? "",
         (args?.prompt as string) ?? ""
       );
+    case "notify_user":
+      return toolFns.notifyUser(aiSessionId, effectiveWorkspaceId, (args ?? {}) as NotifyUserArgs);
     case "respond_to_prompt":
       return toolFns.respondToPrompt(aiSessionId, effectiveWorkspaceId, (args ?? {}) as RespondToPromptArgs);
     case "list_spawned_sessions":

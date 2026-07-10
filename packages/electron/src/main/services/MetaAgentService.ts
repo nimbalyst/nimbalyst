@@ -16,6 +16,7 @@ import { getDatabase } from '../database/initialize';
 import { gitRefWatcher } from '../file/GitRefWatcher';
 import { AIService } from './ai/AIService';
 import { setMetaAgentToolFns } from '../mcp/metaAgentServer';
+import { notificationService } from './NotificationService';
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 
@@ -112,6 +113,15 @@ interface SpawnSessionArgs {
   isolated?: boolean;
 }
 
+interface NotifyUserArgs {
+  title?: string;
+  body?: string;
+  sessionId?: string;
+  bypassFocusCheck?: boolean;
+  silent?: boolean;
+  urgency?: 'normal' | 'critical' | 'low';
+}
+
 export class MetaAgentService {
   private static instance: MetaAgentService | null = null;
   private starting: Promise<void> | null = null;
@@ -185,6 +195,8 @@ export class MetaAgentService {
           this.listQueuedPromptsJson(targetSessionId, workspaceId, options),
         sendPrompt: (_metaSessionId, workspaceId, targetSessionId, prompt) =>
           this.sendPromptToSession(targetSessionId, workspaceId, prompt),
+        notifyUser: (callerSessionId, workspaceId, args) =>
+          this.notifyUserJson(callerSessionId, workspaceId, args),
         respondToPrompt: (_metaSessionId, workspaceId, args) =>
           this.respondToPrompt(workspaceId, args),
         listSpawnedSessions: (metaSessionId, workspaceId) =>
@@ -927,6 +939,48 @@ export class MetaAgentService {
       prompt: queued.prompt,
       statusBeforeQueue: status,
       processingTriggered,
+    }, null, 2);
+  }
+
+  private async notifyUserJson(
+    callerSessionId: string,
+    workspaceId: string,
+    args: NotifyUserArgs
+  ): Promise<string> {
+    const title = args.title?.trim();
+    const body = args.body?.trim();
+    if (!title) {
+      throw new Error('title is required');
+    }
+    if (!body) {
+      throw new Error('body is required');
+    }
+
+    const targetSessionId = args.sessionId?.trim() || callerSessionId;
+    const session = await AISessionsRepository.get(targetSessionId);
+    if (!session || session.workspacePath !== workspaceId) {
+      throw new Error(`Session ${targetSessionId} not found`);
+    }
+
+    const boundedBody = body.length > 1000 ? `${body.slice(0, 997)}...` : body;
+    const result = await notificationService.showNotificationWithResult({
+      title: title.length > 120 ? `${title.slice(0, 117)}...` : title,
+      body: boundedBody,
+      sessionId: targetSessionId,
+      workspacePath: session.workspacePath,
+      provider: 'agent',
+      bypassFocusCheck: args.bypassFocusCheck === true,
+      silent: args.silent === true,
+      urgency: args.urgency || 'normal',
+    });
+
+    return JSON.stringify({
+      tool: 'notify_user',
+      deliveryChannel: 'os_notification',
+      mobilePushAttempted: false,
+      sessionId: targetSessionId,
+      bypassFocusCheck: args.bypassFocusCheck === true,
+      result,
     }, null, 2);
   }
 
