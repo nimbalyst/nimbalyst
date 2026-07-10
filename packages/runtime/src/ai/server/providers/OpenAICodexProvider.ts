@@ -1397,10 +1397,20 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       respondedBy,
       timestamp: Date.now(),
     });
+    this.logAskUserQuestionResultBestEffort({
+      sessionId: sessionId ?? pending.sessionId,
+      questionId,
+      answers,
+      respondedBy,
+    });
     return true;
   }
 
-  public rejectAskUserQuestion(questionId: string, _error: Error): void {
+  public rejectAskUserQuestion(
+    questionId: string,
+    _error: Error,
+    respondedBy: 'desktop' | 'mobile' = 'desktop'
+  ): void {
     const pending = this.pendingAskUserQuestions.get(questionId);
     if (!pending) {
       return;
@@ -1413,8 +1423,44 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       questions: pending.questions,
       answers: {},
       cancelled: true,
+      respondedBy,
       timestamp: Date.now(),
     });
+    this.logAskUserQuestionResultBestEffort({
+      sessionId: pending.sessionId,
+      questionId,
+      answers: {},
+      cancelled: true,
+      respondedBy,
+    });
+  }
+
+  private logAskUserQuestionResultBestEffort(args: {
+    sessionId?: string;
+    questionId: string;
+    answers: Record<string, string>;
+    cancelled?: boolean;
+    respondedBy?: 'desktop' | 'mobile';
+  }): void {
+    if (!args.sessionId || args.sessionId === 'unknown') {
+      return;
+    }
+
+    void this.logAgentMessageBestEffort(
+      args.sessionId,
+      'output',
+      JSON.stringify({
+        type: 'nimbalyst_tool_result',
+        tool_use_id: args.questionId,
+        result: JSON.stringify({
+          answers: args.cancelled ? {} : args.answers,
+          cancelled: args.cancelled === true,
+          respondedAt: Date.now(),
+          ...(args.respondedBy ? { respondedBy: args.respondedBy } : {}),
+        }),
+        is_error: args.cancelled === true,
+      })
+    );
   }
 
   private handleAskUserQuestionToolCall(

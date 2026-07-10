@@ -756,6 +756,103 @@ describe('TranscriptTransformer', () => {
       expect(parsedResult.commitHash).toBe('abc1234');
     });
 
+    it('completes one Codex app-server tool across synthetic and native resume batches', async () => {
+      const rawToolUseId = 'call_question_incremental';
+      const started = makeRawMessage({
+        id: 1,
+        sessionId: SESSION_ID,
+        source: 'openai-codex',
+        direction: 'output',
+        metadata: { transport: 'app-server', eventType: 'item/started' },
+        content: JSON.stringify({
+          method: 'item/started',
+          params: {
+            turnId: 'turn-question',
+            item: {
+              id: rawToolUseId,
+              type: 'mcpToolCall',
+              status: 'in_progress',
+              server: 'nimbalyst',
+              tool: 'AskUserQuestion',
+              arguments: { questions: [{ question: 'Commit everything?' }] },
+            },
+          },
+        }),
+      });
+
+      await new TranscriptTransformer(
+        createMockRawStore([started]),
+        transcriptStore,
+        metadataStore,
+      ).processNewMessages(SESSION_ID, 'openai-codex');
+
+      const afterStart = await transcriptStore.getSessionEvents(SESSION_ID);
+      expect(afterStart).toHaveLength(1);
+      const providerToolCallId = afterStart[0].providerToolCallId as string;
+      expect(providerToolCallId).toMatch(/^nimtc\|call_question_incremental\|/);
+
+      const syntheticResult = makeRawMessage({
+        id: 2,
+        sessionId: SESSION_ID,
+        source: 'openai-codex',
+        direction: 'output',
+        content: JSON.stringify({
+          type: 'nimbalyst_tool_result',
+          tool_use_id: rawToolUseId,
+          result: JSON.stringify({ answers: { Scope: 'Everything' }, respondedBy: 'mobile' }),
+          is_error: false,
+        }),
+      });
+
+      await new TranscriptTransformer(
+        createMockRawStore([started, syntheticResult]),
+        transcriptStore,
+        metadataStore,
+      ).processNewMessages(SESSION_ID, 'openai-codex');
+
+      const afterSyntheticResult = await transcriptStore.getSessionEvents(SESSION_ID);
+      expect(afterSyntheticResult).toHaveLength(1);
+      expect((afterSyntheticResult[0].payload as any).status).toBe('completed');
+
+      const nativeCompletion = makeRawMessage({
+        id: 3,
+        sessionId: SESSION_ID,
+        source: 'openai-codex',
+        direction: 'output',
+        metadata: {
+          transport: 'app-server',
+          eventType: 'item/completed',
+          editGroupId: providerToolCallId,
+        },
+        content: JSON.stringify({
+          method: 'item/completed',
+          params: {
+            turnId: 'turn-question',
+            item: {
+              id: rawToolUseId,
+              type: 'mcpToolCall',
+              status: 'completed',
+              server: 'nimbalyst',
+              tool: 'AskUserQuestion',
+              arguments: { questions: [{ question: 'Commit everything?' }] },
+              result: { answers: { Scope: 'Everything' } },
+            },
+          },
+        }),
+      });
+
+      await new TranscriptTransformer(
+        createMockRawStore([started, syntheticResult, nativeCompletion]),
+        transcriptStore,
+        metadataStore,
+      ).processNewMessages(SESSION_ID, 'openai-codex');
+
+      const finalEvents = await transcriptStore.getSessionEvents(SESSION_ID);
+      expect(finalEvents).toHaveLength(1);
+      expect(finalEvents[0].providerToolCallId).toBe(providerToolCallId);
+      expect((finalEvents[0].payload as any).status).toBe('completed');
+    });
+
     it('transforms system messages', async () => {
       const rawStore = createMockRawStore([
         makeRawMessage({

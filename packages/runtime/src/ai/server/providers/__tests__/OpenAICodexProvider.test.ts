@@ -39,6 +39,71 @@ describe('OpenAICodexProvider', () => {
     OpenAICodexProvider.setSecurityLogger(() => {});
   });
 
+  describe('AskUserQuestion completion persistence', () => {
+    function providerWithPendingQuestion(questionId: string, sessionId: string) {
+      const provider = new OpenAICodexProvider({ apiKey: 'test-key' });
+      (provider as any).pendingAskUserQuestions.set(questionId, {
+        sessionId,
+        questions: [{ header: 'Scope', question: 'Commit everything?', options: [] }],
+      });
+      return provider;
+    }
+
+    it('persists answered questions with their response source', async () => {
+      const provider = providerWithPendingQuestion('call_answer', 'session-answer');
+      const logSpy = vi.spyOn(provider as any, 'logAgentMessageBestEffort').mockResolvedValue(undefined);
+
+      expect(provider.resolveAskUserQuestion(
+        'call_answer',
+        { Scope: 'Everything' },
+        'session-answer',
+        'mobile',
+      )).toBe(true);
+
+      await vi.waitFor(() => expect(logSpy).toHaveBeenCalledTimes(1));
+      expect(logSpy).toHaveBeenCalledWith(
+        'session-answer',
+        'output',
+        expect.any(String),
+      );
+      const content = JSON.parse(logSpy.mock.calls[0][2] as string);
+      expect(content).toMatchObject({
+        type: 'nimbalyst_tool_result',
+        tool_use_id: 'call_answer',
+        is_error: false,
+      });
+      expect(JSON.parse(content.result)).toMatchObject({
+        answers: { Scope: 'Everything' },
+        cancelled: false,
+        respondedBy: 'mobile',
+      });
+    });
+
+    it('persists cancelled questions with their response source', async () => {
+      const provider = providerWithPendingQuestion('call_cancel', 'session-cancel');
+      const logSpy = vi.spyOn(provider as any, 'logAgentMessageBestEffort').mockResolvedValue(undefined);
+
+      provider.rejectAskUserQuestion(
+        'call_cancel',
+        new Error('cancelled'),
+        'mobile',
+      );
+
+      await vi.waitFor(() => expect(logSpy).toHaveBeenCalledTimes(1));
+      const content = JSON.parse(logSpy.mock.calls[0][2] as string);
+      expect(content).toMatchObject({
+        type: 'nimbalyst_tool_result',
+        tool_use_id: 'call_cancel',
+        is_error: true,
+      });
+      expect(JSON.parse(content.result)).toMatchObject({
+        answers: {},
+        cancelled: true,
+        respondedBy: 'mobile',
+      });
+    });
+  });
+
   it('updates currentTodos for app-server todoList raw events', async () => {
     const updateMetadata = vi.fn(async () => {});
     AISessionsRepository.setStore({

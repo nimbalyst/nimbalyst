@@ -301,6 +301,63 @@ describe('projectRawMessagesToViewMessages', () => {
       const toolCall = vms.find(m => m.type === 'tool_call');
       expect(toolCall?.toolCall?.toolName).toBe('mcp__nimbalyst-mcp__developer_git_log');
     });
+
+    it('projects synthetic AskUserQuestion result rows onto app-server tool calls', async () => {
+      const messages: RawMessage[] = [
+        raw({
+          id: 1,
+          source: 'openai-codex',
+          metadata: { transport: 'app-server', eventType: 'item/started' },
+          content: JSON.stringify({
+            method: 'item/started',
+            params: {
+              turnId: 'turn-ask',
+              item: {
+                id: 'call_question_123',
+                type: 'mcpToolCall',
+                status: 'in_progress',
+                server: 'nimbalyst',
+                tool: 'AskUserQuestion',
+                arguments: {
+                  questions: [
+                    {
+                      header: 'COMMIT SCOPE',
+                      question: 'Which changes should be committed?',
+                      options: [{ label: 'Everything' }],
+                    },
+                  ],
+                },
+              },
+            },
+          }),
+        }),
+        raw({
+          id: 2,
+          source: 'claude-code',
+          content: JSON.stringify({
+            type: 'nimbalyst_tool_result',
+            tool_use_id: 'call_question_123',
+            result: JSON.stringify({
+              answers: { commit_scope: 'Everything' },
+              cancelled: false,
+              respondedBy: 'mobile',
+            }),
+            is_error: false,
+          }),
+        }),
+      ];
+
+      const vms = await projectRawMessagesToViewMessages(messages, 'openai-codex');
+
+      const toolCall = vms.find(m => m.type === 'tool_call');
+      expect(toolCall?.toolCall?.toolName).toBe('mcp__nimbalyst__AskUserQuestion');
+      expect(toolCall?.toolCall?.providerToolCallId).toMatch(/^nimtc\|call_question_123\|/);
+      expect(toolCall?.toolCall?.status).toBe('completed');
+      expect(JSON.parse(toolCall?.toolCall?.result as string)).toMatchObject({
+        answers: { commit_scope: 'Everything' },
+        respondedBy: 'mobile',
+      });
+    });
   });
 
   describe('Codex ACP provider', () => {
