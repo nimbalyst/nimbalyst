@@ -39,7 +39,11 @@ export interface AskUserQuestionProvider {
   /**
    * Reject a pending AskUserQuestion request (e.g., on cancel/abort)
    */
-  rejectAskUserQuestion(questionId: string, error: Error): void;
+  rejectAskUserQuestion(
+    questionId: string,
+    error: Error,
+    respondedBy?: 'desktop' | 'mobile'
+  ): void;
 }
 
 /**

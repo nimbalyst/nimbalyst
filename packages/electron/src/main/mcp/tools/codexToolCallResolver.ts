@@ -13,6 +13,12 @@ export interface RequestUserInputPromptTargets {
   waiterPromptIds: string[];
 }
 
+export interface AskUserQuestionPromptTargets {
+  questionId: string;
+  rawQuestionId?: string;
+  waiterQuestionIds: string[];
+}
+
 export function extractCodexTurnMetadataFromRequest(request: unknown): CodexTurnMetadata | null {
   if (!request || typeof request !== "object") return null;
 
@@ -153,5 +159,18 @@ export function resolveRequestUserInputPromptTargets(
     promptId,
     ...(rawPromptId ? { rawPromptId } : {}),
     waiterPromptIds,
+  };
+}
+
+export function resolveAskUserQuestionPromptTargets(
+  questionId: string,
+): AskUserQuestionPromptTargets {
+  const waiterQuestionIds = getCodexToolLookupAliases(questionId);
+  const rawQuestionId = waiterQuestionIds.find((id) => id !== questionId);
+
+  return {
+    questionId,
+    ...(rawQuestionId ? { rawQuestionId } : {}),
+    waiterQuestionIds,
   };
 }

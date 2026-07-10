@@ -5,6 +5,7 @@ import {
   extractCodexTurnMetadataFromRequest,
   extractToolUseIdFromMcpRequest,
   findCodexAppServerToolCallId,
+  resolveAskUserQuestionPromptTargets,
   resolveRequestUserInputPromptTargets,
   resolveToolUseIdFromMcpRequest,
 } from "../tools/codexToolCallResolver";
@@ -93,6 +94,21 @@ describe("codexToolCallResolver", () => {
       promptId: "nimtc|call_test|1779232811883|72",
       rawPromptId: "call_test",
       waiterPromptIds: ["nimtc|call_test|1779232811883|72", "call_test"],
+    });
+  });
+
+  it("expands synthetic AskUserQuestion ids into waiter aliases", () => {
+    expect(resolveAskUserQuestionPromptTargets("nimtc|call_question|1779232811883|73")).toEqual({
+      questionId: "nimtc|call_question|1779232811883|73",
+      rawQuestionId: "call_question",
+      waiterQuestionIds: ["nimtc|call_question|1779232811883|73", "call_question"],
+    });
+  });
+
+  it("keeps raw AskUserQuestion ids unchanged", () => {
+    expect(resolveAskUserQuestionPromptTargets("call_question")).toEqual({
+      questionId: "call_question",
+      waiterQuestionIds: ["call_question"],
     });
   });
 });

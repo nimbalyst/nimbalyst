@@ -7,12 +7,15 @@
  */
 
 import type { SyncProvider, SessionControlMessage } from '@nimbalyst/runtime/sync';
-import { ProviderFactory } from '@nimbalyst/runtime/ai/server';
-import type { BrowserWindow } from 'electron';
+import { ProviderFactory, isAskUserQuestionProvider } from '@nimbalyst/runtime/ai/server';
+import { AgentMessagesRepository, AISessionsRepository, type PermissionScope } from '@nimbalyst/runtime';
+import { ipcMain, type BrowserWindow } from 'electron';
 import { logger } from '../../utils/logger';
-import type { PermissionScope } from '@nimbalyst/runtime';
 import { TrayManager } from '../../tray/TrayManager';
-import { resolveRequestUserInputPromptTargets } from '../../mcp/tools/codexToolCallResolver';
+import {
+  resolveAskUserQuestionPromptTargets,
+  resolveRequestUserInputPromptTargets,
+} from '../../mcp/tools/codexToolCallResolver';
 import {
   getGitCommitProposalResponseChannel,
   resolveGitCommitProposalPromptId,
@@ -152,7 +155,7 @@ function handleControlMessage(
     // Legacy handler - kept for backwards compatibility with older mobile versions
     case 'question_response': {
       const payload = message.payload as unknown as QuestionResponsePayload;
-      handleAskUserQuestionResponse(
+      void handleAskUserQuestionResponse(
         message.sessionId,
         payload.questionId,
         payload.answers,
@@ -242,7 +245,7 @@ function handlePromptResponse(
   switch (payload.promptType) {
     case 'ask_user_question': {
       const response = payload.response as AskUserQuestionResponse;
-      handleAskUserQuestionResponse(
+      void handleAskUserQuestionResponse(
         sessionId,
         payload.promptId,
         response.answers,
@@ -458,91 +461,113 @@ async function handleArchive(sessionId: string, isArchived: boolean): Promise<vo
 /**
  * Handle AskUserQuestion response from mobile
  */
-function handleAskUserQuestionResponse(
+async function handleAskUserQuestionResponse(
   sessionId: string,
   questionId: string,
   answers: Record<string, string>,
   cancelled: boolean,
   _findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined
-): void {
+): Promise<void> {
   log.info(`[Mobile] AskUserQuestion response: questionId=${questionId}, sessionId=${sessionId}, cancelled=${cancelled}`);
 
   let providerResolved = false;
-  const provider = ProviderFactory.getProvider('claude-code', sessionId);
+  const { waiterQuestionIds, rawQuestionId } = resolveAskUserQuestionPromptTargets(questionId);
+  let provider: ReturnType<typeof ProviderFactory.getProvider> | null = null;
+  let providerType: Parameters<typeof ProviderFactory.getProvider>[0] = 'claude-code';
 
-  if (provider) {
-    if (cancelled) {
-      if ('rejectAskUserQuestion' in provider) {
-        (provider as { rejectAskUserQuestion: (questionId: string, error: Error) => void })
-          .rejectAskUserQuestion(questionId, new Error('Question cancelled from mobile'));
-        providerResolved = true;
-      }
-    } else {
-      if ('resolveAskUserQuestion' in provider) {
-        providerResolved = (provider as { resolveAskUserQuestion: (questionId: string, answers: Record<string, string>, sessionId: string, source: string) => boolean })
-          .resolveAskUserQuestion(questionId, answers, sessionId, 'mobile');
-      }
+  try {
+    const session = await AISessionsRepository.get(sessionId);
+    providerType = (session?.provider as Parameters<typeof ProviderFactory.getProvider>[0]) || providerType;
+    provider = ProviderFactory.getProvider(providerType, sessionId);
+    if (!provider) {
+      log.warn(`[Mobile] No provider found for session: ${sessionId} provider=${providerType}`);
     }
-  } else {
-    log.warn('[Mobile] No provider found for session:', sessionId);
+  } catch (error) {
+    log.warn(`[Mobile] Failed to resolve session provider for AskUserQuestion response: ${error}`);
+    provider = ProviderFactory.getProvider('claude-code', sessionId);
   }
 
-  // When AskUserQuestion comes through MCP, the provider's pendingAskUserQuestions map
-  // is empty, so resolveAskUserQuestion returns false. Fall back to IPC emission +
-  // database write so the MCP server's IPC listeners or database polling can resolve it.
-  if (!providerResolved) {
-    const { ipcMain } = require('electron');
+  if (provider && isAskUserQuestionProvider(provider)) {
+    if (cancelled) {
+      if ('rejectAskUserQuestion' in provider) {
+        for (const waiterQuestionId of waiterQuestionIds) {
+          provider.rejectAskUserQuestion(
+            waiterQuestionId,
+            new Error('Question cancelled from mobile'),
+            'mobile',
+          );
+        }
+      }
+    } else {
+      for (const waiterQuestionId of waiterQuestionIds) {
+        providerResolved = provider.resolveAskUserQuestion(waiterQuestionId, answers, sessionId, 'mobile');
+        if (providerResolved) break;
+      }
+    }
+  }
 
-    // Try MCP-specific IPC channel
-    const mcpChannel = `ask-user-question-response:${sessionId}:${questionId}`;
-    const hasMcpWaiter = ipcMain.listenerCount(mcpChannel) > 0;
-    if (hasMcpWaiter) {
+  // Provider state and MCP delivery are independent. A provider can consume
+  // the response while the MCP-backed tool call is still waiting on IPC.
+  let hasMcpWaiter = false;
+  let notifiedWaiter = false;
+  for (const waiterQuestionId of waiterQuestionIds) {
+    const mcpChannel = `ask-user-question-response:${sessionId}:${waiterQuestionId}`;
+    if (ipcMain.listenerCount(mcpChannel) > 0) {
+      hasMcpWaiter = true;
+      notifiedWaiter = true;
       log.info(`[Mobile] Emitting on MCP channel: ${mcpChannel}`);
       ipcMain.emit(mcpChannel, {}, {
         questionId,
+        ...(rawQuestionId ? { rawQuestionId } : {}),
         answers: cancelled ? {} : answers,
         cancelled,
         respondedBy: 'mobile',
         sessionId,
       });
     }
-
-    // Try session fallback IPC channel
-    const fallbackChannel = `ask-user-question:${sessionId}`;
-    const hasFallbackWaiter = ipcMain.listenerCount(fallbackChannel) > 0;
-    if (hasFallbackWaiter) {
-      log.info(`[Mobile] Emitting on session fallback channel: ${fallbackChannel}`);
-      ipcMain.emit(fallbackChannel, {}, {
-        questionId,
-        answers: cancelled ? {} : answers,
-        cancelled,
-        respondedBy: 'mobile',
-        sessionId,
-      });
-    }
-
-    // Database fallback: write response so MCP server's database polling can find it
-    import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository').then(({ AgentMessagesRepository }) => {
-      AgentMessagesRepository.create({
-        sessionId,
-        source: 'claude-code',
-        direction: 'output' as const,
-        createdAt: new Date(),
-        content: JSON.stringify({
-          type: 'ask_user_question_response',
-          questionId,
-          answers: cancelled ? {} : answers,
-          cancelled,
-          respondedBy: 'mobile',
-          respondedAt: Date.now()
-        })
-      }).catch(err => {
-        log.warn(`[Mobile] Failed to persist AskUserQuestion response to database: ${err}`);
-      });
-    });
-
-    log.info(`[Mobile] AskUserQuestion fallback resolution: hasMcpWaiter=${hasMcpWaiter}, hasFallbackWaiter=${hasFallbackWaiter}`);
   }
+
+  const fallbackChannel = `ask-user-question:${sessionId}`;
+  const hasFallbackWaiter = !notifiedWaiter && ipcMain.listenerCount(fallbackChannel) > 0;
+  if (hasFallbackWaiter) {
+    notifiedWaiter = true;
+    log.info(`[Mobile] Emitting on session fallback channel: ${fallbackChannel}`);
+    ipcMain.emit(fallbackChannel, {}, {
+      questionId,
+      ...(rawQuestionId ? { rawQuestionId } : {}),
+      answers: cancelled ? {} : answers,
+      cancelled,
+      respondedBy: 'mobile',
+      sessionId,
+    });
+  }
+
+  // Persist independently of provider/IPC delivery. If the response races
+  // waiter registration, database polling remains able to recover it.
+  try {
+    await AgentMessagesRepository.create({
+      sessionId,
+      source: providerType,
+      direction: 'output',
+      createdAt: new Date(),
+      content: JSON.stringify({
+        type: 'ask_user_question_response',
+        questionId,
+        ...(rawQuestionId ? { rawQuestionId } : {}),
+        answers: cancelled ? {} : answers,
+        cancelled,
+        respondedBy: 'mobile',
+        respondedAt: Date.now()
+      })
+    });
+  } catch (err) {
+    log.warn(`[Mobile] Failed to persist AskUserQuestion response to database: ${err}`);
+  }
+
+  log.info(
+    `[Mobile] AskUserQuestion resolution: providerResolved=${providerResolved}, ` +
+    `hasMcpWaiter=${hasMcpWaiter}, hasFallbackWaiter=${hasFallbackWaiter}, notifiedWaiter=${notifiedWaiter}`
+  );
 
   // Notify renderer to clear the pending question UI
   notifyAllWindows('ai:askUserQuestionAnswered', {
@@ -552,6 +577,7 @@ function handleAskUserQuestionResponse(
     answeredBy: 'mobile',
     cancelled,
   });
+  TrayManager.getInstance().onPromptResolved(sessionId);
 }
 
 /**
