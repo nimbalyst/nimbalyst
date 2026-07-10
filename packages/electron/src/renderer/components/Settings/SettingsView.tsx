@@ -378,6 +378,14 @@ export function SettingsView({
     'claude-code',
     'claude',
     'openai',
+    'ollama',
+    'anythingllm',
+    'openrouter',
+    'featherless-official',
+    'featherless-sane',
+    'featherless',
+    'featherless-heretic',
+    'featherless-keyword',
     'openai-codex',
     'opencode',
     'copilot-cli',
@@ -387,6 +395,14 @@ export function SettingsView({
     'claude-code',
     'claude',
     'openai',
+    'ollama',
+    'anythingllm',
+    'openrouter',
+    'featherless-official',
+    'featherless-sane',
+    'featherless',
+    'featherless-heretic',
+    'featherless-keyword',
     'openai-codex',
     'opencode',
     'copilot-cli',
@@ -408,6 +424,8 @@ export function SettingsView({
     'mcp-servers',
     'tools-mcp',
   ];
+  const openAICompatibleProviderDescription = 'here be dragons, a house of dragons';
+  const openAICompatibleBaseUrlPlaceholder = 'https://example.com/v1';
 
   // When initialCategory/initialScope props change, update state (for deep linking)
   useEffect(() => {
@@ -880,6 +898,94 @@ export function SettingsView({
         );
       case 'openai':
         return wrapWithOverride('openai', 'OpenAI', <OpenAIPanel {...commonProps} />);
+      case 'ollama':
+        return wrapWithOverride('ollama', 'Ollama', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Ollama"
+            providerDescription="Local Ollama models through its OpenAI-compatible endpoint."
+            apiKeyName="ollama"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder="http://127.0.0.1:11434/v1"
+          />
+        ));
+      case 'anythingllm':
+        return wrapWithOverride('anythingllm', 'AnythingLLM', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="AnythingLLM"
+            providerDescription="Local AnythingLLM models through its OpenAI-compatible endpoint."
+            apiKeyName="anythingllm"
+            apiKeyPlaceholder="AnythingLLM API key"
+            baseUrlPlaceholder="http://127.0.0.1:3001/api/v1/openai"
+          />
+        ));
+      case 'openrouter':
+        return wrapWithOverride('openrouter', 'OpenRouter Free', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="OpenRouter Free"
+            providerDescription={openAICompatibleProviderDescription}
+            apiKeyName="openrouter"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
+          />
+        ));
+      case 'featherless':
+        return wrapWithOverride('featherless', 'Featherless Full', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Featherless Full"
+            providerDescription={openAICompatibleProviderDescription}
+            apiKeyName="featherless"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
+          />
+        ));
+      case 'featherless-official':
+        return wrapWithOverride('featherless-official', 'Featherless Official', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Featherless Official"
+            providerDescription={openAICompatibleProviderDescription}
+            apiKeyName="featherless-official"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
+          />
+        ));
+      case 'featherless-sane':
+        return wrapWithOverride('featherless-sane', 'Featherless Sane', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Featherless Sane"
+            providerDescription={openAICompatibleProviderDescription}
+            apiKeyName="featherless-sane"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
+          />
+        ));
+      case 'featherless-heretic':
+        return wrapWithOverride('featherless-heretic', 'Featherless Heretic', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Featherless Heretic"
+            providerDescription={openAICompatibleProviderDescription}
+            apiKeyName="featherless-heretic"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
+          />
+        ));
+      case 'featherless-keyword':
+        return wrapWithOverride('featherless-keyword', 'Featherless Keyword', (
+          <OpenAIPanel
+            {...commonProps}
+            providerName="Featherless Keyword"
+            providerDescription={openAICompatibleProviderDescription}
+            apiKeyName="featherless-keyword"
+            apiKeyPlaceholder="Any dummy value"
+            baseUrlPlaceholder={openAICompatibleBaseUrlPlaceholder}
+          />
+        ));
       case 'openai-codex':
         return wrapWithOverride('openai-codex', 'OpenAI Codex', <OpenAICodexPanel {...commonProps} />);
       case 'opencode':

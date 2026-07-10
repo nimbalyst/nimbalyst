@@ -27,6 +27,7 @@ import {
 import {
   type Message,
   type AIProviderType,
+  isOpenAICompatibleProvider,
   type SessionData,
   type ToolHandler,
   type ToolResult,
@@ -36,6 +37,11 @@ import {
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import {
+  DUMMY_OPENAI_COMPATIBLE_API_KEY,
+  getConfiguredLMStudioBaseUrl,
+  getConfiguredOpenAICompatibleBaseUrl,
+} from './lmStudioConfig';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
@@ -489,6 +495,13 @@ export class MessageStreamingHandler {
           case 'openai':
             errorMessage = 'OpenAI API key not configured';
             break;
+          case 'openrouter':
+          case 'featherless':
+          case 'featherless-official':
+          case 'featherless-sane':
+          case 'featherless-heretic':
+          case 'featherless-keyword':
+            break;
           case 'openai-codex':
             // Codex SDK uses its own auth (codex auth login), API key is optional
             requiresApiKey = false;
@@ -561,8 +574,12 @@ export class MessageStreamingHandler {
 
       // Add baseUrl for LMStudio
       if (session.provider === 'lmstudio') {
-        const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
-        reinitConfig.baseUrl = providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234';
+        reinitConfig.baseUrl = getConfiguredLMStudioBaseUrl(this.svc.getSettingsStore());
+      } else if (isOpenAICompatibleProvider(session.provider)) {
+        reinitConfig.baseUrl = getConfiguredOpenAICompatibleBaseUrl(this.svc.getSettingsStore(), session.provider);
+        reinitConfig.modelFilterRegex =
+          session.providerConfig?.modelFilterRegex
+          || (this.svc.getSettingsStore().get('providerSettings', {}) as Record<string, { modelFilterRegex?: string }>)[session.provider]?.modelFilterRegex;
       }
 
       // Pass model to provider config for all providers including claude-code
@@ -744,7 +761,21 @@ export class MessageStreamingHandler {
     let selectedModelContextWindow: number | undefined;
     const sessionModelId = session.model || session.providerConfig?.model;
     if (sessionModelId) {
-      const models = await ModelRegistry.getModelsForProvider(session.provider as AIProviderType);
+      const models = await ModelRegistry.getModelsForProvider(
+        session.provider as AIProviderType,
+        isOpenAICompatibleProvider(session.provider)
+          ? ((this.svc.getSettingsStore().get('apiKeys', {}) as Record<string, string>)[session.provider] || DUMMY_OPENAI_COMPATIBLE_API_KEY)
+          : undefined,
+        session.provider === 'lmstudio'
+          ? getConfiguredLMStudioBaseUrl(this.svc.getSettingsStore())
+          : isOpenAICompatibleProvider(session.provider)
+            ? getConfiguredOpenAICompatibleBaseUrl(this.svc.getSettingsStore(), session.provider)
+            : undefined,
+        isOpenAICompatibleProvider(session.provider)
+          ? (session.providerConfig?.modelFilterRegex
+            || (this.svc.getSettingsStore().get('providerSettings', {}) as Record<string, { modelFilterRegex?: string }>)[session.provider]?.modelFilterRegex)
+          : undefined,
+      );
       selectedModelContextWindow = models.find(m => m.id === sessionModelId)?.contextWindow;
     }
 

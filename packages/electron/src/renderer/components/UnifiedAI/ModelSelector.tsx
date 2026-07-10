@@ -124,6 +124,14 @@ export function ModelSelector({
       case 'claude':
       case 'claude-code':
       case 'openai':
+      case 'ollama':
+      case 'anythingllm':
+      case 'openrouter':
+      case 'featherless':
+      case 'featherless-official':
+      case 'featherless-sane':
+      case 'featherless-heretic':
+      case 'featherless-keyword':
       case 'openai-codex':
       case 'opencode':
       case 'copilot-cli':
@@ -177,7 +185,15 @@ export function ModelSelector({
       case 'claude-code': return 'Claude Agent (Claude Code Based)';
       case 'claude-code-cli': return 'Claude Code CLI (Subscription)';
       case 'openai': return 'OpenAI';
-      case 'openai-codex': return 'OpenAI Codex';
+      case 'ollama': return 'Ollama';
+      case 'anythingllm': return 'AnythingLLM';
+      case 'openrouter': return 'OpenRouter Free';
+      case 'featherless': return 'Featherless Full';
+      case 'featherless-official': return 'Featherless Official';
+      case 'featherless-sane': return 'Featherless Sane';
+      case 'featherless-heretic': return 'Featherless Heretic';
+      case 'featherless-keyword': return 'Featherless Keyword';
+      case 'openai-codex': return 'OpenAI Codex (ChatGPT OAuth)';
       case 'openai-codex-acp': return 'OpenAI Codex (ACP)';
       case 'opencode': return 'OpenCode';
       case 'copilot-cli': return 'GitHub Copilot';
@@ -207,10 +223,10 @@ export function ModelSelector({
     return getProviderIcon(provider, { size });
   };
 
-  const CHAT_MODEL_PROVIDERS = new Set(['claude', 'openai', 'lmstudio']);
+  const CHAT_MODEL_PROVIDERS = new Set(['claude', 'openai', 'ollama', 'anythingllm', 'openrouter', 'featherless', 'featherless-official', 'featherless-sane', 'featherless-heretic', 'featherless-keyword', 'lmstudio']);
   const getProviderType = (provider: string): ProviderType => {
-    if (isAgentProvider(provider)) return 'agent';
     if (CHAT_MODEL_PROVIDERS.has(provider)) return 'model';
+    if (isAgentProvider(provider)) return 'agent';
     return 'agent';
   };
 

@@ -52,10 +52,10 @@ export function LMStudioPanel({
               <div className="api-key-row flex gap-2 items-center">
                 <input
                   type="text"
-                  value={config.baseUrl || 'http://127.0.0.1:8234'}
+                  value={config.baseUrl || 'http://127.0.0.1:1234'}
                   onChange={(e) => onConfigChange({ baseUrl: e.target.value })}
                   onFocus={(e) => e.target.select()}
-                  placeholder="http://127.0.0.1:8234"
+                  placeholder="http://127.0.0.1:1234"
                   className="api-key-input flex-1 py-2 px-3 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] text-[var(--nim-text)] outline-none font-mono focus:border-[var(--nim-primary)]"
                 />
                 <button
