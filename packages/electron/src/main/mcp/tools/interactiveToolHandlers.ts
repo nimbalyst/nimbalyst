@@ -33,6 +33,7 @@ import {
 import { broadcastMessageLogged } from "../../services/ai/claudeCliUserPromptLog";
 import { ClaudeSettingsManager } from "../../services/ClaudeSettingsManager";
 import { getPermissionService } from "../../services/PermissionService";
+import { findFreshInteractiveResponse } from "./interactiveResponsePolling";
 
 export function getInteractiveToolSchemas(sessionId: string | undefined) {
   if (!sessionId) return [];
@@ -245,6 +246,8 @@ export async function handleAskUserQuestion(
   const questionId =
     await resolveToolUseIdFromMcpRequest(request, sessionId, "AskUserQuestion") ||
     `ask-${sessionId || "unknown"}-${Date.now()}`;
+  const questionIdAliasSet = new Set([questionId]);
+  const responseNotBefore = Date.now();
   const questionResponseChannel = `ask-user-question-response:${sessionId || "unknown"}:${questionId}`;
   const fallbackSessionChannel = `ask-user-question:${sessionId || "unknown"}`;
 
@@ -440,21 +443,21 @@ export async function handleAskUserQuestion(
         }
 
         try {
-          const messages = await AgentMessagesRepository.list(sessionId, { limit: 20 });
-          for (const msg of messages) {
-            try {
-              const content = JSON.parse(msg.content);
-              if (content.type === 'ask_user_question_response' && content.questionId === questionId) {
-                if (content.cancelled) {
-                  settle({ cancelled: true, respondedBy: content.respondedBy }, 'db-poll');
-                } else {
-                  settle({ answers: content.answers, respondedBy: content.respondedBy }, 'db-poll');
-                }
-                return;
-              }
-            } catch {
-              // Not valid JSON, skip
-            }
+          const messages = await AgentMessagesRepository.listTail(sessionId, 50);
+          const content = findFreshInteractiveResponse(messages, {
+            expectedType: "ask_user_question_response",
+            idFields: ["questionId", "rawQuestionId"],
+            acceptedIds: questionIdAliasSet,
+            notBefore: responseNotBefore,
+          });
+          if (!content) return;
+          if (content.cancelled) {
+            settle({ cancelled: true, respondedBy: content.respondedBy as "desktop" | "mobile" | undefined }, 'db-poll');
+          } else {
+            settle({
+              answers: content.answers as Record<string, string> | undefined,
+              respondedBy: content.respondedBy as "desktop" | "mobile" | undefined,
+            }, 'db-poll');
           }
         } catch {
           // Database error, continue polling
@@ -1388,6 +1391,7 @@ export async function handleRequestUserInput(
     `rui-${sessionId || "unknown"}-${Date.now()}`;
   const { waiterPromptIds: promptIdAliases } = resolveRequestUserInputPromptTargets(promptId);
   const promptIdAliasSet = new Set(promptIdAliases);
+  const responseNotBefore = Date.now();
   const responseChannel = getRequestUserInputResponseChannel(sessionId || "unknown", promptId);
   const fallbackResponseChannel = getRequestUserInputFallbackResponseChannel(sessionId || "unknown");
 
@@ -1633,29 +1637,21 @@ export async function handleRequestUserInput(
         }
 
         try {
-          const messages = await AgentMessagesRepository.list(sessionId, { limit: 20 });
-          for (const msg of messages) {
-            try {
-              const content = JSON.parse(msg.content);
-              const responsePromptIds = [
-                typeof content.promptId === "string" ? content.promptId : null,
-                typeof content.rawPromptId === "string" ? content.rawPromptId : null,
-              ].filter((value): value is string => typeof value === "string" && value.length > 0);
-
-              if (
-                content.type === "request_user_input_response"
-                && responsePromptIds.some((id) => promptIdAliasSet.has(id))
-              ) {
-                if (content.cancelled) {
-                  settle({ cancelled: true, respondedBy: content.respondedBy }, "db-poll");
-                } else {
-                  settle({ answers: content.answers, respondedBy: content.respondedBy }, "db-poll");
-                }
-                return;
-              }
-            } catch {
-              // Not valid JSON, skip.
-            }
+          const messages = await AgentMessagesRepository.listTail(sessionId, 50);
+          const content = findFreshInteractiveResponse(messages, {
+            expectedType: "request_user_input_response",
+            idFields: ["promptId", "rawPromptId"],
+            acceptedIds: promptIdAliasSet,
+            notBefore: responseNotBefore,
+          });
+          if (!content) return;
+          if (content.cancelled) {
+            settle({ cancelled: true, respondedBy: content.respondedBy as "desktop" | "mobile" | undefined }, "db-poll");
+          } else {
+            settle({
+              answers: content.answers as Record<string, unknown> | undefined,
+              respondedBy: content.respondedBy as "desktop" | "mobile" | undefined,
+            }, "db-poll");
           }
         } catch {
           // Database error, keep polling.

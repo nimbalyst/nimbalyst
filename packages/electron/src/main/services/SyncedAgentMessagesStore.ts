@@ -124,6 +124,16 @@ export function createSyncedAgentMessagesStore(
       return baseStore.list(sessionId, options);
     },
 
+    async listTail(sessionId: string, limit: number, options?: { includeHidden?: boolean }): Promise<AgentMessage[]> {
+      const boundedLimit = Math.max(1, Math.min(limit, 50000));
+      if (baseStore.listTail) {
+        return baseStore.listTail(sessionId, boundedLimit, options);
+      }
+
+      const messages = await baseStore.list(sessionId, { includeHidden: options?.includeHidden });
+      return messages.slice(-boundedLimit);
+    },
+
     async getMessageCounts(sessionIds: string[]): Promise<Map<string, number>> {
       if (baseStore.getMessageCounts) {
         return baseStore.getMessageCounts(sessionIds);
