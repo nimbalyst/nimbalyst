@@ -803,6 +803,18 @@ interface SessionConnection {
   lastActivity: number;
 }
 
+const FATAL_MESSAGE_SYNC_ERROR_CODES = new Set([
+  'message_limit_exceeded',
+  'message_too_large',
+  'storage_limit_exceeded',
+]);
+
+function isFatalMessageSyncErrorCode(code?: string): boolean {
+  return code !== undefined && FATAL_MESSAGE_SYNC_ERROR_CODES.has(code);
+}
+
+export { isFatalMessageSyncErrorCode as isFatalMessageSyncErrorCodeForTest };
+
 // Cache of session index entries for partial update merging
 // This cache stores DECRYPTED values locally
 interface CachedSessionIndex {
@@ -935,6 +947,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   const sessions = new Map<string, SessionConnection>();
   const sessionIndexCache = new Map<string, CachedSessionIndex>();
+  const disabledMessageSyncSessions = new Set<string>();
   /**
    * Session IDs the caller has explicitly asked us to keep connected. Populated
    * on `connect(sessionId)`, cleared on `disconnect(sessionId)`/`disconnectAll`.
@@ -1003,6 +1016,38 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         cb();
       } catch (err) {
         console.error('[CollabV3] indexReady listener threw:', err);
+      }
+    }
+  }
+
+  function isMessageSyncDisabled(sessionId: string): boolean {
+    return disabledMessageSyncSessions.has(sessionId);
+  }
+
+  function disableMessageSync(sessionId: string, code?: string, message?: string): void {
+    const firstDisable = !disabledMessageSyncSessions.has(sessionId);
+    disabledMessageSyncSessions.add(sessionId);
+    if (firstDisable) {
+      console.warn(
+        `[CollabV3] Disabling message sync for ${sessionId} after fatal server rejection` +
+        `${code ? ` (${code})` : ''}${message ? `: ${message}` : ''}`
+      );
+    }
+
+    updateStatus(sessionId, {
+      connected: false,
+      syncing: false,
+      error: message || 'Session reached the server sync limit',
+    });
+    wantedSessions.delete(sessionId);
+
+    const session = sessions.get(sessionId);
+    if (session) {
+      sessions.delete(sessionId);
+      try {
+        session.ws.close();
+      } catch {
+        // The session is already disabled; socket cleanup is best-effort.
       }
     }
   }
@@ -1483,6 +1528,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
         case 'error':
           console.error(`[CollabV3] Server error for ${sessionId}:`, message.code, message.message);
+          if (isFatalMessageSyncErrorCode(message.code)) {
+            disableMessageSync(sessionId, message.code, message.message);
+            break;
+          }
           updateStatus(sessionId, { error: message.message });
           break;
       }
@@ -1497,6 +1546,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   ): Promise<void> {
     const session = sessions.get(sessionId);
     if (!session) return;
+    if (isMessageSyncDisabled(sessionId)) return;
 
     // Update last sequence
     if (response.messages.length > 0) {
@@ -2515,6 +2565,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     messages: AgentMessage[],
     metadata?: { title?: string; provider?: string; model?: string; mode?: string }
   ): Promise<void> {
+    if (isMessageSyncDisabled(sessionId)) return;
     if (!config.encryptionKey) {
       console.error('[CollabV3] Cannot sync messages - no encryption key');
       return;
@@ -2545,6 +2596,14 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
       ws.onopen = async () => {
         try {
+          if (isMessageSyncDisabled(sessionId)) {
+            clearTimeout(timeout);
+            resolved = true;
+            ws.close();
+            resolve();
+            return;
+          }
+
           // First update metadata if provided
           if (metadata) {
             const wireMetadata: Partial<SessionMetadata> = {
@@ -2569,6 +2628,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
           // Send each message
           for (const message of messages) {
+            if (isMessageSyncDisabled(sessionId)) break;
             if (!shouldSyncMessageForSessionRoom(message.source, message.metadata, message.content)) {
               continue;
             }
@@ -2602,6 +2662,24 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
             ? event.message || 'WebSocket error'
             : 'WebSocket connection error';
           reject(new Error(`[CollabV3] ${errorInfo} for session ${sessionId}`));
+        }
+      };
+
+      ws.onmessage = (event) => {
+        if (resolved) return;
+        try {
+          const message: ServerMessage = JSON.parse(
+            typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data)
+          );
+          if (message.type !== 'error' || !isFatalMessageSyncErrorCode(message.code)) return;
+
+          disableMessageSync(sessionId, message.code, message.message);
+          clearTimeout(timeout);
+          resolved = true;
+          ws.close();
+          resolve();
+        } catch {
+          // Non-JSON and unrelated server messages do not affect batch sync.
         }
       };
 
@@ -2843,6 +2921,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // Create provider object
   const provider: SyncProvider = {
     async connect(sessionId: string): Promise<void> {
+      if (isMessageSyncDisabled(sessionId)) return;
       // Track this session as wanted so we re-subscribe after reconnects.
       // Do this before the short-circuit so callers resubscribing an already-connected
       // session (e.g. after the Map got deleted on onclose) still register intent.
@@ -3046,6 +3125,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     },
 
     async pushChange(sessionId: string, change: SessionChange): Promise<void> {
+      if (isMessageSyncDisabled(sessionId) && change.type === 'message_added') return;
       const session = sessions.get(sessionId);
       const sessionConnected = session?.status.connected;
 
