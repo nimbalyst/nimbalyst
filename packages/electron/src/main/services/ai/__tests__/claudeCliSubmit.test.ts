@@ -93,6 +93,37 @@ describe('submitClaudeCliPrompt', () => {
     );
   });
 
+  it('strips PTY-unsafe control bytes (e.g. an embedded ESC sequence) from the prompt before writing', async () => {
+    const h = harness();
+    await submitClaudeCliPrompt(
+      { sessionId: 's1', workspacePath: '/w', prompt: 'do it\x1b[31mnow\x07' },
+      h.deps,
+    );
+    // Non-slash-command prompts are wrapped in bracketed-paste markers so the
+    // CLI treats the write as one paste instead of one per PTY fragment
+    // (unrelated to control-byte stripping, added after this fix was written).
+    expect(h.writes).toEqual([
+      ['s1', '\x1b[200~do it[31mnow\x1b[201~'],
+      ['s1', '\r'],
+    ]);
+    expect(h.logUserPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: 'do it[31mnow' }),
+    );
+  });
+
+  it('keeps tab and embedded newline/carriage-return in the prompt (legitimate whitespace, not PTY-unsafe)', async () => {
+    const h = harness();
+    await submitClaudeCliPrompt(
+      { sessionId: 's1', workspacePath: '/w', prompt: 'line one\nline two\tindented' },
+      h.deps,
+    );
+    // The composer flattens a real newline to a literal '\n' before it ever
+    // reaches the PTY (a genuine newline is Enter to the CLI's readline and
+    // would submit mid-prompt) -- unrelated to control-byte stripping, this
+    // is the composer's own multi-line-prompt safety behavior.
+    expect(h.writes[0]).toEqual(['s1', '\x1b[200~line one\\nline two\tindented\x1b[201~']);
+  });
+
   it('no-ops (no write/log/analytics) when there is nothing to send', async () => {
     const h = harness();
     const res = await submitClaudeCliPrompt({ sessionId: 's1', workspacePath: '/w', prompt: '   ' }, h.deps);
@@ -142,12 +173,35 @@ describe('submitClaudeCliPrompt', () => {
       ]);
     });
 
-    it('does NOT add a menu-dismiss space when the slash command already has args (menu closed by its own space) (NIM-851)', async () => {
+    it('isolates the command name and sends its own menu-dismiss space BEFORE the arguments (NIM-XXXX, corrects NIM-851)', async () => {
+      // A bulk-written "track bug foo" let the autocomplete menu keep
+      // fuzzy-matching the WHOLE trailing text instead of locking onto
+      // "track" at the natural word boundary, so Enter could hijack the
+      // wrong highlighted row -- or land on no match and submit the raw
+      // text as a literal chat message. Fix: always resolve/dismiss the
+      // menu on the bare command name first, then send the argument text.
       const h = harness();
       await submitClaudeCliPrompt({ sessionId: 's1', workspacePath: '/w', prompt: '/track bug foo' }, h.deps);
       expect(h.writes).toEqual([
         ['s1', '/'],
-        ['s1', 'track bug foo'],
+        ['s1', 'track'],
+        ['s1', ' '],
+        ['s1', 'bug foo'],
+        ['s1', '\r'],
+      ]);
+    });
+
+    it('reliably submits "/compact focus on <text>" (the agent-triggered self-compaction case)', async () => {
+      const h = harness();
+      await submitClaudeCliPrompt(
+        { sessionId: 's1', workspacePath: '/w', prompt: '/compact focus on current task state' },
+        h.deps,
+      );
+      expect(h.writes).toEqual([
+        ['s1', '/'],
+        ['s1', 'compact'],
+        ['s1', ' '],
+        ['s1', 'focus on current task state'],
         ['s1', '\r'],
       ]);
     });

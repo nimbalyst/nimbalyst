@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tracker items can now open as full documents with collaborative editing, inline comments, consistent editable field chips (including collection creation), keyboard-driven search and filters, shared-document navigation, a side-by-side AI chat panel, and a visible action to copy shareable reopen links.
 - A new install now starts on the onboarding screen and can open a ready-made tutorial project — documents, data, designs, plans, and finished AI sessions to explore — reachable any time from the project manager or Help > Launch Tutorial.
 - Agent sessions can show an MCP status chip in the header listing which servers the session has, which are connected, and which never reached it at all — off by default, enable it under Settings > Agent Features.
+- Orchestrator sessions can explicitly opt in to reading or updating a session in another already-loaded project via `targetWorkspacePath`, while every session-context and meta-agent tool stays bound to the caller's own workspace by default.
+- Agent sessions can compact a target session's conversation directly via a new `compact_session` tool, reporting whether compaction actually ran instead of relying on a literal `/compact` prompt.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -62,6 +64,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Menus and popups that open over the title bar respond to clicks again on Windows and Linux, including "Open folder…" in the project switcher (#1052).
 - Tracker types defined in one project no longer overwrite another open project's identically-named types (#1035).
 - Codex sessions now reach for Nimbalyst's browser tools instead of dead-ending on the ChatGPT desktop app's in-app browser plugin.
+- Structured agent prompts now retain their actionable state until exactly one answer settles and reliably resume their waiting session.
+- Opening a second Nimbalyst instance no longer disrupts the running app's agent controls.
+- Delegated agent sessions now report their resolved launch model and reasoning settings, accept auditable priority prompts without stale-turn interrupts, and automatically resume ordinary queued prompts after turns, restarts, and interactive replies without overlapping an interrupted priority turn.
+- Expanded workstream rows now show external session renames immediately without reloading the session view.
+- Empty workstreams now remain explicit containers instead of exposing another session's transcript or becoming draggable sessions.
+- Orchestrator sessions can launch isolated worktree agents from their source project into another loaded project and retain status, result, queue, prompt, and reply control.
+- An active content search no longer gets silently reset to zero results by unrelated session activity elsewhere in the workspace.
+- Windows shows the correct app icon in the taskbar and window chrome, checking the packaged `.ico` and current logo asset instead of only a `icon.png` name that no longer matches the packaged asset.
+- A slash command sent with arguments (e.g. `/compact focus on X`) via the agent queue tools now reliably runs instead of sometimes arriving as plain chat text and silently growing context instead of shrinking it.
 
 ### Removed
 <!-- Removed features go here -->
