@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, app, nativeImage, ipcMain, screen, nativeTheme, Menu, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, app, nativeImage, ipcMain, screen, nativeTheme, Menu, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { join, basename } from 'path';
 import { existsSync } from 'fs';
@@ -13,6 +13,7 @@ import { ElectronDocumentService, setupDocumentServiceHandlers } from '../servic
 import { ElectronFileSystemService } from '../services/ElectronFileSystemService';
 import { isWorktreePath, resolveProjectPath } from '../utils/workspaceDetection';
 import { getPreloadPath } from '../utils/appPaths';
+import { createUnresponsiveHandler } from './unresponsiveHandler';
 import {
   setFileSystemService,
   clearFileSystemService,
@@ -588,20 +589,11 @@ export function createWindow(
         });
 
         // Handle unresponsive renderer
-        window.webContents.on('unresponsive', () => {
-            console.warn('[MAIN] Window became unresponsive');
-            const choice = dialog.showMessageBoxSync(window, {
-                type: 'warning',
-                buttons: ['Reload', 'Keep Waiting'],
-                defaultId: 0,
-                message: 'The window is not responding',
-                detail: 'Would you like to reload the window?'
-            });
-
-            if (choice === 0 && !window.isDestroyed()) {
-                window.reload();
-            }
-        });
+        window.webContents.on('unresponsive', createUnresponsiveHandler({
+            message: 'The window is not responding',
+            logLabel: '[MAIN]',
+            getWindow: () => window
+        }));
 
         // Handle responsive again
         window.webContents.on('responsive', () => {

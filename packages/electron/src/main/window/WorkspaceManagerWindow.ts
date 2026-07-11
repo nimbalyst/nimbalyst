@@ -1,6 +1,7 @@
 import { BrowserWindow, dialog, app } from 'electron';
 import { join, basename } from 'path';
 import { getPreloadPath } from '../utils/appPaths';
+import { createUnresponsiveHandler } from './unresponsiveHandler';
 import { existsSync, mkdirSync, statSync } from 'fs';
 import { readdir } from 'fs/promises';
 import { resolveEntryType } from '../utils/FileTree';
@@ -153,20 +154,11 @@ export function createWorkspaceManagerWindow() {
   });
 
   // Handle unresponsive renderer
-  workspaceManagerWindow.webContents.on('unresponsive', () => {
-    console.warn('[WorkspaceManager] Window became unresponsive');
-    const choice = dialog.showMessageBoxSync(workspaceManagerWindow!, {
-      type: 'warning',
-      buttons: ['Reload', 'Keep Waiting'],
-      defaultId: 0,
-      message: 'Project Manager is not responding',
-      detail: 'Would you like to reload the window?'
-    });
-
-    if (choice === 0 && workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
-      workspaceManagerWindow.reload();
-    }
-  });
+  workspaceManagerWindow.webContents.on('unresponsive', createUnresponsiveHandler({
+    message: 'Project Manager is not responding',
+    logLabel: '[WorkspaceManager]',
+    getWindow: () => workspaceManagerWindow
+  }));
 
   // Handle responsive again
   workspaceManagerWindow.webContents.on('responsive', () => {
