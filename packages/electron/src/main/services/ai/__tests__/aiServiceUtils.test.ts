@@ -265,6 +265,10 @@ describe('aiServiceUtils', () => {
       expect(extractModelForProvider('openai-codex:default', 'openai-codex')).toBe('gpt-5.6-sol');
     });
 
+    it('normalizes legacy Codex aliases for ACP sessions', () => {
+      expect(extractModelForProvider('openai-codex-acp:default', 'openai-codex-acp')).toBe('gpt-5.6-sol');
+    });
+
     it('returns the full model unchanged for claude-code', () => {
       expect(extractModelForProvider('claude-code:opus-1m', 'claude-code')).toBe('claude-code:opus-1m');
     });

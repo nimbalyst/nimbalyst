@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAICodexProvider } from '../OpenAICodexProvider';
+import { OpenAICodexACPProvider } from '../OpenAICodexACPProvider';
 import { configureMcpServers } from '../../services/mcpServerConfig';
 import * as codexBinaryPath from '../codex/codexBinaryPath';
 import * as codexSdkLoader from '../codex/codexSdkLoader';
@@ -109,10 +110,34 @@ describe('OpenAICodexProvider', () => {
         provider: 'openai-codex',
       }),
       expect.objectContaining({
-        id: 'openai-codex:gpt-5.3-codex',
+        id: 'openai-codex:gpt-5.4-mini',
         provider: 'openai-codex',
       }),
     ]));
+  });
+
+  it('keeps the static Codex and ACP fallback rosters in parity', async () => {
+    const expectedModelIds = [
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+    ];
+    const codexModels = await OpenAICodexProvider.getModels(undefined, {
+      loadSdkModule: async () => {
+        throw new Error('sdk unavailable');
+      },
+    });
+    const acpModels = await OpenAICodexACPProvider.getModels();
+
+    expect(codexModels.map((model) => model.id)).toEqual(
+      expectedModelIds.map((modelId) => `openai-codex:${modelId}`)
+    );
+    expect(acpModels.map((model) => model.id)).toEqual(
+      expectedModelIds.map((modelId) => `openai-codex-acp:${modelId}`)
+    );
   });
 
   it('normalizes legacy codex default aliases to the GPT-5.6 Sol default', () => {
@@ -121,13 +146,29 @@ describe('OpenAICodexProvider', () => {
     expect(OpenAICodexProvider.normalizeModelSelection('cli')).toBe('openai-codex:gpt-5.6-sol');
   });
 
+  it.each([
+    ['gpt-5', 'gpt-5.6-terra'],
+    ['gpt-5-codex-mini', 'gpt-5.4-mini'],
+    ['gpt-5.2-codex-mini', 'gpt-5.4-mini'],
+    ['gpt-5.2-codex-max', 'gpt-5.6-sol'],
+    ['gpt-5-codex-max', 'gpt-5.6-sol'],
+    ['gpt-5.1-codex', 'gpt-5.4'],
+    ['gpt-5.3-codex-mini', 'gpt-5.4-mini'],
+    ['gpt-5.3-codex-max', 'gpt-5.6-sol'],
+    ['codex-mini-latest', 'gpt-5.4-mini'],
+  ])('repoints retired alias %s to %s', (legacyModelId, canonicalModelId) => {
+    expect(OpenAICodexProvider.normalizeModelSelection(legacyModelId)).toBe(
+      `openai-codex:${canonicalModelId}`
+    );
+  });
+
   it('uses SDK-provided model discovery when available', async () => {
     let codexConstructorOptions: Record<string, unknown> | undefined;
     const listModels = vi.fn(async () => ({
       data: [
         {
-          id: 'gpt-5.2-codex',
-          name: 'GPT-5.2 Codex',
+          id: 'gpt-5.4-mini',
+          name: 'GPT-5.4 Mini',
           contextWindow: 400000,
           maxTokens: 128000,
         },
@@ -167,28 +208,12 @@ describe('OpenAICodexProvider', () => {
         provider: 'openai-codex',
       }),
       expect.objectContaining({
-        id: 'openai-codex:gpt-5.3-codex',
-        provider: 'openai-codex',
-      }),
-      expect.objectContaining({
-        id: 'openai-codex:gpt-5.2-codex',
-        name: 'GPT-5.2 Codex',
-        provider: 'openai-codex',
-      }),
-      expect.objectContaining({
-        id: 'openai-codex:gpt-5.1-codex-max',
-        provider: 'openai-codex',
-      }),
-      expect.objectContaining({
-        id: 'openai-codex:gpt-5.2',
-        provider: 'openai-codex',
-      }),
-      expect.objectContaining({
-        id: 'openai-codex:gpt-5.1-codex-mini',
+        id: 'openai-codex:gpt-5.4-mini',
+        name: 'GPT-5.4 Mini',
         provider: 'openai-codex',
       }),
     ]));
-    expect(models).toHaveLength(10);
+    expect(models).toHaveLength(6);
   });
 
   it('preserves CLI auth when initialized without an API key', async () => {
@@ -1499,7 +1524,7 @@ describe('OpenAICodexProvider', () => {
 
     expect(startThread).toHaveBeenCalledTimes(1);
     const startArgs = (startThread.mock.calls as unknown as [Record<string, unknown>][])[0][0];
-    expect(startArgs.model).toBe('gpt-5.1-codex-mini');
+    expect(startArgs.model).toBe('gpt-5.4-mini');
   });
 
   it('maps removed codex max aliases to supported model ids', async () => {
@@ -1542,7 +1567,7 @@ describe('OpenAICodexProvider', () => {
 
     expect(startThread).toHaveBeenCalledTimes(1);
     const startArgs = (startThread.mock.calls as unknown as [Record<string, unknown>][])[0][0];
-    expect(startArgs.model).toBe('gpt-5.2-codex');
+    expect(startArgs.model).toBe('gpt-5.6-sol');
   });
 
   it('supports direct handleToolCall execution through the shared tool handler', async () => {

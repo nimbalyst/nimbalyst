@@ -101,11 +101,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', contextWindow: 372000, maxTokens: 128000 },
     { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 400000, maxTokens: 128000 },
     { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 128000, maxTokens: 128000 },
-    { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini', contextWindow: 400000, maxTokens: 128000 },
+    { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', contextWindow: 400000, maxTokens: 128000 },
   ];
   private static readonly MODEL_FALLBACK_PRIORITY: ReadonlyArray<string> = [
     'gpt-5.6-sol',
@@ -113,11 +109,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     'gpt-5.6-luna',
     'gpt-5.5',
     'gpt-5.4',
-    'gpt-5.3-codex',
-    'gpt-5.2-codex',
-    'gpt-5.1-codex-max',
-    'gpt-5.1-codex-mini',
-    'gpt-5.2',
+    'gpt-5.4-mini',
   ];
   private static readonly FALLBACK_MODELS_SET = new Set(
     OpenAICodexProvider.FALLBACK_MODELS.map((model) => model.id)
@@ -437,17 +429,17 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     // Codex (ChatGPT-account auth) rejects the bare `gpt-5.6` alias that the
     // OpenAI API accepts; route it to the flagship Sol tier.
     ['gpt-5.6', 'gpt-5.6-sol'],
-    ['gpt-5', 'gpt-5.2'],
+    ['gpt-5', 'gpt-5.6-terra'],
     ['gpt-5-codex', 'gpt-5.4'],
     ['gpt-5.4-codex', 'gpt-5.4'],
-    ['gpt-5-codex-mini', 'gpt-5.1-codex-mini'],
-    ['gpt-5.2-codex-mini', 'gpt-5.2-codex'],
-    ['gpt-5.2-codex-max', 'gpt-5.2-codex'],
-    ['gpt-5-codex-max', 'gpt-5.1-codex-max'],
-    ['gpt-5.1-codex', 'gpt-5.2-codex'],
-    ['gpt-5.3-codex-mini', 'gpt-5.3-codex'],
-    ['gpt-5.3-codex-max', 'gpt-5.3-codex'],
-    ['codex-mini-latest', 'gpt-5.1-codex-mini'],
+    ['gpt-5-codex-mini', 'gpt-5.4-mini'],
+    ['gpt-5.2-codex-mini', 'gpt-5.4-mini'],
+    ['gpt-5.2-codex-max', 'gpt-5.6-sol'],
+    ['gpt-5-codex-max', 'gpt-5.6-sol'],
+    ['gpt-5.1-codex', 'gpt-5.4'],
+    ['gpt-5.3-codex-mini', 'gpt-5.4-mini'],
+    ['gpt-5.3-codex-max', 'gpt-5.6-sol'],
+    ['codex-mini-latest', 'gpt-5.4-mini'],
   ]);
 
   /**
