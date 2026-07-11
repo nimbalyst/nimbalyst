@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 <!-- New features go here -->
 - Orchestrator sessions can explicitly opt in to reading or updating a session in another already-loaded project via `targetWorkspacePath`, while every session-context and meta-agent tool stays bound to the caller's own workspace by default.
+- Agent sessions can compact a target session's conversation directly via a new `compact_session` tool, reporting whether compaction actually ran instead of relying on a literal `/compact` prompt.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -31,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Orchestrator sessions can launch isolated worktree agents from their source project into another loaded project and retain status, result, queue, prompt, and reply control.
 - An active content search no longer gets silently reset to zero results by unrelated session activity elsewhere in the workspace.
 - Windows shows the correct app icon in the taskbar and window chrome, checking the packaged `.ico` and current logo asset instead of only a `icon.png` name that no longer matches the packaged asset.
+- A slash command sent with arguments (e.g. `/compact focus on X`) via the agent queue tools now reliably runs instead of sometimes arriving as plain chat text and silently growing context instead of shrinking it.
 
 ### Removed
 <!-- Removed features go here -->

@@ -155,6 +155,7 @@ export const HOST_TOOLS: readonly string[] = [
   'send_prompt',
   'send_prompt_now',
   'list_queued_prompts',
+  'compact_session',
   'notify_user',
   'respond_to_prompt',
   'get_session_status',

@@ -449,6 +449,8 @@ export class MetaAgentService {
           this.sendPromptNowToSession(metaSessionId, workspaceId, args),
         notifyUser: (callerSessionId, workspaceId, args) =>
           this.notifyUserJson(callerSessionId, workspaceId, args),
+        compactSession: (callerSessionId, workspaceId, args) =>
+          this.compactSessionJson(callerSessionId, workspaceId, args),
         respondToPrompt: (metaSessionId, workspaceId, args) =>
           this.respondToPrompt(metaSessionId, workspaceId, args),
         listSpawnedSessions: (metaSessionId, workspaceId) =>
@@ -1365,6 +1367,56 @@ export class MetaAgentService {
       bypassFocusCheck: args.bypassFocusCheck === true,
       result,
     }, null, 2);
+  }
+
+  /**
+   * Compact a session's conversation directly -- the reliable counterpart to
+   * sending a literal "/compact" prompt through the queue. Defaults to the
+   * calling session (self-compaction) when sessionId is omitted, matching
+   * notifyUserJson's self-targeting convention. Reports whether compaction
+   * actually ran via the structured `contextCompacted` flag threaded through
+   * from the provider's own stream chunk (MessageStreamingHandler's
+   * `chunk.contextCompacted`, the same signal a normal turn uses to clear
+   * stale context-fill metadata) -- never inferred from a text/substring
+   * match on the response, which can false-positive on ordinary chat text
+   * that happens to mention compaction, or false-negative on a differently
+   * worded provider message.
+   */
+  private async compactSessionJson(
+    callerSessionId: string,
+    workspaceId: string,
+    args: { sessionId?: string; focus?: string }
+  ): Promise<string> {
+    if (!this.aiService) {
+      throw new Error('AI service not initialized');
+    }
+
+    const targetSessionId = args.sessionId?.trim() || callerSessionId;
+    const session = await AISessionsRepository.get(targetSessionId);
+    if (!session || session.workspacePath !== workspaceId) {
+      throw new Error(`Session ${targetSessionId} not found`);
+    }
+
+    const focus = args.focus?.trim();
+    const prompt = focus ? `/compact focus on ${focus}` : '/compact';
+
+    try {
+      const result = await this.aiService.sendMessageDirect(targetSessionId, workspaceId, prompt);
+      const compacted = result.contextCompacted === true;
+      return JSON.stringify({
+        sessionId: targetSessionId,
+        prompt,
+        compacted,
+        response: result.content.slice(0, 500),
+      }, null, 2);
+    } catch (error) {
+      return JSON.stringify({
+        sessionId: targetSessionId,
+        prompt,
+        compacted: false,
+        error: error instanceof Error ? error.message : String(error),
+      }, null, 2);
+    }
   }
 
   private async respondToPrompt(callerSessionId: string, workspaceId: string, args: {

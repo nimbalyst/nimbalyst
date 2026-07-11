@@ -85,11 +85,24 @@ export interface SubmitClaudeCliPromptDeps {
  * Compose + write + log + analytics for one CLI submission. Returns
  * `{ submitted: false }` (a no-op) when there's nothing to send.
  */
+/**
+ * Strip C0 control bytes that have no legitimate purpose in typed prompt text
+ * and could otherwise reach the PTY as raw escape/control sequences (e.g. an
+ * ESC-introduced ANSI sequence from a crafted agent-delivered prompt). Keeps
+ * tab/newline/carriage-return, which are legitimate in real prompt text and
+ * already handled explicitly elsewhere in this module (SUBMIT_TERMINATOR).
+ * Same character class used for the same reason in tools/agents/api_common.py.
+ */
+function stripPtyUnsafeControlChars(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+}
+
 export async function submitClaudeCliPrompt(
   input: SubmitClaudeCliPromptInput,
   deps: SubmitClaudeCliPromptDeps,
 ): Promise<{ submitted: boolean }> {
-  const prompt = (input.prompt ?? '').trim();
+  const prompt = stripPtyUnsafeControlChars((input.prompt ?? '').trim());
   const attachments = input.attachments ?? [];
 
   // NIM-819: the claude TUI only opens its slash-command/memory mode when
@@ -104,27 +117,60 @@ export async function submitClaudeCliPrompt(
   if (isTuiTrigger) {
     deps.writeToTerminal(input.sessionId, prompt[0]);
     await deps.delay(SUBMIT_WRITE_GAP_MS);
-    if (prompt.length > 1) {
-      deps.writeToTerminal(input.sessionId, prompt.slice(1));
+
+    const rest = prompt.slice(1);
+    // NIM-XXXX: a slash command WITH arguments (e.g. "/compact focus on X")
+    // used to be bulk-written as one chunk ("compact focus on X"). That let
+    // the CLI's autocomplete menu keep fuzzy-matching against the FULL
+    // trailing text instead of locking onto "compact" the moment a real user
+    // would pause at the word boundary, so Enter could hijack the wrong
+    // highlighted row -- or land on no match and submit the raw text as a
+    // literal chat message (see NIM-851 comment below; this is the queued/
+    // agent-delivery counterpart of that bug, only reachable when args are
+    // present since isBareSlashCommand below required zero whitespace).
+    const isSlashCommandWithArgs = prompt.startsWith('/') && /\s/.test(rest);
+
+    if (isSlashCommandWithArgs) {
+      // search(/\s/) matches ANY whitespace, consistent with the isSlashCommandWithArgs
+      // gate above (/\s/.test(rest)) -- indexOf(' ') alone would miss a
+      // tab/other-whitespace separator and mis-split the command name.
+      const spaceIdx = rest.search(/\s/);
+      const commandName = rest.slice(0, spaceIdx);
+      const args = rest.slice(spaceIdx + 1);
+      deps.writeToTerminal(input.sessionId, commandName);
       await deps.delay(SUBMIT_WRITE_GAP_MS);
-    }
-    // NIM-851: writing `/` first opens the claude TUI's slash-command
-    // autocomplete menu, and that menu (a) fuzzy-matches command DESCRIPTIONS
-    // not just names — typing "implement" surfaces `/investigate` ("...before
-    // implementing") and `/session-cleanup` ("...implementing -> validating") —
-    // and (b) hijacks Enter to run the HIGHLIGHTED row instead of the literal
-    // typed text. For a bare command (no args) the menu stays open through
-    // Enter, so a stale/recency-shifted highlight runs the wrong command (real
-    // incident: typed `/implement`, ran `/investigate` with empty args). Type a
-    // trailing space first: it ends the command token and dismisses the menu
-    // (verified on claude 2.1.177), so Enter submits the literal command.
-    // Commands WITH args already closed the menu via their separating space;
-    // bare `/` and `#` memory mode are different UIs and left untouched.
-    const isBareSlashCommand =
-      prompt.startsWith('/') && prompt.length > 1 && !/\s/.test(prompt);
-    if (isBareSlashCommand) {
+      // Closing space resolves/dismisses the menu on the command name alone,
+      // exactly like the bare-command case below, BEFORE the argument text
+      // (which may itself fuzzy-match unrelated commands) ever reaches it.
       deps.writeToTerminal(input.sessionId, ' ');
       await deps.delay(SUBMIT_WRITE_GAP_MS);
+      if (args.length > 0) {
+        deps.writeToTerminal(input.sessionId, args);
+        await deps.delay(SUBMIT_WRITE_GAP_MS);
+      }
+    } else {
+      if (rest.length > 0) {
+        deps.writeToTerminal(input.sessionId, rest);
+        await deps.delay(SUBMIT_WRITE_GAP_MS);
+      }
+      // NIM-851: writing `/` first opens the claude TUI's slash-command
+      // autocomplete menu, and that menu (a) fuzzy-matches command DESCRIPTIONS
+      // not just names — typing "implement" surfaces `/investigate` ("...before
+      // implementing") and `/session-cleanup` ("...implementing -> validating") —
+      // and (b) hijacks Enter to run the HIGHLIGHTED row instead of the literal
+      // typed text. For a bare command (no args) the menu stays open through
+      // Enter, so a stale/recency-shifted highlight runs the wrong command (real
+      // incident: typed `/implement`, ran `/investigate` with empty args). Type a
+      // trailing space first: it ends the command token and dismisses the menu
+      // (verified on claude 2.1.177), so Enter submits the literal command.
+      // Commands WITH args are isolated above; bare `/` and `#` memory mode are
+      // different UIs and left untouched here.
+      const isBareSlashCommand =
+        prompt.startsWith('/') && prompt.length > 1 && !/\s/.test(prompt);
+      if (isBareSlashCommand) {
+        deps.writeToTerminal(input.sessionId, ' ');
+        await deps.delay(SUBMIT_WRITE_GAP_MS);
+      }
     }
     deps.writeToTerminal(input.sessionId, SUBMIT_TERMINATOR);
   } else {
