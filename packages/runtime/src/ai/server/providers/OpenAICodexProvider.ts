@@ -1165,6 +1165,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         attachments,
         sessionId,
         mode: documentContext?.mode || 'agent',
+        // Per-turn signal: the session-level raw.abortSignal is stale on
+        // cached/resumed protocol sessions (NIM-1607).
+        abortSignal: abortController.signal,
       })) {
         if (abortController.signal.aborted) {
           throw new Error('Operation cancelled');
