@@ -37,6 +37,7 @@ import {
   type VoiceTokenUsage,
 } from '../atoms/voiceModeState';
 import { voiceModeSettingsAtom, type VoiceModeSettings } from '../atoms/appSettings';
+import { VoiceListenWindowController } from './voiceListenWindow';
 import { activeSessionIdAtom, sessionRegistryAtom, sessionHasPendingInteractivePromptAtom, sessionPendingPromptsAtom, respondToPromptAtom, refreshSessionListAtom, reloadSessionDataAtom } from '../atoms/sessions';
 import { windowModeAtom } from '../atoms/windowMode';
 
@@ -59,34 +60,26 @@ export function onLinkedSessionChanged(callback: ((newSessionId: string) => void
 // =========================================================================
 // Centralized timer that transitions voice from 'listening' to 'sleeping'
 // after a configurable period of inactivity. Reset on speech events,
-// restarted when the voice agent responds.
+// restarted when the voice agent responds. The controller holds every arm
+// request while the user is mid-utterance (NIM-1594): a token-usage from a
+// barge-in-cancelled response, a late transcript-complete for the previous
+// utterance, or a playback drain must not start a countdown that expires
+// while the user is still talking.
 
-let _listenWindowTimer: ReturnType<typeof setTimeout> | null = null;
-
-function getListenWindowMs(): number {
-  return store.get(voiceModeSettingsAtom).listenWindowMs ?? 15000;
-}
-
-function clearListenWindowTimer(): void {
-  if (_listenWindowTimer) {
-    clearTimeout(_listenWindowTimer);
-    _listenWindowTimer = null;
-  }
-}
-
-function startListenWindowTimer(): void {
-  clearListenWindowTimer();
-  const ms = getListenWindowMs();
-  // console.log(`[voiceModeListeners] startListenWindowTimer: ${ms}ms from now`);
-  _listenWindowTimer = setTimeout(() => {
-    _listenWindowTimer = null;
+const listenWindow = new VoiceListenWindowController({
+  getWindowMs: () => store.get(voiceModeSettingsAtom).listenWindowMs ?? 15000,
+  onExpire: () => {
     // Only sleep if still in listening state
     if (store.get(voiceListenStateAtom) === 'listening') {
       // console.log('[voiceModeListeners] Listen window expired -> sleeping');
       sleepVoiceListening();
     }
-  }, ms);
-}
+  },
+  onHeldDuringSpeech: (reason) => {
+    console.log(`[voiceModeListeners] Listen window held open, user is speaking (${reason})`);
+    writeDiagnosticEntry(`Listen window: held open during speech (${reason})`);
+  },
+});
 
 // =========================================================================
 // Post-Turn Listen Window
@@ -106,7 +99,7 @@ function startListenWindowForPostTurn(): void {
   if (wokeFromSleep) {
     wakeVoiceListening(false);
   }
-  startListenWindowTimer();
+  listenWindow.start('post-turn');
   const responseDoneCb = getVoiceResponseDoneCallback();
   if (responseDoneCb) responseDoneCb(wokeFromSleep);
 }
@@ -144,7 +137,7 @@ export function wakeVoiceListening(startTimer = true): void {
   if (current === 'off') return; // can't wake if not active
   store.set(voiceListenStateAtom, 'listening');
   if (startTimer) {
-    startListenWindowTimer();
+    listenWindow.start('wake');
   }
   if (current === 'sleeping') {
     // Tell main process to resume the inactivity disconnect timer
@@ -161,7 +154,10 @@ export function wakeVoiceListening(startTimer = true): void {
 export function sleepVoiceListening(): void {
   if (store.get(voiceListenStateAtom) !== 'listening') return;
   // console.log('[voiceModeListeners] sleepVoiceListening: transitioning to sleeping');
-  clearListenWindowTimer();
+  // reset (not clear): the mic is gated while sleeping, so no speech_stopped
+  // will arrive for an in-flight utterance -- a stale speech flag would hold
+  // the next listen window open forever.
+  listenWindow.reset();
   store.set(voiceListenStateAtom, 'sleeping');
   // Tell main process to suspend the inactivity disconnect timer
   const voiceSessionId = store.get(voiceActiveSessionIdAtom);
@@ -316,7 +312,7 @@ async function updateSessionMetadata(tokenUsage?: VoiceTokenUsage | null): Promi
  * Reset all voice state atoms.
  */
 function resetVoiceAtoms(): void {
-  clearListenWindowTimer();
+  listenWindow.reset();
   clearPostTurnPending();
   store.set(voiceListenStateAtom, 'off');
   store.set(voiceActiveSessionIdAtom, null);
@@ -485,10 +481,27 @@ export function initVoiceModeListeners(): () => void {
       if (store.get(voiceListenStateAtom) === 'sleeping') {
         wakeVoiceListening(false);
       }
-      clearListenWindowTimer();
+      listenWindow.clear();
 
       const cb = getVoiceAudioCallback();
       if (cb) cb(payload.audioBase64);
+    })
+  );
+
+  // =========================================================================
+  // Speech Started (unconditional VAD signal)
+  // =========================================================================
+  // Sent for EVERY input_audio_buffer.speech_started, unlike voice-mode:interrupt
+  // which only fires when the barge-in policy decides to interrupt playback
+  // (an echo-suspect trigger whose playback drains inside the probation window
+  // never interrupts at all). This is the authoritative "user is talking"
+  // signal that holds the listen window open until speech_stopped (NIM-1594).
+  cleanups.push(
+    window.electronAPI.on('voice-mode:speech-started', (_payload: {
+      sessionId: string;
+    }) => {
+      if (!isVoiceActive()) return;
+      listenWindow.speechStarted();
     })
   );
 
@@ -502,12 +515,14 @@ export function initVoiceModeListeners(): () => void {
     }) => {
       if (!isVoiceActive()) return;
 
-      // User started speaking -- PAUSE the timer entirely.
+      // User started speaking -- hold the timer entirely.
       // speech_started fires once at the beginning of an utterance.
       // We don't get any more events until speech_stopped, so a simple
-      // reset would still expire mid-speech. Clear it instead.
-      // console.log('[voiceModeListeners] speech_started -> pausing listen window timer');
-      clearListenWindowTimer();
+      // reset would still expire mid-speech. speechStarted() clears the
+      // countdown AND holds later arm requests until speech_stopped.
+      // (voice-mode:speech-started normally set this already; interrupt can
+      // arrive up to 500ms later on the deferred barge-in path.)
+      listenWindow.speechStarted();
 
       // Discard any pending post-turn timer: the user is now driving the
       // turn. If we left it pending, the AudioPlayback.stop() below would
@@ -531,10 +546,11 @@ export function initVoiceModeListeners(): () => void {
     }) => {
       if (!isVoiceActive()) return;
 
-      // User stopped speaking. Start the idle timer from NOW.
-      // If the assistant responds, text-received will pause it again.
+      // User stopped speaking. Release the speech hold and start the idle
+      // timer from NOW. If the assistant responds, text-received will pause
+      // it again.
       // console.log('[voiceModeListeners] speech_stopped -> starting listen window timer');
-      startListenWindowTimer();
+      listenWindow.speechStopped();
     })
   );
 
@@ -659,6 +675,12 @@ export function initVoiceModeListeners(): () => void {
     }) => {
       if (!isVoiceActive()) return;
       store.set(voiceReconnectingAtom, false);
+      // A speech_stopped may have been lost with the socket; drop any stale
+      // speech hold and start a fresh listen window if the mic is open.
+      listenWindow.reset();
+      if (store.get(voiceListenStateAtom) === 'listening') {
+        listenWindow.start('reconnected');
+      }
     })
   );
 
@@ -673,10 +695,12 @@ export function initVoiceModeListeners(): () => void {
       if (!isVoiceActive()) return;
       if (!payload.transcript || payload.transcript.trim() === '') return;
 
-      // Transcript arrived = speech is definitely done. Start the idle timer
-      // in case speech_stopped was missed or never fired.
+      // Transcript arrived = THAT utterance is done. Arm the idle timer in
+      // case speech_stopped was missed -- but transcription lags, so this can
+      // land after the user already started the NEXT utterance; the controller
+      // holds the arm in that case instead of expiring mid-speech (NIM-1594).
       // console.log('[voiceModeListeners] transcript-complete -> starting listen window timer');
-      startListenWindowTimer();
+      listenWindow.start('transcript-complete');
 
       // Clear partial text
       store.set(voiceCurrentUserTextAtom, '');
@@ -734,7 +758,7 @@ export function initVoiceModeListeners(): () => void {
       if (store.get(voiceListenStateAtom) === 'sleeping') {
         wakeVoiceListening(false);
       }
-      clearListenWindowTimer();
+      listenWindow.clear();
 
       const entries = store.get(voiceTranscriptEntriesAtom);
       const lastEntry = entries[entries.length - 1];
@@ -1199,7 +1223,7 @@ export function initVoiceModeListeners(): () => void {
     if (editorContextDebounce) {
       clearTimeout(editorContextDebounce);
     }
-    clearListenWindowTimer();
+    listenWindow.reset();
   });
 
   return () => {
@@ -1230,8 +1254,9 @@ export async function setVoiceActiveSession(sessionId: string, workspacePath?: s
   store.set(voiceWorkspacePathAtom, workspacePath || null);
   store.set(voiceLastReportedFileAtom, null);
 
-  // Start the listen window timer
-  startListenWindowTimer();
+  // Start the listen window timer (fresh session -- no in-flight speech)
+  listenWindow.reset();
+  listenWindow.start('session-start');
 
   // Try to find and resume a recent voice session
   const wp = workspacePath || '';

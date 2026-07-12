@@ -1212,12 +1212,20 @@ export class MessageStreamingHandler {
         // Refresh credentials every turn for all providers so key changes in settings apply immediately.
         const freshApiKey = this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
         const turnEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
-        await provider.initialize({
+        const turnConfig: any = {
           apiKey: freshApiKey,
           maxTokens: (session.providerConfig as any)?.maxTokens,
           temperature: (session.providerConfig as any)?.temperature,
           ...(turnEffortLevel && { effortLevel: turnEffortLevel }),
-        });
+        };
+        const fullTurnModel = session.model || session.providerConfig?.model;
+        if (fullTurnModel) {
+          const modelForProvider = extractModelForProvider(fullTurnModel, session.provider as AIProviderType);
+          if (modelForProvider !== null) {
+            turnConfig.model = modelForProvider;
+          }
+        }
+        await provider.initialize(turnConfig);
       }
 
       // Attach @ mentioned files for non-agent providers

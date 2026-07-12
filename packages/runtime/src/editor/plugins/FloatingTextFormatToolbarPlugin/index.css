@@ -52,6 +52,11 @@
   opacity: 0.6;
 }
 
+.floating-text-format-popup button.floating-toolbar-action .material-symbols-outlined {
+  color: var(--nim-text-muted);
+  font-size: 18px;
+}
+
 .floating-text-format-popup button.popup-item:disabled i.format {
   opacity: 0.2;
 }
@@ -158,10 +163,4 @@
   height: 16px;
   width: 16px;
   margin-right: 8px;
-}
-
-@media (max-width: 1024px) {
-  .floating-text-format-popup button.insert-comment {
-    display: none;
-  }
 }

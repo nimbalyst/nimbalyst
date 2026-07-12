@@ -16,6 +16,12 @@
 import { useAtomValue } from 'jotai';
 
 import { trackerItemByReferenceKeyAtom } from '../TrackerPlugin/trackerDataAtoms';
+import {
+  getFieldByRole,
+  getRecordPriority,
+  getRecordStatus,
+} from '../TrackerPlugin/trackerRecordAccessors';
+import { getEffectiveUpdatedDate } from '../TrackerPlugin/components/trackerColumns';
 
 /** The minimal live data a chip needs to render. */
 export interface ResolvedTrackerReference {
@@ -30,6 +36,7 @@ export interface ResolvedTrackerReference {
   type?: string;
   priority?: string;
   owner?: string;
+  updatedAt?: string;
 }
 
 /**
@@ -42,15 +49,15 @@ export function useResolvedTrackerReference(
 ): ResolvedTrackerReference | null {
   const record = useAtomValue(trackerItemByReferenceKeyAtom(referenceKey));
   if (!record) return null;
-  const fields = record.fields as Record<string, unknown>;
   return {
     id: record.id,
     issueKey: record.issueKey,
-    title: (fields.title as string) ?? '',
-    status: fields.status as string | undefined,
+    title: (record.fields.title as string) ?? '',
+    status: getRecordStatus(record) || undefined,
     type: record.primaryType,
-    priority: fields.priority as string | undefined,
-    owner: fields.owner as string | undefined,
+    priority: getRecordPriority(record) || undefined,
+    owner: getFieldByRole(record, 'assignee') as string | undefined,
+    updatedAt: getEffectiveUpdatedDate(record)?.toISOString(),
   };
 }
 

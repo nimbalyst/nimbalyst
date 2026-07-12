@@ -281,72 +281,74 @@ export function $transformListToBoard(listNode: LexicalNode): KanbanBoardNode | 
  * Register the transform commands with the DraggableBlockPlugin
  */
 export function registerBoardTransformCommands(): () => void {
-  // Register Board to Table transform
-  const unregisterBoardToTable = draggableBlockMenuRegistry.registerMenuItem({
-    id: 'transform-board-to-table',
-    label: 'Convert to Table',
-    icon: 'table_chart',
-    nodeTypes: ['kanban-board'],
-    order: 100,
-    command: (editor: LexicalEditor, node: LexicalNode) => {
-      editor.update(() => {
-        if ($isBoardNode(node)) {
-          const tableNode = $transformBoardToTable(node);
-          if (tableNode) {
-            node.replace(tableNode);
-            // if the selection was in the board, the replace causes errors
-            tableNode.selectStart();
-          }
-        }
-      });
-    }
-  });
+  // The Kanban board block-menu transforms are commented out — the Kanban board
+  // feature was never finished. Re-enable these when the board work resumes.
+  // // Register Board to Table transform
+  // const unregisterBoardToTable = draggableBlockMenuRegistry.registerMenuItem({
+  //   id: 'transform-board-to-table',
+  //   label: 'Convert to Table',
+  //   icon: 'table_chart',
+  //   nodeTypes: ['kanban-board'],
+  //   order: 100,
+  //   command: (editor: LexicalEditor, node: LexicalNode) => {
+  //     editor.update(() => {
+  //       if ($isBoardNode(node)) {
+  //         const tableNode = $transformBoardToTable(node);
+  //         if (tableNode) {
+  //           node.replace(tableNode);
+  //           // if the selection was in the board, the replace causes errors
+  //           tableNode.selectStart();
+  //         }
+  //       }
+  //     });
+  //   }
+  // });
 
-  // Register Table to Board transform
-  const unregisterTableToBoard = draggableBlockMenuRegistry.registerMenuItem({
-    id: 'transform-table-to-board',
-    label: 'Convert to Kanban Board',
-    icon: 'view_kanban',
-    nodeTypes: ['table'],
-    order: 100,
-    command: (editor: LexicalEditor, node: LexicalNode) => {
-      editor.update(() => {
-        if ($isTableNode(node)) {
-          const boardNode = $transformTableToBoard(node);
-          if (boardNode) {
-            node.replace(boardNode);
-            // if the selection was in the table, the replace causes errors
-            boardNode.selectStart();
-          }
-        }
-      });
-    }
-  });
+  // // Register Table to Board transform
+  // const unregisterTableToBoard = draggableBlockMenuRegistry.registerMenuItem({
+  //   id: 'transform-table-to-board',
+  //   label: 'Convert to Kanban Board',
+  //   icon: 'view_kanban',
+  //   nodeTypes: ['table'],
+  //   order: 100,
+  //   command: (editor: LexicalEditor, node: LexicalNode) => {
+  //     editor.update(() => {
+  //       if ($isTableNode(node)) {
+  //         const boardNode = $transformTableToBoard(node);
+  //         if (boardNode) {
+  //           node.replace(boardNode);
+  //           // if the selection was in the table, the replace causes errors
+  //           boardNode.selectStart();
+  //         }
+  //       }
+  //     });
+  //   }
+  // });
 
-  // Register List to Board transform
-  const unregisterListToBoard = draggableBlockMenuRegistry.registerMenuItem({
-    id: 'transform-list-to-board',
-    label: 'Convert to Kanban Board',
-    icon: 'view_kanban',
-    nodeTypes: ['list'],
-    order: 100,
-    command: (editor: LexicalEditor, node: LexicalNode) => {
-      editor.update(() => {
-        if ($isListNode(node)) {
-          const boardNode = $transformListToBoard(node);
-          if (boardNode) {
-            node.replace(boardNode);
-            // if the selection was in the list, the replace causes errors
-            boardNode.selectStart();
-          }
-        }
-      });
-    }
-  });
+  // // Register List to Board transform
+  // const unregisterListToBoard = draggableBlockMenuRegistry.registerMenuItem({
+  //   id: 'transform-list-to-board',
+  //   label: 'Convert to Kanban Board',
+  //   icon: 'view_kanban',
+  //   nodeTypes: ['list'],
+  //   order: 100,
+  //   command: (editor: LexicalEditor, node: LexicalNode) => {
+  //     editor.update(() => {
+  //       if ($isListNode(node)) {
+  //         const boardNode = $transformListToBoard(node);
+  //         if (boardNode) {
+  //           node.replace(boardNode);
+  //           // if the selection was in the list, the replace causes errors
+  //           boardNode.selectStart();
+  //         }
+  //       }
+  //     });
+  //   }
+  // });
 
   return () => {
-    unregisterBoardToTable();
-    unregisterTableToBoard();
-    unregisterListToBoard();
+    // unregisterBoardToTable();
+    // unregisterTableToBoard();
+    // unregisterListToBoard();
   };
 }

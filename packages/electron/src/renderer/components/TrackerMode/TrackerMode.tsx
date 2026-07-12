@@ -14,6 +14,13 @@ import {
   type TrackerFilterChip,
 } from '../../store/atoms/trackers';
 import type { SavedView } from './trackerSavedViews';
+import type { TrackerNavigationEntry } from '@nimbalyst/runtime/sync';
+import {
+  deleteTrackerFolderAtom,
+  ensureTrackerTypePlacementsAtom,
+  saveTrackerNavigationEntryAtom,
+  trackerNavigationEntriesAtom,
+} from '../../store/atoms/trackerNavigation';
 
 // Ensure built-in trackers are loaded
 loadBuiltinTrackers();
@@ -41,6 +48,29 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
     return globalRegistry.getAll();
   }, [registryVersion]);
 
+  const navigationEntries = useAtomValue(trackerNavigationEntriesAtom);
+  const ensureTypePlacements = useSetAtom(ensureTrackerTypePlacementsAtom);
+  const saveNavigationEntry = useSetAtom(saveTrackerNavigationEntryAtom);
+  const deleteFolder = useSetAtom(deleteTrackerFolderAtom);
+
+  useEffect(() => {
+    if (!workspacePath || trackerTypes.length === 0) return;
+    void ensureTypePlacements({
+      workspacePath,
+      trackerTypes: trackerTypes.map((tracker) => tracker.type),
+    });
+  }, [workspacePath, trackerTypes, ensureTypePlacements]);
+
+  const handleSaveNavigationEntry = useCallback((entry: TrackerNavigationEntry) => {
+    if (!workspacePath) return Promise.resolve();
+    return saveNavigationEntry({ workspacePath, entry });
+  }, [workspacePath, saveNavigationEntry]);
+
+  const handleDeleteFolder = useCallback((folderId: string) => {
+    if (!workspacePath) return Promise.resolve();
+    return deleteFolder({ workspacePath, folderId });
+  }, [workspacePath, deleteFolder]);
+
   // Persisted layout state from atoms
   const modeLayout = useAtomValue(trackerModeLayoutAtom);
   const setModeLayout = useSetAtom(setTrackerModeLayoutAtom);
@@ -66,6 +96,10 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
       : [...current, filter];
     setModeLayout({ activeFilters: next });
   }, [modeLayout.activeFilters, setModeLayout]);
+
+  const handleClearFilters = useCallback(() => {
+    setModeLayout({ activeFilters: [] });
+  }, [setModeLayout]);
 
   const handleViewModeChange = useCallback((mode: ViewMode) => {
     setModeLayout({ viewMode: mode });
@@ -117,6 +151,7 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
       workspacePath={workspacePath || undefined}
       workspaceName={workspaceName}
       trackerTypes={trackerTypes}
+      navigationEntries={navigationEntries}
       selectedType={selectedType}
       activeFilters={activeFilters}
       viewMode={viewMode}
@@ -127,6 +162,8 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
       onApplyView={handleApplyView}
       onSaveView={handleSaveView}
       onDeleteView={handleDeleteView}
+      onSaveNavigationEntry={handleSaveNavigationEntry}
+      onDeleteFolder={handleDeleteFolder}
     />
   );
 
@@ -139,6 +176,7 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
       onSwitchToFilesMode={onSwitchToFilesMode}
       workspacePath={workspacePath || undefined}
       trackerTypes={trackerTypes}
+      onClearSidebarFilters={handleClearFilters}
     />
   );
 

@@ -50,6 +50,10 @@ import type {
   TrackerSchemaSyncResponseMessage,
   TrackerSchemaDeltaMessage,
   TrackerSchemaMutationAckMessage,
+  EncryptedTrackerNavigationEnvelope,
+  TrackerNavigationSyncResponseMessage,
+  TrackerNavigationDeltaMessage,
+  TrackerNavigationMutationAckMessage,
   TrackerRoomMovedMessage,
 } from './trackerProtocol';
 import { SYNC_ID_INITIAL, buildTrackerRoomId } from './trackerProtocol';
@@ -62,6 +66,9 @@ import {
   encodeTrackerPayloadPlaintext,
   decodeTrackerEnvelopePlaintext,
   decodeTrackerSchemaEnvelopePlaintext,
+  encryptTrackerNavigationPayload,
+  decryptTrackerNavigationEnvelope,
+  decodeTrackerNavigationEnvelopePlaintext,
 } from './TrackerEnvelopeCrypto';
 import type { TrackerPersistence, TrackerRowSnapshot } from './trackerPersistence';
 
@@ -119,6 +126,18 @@ export interface TrackerSchemaSyncHooks {
   getMaxSyncId: () => Promise<SyncId>;
   listUnsynced: () => Promise<TrackerSchemaLocalChange[]>;
   applyRemote: (def: { type: string; model: string | null; syncId: SyncId }) => Promise<unknown>;
+}
+
+export interface TrackerNavigationLocalChange {
+  entryId: string;
+  payload: string | null;
+  deleted: boolean;
+}
+
+export interface TrackerNavigationSyncHooks {
+  getMaxSyncId: () => Promise<SyncId>;
+  listUnsynced: () => Promise<TrackerNavigationLocalChange[]>;
+  applyRemote: (def: { entryId: string; payload: string | null; syncId: SyncId }) => Promise<unknown>;
 }
 
 /**
@@ -185,6 +204,9 @@ export interface TrackerSyncEngineConfig {
 
   /** Optional schema sync seam. Electron wires this to tracker_type_defs. */
   schemaSync?: TrackerSchemaSyncHooks;
+
+  /** Optional shared tracker-sidebar navigation sync seam. */
+  navigationSync?: TrackerNavigationSyncHooks;
 
   /**
    * Prefix to install when the first bootstrap proves the tracker room is
@@ -423,6 +445,11 @@ export class TrackerSyncEngine {
     return this.status;
   }
 
+  /** Flush locally-pending tracker navigation entries while connected. */
+  async flushNavigation(): Promise<void> {
+    await this.pushPendingNavigation();
+  }
+
   /**
    * Swap in a new encryption key + fingerprint. The host adapter calls
    * this after handling an `orgKeyRotated` event. In-flight mutations
@@ -536,6 +563,7 @@ export class TrackerSyncEngine {
       }
 
       await this.runSchemaBootstrap();
+      await this.runNavigationBootstrap();
 
       this.synced = true;
       this.setStatus('connected');
@@ -543,6 +571,7 @@ export class TrackerSyncEngine {
       // After bootstrap, replay any persisted-but-unconfirmed mutations.
       await this.replayPending();
       await this.pushPendingSchemas();
+      await this.pushPendingNavigation();
     } catch (err) {
       // Bootstrap failures (e.g. socket drop mid-loop) fall through to the
       // disconnect path, which triggers a reconnect. Don't tear down here.
@@ -656,6 +685,56 @@ export class TrackerSyncEngine {
     }
   }
 
+  private async runNavigationBootstrap(): Promise<void> {
+    const hooks = this.config.navigationSync;
+    if (!hooks) return;
+    let cursor = await hooks.getMaxSyncId();
+    let staleKeyRefreshTried = false;
+    while (true) {
+      const response = await this.requestNavigationSync(cursor);
+      if (!staleKeyRefreshTried && this.shouldRefreshForStaleNavigationKey(response.entries)) {
+        staleKeyRefreshTried = true;
+        const fresh = await this.config.refreshKey?.();
+        if (fresh) this.setKey(fresh);
+      }
+      for (const envelope of response.entries) {
+        try {
+          await this.applyNavigationEnvelope(envelope);
+        } catch (err) {
+          this.config.onBootstrapError?.(err);
+        }
+      }
+      cursor = response.cursorSyncId;
+      if (!response.hasMore) break;
+    }
+  }
+
+  private shouldRefreshForStaleNavigationKey(entries: EncryptedTrackerNavigationEnvelope[]): boolean {
+    if (!this.orgKeyFingerprint) return false;
+    return entries.some((entry) =>
+      entry.encryptedPayload !== null &&
+      entry.orgKeyFingerprint !== null &&
+      entry.orgKeyFingerprint !== this.orgKeyFingerprint,
+    );
+  }
+
+  private requestNavigationSync(sinceSyncId: SyncId): Promise<TrackerNavigationSyncResponseMessage> {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error('WebSocket not open'));
+        return;
+      }
+      const handler = (event: MessageEvent) => {
+        const msg = parseServerMessage(event.data);
+        if (!msg || msg.type !== 'trackerNavigationSyncResponse') return;
+        this.ws?.removeEventListener('message', handler);
+        resolve(msg);
+      };
+      this.ws.addEventListener('message', handler);
+      this.send({ type: 'trackerNavigationSync', sinceSyncId });
+    });
+  }
+
   private async applyBootstrapBatch(batch: TrackerSyncResponseMessage): Promise<void> {
     for (const envelope of batch.items) {
       // Return value (applied true/false) is informational only here; the
@@ -724,6 +803,12 @@ export class TrackerSyncEngine {
       case 'trackerSchemaMutationAck':
         await this.handleSchemaAck(msg);
         break;
+      case 'trackerNavigationDelta':
+        await this.handleNavigationDelta(msg);
+        break;
+      case 'trackerNavigationMutationAck':
+        await this.handleNavigationAck(msg);
+        break;
       case 'trackerConfigBroadcast':
         this.handleConfigBroadcast(msg);
         break;
@@ -744,6 +829,9 @@ export class TrackerSyncEngine {
         break;
       case 'trackerSchemaSyncResponse':
         // The schema bootstrap loop owns these via `requestSchemaSync`.
+        break;
+      case 'trackerNavigationSyncResponse':
+        // The navigation bootstrap loop owns these via `requestNavigationSync`.
         break;
     }
   }
@@ -871,6 +959,32 @@ export class TrackerSyncEngine {
     }
   }
 
+  private async handleNavigationDelta(msg: TrackerNavigationDeltaMessage): Promise<void> {
+    const applied = await this.applyNavigationEnvelope(msg.entry);
+    if (!applied && msg.entry.orgKeyFingerprint && this.orgKeyFingerprint &&
+        msg.entry.orgKeyFingerprint !== this.orgKeyFingerprint && this.config.refreshKey) {
+      const fresh = await this.config.refreshKey();
+      if (fresh) {
+        this.setKey(fresh);
+        await this.applyNavigationEnvelope(msg.entry);
+      }
+    }
+  }
+
+  private async handleNavigationAck(msg: TrackerNavigationMutationAckMessage): Promise<void> {
+    if (msg.accepted && msg.entry) {
+      await this.applyNavigationEnvelope(msg.entry);
+      return;
+    }
+    if (!msg.accepted && msg.error?.code === 'staleKeyEpoch' && this.config.refreshKey) {
+      const fresh = await this.config.refreshKey();
+      if (fresh) {
+        this.setKey(fresh);
+        await this.pushPendingNavigation();
+      }
+    }
+  }
+
   private handleConfigBroadcast(msg: TrackerConfigBroadcastMessage): void {
     this.config.onConfigChange?.(msg.config);
   }
@@ -988,6 +1102,33 @@ export class TrackerSyncEngine {
       model,
       isTombstone,
     });
+    return true;
+  }
+
+  private async applyNavigationEnvelope(envelope: EncryptedTrackerNavigationEnvelope): Promise<boolean> {
+    const hooks = this.config.navigationSync;
+    if (!hooks) return true;
+    const isTombstone = envelope.encryptedPayload === null;
+    let payload: string | null = null;
+    if (!isTombstone) {
+      if (this.serverManaged) {
+        try {
+          payload = decodeTrackerNavigationEnvelopePlaintext(envelope);
+        } catch {
+          return false;
+        }
+      } else {
+        try {
+          payload = await decryptTrackerNavigationEnvelope(envelope, this.encryptionKey!);
+        } catch (err) {
+          if (err !== null && typeof err === 'object' && (err as { name?: string }).name === 'OperationError') {
+            return false;
+          }
+          throw err;
+        }
+      }
+    }
+    await hooks.applyRemote({ entryId: envelope.entryId, payload, syncId: envelope.syncId });
     return true;
   }
 
@@ -1137,6 +1278,49 @@ export class TrackerSyncEngine {
         schemaType: def.type,
         encryptedPayload: enc.encryptedPayload,
         iv: enc.iv,
+        orgKeyFingerprint: this.orgKeyFingerprint,
+      });
+    }
+  }
+
+  private async pushPendingNavigation(): Promise<void> {
+    const hooks = this.config.navigationSync;
+    if (!hooks || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.serverManaged && !this.orgKeyFingerprint) return;
+    const pending = await hooks.listUnsynced();
+    for (const entry of pending) {
+      const clientMutationId = generateClientMutationId();
+      if (entry.deleted || entry.payload === null) {
+        this.send({
+          type: 'trackerNavigationMutation',
+          clientMutationId,
+          entryId: entry.entryId,
+          encryptedPayload: null,
+          orgKeyFingerprint: this.orgKeyFingerprint,
+        });
+        continue;
+      }
+      if (this.serverManaged) {
+        this.send({
+          type: 'trackerNavigationMutation',
+          clientMutationId,
+          entryId: entry.entryId,
+          encryptedPayload: entry.payload,
+          orgKeyFingerprint: null,
+        });
+        continue;
+      }
+      const encrypted = await encryptTrackerNavigationPayload(
+        entry.payload,
+        this.encryptionKey!,
+        entry.entryId,
+      );
+      this.send({
+        type: 'trackerNavigationMutation',
+        clientMutationId,
+        entryId: entry.entryId,
+        encryptedPayload: encrypted.encryptedPayload,
+        iv: encrypted.iv,
         orgKeyFingerprint: this.orgKeyFingerprint,
       });
     }

@@ -47,7 +47,6 @@ export function createRectangle(options: RectangleOptions): ExcalidrawElement {
     y,
     width = 150,
     height = 80,
-    text,
     style = 'default',
     backgroundColor,
     strokeColor,
@@ -256,7 +255,6 @@ export function createLabeledRectangle(options: RectangleOptions): LabeledRectan
     width = 150,
     height = 80,
     text,
-    style = 'default',
     groupIds = [],
   } = options;
 

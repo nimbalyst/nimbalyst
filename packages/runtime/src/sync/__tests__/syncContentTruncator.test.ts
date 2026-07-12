@@ -272,15 +272,232 @@ describe('truncateContentForSync', () => {
       shouldSyncMessageForSessionRoom(
         'claude-code',
         undefined,
-        JSON.stringify({ type: 'result', subtype: 'success', num_turns: 1 }),
+        JSON.stringify({ type: 'system', subtype: 'compact_boundary' }),
       ),
     ).toBe(true);
+  });
 
+  it('drops claude-code result chunks except the num_turns===0 text-backfill case', () => {
+    // Normal turn results duplicate the final assistant text and carry
+    // usage/cost fields mobile never reads -- drop.
     expect(
       shouldSyncMessageForSessionRoom(
         'claude-code',
         undefined,
-        JSON.stringify({ type: 'system', subtype: 'compact_boundary' }),
+        JSON.stringify({ type: 'result', subtype: 'success', num_turns: 3, result: 'final text', usage: { input_tokens: 100 } }),
+      ),
+    ).toBe(false);
+
+    // Unknown-slash-command turns (num_turns===0) render ONLY via the result
+    // chunk -- keep.
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'claude-code',
+        undefined,
+        JSON.stringify({ type: 'result', subtype: 'success', num_turns: 0, result: 'Unknown command: /foo' }),
+      ),
+    ).toBe(true);
+
+    // num_turns===0 with no result text renders nothing -- drop.
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'claude-code',
+        undefined,
+        JSON.stringify({ type: 'result', subtype: 'success', num_turns: 0, result: '   ' }),
+      ),
+    ).toBe(false);
+  });
+
+  it('applies claude-code transient filtering to claude-code-cli sessions', () => {
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'claude-code-cli',
+        undefined,
+        JSON.stringify({ type: 'tool_progress', name: 'Bash' }),
+      ),
+    ).toBe(false);
+
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'claude-code-cli',
+        undefined,
+        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }),
+      ),
+    ).toBe(true);
+  });
+
+  it('drops hidden rows for every source except opencode', () => {
+    // Every raw parser early-returns on hidden rows, so they render nothing.
+    expect(
+      shouldSyncMessageForSessionRoom('claude-code', undefined, JSON.stringify({ type: 'user' }), true),
+    ).toBe(false);
+    expect(
+      shouldSyncMessageForSessionRoom('openai-codex', { transport: 'app-server', eventType: 'item/completed' }, '{}', true),
+    ).toBe(false);
+
+    // OpenCode persists its whole SSE stream hidden and renders FROM those
+    // hidden output rows -- they must keep syncing.
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'opencode',
+        { eventType: 'message.part.delta' },
+        JSON.stringify({ type: 'message.part.delta', properties: { field: 'text', delta: 'hi', messageID: 'm1' } }),
+        true,
+      ),
+    ).toBe(true);
+  });
+
+  it('drops non-rendering legacy codex transport events', () => {
+    expect(
+      shouldSyncMessageForSessionRoom('openai-codex', { eventType: 'token_count' }, JSON.stringify({ type: 'token_count', info: {} })),
+    ).toBe(false);
+    expect(
+      shouldSyncMessageForSessionRoom('openai-codex', { eventType: 'thread.started' }, JSON.stringify({ type: 'thread.started', thread_id: 't1' })),
+    ).toBe(false);
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'openai-codex',
+        { eventType: 'event_msg' },
+        JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: {} } }),
+      ),
+    ).toBe(false);
+
+    // Rendered legacy events keep syncing: items carry text/tools/todo_list.
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'openai-codex',
+        { eventType: 'item.completed' },
+        JSON.stringify({ type: 'item.completed', item: { type: 'message', text: 'hi' } }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'openai-codex',
+        { eventType: 'task_complete' },
+        JSON.stringify({ type: 'task_complete', last_agent_message: 'done' }),
+      ),
+    ).toBe(true);
+  });
+
+  it('whitelists opencode SSE events by what the parser can render', () => {
+    const opencodeMeta = (eventType: string) => ({ eventType, openCodeProvider: true });
+
+    // Role-map + rendered types keep syncing.
+    expect(
+      shouldSyncMessageForSessionRoom('opencode', opencodeMeta('message.updated'), JSON.stringify({ type: 'message.updated', properties: { info: { id: 'm1', role: 'assistant' } } }), true),
+    ).toBe(true);
+    expect(
+      shouldSyncMessageForSessionRoom('opencode', opencodeMeta('session.error'), '{}', true),
+    ).toBe(true);
+    expect(
+      shouldSyncMessageForSessionRoom('opencode', opencodeMeta('todo.updated'), '{}', true),
+    ).toBe(true);
+
+    // Tool parts render from part.updated; text snapshots there are
+    // cumulative dupes of the delta stream.
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'opencode',
+        opencodeMeta('message.part.updated'),
+        JSON.stringify({ type: 'message.part.updated', properties: { part: { type: 'tool', id: 'p1' } } }),
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'opencode',
+        opencodeMeta('message.part.updated'),
+        JSON.stringify({ type: 'message.part.updated', properties: { part: { type: 'text', text: 'cumulative snapshot' } } }),
+        true,
+      ),
+    ).toBe(false);
+
+    // Only text-field deltas render.
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'opencode',
+        opencodeMeta('message.part.delta'),
+        JSON.stringify({ type: 'message.part.delta', properties: { field: 'text', delta: 'hi', messageID: 'm1' } }),
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'opencode',
+        opencodeMeta('message.part.delta'),
+        JSON.stringify({ type: 'message.part.delta', properties: { field: 'reasoning', delta: 'thinking...', messageID: 'm1' } }),
+        true,
+      ),
+    ).toBe(false);
+
+    // session.idle only yields turn_ended, which the projector drops.
+    expect(
+      shouldSyncMessageForSessionRoom('opencode', opencodeMeta('session.idle'), '{}', true),
+    ).toBe(false);
+    // Unknown SSE types hit the parser's default: return [].
+    expect(
+      shouldSyncMessageForSessionRoom('opencode', opencodeMeta('server.connected'), '{}', true),
+    ).toBe(false);
+
+    // Non-SSE rows (no eventType, e.g. user input) always sync.
+    expect(shouldSyncMessageForSessionRoom('opencode', {}, 'user prompt text')).toBe(true);
+  });
+
+  it('drops non-rendering codex ACP session updates', () => {
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'openai-codex-acp',
+        undefined,
+        JSON.stringify({ type: 'session/update', sessionId: 's1', update: { sessionUpdate: 'usage_update', used: 100, size: 200000 } }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'openai-codex-acp',
+        undefined,
+        JSON.stringify({ type: 'session/request_permission_preview', sessionId: 's1' }),
+      ),
+    ).toBe(false);
+
+    // Rendered updates keep syncing.
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'openai-codex-acp',
+        undefined,
+        JSON.stringify({ type: 'session/update', sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } } }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'openai-codex-acp',
+        undefined,
+        JSON.stringify({ type: 'session/request_permission', sessionId: 's1', request: {} }),
+      ),
+    ).toBe(true);
+  });
+
+  it('drops copilot-cli agent_message_chunk rows (item.completed is self-contained)', () => {
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'copilot-cli',
+        { eventType: 'session/update' },
+        JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial' } } } }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'copilot-cli',
+        { eventType: 'session/update' },
+        JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'thinking', text: 'hmm' } } } }),
+      ),
+    ).toBe(false);
+
+    // The completed item carries the full text itself -- keep.
+    expect(
+      shouldSyncMessageForSessionRoom(
+        'copilot-cli',
+        { eventType: 'item.completed' },
+        JSON.stringify({ type: 'item.completed', item: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'full text' }] } }),
       ),
     ).toBe(true);
   });

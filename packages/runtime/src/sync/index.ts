@@ -133,6 +133,7 @@ export type {
   TrackerRoomId,
   SyncId,
   EncryptedTrackerItemEnvelope,
+  EncryptedTrackerNavigationEnvelope,
   TrackerItemPayload,
   TrackerCommentEntry,
   TrackerIdentity,
@@ -142,11 +143,16 @@ export type {
   TrackerServerMessage,
   TrackerSyncRequestMessage,
   TrackerMutationRequestMessage,
+  TrackerNavigationSyncRequestMessage,
+  TrackerNavigationMutationRequestMessage,
   TrackerSetConfigMessage,
   TrackerPingMessage,
   TrackerSyncResponseMessage,
   TrackerDeltaMessage,
   TrackerMutationAckMessage,
+  TrackerNavigationSyncResponseMessage,
+  TrackerNavigationDeltaMessage,
+  TrackerNavigationMutationAckMessage,
   TrackerMutationRejectCode,
   TrackerConfigBroadcastMessage,
   TrackerPongMessage,
@@ -168,6 +174,8 @@ export {
 export {
   encryptTrackerPayload,
   decryptTrackerEnvelope,
+  encryptTrackerNavigationPayload,
+  decryptTrackerNavigationEnvelope,
   fingerprintTrackerKey,
 } from './TrackerEnvelopeCrypto';
 
@@ -211,6 +219,17 @@ export type {
   AppliedTrackerItem,
   RejectedTrackerMutation,
 } from './TrackerSyncEngine';
+
+export {
+  isTrackerNavigationEntry,
+  compareTrackerNavigationEntries,
+} from './trackerNavigation';
+
+export type {
+  TrackerNavigationEntry,
+  TrackerNavigationFolder,
+  TrackerTypePlacement,
+} from './trackerNavigation';
 
 export {
   TeamSyncProvider,

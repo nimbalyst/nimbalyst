@@ -22,6 +22,14 @@ const alias = [
     replacement: path.resolve(__dirname, './packages/runtime/src'),
   },
   {
+    find: '@nimbalyst/extension-sdk/file-tree',
+    replacement: path.resolve(__dirname, './packages/extension-sdk/src/fileDirectoryTree.ts'),
+  },
+  {
+    find: '@nimbalyst/extension-sdk',
+    replacement: path.resolve(__dirname, './packages/extension-sdk/src'),
+  },
+  {
     find: /^monaco-editor(\/.*)?$/,
     replacement: monacoStub,
   },

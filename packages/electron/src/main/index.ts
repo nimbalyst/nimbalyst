@@ -174,6 +174,7 @@ import { FeatureUsageService, FEATURES } from "./services/FeatureUsageService.ts
 import { shutdownStytchAuth, handleAuthCallback, isAuthenticated } from './services/StytchAuthService';
 import { registerTrackerSyncHandlers, initializeTrackerSync } from './services/TrackerSyncManager';
 import { initTrackerSchemaService, updateTrackerSchemaWorkspace } from './services/TrackerSchemaService';
+import { initTrackerNavigationService } from './services/TrackerNavigationService';
 import { registerTeamHandlers, autoMatchTeamForWorkspace, getOrgScopedJwt, findTeamForWorkspace } from './services/TeamService';
 import { windowStates, windows, resolveActiveWorkspacePath } from './window/windowState';
 import { getRecentItems } from './utils/store';
@@ -1608,6 +1609,7 @@ app.whenReady().then(async () => {
     // serve Quick Open semantic search.
     SemanticCatalogService.getInstance().start();
     initTrackerSchemaService(); // Register IPC handlers + load built-in schemas
+    initTrackerNavigationService();
 
     // Initialize commit-tracker linking (listens to GitRefWatcher for all commits)
     commitTrackerLinker.initialize({ getDatabase: () => database });

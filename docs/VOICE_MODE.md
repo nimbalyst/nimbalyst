@@ -151,12 +151,12 @@ Voice mode uses a three-state listening model managed by `voiceModeListeners.ts`
        └────── back to listening
 ```
 
-**Timer management:**
-- `startListenWindowTimer()` starts a countdown (default 15s, configurable via `listenWindowMs`)
-- Timer is paused during speech (speech_started clears timer)
-- Timer restarts after speech ends (speech_stopped) or after assistant finishes responding (token-usage)
-- Timer is cleared while assistant is speaking (audio chunks arriving)
-- Expiry transitions to `sleeping` state
+**Timer management** (owned by `VoiceListenWindowController` in `voiceListenWindow.ts`, a pure unit-tested seam):
+- The controller arms a countdown (default 15s, configurable via `listenWindowMs`)
+- While the user is speaking (`voice-mode:speech-started`, the unconditional VAD signal), the countdown is cleared AND every arm request is held -- a token-usage from a barge-in-cancelled response, a late transcript-complete for the previous utterance, or a playback drain arriving mid-utterance cannot start a countdown that would expire while the user is still talking (NIM-1594). Held requests are logged (`Listen window: held open during speech`) as `[system]` diagnostic transcript entries.
+- The countdown arms after speech ends (speech_stopped) or after the assistant finishes responding (token-usage / playback drain)
+- The countdown is cleared while assistant is speaking (audio chunks arriving)
+- Expiry transitions to `sleeping` state; the explicit `pause_listening` tool sleeps immediately regardless of speech state
 
 When sleeping:
 - Audio capture continues running but `VoiceModeButton` gates sending based on listen state
@@ -190,7 +190,8 @@ When sleeping:
 | `voice-mode:transcript-delta` | Partial/streaming user transcription |
 | `voice-mode:token-usage` | Token usage update after response completes |
 | `voice-mode:submit-prompt` | Voice agent wants to send a coding task |
-| `voice-mode:interrupt` | VAD detected user speech (stop playback) |
+| `voice-mode:interrupt` | Barge-in policy decided to stop playback (deferred/suppressed for echo-suspect triggers) |
+| `voice-mode:speech-started` | VAD detected user speech (unconditional, fired for every trigger) |
 | `voice-mode:speech-stopped` | VAD detected silence after speech |
 | `voice-mode:stopped` | Voice session ended (with final token usage) |
 | `voice-mode:error` | Error (quota, rate limit, connection failure, reconnect exhausted) |

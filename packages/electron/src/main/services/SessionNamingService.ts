@@ -13,6 +13,7 @@ import {
 import { getDatabase } from '../database/initialize';
 import { createWorktreeStore } from './WorktreeStore';
 import { getPreferredAgentLanguage } from '../utils/store';
+import { normalizeSessionPhaseMetadataUpdate } from './session/sessionPhaseTransition';
 
 /**
  * Service to manage the session naming MCP server
@@ -73,15 +74,16 @@ export class SessionNamingService {
 
         // Set the metadata update function (for tags, phase, etc.)
         setUpdateSessionMetadataFn(async (sessionId: string, metadata: Record<string, unknown>) => {
+          const normalizedMetadata = normalizeSessionPhaseMetadataUpdate(metadata);
           // SyncedSessionStore.updateMetadata is the single source of truth for
           // what reaches other devices; phase/tags forwarding lives there now.
-          await AISessionsRepository.updateMetadata(sessionId, { metadata });
+          await AISessionsRepository.updateMetadata(sessionId, { metadata: normalizedMetadata });
 
           // Notify renderer windows so UI updates in real time
           const windows = BrowserWindow.getAllWindows();
           for (const window of windows) {
             if (!window.isDestroyed()) {
-              window.webContents.send('sessions:session-updated', sessionId, metadata);
+              window.webContents.send('sessions:session-updated', sessionId, normalizedMetadata);
             }
           }
         });

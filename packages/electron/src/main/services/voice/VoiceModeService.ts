@@ -613,6 +613,15 @@ export function initVoiceModeService() {
         }
       });
 
+      // Unconditional VAD speech-start signal (unlike voice-mode:interrupt,
+      // which the barge-in policy can defer or suppress). The renderer uses
+      // it to hold the listen window open for the whole utterance (NIM-1594).
+      poc.setOnSpeechStarted(() => {
+        if (window && !window.isDestroyed()) {
+          window.webContents.send('voice-mode:speech-started', { sessionId: currentSessionId() });
+        }
+      });
+
       poc.setOnError((error) => {
         console.error('[VoiceModeService] Error from OpenAI:', error.type, error.message);
         if (window && !window.isDestroyed()) {

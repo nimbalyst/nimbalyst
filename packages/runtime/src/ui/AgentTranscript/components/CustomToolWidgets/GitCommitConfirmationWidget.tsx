@@ -22,6 +22,12 @@ import type { CustomToolWidgetProps } from './index';
 import { buildCodexToolLookupId } from '../../../../ai/server/toolLookupIds';
 import { interactiveWidgetHostAtom } from '../../../../store/atoms/interactiveWidgetHost';
 import { useDiffPeek } from '../../../git/useDiffPeek';
+import {
+  buildFileDirectoryTree,
+  getFileDirectoryPaths,
+  getFilePathBasename,
+  type FileDirectoryNode,
+} from '@nimbalyst/extension-sdk/file-tree';
 
 // ============================================================
 // File Status Types
@@ -64,13 +70,7 @@ function getFilePath(file: FileInput): string {
 // Directory Tree Types and Helpers
 // ============================================================
 
-export interface DirectoryNode {
-  path: string;
-  displayPath: string;
-  files: string[];
-  subdirectories: Map<string, DirectoryNode>;
-  fileCount: number;
-}
+export type DirectoryNode = FileDirectoryNode<string>;
 
 /**
  * Comparator: sort DirectoryNodes alphabetically by displayPath.
@@ -87,110 +87,9 @@ export function compareSubdirectoriesByDisplayPath(a: DirectoryNode, b: Director
  * `filesToStage`.
  */
 export function compareFilesByBasename(a: string, b: string): number {
-  const aBase = a.substring(a.lastIndexOf('/') + 1);
-  const bBase = b.substring(b.lastIndexOf('/') + 1);
+  const aBase = getFilePathBasename(a);
+  const bBase = getFilePathBasename(b);
   return aBase.localeCompare(bBase);
-}
-
-/**
- * Build a directory tree from a flat list of file paths.
- * Collapses single-child directories (e.g., packages/electron/src becomes one node).
- */
-function buildDirectoryTree(filePaths: string[]): DirectoryNode {
-  const root: DirectoryNode = {
-    path: '',
-    displayPath: '',
-    files: [],
-    subdirectories: new Map(),
-    fileCount: 0
-  };
-
-  filePaths.forEach(filePath => {
-    const parts = filePath.split('/');
-
-    // If file is at root level (no directory)
-    if (parts.length === 1) {
-      root.files.push(filePath);
-      root.fileCount++;
-      return;
-    }
-
-    // Build directory tree
-    let currentNode = root;
-    const dirParts = parts.slice(0, -1);
-
-    dirParts.forEach((part, index) => {
-      const pathSoFar = dirParts.slice(0, index + 1).join('/');
-
-      if (!currentNode.subdirectories.has(part)) {
-        currentNode.subdirectories.set(part, {
-          path: pathSoFar,
-          displayPath: part,
-          files: [],
-          subdirectories: new Map(),
-          fileCount: 0
-        });
-      }
-
-      currentNode = currentNode.subdirectories.get(part)!;
-    });
-
-    currentNode.files.push(filePath);
-    currentNode.fileCount++;
-  });
-
-  // Update file counts up the tree
-  const updateCounts = (node: DirectoryNode): number => {
-    let count = node.files.length;
-    node.subdirectories.forEach(subdir => {
-      count += updateCounts(subdir);
-    });
-    node.fileCount = count;
-    return count;
-  };
-  updateCounts(root);
-
-  return collapseDirectoryTree(root);
-}
-
-/**
- * Collapse single-child directory paths (e.g., packages/electron/src -> packages/electron/src)
- */
-function collapseDirectoryTree(node: DirectoryNode): DirectoryNode {
-  // First, recursively collapse all subdirectories
-  node.subdirectories.forEach((subdir, key) => {
-    node.subdirectories.set(key, collapseDirectoryTree(subdir));
-  });
-
-  // If this node has exactly one subdirectory and no files, collapse it
-  if (node.subdirectories.size === 1 && node.files.length === 0) {
-    const [, childNode] = Array.from(node.subdirectories.entries())[0];
-
-    // Merge the paths
-    const newDisplayPath = node.displayPath
-      ? `${node.displayPath}/${childNode.displayPath}`
-      : childNode.displayPath;
-
-    return {
-      ...childNode,
-      displayPath: newDisplayPath
-    };
-  }
-
-  return node;
-}
-
-/**
- * Get all folder paths in a tree (for expand all functionality)
- */
-function getAllFolderPaths(node: DirectoryNode, paths: string[] = []): string[] {
-  if (node.path) {
-    paths.push(node.path);
-  }
-  node.subdirectories.forEach(subdir => {
-    getAllFolderPaths(subdir, paths);
-  });
-  return paths;
 }
 
 interface StructuredCommitResult {
@@ -598,12 +497,12 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
 
   // Build directory tree from files
   const directoryTree = useMemo(() => {
-    return buildDirectoryTree(initialFilesToStage);
+    return buildFileDirectoryTree(initialFilesToStage, filePath => filePath);
   }, [initialFilesToStage]);
 
   // Auto-expand all folders on mount
   useEffect(() => {
-    const allPaths = getAllFolderPaths(directoryTree);
+    const allPaths = getFileDirectoryPaths(directoryTree);
     setExpandedFolders(new Set(allPaths));
   }, [directoryTree]);
 
@@ -699,7 +598,7 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
   // Render a single file item
   const renderFile = (filePath: string, isInDirectory = false) => {
     const isSelected = filesToStage.has(filePath);
-    const fileName = filePath.split('/').pop() || filePath;
+    const fileName = getFilePathBasename(filePath);
     const status = fileStatusMap.get(filePath) || 'modified';
     const isPinned = isActive(filePath);
     return (
@@ -987,7 +886,7 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
               </div>
               <div className="flex flex-wrap gap-1">
                 {Array.from(filesToStage).map((filePath) => {
-                  const fileName = filePath.split('/').pop() || filePath;
+                  const fileName = getFilePathBasename(filePath);
                   const status = fileStatusMap.get(filePath) || 'modified';
                   return (
                     <div key={filePath} className="text-xs" title={filePath}>
@@ -1056,7 +955,7 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
             </div>
             <div className="flex flex-wrap gap-1">
               {initialFilesToStage.map((filePath) => {
-                const fileName = filePath.split('/').pop() || filePath;
+                const fileName = getFilePathBasename(filePath);
                 const status = fileStatusMap.get(filePath) || 'modified';
                 return (
                   <div key={filePath} className="text-xs" title={filePath}>

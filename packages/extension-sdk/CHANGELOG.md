@@ -8,12 +8,19 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 
 | SDK version | Minimum Nimbalyst app version |
 | --- | --- |
+| 0.2.2 | 0.58.5 |
 | 0.2.1 | 0.58.5 |
 | 0.2.0 | 0.58.5 |
 | 0.1.5 | 0.58.5 |
 | 0.1.0 | 0.58.5 |
 
 ## [Unreleased]
+
+## [0.2.2]
+
+### Added
+
+- Host-provided tracker reference chips and pickers let extensions persist stable item keys while using Nimbalyst's live metadata and navigation.
 
 ## [0.2.1]
 

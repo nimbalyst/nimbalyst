@@ -74,6 +74,7 @@ interface TrackerMainViewProps {
   onSwitchToFilesMode?: () => void;
   workspacePath?: string;
   trackerTypes: TrackerDataModel[];
+  onClearSidebarFilters: () => void;
 }
 
 export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
@@ -84,6 +85,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   onSwitchToFilesMode,
   workspacePath,
   trackerTypes,
+  onClearSidebarFilters,
 }) => {
   const [sortBy, setSortBy] = useState<TrackerSortColumn>('lastIndexed');
   const [sortDirection, setSortDirection] = useState<TrackerSortDirection>('desc');
@@ -358,6 +360,16 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   const toggleSource = useCallback((key: string) => {
     setSourceFilter((cur) => (cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]));
   }, []);
+
+  const hasExternalTableFilters = activeFilters.length > 0 || tagFilter.length > 0 || sourceFilter.length > 0;
+  const clearTableFilters = useCallback(() => {
+    setSearchQuery('');
+    setTagQuery('');
+    setShowTagDropdown(false);
+    setTagFilter([]);
+    setSourceFilter([]);
+    onClearSidebarFilters();
+  }, [onClearSidebarFilters]);
 
   const tagMenu = useFloatingMenu({
     placement: 'bottom-start',
@@ -933,6 +945,8 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onDeleteItems={handleDeleteItems}
               onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
               searchQuery={searchQuery}
+              hasExternalFilters={hasExternalTableFilters}
+              onClearFilters={clearTableFilters}
               columnConfig={columnConfig}
               onColumnConfigChange={handleColumnConfigChange}
             />
@@ -955,6 +969,8 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onDeleteItems={handleDeleteItems}
               onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
               searchQuery={searchQuery}
+              hasExternalFilters={hasExternalTableFilters}
+              onClearFilters={clearTableFilters}
               columnConfig={columnConfig}
               onColumnConfigChange={handleColumnConfigChange}
             />

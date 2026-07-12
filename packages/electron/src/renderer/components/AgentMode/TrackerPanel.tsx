@@ -79,9 +79,14 @@ export const TrackerPanel: React.FC<TrackerPanelProps> = React.memo(({
   }, [toggleCollapsed]);
 
   const handleNavigate = useCallback((itemId: string) => {
-    setTrackerLayout({ selectedItemId: itemId });
-    setWindowMode('tracker');
-  }, [setTrackerLayout, setWindowMode]);
+    // Dispatch the platform-neutral navigation intent. The host (App) routes
+    // it: in Agent Mode it opens the tracker as a workstream resource tab; in
+    // other modes it falls back to Tracker Mode. This keeps TrackerPanel from
+    // owning a Tracker-Mode-only navigation path.
+    window.dispatchEvent(
+      new CustomEvent('nimbalyst:navigate-tracker-item', { detail: { itemId } })
+    );
+  }, []);
 
   // Don't render if no linked tracker items
   if (linkedItemIds.length === 0) {

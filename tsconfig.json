@@ -15,6 +15,7 @@
       "@nimbalyst/runtime": ["./packages/runtime/src/index.ts"],
       "@nimbalyst/runtime/*": ["./packages/runtime/src/*"],
       "@nimbalyst/extension-sdk": ["./packages/extension-sdk/src/index.ts"],
+      "@nimbalyst/extension-sdk/file-tree": ["./packages/extension-sdk/src/fileDirectoryTree.ts"],
       "@nimbalyst/extension-sdk/*": ["./packages/extension-sdk/src/*"]
     }
   },

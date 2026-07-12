@@ -210,10 +210,14 @@ export class DocumentSyncProvider {
   // Compaction state
   /**
    * Server sequence covered by the latest snapshot we know about. Updated
-   * when (a) we apply a server snapshot during sync, and (b) we send our
-   * own `docCompact`. Used to compute how many updates have accumulated.
+   * when (a) we apply a server snapshot during sync, and (b) the server
+   * acknowledges our own `docCompact`. Used to compute how many updates have
+   * accumulated.
    */
   private lastSnapshotSeq = 0;
+  private pendingCompactionId: string | null = null;
+  private compactionAckTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly COMPACTION_ACK_TIMEOUT_MS = 10_000;
 
   /**
    * True once ANY snapshot/update/broadcast failed to decode and was skipped
@@ -353,6 +357,8 @@ export class DocumentSyncProvider {
   disconnect(): void {
     this.cancelReconnect();
     this.clearReplayAckTimer();
+    this.clearCompactionAckTimer();
+    this.pendingCompactionId = null;
     this.connecting = false;
     this.suppressReconnect = true;
     this.requeueInflightPendingUpdate();
@@ -820,6 +826,9 @@ export class DocumentSyncProvider {
           break;
         case 'docUpdateAck':
           this.handleUpdateAck(msg);
+          break;
+        case 'docCompactAck':
+          this.handleCompactionAck(msg);
           break;
         case 'docAwarenessBroadcast':
           await this.handleAwarenessBroadcast(msg);
@@ -1490,6 +1499,7 @@ export class DocumentSyncProvider {
     if (this.destroyed) return;
     if (!this.synced) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (this.pendingCompactionId) return;
     // Skip while we have unacked local writes -- otherwise the snapshot would
     // include local state beyond `replacesUpTo`, and that state would also
     // appear in the subsequent update once acked, doubling the payload (benign
@@ -1535,22 +1545,62 @@ export class DocumentSyncProvider {
 
     try {
       const { encrypted, iv } = await this.encryptForWire(stateBytes);
+      const clientCompactId = `compact-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       this.send({
         type: 'docCompact',
         encryptedState: encrypted,
         iv,
         replacesUpTo: currentSeq,
+        clientCompactId,
         orgKeyFingerprint: this.wireOrgKeyFingerprint,
       });
-      this.lastSnapshotSeq = currentSeq;
+      this.pendingCompactionId = clientCompactId;
+      this.scheduleCompactionAckTimeout(clientCompactId);
       this.lastCompactionAttemptAt = Date.now();
       console.log(
-        `[DocumentSync] Sent docCompact: replacesUpTo=${currentSeq}, snapshotBytes=${stateBytes.byteLength}`
+        `[DocumentSync] Sent docCompact awaiting ack: replacesUpTo=${currentSeq}, snapshotBytes=${stateBytes.byteLength}`
       );
     } catch (err) {
       // Optimistic: leave lastSnapshotSeq untouched so the next check retries.
       console.warn('[DocumentSync] Failed to send compaction snapshot:', err);
     }
+  }
+
+  private handleCompactionAck(msg: Extract<DocServerMessage, { type: 'docCompactAck' }>): void {
+    if (msg.clientCompactId && msg.clientCompactId !== this.pendingCompactionId) {
+      return;
+    }
+
+    this.clearCompactionAckTimer();
+    this.pendingCompactionId = null;
+    this.lastCompactionAttemptAt = Date.now();
+    if (!msg.accepted) {
+      console.warn(
+        `[DocumentSync] Compaction rejected: ${msg.error?.code ?? 'unknown'} ${msg.error?.message ?? ''}`.trim()
+      );
+      return;
+    }
+
+    this.lastSnapshotSeq = Math.max(this.lastSnapshotSeq, msg.replacesUpTo);
+    console.log(
+      `[DocumentSync] Compaction acknowledged: replacesUpTo=${msg.replacesUpTo}${msg.deduplicated ? ', deduplicated=true' : ''}`
+    );
+  }
+
+  private scheduleCompactionAckTimeout(clientCompactId: string): void {
+    this.clearCompactionAckTimer();
+    this.compactionAckTimer = setTimeout(() => {
+      this.compactionAckTimer = null;
+      if (this.pendingCompactionId !== clientCompactId) return;
+      this.pendingCompactionId = null;
+      console.warn('[DocumentSync] Compaction acknowledgement timed out; will retry when eligible');
+    }, DocumentSyncProvider.COMPACTION_ACK_TIMEOUT_MS);
+  }
+
+  private clearCompactionAckTimer(): void {
+    if (!this.compactionAckTimer) return;
+    clearTimeout(this.compactionAckTimer);
+    this.compactionAckTimer = null;
   }
 }
 

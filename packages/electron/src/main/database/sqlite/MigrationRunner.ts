@@ -121,6 +121,11 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'read_receipts',
       sqlFile: path.join(schemaDir, '0016_read_receipts.sql'),
     },
+    {
+      version: 17,
+      name: 'tracker_type_navigation',
+      sqlFile: path.join(schemaDir, '0017_tracker_type_navigation.sql'),
+    },
   ];
 }
 

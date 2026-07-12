@@ -2746,6 +2746,33 @@ class PGLiteWorker {
       console.error('[PGLite Worker] Failed to create read_receipts table:', error);
       throw error;
     }
+
+    // Migration: shared tracker-type folder navigation (schema version 17).
+    // JSONB is selected as a whole column and parsed defensively by consumers.
+    // Mirror of SQLite migration 0017_tracker_type_navigation.sql.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tracker_type_navigation (
+          workspace   TEXT NOT NULL,
+          entry_id    TEXT NOT NULL,
+          kind        TEXT NOT NULL,
+          payload     JSONB NOT NULL,
+          updated     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at  TIMESTAMPTZ,
+          sync_id     BIGINT,
+          sync_status TEXT NOT NULL DEFAULT 'local',
+          PRIMARY KEY (workspace, entry_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tracker_type_navigation_sync
+          ON tracker_type_navigation (workspace, sync_status);
+        CREATE INDEX IF NOT EXISTS idx_tracker_type_navigation_cursor
+          ON tracker_type_navigation (workspace, sync_id);
+      `);
+      console.log('[PGLite Worker] tracker_type_navigation table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tracker_type_navigation table:', error);
+      throw error;
+    }
   }
 
   async query(message) {

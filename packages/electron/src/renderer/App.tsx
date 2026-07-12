@@ -54,7 +54,9 @@ import { TabsProvider } from './contexts/TabsContext';
 import { DocumentModelRegistry } from './services/document-model/DocumentModelRegistry';
 import {
   addWorkstreamFileAtom,
+  addWorkstreamTrackerAtom,
   setWorkstreamLayoutModeAtom,
+  workstreamStateAtom,
 } from './store/atoms/workstreamState';
 import {
   addSessionFullAtom,
@@ -1486,18 +1488,46 @@ export default function App() {
   useEffect(() => {
     const handleNavigateTrackerItem = (e: Event) => {
       const itemId = (e as CustomEvent).detail?.itemId;
-      if (typeof itemId === 'string') {
-        setActiveMode('tracker');
-        store.set(trackerModeLayoutAtom, (current) => ({
-          ...current,
-          selectedItemId: itemId,
-        }));
+      if (typeof itemId !== 'string') return;
+
+      // Contextual navigation: in Agent Mode with a workstream selected, open
+      // the tracker as a workstream resource tab (statefully attached to the
+      // workstream) instead of switching the whole window to Tracker Mode.
+      const currentMode = activeModeStateRef.current;
+      const selection = workspacePath
+        ? store.get(selectedWorkstreamAtom(workspacePath))
+        : null;
+      if (currentMode === 'agent' && selection?.id) {
+        const workstreamId = selection.id;
+        const layout = store.get(workstreamStateAtom(workstreamId)).layoutMode;
+        if (layout === 'transcript') {
+          // Editor strip not mounted: seed openResources so the mount-time
+          // restore projects the tracker tab, then reveal the strip.
+          store.set(addWorkstreamTrackerAtom, { workstreamId, trackerItemId: itemId });
+          store.set(setWorkstreamLayoutModeAtom, { workstreamId, mode: 'split' });
+        } else {
+          // Already mounted: open imperatively. TabsContext is authoritative
+          // once mounted; the persist effect mirrors the change to openResources.
+          window.dispatchEvent(
+            new CustomEvent('nimbalyst:workstream-open-tracker', {
+              detail: { workstreamId, trackerItemId: itemId },
+            })
+          );
+        }
+        return;
       }
+
+      // Default: switch to Tracker Mode and select the item.
+      setActiveMode('tracker');
+      store.set(trackerModeLayoutAtom, (current) => ({
+        ...current,
+        selectedItemId: itemId,
+      }));
     };
 
     window.addEventListener('nimbalyst:navigate-tracker-item', handleNavigateTrackerItem);
     return () => window.removeEventListener('nimbalyst:navigate-tracker-item', handleNavigateTrackerItem);
-  }, [setActiveMode]);
+  }, [setActiveMode, workspacePath]);
 
   // Listen for PR navigation events (from tracker detail / session panels) —
   // the PR-view leg of the PR ↔ tracker ↔ session navigation triangle.

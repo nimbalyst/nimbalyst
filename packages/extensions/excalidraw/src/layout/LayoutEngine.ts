@@ -6,7 +6,7 @@
  */
 
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
-import type { LayoutAlgorithm, LayoutOptions } from '../types';
+import type { LayoutOptions } from '../types';
 
 interface LayoutNode {
   id: string;
@@ -97,7 +97,7 @@ export class LayoutEngine {
   /**
    * Calculate default position when no reference element is given
    */
-  calculateDefaultPosition(width: number, height: number): { x: number; y: number } {
+  calculateDefaultPosition(_width: number, _height: number): { x: number; y: number } {
     if (this.nodes.size === 0) {
       return { x: 100, y: 100 };
     }
@@ -250,7 +250,7 @@ export class LayoutEngine {
   /**
    * Force-directed layout (suitable for network diagrams)
    */
-  private forceDirectedLayout(options: LayoutOptions): Map<string, { x: number; y: number }> {
+  private forceDirectedLayout(_options: LayoutOptions): Map<string, { x: number; y: number }> {
     const positions = new Map<string, { x: number; y: number }>();
 
     // Initialize random positions
@@ -281,8 +281,8 @@ export class LayoutEngine {
       }
 
       // Repulsion between all pairs
-      for (const [id1, node1] of this.nodes) {
-        for (const [id2, node2] of this.nodes) {
+      for (const id1 of this.nodes.keys()) {
+        for (const id2 of this.nodes.keys()) {
           if (id1 === id2) continue;
 
           const pos1 = positions.get(id1)!;
@@ -313,7 +313,6 @@ export class LayoutEngine {
 
           const dx = pos2.x - pos1.x;
           const dy = pos2.y - pos1.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
 
           const fx = dx * attractionStrength;
           const fy = dy * attractionStrength;

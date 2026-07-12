@@ -42,6 +42,7 @@ export {
   TrackerReferenceNode,
   TrackerReferenceTransformer,
   TrackerReferenceChip,
+  TrackerReferencePicker,
   $createTrackerReferenceNode,
   $isTrackerReferenceNode,
   TRACKER_REFERENCE_URN_SCHEME,
@@ -51,6 +52,8 @@ export {
 export type {
   ResolvedTrackerReference,
   SerializedTrackerReferenceNode,
+  TrackerReferenceChipProps,
+  TrackerReferencePickerProps,
 } from './plugins/TrackerLinkPlugin';
 // `DiffApprovalBarPlugin` / `DiffApprovalBar` were dropped -- the live diff approval UI is
 // `UnifiedDiffHeader` in the electron renderer, fed by `useLexicalDiffState`.

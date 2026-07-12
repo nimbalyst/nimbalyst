@@ -57,6 +57,17 @@ export interface EncryptedTrackerSchemaEnvelope {
   orgKeyFingerprint: string | null;
 }
 
+/** One shared tracker-sidebar navigation entry (folder or type placement). */
+export interface EncryptedTrackerNavigationEnvelope {
+  entryId: string;
+  syncId: SyncId;
+  encryptedPayload: string | null;
+  iv?: string;
+  updatedAt: number;
+  deletedAt: number | null;
+  orgKeyFingerprint: string | null;
+}
+
 // ============================================================================
 // Client -> Server Messages
 // ============================================================================
@@ -67,7 +78,23 @@ export type TrackerClientMessage =
   | TrackerSetConfigMessage
   | TrackerSchemaSyncRequestMessage
   | TrackerSchemaMutationRequestMessage
+  | TrackerNavigationSyncRequestMessage
+  | TrackerNavigationMutationRequestMessage
   | TrackerPingMessage;
+
+export interface TrackerNavigationSyncRequestMessage {
+  type: 'trackerNavigationSync';
+  sinceSyncId: SyncId;
+}
+
+export interface TrackerNavigationMutationRequestMessage {
+  type: 'trackerNavigationMutation';
+  clientMutationId: string;
+  entryId: string;
+  encryptedPayload: string | null;
+  iv?: string;
+  orgKeyFingerprint: string | null;
+}
 
 /** Request the schema delta since a cursor. `sinceSyncId: 0` bootstraps. */
 export interface TrackerSchemaSyncRequestMessage {
@@ -129,9 +156,36 @@ export type TrackerServerMessage =
   | TrackerSchemaSyncResponseMessage
   | TrackerSchemaDeltaMessage
   | TrackerSchemaMutationAckMessage
+  | TrackerNavigationSyncResponseMessage
+  | TrackerNavigationDeltaMessage
+  | TrackerNavigationMutationAckMessage
   | TrackerPongMessage
   | TrackerRoomMovedMessage
   | TrackerErrorMessage;
+
+export interface TrackerNavigationSyncResponseMessage {
+  type: 'trackerNavigationSyncResponse';
+  entries: EncryptedTrackerNavigationEnvelope[];
+  cursorSyncId: SyncId;
+  hasMore: boolean;
+}
+
+export interface TrackerNavigationDeltaMessage {
+  type: 'trackerNavigationDelta';
+  entry: EncryptedTrackerNavigationEnvelope;
+}
+
+export interface TrackerNavigationMutationAckMessage {
+  type: 'trackerNavigationMutationAck';
+  clientMutationId: string;
+  accepted: boolean;
+  syncId?: SyncId;
+  entry?: EncryptedTrackerNavigationEnvelope;
+  error?: {
+    code: TrackerMutationRejectCode;
+    message: string;
+  };
+}
 
 export interface TrackerSchemaSyncResponseMessage {
   type: 'trackerSchemaSyncResponse';

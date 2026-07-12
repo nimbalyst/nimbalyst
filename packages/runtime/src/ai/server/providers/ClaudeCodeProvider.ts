@@ -3155,8 +3155,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         timestamp: Date.now(),
       });
 
-      // Persist the response as a message for sync and audit trail
-      if (sessionId) {
+      // Mobile response handlers persist the durable response before invoking
+      // the provider so stale-response cutoffs remain correct. Desktop callers
+      // still rely on the provider-owned write here.
+      if (sessionId && respondedBy !== 'mobile') {
         const responseContent = {
           type: 'exit_plan_mode_response' as const,
           requestId,

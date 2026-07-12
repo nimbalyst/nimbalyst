@@ -49,6 +49,14 @@ describe('compareFilesByBasename', () => {
     expect(files.slice().sort(compareFilesByBasename)).toEqual(['a.md', 'm.md', 'z.md']);
   });
 
+  it('sorts Windows paths by basename', () => {
+    const files = ['deep\\zebra.ts', 'shallow\\apple.ts'];
+    expect(files.slice().sort(compareFilesByBasename)).toEqual([
+      'shallow\\apple.ts',
+      'deep\\zebra.ts',
+    ]);
+  });
+
   it('is stable across already-sorted input', () => {
     const files = ['a.md', 'b.md', 'c.md'];
     expect(files.slice().sort(compareFilesByBasename)).toEqual(['a.md', 'b.md', 'c.md']);

@@ -25,6 +25,7 @@ import {
 } from '../services/ai/gitCommitProposalPromptUtils';
 import { enrichTranscriptMessagesWithToolCallDiffs } from '../services/TranscriptToolCallEnricher';
 import { setSessionPendingPrompt } from '../services/ai/pendingPromptPersistence';
+import { normalizeSessionPhaseMetadataUpdate } from '../services/session/sessionPhaseTransition';
 
 // Initialize session manager
 const sessionManager = new SessionManager();
@@ -454,7 +455,8 @@ export async function registerSessionHandlers() {
     safeHandle('sessions:update-session-metadata', async (event, sessionId: string, updates: any) => {
         try {
             // Extract sessionType and metadata from updates
-            const { sessionType, ...metadataFields } = updates;
+            const { sessionType, ...rawMetadataFields } = updates;
+            const metadataFields = normalizeSessionPhaseMetadataUpdate(rawMetadataFields);
 
             // Build update payload
             const updatePayload: any = {};

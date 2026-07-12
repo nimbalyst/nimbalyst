@@ -40,6 +40,8 @@ export interface DocCompactMessage {
   encryptedState: string;
   iv: string;
   replacesUpTo: number;
+  /** Correlates the server acknowledgement with this compaction attempt. */
+  clientCompactId?: string;
   /** Org key fingerprint for epoch enforcement. Server rejects stale-key writes. */
   orgKeyFingerprint?: string;
 }
@@ -79,6 +81,7 @@ export type DocServerMessage =
   | DocSyncResponseMessage
   | DocUpdateBroadcastMessage
   | DocUpdateAckMessage
+  | DocCompactAckMessage
   | DocAwarenessBroadcastMessage
   | KeyEnvelopeMessage
   | DocRoomMovedMessage
@@ -127,6 +130,19 @@ export interface DocUpdateAckMessage {
   type: 'docUpdateAck';
   clientUpdateId: string;
   sequence: number;
+}
+
+/** Acknowledge a compaction only after its snapshot and pruning commit. */
+export interface DocCompactAckMessage {
+  type: 'docCompactAck';
+  clientCompactId?: string;
+  accepted: boolean;
+  replacesUpTo: number;
+  deduplicated?: boolean;
+  error?: {
+    code: string;
+    message: string;
+  };
 }
 
 /** Broadcast encrypted awareness state to other connections */

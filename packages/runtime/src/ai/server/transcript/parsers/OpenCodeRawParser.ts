@@ -159,6 +159,10 @@ export class OpenCodeRawParser implements IRawMessageParser {
     const eventType = typeof sseEvent.type === 'string' ? sseEvent.type : '';
     const props = (sseEvent.properties ?? {}) as Record<string, unknown>;
 
+    // KEEP IN SYNC with OPENCODE_SYNCED_EVENT_TYPES in syncContentTruncator.ts:
+    // the session-room sync filter whitelists exactly the event types this
+    // switch can render. If a new case is added here without updating that
+    // set, mobile will never receive the rows to render it.
     switch (eventType) {
       case 'message.updated':
         return this.parseMessageUpdated(props);

@@ -44,6 +44,10 @@ import {
   COLLAB_INIT_ORIGIN,
   setTranscriptMarkdownContributions,
   clearTranscriptMarkdownContributions,
+  TrackerReferenceChip,
+  TrackerReferencePicker,
+  navigateToTrackerReference,
+  useResolvedTrackerReference,
 } from '@nimbalyst/runtime';
 
 // yJS singletons shared with extensions: the host's Y.Doc passes by reference
@@ -475,6 +479,10 @@ CHECK:
         COLLAB_INIT_ORIGIN,
         setTranscriptMarkdownContributions,
         clearTranscriptMarkdownContributions,
+        TrackerReferenceChip,
+        TrackerReferencePicker,
+        navigateToTrackerReference,
+        useResolvedTrackerReference,
         // Editor components - extensions can use these instead of bundling their own
         // MarkdownEditor is the configured wrapper with platform features (image handling, toolbar)
         MarkdownEditor: NimbalystMarkdownEditor,

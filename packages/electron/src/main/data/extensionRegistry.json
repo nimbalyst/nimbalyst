@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-03T14:13:16.731Z",
+  "generatedAt": "2026-07-12T17:02:11.019Z",
   "extensions": [
     {
       "id": "com.nimbalyst.astro",
@@ -530,7 +530,7 @@
       "id": "com.nimbalyst.mindmap",
       "name": "Nimbalyst Mindmap",
       "description": "A freeform spatial mindmap editor with AI-assisted editing",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "author": "Nimbalyst",
       "categories": [
         "diagrams"
@@ -551,16 +551,16 @@
         "filesystem"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.mindmap/1.0.1",
-      "checksum": "429c8e357015d5512f82a8e507de2e7086c190062b3effe6127985cca253396c",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.mindmap/1.0.2",
+      "checksum": "f28c28ee751a0188793fdf36e3bb8690e5bd6dc9451c46c32890eb10620d6446",
       "repositoryUrl": "",
       "changelog": "",
       "tagline": "Freeform spatial mindmap editor with AI-assisted editing",
       "longDescription": "Create hierarchical mind maps on an infinite canvas. Add nodes, color-code branches, attach notes and tags, and use the AI to generate entire mind maps from a topic.",
       "highlights": [
-        "Infinite canvas with keyboard-driven node creation",
-        "Color-coded branches, notes, tags, and status per node",
-        "AI generates complete mind maps from a topic description"
+        "Continuous keyboard capture with spatial navigation and branch focus",
+        "Hybrid layouts preserve manual positions, notes, links, tags, and status",
+        "Context-aware AI expands and reorganizes branches atomically"
       ],
       "fileTypes": [
         ".mindmap"
@@ -768,6 +768,62 @@
       "longDescription": "",
       "highlights": [],
       "fileTypes": []
+    },
+    {
+      "id": "com.nimbalyst.replicad",
+      "name": "Replicad CAD",
+      "description": "Agentic 3D-CAD editor built on Replicad (OpenCascade.js / OCCT-in-wasm): a real B-rep kernel with fillets, chamfers, STEP import/export, live preview, and AI see-correct tools.",
+      "version": "0.1.0",
+      "author": "Nimbalyst",
+      "categories": [
+        "code",
+        "3d"
+      ],
+      "tags": [
+        "replicad",
+        "opencascade",
+        "occt",
+        "cad",
+        "3d",
+        "b-rep",
+        "step",
+        "stl",
+        "obj",
+        "modeling"
+      ],
+      "icon": "deployed_code",
+      "screenshots": [
+        {
+          "src": "https://extensions.nimbalyst.com/screenshots/com.nimbalyst.replicad/com.nimbalyst.replicad-0-dark.png",
+          "alt": "Replicad CAD screenshot",
+          "srcLight": "https://extensions.nimbalyst.com/screenshots/com.nimbalyst.replicad/com.nimbalyst.replicad-0-light.png"
+        }
+      ],
+      "downloads": 0,
+      "featured": true,
+      "permissions": [
+        "filesystem",
+        "ai"
+      ],
+      "minimumAppVersion": "1.0.0",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.replicad/0.1.0",
+      "checksum": "11499bfcd64da3edf7cb249761da93253ba45608c0dce80af75cea8683edacfa",
+      "repositoryUrl": "https://github.com/nimbalyst/nimbalyst-replicad",
+      "changelog": "0.1.0: Initial public release with Replicad TypeScript modeling, live OCCT preview, Customizer parameters, STEP import/export, and AI inspection tools.",
+      "tagline": "Code-CAD with a real B-rep kernel and an AI see-correct loop",
+      "longDescription": "Replicad models (*.replicad.ts) get a project-aware split editor: TypeScript on the left, a live B-rep preview on the right, and a Customizer parameter panel. Built on the full OCCT kernel compiled to wasm, it supports fillets/chamfers, STEP import of vendor parts, and STEP/STL/3MF/OBJ export. AI tools compile, render multi-view screenshots, measure geometry, and run printability checks so the agent can see and correct the parts it builds.",
+      "highlights": [
+        "Real B-rep kernel (OCCT) — fillets, chamfers, booleans, STEP",
+        "Split editor with TypeScript and live model preview",
+        "Customizer panel: numbers, booleans, enums, vectors, grouped sections",
+        "AI see-correct loop: multi-view inspect, metrics, printability checks",
+        "STEP import of vendor / McMaster parts; STEP/STL/3MF/OBJ export"
+      ],
+      "fileTypes": [
+        ".replicad.ts",
+        ".stl",
+        ".obj"
+      ]
     },
     {
       "id": "com.nimbalyst.slides",

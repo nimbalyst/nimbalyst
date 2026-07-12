@@ -462,11 +462,13 @@ export class ExcalidrawBinding {
         ? { background: user.color, stroke: user.color }
         : undefined,
       avatarUrl: user.avatarUrl,
-      userState: user.state,
-      // Cast: Collaborator type marks socketId as optional but Excalidraw
-      // requires a string at runtime for keying purposes.
-      socketId: clientId.toString() as unknown as Collaborator['socketId'],
-    };
+      // Cast: our wire value is the plain string, Excalidraw types it as the
+      // UserIdleState enum (same runtime values).
+      userState: user.state as unknown as Collaborator['userState'],
+      // Excalidraw keys collaborators by socketId at runtime, but the 0.17.6
+      // Collaborator type doesn't declare the property yet.
+      socketId: clientId.toString(),
+    } as Collaborator;
   }
 
   /**

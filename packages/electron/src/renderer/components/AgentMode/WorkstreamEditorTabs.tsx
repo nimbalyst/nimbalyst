@@ -17,172 +17,22 @@ import { TabsProvider, useTabs, useTabsActions } from '../../contexts/TabsContex
 import { TabManager } from '../TabManager/TabManager';
 import { TabContent } from '../TabContent/TabContent';
 import { setSessionTabCountAtom } from '../../store';
-import { workstreamStateAtom, workstreamStatesLoadedAtom } from '../../store/atoms/workstreamState';
+import {
+  workstreamStateAtom,
+  workstreamStatesLoadedAtom,
+  setWorkstreamResourcesAtom,
+  trackerResourceId,
+  isTrackerResourceId,
+  fileResource,
+  trackerResource,
+  type WorkstreamResource,
+} from '../../store/atoms/workstreamState';
 import { fileDeletedAtomFamily } from '../../store/atoms/fileWatch';
-
-// Current tab state - always kept up to date for sync flush on unmount
-const currentTabState = new Map<string, {
-  workspacePath: string;
-  tabs: Array<{ filePath: string; id: string }>;
-  activeTabId: string | null;
-}>();
-
-// Debounce timer for persisting tabs
-const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-/**
- * Actually perform the persist to workspace state.
- */
-async function doPersist(workstreamId: string): Promise<void> {
-  const data = currentTabState.get(workstreamId);
-  if (!data) return;
-
-  persistTimers.delete(workstreamId);
-
-  try {
-    const workspaceState = await window.electronAPI.invoke('workspace:get-state', data.workspacePath);
-    const existingStates = workspaceState?.workstreamEditorStates ?? {};
-
-    await window.electronAPI.invoke('workspace:update-state', data.workspacePath, {
-      workstreamEditorStates: {
-        ...existingStates,
-        [workstreamId]: {
-          openTabs: data.tabs.map(t => ({
-            filePath: t.filePath,
-            isActive: t.id === data.activeTabId,
-          })),
-        },
-      },
-    });
-    // console.log('[WorkstreamEditorTabs] Persisted to workspace state:', workstreamId, data.tabs.length, 'tabs');
-  } catch (err) {
-    console.error('[WorkstreamEditorTabs] Failed to persist tabs:', err);
-  }
-}
-
-/**
- * Update current tab state and schedule persist to workspace state.
- * Debounced to avoid excessive IPC calls.
- */
-function updateTabState(
-  workstreamId: string,
-  workspacePath: string,
-  tabs: Array<{ filePath: string; id: string }>,
-  activeTabId: string | null
-): void {
-  // Always keep current state up to date (for sync flush on unmount)
-  currentTabState.set(workstreamId, { workspacePath, tabs, activeTabId });
-
-  // Clear existing timer
-  const existingTimer = persistTimers.get(workstreamId);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-  }
-
-  // Schedule persistence to workspace state
-  const timer = setTimeout(() => doPersist(workstreamId), 500);
-  persistTimers.set(workstreamId, timer);
-}
-
-/**
- * Flush current tab state to sessionStorage synchronously on unmount.
- * This ensures tabs are available immediately when switching back.
- */
-function flushToSessionStorage(workstreamId: string): void {
-  // Cancel any pending async persist
-  const existingTimer = persistTimers.get(workstreamId);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-    persistTimers.delete(workstreamId);
-  }
-
-  const data = currentTabState.get(workstreamId);
-  if (!data || data.tabs.length === 0) {
-    // console.log('[WorkstreamEditorTabs] Nothing to flush for:', workstreamId);
-    return;
-  }
-
-  // Store in sessionStorage synchronously
-  const key = `workstream-tabs-${workstreamId}`;
-  const value = JSON.stringify({
-    openTabs: data.tabs.map(t => ({
-      filePath: t.filePath,
-      isActive: t.id === data.activeTabId,
-    })),
-  });
-  sessionStorage.setItem(key, value);
-  // console.log('[WorkstreamEditorTabs] Flushed to sessionStorage:', workstreamId, data.tabs.length, 'tabs');
-
-  // Fire async persist with the data BEFORE deleting from currentTabState
-  // This ensures workspace state also gets updated
-  const dataCopy = { ...data };
-  currentTabState.delete(workstreamId);
-
-  // Persist to workspace state asynchronously (won't block unmount)
-  (async () => {
-    try {
-      const workspaceState = await window.electronAPI.invoke('workspace:get-state', dataCopy.workspacePath);
-      const existingStates = workspaceState?.workstreamEditorStates ?? {};
-
-      await window.electronAPI.invoke('workspace:update-state', dataCopy.workspacePath, {
-        workstreamEditorStates: {
-          ...existingStates,
-          [workstreamId]: {
-            openTabs: dataCopy.tabs.map(t => ({
-              filePath: t.filePath,
-              isActive: t.id === dataCopy.activeTabId,
-            })),
-          },
-        },
-      });
-      // console.log('[WorkstreamEditorTabs] Async persisted on unmount:', workstreamId);
-    } catch (err) {
-      console.error('[WorkstreamEditorTabs] Failed to persist on unmount:', err);
-    }
-  })();
-}
-
-/**
- * Load persisted workstream tabs.
- * First checks sessionStorage (sync backup), then workspace state.
- */
-async function loadWorkstreamTabs(
-  workstreamId: string,
-  workspacePath: string
-): Promise<{ filePath: string; isActive: boolean }[] | null> {
-  // First check sessionStorage (synchronous backup from flush)
-  const sessionKey = `workstream-tabs-${workstreamId}`;
-  const sessionData = sessionStorage.getItem(sessionKey);
-  if (sessionData) {
-    try {
-      const parsed = JSON.parse(sessionData);
-      if (parsed?.openTabs?.length > 0) {
-        // console.log('[WorkstreamEditorTabs] Loaded from sessionStorage:', workstreamId);
-        // Clear it after loading so workspace state takes over next time
-        sessionStorage.removeItem(sessionKey);
-        return parsed.openTabs;
-      }
-    } catch (e) {
-      console.error('[WorkstreamEditorTabs] Failed to parse sessionStorage:', e);
-    }
-  }
-
-  // Fall back to workspace state
-  try {
-    const workspaceState = await window.electronAPI.invoke('workspace:get-state', workspacePath);
-    const saved = workspaceState?.workstreamEditorStates?.[workstreamId];
-    if (saved?.openTabs) {
-      // console.log('[WorkstreamEditorTabs] Loaded from workspace state:', workstreamId);
-      return saved.openTabs;
-    }
-  } catch (err) {
-    console.error('[WorkstreamEditorTabs] Failed to load tabs:', err);
-  }
-  return null;
-}
 
 export interface WorkstreamEditorTabsRef {
   openFile: (filePath: string) => void;
+  /** Open (or focus) a tracker item as a workstream resource tab. */
+  openTracker: (trackerItemId: string) => void;
   hasTabs: () => boolean;
   getActiveFilePath: () => string | null;
   closeActiveTab: () => void;
@@ -220,26 +70,11 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
     const tabsActions = useTabsActions();
     const setTabCount = useSetAtom(setSessionTabCountAtom);
     const workstreamState = useAtomValue(workstreamStateAtom(workstreamId));
-    const setWorkstreamState = useSetAtom(workstreamStateAtom(workstreamId));
+    const setWorkstreamResources = useSetAtom(setWorkstreamResourcesAtom);
     const workstreamStatesLoaded = useAtomValue(workstreamStatesLoadedAtom);
     const prevTabCountRef = useRef(tabs.length);
     // Track restore state: 'pending' -> 'restoring' -> 'done'
     const restoreStateRef = useRef<'pending' | 'restoring' | 'done'>('pending');
-    // Defense-in-depth: only allow `[]` writes to disk after we've observed
-    // a non-empty tab state at least once. This prevents data loss on the
-    // failure paths the `workstreamStatesLoaded` gate doesn't fully cover:
-    //   1) `loadWorkstreamStates` IPC throws and the catch block flips the
-    //      loaded flag to true with an empty map - the gate passes, restore
-    //      reads empty, transitions to 'done', and persist writes [] over
-    //      the saved tabs.
-    //   2) The per-workstream `loadWorkstreamState(id)` call (fired async by
-    //      `AgentWorkstreamPanel`) loses the race against this component's
-    //      mount when the global flag is already true from a prior bulk load.
-    // Until we see at least one tab in scope, treat an empty `tabs` array as
-    // "load not complete" and skip the IPC write. New workstreams legitimately
-    // have nothing to save until the user opens a file, so the deferred write
-    // is harmless there.
-    const hasEverHadTabsRef = useRef(false);
 
     // Restore tabs from workstream state on mount.
     // Wait for workstream states to finish loading from IPC before reading
@@ -260,20 +95,23 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
       restoreStateRef.current = 'restoring';
       // console.log('[WorkstreamEditorTabs] Starting restore for workstream:', workstreamId);
 
-      // Restore from workstream state (unified source of truth)
-      const { openFilePaths, activeFilePath } = workstreamState;
-      // console.log('[WorkstreamEditorTabs] Restoring from workstream state:', openFilePaths.length, 'files, active:', activeFilePath);
+      // Restore from workstream state (unified source of truth). Project ALL
+      // typed resources into the live TabsContext: files use their path as the
+      // tab key, trackers use their `tracker://<id>` resource id. The active
+      // resource id maps directly to the restored tab's path (resource id).
+      const { openResources, activeResourceId } = workstreamState;
+      // console.log('[WorkstreamEditorTabs] Restoring resources:', openResources.length, 'active:', activeResourceId);
 
-      if (openFilePaths.length > 0) {
-        // Add all tabs
-        for (const filePath of openFilePaths) {
-          // console.log('[WorkstreamEditorTabs] Adding tab:', filePath);
-          tabsActions.addTab(filePath);
+      if (openResources.length > 0) {
+        for (const tab of openResources) {
+          const r = tab.resource;
+          const tabKey = r.kind === 'tracker' ? trackerResourceId(r.trackerItemId) : r.filePath;
+          tabsActions.addTab(tabKey);
         }
 
-        // Switch to the active tab
-        if (activeFilePath) {
-          const foundTab = tabsActions.findTabByPath(activeFilePath);
+        // Switch to the active resource (resource id == tab filePath key).
+        if (activeResourceId) {
+          const foundTab = tabsActions.findTabByPath(activeResourceId);
           if (foundTab) {
             tabsActions.switchTab(foundTab.id);
           }
@@ -294,43 +132,50 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
         setTabCount({ sessionId: workstreamId, count: tabs.length });
       }
 
-      // Always sync to workstream state atom (even during restore)
-      const activeFilePath = activeTabId ? tabs.find(t => t.id === activeTabId)?.filePath || null : null;
-      setWorkstreamState({
-        openFilePaths: tabs.map(t => t.filePath),
-        activeFilePath,
-      });
-      // console.log('[WorkstreamEditorTabs] Synced workstream state:', tabs.length, 'tabs');
+      // Always sync to workstream state atom (even during restore). This
+      // component projects BOTH file and tracker tabs into TabsContext, so it
+      // owns the whole ordered resource set. Map each live tab back to a typed
+      // resource, preserving order; the active resource id is the active tab's
+      // key (file path or tracker://<id>).
+      const resources: WorkstreamResource[] = tabs.map((t) =>
+        t.kind === 'tracker' && t.trackerItemId
+          ? trackerResource(t.trackerItemId)
+          : fileResource(t.filePath)
+      );
+      const activeResourceId = activeTabId
+        ? tabs.find((t) => t.id === activeTabId)?.filePath || null
+        : null;
+      // Persistence to disk is handled by the workstreamState atom (setWorkstreamResources
+      // schedules a debounced workspace-state write). The debounce plus the
+      // restore-effect ordering tolerate the transient empty write at mount.
+      setWorkstreamResources({ workstreamId, resources, activeResourceId });
+      // console.log('[WorkstreamEditorTabs] Synced workstream resources:', resources.length);
+    }, [tabs, tabs.length, activeTabId, workstreamId, workspacePath, setTabCount, setWorkstreamResources]);
 
-      // Latch: once we observe non-empty tabs, all subsequent writes are
-      // legitimate user edits (including closing all tabs). Before that
-      // first observation, treat empty as "not yet hydrated" and skip IPC.
-      if (tabs.length > 0) {
-        hasEverHadTabsRef.current = true;
-      }
-
-      // Only persist to IPC after restore is complete to avoid overwriting saved state
-      if (restoreStateRef.current === 'done') {
-        if (tabs.length === 0 && !hasEverHadTabsRef.current) {
-          // Skip the first empty write so a load failure or post-bulk on-demand
-          // load race can't clobber the saved tab list. The user opening any
-          // tab flips the latch and unblocks future writes.
-          return;
-        }
-        // console.log('[WorkstreamEditorTabs] Persisting tabs to workspace state:', tabs.map(t => t.filePath), 'active:', activeTabId);
-        updateTabState(workstreamId, workspacePath, tabs, activeTabId);
-      } else {
-        // console.log('[WorkstreamEditorTabs] Skipping IPC persist (still restoring), state:', restoreStateRef.current);
-      }
-    }, [tabs, tabs.length, activeTabId, workstreamId, workspacePath, setTabCount, setWorkstreamState]);
-
-    // Flush pending persist on unmount to ensure tabs are saved before switching workstreams
+    // Imperative open for an already-mounted workstream. Navigation from a
+    // transcript/TrackerPanel dispatches this event; the mounted workstream
+    // that owns the id opens (or focuses) the tracker tab directly. This avoids
+    // a reactive openResources->tabs bridge (which fights the persist path and
+    // resurrects closed tabs). After mount, TabsContext is the sole authority;
+    // openResources is a one-way persisted mirror written by the persist effect.
     useEffect(() => {
-      return () => {
-        // console.log('[WorkstreamEditorTabs] Unmounting, flushing persist for:', workstreamId);
-        flushToSessionStorage(workstreamId);
+      const handler = (e: Event) => {
+        const detail = (e as CustomEvent).detail;
+        if (!detail || detail.workstreamId !== workstreamId) return;
+        const trackerItemId = detail.trackerItemId;
+        if (typeof trackerItemId !== 'string') return;
+        const key = trackerResourceId(trackerItemId);
+        const existing = tabsActions.findTabByPath(key);
+        if (existing) {
+          tabsActions.switchTab(existing.id);
+        } else {
+          tabsActions.addTab(key);
+        }
       };
-    }, [workstreamId]);
+      window.addEventListener('nimbalyst:workstream-open-tracker', handler);
+      return () => window.removeEventListener('nimbalyst:workstream-open-tracker', handler);
+    }, [workstreamId, tabsActions]);
+
 
     // Subscribe to file-deletion atoms for every currently-open tab path so
     // the workstream tab is closed when a file is deleted on disk. Without
@@ -342,6 +187,8 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
       for (const tab of tabs) {
         const filePath = tab.filePath;
         if (!filePath) continue;
+        // Tracker tabs are not files on disk — no deletion watch.
+        if (tab.kind === 'tracker' || isTrackerResourceId(filePath)) continue;
         const deletedAtom = fileDeletedAtomFamily(filePath);
         const initial = store.get(deletedAtom);
         const unsub = store.sub(deletedAtom, () => {
@@ -363,7 +210,9 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
     // This mirrors what EditorMode does, but for workstream editor tabs
     // basePath can be either workspacePath (main project) or worktreePath (for worktree sessions)
     useEffect(() => {
-      const activeFilePath = activeTabId ? tabs.find(t => t.id === activeTabId)?.filePath || null : null;
+      const activeTab = activeTabId ? tabs.find(t => t.id === activeTabId) : undefined;
+      // Only expose a real file path to plugins; tracker tabs have none.
+      const activeFilePath = activeTab && activeTab.kind !== 'tracker' ? (activeTab.filePath || null) : null;
       (window as any).__currentDocumentPath = activeFilePath;
       (window as any).__workspacePath = basePath;
       // Also set the legacy property for compatibility
@@ -386,11 +235,24 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
           tabsActions.addTab(filePath);
           // Workstream state will be synced via the tabs useEffect
         },
+        openTracker: (trackerItemId: string) => {
+          // Tracker tabs use `tracker://<id>` as their tab key so path-based
+          // dedup focuses an already-open tracker instead of duplicating it.
+          const key = trackerResourceId(trackerItemId);
+          const existing = tabsActions.findTabByPath(key);
+          if (existing) {
+            tabsActions.switchTab(existing.id);
+            return;
+          }
+          tabsActions.addTab(key);
+        },
         hasTabs: () => tabs.length > 0,
         getActiveFilePath: () => {
           if (!activeTabId) return null;
           const activeTab = tabs.find((t) => t.id === activeTabId);
-          return activeTab?.filePath || null;
+          // Tracker tabs are not files; file consumers should see null.
+          if (!activeTab || activeTab.kind === 'tracker') return null;
+          return activeTab.filePath || null;
         },
         closeActiveTab: () => {
           if (activeTabId) {
@@ -437,7 +299,13 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
           </TabManager>
         </div>
         <div className="workstream-editor-tabs-content flex-1 min-h-0 overflow-hidden">
-          <TabContent workspaceId={basePath} onSwitchToAgentMode={onSwitchToAgentMode} onOpenSessionInChat={onOpenSessionInChat} />
+          <TabContent
+            workspaceId={basePath}
+            workstreamId={workstreamId}
+            onSwitchToAgentMode={onSwitchToAgentMode}
+            onOpenSessionInChat={onOpenSessionInChat}
+            onOpenTracker={(trackerItemId) => tabsActions.addTab(trackerResourceId(trackerItemId))}
+          />
         </div>
       </div>
     );
@@ -450,7 +318,8 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
  * Each workstream gets its own TabsProvider context, isolating file tabs
  * from the main workspace tabs.
  *
- * Tab state is persisted to workstreamEditorStates in workspace state.
+ * Tab state (typed resources: files + trackers) is persisted per workstream via
+ * the workstreamState atom (workstreamStates workspace-state key).
  */
 export const WorkstreamEditorTabs = forwardRef<WorkstreamEditorTabsRef, WorkstreamEditorTabsProps>(
   function WorkstreamEditorTabs({ workstreamId, workspacePath, basePath, isActive = true, onSwitchToAgentMode, onOpenSessionInChat, onTabDoubleClick }, ref) {
@@ -461,6 +330,7 @@ export const WorkstreamEditorTabs = forwardRef<WorkstreamEditorTabsRef, Workstre
     // Forward ref to inner component
     useImperativeHandle(ref, () => ({
       openFile: (filePath: string) => innerRef.current?.openFile(filePath),
+      openTracker: (trackerItemId: string) => innerRef.current?.openTracker(trackerItemId),
       hasTabs: () => innerRef.current?.hasTabs() ?? false,
       getActiveFilePath: () => innerRef.current?.getActiveFilePath() ?? null,
       closeActiveTab: () => innerRef.current?.closeActiveTab(),

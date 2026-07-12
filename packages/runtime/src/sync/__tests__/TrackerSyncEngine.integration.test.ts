@@ -237,6 +237,72 @@ describe('TrackerSyncEngine (in-memory)', () => {
     c.engine.destroy();
   });
 
+  it('syncs tracker folders and type placements through outbox, live delta, and bootstrap', async () => {
+    const server = createFakeServer();
+    const folder = JSON.stringify({
+      entryId: 'folder:delivery',
+      kind: 'folder',
+      folderId: 'delivery',
+      name: 'Delivery',
+      sortKey: 'a0',
+    });
+
+    const b = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const bApplied: Array<{ entryId: string; payload: string | null; syncId: number }> = [];
+    b.config.navigationSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => [],
+      applyRemote: async (def) => { bApplied.push(def); },
+    };
+    await b.engine.connect();
+    await waitUntil(() => b.engine.getStatus() === 'connected');
+
+    let pending = [{ entryId: 'folder:delivery', payload: folder, deleted: false }];
+    const a = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    a.config.navigationSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => pending,
+      applyRemote: async (def) => {
+        pending = pending.filter((entry) => entry.entryId !== def.entryId);
+      },
+    };
+    await a.engine.connect();
+    await waitUntil(() => a.engine.getStatus() === 'connected');
+    await waitUntil(() => bApplied.some((entry) => entry.entryId === 'folder:delivery'));
+    expect(JSON.parse(bApplied[0].payload!)).toMatchObject({ name: 'Delivery' });
+
+    const placement = JSON.stringify({
+      entryId: 'type:task',
+      kind: 'type-placement',
+      trackerType: 'task',
+      folderId: 'delivery',
+      sortKey: 'a0',
+    });
+    pending = [{ entryId: 'type:task', payload: placement, deleted: false }];
+    await a.engine.flushNavigation();
+    await waitUntil(() => bApplied.some((entry) => entry.entryId === 'type:task'));
+
+    const c = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const cApplied: Array<{ entryId: string; payload: string | null; syncId: number }> = [];
+    c.config.navigationSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => [],
+      applyRemote: async (def) => { cApplied.push(def); },
+    };
+    await c.engine.connect();
+    await waitUntil(() => c.engine.getStatus() === 'connected');
+    await waitUntil(() => cApplied.length === 2);
+    expect(cApplied.map((entry) => entry.entryId)).toEqual(['folder:delivery', 'type:task']);
+    expect(server.room.receivedNavigationMutations.map((entry) => entry.entryId)).toEqual([
+      'folder:delivery',
+      'type:task',
+    ]);
+
+    a.engine.destroy();
+    b.engine.destroy();
+    c.engine.destroy();
+  });
+
   // ==========================================================================
   // Stripping linked sessions at upload boundary
   // ==========================================================================

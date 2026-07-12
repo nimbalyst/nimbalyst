@@ -73,6 +73,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 ## Agent Mode
 
 - Full-screen AI session interface
+- Agent navigation badge with a grouped list of sessions awaiting input, running, or unread
 - Plan mode toggle (Shift+Tab)
 - Effort level selector (low/medium/high/max)
 - Model selector (per-session or per-workstream)

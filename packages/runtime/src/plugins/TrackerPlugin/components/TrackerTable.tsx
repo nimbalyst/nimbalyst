@@ -65,6 +65,10 @@ interface TrackerTableProps {
   onCopyDeepLink?: (itemId: string) => void;
   /** External search query from parent toolbar (replaces internal search input) */
   searchQuery?: string;
+  /** Whether filters owned by the parent are active (for the filtered empty state). */
+  hasExternalFilters?: boolean;
+  /** Clears filters owned by the parent. */
+  onClearFilters?: () => void;
   /** Column configuration (visible columns, order, widths) */
   columnConfig?: import('./trackerColumns').TypeColumnConfig;
   /** Callback when column config changes (from display options panel) */
@@ -747,6 +751,8 @@ export function TrackerTable({
   onDeleteItems,
   onCopyDeepLink,
   searchQuery: externalSearchQuery,
+  hasExternalFilters = false,
+  onClearFilters,
   columnConfig: externalColumnConfig,
   onColumnConfigChange,
 }: TrackerTableProps): JSX.Element {
@@ -809,7 +815,17 @@ export function TrackerTable({
   const [customFieldFilters, setCustomFieldFilters] = useState<Record<string, Set<string>>>({});
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const filterMenuRef = useRef<HTMLDivElement>(null);
-  const hasActiveFilters = statusFilter !== 'all' || priorityFilter !== 'all';
+  const hasCustomFieldFilters = Object.values(customFieldFilters).some(selected => selected.size > 0);
+  const hasActiveFilters = statusFilter !== 'all' || priorityFilter !== 'all' || hasCustomFieldFilters;
+  const hasAnyFilters = hasExternalFilters || Boolean(searchTerm.trim()) || hasActiveFilters;
+  const clearAllFilters = useCallback(() => {
+    setStatusFilter('all');
+    setPriorityFilter('all');
+    setCustomFieldFilters({});
+    setSearchTerm('');
+    setShowFilterMenu(false);
+    onClearFilters?.();
+  }, [onClearFilters, setSearchTerm]);
   const posthog = usePostHog();
 
   // Close filter menu on outside click
@@ -1178,7 +1194,7 @@ export function TrackerTable({
                     <div className="border-t border-[var(--nim-border)] my-1" />
                     <button
                       className="w-full text-left px-3 py-1 text-[var(--nim-text-faint)] hover:text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
-                      onClick={() => { setStatusFilter('all'); setPriorityFilter('all'); setShowFilterMenu(false); }}
+                      onClick={clearAllFilters}
                     >
                       Clear all filters
                     </button>
@@ -1227,6 +1243,26 @@ export function TrackerTable({
               <div className="tracker-table-loading flex items-center justify-center gap-3 py-6 px-6 text-[var(--nim-text-muted)]">
                 <div className="w-5 h-5 border-2 border-[var(--nim-border)] border-t-[var(--nim-primary)] rounded-full animate-spin"></div>
                 <span className="text-sm">Loading...</span>
+              </div>
+            ) : hasAnyFilters ? (
+              <div className="tracker-table-empty tracker-table-filtered-empty flex flex-col items-center justify-center gap-2 py-6 px-6 text-center">
+                <p className="text-sm text-[var(--nim-text-muted)] m-0">No tracker items match your filters</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="px-3 py-1.5 rounded-md text-xs font-medium text-white bg-[var(--nim-primary)] border-none cursor-pointer transition-colors hover:bg-[var(--nim-primary-hover)]"
+                    onClick={clearAllFilters}
+                  >
+                    Clear filters
+                  </button>
+                  {activeTypeFilter !== 'all' && onNewItem && globalRegistry.get(activeTypeFilter)?.creatable !== false && (
+                    <button
+                      className="px-3 py-1.5 rounded-md text-xs font-medium text-[var(--nim-text)] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-colors hover:bg-[var(--nim-bg-hover)]"
+                      onClick={() => onNewItem(activeTypeFilter as TrackerItemType)}
+                    >
+                      New {activeTypeFilter.charAt(0).toUpperCase() + activeTypeFilter.slice(1)}
+                    </button>
+                  )}
+                </div>
               </div>
             ) : activeTypeFilter !== 'all' ? (
               (() => {

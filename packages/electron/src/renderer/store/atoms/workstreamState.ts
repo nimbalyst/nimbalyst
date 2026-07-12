@@ -97,6 +97,78 @@ export type WorkstreamLayoutMode = 'editor' | 'split' | 'transcript';
  */
 export type FileScopeMode = 'current-changes' | 'session-files' | 'all-changes';
 
+// ============================================================
+// Workstream Resources (typed editor tabs)
+// ============================================================
+
+/**
+ * Kind of resource that can occupy a workstream editor tab.
+ * - file: a disk-backed file (canonical absolute path is the identity)
+ * - tracker: a tracker item rendered as a host resource (not a fake file)
+ */
+export type WorkstreamResourceKind = 'file' | 'tracker';
+
+/**
+ * A typed resource that can live in the shared workstream editor tab strip.
+ * `resourceId` is the stable, unique tab key.
+ *
+ * File resources use their canonical absolute path as the id so all existing
+ * path-based logic keeps working. Tracker resources use a `tracker://<itemId>`
+ * scheme so they can never be mistaken for a file/virtual-document path.
+ */
+export type WorkstreamResource =
+  | {
+      kind: 'file';
+      /** Canonical absolute file path (also the resourceId). */
+      resourceId: string;
+      filePath: string;
+    }
+  | {
+      kind: 'tracker';
+      /** `tracker://<trackerItemId>`. */
+      resourceId: string;
+      trackerItemId: string;
+    };
+
+/**
+ * Per-tab UI/presentation state that is safe to persist alongside identity.
+ * Never contains customer body content — only tracker IDs and UI flags.
+ */
+export interface WorkstreamTabPresentation {
+  /** Content-focus layout toggle for a shared tracker body. */
+  trackerContentFocus?: boolean;
+}
+
+/**
+ * A persisted workstream editor tab: a typed resource plus optional UI state.
+ */
+export interface PersistedWorkstreamTab {
+  resource: WorkstreamResource;
+  presentation?: WorkstreamTabPresentation;
+}
+
+const TRACKER_RESOURCE_PREFIX = 'tracker://';
+
+/** Build the resourceId for a tracker resource. */
+export function trackerResourceId(trackerItemId: string): string {
+  return `${TRACKER_RESOURCE_PREFIX}${trackerItemId}`;
+}
+
+/** True when a resourceId identifies a tracker resource (vs. a file path). */
+export function isTrackerResourceId(resourceId: string): boolean {
+  return resourceId.startsWith(TRACKER_RESOURCE_PREFIX);
+}
+
+/** Build a file resource descriptor. */
+export function fileResource(filePath: string): WorkstreamResource {
+  return { kind: 'file', resourceId: filePath, filePath };
+}
+
+/** Build a tracker resource descriptor. */
+export function trackerResource(trackerItemId: string): WorkstreamResource {
+  return { kind: 'tracker', resourceId: trackerResourceId(trackerItemId), trackerItemId };
+}
+
 /**
  * Complete state for a single workstream.
  * This is the single source of truth for all workstream-related state.
@@ -129,10 +201,15 @@ export interface WorkstreamState {
   filesSidebarVisible: boolean;
 
   // ===== Editor Tabs (within this workstream) =====
-  /** Open file paths in editor tabs */
-  openFilePaths: string[];
-  /** Currently active file path */
-  activeFilePath: string | null;
+  /**
+   * Open editor tabs as typed resources (files and trackers).
+   * This is the single source of truth for the shared workstream tab strip.
+   * Legacy `openFilePaths`/`activeFilePath` state migrates into `kind:'file'`
+   * resources on load (see migrateWorkstreamResources).
+   */
+  openResources: PersistedWorkstreamTab[];
+  /** resourceId of the currently active tab (file path or `tracker://<id>`). */
+  activeResourceId: string | null;
 
   // ===== Git Commit State (for Manual/Smart mode) =====
   /** Files selected for commit (staged in UI) */
@@ -161,13 +238,82 @@ function createDefaultState(id: string): WorkstreamState {
     layoutMode: 'transcript', // Start with transcript maximized
     splitRatio: 0.5,
     filesSidebarVisible: true,
-    openFilePaths: [],
-    activeFilePath: null,
+    openResources: [],
+    activeResourceId: null,
     stagedFiles: [],
     commitMessage: '',
     activeProposalId: null,
     fileScopeMode: 'all-changes', // Default to showing all changes
   };
+}
+
+/**
+ * Legacy persisted shape for workstream editor tabs (pre-typed-resources).
+ * Older workspace state stored `openFilePaths`/`activeFilePath`; newer state
+ * stores `openResources`/`activeResourceId`.
+ */
+interface LegacyWorkstreamTabState {
+  openFilePaths?: unknown;
+  activeFilePath?: unknown;
+  openResources?: unknown;
+  activeResourceId?: unknown;
+}
+
+/**
+ * Normalize persisted tab state into typed resources.
+ *
+ * - If `openResources` already exists, defensively normalize its array shape.
+ * - Otherwise migrate legacy `openFilePaths`/`activeFilePath` into `kind:'file'`
+ *   resources, preserving order and the active tab.
+ *
+ * Exported for unit testing (state-persistence migration safety).
+ */
+export function migrateWorkstreamResources(
+  raw: LegacyWorkstreamTabState | undefined | null
+): { openResources: PersistedWorkstreamTab[]; activeResourceId: string | null } {
+  if (!raw) return { openResources: [], activeResourceId: null };
+
+  // Preferred path: already-typed resources. Normalize defensively so stale or
+  // partially-written data can't crash the read.
+  if (Array.isArray(raw.openResources)) {
+    const openResources: PersistedWorkstreamTab[] = [];
+    for (const entry of raw.openResources) {
+      const resource = (entry as PersistedWorkstreamTab | undefined)?.resource;
+      if (!resource || typeof resource.resourceId !== 'string') continue;
+      if (resource.kind === 'file' && typeof (resource as { filePath?: unknown }).filePath === 'string') {
+        openResources.push({
+          resource: fileResource((resource as { filePath: string }).filePath),
+          presentation: (entry as PersistedWorkstreamTab).presentation,
+        });
+      } else if (
+        resource.kind === 'tracker' &&
+        typeof (resource as { trackerItemId?: unknown }).trackerItemId === 'string'
+      ) {
+        openResources.push({
+          resource: trackerResource((resource as { trackerItemId: string }).trackerItemId),
+          presentation: (entry as PersistedWorkstreamTab).presentation,
+        });
+      }
+    }
+    const activeResourceId =
+      typeof raw.activeResourceId === 'string' &&
+      openResources.some((t) => t.resource.resourceId === raw.activeResourceId)
+        ? raw.activeResourceId
+        : (openResources.find((t) => t.resource.kind === 'file')?.resource.resourceId ?? null);
+    return { openResources, activeResourceId };
+  }
+
+  // Legacy path: build file resources from openFilePaths.
+  const legacyPaths = Array.isArray(raw.openFilePaths)
+    ? (raw.openFilePaths.filter((p) => typeof p === 'string') as string[])
+    : [];
+  const openResources = legacyPaths.map((filePath) => ({ resource: fileResource(filePath) }));
+  const legacyActive = typeof raw.activeFilePath === 'string' ? raw.activeFilePath : null;
+  const activeResourceId =
+    legacyActive && legacyPaths.includes(legacyActive)
+      ? legacyActive
+      : (legacyPaths[0] ?? null);
+  return { openResources, activeResourceId };
 }
 
 // ============================================================
@@ -210,6 +356,19 @@ export const workstreamStateAtom = atomFamily((workstreamId: string) =>
       // Deep merge with defaults ensures all fields have values, even nested ones.
       // This handles old persisted state that's missing newly added fields.
       let state = deepMergeWorkstreamState(createDefaultState(workstreamId), stored);
+
+      // Normalize/migrate editor tabs into typed resources. Legacy state stored
+      // openFilePaths/activeFilePath; migrate it into kind:'file' resources so
+      // downstream code only ever sees the typed-resource shape.
+      const { openResources, activeResourceId } = migrateWorkstreamResources(
+        stored as LegacyWorkstreamTabState | undefined
+      );
+      if (
+        state.openResources !== openResources ||
+        state.activeResourceId !== activeResourceId
+      ) {
+        state = { ...state, openResources, activeResourceId };
+      }
 
       // Auto-determine type based on state if not explicitly set
       if (state.type === 'single') {
@@ -284,17 +443,46 @@ export const workstreamFilesSidebarVisibleAtom = atomFamily((id: string) =>
 );
 
 /**
- * Open file paths in a workstream.
+ * All open resources (files + trackers) in a workstream, in tab order.
  */
-export const workstreamOpenFilesAtom = atomFamily((id: string) =>
-  atom((get) => get(workstreamStateAtom(id)).openFilePaths)
+export const workstreamOpenResourcesAtom = atomFamily((id: string) =>
+  atom((get) => get(workstreamStateAtom(id)).openResources)
 );
 
 /**
- * Active file path in a workstream.
+ * The active resource in a workstream (or null).
+ */
+export const workstreamActiveResourceAtom = atomFamily((id: string) =>
+  atom((get) => {
+    const state = get(workstreamStateAtom(id));
+    if (!state.activeResourceId) return null;
+    return (
+      state.openResources.find((t) => t.resource.resourceId === state.activeResourceId) ?? null
+    );
+  })
+);
+
+/**
+ * Open file paths in a workstream (file resources only).
+ * Back-compat derivation for existing file-centric consumers.
+ */
+export const workstreamOpenFilesAtom = atomFamily((id: string) =>
+  atom((get) =>
+    get(workstreamStateAtom(id))
+      .openResources.filter((t) => t.resource.kind === 'file')
+      .map((t) => (t.resource as { filePath: string }).filePath)
+  )
+);
+
+/**
+ * Active file path in a workstream (null when the active resource is not a file).
+ * Back-compat derivation for existing file-centric consumers.
  */
 export const workstreamActiveFileAtom = atomFamily((id: string) =>
-  atom((get) => get(workstreamStateAtom(id)).activeFilePath)
+  atom((get) => {
+    const active = get(workstreamActiveResourceAtom(id));
+    return active?.resource.kind === 'file' ? active.resource.filePath : null;
+  })
 );
 
 /**
@@ -321,9 +509,21 @@ export const workstreamHasChildrenAtom = atomFamily((id: string) =>
 
 /**
  * Whether a workstream has any open file tabs.
+ * Back-compat: file resources only.
  */
 export const workstreamHasOpenFilesAtom = atomFamily((id: string) =>
-  atom((get) => get(workstreamStateAtom(id)).openFilePaths.length > 0)
+  atom((get) =>
+    get(workstreamStateAtom(id)).openResources.some((t) => t.resource.kind === 'file')
+  )
+);
+
+/**
+ * Whether a workstream has any open resource tabs (files OR trackers).
+ * This is the atom that should gate the split/editor layout so a workstream
+ * with only tracker tabs (no files) does not collapse to transcript-only.
+ */
+export const workstreamHasOpenResourcesAtom = atomFamily((id: string) =>
+  atom((get) => get(workstreamStateAtom(id)).openResources.length > 0)
 );
 
 /**
@@ -466,44 +666,216 @@ export const toggleWorkstreamFilesSidebarAtom = atom(
 );
 
 /**
- * Add a file to the workstream's open files.
+ * Add a file to the workstream's open resources (or focus it if already open).
  */
 export const addWorkstreamFileAtom = atom(
   null,
   (get, set, { workstreamId, filePath }: { workstreamId: string; filePath: string }) => {
-    const state = get(workstreamStateAtom(workstreamId));
+    set(openWorkstreamResourceAtom, { workstreamId, resource: fileResource(filePath) });
+  }
+);
 
-    // Don't add if already open
-    if (state.openFilePaths.includes(filePath)) {
-      set(workstreamStateAtom(workstreamId), { activeFilePath: filePath });
+/**
+ * Open a tracker as a workstream resource tab (or focus it if already open).
+ */
+export const addWorkstreamTrackerAtom = atom(
+  null,
+  (get, set, { workstreamId, trackerItemId }: { workstreamId: string; trackerItemId: string }) => {
+    set(openWorkstreamResourceAtom, { workstreamId, resource: trackerResource(trackerItemId) });
+  }
+);
+
+/**
+ * Open (or focus) any typed resource in the workstream tab strip.
+ * Opening an already-open resource focuses the existing tab rather than
+ * duplicating it. This is the single primitive both file and tracker opens
+ * route through.
+ */
+export const openWorkstreamResourceAtom = atom(
+  null,
+  (get, set, { workstreamId, resource }: { workstreamId: string; resource: WorkstreamResource }) => {
+    const state = get(workstreamStateAtom(workstreamId));
+    const existing = state.openResources.find(
+      (t) => t.resource.resourceId === resource.resourceId
+    );
+
+    if (existing) {
+      // Already open — just focus it.
+      set(workstreamStateAtom(workstreamId), { activeResourceId: resource.resourceId });
       return;
     }
 
-    // Add to open files and make active
     set(workstreamStateAtom(workstreamId), {
-      openFilePaths: [...state.openFilePaths, filePath],
-      activeFilePath: filePath,
+      openResources: [...state.openResources, { resource }],
+      activeResourceId: resource.resourceId,
     });
   }
 );
 
 /**
- * Close a file in the workstream's editor tabs.
+ * Close a resource tab by its resourceId. When the active tab is closed the
+ * focus moves to the previous tab (or the first remaining tab).
+ */
+export const closeWorkstreamResourceAtom = atom(
+  null,
+  (get, set, { workstreamId, resourceId }: { workstreamId: string; resourceId: string }) => {
+    const state = get(workstreamStateAtom(workstreamId));
+    const closingIndex = state.openResources.findIndex(
+      (t) => t.resource.resourceId === resourceId
+    );
+    if (closingIndex === -1) return;
+
+    const newResources = state.openResources.filter(
+      (t) => t.resource.resourceId !== resourceId
+    );
+
+    let newActiveId = state.activeResourceId;
+    if (state.activeResourceId === resourceId) {
+      // Prefer the neighbor to the left, else the new first tab, else null.
+      const fallback = newResources[closingIndex - 1] ?? newResources[0];
+      newActiveId = fallback?.resource.resourceId ?? null;
+    }
+
+    set(workstreamStateAtom(workstreamId), {
+      openResources: newResources,
+      activeResourceId: newActiveId,
+    });
+  }
+);
+
+/**
+ * Close a file in the workstream's editor tabs (file resourceId == path).
  */
 export const closeWorkstreamFileAtom = atom(
   null,
   (get, set, { workstreamId, filePath }: { workstreamId: string; filePath: string }) => {
-    const state = get(workstreamStateAtom(workstreamId));
-    const newFiles = state.openFilePaths.filter((f) => f !== filePath);
+    set(closeWorkstreamResourceAtom, { workstreamId, resourceId: filePath });
+  }
+);
 
-    // If closing the active file, switch to the first remaining file
-    const newActiveFile =
-      state.activeFilePath === filePath ? (newFiles[0] || null) : state.activeFilePath;
+/**
+ * Set the active resource tab by resourceId.
+ */
+export const setWorkstreamActiveResourceAtom = atom(
+  null,
+  (get, set, { workstreamId, resourceId }: { workstreamId: string; resourceId: string | null }) => {
+    set(workstreamStateAtom(workstreamId), { activeResourceId: resourceId });
+  }
+);
 
+/**
+ * Replace the full ordered resource list for a workstream from the live tab
+ * strip. Used by WorkstreamEditorTabs, which now projects BOTH file and tracker
+ * resources into TabsContext, so it owns the whole ordered set on each change.
+ */
+export const setWorkstreamResourcesAtom = atom(
+  null,
+  (
+    get,
+    set,
+    {
+      workstreamId,
+      resources,
+      activeResourceId,
+    }: {
+      workstreamId: string;
+      resources: WorkstreamResource[];
+      activeResourceId: string | null;
+    }
+  ) => {
+    // Preserve existing per-tab presentation state (e.g. tracker content focus)
+    // across this rebuild-from-tabs so the persist effect doesn't clobber it.
+    const current = get(workstreamStateAtom(workstreamId));
+    const prevPresentation = new Map(
+      current.openResources.map((t) => [t.resource.resourceId, t.presentation])
+    );
     set(workstreamStateAtom(workstreamId), {
-      openFilePaths: newFiles,
-      activeFilePath: newActiveFile,
+      openResources: resources.map((resource) => {
+        const presentation = prevPresentation.get(resource.resourceId);
+        return presentation ? { resource, presentation } : { resource };
+      }),
+      activeResourceId,
     });
+  }
+);
+
+/**
+ * Set the content-focus flag for a tracker resource tab (per-tab presentation).
+ * Persisted with the tab so focus survives close/reopen and app restart.
+ */
+export const setWorkstreamTrackerFocusAtom = atom(
+  null,
+  (
+    get,
+    set,
+    { workstreamId, resourceId, focus }: { workstreamId: string; resourceId: string; focus: boolean }
+  ) => {
+    const state = get(workstreamStateAtom(workstreamId));
+    const openResources = state.openResources.map((t) =>
+      t.resource.resourceId === resourceId
+        ? { ...t, presentation: { ...t.presentation, trackerContentFocus: focus } }
+        : t
+    );
+    set(workstreamStateAtom(workstreamId), { openResources });
+  }
+);
+
+/**
+ * Read the persisted content-focus flag for one tracker tab. Keyed by
+ * `${workstreamId}::${resourceId}` so consumers only re-render when THIS tab's
+ * focus flips, not on unrelated workstream-state changes.
+ */
+export const workstreamTrackerFocusAtom = atomFamily((key: string) =>
+  atom((get) => {
+    const sep = key.indexOf('::');
+    if (sep === -1) return false;
+    const workstreamId = key.slice(0, sep);
+    const resourceId = key.slice(sep + 2);
+    const state = get(workstreamStateAtom(workstreamId));
+    const tab = state.openResources.find((t) => t.resource.resourceId === resourceId);
+    return tab?.presentation?.trackerContentFocus ?? false;
+  })
+);
+
+/**
+ * Replace the FILE resources of a workstream from the file-tabs component while
+ * preserving any non-file (tracker) resources and their relative order.
+ *
+ * The file editor tabs component (WorkstreamEditorTabs) only knows about files;
+ * it must not clobber tracker resources that live in the same strip. This
+ * merges the given file list back into openResources: tracker tabs keep their
+ * positions, files are reconciled to `filePaths` in order.
+ */
+export const setWorkstreamFileResourcesAtom = atom(
+  null,
+  (
+    get,
+    set,
+    {
+      workstreamId,
+      filePaths,
+      activeFilePath,
+    }: { workstreamId: string; filePaths: string[]; activeFilePath: string | null }
+  ) => {
+    const state = get(workstreamStateAtom(workstreamId));
+    const trackerTabs = state.openResources.filter((t) => t.resource.kind === 'tracker');
+    const fileTabs: PersistedWorkstreamTab[] = filePaths.map((filePath) => ({
+      resource: fileResource(filePath),
+    }));
+
+    // Keep tracker tabs first (they were opened via navigation), files after.
+    // Ordering within each group is preserved; interleave polish is Slice 2.
+    const openResources = [...trackerTabs, ...fileTabs];
+
+    // Preserve an active tracker tab if one is set; otherwise follow the file.
+    const activeIsTracker =
+      state.activeResourceId != null && isTrackerResourceId(state.activeResourceId) &&
+      trackerTabs.some((t) => t.resource.resourceId === state.activeResourceId);
+    const activeResourceId = activeIsTracker
+      ? state.activeResourceId
+      : (activeFilePath ?? null);
+
+    set(workstreamStateAtom(workstreamId), { openResources, activeResourceId });
   }
 );
 
@@ -620,8 +992,8 @@ export const convertToWorkstreamAtom = atom(
       layoutMode: currentState.layoutMode,
       splitRatio: currentState.splitRatio,
       filesSidebarVisible: currentState.filesSidebarVisible,
-      openFilePaths: currentState.openFilePaths,
-      activeFilePath: currentState.activeFilePath,
+      openResources: currentState.openResources,
+      activeResourceId: currentState.activeResourceId,
       // Inherit git state from original session
       stagedFiles: currentState.stagedFiles,
       commitMessage: currentState.commitMessage,
@@ -641,8 +1013,8 @@ export const convertToWorkstreamAtom = atom(
       layoutMode: 'transcript',
       splitRatio: 0.5,
       filesSidebarVisible: true,
-      openFilePaths: [],
-      activeFilePath: null,
+      openResources: [],
+      activeResourceId: null,
       stagedFiles: [],
       commitMessage: '',
       activeProposalId: null,
@@ -808,14 +1180,17 @@ export async function loadWorkstreamState(workstreamId: string): Promise<void> {
       // Only restore UI state fields, preserve hierarchy state
       // This prevents race conditions where persisted state overwrites
       // activeChildId that was just set by setWorkstreamActiveChildAtom
+      const { openResources, activeResourceId } = migrateWorkstreamResources(
+        saved as LegacyWorkstreamTabState
+      );
       const merged: WorkstreamState = {
         ...current,
         // UI state from persisted
         layoutMode: (saved as WorkstreamState).layoutMode ?? current.layoutMode,
         splitRatio: (saved as WorkstreamState).splitRatio ?? current.splitRatio,
         filesSidebarVisible: (saved as WorkstreamState).filesSidebarVisible ?? current.filesSidebarVisible,
-        openFilePaths: (saved as WorkstreamState).openFilePaths ?? current.openFilePaths,
-        activeFilePath: (saved as WorkstreamState).activeFilePath ?? current.activeFilePath,
+        openResources,
+        activeResourceId,
         // Cached worktree path (available synchronously on remount)
         worktreePath: (saved as WorkstreamState).worktreePath ?? current.worktreePath,
         // Hierarchy state preserved from current in-memory state

@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/extension-sdk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "SDK for building Nimbalyst extensions",
   "repository": {
     "type": "git",
@@ -40,6 +40,10 @@
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
+    },
+    "./file-tree": {
+      "types": "./dist/fileDirectoryTree.d.ts",
+      "import": "./dist/fileDirectoryTree.js"
     }
   },
   "files": [

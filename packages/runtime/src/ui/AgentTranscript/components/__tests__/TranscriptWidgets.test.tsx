@@ -1100,6 +1100,32 @@ describe('GitCommitConfirmationWidget', () => {
     expect(screen.getByTestId('git-commit-cancel')).toBeDefined();
   });
 
+  it('groups Windows-style proposal paths by directory', () => {
+    const message = makeToolMessage('git_commit_proposal', {
+      commitMessage: 'fix: group Windows paths',
+      filesToStage: [
+        { path: 'packages\\runtime\\SKILL.md', status: 'modified' },
+        { path: 'packages\\electron\\SKILL.md', status: 'modified' },
+      ],
+    });
+
+    render(
+      <Wrapper>
+        <GitCommitConfirmationWidget
+          message={message}
+          isExpanded={false}
+          onToggle={() => {}}
+          sessionId="windows-paths"
+        />
+      </Wrapper>
+    );
+
+    expect(screen.getByText('packages')).toBeDefined();
+    expect(screen.getByText('runtime')).toBeDefined();
+    expect(screen.getByText('electron')).toBeDefined();
+    expect(screen.getAllByText('SKILL.md')).toHaveLength(2);
+  });
+
   it('renders committed state from tool result', () => {
     const message = makeToolMessage(
       'git_commit_proposal',

@@ -65,7 +65,38 @@ describe('DocumentSync compaction safety (NIM-1519)', () => {
 
     await (provider as any).maybeCompact();
 
-    expect(fakeWs.sent.some((m) => m.type === 'docCompact')).toBe(true);
+    const compact = fakeWs.sent.find((m) => m.type === 'docCompact');
+    expect(compact).toBeDefined();
+    expect((provider as any).lastSnapshotSeq).toBe(0);
+
+    (provider as any).handleCompactionAck({
+      type: 'docCompactAck',
+      clientCompactId: compact.clientCompactId,
+      accepted: true,
+      replacesUpTo: compact.replacesUpTo,
+    });
+    expect((provider as any).lastSnapshotSeq).toBe(500);
+    provider.destroy();
+  });
+
+  it('does not advance snapshot bookkeeping when compaction is rejected', async () => {
+    const provider = createProvider(await createDocumentKey());
+    provider.getYDoc().getMap('m').set('k', 'v');
+    const fakeWs = createFakeWebSocket();
+    primeForCompaction(provider, fakeWs);
+
+    await (provider as any).maybeCompact();
+    const compact = fakeWs.sent.find((m) => m.type === 'docCompact');
+    (provider as any).handleCompactionAck({
+      type: 'docCompactAck',
+      clientCompactId: compact.clientCompactId,
+      accepted: false,
+      replacesUpTo: compact.replacesUpTo,
+      error: { code: 'invalid_compaction', message: 'rejected' },
+    });
+
+    expect((provider as any).lastSnapshotSeq).toBe(0);
+    expect((provider as any).pendingCompactionId).toBeNull();
     provider.destroy();
   });
 

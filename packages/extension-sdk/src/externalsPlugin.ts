@@ -230,6 +230,15 @@ function generateCommonExports(externalKey: string): string {
     exports = ['useDocumentPath'];
   } else if (externalKey === '@nimbalyst/runtime/ui/icons/MaterialSymbol') {
     exports = ['MaterialSymbol'];
+  } else if (externalKey === '@nimbalyst/runtime') {
+    exports = [
+      'MaterialSymbol', 'useDocumentPath', 'useEditorLifecycle',
+      'useCollaborativeEditor', 'COLLAB_INIT_ORIGIN',
+      'setTranscriptMarkdownContributions', 'clearTranscriptMarkdownContributions',
+      'MarkdownEditor', 'MonacoEditor', 'MonacoCodeEditor',
+      'TrackerReferenceChip', 'TrackerReferencePicker',
+      'useResolvedTrackerReference', 'navigateToTrackerReference',
+    ];
   } else if (externalKey === '@nimbalyst/screenshot-service') {
     exports = ['screenshotService'];
   } else if (externalKey === '@nimbalyst/datamodel-platform-service') {

@@ -30,8 +30,9 @@ import {
 import type { TrackerItem, TrackerItemChangeEvent } from '@nimbalyst/runtime';
 import { trackerItemToRecord, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { globalRegistry, isRelationshipField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
-import { trackerSyncConfigChangeAtom, trackerSyncRejectionAtom, type TrackerSyncRejectionCode } from '../atoms/trackerSync';
+import { trackerSyncConfigChangeAtom, trackerSyncConnectionAtom, trackerSyncRejectionAtom, type TrackerSyncRejectionCode } from '../atoms/trackerSync';
 import { activeWorkspacePathAtom } from '../atoms/openProjects';
+import { loadTrackerNavigationAtom } from '../atoms/trackerNavigation';
 
 /** Auto-clear delay for transient rotation locks. Matches the typical
  *  team rotation window -- by 30s the org-wide write freeze should have
@@ -218,6 +219,31 @@ export function initTrackerSyncListeners(): () => void {
   // window, but a stray event from a buggy code path would still leak a
   // foreign item into our atoms and display it until the next refresh.
   let currentWorkspacePath: string | null = null;
+  cleanups.push(
+    window.electronAPI.on('tracker-sync:status-changed', (value: string | { workspacePath: string; status: string; shared?: boolean }) => {
+      if (!currentWorkspacePath) return;
+      const status = typeof value === 'string' ? value : value.status;
+      const eventWorkspace = typeof value === 'string' ? currentWorkspacePath : value.workspacePath;
+      if (eventWorkspace !== currentWorkspacePath) return;
+      const current = store.get(trackerSyncConnectionAtom);
+      store.set(trackerSyncConnectionAtom, {
+        workspacePath: currentWorkspacePath,
+        status,
+        projectId: typeof value !== 'string' && value.shared
+          ? 'shared'
+          : current?.workspacePath === currentWorkspacePath ? current.projectId : null,
+      });
+    }),
+  );
+  cleanups.push(
+    window.electronAPI.on(
+      'tracker-navigation:changed',
+      (data: { workspacePath: string }) => {
+        if (!data?.workspacePath || data.workspacePath !== currentWorkspacePath) return;
+        void store.set(loadTrackerNavigationAtom, data.workspacePath);
+      },
+    ),
+  );
   void window.electronAPI
     .invoke('get-initial-state')
     .then(async (state: { mode?: string; workspacePath?: string } | null) => {
@@ -231,6 +257,24 @@ export function initTrackerSyncListeners(): () => void {
       }
 
       currentWorkspacePath = state.workspacePath;
+      const requestedWorkspacePath = currentWorkspacePath;
+
+      void store.set(loadTrackerNavigationAtom, requestedWorkspacePath).catch((error) => {
+        console.error('[trackerSyncListeners] Failed to load tracker navigation:', error);
+      });
+      void window.electronAPI.invoke(
+        'tracker-sync:get-status',
+        { workspacePath: requestedWorkspacePath },
+      ).then((syncStatus: { status?: string; projectId?: string | null } | undefined) => {
+        if (disposed || !syncStatus || currentWorkspacePath !== requestedWorkspacePath) return;
+        store.set(trackerSyncConnectionAtom, {
+          workspacePath: requestedWorkspacePath,
+          status: syncStatus.status ?? 'disconnected',
+          projectId: syncStatus.projectId ?? null,
+        });
+      }).catch((error: unknown) => {
+        console.error('[trackerSyncListeners] Failed to load tracker sync status:', error);
+      });
 
       // Initial load from the shared tracker read model (DB projection +
       // frontmatter-backed full-document items).

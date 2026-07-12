@@ -41,6 +41,7 @@ import TableHoverActionsPlugin from './plugins/TableHoverActionsPlugin';
 import ToolbarPlugin from './plugins/ToolbarPlugin';
 import TreeViewPlugin from './plugins/TreeViewPlugin';
 import CommentsPlugin from './plugins/CommentPlugin';
+import { getCommentToolbarActions } from './plugins/CommentPlugin/toolbarAction';
 import { SelectionAlwaysOnDisplay } from './plugins/SelectionAlwaysOnDisplayPlugin';
 import ListEnterFormatClearPlugin from './plugins/ListEnterFormatClearPlugin';
 import ContentEditable from './ui/ContentEditable';
@@ -198,6 +199,10 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
   // AIChatIntegrationPlugin, TrackerPlugin, etc.). Each is registered via
   // `registerExtensionEditorComponent` at app startup.
   const extensionEditorComponents = useExtensionEditorComponents();
+  const floatingTextToolbarActions = useMemo(
+    () => getCommentToolbarActions(config.comments, editor),
+    [config.comments, editor],
+  );
 
   return (
     <>
@@ -312,6 +317,7 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
                 <FloatingTextFormatToolbarPlugin
                   anchorElem={floatingAnchorElem}
                   setIsLinkEditMode={setIsLinkEditMode}
+                  actions={floatingTextToolbarActions}
                 />
               </>
             )}

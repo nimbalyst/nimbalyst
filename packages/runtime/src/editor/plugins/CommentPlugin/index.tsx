@@ -1,8 +1,8 @@
 /**
  * CommentsPlugin
  *
- * Text-selection comments for collaborative Lexical documents. Selecting text
- * surfaces a floating "Add comment" affordance; submitting opens a composer
+ * Text-selection comments for collaborative Lexical documents. The floating
+ * text toolbar contributes an "Add comment" action; selecting it opens a composer
  * with an `@`-mention picker (team members). Comments anchor to the text via
  * `@lexical/mark` `MarkNode`s and persist in the document's shared Y.Doc
  * (top-level `comments` YArray) through the orphaned-upstream `CommentStore`.
@@ -71,6 +71,7 @@ import type {
   CommentMentionPayload,
 } from '../../commenting/types';
 import { INSERT_INLINE_COMMENT_COMMAND } from '../../extensions/builtin/CommentsExtension';
+import { OPEN_COMMENT_COMPOSER_COMMAND } from './commands';
 import {
   TypeaheadMenuPlugin,
   type TypeaheadMenuOption,
@@ -80,6 +81,8 @@ import { createBasicTriggerFunction } from '../TypeaheadPlugin/TypeaheadMenu';
 import './CommentPlugin.css';
 
 type MarkNodeMap = Map<string, Set<NodeKey>>;
+
+export { OPEN_COMMENT_COMPOSER_COMMAND } from './commands';
 
 function formatTimestamp(ts: number): string {
   try {
@@ -508,7 +511,6 @@ export default function CommentsPlugin({
   const markNodeMapRef = useRef<MarkNodeMap>(new Map());
   const [markVersion, setMarkVersion] = useState(0);
 
-  const [selectionRect, setSelectionRect] = useState<DOMRect | null>(null);
   const [composer, setComposer] = useState<{ thread: Thread; rect: DOMRect } | null>(
     null,
   );
@@ -615,37 +617,6 @@ export default function CommentsPlugin({
     }
   }, [editor, threads, markVersion]);
 
-  // -- Track the current non-collapsed selection for the add affordance ------
-  useEffect(() => {
-    const update = () => {
-      if (composer) {
-        return;
-      }
-      editor.getEditorState().read(() => {
-        const selection = $getSelection();
-        const nativeSelection = getDOMSelection(editor._window);
-        const rootElement = editor.getRootElement();
-        if (
-          $isRangeSelection(selection) &&
-          !selection.isCollapsed() &&
-          nativeSelection !== null &&
-          rootElement !== null &&
-          rootElement.contains(nativeSelection.anchorNode) &&
-          selection.getTextContent().trim() !== ''
-        ) {
-          setSelectionRect(getDOMRangeRect(nativeSelection, rootElement));
-        } else {
-          setSelectionRect(null);
-        }
-      });
-    };
-    document.addEventListener('selectionchange', update);
-    return mergeRegister(
-      editor.registerUpdateListener(update),
-      () => document.removeEventListener('selectionchange', update),
-    );
-  }, [editor, composer]);
-
   // -- Helpers ---------------------------------------------------------------
   const removeMark = useCallback(
     (id: string) => {
@@ -705,11 +676,17 @@ export default function CommentsPlugin({
   const handleAddComment = useCallback(() => {
     let quote = '';
     let isBackward = false;
+    let selectionRect = new DOMRect();
     editor.getEditorState().read(() => {
       const selection = $getSelection();
       if ($isRangeSelection(selection)) {
         quote = selection.getTextContent();
         isBackward = selection.isBackward();
+        const nativeSelection = getDOMSelection(editor._window);
+        const rootElement = editor.getRootElement();
+        if (nativeSelection && rootElement) {
+          selectionRect = getDOMRangeRect(nativeSelection, rootElement);
+        }
       }
     });
     if (!quote.trim()) return;
@@ -721,11 +698,22 @@ export default function CommentsPlugin({
       isBackward,
     });
 
-    const rect = selectionRect;
-    setSelectionRect(null);
-    setComposer({ thread, rect: rect ?? new DOMRect() });
+    setComposer({ thread, rect: selectionRect });
     setActiveThreadId(thread.id);
-  }, [editor, commentStore, selectionRect]);
+  }, [editor, commentStore]);
+
+  useEffect(
+    () =>
+      editor.registerCommand(
+        OPEN_COMMENT_COMPOSER_COMMAND,
+        () => {
+          handleAddComment();
+          return true;
+        },
+        COMMAND_PRIORITY_HIGH,
+      ),
+    [editor, handleAddComment],
+  );
 
   const handleComposerSubmit = useCallback(
     (text: string, mentionedUserIds: string[]) => {
@@ -810,34 +798,20 @@ export default function CommentsPlugin({
   const getMembers = useCallback(() => config.getMembers(), [config]);
 
   // -- Floating positioning --------------------------------------------------
-  const addButtonRef = useFloating({
-    placement: 'top',
-    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
-    whileElementsMounted: autoUpdate,
-  });
   const composerFloat = useFloating({
     placement: 'bottom-start',
     middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
     whileElementsMounted: autoUpdate,
   });
 
-  const addReference = useMemo(
-    () => ({ getBoundingClientRect: () => selectionRect ?? new DOMRect() }),
-    [selectionRect],
-  );
   const composerReference = useMemo(
     () => ({ getBoundingClientRect: () => composer?.rect ?? new DOMRect() }),
     [composer],
   );
 
   useEffect(() => {
-    addButtonRef.refs.setReference(addReference);
-  }, [addButtonRef.refs, addReference]);
-  useEffect(() => {
     composerFloat.refs.setReference(composerReference);
   }, [composerFloat.refs, composerReference]);
-
-  const showAddButton = selectionRect !== null && composer === null;
 
   // Reserve room on the right of the editor pane while the panel is docked
   // open, so document text isn't hidden underneath it.
@@ -850,25 +824,6 @@ export default function CommentsPlugin({
 
   return (
     <>
-      {showAddButton && (
-        <FloatingPortal>
-          <button
-            type="button"
-            ref={addButtonRef.refs.setFloating}
-            style={addButtonRef.floatingStyles}
-            className="nim-add-comment-button"
-            data-testid="add-comment-button"
-            // Prevent the click from blurring the editor selection before the
-            // command runs.
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={handleAddComment}
-          >
-            <span className="material-symbols-outlined">add_comment</span>
-            <span>Comment</span>
-          </button>
-        </FloatingPortal>
-      )}
-
       {composer && (
         <FloatingPortal>
           <div

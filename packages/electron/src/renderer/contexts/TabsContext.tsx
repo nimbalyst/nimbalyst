@@ -35,6 +35,36 @@ export interface TabData {
   contentHash?: string;
   contentLoadedAt?: Date;
   isVirtual?: boolean;
+  /**
+   * Resource kind for the tab. Undefined/`'file'` = a disk-backed file
+   * (default). `'tracker'` = a tracker item rendered by the workstream host
+   * (its `filePath` is a `tracker://<itemId>` resource id, NOT a real path).
+   */
+  kind?: 'file' | 'tracker';
+  /** For tracker tabs: the tracker item id (also encoded in filePath). */
+  trackerItemId?: string;
+}
+
+/**
+ * Prefix for tracker resource tab ids. Kept in sync with the canonical
+ * `trackerResourceId` helper in store/atoms/workstreamState.ts — a tracker tab
+ * carries `filePath = tracker://<itemId>` so path-based dedup keeps working
+ * while the file-watch/disk-read paths are skipped.
+ */
+const TRACKER_TAB_PREFIX = 'tracker://';
+
+/** True when a tab filePath identifies a tracker resource (not a real file). */
+export function isTrackerTabPath(filePath: string): boolean {
+  return filePath.startsWith(TRACKER_TAB_PREFIX);
+}
+
+/** True when a tab represents a non-filesystem resource (virtual/collab/tracker). */
+function isNonFilesystemTab(filePath: string): boolean {
+  return (
+    filePath.startsWith('virtual://') ||
+    isCollabUri(filePath) ||
+    isTrackerTabPath(filePath)
+  );
 }
 
 interface TabsStore {
@@ -245,8 +275,8 @@ export function TabsProvider({
     store.tabs.delete(tabId);
     store.tabOrder = store.tabOrder.filter(id => id !== tabId);
 
-    // Stop watching file (skip virtual and collaborative documents)
-    if (window.electronAPI && !tab.filePath.startsWith('virtual://') && !isCollabUri(tab.filePath)) {
+    // Stop watching file (skip virtual, collaborative, and tracker documents)
+    if (window.electronAPI && !isNonFilesystemTab(tab.filePath)) {
       window.electronAPI.invoke('stop-watching-file', tab.filePath).catch(() => {});
       // Closing drops any unsaved buffer, so clear the dirty flag in main; this
       // lets personal docs sync flush a deferred remote write (NIM-853, Layer 4).
@@ -282,7 +312,12 @@ export function TabsProvider({
     }
 
     const tabId = generateTabId();
-    const fileName = getFileName(filePath);
+    const isTracker = isTrackerTabPath(filePath);
+    // Tracker tabs use the item id as their label fallback; the live title is
+    // resolved by the tab bar from the canonical tracker atom.
+    const fileName = isTracker
+      ? filePath.slice(TRACKER_TAB_PREFIX.length)
+      : getFileName(filePath);
 
     const newTab: TabData = {
       id: tabId,
@@ -292,6 +327,8 @@ export function TabsProvider({
       isDirty: false,
       isPinned: false,
       isVirtual: filePath.startsWith('virtual://'),
+      kind: isTracker ? 'tracker' : 'file',
+      trackerItemId: isTracker ? filePath.slice(TRACKER_TAB_PREFIX.length) : undefined,
       contentHash: simpleHash(content),
       contentLoadedAt: new Date()
     };
@@ -305,8 +342,8 @@ export function TabsProvider({
       store.activeTabId = tabId;
     }
 
-    // Start watching filesystem-backed files only.
-    if (window.electronAPI && !filePath.startsWith('virtual://') && !isCollabUri(filePath)) {
+    // Start watching filesystem-backed files only (skip virtual/collab/tracker).
+    if (window.electronAPI && !isNonFilesystemTab(filePath)) {
       window.electronAPI.invoke('start-watching-file', filePath).catch(() => {});
     }
 
@@ -537,7 +574,7 @@ export function TabsProvider({
           // Start watching restored filesystem-backed tabs only.
           if (window.electronAPI) {
             for (const tab of restoredTabs.values()) {
-              if (!tab.filePath.startsWith('virtual://') && !isCollabUri(tab.filePath)) {
+              if (!isNonFilesystemTab(tab.filePath)) {
                 window.electronAPI.invoke('start-watching-file', tab.filePath).catch(() => {});
               }
             }

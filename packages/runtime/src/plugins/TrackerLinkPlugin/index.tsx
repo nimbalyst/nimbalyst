@@ -16,7 +16,14 @@ export {
 
 export { TrackerReferenceTransformer } from './TrackerReferenceTransformer';
 
-export { TrackerReferenceChip } from './TrackerReferenceChip';
+export {
+  TrackerReferenceChip,
+  type TrackerReferenceChipProps,
+} from './TrackerReferenceChip';
+export {
+  TrackerReferencePicker,
+  type TrackerReferencePickerProps,
+} from './TrackerReferencePickerComponent';
 
 export {
   useResolvedTrackerReference,

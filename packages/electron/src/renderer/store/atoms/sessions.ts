@@ -176,6 +176,63 @@ export const sessionHasPendingInteractivePromptAtom = atomFamily((_sessionId: st
   atom(false)
 );
 
+export type AgentBubbleColor = 'orange' | 'green' | 'blue';
+
+export interface AgentSessionAttentionGroups {
+  awaitingInput: SessionMeta[];
+  running: SessionMeta[];
+  unread: SessionMeta[];
+}
+
+/**
+ * Active-workspace sessions that currently need attention, classified by
+ * their highest-priority state so a session appears in exactly one group.
+ */
+export const agentSessionAttentionAtom = atom<AgentSessionAttentionGroups>((get) => {
+  const registry = get(sessionRegistryAtom);
+  const workspacePath = get(sessionListWorkspaceAtom);
+  const sessions = Array.from(registry.values())
+    .filter((session) =>
+      !session.isArchived &&
+      session.phase !== 'complete' &&
+      (!workspacePath || session.workspaceId === workspacePath)
+    )
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+
+  const groups: AgentSessionAttentionGroups = {
+    awaitingInput: [],
+    running: [],
+    unread: [],
+  };
+
+  for (const session of sessions) {
+    if (get(sessionHasPendingInteractivePromptAtom(session.id))) {
+      groups.awaitingInput.push(session);
+    } else if (get(sessionProcessingAtom(session.id))) {
+      groups.running.push(session);
+    } else if (get(sessionUnreadAtom(session.id))) {
+      groups.unread.push(session);
+    }
+  }
+
+  return groups;
+});
+
+/** Highest-priority Agent gutter bubble state. The count matches its color. */
+export const agentBubbleStateAtom = atom<{ color: AgentBubbleColor | null; count: number }>((get) => {
+  const groups = get(agentSessionAttentionAtom);
+  if (groups.awaitingInput.length > 0) {
+    return { color: 'orange', count: groups.awaitingInput.length };
+  }
+  if (groups.running.length > 0) {
+    return { color: 'green', count: groups.running.length };
+  }
+  if (groups.unread.length > 0) {
+    return { color: 'blue', count: groups.unread.length };
+  }
+  return { color: null, count: 0 };
+});
+
 /**
  * Last read timestamp per session.
  * Used to calculate unread message count.

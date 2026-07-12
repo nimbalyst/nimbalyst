@@ -57,6 +57,14 @@ import {
   listUnsyncedTrackerSchemaDefs,
 } from './tracker/trackerTypeDefStore';
 import { applyRemoteWorkspaceTrackerSchemaDef } from './TrackerSchemaService';
+import {
+  applyRemoteWorkspaceTrackerNavigationEntry,
+  registerTrackerNavigationFlushHandler,
+} from './TrackerNavigationService';
+import {
+  getMaxTrackerNavigationSyncId,
+  listUnsyncedTrackerNavigationEntries,
+} from './tracker/trackerNavigationStore';
 import { windows, windowStates } from '../window/windowState';
 import { getEffectiveTrackerSyncPolicy, decideBackfillAction } from './TrackerPolicyService';
 import { rowToTrackerItem } from '../mcp/tools/trackerToolHandlers';
@@ -86,6 +94,10 @@ interface EngineEntry {
 // projection's row stream per consumer. Phase 4's per-window broadcast
 // could later collapse to a single engine per team.
 const engines = new Map<string, EngineEntry>();
+
+registerTrackerNavigationFlushHandler((workspacePath) =>
+  engines.get(workspacePath)?.engine.flushNavigation(),
+);
 
 /**
  * In-flight `initializeTrackerSync` promises, keyed by workspace path.
@@ -311,6 +323,11 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
       listUnsynced: () => listUnsyncedTrackerSchemaDefs(workspacePath),
       applyRemote: (def) => applyRemoteWorkspaceTrackerSchemaDef(workspacePath, def),
     },
+    navigationSync: {
+      getMaxSyncId: () => getMaxTrackerNavigationSyncId(workspacePath),
+      listUnsynced: () => listUnsyncedTrackerNavigationEntries(workspacePath),
+      applyRemote: (def) => applyRemoteWorkspaceTrackerNavigationEntry(workspacePath, def),
+    },
     getJwt: () => getOrgScopedJwt(team.orgId),
     // Legacy-only: server-managed mode never hits staleKeyEpoch (server owns
     // the epoch), so a key-refresh callback would be dead weight.
@@ -329,7 +346,7 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
         entry.status = status;
       }
       notifyStatus(status);
-      broadcastToAllWindows('tracker-sync:status-changed', status);
+      broadcastToAllWindows('tracker-sync:status-changed', { workspacePath, status, shared: true });
       // First successful connect to this room: catch up the server with
       // any items that were created locally before the engine existed (or
       // before the team's TrackerRoom DO was minted). Without this, a user
@@ -984,12 +1001,17 @@ export function registerTrackerSyncHandlers(): void {
             listUnsynced: () => listUnsyncedTrackerSchemaDefs(workspacePath),
             applyRemote: (def) => applyRemoteWorkspaceTrackerSchemaDef(workspacePath, def),
           },
+          navigationSync: {
+            getMaxSyncId: () => getMaxTrackerNavigationSyncId(workspacePath),
+            listUnsynced: () => listUnsyncedTrackerNavigationEntries(workspacePath),
+            applyRemote: (def) => applyRemoteWorkspaceTrackerNavigationEntry(workspacePath, def),
+          },
           getJwt: async () => 'test-jwt',
           createWebSocket: ((url: string) => new WebSocket(url)) as unknown as TrackerSyncEngineConfig['createWebSocket'],
           onStatusChange: (status) => {
             const entry = engines.get(workspacePath);
             if (entry) entry.status = status;
-            broadcastToAllWindows('tracker-sync:status-changed', status);
+            broadcastToAllWindows('tracker-sync:status-changed', { workspacePath, status, shared: true });
           },
           onItemApplied: (applied) => {
             emitItemApplied(workspacePath, applied);

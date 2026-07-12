@@ -1,7 +1,8 @@
 /**
  * Meta-agent (child-session orchestration) tool surface — `create_session`,
- * `spawn_session`, `send_prompt`, `respond_to_prompt`, `get_session_status`,
- * `get_session_result`, `list_spawned_sessions`, `list_worktrees`.
+ * `spawn_session`, `send_prompt`, `list_queued_prompts`, `respond_to_prompt`,
+ * `get_session_status`, `get_session_result`, `list_spawned_sessions`,
+ * `list_worktrees`.
  *
  * MCP consolidation: these tools are served by the unified internal MCP HTTP
  * server's `/mcp/host` endpoint (`nimbalyst-host`). This module exports the tool
@@ -49,6 +50,20 @@ type RespondToPromptArgs = {
   response: Record<string, unknown>;
 };
 
+type ListQueuedPromptsArgs = {
+  sessionId: string;
+  /**
+   * Include completed and failed queue rows in addition to pending/executing
+   * rows. Defaults to false so the default view answers "what is still stuck?"
+   */
+  includeCompleted?: boolean;
+  /**
+   * Include full prompt text. Defaults to false; the response always includes a
+   * bounded preview so callers can identify rows without dumping huge prompts.
+   */
+  includePromptText?: boolean;
+};
+
 interface MetaAgentToolFns {
   listWorktrees: (
     metaSessionId: string,
@@ -73,6 +88,12 @@ interface MetaAgentToolFns {
     metaSessionId: string,
     workspaceId: string,
     targetSessionId: string
+  ) => Promise<string>;
+  listQueuedPrompts: (
+    metaSessionId: string,
+    workspaceId: string,
+    targetSessionId: string,
+    options?: Pick<ListQueuedPromptsArgs, "includeCompleted" | "includePromptText">
   ) => Promise<string>;
   sendPrompt: (
     metaSessionId: string,
@@ -251,6 +272,31 @@ export const META_AGENT_TOOL_DEFS: Array<{
     },
   },
   {
+    name: "list_queued_prompts",
+    description:
+      "Inspect queued prompts for a session. By default returns only pending/executing rows with bounded prompt previews; set includeCompleted to audit recently consumed rows.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description: "The target session ID.",
+        },
+        includeCompleted: {
+          type: "boolean",
+          description:
+            "Optional. If true, include completed and failed queue rows. Defaults to false.",
+        },
+        includePromptText: {
+          type: "boolean",
+          description:
+            "Optional. If true, include full prompt text. Defaults to false; promptPreview is always included.",
+        },
+      },
+      required: ["sessionId"],
+    },
+  },
+  {
     name: "send_prompt",
     description:
       "Queue a follow-up prompt for a child session. If the session is idle, prompt processing starts immediately.",
@@ -335,6 +381,7 @@ const EXTENSION_META_AGENT_ALLOWED_TOOLS = new Set<string>([
   "create_session",
   "get_session_status",
   "get_session_result",
+  "list_queued_prompts",
   "send_prompt",
   "respond_to_prompt",
   "list_spawned_sessions",
@@ -397,6 +444,16 @@ export async function dispatchMetaAgentTool(
         aiSessionId,
         effectiveWorkspaceId,
         (args?.sessionId as string) ?? ""
+      );
+    case "list_queued_prompts":
+      return toolFns.listQueuedPrompts(
+        aiSessionId,
+        effectiveWorkspaceId,
+        (args?.sessionId as string) ?? "",
+        {
+          includeCompleted: args?.includeCompleted === true,
+          includePromptText: args?.includePromptText === true,
+        }
       );
     case "send_prompt":
       return toolFns.sendPrompt(

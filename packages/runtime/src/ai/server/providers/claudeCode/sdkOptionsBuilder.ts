@@ -227,6 +227,15 @@ export async function buildSdkOptions(
         },
     settingSources,
     mcpServers: await mcpConfigService.getMcpServersConfig({ sessionId, workspacePath: mcpConfigWorkspacePath || workspacePath }),
+    // NIM-843 (SDK path): use ONLY the mcpServers we pass above and ignore the
+    // SDK's own discovery (~/.claude.json, project .mcp.json, user settings,
+    // claude.ai connectors). settingSources includes 'user'/'project' to load
+    // slash commands/skills/hooks, but that also re-merges their mcpServers on
+    // top of our filtered list — leaking user-disabled third-party servers into
+    // sessions, ignoring the `disabled`/`enabledForProviders` toggle. strictMcpConfig
+    // gates MCP only, so commands/skills/hooks from settingSources still load.
+    // This mirrors the CLI path's `--strict-mcp-config` (claudeCliSpawnConfig.ts).
+    strictMcpConfig: true,
     cwd: workspacePath,
     abortController,
     model: resolveModelVariant(),

@@ -38,6 +38,7 @@ import type { TrackerItem } from '@nimbalyst/runtime';
 import { trackerRecordToItem, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { logger } from '../../utils/logger';
 import { toDbBoolean } from './trackerDbValue';
+import { extractItemCustomFields } from './trackerRowCustomFields';
 
 // ============================================================================
 // Local-only field preservation on UPDATE
@@ -813,7 +814,7 @@ function pgliteRowToPayload(row: PGLiteTrackerItemRow): TrackerItemPayload {
  * `ElectronDocumentService.rowToTrackerItem` but lives here so the host
  * adapter does not need a back-reference into the document service.
  */
-function pgliteRowToTrackerItem(row: PGLiteTrackerItemRow, workspacePath: string): TrackerItem {
+export function pgliteRowToTrackerItem(row: PGLiteTrackerItemRow, workspacePath: string): TrackerItem {
   const data: Record<string, unknown> =
     typeof row.data === 'string' ? JSON.parse(row.data) : ((row.data as Record<string, unknown>) || {});
   // type_tags is TEXT[] in PGLite (returns string[]) but TEXT in SQLite
@@ -826,6 +827,17 @@ function pgliteRowToTrackerItem(row: PGLiteTrackerItemRow, workspacePath: string
       : undefined;
   const typeTags: string[] =
     parsedTags && parsedTags.length > 0 ? parsedTags : [row.type];
+  // Keys already mapped onto first-class TrackerItem props below; everything
+  // else in `data` (incl. the nested `data.customFields` bag: prUrl, prNumber,
+  // relationship fields, ...) must be lifted into `customFields`. Omitting this
+  // dropped prUrl from the sync read-back broadcast, wiping PR badges and schema
+  // columns until a full reload (NIM-1659).
+  const knownDataKeys = new Set<string>([
+    'title', 'description', 'status', 'priority', 'owner', 'tags',
+    'created', 'updated', 'dueDate', 'progress', 'authorIdentity',
+    'lastModifiedBy', 'createdByAgent', 'labels', 'labelsMap',
+    'linkedSessions', 'linkedCommitSha', 'linkedCommits', 'documentId',
+  ]);
   return {
     id: row.id,
     issueNumber: row.issue_number ?? undefined,
@@ -852,7 +864,7 @@ function pgliteRowToTrackerItem(row: PGLiteTrackerItemRow, workspacePath: string
     dueDate: data.dueDate as string | undefined,
     progress: data.progress as number | undefined,
     lastIndexed: row.last_indexed instanceof Date ? row.last_indexed : new Date(),
-    customFields: undefined,
+    customFields: extractItemCustomFields(data, knownDataKeys),
     content: undefined,
     archived: row.archived ?? false,
     source: (row.source ?? 'native') as TrackerItem['source'],

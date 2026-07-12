@@ -56,6 +56,8 @@ interface TrackerTableGridProps {
   onDeleteItems?: (itemIds: string[]) => void;
   onCopyDeepLink?: (itemId: string) => void;
   searchQuery?: string;
+  hasExternalFilters?: boolean;
+  onClearFilters?: () => void;
   columnConfig?: TypeColumnConfig;
   onColumnConfigChange?: (config: TypeColumnConfig) => void;
 }
@@ -79,6 +81,8 @@ export function TrackerTableGrid({
   onDeleteItems,
   onCopyDeepLink,
   searchQuery: externalSearchQuery,
+  hasExternalFilters = false,
+  onClearFilters,
   columnConfig: externalColumnConfig,
   onColumnConfigChange,
 }: TrackerTableGridProps): JSX.Element {
@@ -118,6 +122,7 @@ export function TrackerTableGrid({
 
   const loading = !dataLoaded && items.length === 0;
   const searchTerm = externalSearchQuery ?? '';
+  const hasAnyFilters = hasExternalFilters || Boolean(searchTerm.trim());
 
   // Filter
   const filteredItems = useMemo(() => {
@@ -353,20 +358,32 @@ export function TrackerTableGrid({
         className="tracker-table-grid-scroll flex-1 overflow-auto outline-none"
       >
         {sortedItems.length === 0 ? (
-          <div className="tracker-table-grid-empty flex items-center justify-center gap-2 py-6 px-6">
-            <p className="text-sm text-[var(--nim-text-muted)] m-0">No tracker items found</p>
-            {activeTypeFilter !== 'all' && onNewItem && globalRegistry.get(activeTypeFilter)?.creatable !== false && (
-              <button
-                className="px-3 py-1.5 rounded-md text-xs font-medium text-white border-none cursor-pointer transition-all duration-150 hover:opacity-90"
-                style={{ backgroundColor: getTypeColor(activeTypeFilter) }}
-                onClick={() => onNewItem(activeTypeFilter as TrackerItemType)}
-              >
-                <span className="flex items-center gap-1">
-                  <span className="material-symbols-outlined text-sm">add</span>
-                  New {activeTypeFilter.charAt(0).toUpperCase() + activeTypeFilter.slice(1)}
-                </span>
-              </button>
-            )}
+          <div className="tracker-table-grid-empty flex flex-col items-center justify-center gap-2 py-6 px-6 text-center">
+            <p className="text-sm text-[var(--nim-text-muted)] m-0">
+              {hasAnyFilters ? 'No tracker items match your filters' : 'No tracker items found'}
+            </p>
+            <div className="flex items-center gap-2">
+              {hasAnyFilters && onClearFilters && (
+                <button
+                  className="px-3 py-1.5 rounded-md text-xs font-medium text-white bg-[var(--nim-primary)] border-none cursor-pointer transition-colors hover:bg-[var(--nim-primary-hover)]"
+                  onClick={onClearFilters}
+                >
+                  Clear filters
+                </button>
+              )}
+              {activeTypeFilter !== 'all' && onNewItem && globalRegistry.get(activeTypeFilter)?.creatable !== false && (
+                <button
+                  className="px-3 py-1.5 rounded-md text-xs font-medium text-white border-none cursor-pointer transition-all duration-150 hover:opacity-90"
+                  style={{ backgroundColor: getTypeColor(activeTypeFilter) }}
+                  onClick={() => onNewItem(activeTypeFilter as TrackerItemType)}
+                >
+                  <span className="flex items-center gap-1">
+                    <span className="material-symbols-outlined text-sm">add</span>
+                    New {activeTypeFilter.charAt(0).toUpperCase() + activeTypeFilter.slice(1)}
+                  </span>
+                </button>
+              )}
+            </div>
           </div>
         ) : (
           // min-width: max-content lets the grid overflow horizontally when the

@@ -190,6 +190,7 @@ export class RealtimeAPIClient {
   private onAskCodingAgentCallback: ((question: string) => Promise<{ success: boolean; answer?: string; error?: string }>) | null = null;
   private onPauseListeningCallback: (() => void) | null = null;
   private onSpeechStoppedCallback: (() => void) | null = null;
+  private onSpeechStartedCallback: (() => void) | null = null;
   private onRespondToPromptCallback: ((params: { sessionId: string; promptId: string; promptType: string; answer: string }) => Promise<{ success: boolean; error?: string }>) | null = null;
   private onListSessionsCallback: ((query?: string) => Promise<{ success: boolean; sessions?: Array<{ id: string; title: string; status: string }>; error?: string }>) | null = null;
   private onNavigateToSessionCallback: ((sessionId: string) => Promise<{ success: boolean; title?: string; error?: string }>) | null = null;
@@ -376,6 +377,17 @@ export class RealtimeAPIClient {
    */
   setOnSpeechStopped(callback: () => void): void {
     this.onSpeechStoppedCallback = callback;
+  }
+
+  /**
+   * Set callback for when the user starts speaking (VAD speech_started).
+   * Fired for EVERY trigger, independent of the barge-in interrupt decision
+   * (which can defer or suppress onInterruption entirely for echo-suspect
+   * triggers) -- the renderer needs it to hold the listen window open for
+   * the whole utterance (NIM-1594).
+   */
+  setOnSpeechStarted(callback: () => void): void {
+    this.onSpeechStartedCallback = callback;
   }
 
   /**
@@ -792,6 +804,12 @@ export class RealtimeAPIClient {
 
       case 'input_audio_buffer.speech_started': {
         this.updateActivity();
+        // Always tell the renderer speech began, BEFORE the barge-in
+        // decision -- interrupt may be deferred or suppressed, but the
+        // listen window must hold for the whole utterance either way.
+        if (this.onSpeechStartedCallback) {
+          this.onSpeechStartedCallback();
+        }
         // Route the barge-in decision through the policy seam: it classifies
         // echo-suspect (agent audio still audibly playing in the renderer --
         // residual echo can trip VAD on open speakers, NIM-1314 desktop

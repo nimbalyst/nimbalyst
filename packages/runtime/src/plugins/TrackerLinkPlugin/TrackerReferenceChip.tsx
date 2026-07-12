@@ -28,6 +28,13 @@ import {
   navigateToTrackerReference,
   type ResolvedTrackerReference,
 } from './trackerReferenceData';
+import {
+  formatRelativeDate,
+  getPriorityColor,
+  getStatusColor,
+  getTypeColor,
+  getTypeIcon,
+} from '../TrackerPlugin/components/trackerColumns';
 
 // Status palette mirrors the tracker-mode board (KanbanBoard / TrackerItemDetail).
 // Kept inline here because the chip lives in the platform-agnostic runtime and
@@ -51,18 +58,101 @@ const STATUS_COLORS: Record<string, string> = {
 
 const UNRESOLVED_COLOR = 'var(--nim-text-faint)';
 
-function statusColor(status: string | undefined): string {
-  if (!status) return UNRESOLVED_COLOR;
-  return STATUS_COLORS[status] ?? 'var(--nim-text-muted)';
+// These statuses represent successfully finished work across the built-in
+// tracker types. Other terminal states (rejected, superseded, won't-fix) keep
+// their own status color without presenting the item as completed.
+const COMPLETED_STATUSES = new Set([
+  'done',
+  'completed',
+  'implemented',
+  'decided',
+]);
+
+function normalizeStatus(status: string | undefined): string | undefined {
+  return status?.trim().toLowerCase();
 }
 
-interface TrackerReferenceChipProps {
+function statusColor(status: string | undefined): string {
+  const normalizedStatus = normalizeStatus(status);
+  if (!normalizedStatus) return UNRESOLVED_COLOR;
+  return STATUS_COLORS[normalizedStatus] ?? 'var(--nim-text-muted)';
+}
+
+function displayLabel(value: string): string {
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+interface MetadataBadgeProps {
+  color: string;
+  icon?: string;
+  label: string;
+  className: string;
+}
+
+function MetadataBadge({
+  color,
+  icon,
+  label,
+  className,
+}: MetadataBadgeProps): JSX.Element {
+  return (
+    <span
+      className={className}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '4px',
+        minHeight: '22px',
+        padding: '1px 7px',
+        borderRadius: '999px',
+        border: `1px solid ${color}40`,
+        background: `${color}18`,
+        color,
+        fontSize: '10px',
+        fontWeight: 600,
+        lineHeight: 1.2,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {icon ? (
+        <span
+          className="material-symbols-outlined"
+          aria-hidden="true"
+          style={{ fontSize: '13px', lineHeight: 1 }}
+        >
+          {icon}
+        </span>
+      ) : (
+        <span
+          aria-hidden="true"
+          style={{
+            width: '6px',
+            height: '6px',
+            borderRadius: '50%',
+            background: color,
+            flexShrink: 0,
+          }}
+        />
+      )}
+      {label}
+    </span>
+  );
+}
+
+export interface TrackerReferenceChipProps {
   referenceKey: string;
   nodeKey?: string;
+  /** Compact chips omit the live title while retaining preview and navigation. */
+  variant?: 'default' | 'compact';
 }
 
 export function TrackerReferenceChip({
   referenceKey,
+  variant = 'default',
 }: TrackerReferenceChipProps): JSX.Element {
   const resolved = useResolvedTrackerReference(referenceKey);
   const [open, setOpen] = React.useState(false);
@@ -85,6 +175,10 @@ export function TrackerReferenceChip({
   ]);
 
   const color = statusColor(resolved?.status);
+  const normalizedStatus = normalizeStatus(resolved?.status);
+  const isCompleted = normalizedStatus
+    ? COMPLETED_STATUSES.has(normalizedStatus)
+    : false;
   const label = resolved?.issueKey ?? referenceKey;
   const title = resolved?.title;
   const tooltip = resolved
@@ -101,6 +195,8 @@ export function TrackerReferenceChip({
         className="tracker-reference-chip"
         data-issue-key={referenceKey}
         data-resolved={resolved ? 'true' : 'false'}
+        data-status={normalizedStatus}
+        data-completed={isCompleted ? 'true' : 'false'}
         title={tooltip}
         style={{
           display: 'inline-flex',
@@ -120,21 +216,33 @@ export function TrackerReferenceChip({
       >
         <span
           className="tracker-reference-chip-dot"
+          aria-hidden="true"
           style={{
-            width: '7px',
-            height: '7px',
+            width: isCompleted ? '13px' : '7px',
+            height: isCompleted ? '13px' : '7px',
             borderRadius: '50%',
             background: color,
             flexShrink: 0,
+            color: '#fff',
+            fontSize: '10px',
+            fontWeight: 700,
+            lineHeight: isCompleted ? '13px' : '7px',
+            textAlign: 'center',
           }}
-        />
+        >
+          {isCompleted ? '✓' : null}
+        </span>
         <span
           className="tracker-reference-chip-key"
-          style={{ fontWeight: 600, color: 'var(--nim-text)' }}
+          style={{
+            fontWeight: 600,
+            color: isCompleted ? 'var(--nim-text-muted)' : 'var(--nim-text)',
+            textDecoration: isCompleted ? 'line-through' : undefined,
+          }}
         >
           {label}
         </span>
-        {title ? (
+        {title && variant === 'default' ? (
           <span
             className="tracker-reference-chip-title"
             style={{
@@ -142,6 +250,7 @@ export function TrackerReferenceChip({
               maxWidth: '40ch',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
+              textDecoration: isCompleted ? 'line-through' : undefined,
             }}
           >
             {title}
@@ -184,13 +293,30 @@ function TrackerReferencePreview({
   resolved,
   onGoTo,
 }: TrackerReferencePreviewProps): JSX.Element {
+  const typeColor = resolved?.type
+    ? getTypeColor(resolved.type)
+    : 'var(--nim-text-muted)';
+  const resolvedStatusColor = resolved?.status
+    ? getStatusColor(
+        normalizeStatus(resolved.status) ?? resolved.status,
+        resolved.type,
+      )
+    : 'var(--nim-text-muted)';
+  const priorityColor = getPriorityColor(resolved?.priority);
+  const updatedDate = resolved?.updatedAt
+    ? new Date(resolved.updatedAt)
+    : undefined;
+  const updatedLabel =
+    updatedDate && !Number.isNaN(updatedDate.getTime())
+      ? formatRelativeDate(updatedDate)
+      : '';
+
   return (
     <div
       style={{
-        minWidth: '220px',
-        maxWidth: '320px',
-        padding: '10px 12px',
-        borderRadius: '8px',
+        width: 'min(340px, calc(100vw - 24px))',
+        padding: '12px',
+        borderRadius: '10px',
         background: 'var(--nim-bg)',
         border: '1px solid var(--nim-border)',
         boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
@@ -205,56 +331,121 @@ function TrackerReferencePreview({
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '6px',
-              marginBottom: '4px',
+              gap: '8px',
+              marginBottom: '7px',
             }}
           >
             <span
               style={{
-                width: '7px',
-                height: '7px',
-                borderRadius: '50%',
-                background: statusColor(resolved.status),
-                flexShrink: 0,
+                color: 'var(--nim-text-faint)',
+                fontSize: '10px',
+                fontWeight: 700,
+                letterSpacing: '0.08em',
+                textTransform: 'uppercase',
               }}
-            />
-            <span style={{ fontWeight: 600 }}>
+            >
               {resolved.issueKey ?? referenceKey}
             </span>
+          </div>
+          <div
+            style={{
+              marginBottom: '10px',
+              fontSize: '14px',
+              fontWeight: 550,
+              lineHeight: 1.35,
+            }}
+          >
+            {resolved.title}
+          </div>
+          <div
+            className="tracker-reference-preview-badges"
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '6px',
+              marginBottom: '12px',
+            }}
+          >
+            {resolved.type ? (
+              <MetadataBadge
+                className="tracker-reference-preview-type"
+                color={typeColor}
+                icon={getTypeIcon(resolved.type)}
+                label={displayLabel(resolved.type)}
+              />
+            ) : null}
             {resolved.status ? (
-              <span style={{ color: 'var(--nim-text-muted)' }}>
-                {resolved.status}
-              </span>
+              <MetadataBadge
+                className="tracker-reference-preview-status"
+                color={resolvedStatusColor}
+                label={displayLabel(resolved.status)}
+              />
+            ) : null}
+            {resolved.priority ? (
+              <MetadataBadge
+                className="tracker-reference-preview-priority"
+                color={priorityColor}
+                icon="flag"
+                label={`${displayLabel(resolved.priority)} priority`}
+              />
             ) : null}
           </div>
-          <div style={{ marginBottom: '8px' }}>{resolved.title}</div>
           <div
             style={{
               display: 'flex',
+              alignItems: 'center',
               gap: '8px',
-              color: 'var(--nim-text-faint)',
-              marginBottom: '8px',
+              paddingTop: '10px',
+              borderTop: '1px solid var(--nim-border)',
             }}
           >
-            {resolved.type ? <span>{resolved.type}</span> : null}
-            {resolved.priority ? <span>· {resolved.priority}</span> : null}
-            {resolved.owner ? <span>· {resolved.owner}</span> : null}
+            <div
+              className="tracker-reference-preview-updated"
+              title={updatedDate?.toLocaleString()}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                flex: 1,
+                minWidth: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                color: 'var(--nim-text-faint)',
+                fontSize: '10px',
+              }}
+            >
+              <span
+                className="material-symbols-outlined"
+                aria-hidden="true"
+                style={{ fontSize: '13px' }}
+              >
+                schedule
+              </span>
+              {updatedLabel
+                ? `Updated ${updatedLabel}`
+                : 'Update time unavailable'}
+              {resolved.owner ? ` · ${resolved.owner}` : ''}
+            </div>
+            <button
+              type="button"
+              onClick={onGoTo}
+              style={{
+                marginLeft: 'auto',
+                flexShrink: 0,
+                fontSize: '11px',
+                fontWeight: 600,
+                padding: '5px 10px',
+                borderRadius: '6px',
+                border: '1px solid var(--nim-border)',
+                background: 'var(--nim-bg-secondary)',
+                color: 'var(--nim-text)',
+                cursor: 'pointer',
+              }}
+            >
+              Go to item
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onGoTo}
-            style={{
-              fontSize: '12px',
-              padding: '4px 10px',
-              borderRadius: '6px',
-              border: '1px solid var(--nim-border)',
-              background: 'var(--nim-bg-secondary)',
-              color: 'var(--nim-text)',
-              cursor: 'pointer',
-            }}
-          >
-            Go to item
-          </button>
         </>
       ) : (
         <div style={{ color: 'var(--nim-text-muted)' }}>

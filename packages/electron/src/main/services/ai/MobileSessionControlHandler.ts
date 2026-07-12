@@ -7,12 +7,22 @@
  */
 
 import type { SyncProvider, SessionControlMessage } from '@nimbalyst/runtime/sync';
-import { ProviderFactory } from '@nimbalyst/runtime/ai/server';
-import type { BrowserWindow } from 'electron';
+import {
+  isAskUserQuestionProvider,
+  isExitPlanModeProvider,
+  isToolPermissionProvider,
+} from '@nimbalyst/runtime/ai/server';
+import { AISessionsRepository, type PermissionScope } from '@nimbalyst/runtime';
+import { ipcMain, BrowserWindow } from 'electron';
 import { logger } from '../../utils/logger';
-import type { PermissionScope } from '@nimbalyst/runtime';
 import { TrayManager } from '../../tray/TrayManager';
-import { resolveRequestUserInputPromptTargets } from '../../mcp/tools/codexToolCallResolver';
+import { resolvePromptTargets } from '../../mcp/tools/codexToolCallResolver';
+import {
+  getRequestUserInputResponseChannel,
+  getRequestUserInputFallbackResponseChannel,
+  getToolPermissionResponseChannel,
+} from '../../mcp/tools/interactiveToolHandlers';
+import { deliverMobilePromptResponse, resolveSessionProvider } from './MobilePromptDelivery';
 import {
   getGitCommitProposalResponseChannel,
   resolveGitCommitProposalPromptId,
@@ -152,7 +162,7 @@ function handleControlMessage(
     // Legacy handler - kept for backwards compatibility with older mobile versions
     case 'question_response': {
       const payload = message.payload as unknown as QuestionResponsePayload;
-      handleAskUserQuestionResponse(
+      void handleAskUserQuestionResponse(
         message.sessionId,
         payload.questionId,
         payload.answers,
@@ -203,7 +213,6 @@ async function handlePromptTrigger(
   callbacks: MobileSessionControlCallbacks
 ): Promise<void> {
   try {
-    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
     const session = await AISessionsRepository.get(sessionId);
     if (!session?.workspacePath) {
       log.warn('Received prompt control message for unknown session:', sessionId);
@@ -242,7 +251,7 @@ function handlePromptResponse(
   switch (payload.promptType) {
     case 'ask_user_question': {
       const response = payload.response as AskUserQuestionResponse;
-      handleAskUserQuestionResponse(
+      void handleAskUserQuestionResponse(
         sessionId,
         payload.promptId,
         response.answers,
@@ -315,70 +324,42 @@ function handleRequestUserInputResponse(
     `[Mobile] RequestUserInput response: promptId=${promptId}, sessionId=${sessionId}, cancelled=${response.cancelled === true}`,
   );
 
-  const { ipcMain } = require('electron');
-  const { waiterPromptIds: promptIdAliases, rawPromptId } =
-    resolveRequestUserInputPromptTargets(promptId);
+  const { rawId, waiterIds } = resolvePromptTargets(promptId);
+  const answers = response.cancelled ? {} : (response.answers ?? {});
+  const cancelled = response.cancelled === true;
+  // A single payload for both the per-waiter and fallback channels: the
+  // per-waiter listener reads only answers/cancelled/respondedBy and ignores
+  // the extra id fields the fallback listener needs.
+  const ipcPayload = {
+    promptId,
+    ...(rawId ? { rawPromptId: rawId } : {}),
+    answers,
+    cancelled,
+    respondedBy: 'mobile' as const,
+  };
 
-  import('../../mcp/tools/interactiveToolHandlers').then(({
-    getRequestUserInputResponseChannel,
-    getRequestUserInputFallbackResponseChannel,
-  }) => {
-    let hasWaiter = false;
-    for (const promptIdAlias of promptIdAliases) {
-      const channel = getRequestUserInputResponseChannel(sessionId, promptIdAlias);
-      if (ipcMain.listenerCount(channel) > 0) {
-        hasWaiter = true;
-        log.info(`[Mobile] Emitting on RequestUserInput channel: ${channel}`);
-        ipcMain.emit(channel, {}, {
-          answers: response.cancelled ? {} : (response.answers ?? {}),
-          cancelled: response.cancelled === true,
-          respondedBy: 'mobile',
-        });
-      }
-    }
-    const fallbackChannel = getRequestUserInputFallbackResponseChannel(sessionId);
-    if (!hasWaiter && ipcMain.listenerCount(fallbackChannel) > 0) {
-      hasWaiter = true;
-      log.info(`[Mobile] Emitting on RequestUserInput fallback channel: ${fallbackChannel}`);
-      ipcMain.emit(fallbackChannel, {}, {
-        promptId,
-        ...(rawPromptId ? { rawPromptId } : {}),
-        answers: response.cancelled ? {} : (response.answers ?? {}),
-        cancelled: response.cancelled === true,
-        respondedBy: 'mobile',
-      });
-    }
-    if (!hasWaiter) {
-      log.info(`[Mobile] No MCP waiter for RequestUserInput on ${promptIdAliases.join(', ')} -- relying on DB poll`);
-    }
-  }).catch((err) => {
-    log.warn('[Mobile] Failed to import interactiveToolHandlers:', err);
+  void deliverMobilePromptResponse({
+    promptType: 'request_user_input',
+    sessionId,
+    waiterIds,
+    // No in-process provider: request_user_input is an MCP-only prompt.
+    mcpChannel: (sid, waiterId) => getRequestUserInputResponseChannel(sid, waiterId),
+    fallbackChannel: (sid) => getRequestUserInputFallbackResponseChannel(sid),
+    ipcPayload,
+    dbRecord: {
+      type: 'request_user_input_response',
+      promptId,
+      ...(rawId ? { rawPromptId: rawId } : {}),
+      waiterIds,
+      answers,
+      cancelled,
+      respondedBy: 'mobile',
+      respondedAt: Date.now(),
+    },
+    notify: () => {
+      notifyAllWindows('ai:requestUserInputResolved', { sessionId, promptId });
+    },
   });
-
-  // DB fallback: write a response row so the MCP server's polling loop resolves.
-  import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository').then(({ AgentMessagesRepository }) => {
-    AgentMessagesRepository.create({
-      sessionId,
-      source: 'claude-code',
-      direction: 'output' as const,
-      createdAt: new Date(),
-      content: JSON.stringify({
-        type: 'request_user_input_response',
-        promptId,
-        ...(rawPromptId ? { rawPromptId } : {}),
-        answers: response.cancelled ? {} : (response.answers ?? {}),
-        cancelled: response.cancelled === true,
-        respondedBy: 'mobile',
-        respondedAt: Date.now(),
-      }),
-    }).catch((err) => {
-      log.warn(`[Mobile] Failed to persist RequestUserInput response: ${err}`);
-    });
-  });
-
-  // Notify all windows to clear the pending UI.
-  notifyAllWindows('ai:requestUserInputResolved', { sessionId, promptId });
-  TrayManager.getInstance().onPromptResolved(sessionId);
 }
 
 /**
@@ -405,9 +386,8 @@ async function handleCancel(
   // claude-code-cli is an external CLI process with NO in-process provider —
   // abort it by sending Ctrl-C to the terminal PTY, mirroring the desktop
   // `ai:cancelRequest` handler (AIService.ts).
-  const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-  const session = await AISessionsRepository.get(sessionId);
-  if (session?.provider === 'claude-code-cli') {
+  const { providerType, provider } = await resolveSessionProvider(sessionId);
+  if (providerType === 'claude-code-cli') {
     const { getTerminalSessionManager } = await import('../TerminalSessionManager');
     const terminalManager = getTerminalSessionManager();
     if (!terminalManager.isTerminalActive(sessionId)) {
@@ -421,7 +401,6 @@ async function handleCancel(
     return;
   }
 
-  const provider = ProviderFactory.getProvider((session?.provider as Parameters<typeof ProviderFactory.getProvider>[0]) || 'claude-code', sessionId);
   if (provider && 'abort' in provider) {
     log.info('Aborting session:', sessionId);
     await rollbackQueuedPrompts();
@@ -441,7 +420,6 @@ async function handleArchive(sessionId: string, isArchived: boolean): Promise<vo
   log.info(`${isArchived ? 'Archiving' : 'Unarchiving'} session from mobile:`, sessionId);
 
   try {
-    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
     await AISessionsRepository.updateMetadata(sessionId, { isArchived });
 
     // Notify renderer to update UI
@@ -458,99 +436,66 @@ async function handleArchive(sessionId: string, isArchived: boolean): Promise<vo
 /**
  * Handle AskUserQuestion response from mobile
  */
-function handleAskUserQuestionResponse(
+async function handleAskUserQuestionResponse(
   sessionId: string,
   questionId: string,
   answers: Record<string, string>,
   cancelled: boolean,
   _findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined
-): void {
+): Promise<void> {
   log.info(`[Mobile] AskUserQuestion response: questionId=${questionId}, sessionId=${sessionId}, cancelled=${cancelled}`);
 
-  let providerResolved = false;
-  const provider = ProviderFactory.getProvider('claude-code', sessionId);
-
-  if (provider) {
-    if (cancelled) {
-      if ('rejectAskUserQuestion' in provider) {
-        (provider as { rejectAskUserQuestion: (questionId: string, error: Error) => void })
-          .rejectAskUserQuestion(questionId, new Error('Question cancelled from mobile'));
-        providerResolved = true;
-      }
-    } else {
-      if ('resolveAskUserQuestion' in provider) {
-        providerResolved = (provider as { resolveAskUserQuestion: (questionId: string, answers: Record<string, string>, sessionId: string, source: string) => boolean })
-          .resolveAskUserQuestion(questionId, answers, sessionId, 'mobile');
-      }
-    }
-  } else {
-    log.warn('[Mobile] No provider found for session:', sessionId);
-  }
-
-  // When AskUserQuestion comes through MCP, the provider's pendingAskUserQuestions map
-  // is empty, so resolveAskUserQuestion returns false. Fall back to IPC emission +
-  // database write so the MCP server's IPC listeners or database polling can resolve it.
-  if (!providerResolved) {
-    const { ipcMain } = require('electron');
-
-    // Try MCP-specific IPC channel
-    const mcpChannel = `ask-user-question-response:${sessionId}:${questionId}`;
-    const hasMcpWaiter = ipcMain.listenerCount(mcpChannel) > 0;
-    if (hasMcpWaiter) {
-      log.info(`[Mobile] Emitting on MCP channel: ${mcpChannel}`);
-      ipcMain.emit(mcpChannel, {}, {
-        questionId,
-        answers: cancelled ? {} : answers,
-        cancelled,
-        respondedBy: 'mobile',
-        sessionId,
-      });
-    }
-
-    // Try session fallback IPC channel
-    const fallbackChannel = `ask-user-question:${sessionId}`;
-    const hasFallbackWaiter = ipcMain.listenerCount(fallbackChannel) > 0;
-    if (hasFallbackWaiter) {
-      log.info(`[Mobile] Emitting on session fallback channel: ${fallbackChannel}`);
-      ipcMain.emit(fallbackChannel, {}, {
-        questionId,
-        answers: cancelled ? {} : answers,
-        cancelled,
-        respondedBy: 'mobile',
-        sessionId,
-      });
-    }
-
-    // Database fallback: write response so MCP server's database polling can find it
-    import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository').then(({ AgentMessagesRepository }) => {
-      AgentMessagesRepository.create({
-        sessionId,
-        source: 'claude-code',
-        direction: 'output' as const,
-        createdAt: new Date(),
-        content: JSON.stringify({
-          type: 'ask_user_question_response',
-          questionId,
-          answers: cancelled ? {} : answers,
-          cancelled,
-          respondedBy: 'mobile',
-          respondedAt: Date.now()
-        })
-      }).catch(err => {
-        log.warn(`[Mobile] Failed to persist AskUserQuestion response to database: ${err}`);
-      });
-    });
-
-    log.info(`[Mobile] AskUserQuestion fallback resolution: hasMcpWaiter=${hasMcpWaiter}, hasFallbackWaiter=${hasFallbackWaiter}`);
-  }
-
-  // Notify renderer to clear the pending question UI
-  notifyAllWindows('ai:askUserQuestionAnswered', {
-    sessionId,
+  const { rawId, waiterIds } = resolvePromptTargets(questionId);
+  const ipcPayload = {
     questionId,
-    answers,
-    answeredBy: 'mobile',
+    ...(rawId ? { rawQuestionId: rawId } : {}),
+    answers: cancelled ? {} : answers,
     cancelled,
+    respondedBy: 'mobile' as const,
+    sessionId,
+  };
+
+  await deliverMobilePromptResponse({
+    promptType: 'ask_user_question',
+    sessionId,
+    waiterIds,
+    deliverToProvider: (provider) => {
+      if (!provider || !isAskUserQuestionProvider(provider)) return false;
+      if (cancelled) {
+        for (const waiterId of waiterIds) {
+          provider.rejectAskUserQuestion(waiterId, new Error('Question cancelled from mobile'), 'mobile');
+        }
+        return true;
+      }
+      for (const waiterId of waiterIds) {
+        if (provider.resolveAskUserQuestion(waiterId, answers, sessionId, 'mobile')) return true;
+      }
+      return false;
+    },
+    mcpChannel: (sid, waiterId) => `ask-user-question-response:${sid}:${waiterId}`,
+    fallbackChannel: (sid) => `ask-user-question:${sid}`,
+    ipcPayload,
+    dbRecord: {
+      type: 'ask_user_question_response',
+      questionId,
+      ...(rawId ? { rawQuestionId: rawId } : {}),
+      // Option (A): persist the full alias list so DB-poll recovery is
+      // alias-aware without re-deriving aliases in the hot loop.
+      waiterIds,
+      answers: cancelled ? {} : answers,
+      cancelled,
+      respondedBy: 'mobile',
+      respondedAt: Date.now(),
+    },
+    notify: () => {
+      notifyAllWindows('ai:askUserQuestionAnswered', {
+        sessionId,
+        questionId,
+        answers,
+        answeredBy: 'mobile',
+        cancelled,
+      });
+    },
   });
 }
 
@@ -565,19 +510,19 @@ function handleExitPlanModeResponse(
 ): void {
   log.info('Handling ExitPlanMode response:', promptId, 'approved:', response.approved);
 
-  // Get the provider to resolve the SDK's pending promise
-  const provider = ProviderFactory.getProvider('claude-code', sessionId);
-
-  if (!provider) {
-    log.warn('No provider found for session:', sessionId);
-    return;
-  }
-
-  // Call resolveExitPlanModeConfirmation on the provider to resolve the SDK's pending promise
-  if ('resolveExitPlanModeConfirmation' in provider) {
-    log.info('Resolving ExitPlanMode confirmation:', promptId, 'approved:', response.approved);
-    (provider as { resolveExitPlanModeConfirmation: (requestId: string, response: { approved: boolean; clearContext?: boolean; feedback?: string }, sessionId: string, source: string) => void })
-      .resolveExitPlanModeConfirmation(
+  // ExitPlanMode has no MCP-over-IPC waiter (the SDK's canUseTool promise is
+  // resolved directly on the provider). It DOES have a durable record read by
+  // MetaAgentService to know a pending plan prompt was answered, so we persist
+  // an `exit_plan_mode_response` row matching the desktop shape (SessionHandlers).
+  void deliverMobilePromptResponse({
+    promptType: 'exit_plan_mode',
+    sessionId,
+    deliverToProvider: (provider) => {
+      if (!isExitPlanModeProvider(provider)) {
+        log.warn('[Mobile] ExitPlanMode: provider cannot resolve confirmation for session:', sessionId);
+        return false;
+      }
+      provider.resolveExitPlanModeConfirmation(
         promptId,
         {
           approved: response.approved,
@@ -585,21 +530,30 @@ function handleExitPlanModeResponse(
           feedback: response.feedback,
         },
         sessionId,
-        'mobile'
+        'mobile',
       );
-  }
-
-  // Notify renderer to update the UI
-  notifyAllWindows('ai:exitPlanModeResponse', {
-    sessionId,
-    promptId,
-    approved: response.approved,
-    feedback: response.feedback,
-    startNewSession: response.startNewSession,
-    answeredBy: 'mobile',
+      return true;
+    },
+    dbRecord: {
+      type: 'exit_plan_mode_response',
+      requestId: promptId,
+      approved: response.approved,
+      clearContext: response.startNewSession,
+      feedback: response.feedback,
+      respondedBy: 'mobile',
+      respondedAt: Date.now(),
+    },
+    notify: () => {
+      notifyAllWindows('ai:exitPlanModeResponse', {
+        sessionId,
+        promptId,
+        approved: response.approved,
+        feedback: response.feedback,
+        startNewSession: response.startNewSession,
+        answeredBy: 'mobile',
+      });
+    },
   });
-
-  TrayManager.getInstance().onPromptResolved(sessionId);
 }
 
 /**
@@ -613,62 +567,44 @@ function handleToolPermissionResponse(
 ): void {
   log.info('Handling ToolPermission response:', promptId, 'decision:', response.decision, 'scope:', response.scope);
 
-  // Resolve the permission on the provider directly (same as desktop renderer does via IPC)
-  const provider = ProviderFactory.getProvider('claude-code', sessionId);
-  log.info('ToolPermission provider lookup:', provider ? 'found' : 'not found', 'hasResolve:', provider ? typeof (provider as any).resolveToolPermission : 'N/A');
-
-  if (provider && typeof (provider as any).resolveToolPermission === 'function') {
-    log.info('Calling resolveToolPermission on provider for:', promptId);
-    (provider as any).resolveToolPermission(promptId, response, sessionId, 'mobile');
-  } else {
-    log.warn('No provider found or provider does not support tool permission for session:', sessionId);
-  }
-
-  import('electron').then(({ ipcMain }) => {
-    const channel = `tool-permission-response:${sessionId}:${promptId}`;
-    const hasMcpWaiter = ipcMain.listenerCount(channel) > 0;
-    if (hasMcpWaiter) {
-      log.info(`[Mobile] Emitting ToolPermission response on MCP channel: ${channel}`);
-      ipcMain.emit(channel, {}, {
-        requestId: promptId,
+  void deliverMobilePromptResponse({
+    promptType: 'tool_permission',
+    sessionId,
+    // The MCP waiter (claude-code-cli PreToolUse path) keys on the canonical
+    // `tool-perm-…` id; provider-path sessions resolve via deliverToProvider.
+    waiterIds: [promptId],
+    deliverToProvider: (provider) => {
+      if (!isToolPermissionProvider(provider)) {
+        log.warn('[Mobile] ToolPermission: provider cannot resolve permission for session:', sessionId);
+        return false;
+      }
+      provider.resolveToolPermission(promptId, response, sessionId, 'mobile');
+      return true;
+    },
+    mcpChannel: (sid, waiterId) => getToolPermissionResponseChannel(sid, waiterId),
+    ipcPayload: {
+      requestId: promptId,
+      sessionId,
+      decision: response.decision,
+      scope: response.scope,
+      respondedBy: 'mobile',
+    },
+    dbRecord: buildToolPermissionResponseRecord({
+      requestId: promptId,
+      answer: response,
+      respondedBy: 'mobile',
+    }),
+    notify: () => {
+      notifyAllWindows('ai:toolPermissionResponse', {
         sessionId,
+        promptId,
         decision: response.decision,
         scope: response.scope,
-        respondedBy: 'mobile',
+        answeredBy: 'mobile',
       });
-    }
-  }).catch((err) => {
-    log.warn(`[Mobile] Failed to emit ToolPermission response over IPC: ${err}`);
+      notifyAllWindows('ai:toolPermissionResolved', { sessionId, requestId: promptId });
+    },
   });
-
-  import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository').then(({ AgentMessagesRepository }) => {
-    AgentMessagesRepository.create({
-      sessionId,
-      source: 'nimbalyst',
-      direction: 'output' as const,
-      createdAt: new Date(),
-      content: JSON.stringify(buildToolPermissionResponseRecord({
-        requestId: promptId,
-        answer: response,
-        respondedBy: 'mobile',
-      })),
-    }).catch((err) => {
-      log.warn(`[Mobile] Failed to persist ToolPermission response to database: ${err}`);
-    });
-  }).catch((err) => {
-    log.warn(`[Mobile] Failed to load AgentMessagesRepository for ToolPermission response: ${err}`);
-  });
-
-  // Notify renderer to update the UI
-  notifyAllWindows('ai:toolPermissionResponse', {
-    sessionId,
-    promptId,
-    decision: response.decision,
-    scope: response.scope,
-    answeredBy: 'mobile',
-  });
-  notifyAllWindows('ai:toolPermissionResolved', { sessionId, requestId: promptId });
-  TrayManager.getInstance().onPromptResolved(sessionId);
 }
 
 /**
@@ -779,8 +715,7 @@ async function handleGitCommitResponse(
 /**
  * Helper to notify all windows
  */
-async function notifyAllWindows(channel: string, data: Record<string, unknown>): Promise<void> {
-  const { BrowserWindow } = await import('electron');
+function notifyAllWindows(channel: string, data: Record<string, unknown>): void {
   const windows = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed());
   for (const win of windows) {
     win.webContents.send(channel, data);

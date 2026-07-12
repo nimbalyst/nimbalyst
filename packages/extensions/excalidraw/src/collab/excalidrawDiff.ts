@@ -290,7 +290,7 @@ export const applyElementOperations = (
         case 'append': {
           idYjsIndexMap[op.id] = yElements.length;
           yElements.push([
-            new Y.Map<ExcalidrawElement | string>(
+            new Y.Map<unknown>(
               Object.entries({ pos: op.pos, el: { ...op.element } }),
             ),
           ]);

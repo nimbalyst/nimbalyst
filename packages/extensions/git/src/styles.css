@@ -64,6 +64,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  margin-left: auto;
 }
 
 .git-log-toolbar-filters {
@@ -135,6 +136,11 @@
 
 /* Action buttons */
 .git-log-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 24px;
   background: var(--nim-bg-tertiary);
   color: var(--nim-text);
   border: 1px solid var(--nim-border);
@@ -158,8 +164,79 @@
 }
 
 .git-log-action-btn--refresh {
-  padding: 3px 6px;
+  width: 28px;
+  padding: 0;
   font-size: 14px;
+  line-height: 1;
+}
+
+.git-log-hide-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.git-log-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--nim-border);
+  background: var(--nim-bg);
+  flex-shrink: 0;
+}
+
+.git-log-search-icon {
+  flex-shrink: 0;
+  color: var(--nim-text-muted);
+}
+
+.git-log-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 7px;
+  background: var(--nim-bg-tertiary);
+  color: var(--nim-text);
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  font: inherit;
+  outline: none;
+  user-select: text;
+}
+
+.git-log-search-input:focus {
+  border-color: var(--nim-primary);
+}
+
+.git-log-search-input::placeholder {
+  color: var(--nim-text-faint);
+}
+
+.git-log-search-count {
+  flex-shrink: 0;
+  color: var(--nim-text-muted);
+  font-size: 11px;
+}
+
+.git-log-search-clear {
+  flex-shrink: 0;
+  padding: 2px 4px;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--nim-text-faint);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.git-log-search-clear:hover {
+  color: var(--nim-text);
+  background: var(--nim-bg-active);
 }
 
 /* Split button (pull) */
@@ -177,9 +254,15 @@
 .git-log-split-btn-arrow {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
-  padding: 3px 4px;
-  font-size: 9px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+}
+
+.git-log-split-btn-chevron {
+  display: block;
 }
 
 .git-log-split-menu {

@@ -13,11 +13,9 @@ import { ExtensionDevIndicator } from '../ExtensionDevIndicator';
 import { ClaudeUsageIndicator } from '../ClaudeUsageIndicator';
 import { CodexUsageIndicator } from '../CodexUsageIndicator';
 import { GeminiUsageIndicator } from '../GeminiUsageIndicator';
-import { BackgroundTaskIndicator } from '../BackgroundTaskIndicator';
 import { VoiceModeButton } from '../UnifiedAI/VoiceModeButton';
 import { useExtensionGutterButtons, useExtensionBottomPanelButtons } from '../../extensions/panels/usePanels';
 import { HelpTooltip } from '../../help';
-import { setActiveSessionAtom } from '../../store';
 import {
   developerModeAtom,
   terminalFeatureAvailableAtom,
@@ -45,6 +43,7 @@ import {
   canHideGutterItem,
 } from './navGutterItems';
 import { prRemoteAtom } from '../../store/atoms/pullRequests';
+import { AgentSessionsPopover } from './AgentSessionsPopover';
 
 export type NavigationMode = 'planning' | 'coding';
 export type SidebarView = 'files' | 'settings';
@@ -113,9 +112,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
   onExtensionBottomPanelChange,
 }) => {
   const posthog = usePostHog();
-  const isDevMode = import.meta.env.DEV || window.IS_DEV_MODE;
   const developerMode = useAtomValue(developerModeAtom);
-  const setActiveSession = useSetAtom(setActiveSessionAtom);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuButtonRef = useRef<HTMLButtonElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
@@ -200,36 +197,41 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
     onReclick?: () => void;
     /** Extra decoration (e.g. alpha badge). */
     decoration?: React.ReactNode;
+    /** Interactive sibling rendered over the button (e.g. Agent attention bubble). */
+    overlay?: React.ReactNode;
   }): React.ReactNode => {
     const isActive = contentMode === opts.contentMode && !activeExtensionPanel;
     return (
-      <HelpTooltip testId={opts.testId} placement="right">
-        <button
-          className={navBtnClass(isActive)}
-          onClick={() => {
-            // Clear any active fullscreen extension panel when switching modes.
-            onExtensionPanelChange?.(null);
-            if (isActive) {
-              opts.onReclick?.();
-            } else {
-              if (opts.contentMode !== contentMode) {
-                posthog?.capture('content_mode_switched', {
-                  fromMode: contentMode,
-                  toMode: opts.contentMode,
-                });
+      <div className="nav-mode-button-wrapper relative">
+        <HelpTooltip testId={opts.testId} placement="right">
+          <button
+            className={navBtnClass(isActive)}
+            onClick={() => {
+              // Clear any active fullscreen extension panel when switching modes.
+              onExtensionPanelChange?.(null);
+              if (isActive) {
+                opts.onReclick?.();
+              } else {
+                if (opts.contentMode !== contentMode) {
+                  posthog?.capture('content_mode_switched', {
+                    fromMode: contentMode,
+                    toMode: opts.contentMode,
+                  });
+                }
+                onContentModeChange(opts.contentMode);
               }
-              onContentModeChange(opts.contentMode);
-            }
-          }}
-          aria-label={opts.label}
-          aria-pressed={isActive}
-          data-mode={opts.contentMode}
-          data-testid={opts.testId}
-        >
-          <MaterialSymbol icon={opts.icon} size={20} fill={isActive} />
-          {opts.decoration}
-        </button>
-      </HelpTooltip>
+            }}
+            aria-label={opts.label}
+            aria-pressed={isActive}
+            data-mode={opts.contentMode}
+            data-testid={opts.testId}
+          >
+            <MaterialSymbol icon={opts.icon} size={20} fill={isActive} />
+            {opts.decoration}
+          </button>
+        </HelpTooltip>
+        {opts.overlay}
+      </div>
     );
   };
 
@@ -320,6 +322,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
         label: `Agent (${getShortcutDisplay(KeyboardShortcuts.view.agentMode)})`,
         contentMode: 'agent', testId: 'agent-mode-button',
         onReclick: () => onToggleAgentCollapsed?.(),
+        overlay: <AgentSessionsPopover onOpenAgentMode={() => onContentModeChange('agent')} />,
       }),
     },
     {
@@ -511,17 +514,6 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
       {/* Indicators + settings cluster (bottom) */}
       <div className="nav-section nav-settings flex flex-col items-center gap-1 w-full px-1.5 py-1 mt-auto pt-2 border-t border-nim">
         {renderSection(indicatorItems, 'indicators')}
-
-        {/* Background task indicator: dev-only, transient, not user-configurable */}
-        {isDevMode && (
-          <BackgroundTaskIndicator
-            workspacePath={workspacePath || undefined}
-            onOpenSession={(sessionId) => {
-              setActiveSession(sessionId);
-              onContentModeChange('agent');
-            }}
-          />
-        )}
 
         {/* User menu: always visible, never hideable, always last */}
         <div>
