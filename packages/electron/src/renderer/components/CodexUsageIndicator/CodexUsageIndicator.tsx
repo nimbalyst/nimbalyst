@@ -50,6 +50,7 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
   const utilization = hasLoadError ? 0 : usage?.fiveHour?.utilization ?? 0;
   const strokeDashoffset = RING_CIRCUMFERENCE * (1 - utilization / 100);
   const limitsAvailable = !hasLoadError && (usage?.limitsAvailable ?? true);
+  const sessionAvailable = limitsAvailable && (usage?.fiveHour.available ?? true);
 
   const colorClasses: Record<string, string> = {
     green: 'stroke-green-500',
@@ -58,14 +59,16 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
     muted: 'stroke-nim-muted',
   };
 
-  const effectiveSessionColor = limitsAvailable ? sessionColor : 'muted';
+  const effectiveSessionColor = sessionAvailable ? sessionColor : 'muted';
   const strokeColor = colorClasses[effectiveSessionColor] || colorClasses.muted;
 
   const tooltipContent = usage?.error
     ? `Codex usage unavailable: ${usage.error}`
     : usage
       ? limitsAvailable
-        ? `Codex: ${Math.round(utilization)}% (resets ${formatResetTime(usage.fiveHour.resetsAt)})`
+        ? sessionAvailable
+          ? `Codex: ${Math.round(utilization)}% (resets ${formatResetTime(usage.fiveHour.resetsAt)})`
+          : 'Codex session usage is not currently reported; weekly usage is available in the popover'
         : 'Codex usage (limits unavailable)'
       : 'Codex usage unavailable';
 
@@ -110,7 +113,7 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
         </svg>
         {/* Percentage text */}
         <span className="absolute inset-0 flex items-center justify-center text-[9px] font-semibold text-nim">
-          {limitsAvailable ? `${Math.round(utilization)}%` : '--'}
+          {sessionAvailable ? `${Math.round(utilization)}%` : '--'}
         </span>
       </button>
 

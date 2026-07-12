@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mobile session sync now skips messages the mobile transcript never displays, cutting sync storage and traffic.
 
 ### Fixed
+- Codex usage meters now identify session and weekly limits by duration, so temporary weekly-only limits no longer appear under Session.
 - PR mode now explains when a merge needs the GitHub CLI `workflow` scope and offers the recovery command instead of showing `gh api -X failed`.
 - Importing Mermaid diagrams into Excalidraw works again: flowcharts (including subgraphs) become editable shapes instead of failing or degrading to a broken image, and AI-added arrows no longer lose their labels.
 - Voice mode no longer stops listening while you are still speaking; the mic stays open until you finish or explicitly pause.

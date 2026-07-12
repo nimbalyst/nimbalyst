@@ -27,6 +27,7 @@ interface UsageSectionProps {
   subtitle: string;
   utilization: number;
   resetsAt: string | null;
+  available: boolean;
   color: 'green' | 'yellow' | 'red' | 'muted';
   windowDurationMs: number;
 }
@@ -48,6 +49,7 @@ const UsageSection: React.FC<UsageSectionProps> = ({
   subtitle,
   utilization,
   resetsAt,
+  available,
   color,
   windowDurationMs,
 }) => {
@@ -70,23 +72,25 @@ const UsageSection: React.FC<UsageSectionProps> = ({
           <div className="text-[11px] text-nim-muted">{subtitle}</div>
         </div>
         <div className={`text-[16px] font-semibold ${colors.text}`}>
-          {Math.round(utilization)}%
+          {available ? `${Math.round(utilization)}%` : '--'}
         </div>
       </div>
       <div className="relative h-1.5 bg-nim-tertiary rounded-full overflow-hidden mb-1.5">
         <div
           className={`h-full rounded-full transition-all duration-300 ${colors.bar}`}
-          style={{ width: `${Math.min(utilization, 100)}%` }}
+          style={{ width: available ? `${Math.min(utilization, 100)}%` : '0%' }}
         />
-        <div
-          className={`absolute top-0 h-full w-0.5 transition-all duration-300 ${isOverPacing ? 'bg-red-400' : 'bg-nim-text-muted'}`}
-          style={{ left: `${timeElapsedPercent}%` }}
-          title={`${Math.round(timeElapsedPercent)}% of window elapsed`}
-        />
+        {available && (
+          <div
+            className={`absolute top-0 h-full w-0.5 transition-all duration-300 ${isOverPacing ? 'bg-red-400' : 'bg-nim-text-muted'}`}
+            style={{ left: `${timeElapsedPercent}%` }}
+            title={`${Math.round(timeElapsedPercent)}% of window elapsed`}
+          />
+        )}
       </div>
       <div className="flex items-center gap-1 text-[11px] text-nim-muted">
         <MaterialSymbol icon="schedule" size={12} className="opacity-70" />
-        <span>Resets in {formatResetTime(resetsAt)}</span>
+        <span>{available ? `Resets in ${formatResetTime(resetsAt)}` : 'Not currently reported'}</span>
       </div>
     </div>
   );
@@ -194,6 +198,7 @@ export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
                 subtitle="5-hour window"
                 utilization={usage.fiveHour.utilization}
                 resetsAt={usage.fiveHour.resetsAt}
+                available={usage.fiveHour.available}
                 color={sessionColor as 'green' | 'yellow' | 'red' | 'muted'}
                 windowDurationMs={sessionWindowMs}
               />
@@ -202,6 +207,7 @@ export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
                 subtitle="7-day window"
                 utilization={usage.sevenDay.utilization}
                 resetsAt={usage.sevenDay.resetsAt}
+                available={usage.sevenDay.available}
                 color={weeklyColor as 'green' | 'yellow' | 'red' | 'muted'}
                 windowDurationMs={weeklyWindowMs}
               />

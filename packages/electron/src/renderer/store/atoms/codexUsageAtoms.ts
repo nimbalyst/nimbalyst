@@ -15,10 +15,12 @@ export interface CodexUsageData {
   fiveHour: {
     utilization: number; // 0-100 percentage
     resetsAt: string | null; // ISO timestamp
+    available: boolean;
   };
   sevenDay: {
     utilization: number;
     resetsAt: string | null;
+    available: boolean;
   };
   credits?: {
     hasCredits: boolean;
@@ -60,7 +62,7 @@ export const codexUsageAvailableAtom = atom((get) => {
 
 export const codexUsageSessionColorAtom = atom((get) => {
   const usage = get(codexUsageAtom);
-  if (!usage) return 'muted';
+  if (!usage || !usage.fiveHour.available) return 'muted';
   const util = usage.fiveHour.utilization;
   if (util >= 80) return 'red';
   if (util >= 50) return 'yellow';
@@ -69,7 +71,7 @@ export const codexUsageSessionColorAtom = atom((get) => {
 
 export const codexUsageWeeklyColorAtom = atom((get) => {
   const usage = get(codexUsageAtom);
-  if (!usage) return 'muted';
+  if (!usage || !usage.sevenDay.available) return 'muted';
   const util = usage.sevenDay.utilization;
   if (util >= 80) return 'red';
   if (util >= 50) return 'yellow';

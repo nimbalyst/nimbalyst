@@ -14,7 +14,10 @@
  * still-active sibling window.
  */
 import { describe, it, expect } from 'vitest';
-import { filterRateLimitsByExpiry } from '../CodexUsageService';
+import {
+  classifyRateLimitWindows,
+  filterRateLimitsByExpiry,
+} from '../CodexUsageService';
 
 // 2026-05-14T12:00:00Z, in Unix seconds. Each test pins a specific "now"
 // relative to this anchor so resets_at math is human-readable.
@@ -130,5 +133,37 @@ describe('filterRateLimitsByExpiry', () => {
     const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
     expect(out).not.toBeNull();
     expect(out!.limit_id).toBe('usage-bucket-7');
+  });
+});
+
+describe('classifyRateLimitWindows', () => {
+  it('classifies the legacy primary/secondary shape by duration', () => {
+    const windows = classifyRateLimitWindows({
+      primary: primary(42, NOW_SECONDS + FIVE_HOURS),
+      secondary: secondary(18, NOW_SECONDS + SEVEN_DAYS),
+    });
+
+    expect(windows.fiveHour?.used_percent).toBe(42);
+    expect(windows.sevenDay?.used_percent).toBe(18);
+  });
+
+  it('classifies a weekly-only primary bucket as weekly', () => {
+    const windows = classifyRateLimitWindows({
+      primary: secondary(11, NOW_SECONDS + SEVEN_DAYS),
+      secondary: null,
+    });
+
+    expect(windows.fiveHour).toBeNull();
+    expect(windows.sevenDay?.used_percent).toBe(11);
+  });
+
+  it('classifies reordered buckets by duration instead of slot', () => {
+    const windows = classifyRateLimitWindows({
+      primary: secondary(18, NOW_SECONDS + SEVEN_DAYS),
+      secondary: primary(42, NOW_SECONDS + FIVE_HOURS),
+    });
+
+    expect(windows.fiveHour?.used_percent).toBe(42);
+    expect(windows.sevenDay?.used_percent).toBe(18);
   });
 });
