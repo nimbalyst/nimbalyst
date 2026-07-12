@@ -120,6 +120,10 @@ interface AppServerSessionRaw {
   dynamicTools: DynamicToolSpec[];
   /** Snapshot of any uncompleted turn for abort handling. */
   activeTurnId: string | null;
+  /** True from before turn/start until a terminal turn notification. */
+  turnInProgress: boolean;
+  /** True while provider-native compaction owns the Codex core task slot. */
+  compactionInProgress: boolean;
   /** stderr buffer for diagnostic surface on failure. */
   stderrTail: string[];
 }
@@ -277,6 +281,17 @@ export class CodexAppServerProtocol implements AgentProtocol {
       ?? (raw.options as unknown as { abortSignal?: AbortSignal })?.abortSignal
       ?? (session.raw as { options?: { abortSignal?: AbortSignal } })?.options?.abortSignal;
 
+    // Model turns and CompactTask both replace any active Codex core task.
+    // Refuse before subscribing or issuing turn/start so concurrent operations
+    // cannot replace each other behind Nimbalyst's lifecycle tracking.
+    if (raw.turnInProgress || raw.compactionInProgress) {
+      yield {
+        type: 'error',
+        error: '[CodexAppServer] thread already has an active turn or compaction',
+      };
+      return;
+    }
+
     // Drain queue: notifications and one terminating turn event are pushed by
     // the JsonRpcClient handler; the generator below awaits them.
     const queue: Array<{ kind: 'event'; event: ProtocolEvent } | { kind: 'end' } | { kind: 'fail'; error: Error } | { kind: 'abort' }> = [];
@@ -334,10 +349,12 @@ export class CodexAppServerProtocol implements AgentProtocol {
       }
     }
 
-    // Start the turn. Errors from the request itself are surfaced as fail.
-    const turnInput = await this.buildInput(message);
+    // Start the turn. Errors from input construction or the request itself are
+    // surfaced as fail while releasing the operation slot.
     let turnStartResultId: string | null = null;
+    raw.turnInProgress = true;
     try {
+      const turnInput = await this.buildInput(message);
       const turnStart = await raw.client.request<{ turn?: { id?: string } }>('turn/start', {
         threadId: raw.threadId,
         input: turnInput,
@@ -345,6 +362,10 @@ export class CodexAppServerProtocol implements AgentProtocol {
       turnStartResultId = turnStart?.turn?.id ?? null;
       raw.activeTurnId = turnStartResultId;
     } catch (err) {
+      raw.turnInProgress = false;
+      for (const unsub of unsubscribers) {
+        try { unsub(); } catch { /* noop */ }
+      }
       const baseMsg = err instanceof Error ? err.message : String(err);
       yield {
         type: 'error',
@@ -390,6 +411,117 @@ export class CodexAppServerProtocol implements AgentProtocol {
         try { unsub(); } catch { /* noop */ }
       }
       raw.activeTurnId = null;
+      raw.turnInProgress = false;
+    }
+  }
+
+  /**
+   * Report whether a model turn or native compaction currently owns the Codex
+   * core task slot for this thread.
+   */
+  isSessionActive(session: ProtocolSession): boolean {
+    const raw = this.assertRaw(session);
+    return raw.turnInProgress || raw.compactionInProgress;
+  }
+
+  /**
+   * Compact an idle Codex thread through the app-server's provider-native RPC.
+   * Codex core implements CompactTask by replacing any current task, so the
+   * active-operation guard is a correctness boundary, not an optimization.
+   * Success is based only on structured notifications, never response text.
+   */
+  async compactSession(session: ProtocolSession): Promise<void> {
+    const raw = this.assertRaw(session);
+    const threadId = raw.threadId;
+    if (!threadId) {
+      throw new Error('[CodexAppServer] cannot compact a session without a thread id');
+    }
+    if (this.isSessionActive(session)) {
+      throw new Error('[CodexAppServer] cannot compact a thread with an active turn');
+    }
+    raw.compactionInProgress = true;
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe = () => {};
+    try {
+      let resolveCompletion!: () => void;
+      let rejectCompletion!: (error: Error) => void;
+      const completion = new Promise<void>((resolve, reject) => {
+        resolveCompletion = resolve;
+        rejectCompletion = reject;
+      });
+      let sawCompactionItem = false;
+      let sawTerminalTurn = false;
+      const resolveWhenFullySettled = () => {
+        if (sawCompactionItem && sawTerminalTurn) resolveCompletion();
+      };
+      timeout = setTimeout(() => {
+        rejectCompletion(new Error(`[CodexAppServer] timed out waiting for thread ${threadId} to compact`));
+      }, 60_000);
+
+      unsubscribe = raw.client.onNotification((method, paramsUnknown) => {
+        const params = paramsUnknown && typeof paramsUnknown === 'object'
+          ? paramsUnknown as Record<string, unknown>
+          : null;
+        if (!params || params.threadId !== threadId) return;
+
+        if (method === 'thread/compacted') {
+          sawCompactionItem = true;
+          resolveWhenFullySettled();
+          return;
+        }
+
+        if (method === 'item/completed') {
+          const item = params.item && typeof params.item === 'object'
+            ? params.item as Record<string, unknown>
+            : null;
+          if (item?.type === 'contextCompaction' || item?.type === 'context_compaction') {
+            sawCompactionItem = true;
+            resolveWhenFullySettled();
+          }
+          return;
+        }
+
+        if (method === 'turn/completed') {
+          const turn = params.turn && typeof params.turn === 'object'
+            ? params.turn as Record<string, unknown>
+            : null;
+          if (turn?.status === 'failed') {
+            const error = turn.error && typeof turn.error === 'object'
+              ? turn.error as Record<string, unknown>
+              : null;
+            rejectCompletion(new Error(
+              typeof error?.message === 'string'
+                ? error.message
+                : '[CodexAppServer] compaction turn failed',
+            ));
+            return;
+          }
+          sawTerminalTurn = true;
+          resolveWhenFullySettled();
+          return;
+        }
+
+        if (method === 'turn/failed' || method === 'error') {
+          const error = params.error && typeof params.error === 'object'
+            ? params.error as Record<string, unknown>
+            : null;
+          rejectCompletion(new Error(
+            typeof error?.message === 'string'
+              ? error.message
+              : '[CodexAppServer] compaction turn failed',
+          ));
+        }
+      });
+
+      await Promise.all([
+        raw.client.request('thread/compact/start', { threadId }, 60_000),
+        completion,
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      unsubscribe();
+      raw.compactionInProgress = false;
     }
   }
 
@@ -478,6 +610,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
       initResponse,
       dynamicTools: this.extractDynamicTools(options),
       activeTurnId: null,
+      turnInProgress: false,
+      compactionInProgress: false,
       stderrTail,
     };
   }
@@ -707,6 +841,11 @@ export class CodexAppServerProtocol implements AgentProtocol {
       }
       case 'turn/completed': {
         const n = params as unknown as TurnCompletedNotification;
+        // The core task is finished before the completion event is exposed to
+        // MessageStreamingHandler. This lets its normal queue continuation
+        // safely start a post-turn compaction action.
+        raw.activeTurnId = null;
+        raw.turnInProgress = false;
         const usage = normalizeUsage(n.usage);
         if (usage) setUsage(usage);
         if (n.turn?.status === 'failed') {
@@ -720,6 +859,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
       case 'turn/failed':
       case 'error': {
         const n = params as unknown as ErrorNotification;
+        raw.activeTurnId = null;
+        raw.turnInProgress = false;
         const msg = n?.error?.message ?? 'codex app-server error';
         push({ kind: 'fail', error: new Error(msg) });
         return;
@@ -1011,6 +1152,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
       'fileChange',
       'mcpToolCall',
       'commandExecution',
+      'contextCompaction',
+      'context_compaction',
     ]).has(item.type);
   }
 

@@ -54,6 +54,21 @@ export interface SubmitClaudeCliPromptDeps {
 }
 
 /**
+ * Remove control bytes that can be interpreted by the PTY instead of becoming
+ * ordinary prompt text. Tabs and line breaks remain valid for normal prompts;
+ * slash-command argument tails are normalized separately below.
+ */
+function stripPtyControlBytes(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+}
+
+/** A slash-command tail must never contain an embedded submit keystroke. */
+function normalizeSlashCommandArgs(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Compose + write + log + analytics for one CLI submission. Returns
  * `{ submitted: false }` (a no-op) when there's nothing to send.
  */
@@ -61,7 +76,7 @@ export async function submitClaudeCliPrompt(
   input: SubmitClaudeCliPromptInput,
   deps: SubmitClaudeCliPromptDeps,
 ): Promise<{ submitted: boolean }> {
-  const prompt = (input.prompt ?? '').trim();
+  const prompt = stripPtyControlBytes(input.prompt ?? '').trim();
   const attachments = input.attachments ?? [];
 
   // NIM-819: the claude TUI only opens its slash-command/memory mode when
@@ -76,27 +91,42 @@ export async function submitClaudeCliPrompt(
   if (isTuiTrigger) {
     deps.writeToTerminal(input.sessionId, prompt[0]);
     await deps.delay(SUBMIT_WRITE_GAP_MS);
-    if (prompt.length > 1) {
-      deps.writeToTerminal(input.sessionId, prompt.slice(1));
+
+    const rest = prompt.slice(1);
+    const separatorIndex = prompt.startsWith('/') ? rest.search(/\s/) : -1;
+    const isSlashCommandWithArgs = separatorIndex > 0;
+
+    if (isSlashCommandWithArgs) {
+      const commandName = rest.slice(0, separatorIndex);
+      const args = normalizeSlashCommandArgs(rest.slice(separatorIndex));
+
+      // Resolve the autocomplete menu using only the command token. Writing
+      // the command and its argument tail in one PTY chunk lets the menu keep
+      // fuzzy-matching the entire tail and can submit the wrong highlighted
+      // command (or literal chat text) instead.
+      deps.writeToTerminal(input.sessionId, commandName);
       await deps.delay(SUBMIT_WRITE_GAP_MS);
-    }
-    // NIM-851: writing `/` first opens the claude TUI's slash-command
-    // autocomplete menu, and that menu (a) fuzzy-matches command DESCRIPTIONS
-    // not just names — typing "implement" surfaces `/investigate` ("...before
-    // implementing") and `/session-cleanup` ("...implementing -> validating") —
-    // and (b) hijacks Enter to run the HIGHLIGHTED row instead of the literal
-    // typed text. For a bare command (no args) the menu stays open through
-    // Enter, so a stale/recency-shifted highlight runs the wrong command (real
-    // incident: typed `/implement`, ran `/investigate` with empty args). Type a
-    // trailing space first: it ends the command token and dismisses the menu
-    // (verified on claude 2.1.177), so Enter submits the literal command.
-    // Commands WITH args already closed the menu via their separating space;
-    // bare `/` and `#` memory mode are different UIs and left untouched.
-    const isBareSlashCommand =
-      prompt.startsWith('/') && prompt.length > 1 && !/\s/.test(prompt);
-    if (isBareSlashCommand) {
       deps.writeToTerminal(input.sessionId, ' ');
       await deps.delay(SUBMIT_WRITE_GAP_MS);
+      if (args) {
+        deps.writeToTerminal(input.sessionId, args);
+        await deps.delay(SUBMIT_WRITE_GAP_MS);
+      }
+    } else {
+      if (rest) {
+        deps.writeToTerminal(input.sessionId, rest);
+        await deps.delay(SUBMIT_WRITE_GAP_MS);
+      }
+      // NIM-851: writing `/` first opens the claude TUI's slash-command
+      // autocomplete menu, whose highlighted row can hijack Enter. A trailing
+      // space resolves a bare command token before Enter is sent. Bare `/` and
+      // `#` memory mode are different UIs and remain untouched.
+      const isBareSlashCommand =
+        prompt.startsWith('/') && prompt.length > 1 && !/\s/.test(prompt);
+      if (isBareSlashCommand) {
+        deps.writeToTerminal(input.sessionId, ' ');
+        await deps.delay(SUBMIT_WRITE_GAP_MS);
+      }
     }
     deps.writeToTerminal(input.sessionId, SUBMIT_TERMINATOR);
   } else {

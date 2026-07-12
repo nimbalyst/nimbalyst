@@ -18,10 +18,12 @@ import {
   ModelRegistry,
   AIProvider,
   isAskUserQuestionProvider,
+  isContextCompactionProvider,
   isAgentProvider,
   isSlashCommandCatalogProvider,
   ClaudeCodeProvider,
   OpenAICodexProvider,
+  type ContextCompactionResult,
 } from '@nimbalyst/runtime/ai/server';
 import { CLAUDE_CODE_SAFE_FALLBACK_MODEL } from '@nimbalyst/runtime/ai/modelConstants';
 import { reconcileClaudeCodeModels } from './claudeCodeModelReconcile';
@@ -122,6 +124,10 @@ import { MessageStreamingHandler } from './MessageStreamingHandler';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
+import {
+  dispatchQueuedCompactionAction,
+  isQueuedCompactionAction,
+} from './queuedCompactionAction';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
@@ -415,6 +421,53 @@ export class AIService {
   }
 
   /**
+   * Invoke provider-native compaction for a tagged queued action after the
+   * requesting turn has ended. The provider/protocol guard still refuses an
+   * active turn so no alternate caller can replace an in-flight Codex task.
+   */
+  public async compactSessionNative(
+    sessionId: string,
+    workspacePath: string,
+  ): Promise<ContextCompactionResult> {
+    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+    const session = await AISessionsRepository.get(sessionId);
+    if (!session || session.workspacePath !== workspacePath) {
+      return { supported: false, compacted: false, error: `Session ${sessionId} not found` };
+    }
+
+    const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+    if (!isContextCompactionProvider(provider)) {
+      return {
+        supported: false,
+        compacted: false,
+        error: `Provider ${session.provider} does not support native compaction`,
+      };
+    }
+
+    let result: ContextCompactionResult;
+    try {
+      result = await provider.compactSession(sessionId);
+    } catch (error) {
+      return {
+        supported: true,
+        compacted: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (result.compacted && session.tokenUsage) {
+      const tokenUsage = { ...session.tokenUsage, currentContext: undefined };
+      await this.sessionManager.updateSessionTokenUsage(sessionId, tokenUsage);
+
+      const targetWindow = findWindowByWorkspace(workspacePath);
+      if (targetWindow && !targetWindow.isDestroyed()) {
+        targetWindow.webContents.send('ai:tokenUsageUpdated', { sessionId, tokenUsage });
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Back-fill any claude-code variants that shipped after this user's
    * `providerSettings['claude-code'].models` allow-list was first persisted.
    * Without this, `ai:getModels` filters out newly-introduced variants (they
@@ -703,8 +756,31 @@ export class AIService {
     let settledChildErrored = false;
 
     return tryClaimAndDispatchNextQueuedPrompt({
+      canDispatch: async (pendingPrompt) => {
+        if (!isQueuedCompactionAction(pendingPrompt)) return true;
+        if (!dispatchSession?.provider) return true;
+
+        try {
+          const provider = ProviderFactory.getProvider(
+            dispatchSession.provider as AIProviderType,
+            sessionId,
+          );
+          return !(isContextCompactionProvider(provider)
+            && provider.isSessionActive?.(sessionId) === true);
+        } catch (error) {
+          // Let dispatch claim the row and settle it failed through the normal
+          // observable queue lifecycle instead of breaking the prior turn's
+          // completion handler during a readiness probe.
+          logger.main.warn(`[AIService] ${source}: compaction readiness check failed:`, error);
+          return true;
+        }
+      },
       continueQueuedPromptChain: (nextSessionId, nextWorkspacePath, nextTargetWindow, nextSource) =>
         this.continueQueuedPromptChain(nextSessionId, nextWorkspacePath, nextTargetWindow, nextSource),
+      dispatchClaimedAction: (claimedPrompt) => dispatchQueuedCompactionAction(
+        claimedPrompt,
+        () => this.compactSessionNative(sessionId, workspacePath),
+      ),
       logError: (message, error) => logger.main.error(message, error),
       logInfo: (message) => logger.main.info(message),
       onAfterSettled: async () => {

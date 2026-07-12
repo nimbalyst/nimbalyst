@@ -180,4 +180,84 @@ describe('queuedPromptDispatcher', () => {
 
     expect(onChainSettled).not.toHaveBeenCalled();
   });
+
+  it('leaves a queued action pending when its provider-boundary guard says it is not dispatchable', async () => {
+    const claimedPrompt: ClaimedQueuedPrompt = {
+      id: 'compact-1',
+      prompt: '/compact',
+      documentContext: { promptOrigin: 'agent_compaction' },
+    };
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => [claimedPrompt]),
+      claim: vi.fn(async () => claimedPrompt),
+      complete: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+    };
+
+    const processed = await tryClaimAndDispatchNextQueuedPrompt({
+      canDispatch: vi.fn(async () => false),
+      continueQueuedPromptChain: vi.fn(),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onPromptClaimed: vi.fn(),
+      processingSet: new Set<string>(),
+      queueStore,
+      sendMessageHandler: vi.fn(),
+      sessionId: 'session-1',
+      source: 'active-turn guard',
+      startSession: vi.fn(),
+      targetWindow: {
+        isDestroyed: () => false,
+        webContents: { send: vi.fn(), mainFrame: {} },
+      } as unknown as Electron.BrowserWindow,
+      workspacePath: '/workspace/project',
+    });
+
+    expect(processed).toBe(false);
+    expect(queueStore.claim).not.toHaveBeenCalled();
+  });
+
+  it('settles a handled internal action without invoking the model-turn handler', async () => {
+    vi.useFakeTimers();
+    const order: string[] = [];
+    const claimedPrompt: ClaimedQueuedPrompt = {
+      id: 'compact-1',
+      prompt: '/compact',
+      documentContext: { promptOrigin: 'agent_compaction' },
+    };
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => [claimedPrompt]),
+      claim: vi.fn(async () => claimedPrompt),
+      complete: vi.fn(async () => { order.push('complete'); }),
+      fail: vi.fn(async () => {}),
+    };
+    const sendMessageHandler = vi.fn();
+
+    await tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain: vi.fn(async () => { order.push('continue'); }),
+      dispatchClaimedAction: vi.fn(async () => {
+        order.push('nativeCompact');
+        return true;
+      }),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onPromptClaimed: vi.fn(),
+      processingSet: new Set<string>(),
+      queueStore,
+      sendMessageHandler,
+      sessionId: 'session-1',
+      source: 'internal action',
+      startSession: vi.fn(async () => { order.push('startSession'); }),
+      targetWindow: {
+        isDestroyed: () => false,
+        webContents: { send: vi.fn(), mainFrame: {} },
+      } as unknown as Electron.BrowserWindow,
+      workspacePath: '/workspace/project',
+    });
+
+    await vi.runAllTimersAsync();
+
+    expect(order).toEqual(['startSession', 'nativeCompact', 'complete', 'continue']);
+    expect(sendMessageHandler).not.toHaveBeenCalled();
+  });
 });

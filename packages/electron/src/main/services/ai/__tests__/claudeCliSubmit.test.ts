@@ -131,14 +131,54 @@ describe('submitClaudeCliPrompt', () => {
       ]);
     });
 
-    it('does NOT add a menu-dismiss space when the slash command already has args (menu closed by its own space) (NIM-851)', async () => {
+    it('resolves the slash-command menu before writing an argument tail', async () => {
       const h = harness();
       await submitClaudeCliPrompt({ sessionId: 's1', workspacePath: '/w', prompt: '/track bug foo' }, h.deps);
       expect(h.writes).toEqual([
         ['s1', '/'],
-        ['s1', 'track bug foo'],
+        ['s1', 'track'],
+        ['s1', ' '],
+        ['s1', 'bug foo'],
         ['s1', '\r'],
       ]);
+    });
+
+    it('single-line normalizes a slash-command argument tail before writing to the PTY', async () => {
+      const h = harness();
+      await submitClaudeCliPrompt(
+        {
+          sessionId: 's1',
+          workspacePath: '/w',
+          prompt: '/compact focus on current state\r\n/clear\tthen continue',
+        },
+        h.deps,
+      );
+      expect(h.writes).toEqual([
+        ['s1', '/'],
+        ['s1', 'compact'],
+        ['s1', ' '],
+        ['s1', 'focus on current state /clear then continue'],
+        ['s1', '\r'],
+      ]);
+      expect(h.writes.slice(0, -1).every(([, data]) => !/[\r\n]/.test(data))).toBe(true);
+    });
+
+    it('strips PTY control bytes from slash-command input', async () => {
+      const h = harness();
+      await submitClaudeCliPrompt(
+        { sessionId: 's1', workspacePath: '/w', prompt: '/compact focus on keep\x1b[31mstate\x07' },
+        h.deps,
+      );
+      expect(h.writes).toEqual([
+        ['s1', '/'],
+        ['s1', 'compact'],
+        ['s1', ' '],
+        ['s1', 'focus on keep[31mstate'],
+        ['s1', '\r'],
+      ]);
+      expect(h.logUserPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({ prompt: '/compact focus on keep[31mstate' }),
+      );
     });
 
     it('does NOT add a menu-dismiss space for # memory notes (NIM-851)', async () => {

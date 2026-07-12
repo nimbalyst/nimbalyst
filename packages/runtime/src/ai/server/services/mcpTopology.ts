@@ -154,6 +154,7 @@ export const HOST_TOOLS: readonly string[] = [
   'create_session',
   'spawn_session',
   'send_prompt',
+  'compact_session',
   'respond_to_prompt',
   'get_session_status',
   'get_session_result',

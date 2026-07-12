@@ -39,6 +39,93 @@ describe('OpenAICodexProvider', () => {
     OpenAICodexProvider.setSecurityLogger(() => {});
   });
 
+  it('delegates compaction to the live app-server thread without sending another message', async () => {
+    const compactSession = vi.fn().mockResolvedValue(undefined);
+    const sendMessage = vi.fn();
+    const protocol = {
+      platform: 'codex-app-server',
+      compactSession,
+      isSessionActive: vi.fn(() => false),
+      sendMessage,
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      forkSession: vi.fn(),
+      abortSession: vi.fn(),
+      cleanupSession: vi.fn(),
+    } as any;
+    const provider = new OpenAICodexProvider(undefined, {
+      protocol,
+      transport: 'app-server',
+      permissionService: {} as any,
+    });
+    const protocolSession = { id: 'thread-1', platform: 'codex-app-server', raw: {} };
+    (provider as any).liveProtocolSessions.set('session-1', protocolSession);
+
+    await expect(provider.compactSession('session-1')).resolves.toEqual({
+      supported: true,
+      compacted: true,
+      method: 'thread/compact/start',
+    });
+    expect(compactSession).toHaveBeenCalledWith(protocolSession);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('refuses native compaction while the live app-server thread has an active turn', async () => {
+    const compactSession = vi.fn();
+    const protocol = {
+      platform: 'codex-app-server',
+      compactSession,
+      isSessionActive: vi.fn(() => true),
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      forkSession: vi.fn(),
+      sendMessage: vi.fn(),
+      abortSession: vi.fn(),
+      cleanupSession: vi.fn(),
+    } as any;
+    const provider = new OpenAICodexProvider(undefined, {
+      protocol,
+      transport: 'app-server',
+      permissionService: {} as any,
+    });
+    (provider as any).liveProtocolSessions.set('session-1', {
+      id: 'thread-1',
+      platform: 'codex-app-server',
+      raw: {},
+    });
+
+    await expect(provider.compactSession('session-1')).resolves.toMatchObject({
+      supported: true,
+      compacted: false,
+      error: expect.stringContaining('active turn'),
+    });
+    expect(compactSession).not.toHaveBeenCalled();
+  });
+
+  it('reports a structured failure when no live app-server thread is available', async () => {
+    const provider = new OpenAICodexProvider(undefined, {
+      protocol: {
+        platform: 'codex-app-server',
+        compactSession: vi.fn(),
+        createSession: vi.fn(),
+        resumeSession: vi.fn(),
+        forkSession: vi.fn(),
+        sendMessage: vi.fn(),
+        abortSession: vi.fn(),
+        cleanupSession: vi.fn(),
+      } as any,
+      transport: 'app-server',
+      permissionService: {} as any,
+    });
+
+    await expect(provider.compactSession('missing-session')).resolves.toEqual({
+      supported: true,
+      compacted: false,
+      method: 'thread/compact/start',
+      error: 'No live Codex app-server thread is available for this session',
+    });
+  });
+
   it('updates currentTodos for app-server todoList raw events', async () => {
     const updateMetadata = vi.fn(async () => {});
     AISessionsRepository.setStore({
