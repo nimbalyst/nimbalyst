@@ -278,9 +278,12 @@ export function createPGLiteQueuedPromptsStore(
     async complete(id: string): Promise<void> {
       await ensureReady();
 
+      // error_message = NULL: a turn that resolves normally after a sweep
+      // provisionally failed the row (buffered output landing late) must
+      // not keep the stale sweep error alongside status 'completed'.
       await db.query(
         `UPDATE queued_prompts
-         SET status = 'completed', completed_at = CURRENT_TIMESTAMP
+         SET status = 'completed', completed_at = CURRENT_TIMESTAMP, error_message = NULL
          WHERE id = $1`,
         [id]
       );
@@ -411,11 +414,13 @@ export function createPGLiteQueuedPromptsStore(
       );
 
       // Pass 2: still-executing rows whose input WAS delivered but that
-      // have no output evidence (pass 1 already consumed the answered
-      // ones). The turn died between delivery and any response. Mark
-      // failed with a visible error, NOT completed (silent fake success,
-      // #783) and NOT pending (a re-claim would re-send the delivered
-      // input, regressing NIM-615).
+      // have no output evidence. The turn died between delivery and any
+      // response. Mark failed with a visible error, NOT completed (silent
+      // fake success, #783) and NOT pending (a re-claim would re-send the
+      // delivered input, regressing NIM-615). The NOT EXISTS makes this
+      // pass independently correct rather than relying on pass 1 having
+      // consumed the answered rows first (an output row committed between
+      // the two statements must not produce a failed-but-answered row).
       const failedResult = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $1
@@ -424,6 +429,12 @@ export function createPGLiteQueuedPromptsStore(
              SELECT 1 FROM ai_agent_messages m
              WHERE m.session_id = queued_prompts.session_id
                AND m.direction = 'input'
+               AND m.created_at >= queued_prompts.claimed_at
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM ai_agent_messages m
+             WHERE m.session_id = queued_prompts.session_id
+               AND m.direction = 'output'
                AND m.created_at >= queued_prompts.claimed_at
            )
          RETURNING id`,
@@ -485,7 +496,10 @@ export function createPGLiteQueuedPromptsStore(
       // exact #790 shape ("why did you stop?" was claimed, never
       // answered, and the interrupt sweep marked it completed). Fail it
       // visibly instead; never roll back to pending (re-claim would
-      // re-send the delivered input, NIM-615).
+      // re-send the delivered input, NIM-615). NOT EXISTS keeps this
+      // pass independently correct if an output row commits between the
+      // two statements; and if the turn later resolves normally anyway,
+      // complete() overwrites the provisional failed and clears the error.
       const failedResult = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $2
@@ -496,6 +510,12 @@ export function createPGLiteQueuedPromptsStore(
              SELECT 1 FROM ai_agent_messages m
              WHERE m.session_id = queued_prompts.session_id
                AND m.direction = 'input'
+               AND m.created_at >= queued_prompts.claimed_at
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM ai_agent_messages m
+             WHERE m.session_id = queued_prompts.session_id
+               AND m.direction = 'output'
                AND m.created_at >= queued_prompts.claimed_at
            )
          RETURNING id`,

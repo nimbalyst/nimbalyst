@@ -120,11 +120,15 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
     // Second pass: delivered-but-unanswered rows become a VISIBLE terminal
     // state, never 'completed' (silent success) and never 'pending'
     // (re-claim would re-send the delivered input, regressing NIM-615).
+    // The pass re-checks output absence itself (NOT EXISTS) so it stays
+    // correct even if an output row commits between the two statements.
     expect(calls[1].sql).toContain("SET status = 'failed'");
     expect(calls[1].sql).toContain('error_message');
     expect(calls[1].sql).toContain("status = 'executing'");
     expect(calls[1].sql).toContain('claimed_at IS NOT NULL');
     expect(calls[1].sql).toContain("direction = 'input'");
+    expect(calls[1].sql).toContain('NOT EXISTS');
+    expect(calls[1].sql).toContain("direction = 'output'");
 
     // Third pass: rolls back anything still executing (i.e. undelivered)
     expect(calls[2].sql).toContain("SET status = 'pending'");
@@ -224,6 +228,23 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
   });
 });
 
+describe('PGLiteQueuedPromptsStore.complete', () => {
+  it('clears error_message so a turn resolving after a provisional sweep-fail does not keep the stale error', async () => {
+    const query = vi.fn(async (sql: string, params?: any[]) => {
+      expect(sql).toContain("SET status = 'completed'");
+      expect(sql).toContain('error_message = NULL');
+      expect(params).toEqual(['prompt-1']);
+      return { rows: [] };
+    });
+    const db: DbStub = { query: query as any };
+
+    const store = createPGLiteQueuedPromptsStore(db);
+    await store.complete('prompt-1');
+
+    expect(query).toHaveBeenCalledOnce();
+  });
+});
+
 describe('PGLiteQueuedPromptsStore.sweepExecutingForSession', () => {
   it('scopes all three passes to the given session id', async () => {
     const calls: { sql: string; params?: any[] }[] = [];
@@ -261,10 +282,12 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingForSession', () => {
     expect(calls[0].sql).toContain('m.created_at >= queued_prompts.claimed_at');
     expect(calls[0].params).toEqual(['session-xyz']);
 
-    // Pass 2: delivered-but-unanswered rows go to a visible failed state
+    // Pass 2: delivered-but-unanswered rows go to a visible failed state,
+    // with an independent no-output recheck (NOT EXISTS)
     expect(calls[1].sql).toContain("SET status = 'failed'");
     expect(calls[1].sql).toContain('error_message');
     expect(calls[1].sql).toContain('session_id = $1');
+    expect(calls[1].sql).toContain('NOT EXISTS');
     expect(calls[1].params?.[0]).toBe('session-xyz');
     expect(calls[1].params?.[1]).toContain('interrupted before a response was recorded');
 
