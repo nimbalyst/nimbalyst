@@ -17,6 +17,7 @@ import {
   type PullRequestPermissions,
   type MergeMethod,
 } from '../../services/RendererPullRequestService';
+import { PullRequestActionError } from './PullRequestActionError';
 
 interface PullRequestActionsProps {
   workspaceId: string;
@@ -148,7 +149,7 @@ export function PullRequestActions({
     if (notice) {
       return <span className="text-nim-success text-[11px] flex items-center gap-1" data-testid="pr-action-notice"><MaterialSymbol icon="check_circle" size={13} />{notice}</span>;
     }
-    return error ? <span className="text-nim-error text-[11px]">{error}</span> : null;
+    return error ? <PullRequestActionError error={error} /> : null;
   }
 
   const mergeBlocked = perms.mergeable === false;
@@ -160,7 +161,7 @@ export function PullRequestActions({
 
   return (
     <div className="pr-actions flex items-center gap-2" data-testid="pr-actions">
-      {error && <span className="text-nim-error text-[11px] max-w-[220px] truncate" title={error}>{error}</span>}
+      {error && <PullRequestActionError error={error} />}
       {notice && !error && (
         <span className="text-nim-success text-[11px] flex items-center gap-1" data-testid="pr-action-notice">
           <MaterialSymbol icon="check_circle" size={13} />

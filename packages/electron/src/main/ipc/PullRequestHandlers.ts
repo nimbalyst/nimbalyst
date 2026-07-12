@@ -21,6 +21,7 @@ import { ghCliDetector, type GhCliStatus } from '../services/GhCliDetector';
 import {
   GhApiService,
   GhApiError,
+  getWorkflowScopeRecoveryMessage,
   type ListFilters,
   type TimelineEntry,
   type MergeMethod,
@@ -69,6 +70,10 @@ function errorResponse(error: unknown): IPCResponse<never> {
 function ghErrorResponse(error: unknown): IPCResponse<never> {
   if (error instanceof GhApiError) {
     const stderr = error.stderr.trim();
+    const workflowScopeRecovery = getWorkflowScopeRecoveryMessage(stderr);
+    if (workflowScopeRecovery) {
+      return { success: false, error: workflowScopeRecovery };
+    }
     // A 404 on a repo endpoint almost always means the *active* gh account
     // can't see the repo (private repo + wrong account, e.g. an EMU), not
     // that the repo is missing. Point the user at the likely fix.
