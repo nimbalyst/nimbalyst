@@ -2162,10 +2162,10 @@ app.whenReady().then(async () => {
     // re-sent on next launch (NIM-615).
     try {
       const { getQueuedPromptsStore } = await import('./services/RepositoryManager');
-      const { completed, rolledBack } = await getQueuedPromptsStore().sweepExecutingOnBoot();
-      if (completed > 0 || rolledBack > 0) {
+      const { completed, failed, rolledBack } = await getQueuedPromptsStore().sweepExecutingOnBoot();
+      if (completed > 0 || failed > 0 || rolledBack > 0) {
         logger.main.info(
-          `[Main] Boot sweep: ${completed} delivered prompt(s) marked completed, ${rolledBack} undelivered prompt(s) rolled back to pending`
+          `[Main] Boot sweep: ${completed} answered prompt(s) marked completed, ${failed} delivered-but-unanswered prompt(s) marked failed, ${rolledBack} undelivered prompt(s) rolled back to pending`
         );
       }
     } catch (sweepErr) {

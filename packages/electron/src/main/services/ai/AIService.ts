@@ -2833,10 +2833,10 @@ export class AIService {
         try {
           const { getQueuedPromptsStore } = await import('../RepositoryManager');
           const queueStore = getQueuedPromptsStore();
-          const { completed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
-          if (completed > 0 || rolledBack > 0) {
+          const { completed, failed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
+          if (completed > 0 || failed > 0 || rolledBack > 0) {
             logger.main.info(
-              `[AIService] cancelRequest: swept session ${sessionId} -- ${completed} delivered marked completed, ${rolledBack} undelivered rolled back`
+              `[AIService] cancelRequest: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
             );
           }
         } catch (sweepErr) {
@@ -2895,10 +2895,10 @@ export class AIService {
       try {
         const { getQueuedPromptsStore } = await import('../RepositoryManager');
         const queueStore = getQueuedPromptsStore();
-        const { completed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
-        if (completed > 0 || rolledBack > 0) {
+        const { completed, failed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
+        if (completed > 0 || failed > 0 || rolledBack > 0) {
           logger.main.info(
-            `[AIService] interruptCurrentTurn: swept session ${sessionId} -- ${completed} delivered marked completed, ${rolledBack} undelivered rolled back`
+            `[AIService] interruptCurrentTurn: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
           );
         }
       } catch (sweepErr) {

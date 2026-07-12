@@ -95,14 +95,18 @@ export interface QueuedPromptsStore {
    * activation, duplicating the original user input. We instead check
    * whether the prompt was already injected into the conversation by
    * looking for an `ai_agent_messages` input row in the same session
-   * dated at or after `claimed_at`. If delivered -> mark `completed`
-   * (the agent turn is no longer running, but the prompt did its job).
-   * If not delivered -> roll back to `pending` so a retry can pick it
-   * up (genuine crash before send).
+   * dated at or after `claimed_at`, AND whether the agent produced any
+   * output row after the claim. Delivered and answered -> `completed`.
+   * Delivered but never answered (input row only, e.g. the provider was
+   * SIGTERM'd mid-turn at quit, #783) -> `failed` with an error message,
+   * a visible terminal state; never `pending`, because a re-claim would
+   * re-send the already-delivered input (NIM-615). Not delivered ->
+   * roll back to `pending` so a retry can pick it up (genuine crash
+   * before send).
    *
    * Returns the count of rows in each bucket.
    */
-  sweepExecutingOnBoot(): Promise<{ completed: number; rolledBack: number }>;
+  sweepExecutingOnBoot(): Promise<{ completed: number; failed: number; rolledBack: number }>;
 
   /**
    * Delivery-aware single-session variant of the boot sweep. Used by
@@ -111,11 +115,13 @@ export interface QueuedPromptsStore {
    * not undo the user message that has already landed in
    * `ai_agent_messages`. Rolling such a row back to `pending` causes
    * the queue trigger that follows the abort to immediately re-claim
-   * and re-send it, duplicating the input. Mark delivered rows
-   * `completed`; roll back only rows that never made it to the
+   * and re-send it, duplicating the input. Mark answered rows
+   * `completed`, delivered-but-unanswered rows `failed` (#790: an
+   * interrupt sweep used to mark those completed and the session looked
+   * silently answered); roll back only rows that never made it to the
    * conversation.
    */
-  sweepExecutingForSession(sessionId: string): Promise<{ completed: number; rolledBack: number }>;
+  sweepExecutingForSession(sessionId: string): Promise<{ completed: number; failed: number; rolledBack: number }>;
 
   /** Delete all completed/failed prompts older than a certain age */
   cleanup(olderThanMs: number): Promise<number>;
@@ -126,6 +132,15 @@ type PGliteLike = {
 };
 
 type EnsureReadyFn = () => Promise<void>;
+
+/**
+ * error_message written by the sweep passes for prompts that were
+ * delivered (input row logged) but got no agent output before the turn
+ * died (app quit / provider interrupt). Deliberately phrased so a user
+ * reading the row knows the recovery action.
+ */
+const SWEEP_UNANSWERED_ERROR =
+  'Prompt was delivered but the turn was interrupted before a response was recorded. Send it again to retry.';
 
 function rowToQueuedPrompt(row: any): QueuedPrompt {
   // Parse JSONB fields
@@ -330,19 +345,25 @@ export function createPGLiteQueuedPromptsStore(
       return rows.length;
     },
 
-    async sweepExecutingOnBoot(): Promise<{ completed: number; rolledBack: number }> {
+    async sweepExecutingOnBoot(): Promise<{ completed: number; failed: number; rolledBack: number }> {
       await ensureReady();
 
       // Pass 1: rows whose user message was already logged to
-      // ai_agent_messages -- the prompt was delivered and the agent was
-      // just paused (e.g. on AskUserQuestion) when the app quit. Mark
-      // completed so the next session activation doesn't re-claim and
-      // re-send the original prompt.
+      // ai_agent_messages AND that have agent output after the claim --
+      // the prompt was delivered and the agent responded (or was paused
+      // on an interactive prompt, which also persists as an output row)
+      // when the app quit. Mark completed so the next session activation
+      // doesn't re-claim and re-send the original prompt.
       //
       // Three branches join in this update:
       //
-      // (a) `executing` rows whose input arrived after `claimed_at` --
-      //     standard "delivered then paused" case.
+      // (a) `executing` rows whose input arrived after `claimed_at` AND
+      //     that have at least one output row after `claimed_at` --
+      //     "delivered then answered/paused". The input row alone does
+      //     NOT prove the agent ever responded: a provider SIGTERM'd at
+      //     quit leaves the input logged and nothing else, and marking
+      //     that completed makes the session look silently answered
+      //     (#783). Those rows fall through to pass 2 instead.
       // (b) `pending` rows whose prompt text appears in a later input
       //     for the same session -- leftover corruption from older
       //     builds that ran the blanket `rollbackAllExecuting` sweep on
@@ -366,6 +387,12 @@ export function createPGLiteQueuedPromptsStore(
               WHERE m.session_id = queued_prompts.session_id
                 AND m.direction = 'input'
                 AND m.created_at >= queued_prompts.claimed_at
+            )
+            AND EXISTS (
+              SELECT 1 FROM ai_agent_messages m
+              WHERE m.session_id = queued_prompts.session_id
+                AND m.direction = 'output'
+                AND m.created_at >= queued_prompts.claimed_at
             ))
            OR
            (status = 'pending'
@@ -383,7 +410,27 @@ export function createPGLiteQueuedPromptsStore(
          RETURNING id`
       );
 
-      // Pass 2: anything still executing crashed before its input was
+      // Pass 2: still-executing rows whose input WAS delivered but that
+      // have no output evidence (pass 1 already consumed the answered
+      // ones). The turn died between delivery and any response. Mark
+      // failed with a visible error, NOT completed (silent fake success,
+      // #783) and NOT pending (a re-claim would re-send the delivered
+      // input, regressing NIM-615).
+      const failedResult = await db.query<{ id: string }>(
+        `UPDATE queued_prompts
+         SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $1
+         WHERE status = 'executing' AND claimed_at IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM ai_agent_messages m
+             WHERE m.session_id = queued_prompts.session_id
+               AND m.direction = 'input'
+               AND m.created_at >= queued_prompts.claimed_at
+           )
+         RETURNING id`,
+        [SWEEP_UNANSWERED_ERROR]
+      );
+
+      // Pass 3: anything still executing crashed before its input was
       // ever logged. Roll back to pending so it can be retried.
       const rolledBackResult = await db.query<{ id: string }>(
         `UPDATE queued_prompts
@@ -393,24 +440,25 @@ export function createPGLiteQueuedPromptsStore(
       );
 
       const completed = completedResult.rows.length;
+      const failed = failedResult.rows.length;
       const rolledBack = rolledBackResult.rows.length;
 
-      if (completed > 0 || rolledBack > 0) {
+      if (completed > 0 || failed > 0 || rolledBack > 0) {
         console.log(
-          `[QueuedPromptsStore] Boot sweep: marked ${completed} delivered prompt(s) completed, rolled back ${rolledBack} undelivered prompt(s)`
+          `[QueuedPromptsStore] Boot sweep: marked ${completed} answered prompt(s) completed, ${failed} delivered-but-unanswered prompt(s) failed, rolled back ${rolledBack} undelivered prompt(s)`
         );
       }
 
-      return { completed, rolledBack };
+      return { completed, failed, rolledBack };
     },
 
-    async sweepExecutingForSession(sessionId: string): Promise<{ completed: number; rolledBack: number }> {
+    async sweepExecutingForSession(sessionId: string): Promise<{ completed: number; failed: number; rolledBack: number }> {
       await ensureReady();
 
-      // Pass 1: same delivery check as sweepExecutingOnBoot, but scoped
-      // to a single session. Used on cancel/interrupt to avoid the
-      // immediate re-claim that follows when an already-delivered prompt
-      // is rolled back to pending.
+      // Pass 1: same delivery + output-evidence check as
+      // sweepExecutingOnBoot, but scoped to a single session. Used on
+      // cancel/interrupt to avoid the immediate re-claim that follows
+      // when an already-delivered prompt is rolled back to pending.
       const completedResult = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'completed', completed_at = CURRENT_TIMESTAMP
@@ -423,11 +471,38 @@ export function createPGLiteQueuedPromptsStore(
                AND m.direction = 'input'
                AND m.created_at >= queued_prompts.claimed_at
            )
+           AND EXISTS (
+             SELECT 1 FROM ai_agent_messages m
+             WHERE m.session_id = queued_prompts.session_id
+               AND m.direction = 'output'
+               AND m.created_at >= queued_prompts.claimed_at
+           )
          RETURNING id`,
         [sessionId]
       );
 
-      // Pass 2: roll back anything still executing for this session that
+      // Pass 2: delivered but no output before the interrupt -- the
+      // exact #790 shape ("why did you stop?" was claimed, never
+      // answered, and the interrupt sweep marked it completed). Fail it
+      // visibly instead; never roll back to pending (re-claim would
+      // re-send the delivered input, NIM-615).
+      const failedResult = await db.query<{ id: string }>(
+        `UPDATE queued_prompts
+         SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $2
+         WHERE status = 'executing'
+           AND session_id = $1
+           AND claimed_at IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM ai_agent_messages m
+             WHERE m.session_id = queued_prompts.session_id
+               AND m.direction = 'input'
+               AND m.created_at >= queued_prompts.claimed_at
+           )
+         RETURNING id`,
+        [sessionId, SWEEP_UNANSWERED_ERROR]
+      );
+
+      // Pass 3: roll back anything still executing for this session that
       // never made it to the conversation.
       const rolledBackResult = await db.query<{ id: string }>(
         `UPDATE queued_prompts
@@ -438,15 +513,16 @@ export function createPGLiteQueuedPromptsStore(
       );
 
       const completed = completedResult.rows.length;
+      const failed = failedResult.rows.length;
       const rolledBack = rolledBackResult.rows.length;
 
-      if (completed > 0 || rolledBack > 0) {
+      if (completed > 0 || failed > 0 || rolledBack > 0) {
         console.log(
-          `[QueuedPromptsStore] Session sweep (${sessionId}): marked ${completed} delivered prompt(s) completed, rolled back ${rolledBack} undelivered prompt(s)`
+          `[QueuedPromptsStore] Session sweep (${sessionId}): marked ${completed} answered prompt(s) completed, ${failed} delivered-but-unanswered prompt(s) failed, rolled back ${rolledBack} undelivered prompt(s)`
         );
       }
 
-      return { completed, rolledBack };
+      return { completed, failed, rolledBack };
     },
 
     async cleanup(olderThanMs: number): Promise<number> {

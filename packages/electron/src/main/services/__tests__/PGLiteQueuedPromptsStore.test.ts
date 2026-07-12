@@ -75,16 +75,20 @@ describe('PGLiteQueuedPromptsStore.rollbackAllExecuting', () => {
 });
 
 describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
-  it('marks delivered executing rows completed, rolls back undelivered ones', async () => {
+  it('completes answered rows, fails delivered-but-unanswered ones, rolls back undelivered ones', async () => {
     const calls: { sql: string; params?: any[] }[] = [];
     const db: DbStub = {
       query: (async (sql: string, params?: any[]) => {
         calls.push({ sql, params });
-        // Pass 1: completed-update returns rows that were delivered
+        // Pass 1: completed-update returns rows with delivery AND output evidence
         if (sql.includes("SET status = 'completed'")) {
-          return { rows: [{ id: 'delivered-1' }, { id: 'delivered-2' }] };
+          return { rows: [{ id: 'answered-1' }, { id: 'answered-2' }] };
         }
-        // Pass 2: rollback-update returns the remaining stuck rows
+        // Pass 2: failed-update returns delivered rows with no output evidence
+        if (sql.includes("SET status = 'failed'")) {
+          return { rows: [{ id: 'unanswered-1' }] };
+        }
+        // Pass 3: rollback-update returns the remaining stuck rows
         if (sql.includes("SET status = 'pending'") && sql.includes('claimed_at = NULL')) {
           return { rows: [{ id: 'undelivered-1' }] };
         }
@@ -95,32 +99,71 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
     const store = createPGLiteQueuedPromptsStore(db);
     const result = await store.sweepExecutingOnBoot();
 
-    expect(result).toEqual({ completed: 2, rolledBack: 1 });
-    expect(calls).toHaveLength(2);
+    expect(result).toEqual({ completed: 2, failed: 1, rolledBack: 1 });
+    expect(calls).toHaveLength(3);
 
-    // First pass: covers both executing-with-delivered-claim AND
-    // pending-with-content-match (leftover corruption from old boot sweeps).
+    // First pass: executing rows need BOTH the delivered input row AND
+    // output evidence after claimed_at to count as completed (#783: a
+    // delivered input alone does not prove the agent ever responded).
+    // Pending-with-content-match and 24h-abandoned branches stay.
     expect(calls[0].sql).toContain("SET status = 'completed'");
     expect(calls[0].sql).toContain("status = 'executing'");
     expect(calls[0].sql).toContain("status = 'pending'");
     expect(calls[0].sql).toContain('claimed_at IS NOT NULL');
     expect(calls[0].sql).toContain('ai_agent_messages');
     expect(calls[0].sql).toContain("direction = 'input'");
+    expect(calls[0].sql).toContain("direction = 'output'");
     expect(calls[0].sql).toContain('m.created_at >= queued_prompts.claimed_at');
     expect(calls[0].sql).toContain('m.created_at >= queued_prompts.created_at');
     expect(calls[0].sql).toContain('POSITION(queued_prompts.prompt IN m.content)');
 
-    // Second pass: rolls back anything still executing (i.e. undelivered)
-    expect(calls[1].sql).toContain("SET status = 'pending'");
-    expect(calls[1].sql).toContain('claimed_at = NULL');
+    // Second pass: delivered-but-unanswered rows become a VISIBLE terminal
+    // state, never 'completed' (silent success) and never 'pending'
+    // (re-claim would re-send the delivered input, regressing NIM-615).
+    expect(calls[1].sql).toContain("SET status = 'failed'");
+    expect(calls[1].sql).toContain('error_message');
     expect(calls[1].sql).toContain("status = 'executing'");
+    expect(calls[1].sql).toContain('claimed_at IS NOT NULL');
+    expect(calls[1].sql).toContain("direction = 'input'");
+
+    // Third pass: rolls back anything still executing (i.e. undelivered)
+    expect(calls[2].sql).toContain("SET status = 'pending'");
+    expect(calls[2].sql).toContain('claimed_at = NULL');
+    expect(calls[2].sql).toContain("status = 'executing'");
+  });
+
+  it('fails a delivered executing row with no output after claimed_at instead of completing it (#783)', async () => {
+    // Karl's forensic case: input row logged after claim, app quit
+    // SIGTERM'd the provider, zero output events persisted. The old sweep
+    // marked the row completed and the session looked answered-and-idle.
+    const calls: { sql: string; params?: any[] }[] = [];
+    const db: DbStub = {
+      query: (async (sql: string, params?: any[]) => {
+        calls.push({ sql, params });
+        if (sql.includes("SET status = 'completed'")) {
+          return { rows: [] };
+        }
+        if (sql.includes("SET status = 'failed'")) {
+          return { rows: [{ id: 'local-1783443721220-i0jrwc8' }] };
+        }
+        if (sql.includes("SET status = 'pending'")) {
+          return { rows: [] };
+        }
+        throw new Error(`Unexpected query: ${sql}`);
+      }) as any,
+    };
+
+    const store = createPGLiteQueuedPromptsStore(db);
+    const result = await store.sweepExecutingOnBoot();
+
+    expect(result).toEqual({ completed: 0, failed: 1, rolledBack: 0 });
   });
 
   it('returns zeros when nothing was executing', async () => {
     const db: DbStub = { query: (async () => ({ rows: [] })) as any };
 
     const store = createPGLiteQueuedPromptsStore(db);
-    expect(await store.sweepExecutingOnBoot()).toEqual({ completed: 0, rolledBack: 0 });
+    expect(await store.sweepExecutingOnBoot()).toEqual({ completed: 0, failed: 0, rolledBack: 0 });
   });
 
   it('completes pending rows that match a delivered input message (leftover-corruption cleanup)', async () => {
@@ -135,7 +178,7 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
           completedSql = sql;
           return { rows: [{ id: 'leftover-1' }, { id: 'leftover-2' }, { id: 'leftover-3' }] };
         }
-        if (sql.includes("SET status = 'pending'")) {
+        if (sql.includes("SET status = 'failed'") || sql.includes("SET status = 'pending'")) {
           return { rows: [] };
         }
         throw new Error(`Unexpected query: ${sql}`);
@@ -145,7 +188,7 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
     const store = createPGLiteQueuedPromptsStore(db);
     const result = await store.sweepExecutingOnBoot();
 
-    expect(result).toEqual({ completed: 3, rolledBack: 0 });
+    expect(result).toEqual({ completed: 3, failed: 0, rolledBack: 0 });
     // The combined query must contain both branches so an existing
     // pending row whose prompt text already appears in the conversation
     // gets cleaned up alongside the executing-but-delivered case.
@@ -161,7 +204,7 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
           completedSql = sql;
           return { rows: [{ id: 'abandoned-1' }, { id: 'abandoned-2' }] };
         }
-        if (sql.includes("SET status = 'pending'")) {
+        if (sql.includes("SET status = 'failed'") || sql.includes("SET status = 'pending'")) {
           return { rows: [] };
         }
         throw new Error(`Unexpected query: ${sql}`);
@@ -171,7 +214,7 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
     const store = createPGLiteQueuedPromptsStore(db);
     const result = await store.sweepExecutingOnBoot();
 
-    expect(result).toEqual({ completed: 2, rolledBack: 0 });
+    expect(result).toEqual({ completed: 2, failed: 0, rolledBack: 0 });
     // Age branch: pending rows older than 24h are completed
     // unconditionally. Handles content-match false negatives caused by
     // JSON escaping (newlines / quotes / attachments) and genuinely
@@ -182,13 +225,16 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
 });
 
 describe('PGLiteQueuedPromptsStore.sweepExecutingForSession', () => {
-  it('scopes both passes to the given session id', async () => {
+  it('scopes all three passes to the given session id', async () => {
     const calls: { sql: string; params?: any[] }[] = [];
     const db: DbStub = {
       query: (async (sql: string, params?: any[]) => {
         calls.push({ sql, params });
         if (sql.includes("SET status = 'completed'")) {
-          return { rows: [{ id: 'delivered-1' }] };
+          return { rows: [{ id: 'answered-1' }] };
+        }
+        if (sql.includes("SET status = 'failed'")) {
+          return { rows: [{ id: 'unanswered-1' }] };
         }
         if (sql.includes("SET status = 'pending'")) {
           return { rows: [{ id: 'undelivered-1' }, { id: 'undelivered-2' }] };
@@ -200,24 +246,34 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingForSession', () => {
     const store = createPGLiteQueuedPromptsStore(db);
     const result = await store.sweepExecutingForSession('session-xyz');
 
-    expect(result).toEqual({ completed: 1, rolledBack: 2 });
-    expect(calls).toHaveLength(2);
+    expect(result).toEqual({ completed: 1, failed: 1, rolledBack: 2 });
+    expect(calls).toHaveLength(3);
 
-    // Pass 1: delivery check filters by session_id and matches input messages
+    // Pass 1: completion needs input AND output evidence, session-scoped
+    // (#790: an interrupt sweep marked a delivered-but-never-answered
+    // prompt completed on the input row alone).
     expect(calls[0].sql).toContain("SET status = 'completed'");
     expect(calls[0].sql).toContain("session_id = $1");
     expect(calls[0].sql).toContain('claimed_at IS NOT NULL');
     expect(calls[0].sql).toContain('ai_agent_messages');
     expect(calls[0].sql).toContain("direction = 'input'");
+    expect(calls[0].sql).toContain("direction = 'output'");
     expect(calls[0].sql).toContain('m.created_at >= queued_prompts.claimed_at');
     expect(calls[0].params).toEqual(['session-xyz']);
 
-    // Pass 2: roll back undelivered executing rows for the same session
-    expect(calls[1].sql).toContain("SET status = 'pending'");
-    expect(calls[1].sql).toContain('claimed_at = NULL');
-    expect(calls[1].sql).toContain("status = 'executing'");
+    // Pass 2: delivered-but-unanswered rows go to a visible failed state
+    expect(calls[1].sql).toContain("SET status = 'failed'");
+    expect(calls[1].sql).toContain('error_message');
     expect(calls[1].sql).toContain('session_id = $1');
-    expect(calls[1].params).toEqual(['session-xyz']);
+    expect(calls[1].params?.[0]).toBe('session-xyz');
+    expect(calls[1].params?.[1]).toContain('interrupted before a response was recorded');
+
+    // Pass 3: roll back undelivered executing rows for the same session
+    expect(calls[2].sql).toContain("SET status = 'pending'");
+    expect(calls[2].sql).toContain('claimed_at = NULL');
+    expect(calls[2].sql).toContain("status = 'executing'");
+    expect(calls[2].sql).toContain('session_id = $1');
+    expect(calls[2].params).toEqual(['session-xyz']);
   });
 
   it('returns zeros when the session has no executing rows', async () => {
@@ -226,6 +282,7 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingForSession', () => {
     const store = createPGLiteQueuedPromptsStore(db);
     expect(await store.sweepExecutingForSession('session-clean')).toEqual({
       completed: 0,
+      failed: 0,
       rolledBack: 0,
     });
   });
