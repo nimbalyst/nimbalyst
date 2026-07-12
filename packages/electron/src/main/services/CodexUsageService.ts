@@ -23,10 +23,12 @@ export interface CodexUsageData {
   fiveHour: {
     utilization: number; // 0-100 percentage
     resetsAt: string | null; // ISO timestamp
+    available: boolean;
   };
   sevenDay: {
     utilization: number;
     resetsAt: string | null;
+    available: boolean;
   };
   credits?: {
     hasCredits: boolean;
@@ -42,18 +44,16 @@ export interface CodexUsageData {
   error?: string;
 }
 
+interface CodexRateLimitWindow {
+  used_percent: number;
+  window_minutes: number;
+  resets_at: number; // Unix seconds
+}
+
 interface CodexRateLimits {
   limit_id?: string;
-  primary?: {
-    used_percent: number;
-    window_minutes: number;
-    resets_at: number; // Unix seconds
-  } | null;
-  secondary?: {
-    used_percent: number;
-    window_minutes: number;
-    resets_at: number; // Unix seconds
-  } | null;
+  primary?: CodexRateLimitWindow | null;
+  secondary?: CodexRateLimitWindow | null;
   credits?: {
     has_credits: boolean;
     unlimited: boolean;
@@ -111,8 +111,8 @@ class CodexUsageServiceImpl {
       );
       if (!snapshot.rateLimits && !snapshot.tokenUsage) {
         const noData: CodexUsageData = {
-          fiveHour: { utilization: 0, resetsAt: null },
-          sevenDay: { utilization: 0, resetsAt: null },
+          fiveHour: { utilization: 0, resetsAt: null, available: false },
+          sevenDay: { utilization: 0, resetsAt: null, available: false },
           lastUpdated: Date.now(),
           error: 'No Codex usage data found. Use Codex CLI with a ChatGPT subscription to see usage.',
         };
@@ -123,8 +123,8 @@ class CodexUsageServiceImpl {
 
       if (!snapshot.rateLimits && snapshot.tokenUsage) {
         const usageData: CodexUsageData = {
-          fiveHour: { utilization: 0, resetsAt: null },
-          sevenDay: { utilization: 0, resetsAt: null },
+          fiveHour: { utilization: 0, resetsAt: null, available: false },
+          sevenDay: { utilization: 0, resetsAt: null, available: false },
           tokenUsage: snapshot.tokenUsage,
           limitsAvailable: false,
           lastUpdated: Date.now(),
@@ -145,8 +145,8 @@ class CodexUsageServiceImpl {
     } catch (error) {
       logger.main.error('[CodexUsageService] Error refreshing usage:', error);
       const errorData: CodexUsageData = {
-        fiveHour: { utilization: 0, resetsAt: null },
-        sevenDay: { utilization: 0, resetsAt: null },
+        fiveHour: { utilization: 0, resetsAt: null, available: false },
+        sevenDay: { utilization: 0, resetsAt: null, available: false },
         lastUpdated: Date.now(),
         error: error instanceof Error ? error.message : 'Unknown error reading Codex session files',
       };
@@ -342,7 +342,7 @@ class CodexUsageServiceImpl {
 
   /**
    * Extract rate_limits from a single JSONL event if it's a token_count event
-   * with non-null primary data. Delegates to the pure `filterRateLimitsByExpiry`
+   * with at least one window. Delegates to the pure `filterRateLimitsByExpiry`
    * helper below so the expiry logic stays unit-testable. See #120.
    */
   private extractRateLimitsFromEvent(event: Record<string, unknown>): CodexRateLimits | null {
@@ -350,7 +350,7 @@ class CodexUsageServiceImpl {
     if (!tokenCountPayload) return null;
 
     const rateLimits = tokenCountPayload.rate_limits as CodexRateLimits | undefined;
-    if (!rateLimits?.primary) return null;
+    if (!rateLimits?.primary && !rateLimits?.secondary) return null;
 
     return filterRateLimitsByExpiry(rateLimits, Date.now() / 1000);
   }
@@ -374,18 +374,21 @@ class CodexUsageServiceImpl {
   }
 
   private convertRateLimits(rateLimits: CodexRateLimits): CodexUsageData {
+    const windows = classifyRateLimitWindows(rateLimits);
     const data: CodexUsageData = {
       fiveHour: {
-        utilization: rateLimits.primary?.used_percent ?? 0,
-        resetsAt: rateLimits.primary?.resets_at
-          ? new Date(rateLimits.primary.resets_at * 1000).toISOString()
+        utilization: windows.fiveHour?.used_percent ?? 0,
+        resetsAt: windows.fiveHour?.resets_at
+          ? new Date(windows.fiveHour.resets_at * 1000).toISOString()
           : null,
+        available: windows.fiveHour !== null,
       },
       sevenDay: {
-        utilization: rateLimits.secondary?.used_percent ?? 0,
-        resetsAt: rateLimits.secondary?.resets_at
-          ? new Date(rateLimits.secondary.resets_at * 1000).toISOString()
+        utilization: windows.sevenDay?.used_percent ?? 0,
+        resetsAt: windows.sevenDay?.resets_at
+          ? new Date(windows.sevenDay.resets_at * 1000).toISOString()
           : null,
+        available: windows.sevenDay !== null,
       },
       lastUpdated: Date.now(),
     };
@@ -414,11 +417,39 @@ class CodexUsageServiceImpl {
 // Singleton instance
 export const codexUsageService = new CodexUsageServiceImpl();
 
+const FIVE_HOUR_WINDOW_MINUTES = 5 * 60;
+const SEVEN_DAY_WINDOW_MINUTES = 7 * 24 * 60;
+
+/**
+ * Classify rate-limit buckets by their declared duration, not their position.
+ * Codex historically emitted 5-hour limits as `primary` and 7-day limits as
+ * `secondary`, but it can put a weekly-only limit in `primary` when the
+ * shorter limit is not active (for example, during temporary limit changes).
+ */
+export function classifyRateLimitWindows(rateLimits: CodexRateLimits): {
+  fiveHour: CodexRateLimitWindow | null;
+  sevenDay: CodexRateLimitWindow | null;
+} {
+  let fiveHour: CodexRateLimitWindow | null = null;
+  let sevenDay: CodexRateLimitWindow | null = null;
+
+  for (const window of [rateLimits.primary, rateLimits.secondary]) {
+    if (!window) continue;
+    if (window.window_minutes === FIVE_HOUR_WINDOW_MINUTES && !fiveHour) {
+      fiveHour = window;
+    } else if (window.window_minutes === SEVEN_DAY_WINDOW_MINUTES && !sevenDay) {
+      sevenDay = window;
+    }
+  }
+
+  return { fiveHour, sevenDay };
+}
+
 /**
  * Drop expired buckets from a CodexRateLimits block.
  *
- * Each window (primary 5h, secondary 7d) carries its own `resets_at` Unix-seconds
- * timestamp. After that moment the window resets and the historical `used_percent`
+ * Each emitted bucket carries its own `resets_at` Unix-seconds timestamp. After
+ * that moment the window resets and the historical `used_percent`
  * no longer matches reality - but the JSONL session file that produced the line is
  * never rewritten, so the same stale value keeps coming back from the
  * scan-backward loop in `extractUsageSnapshotFromFile`. That is the bug behind
