@@ -11,7 +11,6 @@ import path from 'path';
 import { app } from 'electron';
 import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
-import { DEFAULT_EFFORT_LEVEL } from '../../effortLevels';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
 
@@ -352,7 +351,10 @@ export async function buildSdkOptions(
     // the official CLI and removes that asymmetry. The user can still
     // override via their own env var if they want the original sdk-ts label.
     ...(process.env.CLAUDE_CODE_ENTRYPOINT == null && { CLAUDE_CODE_ENTRYPOINT: 'cli' }),
-    ...(config.effortLevel && config.effortLevel !== DEFAULT_EFFORT_LEVEL && {
+    // The Claude CLI currently defaults to xhigh when this variable is absent.
+    // Always forward a resolved Nimbalyst selection, including "high", so the
+    // effort shown in the selector matches the request sent to the CLI.
+    ...(config.effortLevel && {
       CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel
     }),
     // The bundled claude binary runs a per-tool idle-timeout watchdog (default
