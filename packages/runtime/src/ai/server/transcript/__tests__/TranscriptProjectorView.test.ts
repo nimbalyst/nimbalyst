@@ -154,6 +154,7 @@ describe('TranscriptViewMessage structure', () => {
         teamName: null,
         teammateMode: null,
         model: null,
+        reasoningEffort: null,
         color: null,
         isBackground: false,
         prompt: 'Find the file',

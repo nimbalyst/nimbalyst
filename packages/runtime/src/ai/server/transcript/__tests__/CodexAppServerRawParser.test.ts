@@ -318,6 +318,8 @@ describe('CodexAppServerRawParser', () => {
           tool: 'spawnAgent',
           status: 'inProgress',
           prompt: 'Create a plan',
+          model: 'gpt-5.4',
+          reasoningEffort: 'high',
         },
       }),
     });
@@ -329,6 +331,8 @@ describe('CodexAppServerRawParser', () => {
       subagentId: 'spawn-1',
       agentType: 'Session',
       prompt: 'Create a plan',
+      model: 'gpt-5.4',
+      reasoningEffort: 'high',
       createdAt: startMsg.createdAt,
     }]);
 
@@ -356,7 +360,9 @@ describe('CodexAppServerRawParser', () => {
       type: 'subagent_completed',
       subagentId: 'spawn-1',
       status: 'completed',
-      resultSummary: 'receiver_thread_ids: thread-child-1\nmodel: gpt-5.4\nreasoning_effort: high',
+      resultSummary: 'receiver_thread_ids: thread-child-1',
+      model: 'gpt-5.4',
+      reasoningEffort: 'high',
     }]);
   });
 

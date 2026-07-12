@@ -1298,6 +1298,68 @@ describe('TranscriptTransformer', () => {
   describe('Codex reasoning and todo_list transformation', () => {
     const CODEX_PROVIDER = 'openai-codex';
 
+    it('merges completion-only spawnAgent execution metadata into its canonical sub-agent event', async () => {
+      const rawStore = createMockRawStore([
+        makeRawMessage({
+          id: 1,
+          sessionId: SESSION_ID,
+          source: 'openai-codex',
+          direction: 'output',
+          metadata: { transport: 'app-server' },
+          content: JSON.stringify({
+            method: 'item/started',
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              item: {
+                id: 'spawn-1',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                status: 'inProgress',
+                prompt: 'Inspect the transcript pipeline',
+              },
+            },
+          }),
+        }),
+        makeRawMessage({
+          id: 2,
+          sessionId: SESSION_ID,
+          source: 'openai-codex',
+          direction: 'output',
+          metadata: { transport: 'app-server' },
+          content: JSON.stringify({
+            method: 'item/completed',
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              item: {
+                id: 'spawn-1',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                status: 'completed',
+                model: 'gpt-5.4-long-provider-model-id',
+                reasoningEffort: 'xhigh',
+              },
+            },
+          }),
+        }),
+      ]);
+      const transformer = new TranscriptTransformer(rawStore, transcriptStore, metadataStore);
+
+      await transformer.ensureTransformed(SESSION_ID, CODEX_PROVIDER);
+
+      const subagents = (await transcriptStore.getSessionEvents(SESSION_ID))
+        .filter((event) => event.eventType === 'subagent');
+      expect(subagents).toHaveLength(1);
+      expect(subagents[0].subagentId).toBe('spawn-1');
+      expect(subagents[0].payload).toMatchObject({
+        status: 'completed',
+        prompt: 'Inspect the transcript pipeline',
+        model: 'gpt-5.4-long-provider-model-id',
+        reasoningEffort: 'xhigh',
+      });
+    });
+
     it('transforms Codex reasoning events into assistant thinking messages', async () => {
       const rawStore = createMockRawStore([
         makeRawMessage({

@@ -349,6 +349,8 @@ export class CodexAppServerRawParser implements IRawMessageParser {
         subagentId: item.id,
         agentType: 'Session',
         prompt: item.prompt ?? '',
+        ...(item.model != null ? { model: item.model } : {}),
+        ...(item.reasoningEffort != null ? { reasoningEffort: item.reasoningEffort } : {}),
         createdAt: msg.createdAt,
       }];
     }
@@ -369,6 +371,8 @@ export class CodexAppServerRawParser implements IRawMessageParser {
         subagentId: item.id,
         status: 'completed',
         resultSummary: this.buildSpawnAgentResultSummary(item),
+        ...(item.model != null ? { model: item.model } : {}),
+        ...(item.reasoningEffort != null ? { reasoningEffort: item.reasoningEffort } : {}),
       }];
     }
 
@@ -760,12 +764,6 @@ export class CodexAppServerRawParser implements IRawMessageParser {
       parts.push(`receiver_thread_ids: ${item.receiverThreadIds.join(', ')}`);
     } else {
       parts.push('receiver_thread_ids: none');
-    }
-    if (item.model) {
-      parts.push(`model: ${item.model}`);
-    }
-    if (item.reasoningEffort) {
-      parts.push(`reasoning_effort: ${item.reasoningEffort}`);
     }
     return parts.join('\n');
   }
