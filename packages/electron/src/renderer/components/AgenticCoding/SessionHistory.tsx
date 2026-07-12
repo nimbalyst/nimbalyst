@@ -411,6 +411,10 @@ const SessionHistoryComponent: React.FC = () => {
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set()); // Format: "blitz:id", "worktree:id", "workstream:id", "superloop:id", "meta-agent:id"
   const lastSelectedIdRef = useRef<string | null>(null); // For shift+click range selection
+  // Tracks the last searchQuery|tagFilter|mode combination the title-filter effect ran for, so
+  // it can tell a real user-driven filter change apart from an unrelated `allSessions` reference
+  // change (see the effect below and bug_session_search_contents_reset_to_zero.md).
+  const prevSessionFilterKeyRef = useRef<string>('');
   const [worktreeCache, setWorktreeCache] = useState<Map<string, WorktreeWithStatus>>(new Map()); // Cache worktree data
   const [workstreamChildrenCache, setWorkstreamChildrenCache] = useState<Map<string, SessionItem[]>>(new Map()); // Cache workstream children
   const [blitzCache, setBlitzCache] = useState<Map<string, BlitzData>>(new Map()); // Cache blitz data
@@ -800,8 +804,26 @@ const SessionHistoryComponent: React.FC = () => {
 
   // Client-side title filtering (instant, no database query)
   // Note: Archived session filtering is handled by sessionListRootAtom based on showArchivedSessionsAtom
+  //
+  // Bug fix (Temp/yogi_v0681/bug_session_search_contents_reset_to_zero.md): this effect used to
+  // unconditionally reset `contentSearchTriggered` and overwrite `sessions` with a title-only
+  // re-filter every time `allSessions` changed reference -- which happens on ANY session's
+  // metadata update anywhere in the workspace, not just the one being searched. That silently
+  // cancelled an active content search and reset the visible results to zero within seconds of
+  // unrelated background session activity. `prevSessionFilterKeyRef` tracks only the inputs a
+  // user action can actually change (searchQuery/tagFilter/mode); when none of those changed and
+  // a content search is active, this effect leaves `sessions` (already populated by
+  // executeSearch) alone instead of clobbering it.
   useEffect(() => {
-    // Reset content search trigger when query changes
+    const filterKey = `${searchQuery}|${tagFilter.tags.join(',')}|${mode}`;
+    const userFilterInputsChanged = prevSessionFilterKeyRef.current !== filterKey;
+    prevSessionFilterKeyRef.current = filterKey;
+
+    if (contentSearchTriggered && !userFilterInputsChanged) {
+      return;
+    }
+
+    // Reset content search trigger when the query/tags/mode actually change.
     setContentSearchTriggered(false);
 
     // Filter out sessions that belong to worktrees (they're shown in WorktreeGroup instead)
@@ -831,7 +853,7 @@ const SessionHistoryComponent: React.FC = () => {
       return true;
     });
     setSessions(filtered.sort(compareSessionOrder));
-  }, [searchQuery, tagFilter.tags, allSessions, mode, compareSessionOrder, sessionRegistry]);
+  }, [searchQuery, tagFilter.tags, allSessions, mode, compareSessionOrder, sessionRegistry, contentSearchTriggered]);
 
   useEffect(() => {
     const commitOrderMap = (nextMap: Map<string, number>) => {
