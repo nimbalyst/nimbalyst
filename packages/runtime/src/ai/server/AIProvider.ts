@@ -63,6 +63,29 @@ export function isSlashCommandCatalogProvider(
   );
 }
 
+export interface ContextCompactionResult {
+  /** Whether this provider exposes a native, structured compaction operation. */
+  supported: boolean;
+  /** True only after the provider confirms that compaction completed. */
+  compacted: boolean;
+  /** Provider operation used for compaction. */
+  method?: string;
+  /** Structured failure detail when compaction did not complete. */
+  error?: string;
+}
+
+export interface ContextCompactionProvider {
+  compactSession(sessionId: string): Promise<ContextCompactionResult>;
+  /** True while provider-native compaction would replace an in-flight turn. */
+  isSessionActive?(sessionId: string): boolean;
+}
+
+export function isContextCompactionProvider(
+  provider: AIProvider | null | undefined
+): provider is AIProvider & ContextCompactionProvider {
+  return !!provider && typeof (provider as Partial<ContextCompactionProvider>).compactSession === 'function';
+}
+
 export interface AIProvider extends EventEmitter {
   /**
    * Initialize the provider with configuration

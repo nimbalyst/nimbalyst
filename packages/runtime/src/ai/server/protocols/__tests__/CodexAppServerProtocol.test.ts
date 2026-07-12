@@ -191,6 +191,90 @@ describe('CodexAppServerProtocol', () => {
     protocol.cleanupSession(session);
   });
 
+  it('refuses active-turn compaction, then compacts post-turn without starting a model turn', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 'thread-abc' } } });
+    const session = await sessionPromise;
+
+    const events: ProtocolEvent[] = [];
+    const collector = (async () => {
+      for await (const event of protocol.sendMessage(session, { content: 'call compact_session' })) {
+        events.push(event);
+      }
+    })();
+    const turnReq = await nextWrittenMatching(child, 'turn/start');
+
+    const activeOutcome = protocol.compactSession(session).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const activeCompactReq = child.writtenLines.find(
+      (line) => (line as { method?: string }).method === 'thread/compact/start',
+    ) as Record<string, unknown> | undefined;
+    if (activeCompactReq) {
+      child.emitLine({ id: activeCompactReq.id, result: {} });
+      child.emitLine({
+        method: 'item/completed',
+        params: {
+          threadId: 'thread-abc',
+          turnId: 'compact-active',
+          item: { id: 'compaction-active', type: 'contextCompaction' },
+        },
+      });
+    }
+    const activeResult = await activeOutcome;
+    expect(activeCompactReq).toBeUndefined();
+    expect(activeResult.ok).toBe(false);
+    expect(activeResult).toMatchObject({
+      error: expect.objectContaining({ message: expect.stringContaining('active turn') }),
+    });
+
+    child.emitLine({ id: turnReq.id, result: { turn: { id: 'turn-1', items: [], status: 'inProgress' } } });
+    child.emitLine({ method: 'turn/completed', params: { threadId: 'thread-abc', turn: { id: 'turn-1', status: 'completed' } } });
+    await collector;
+
+    const compactPromise = protocol.compactSession(session);
+    const compactReq = await nextWrittenMatching(child, 'thread/compact/start');
+    expect(compactReq.params).toEqual({ threadId: 'thread-abc' });
+    child.emitLine({ id: compactReq.id, result: {} });
+    child.emitLine({
+      method: 'item/completed',
+      params: {
+        threadId: 'thread-abc',
+        turnId: 'compact-1',
+        item: { id: 'compaction-1', type: 'contextCompaction' },
+      },
+    });
+
+    let compactionSettled = false;
+    void compactPromise.then(
+      () => { compactionSettled = true; },
+      () => { compactionSettled = true; },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(compactionSettled).toBe(false);
+    expect(protocol.isSessionActive(session)).toBe(true);
+
+    child.emitLine({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-abc',
+        turn: { id: 'compact-1', status: 'completed' },
+      },
+    });
+    await expect(compactPromise).resolves.toBeUndefined();
+    expect(protocol.isSessionActive(session)).toBe(false);
+    expect(child.writtenLines.filter((line) => (line as { method?: string }).method === 'turn/start')).toHaveLength(1);
+    expect(child.writtenLines.some((line) => (line as { method?: string }).method === 'turn/interrupt')).toBe(false);
+    expect(events.some((event) => event.toolCall?.name === 'contextCompaction')).toBe(false);
+    protocol.cleanupSession(session);
+  });
+
   it('translates fileChange item/completed into a tool_call event with diff-based baselines', async () => {
     const protocol = new CodexAppServerProtocol();
     const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });

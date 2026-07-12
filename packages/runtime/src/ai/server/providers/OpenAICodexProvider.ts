@@ -2,6 +2,7 @@ import path from 'path';
 import crypto from 'crypto';
 import OpenAI from 'openai';
 import { BaseAgentProvider } from './BaseAgentProvider';
+import type { ContextCompactionResult } from '../AIProvider';
 import { buildUserMessageAddition } from './documentContextUtils';
 import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
 import { DEFAULT_MODELS } from '../../modelConstants';
@@ -53,6 +54,8 @@ export type CodexTransport = 'sdk' | 'app-server';
  */
 export interface CodexProtocol extends AgentProtocol {
   setApiKey?(apiKey: string): void;
+  compactSession?(session: ProtocolSession): Promise<void>;
+  isSessionActive?(session: ProtocolSession): boolean;
 }
 
 interface OpenAICodexProviderDeps {
@@ -880,6 +883,59 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
   async cancelStream(_sessionId?: string): Promise<void> {
     this.abort();
+  }
+
+  /** Compact the existing app-server thread without starting another turn. */
+  async compactSession(sessionId: string): Promise<ContextCompactionResult> {
+    const method = 'thread/compact/start';
+    if (this.transport !== 'app-server' || typeof this.protocol.compactSession !== 'function') {
+      return {
+        supported: false,
+        compacted: false,
+        method,
+        error: 'Native compaction requires the Codex app-server transport',
+      };
+    }
+
+    const session = this.liveProtocolSessions.get(sessionId);
+    if (!session) {
+      return {
+        supported: true,
+        compacted: false,
+        method,
+        error: 'No live Codex app-server thread is available for this session',
+      };
+    }
+
+    if (this.isSessionActive(sessionId)) {
+      return {
+        supported: true,
+        compacted: false,
+        method,
+        error: 'Cannot compact a Codex thread while it has an active turn',
+      };
+    }
+
+    try {
+      await this.protocol.compactSession(session);
+      return { supported: true, compacted: true, method };
+    } catch (error) {
+      return {
+        supported: true,
+        compacted: false,
+        method,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /** Provider-boundary guard used before claiming a queued compaction action. */
+  isSessionActive(sessionId: string): boolean {
+    const session = this.liveProtocolSessions.get(sessionId);
+    if (!session) return false;
+    // A protocol implementation without the guard cannot safely prove
+    // inactivity, so treat a live thread as active rather than guessing.
+    return this.protocol.isSessionActive?.(session) ?? true;
   }
 
   async *sendMessage(

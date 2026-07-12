@@ -1,6 +1,6 @@
 /**
  * Meta-agent (child-session orchestration) tool surface — `create_session`,
- * `spawn_session`, `send_prompt`, `respond_to_prompt`, `get_session_status`,
+ * `spawn_session`, `send_prompt`, `compact_session`, `respond_to_prompt`, `get_session_status`,
  * `get_session_result`, `list_spawned_sessions`, `list_worktrees`.
  *
  * MCP consolidation: these tools are served by the unified internal MCP HTTP
@@ -49,6 +49,11 @@ type RespondToPromptArgs = {
   response: Record<string, unknown>;
 };
 
+type CompactSessionArgs = {
+  sessionId?: string;
+  focus?: string;
+};
+
 interface MetaAgentToolFns {
   listWorktrees: (
     metaSessionId: string,
@@ -79,6 +84,11 @@ interface MetaAgentToolFns {
     workspaceId: string,
     targetSessionId: string,
     prompt: string
+  ) => Promise<string>;
+  compactSession: (
+    callerSessionId: string,
+    workspaceId: string,
+    args: CompactSessionArgs
   ) => Promise<string>;
   respondToPrompt: (
     metaSessionId: string,
@@ -270,6 +280,25 @@ export const META_AGENT_TOOL_DEFS: Array<{
     },
   },
   {
+    name: "compact_session",
+    description:
+      "Schedule compaction for this session or an owned child session after its active turn ends. Codex app-server sessions execute provider-native compaction as a tagged queued action without starting a model turn; Claude Agent and Claude CLI execute a real /compact command. The tool returns compacted:false and scheduled:true; end the current turn before checking queue/session status. Optional focus text is single-line normalized and provider-dependent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description: "Optional owned target session. Defaults to the calling session.",
+        },
+        focus: {
+          type: "string",
+          maxLength: 1000,
+          description: "Optional focus for providers that support /compact focus text. Newlines are normalized to spaces.",
+        },
+      },
+    },
+  },
+  {
     name: "respond_to_prompt",
     description:
       "Answer a child session's interactive prompt such as AskUserQuestion, ExitPlanMode, or ToolPermission.",
@@ -336,6 +365,7 @@ const EXTENSION_META_AGENT_ALLOWED_TOOLS = new Set<string>([
   "get_session_status",
   "get_session_result",
   "send_prompt",
+  "compact_session",
   "respond_to_prompt",
   "list_spawned_sessions",
 ]);
@@ -404,6 +434,12 @@ export async function dispatchMetaAgentTool(
         effectiveWorkspaceId,
         (args?.sessionId as string) ?? "",
         (args?.prompt as string) ?? ""
+      );
+    case "compact_session":
+      return toolFns.compactSession(
+        aiSessionId,
+        effectiveWorkspaceId,
+        (args ?? {}) as CompactSessionArgs
       );
     case "respond_to_prompt":
       return toolFns.respondToPrompt(aiSessionId, effectiveWorkspaceId, (args ?? {}) as RespondToPromptArgs);

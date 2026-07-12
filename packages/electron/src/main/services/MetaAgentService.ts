@@ -15,12 +15,31 @@ import { database as databaseWorker } from '../database/PGLiteDatabaseWorker';
 import { getDatabase } from '../database/initialize';
 import { gitRefWatcher } from '../file/GitRefWatcher';
 import { AIService } from './ai/AIService';
+import { QUEUED_COMPACTION_PROMPT_ORIGIN } from './ai/queuedCompactionAction';
 import { setMetaAgentToolFns } from '../mcp/metaAgentServer';
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
+const MAX_COMPACTION_FOCUS_LENGTH = 1000;
+
+function normalizeCompactionFocus(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new Error('focus must be a string');
+  }
+  if (value.length > MAX_COMPACTION_FOCUS_LENGTH) {
+    throw new Error(`focus must be at most ${MAX_COMPACTION_FOCUS_LENGTH} characters`);
+  }
+  // Treat every C0 byte as a separator before collapsing whitespace. This
+  // keeps the focus safe for both SDK-backed prompts and PTY slash-command
+  // tails without accidentally joining words around a stripped control byte.
+  // eslint-disable-next-line no-control-regex
+  const normalized = value.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!normalized) return undefined;
+  return normalized;
+}
 
 interface PendingInteractivePrompt {
   id: string;
@@ -183,6 +202,8 @@ export class MetaAgentService {
           this.getSessionResultJson(targetSessionId, workspaceId),
         sendPrompt: (_metaSessionId, workspaceId, targetSessionId, prompt) =>
           this.sendPromptToSession(targetSessionId, workspaceId, prompt),
+        compactSession: (callerSessionId, workspaceId, args) =>
+          this.compactSessionJson(callerSessionId, workspaceId, args),
         respondToPrompt: (_metaSessionId, workspaceId, args) =>
           this.respondToPrompt(workspaceId, args),
         listSpawnedSessions: (metaSessionId, workspaceId) =>
@@ -877,6 +898,89 @@ export class MetaAgentService {
       prompt: queued.prompt,
       statusBeforeQueue: status,
       processingTriggered,
+    }, null, 2);
+  }
+
+  private async compactSessionJson(
+    callerSessionId: string,
+    workspaceId: string,
+    args: { sessionId?: string; focus?: string },
+  ): Promise<string> {
+    if (!this.aiService) {
+      throw new Error('AI service not initialized');
+    }
+    if (args.sessionId !== undefined && typeof args.sessionId !== 'string') {
+      throw new Error('sessionId must be a string');
+    }
+
+    const targetSessionId = args.sessionId?.trim() || callerSessionId;
+    const focus = normalizeCompactionFocus(args.focus);
+    const session = await AISessionsRepository.get(targetSessionId);
+    if (!session || session.workspacePath !== workspaceId) {
+      throw new Error(`Session ${targetSessionId} not found`);
+    }
+    if (targetSessionId !== callerSessionId && session.createdBySessionId !== callerSessionId) {
+      throw new Error(`Session ${targetSessionId} is not owned by ${callerSessionId}`);
+    }
+
+    const usesCodexNativeQueue = session.provider === 'openai-codex';
+    const usesClaudeSlashQueue = session.provider === 'claude-code'
+      || session.provider === 'claude-code-cli';
+    if (!usesCodexNativeQueue && !usesClaudeSlashQueue) {
+      return JSON.stringify({
+        sessionId: targetSessionId,
+        provider: session.provider,
+        compacted: false,
+        scheduled: false,
+        error: `Provider ${session.provider} does not support compaction`,
+        ...(focus ? { focus, focusApplied: false } : {}),
+      }, null, 2);
+    }
+
+    // Compaction replaces the provider's current task on both Codex and
+    // Claude. Queue it so a self-targeted MCP call returns before the current
+    // turn ends. Codex's tagged exact action is intercepted after normal queue
+    // dispatch and invokes thread/compact/start without starting a model turn;
+    // Claude executes the real slash command through its existing rails.
+    const prompt = usesCodexNativeQueue
+      ? '/compact'
+      : focus
+        ? `/compact focus on ${focus}`
+        : '/compact';
+    const statusRow = await this.getSessionStatusRow(targetSessionId, workspaceId);
+    const status = (statusRow?.status || 'idle') as SessionStatusValue;
+    const queued = usesCodexNativeQueue
+      ? await this.aiService.queuePromptForSession(
+          targetSessionId,
+          prompt,
+          undefined,
+          { promptOrigin: QUEUED_COMPACTION_PROMPT_ORIGIN },
+        )
+      : await this.aiService.queuePromptForSession(targetSessionId, prompt);
+    // A self-targeted MCP call is necessarily running inside the caller's
+    // current turn. Never trust a lagging persisted "idle" status here: an
+    // immediate trigger would re-enter the provider before the tool returns.
+    let processingTriggered = false;
+    const canTriggerProcessing = targetSessionId !== callerSessionId
+      && (status === 'idle' || status === 'interrupted' || status === 'error');
+    if (canTriggerProcessing) {
+      processingTriggered = await this.aiService.triggerQueuedPromptProcessingForSession(
+        targetSessionId,
+        session.worktreePath || session.workspacePath || workspaceId,
+      );
+    }
+
+    return JSON.stringify({
+      sessionId: targetSessionId,
+      provider: session.provider,
+      compacted: false,
+      scheduled: true,
+      method: usesCodexNativeQueue
+        ? 'queued-native-compaction'
+        : 'queued-slash-command',
+      queuedPromptId: queued.id,
+      processingTriggered,
+      ...(focus ? { focus, focusApplied: false } : {}),
     }, null, 2);
   }
 

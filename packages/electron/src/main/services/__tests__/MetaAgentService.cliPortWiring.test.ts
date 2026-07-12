@@ -77,6 +77,7 @@ describe('MetaAgentService tool-fn injection (Phase 7: no standalone server)', (
     expect(typeof fns.createSession).toBe('function');
     expect(typeof fns.spawnSession).toBe('function');
     expect(typeof fns.listWorktrees).toBe('function');
+    expect(typeof fns.compactSession).toBe('function');
 
     await service.shutdown();
   });

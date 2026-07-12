@@ -23,6 +23,7 @@ interface DispatchClaimedQueuedPromptOptions {
     source: string,
   ) => Promise<void>;
   logError: (message: string, error: unknown) => void;
+  dispatchClaimedAction?: (claimed: ClaimedQueuedPrompt) => Promise<boolean>;
   onAfterSettled?: () => Promise<void>;
   onChainSettled?: (payload: { sessionId: string; workspacePath: string; source: string }) => Promise<void>;
   onPromptClaimed: (payload: { sessionId: string; promptId: string }) => void;
@@ -48,6 +49,7 @@ export async function dispatchClaimedQueuedPrompt(
   const {
     claimed,
     continueQueuedPromptChain,
+    dispatchClaimedAction,
     logError,
     onAfterSettled,
     onChainSettled,
@@ -86,7 +88,12 @@ export async function dispatchClaimedQueuedPrompt(
         senderFrame: targetWindow.webContents.mainFrame,
       } as Electron.IpcMainInvokeEvent;
 
-      await sendMessageHandler(mockEvent, claimed.prompt, docContext, sessionId, workspacePath);
+      const handledAction = dispatchClaimedAction
+        ? await dispatchClaimedAction(claimed)
+        : false;
+      if (!handledAction) {
+        await sendMessageHandler(mockEvent, claimed.prompt, docContext, sessionId, workspacePath);
+      }
       await queueStore.complete(claimed.id);
     } catch (queueError) {
       logError(`[AIService] Failed to process queued prompt ${claimed.id}:`, queueError);
@@ -129,7 +136,9 @@ export async function dispatchClaimedQueuedPrompt(
 }
 
 interface TryClaimAndDispatchNextQueuedPromptOptions {
+  canDispatch?: (prompt: ClaimedQueuedPrompt) => Promise<boolean>;
   continueQueuedPromptChain: DispatchClaimedQueuedPromptOptions['continueQueuedPromptChain'];
+  dispatchClaimedAction?: DispatchClaimedQueuedPromptOptions['dispatchClaimedAction'];
   logError: DispatchClaimedQueuedPromptOptions['logError'];
   logInfo: (message: string) => void;
   onAfterSettled?: DispatchClaimedQueuedPromptOptions['onAfterSettled'];
@@ -149,7 +158,9 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
   options: TryClaimAndDispatchNextQueuedPromptOptions,
 ): Promise<boolean> {
   const {
+    canDispatch,
     continueQueuedPromptChain,
+    dispatchClaimedAction,
     logError,
     logInfo,
     onAfterSettled,
@@ -184,6 +195,11 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
   const nextPrompt = pendingPrompts[0];
   logInfo(`[AIService] ${source}: processing prompt ${nextPrompt.id} for session ${sessionId}`);
 
+  if (canDispatch && !(await canDispatch(nextPrompt))) {
+    logInfo(`[AIService] ${source}: prompt ${nextPrompt.id} deferred by provider-boundary guard`);
+    return false;
+  }
+
   const claimed = await queueStore.claim(nextPrompt.id);
   if (!claimed) {
     logInfo(`[AIService] ${source}: prompt ${nextPrompt.id} already claimed`);
@@ -199,6 +215,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
   await dispatchClaimedQueuedPrompt({
     claimed,
     continueQueuedPromptChain,
+    dispatchClaimedAction,
     logError,
     onAfterSettled,
     onChainSettled,
