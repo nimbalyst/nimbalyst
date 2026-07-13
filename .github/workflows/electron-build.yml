@@ -352,6 +352,22 @@ jobs:
           Write-Host "DigiCert client certificate decoded ($($certBytes.Length) bytes)"
         shell: powershell
 
+      # Install and authenticate smctl before electron-builder runs. The custom
+      # signer in build/sign-windows.js is then invoked for the staged app
+      # binaries and for the NSIS installer, so the payload is signed before it
+      # is embedded in the distributable.
+      - name: Set up DigiCert KeyLocker for Windows payload signing
+        if: matrix.platform == 'win' && matrix.arch != 'arm64' && env.DIGICERT_CLIENT_CERT_BASE64 != '' && (github.ref_type == 'tag' || inputs.release == true || inputs.release == 'true')
+        uses: digicert/code-signing-software-trust-action@v1.0.0
+        with:
+          simple-signing-mode: true
+        env:
+          DIGICERT_CLIENT_CERT_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_BASE64 }}
+          SM_HOST: "https://clientauth.one.digicert.com"
+          SM_API_KEY: ${{ secrets.DIGICERT_CLIENT_API_TOKEN }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}\digicert_client_cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PW }}
+
       # Pre-populate electron-builder's winCodeSign cache for ARM64.
       # The published winCodeSign archive only ships windows-10/x64 and
       # windows-10/ia32 signtool binaries. On ARM64 runners electron-builder
@@ -429,10 +445,19 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: '3GYP4YJ3DH'
-          CSC_NAME: ${{ secrets.CSC_NAME }}
-          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
-          # Windows signing is handled post-build by DigiCert KeyLocker
+          # Keep Apple credentials under macOS-only names. CSC_LINK is a shared
+          # electron-builder fallback and must never leak into a Windows build.
+          MACOS_CSC_NAME: ${{ secrets.CSC_NAME }}
+          MACOS_CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          DIGICERT_KEYPAIR_ALIAS: ${{ (github.ref_type == 'tag' || inputs.release == true || inputs.release == 'true') && secrets.DIGICERT_KEYPAIR_ALIAS || '' }}
+          SM_HOST: "https://clientauth.one.digicert.com"
+          SM_API_KEY: ${{ secrets.DIGICERT_CLIENT_API_TOKEN }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}\digicert_client_cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PW }}
+          # ARM64 is re-signed by the dedicated x64-hosted job below until
+          # DigiCert publishes native ARM64 smctl tooling.
+          ALLOW_UNSIGNED_WINDOWS_BUILD: ${{ github.ref_type != 'tag' && inputs.release != true && inputs.release != 'true' || matrix.platform == 'win' && matrix.arch == 'arm64' }}
           # GH_TOKEN is intentionally unset: electron-builder is invoked with
           # --publish never on all platforms below, so GitHub Release creation
           # does not happen at the build step. The dedicated release step later
@@ -451,12 +476,20 @@ jobs:
           # handled explicitly later in this workflow, and electron-builder
           # must not create GitHub Releases on its own.
           if [ "${{ matrix.platform }}" == "mac" ]; then
+            export CSC_NAME="$MACOS_CSC_NAME"
+            export CSC_LINK="$MACOS_CSC_LINK"
+            export CSC_KEY_PASSWORD="$MACOS_CSC_KEY_PASSWORD"
             if [ "${{ github.ref_type }}" == "tag" ] || [ "${{ inputs.release }}" == "true" ]; then
               npm run build:mac:notarized -- --${{ matrix.arch }} --mac dmg zip --publish never
             else
               npm run build:mac:local -- --${{ matrix.arch }} --mac dmg zip --publish never
             fi
           elif [ "${{ matrix.platform }}" == "win" ]; then
+            unset CSC_NAME CSC_LINK CSC_KEY_PASSWORD
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            if [ "${{ matrix.arch }}" == "arm64" ]; then
+              unset DIGICERT_KEYPAIR_ALIAS
+            fi
             if [ "${{ matrix.arch }}" == "arm64" ]; then
               npm run build:win:arm64 -- --publish never
             else
@@ -467,31 +500,41 @@ jobs:
           fi
         shell: bash
 
-      # Sign Windows exe with DigiCert KeyLocker (post-build).
-      # The artifactName template "${productName}-Windows-${arch}.${ext}" means
-      # each matrix job produces a distinct arch-suffixed exe to sign.
-      #
-      # Skipped on Windows ARM64: digicert/code-signing-software-trust-action@v1.0.0
-      # downloads an arch-specific `smctl` binary and DigiCert does not publish
-      # `smctl-win32-arm64`, so the action fails with "Unable to locate executable
-      # file: smctl". The electron-builder step already signs
-      # Nimbalyst-Windows-arm64.exe with the configured p12 cert, so the ARM64
-      # installer ships with a valid (non-EV) signature. Revisit to add
-      # cloud-HSM EV signing for ARM64 once DigiCert ships an ARM64 smctl or via
-      # x64 smctl under Windows ARM64 emulation.
-      - name: Sign Windows exe with DigiCert KeyLocker
-        if: matrix.platform == 'win' && matrix.arch != 'arm64' && env.DIGICERT_CLIENT_CERT_BASE64 != ''
-        uses: digicert/code-signing-software-trust-action@v1.0.0
-        with:
-          simple-signing-mode: true
-          input: "packages/electron/release/Nimbalyst-Windows-${{ matrix.arch }}.exe"
-          keypair-alias: ${{ secrets.DIGICERT_KEYPAIR_ALIAS }}
-        env:
-          DIGICERT_CLIENT_CERT_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_BASE64 }}
-          SM_HOST: "https://clientauth.one.digicert.com"
-          SM_API_KEY: ${{ secrets.DIGICERT_CLIENT_API_TOKEN }}
-          SM_CLIENT_CERT_FILE: ${{ runner.temp }}\digicert_client_cert.p12
-          SM_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PW }}
+      - name: Verify Windows payload and installer signatures
+        if: matrix.platform == 'win' && matrix.arch != 'arm64' && (github.ref_type == 'tag' || inputs.release == true || inputs.release == 'true')
+        shell: pwsh
+        working-directory: packages/electron
+        run: |
+          $ErrorActionPreference = "Stop"
+          $payload = Get-ChildItem release -Filter Nimbalyst.exe -File -Recurse |
+            Where-Object { $_.FullName -match 'win-unpacked' } |
+            Select-Object -First 1
+          $installer = Get-Item "release/Nimbalyst-Windows-${{ matrix.arch }}.exe"
+
+          if (-not $payload) {
+            throw "Could not find the staged Windows payload executable"
+          }
+
+          foreach ($file in @($payload, $installer)) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            $subject = $signature.SignerCertificate.Subject
+            if ($signature.Status -ne 'Valid' -or $subject -notmatch 'O="?NIMBALYST, INC\.') {
+              throw "Invalid Nimbalyst Windows signature: $($file.FullName) status=$($signature.Status) subject=$subject"
+            }
+            Write-Host "Verified Windows signature: $($file.FullName) [$subject]"
+          }
+
+          $invalidNativeFiles = Get-ChildItem $payload.Directory.FullName -File -Recurse |
+            Where-Object { $_.Extension -in '.exe', '.dll', '.node' } |
+            ForEach-Object {
+              $signature = Get-AuthenticodeSignature -LiteralPath $_.FullName
+              if ($signature.Status -ne 'Valid') {
+                "$($_.FullName) status=$($signature.Status) subject=$($signature.SignerCertificate.Subject)"
+              }
+            }
+          if ($invalidNativeFiles) {
+            throw "Unsigned or untrusted native files remain in the Windows payload:`n$($invalidNativeFiles -join "`n")"
+          }
 
       # Create a backwards-compatible copy of the signed x64 exe so any existing
       # download links pointing at Nimbalyst-Windows.exe keep working. ARM64
@@ -558,6 +601,7 @@ jobs:
             packages/electron/release/*.AppImage
             packages/electron/release/*.yml
             packages/electron/release/*.yaml
+            packages/electron/release/win-arm64-unpacked/**
           retention-days: 7
 
   # Cross-architecture DigiCert KeyLocker re-sign for the Windows ARM64
@@ -576,11 +620,31 @@ jobs:
     env:
       DIGICERT_CLIENT_CERT_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_BASE64 }}
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
       - name: Download win-arm64 artifact
         uses: actions/download-artifact@v8
         with:
           name: win-arm64
           path: win-arm64
+
+      - name: Locate Windows ARM64 payload
+        id: arm-payload
+        shell: pwsh
+        run: |
+          $payload = Get-ChildItem win-arm64 -Directory -Recurse |
+            Where-Object { $_.Name -eq 'win-arm64-unpacked' } |
+            Select-Object -First 1
+          if (-not $payload) {
+            throw "Could not find win-arm64-unpacked in the downloaded artifact"
+          }
+          "path=$($payload.FullName)" >> $env:GITHUB_OUTPUT
 
       - name: Decode DigiCert Client Certificate
         if: env.DIGICERT_CLIENT_CERT_BASE64 != ''
@@ -591,12 +655,12 @@ jobs:
           Write-Host "DigiCert client certificate decoded ($($certBytes.Length) bytes)"
         shell: powershell
 
-      - name: Sign Windows ARM64 exe with DigiCert KeyLocker
+      - name: Sign Windows ARM64 payload with DigiCert KeyLocker
         if: env.DIGICERT_CLIENT_CERT_BASE64 != ''
         uses: digicert/code-signing-software-trust-action@v1.0.0
         with:
           simple-signing-mode: true
-          input: win-arm64/Nimbalyst-Windows-arm64.exe
+          input: ${{ steps.arm-payload.outputs.path }}
           keypair-alias: ${{ secrets.DIGICERT_KEYPAIR_ALIAS }}
         env:
           DIGICERT_CLIENT_CERT_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_BASE64 }}
@@ -605,9 +669,83 @@ jobs:
           SM_CLIENT_CERT_FILE: ${{ runner.temp }}\digicert_client_cert.p12
           SM_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PW }}
 
-      # Re-upload every file that was in the original win-arm64 artifact so
-      # we don't silently drop blockmap/yml/etc. The download step unpacks
-      # into ./win-arm64, and upload-artifact re-archives that directory.
+      - name: Sign Windows ARM64 native modules with DigiCert KeyLocker
+        shell: pwsh
+        env:
+          DIGICERT_KEYPAIR_ALIAS: ${{ secrets.DIGICERT_KEYPAIR_ALIAS }}
+          SM_HOST: "https://clientauth.one.digicert.com"
+          SM_API_KEY: ${{ secrets.DIGICERT_CLIENT_API_TOKEN }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}\digicert_client_cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PW }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          Get-ChildItem "${{ steps.arm-payload.outputs.path }}" -Filter *.node -File -Recurse | ForEach-Object {
+            $temporaryPath = "$($_.FullName).dll"
+            Move-Item -LiteralPath $_.FullName -Destination $temporaryPath
+            try {
+              & smctl sign --keypair-alias $env:DIGICERT_KEYPAIR_ALIAS --input $temporaryPath --simple
+              if ($LASTEXITCODE -ne 0) {
+                throw "smctl failed to sign $($_.FullName) with exit code $LASTEXITCODE"
+              }
+            } finally {
+              Move-Item -LiteralPath $temporaryPath -Destination $_.FullName
+            }
+          }
+
+      - name: Package signed Windows ARM64 payload
+        working-directory: packages/electron
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          DIGICERT_KEYPAIR_ALIAS: ${{ secrets.DIGICERT_KEYPAIR_ALIAS }}
+          SM_HOST: "https://clientauth.one.digicert.com"
+          SM_API_KEY: ${{ secrets.DIGICERT_CLIENT_API_TOKEN }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}\digicert_client_cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PW }}
+        run: |
+          npx --yes electron-builder@26.0.12 `
+            --win nsis `
+            --arm64 `
+            --prepackaged "${{ steps.arm-payload.outputs.path }}" `
+            --publish never
+          if ($LASTEXITCODE -ne 0) {
+            throw "electron-builder failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Verify Windows ARM64 payload and installer signatures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $payload = Get-Item "${{ steps.arm-payload.outputs.path }}\Nimbalyst.exe"
+          $installer = Get-Item "packages/electron/release/Nimbalyst-Windows-arm64.exe"
+
+          foreach ($file in @($payload, $installer)) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            $subject = $signature.SignerCertificate.Subject
+            if ($signature.Status -ne 'Valid' -or $subject -notmatch 'O="?NIMBALYST, INC\.') {
+              throw "Invalid Nimbalyst Windows signature: $($file.FullName) status=$($signature.Status) subject=$subject"
+            }
+            Write-Host "Verified Windows signature: $($file.FullName) [$subject]"
+          }
+
+          $invalidNativeFiles = Get-ChildItem "${{ steps.arm-payload.outputs.path }}" -File -Recurse |
+            Where-Object { $_.Extension -in '.exe', '.dll', '.node' } |
+            ForEach-Object {
+              $signature = Get-AuthenticodeSignature -LiteralPath $_.FullName
+              if ($signature.Status -ne 'Valid') {
+                "$($_.FullName) status=$($signature.Status) subject=$($signature.SignerCertificate.Subject)"
+              }
+            }
+          if ($invalidNativeFiles) {
+            throw "Unsigned or untrusted native files remain in the Windows ARM64 payload:`n$($invalidNativeFiles -join "`n")"
+          }
+
+      - name: Prepare signed Windows ARM64 artifact
+        shell: pwsh
+        run: |
+          Get-ChildItem win-arm64 -Force | Remove-Item -Recurse -Force
+          Copy-Item "packages/electron/release/Nimbalyst-Windows-arm64.exe" "win-arm64/Nimbalyst-Windows-arm64.exe"
+
       - name: Re-upload signed win-arm64 artifact
         uses: actions/upload-artifact@v7
         with:
