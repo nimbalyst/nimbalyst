@@ -95,7 +95,12 @@ import { registerDatabaseBrowserSqliteHandlers } from './ipc/DatabaseBrowserSqli
 import { registerMigrationHandlers } from './ipc/MigrationHandlers';
 import { registerTerminalHandlers, shutdownTerminalHandlers } from './ipc/TerminalHandlers';
 import { AIService } from './services/ai/AIService';
-import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesForWorkspace } from './utils/workspaceDetection';
+import {
+    detectFileWorkspace,
+    suggestWorkspaceForFile,
+    getAdditionalDirectoriesForWorkspace,
+    getClaudeAdditionalDirectoriesForWorkspace,
+} from './utils/workspaceDetection';
 import { cliManager, initEnhancedPath, getEnhancedPath, getShellEnvironment } from './services/CLIManager';
 import { registerWorkspaceWindow, registerExtensionTools, shutdownHttpServer, startMcpHttpServer, updateDocumentState, getActiveExtensionShortNames } from './mcp/httpServer';
 import { writeMcpEndpointDescriptor, removeMcpEndpointDescriptor, type EndpointWorkspace } from './mcp/mcpEndpointDescriptor';
@@ -1928,18 +1933,13 @@ runIfSingleInstanceLifecycleOwner(singleInstanceLifecycle, () => {
       });
     }
 
-    // Inject additional directories loader. Adds the parent project root and
-    // sibling worktrees so agents can read shared configs, traverse the .git
-    // common dir from a worktree, and (for Codex) escape its workspace-write
-    // sandbox when an orchestrator session needs to edit sibling worktrees.
-    // Issue #37 problem 1.
-    // Claude opts out of sibling worktrees: the Claude CLI loads .claude/commands
-    // skills from every additional directory, so N worktrees = N duplicate
-    // copies of every project skill in the system prompt (~7K tokens wasted per
-    // session). Claude has no Codex-style sandbox; cross-worktree file access
-    // still works through the normal permission flow.
-    ClaudeCodeProvider.setAdditionalDirectoriesLoader((workspacePath: string) =>
-      getAdditionalDirectoriesForWorkspace(workspacePath, { includeSiblingWorktrees: false }));
+    // Inject additional directories loaders. Codex keeps parent/sibling roots
+    // for its workspace-write sandbox. Claude filters every checkout of the
+    // current project because its binary discovers .claude commands/skills from
+    // each additional root; a worktree cwd plus its parent otherwise contributes
+    // the same catalog twice. Claude cross-worktree access still uses its normal
+    // permission flow. Issue #37 problem 1; NIM-254.
+    ClaudeCodeProvider.setAdditionalDirectoriesLoader(getClaudeAdditionalDirectoriesForWorkspace);
     OpenAICodexProvider.setAdditionalDirectoriesLoader(getAdditionalDirectoriesForWorkspace);
 
     // Wire the Codex PreToolUse hook (LEGACY -- only consulted by the SDK

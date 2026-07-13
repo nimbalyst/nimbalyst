@@ -8,7 +8,9 @@ import {
   clearWorktreeIdentityCache,
   findNearestAncestor,
   findProjectRoot,
+  filterClaudeCatalogDuplicateDirectories,
   getAdditionalDirectoriesForWorkspace,
+  getClaudeAdditionalDirectoriesForWorkspace,
 } from '../workspaceDetection';
 
 /**
@@ -284,6 +286,169 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
     });
     // Parent project access (shared configs, .git common dir) must survive.
     expect(dirs).toEqual([fs.realpathSync.native(projectPath)]);
+  });
+});
+
+describe('Claude workflow catalog directory scopes', () => {
+  let tmpRoot: string;
+  let projectPath: string;
+  let worktreePath: string;
+
+  const writeCommand = (root: string, name: string) => {
+    const commandDir = path.join(root, '.claude', 'commands');
+    fs.mkdirSync(commandDir, { recursive: true });
+    fs.writeFileSync(path.join(commandDir, `${name}.md`), `---\ndescription: ${name}\n---\n`);
+  };
+
+  const writeSkill = (root: string, name: string) => {
+    const skillDir = path.join(root, '.claude', 'skills', name);
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name}\n---\n`);
+  };
+
+  const collectCatalog = (roots: string[]) => roots.flatMap((root) => {
+    const entries: Array<{ kind: 'command' | 'skill'; name: string; sourceRoot: string }> = [];
+    const commandsDir = path.join(root, '.claude', 'commands');
+    if (fs.existsSync(commandsDir)) {
+      for (const entry of fs.readdirSync(commandsDir, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith('.md')) {
+          entries.push({ kind: 'command', name: path.basename(entry.name, '.md'), sourceRoot: root });
+        }
+      }
+    }
+    const skillsDir = path.join(root, '.claude', 'skills');
+    if (fs.existsSync(skillsDir)) {
+      for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && fs.existsSync(path.join(skillsDir, entry.name, 'SKILL.md'))) {
+          entries.push({ kind: 'skill', name: entry.name, sourceRoot: root });
+        }
+      }
+    }
+    return entries;
+  });
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-claude-catalog-scopes-'));
+    projectPath = path.join(tmpRoot, 'project');
+    worktreePath = path.join(tmpRoot, 'project_worktrees', 'fresh-worktree');
+    // Worktree identity is git-metadata-based (see createLinkedWorktree above), not the
+    // lexical `<project>_worktrees/<name>` naming convention alone -- a bare directory at
+    // that path is no longer recognized as a worktree.
+    createLinkedWorktree(projectPath, worktreePath, 'fresh-worktree');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    clearWorktreeIdentityCache();
+  });
+
+  it('keeps one project catalog for both main-checkout and worktree Claude sessions', () => {
+    for (const root of [projectPath, worktreePath]) {
+      writeCommand(root, 'repair');
+      writeSkill(root, 'review');
+    }
+
+    const previousWorktreeRoots = [
+      worktreePath,
+      ...getAdditionalDirectoriesForWorkspace(worktreePath, { includeSiblingWorktrees: false }),
+    ];
+    const previousWorktreeCatalog = collectCatalog(previousWorktreeRoots);
+    expect(previousWorktreeCatalog).toHaveLength(4);
+    expect(previousWorktreeCatalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:repair',
+      'skill:review',
+      'command:repair',
+      'skill:review',
+    ]);
+
+    const mainCatalog = collectCatalog([
+      projectPath,
+      ...getClaudeAdditionalDirectoriesForWorkspace(projectPath),
+    ]);
+    const worktreeCatalog = collectCatalog([
+      worktreePath,
+      ...getClaudeAdditionalDirectoriesForWorkspace(worktreePath),
+    ]);
+
+    expect(mainCatalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:repair',
+      'skill:review',
+    ]);
+    expect(worktreeCatalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:repair',
+      'skill:review',
+    ]);
+  });
+
+  it('dedups a registered worktree at a NON-convention path, in both directions', () => {
+    // Real registered worktree, but NOT under `<project>_worktrees/<name>` -- this
+    // machine's actual worktree volumes (D:/nimbalyst-worktrees, D:/claude-worktrees)
+    // use a hyphen and live outside the project directory entirely. F (PR #13)
+    // deliberately made worktree discovery git-metadata-based, not path-lexical, so
+    // dedup must recognize this via registration, not the `_worktrees` naming guess.
+    const offConventionWorktree = path.join(tmpRoot, 'external-worktree-volume', 'unrelated-dir-name');
+    createLinkedWorktree(projectPath, offConventionWorktree, 'unrelated-dir-name');
+
+    for (const root of [projectPath, offConventionWorktree]) {
+      writeCommand(root, 'repair');
+      writeSkill(root, 'review');
+    }
+
+    const mainCatalog = collectCatalog([
+      projectPath,
+      ...getClaudeAdditionalDirectoriesForWorkspace(projectPath),
+    ]);
+    const worktreeCatalog = collectCatalog([
+      offConventionWorktree,
+      ...getClaudeAdditionalDirectoriesForWorkspace(offConventionWorktree),
+    ]);
+
+    expect(mainCatalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:repair',
+      'skill:review',
+    ]);
+    expect(worktreeCatalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:repair',
+      'skill:review',
+    ]);
+  });
+
+  it('preserves same-looking entries from a distinct source while removing same-project scopes', () => {
+    const siblingPath = path.join(tmpRoot, 'project_worktrees', 'sibling');
+    const externalRoot = path.join(tmpRoot, 'external-workflows');
+    // Real registered sibling worktree of the same parent project (not just a
+    // lexically-named bare directory -- see the off-convention test above for why).
+    createLinkedWorktree(projectPath, siblingPath, 'sibling');
+    fs.mkdirSync(externalRoot, { recursive: true });
+
+    writeCommand(worktreePath, 'review');
+    writeCommand(projectPath, 'review');
+    writeCommand(siblingPath, 'review');
+    writeSkill(externalRoot, 'review');
+
+    const filtered = filterClaudeCatalogDuplicateDirectories(worktreePath, [
+      projectPath,
+      siblingPath,
+      externalRoot,
+    ]);
+    expect(filtered).toEqual([externalRoot]);
+
+    const catalog = collectCatalog([worktreePath, ...filtered]);
+    expect(catalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:review',
+      'skill:review',
+    ]);
+  });
+
+  it('normalizes Windows case and separators when comparing catalog provenance', () => {
+    expect(filterClaudeCatalogDuplicateDirectories(
+      'C:\\Repos\\Project_worktrees\\Fresh',
+      [
+        'c:/repos/project',
+        'C:\\REPOS\\PROJECT_WORKTREES\\Sibling',
+        'D:\\Repos\\Project',
+      ],
+    )).toEqual(['D:\\Repos\\Project']);
   });
 });
 
