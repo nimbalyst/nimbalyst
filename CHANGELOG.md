@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tracker status badges and custom columns no longer vanish after a synced update; they stay put instead of blanking out until the next reload.
 - A long queue of pending prompts now scrolls within a capped area instead of pushing the message input off screen.
 - Opening several shared documents or tracker items at once no longer repeats team-resolution and encryption-status lookups for each one, removing redundant network round trips from the open path.
+- Restarting with several AI tabs or windows open no longer repeats slash-command and shared-link lookups for each one, removing redundant scans and network round trips from startup.
 
 ### Removed
 <!-- Removed features go here -->

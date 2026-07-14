@@ -554,4 +554,33 @@ Inspect the target issue, patch the code, and explain the fix.
     expect(fs.statSync(codexSkillPath).mtimeMs).toBe(codexBefore);
     expect(fs.statSync(claudePluginJsonPath).mtimeMs).toBe(claudeBefore);
   });
+
+  it('collapses N concurrent listEntries() calls into a single filesystem scan (startup burst)', async () => {
+    // Regression test for the startup-contention investigation: multiple AI
+    // tabs/panes each call ai:getAgentWorkflows on mount with no shared cache.
+    // Before the fix, every call before the first buildSnapshot() resolves
+    // races into its own full scan (observed: ~12 concurrent 8s scans at
+    // startup, see nimbalyst-local/investigations/startup-contention.md).
+    setAgentWorkflowExportSettings({
+      codexEnabled: false,
+      claudeGeneratedExtensionWorkflowsEnabled: false,
+    });
+
+    let resolveLoader: (dirs: string[]) => void = () => {};
+    const loaderPromise = new Promise<string[]>((resolve) => { resolveLoader = resolve; });
+    const extensionDirectoriesLoader = vi.fn(() => loaderPromise);
+
+    const service = new AgentWorkflowService(workspacePath, {
+      userHomePath,
+      extensionDirectoriesLoader,
+      nativeClaudePluginPathsLoader: async () => [],
+      releaseChannelLoader: () => 'stable',
+    });
+
+    const calls = Array.from({ length: 5 }, () => service.listEntries({ provider: 'claude-code' }));
+    resolveLoader([]);
+    await Promise.all(calls);
+
+    expect(extensionDirectoriesLoader).toHaveBeenCalledTimes(1);
+  });
 });

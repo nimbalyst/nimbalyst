@@ -12,6 +12,7 @@ import { loadViewMessages } from '../utils/transcriptHelpers';
 import { exportFileToHtml } from '../services/FileHtmlExporter';
 import { getSessionJwt, refreshSession } from '../services/StytchAuthService';
 import { store } from '../utils/store';
+import { createTtlCache } from '../utils/asyncCache';
 
 const SHARE_SERVER_URL = 'https://sync.nimbalyst.com';
 const DEFAULT_SHARE_EXPIRATION_DAYS = 7;
@@ -255,6 +256,94 @@ export interface ShareInfo {
   viewCount: number;
 }
 
+export interface ShareListResult {
+  success: boolean;
+  shares?: ShareInfo[];
+  error?: string;
+}
+
+/**
+ * share:list returns global, user-scoped data (not workspace-specific) --
+ * every open window asks the server for the identical share list. Without
+ * this, N windows open at once means N Stytch JWT refreshes + N identical
+ * GET /shares round trips (observed: 7+ concurrent share:list calls at
+ * startup, see nimbalyst-local/investigations/startup-contention.md).
+ */
+const SHARE_LIST_TTL_MS = 5000;
+const shareListCache = createTtlCache<'all', ShareListResult>(SHARE_LIST_TTL_MS);
+
+/** Force the next share:list call to refetch instead of reusing the cached list. */
+export function invalidateShareListCache(): void {
+  shareListCache.invalidate();
+}
+
+/** Single-flight + short-TTL wrapper around the uncached share list fetch. */
+export async function getShareList(): Promise<ShareListResult> {
+  return shareListCache.get('all', listSharesUncached);
+}
+
+/**
+ * List the user's shared sessions.
+ */
+async function listSharesUncached(): Promise<ShareListResult> {
+  const jwt = await getValidJwt();
+  if (!jwt) {
+    return { success: false, error: 'Not signed in' };
+  }
+
+  const serverUrl = SHARE_SERVER_URL;
+
+  try {
+    const response = await net.fetch(`${serverUrl}/shares`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${jwt}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.file.error(`[ShareHandlers] List shares failed: ${response.status} ${errorText}`);
+      if (response.status === 401 || response.status === 403) {
+        return { success: false, error: 'Not signed in' };
+      }
+      return { success: false, error: `Failed to list shares: ${errorText || response.status}` };
+    }
+
+    const data = await response.json() as { shares: ShareInfo[] };
+    const shareMetadata = loadShareMetadata();
+
+    const shares = await Promise.all(
+      data.shares.map(async (share) => {
+        const shareKeyId = typeof share.sessionId === 'string' ? share.sessionId : '';
+        const localMetadata = shareKeyId ? shareMetadata[shareKeyId] : undefined;
+        if (localMetadata?.title) {
+          return { ...share, title: localMetadata.title };
+        }
+
+        if (shareKeyId && !shareKeyId.startsWith('file:')) {
+          try {
+            const session = await AISessionsRepository.get(shareKeyId);
+            if (session?.title) {
+              return { ...share, title: session.title };
+            }
+          } catch (error) {
+            logger.main.warn('[ShareHandlers] Failed to resolve shared session title:', shareKeyId, error);
+          }
+        }
+
+        return share;
+      })
+    );
+
+    return { success: true, shares };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.file.error(`[ShareHandlers] List shares failed: ${errorMessage}`);
+    return { success: false, error: errorMessage };
+  }
+}
+
 /**
  * Registers IPC handlers for session sharing functionality.
  */
@@ -359,6 +448,7 @@ export function registerShareHandlers() {
           contentType: 'session',
           title: chatSession.title ?? 'New conversation',
         });
+        invalidateShareListCache();
 
         // Track successful session share
         AnalyticsService.getInstance().sendEvent('content_shared', {
@@ -386,67 +476,7 @@ export function registerShareHandlers() {
   /**
    * List the user's shared sessions.
    */
-  safeHandle(
-    'share:list',
-    async (): Promise<{ success: boolean; shares?: ShareInfo[]; error?: string }> => {
-      const jwt = await getValidJwt();
-      if (!jwt) {
-        return { success: false, error: 'Not signed in' };
-      }
-
-      const serverUrl = SHARE_SERVER_URL;
-
-      try {
-        const response = await net.fetch(`${serverUrl}/shares`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${jwt}`,
-          },
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          logger.file.error(`[ShareHandlers] List shares failed: ${response.status} ${errorText}`);
-          if (response.status === 401 || response.status === 403) {
-            return { success: false, error: 'Not signed in' };
-          }
-          return { success: false, error: `Failed to list shares: ${errorText || response.status}` };
-        }
-
-        const data = await response.json() as { shares: ShareInfo[] };
-        const shareMetadata = loadShareMetadata();
-
-        const shares = await Promise.all(
-          data.shares.map(async (share) => {
-            const shareKeyId = typeof share.sessionId === 'string' ? share.sessionId : '';
-            const localMetadata = shareKeyId ? shareMetadata[shareKeyId] : undefined;
-            if (localMetadata?.title) {
-              return { ...share, title: localMetadata.title };
-            }
-
-            if (shareKeyId && !shareKeyId.startsWith('file:')) {
-              try {
-                const session = await AISessionsRepository.get(shareKeyId);
-                if (session?.title) {
-                  return { ...share, title: session.title };
-                }
-              } catch (error) {
-                logger.main.warn('[ShareHandlers] Failed to resolve shared session title:', shareKeyId, error);
-              }
-            }
-
-            return share;
-          })
-        );
-
-        return { success: true, shares };
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.file.error(`[ShareHandlers] List shares failed: ${errorMessage}`);
-        return { success: false, error: errorMessage };
-      }
-    }
-  );
+  safeHandle('share:list', async (): Promise<ShareListResult> => getShareList());
 
   /**
    * Delete (unshare) a shared session.
@@ -489,6 +519,7 @@ export function registerShareHandlers() {
           removeShareKey(sessionId);
           removeShareMetadata(sessionId);
         }
+        invalidateShareListCache();
 
         logger.file.info(`[ShareHandlers] Share deleted: ${shareId}`);
 
@@ -594,6 +625,7 @@ export function registerShareHandlers() {
           contentType: 'file',
           title: path.basename(filePath),
         });
+        invalidateShareListCache();
 
         // Track successful file share
         AnalyticsService.getInstance().sendEvent('content_shared', {
