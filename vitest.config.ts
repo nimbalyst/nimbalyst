@@ -49,6 +49,19 @@ const alias = [
 
 const setupFiles = ['./test-utils/setup.ts', './packages/electron/vitest.setup.ts'];
 
+// Authoritative timeouts. The pre-push suite runs all ~630 files at full
+// parallelism, often on a dev machine that is also running the dev server and
+// other AI sessions -- so a worker can be starved for several seconds and a
+// heavy test (module-graph dynamic imports, better-sqlite3 migrations, large
+// lexical diffs, the ~4s claude-cli MCP config chain) blows past the 5s vitest
+// default. These used to be bumped via `beforeAll(() => vi.setConfig(...))` in
+// the electron setup file, but the vitest 4 upgrade stopped that side-effect
+// from taking effect (tests fell back to the 5s default and flaked). Set it
+// declaratively here instead -- and in each project, since `test.projects`
+// entries do NOT inherit root-level `test` timeouts.
+const TEST_TIMEOUT_MS = 20000;
+const HOOK_TIMEOUT_MS = 20000;
+
 const include = [
   'packages/**/__tests__/**/*.test.{ts,tsx}',
   'packages/**/__tests__/**/*.spec.{ts,tsx}',
@@ -62,6 +75,8 @@ const nodeOnly = ['packages/electron/src/main/**', 'packages/runtime/src/ai/**']
 
 export default defineConfig({
   test: {
+    testTimeout: TEST_TIMEOUT_MS,
+    hookTimeout: HOOK_TIMEOUT_MS,
     // Tests under packages/electron/src/main touch better-sqlite3, whose
     // build/Release/.node binary is compiled for Electron (NODE_MODULE_VERSION
     // 145) and unloadable under the system Node that vitest runs against.
@@ -87,6 +102,8 @@ export default defineConfig({
         resolve: { alias },
         test: {
           name: 'jsdom',
+          testTimeout: TEST_TIMEOUT_MS,
+          hookTimeout: HOOK_TIMEOUT_MS,
           globals: true,
           environment: 'jsdom',
           setupFiles,
@@ -102,6 +119,8 @@ export default defineConfig({
         resolve: { alias },
         test: {
           name: 'node',
+          testTimeout: TEST_TIMEOUT_MS,
+          hookTimeout: HOOK_TIMEOUT_MS,
           globals: true,
           environment: 'node',
           setupFiles,
