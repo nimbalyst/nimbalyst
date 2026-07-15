@@ -177,7 +177,8 @@ export function buildClaudeCodeSystemPrompt(options: ClaudeCodePromptOptions): s
     trackersEnabled = true,
   } = options;
   const effectiveToolReferenceStyle = sessionNamingInstructionStyle ?? toolReferenceStyle;
-  // These are all core tools, served by the eager `nimbalyst` server.
+  // These are all core tools on the `nimbalyst` server, always-loaded so their
+  // schemas are in context when the prompt below tells the model to use them.
   const displayToUserTool = formatMcpToolReference(MCP_CORE, 'display_to_user', effectiveToolReferenceStyle);
   const captureEditorScreenshotTool = formatMcpToolReference(MCP_CORE, 'capture_editor_screenshot', effectiveToolReferenceStyle);
   const askUserQuestionTool = formatMcpToolReference(MCP_CORE, 'AskUserQuestion', effectiveToolReferenceStyle);

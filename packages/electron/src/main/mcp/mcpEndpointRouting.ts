@@ -104,10 +104,10 @@ export const ALWAYS_LOAD_META_KEY = 'anthropic/alwaysLoad';
 
 /**
  * On the core endpoint, mark the CORE_ALWAYS_LOAD_TOOLS subset eager via
- * per-tool `_meta`. The core server config no longer sets server-level
- * `alwaysLoad` (which would force ALL its tools eager); this is how the
- * interactive/session tools stay in the prompt while display_to_user and
- * capture_editor_screenshot defer without leaving the `nimbalyst` config-key.
+ * per-tool `_meta`. The core server config sets no server-level `alwaysLoad`;
+ * this per-tool marking is how the core tools the prompt references — including
+ * the visual tools display_to_user / capture_editor_screenshot — stay in the
+ * prompt without a server-level flag.
  */
 export function applyCoreAlwaysLoadMeta<T extends NamedToolSchema>(
   tools: T[],

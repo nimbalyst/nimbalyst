@@ -108,15 +108,18 @@ export const CORE_TOOLS: readonly string[] = [
  * `alwaysLoad: true`; instead the `/mcp/core` ListTools marks these tools with
  * `_meta['anthropic/alwaysLoad']`, which the Claude CLI honors per tool.
  *
- * `display_to_user` and `capture_editor_screenshot` stay on core so their
- * `mcp__nimbalyst__*` names (referenced by tool policies, permissions,
- * analytics, and onboarding prompts) never change, but they defer behind tool
- * search — visual output is occasional and their schemas cost ~1.1K tokens on
- * every session.
+ * `display_to_user` and `capture_editor_screenshot` are always-loaded: the
+ * system prompt actively instructs the model to use them for inline visuals, so
+ * their schemas must be in context. Deferring them (a ~1.1K-token saving) meant
+ * the model invoked them from memory with the wrong shape and hit
+ * schema-validation errors instead of rendering — charts silently failed
+ * (NIM-1766). The token cost is worth reliable visual output.
  */
 export const CORE_ALWAYS_LOAD_TOOLS: readonly string[] = [
   'AskUserQuestion',
   'PromptForUserInput',
+  'display_to_user',
+  'capture_editor_screenshot',
   'get_session_edited_files',
   'developer_git_commit_proposal',
   'update_session_meta',

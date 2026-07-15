@@ -119,22 +119,23 @@ describe('mcpEndpointRouting', () => {
       { name: 'capture_editor_screenshot', description: 'shot', inputSchema: {} },
     ];
 
-    it('marks only the always-load subset of core tools with anthropic/alwaysLoad', () => {
+    it('marks the always-load subset of core tools with anthropic/alwaysLoad', () => {
       const result = applyCoreAlwaysLoadMeta(coreTools, MCP_CORE);
       const metaByName = new Map(result.map((t) => [t.name, (t as { _meta?: Record<string, unknown> })._meta]));
 
+      // The visual-output tools are eager: the prompt tells the model to use
+      // them, so their schemas must be in context (NIM-1766).
       for (const eager of [
         'AskUserQuestion',
         'PromptForUserInput',
         'developer_git_commit_proposal',
         'get_session_edited_files',
         'update_session_meta',
+        'display_to_user',
+        'capture_editor_screenshot',
       ]) {
         expect(metaByName.get(eager)).toEqual({ 'anthropic/alwaysLoad': true });
       }
-      // The visual-output tools stay on core (stable names) but defer.
-      expect(metaByName.get('display_to_user')).toBeUndefined();
-      expect(metaByName.get('capture_editor_screenshot')).toBeUndefined();
     });
 
     it('leaves non-core endpoints untouched', () => {
