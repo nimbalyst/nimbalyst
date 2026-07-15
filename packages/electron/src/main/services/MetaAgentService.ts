@@ -112,6 +112,51 @@ interface SpawnSessionArgs {
   isolated?: boolean;
 }
 
+/** Notification-only bound for the reinjected original task text. The stored,
+ *  returned `SessionResultData.originalPrompt` value itself stays unbounded --
+ *  only the text appended into a `[Child Session Update]` notification (which
+ *  lands directly in the parent's own prompt queue) is capped. Fixed, not
+ *  user-configurable, matching the other hardcoded bounds nearby
+ *  (500 chars for lastResponse, 2,000 chars/message for recentMessages). */
+const CHILD_NOTIFICATION_ORIGINAL_PROMPT_MAX_CHARS = 2_000;
+
+function truncateNotificationPreview(
+  text: string,
+  maxChars: number = CHILD_NOTIFICATION_ORIGINAL_PROMPT_MAX_CHARS,
+): { text: string; truncated: boolean } {
+  if (text.length <= maxChars) {
+    return { text, truncated: false };
+  }
+
+  const marker = '…[original task truncated; call get_session_result for the complete prompt]…';
+  const keepChars = Math.max(0, maxChars - marker.length);
+  const headChars = Math.ceil(keepChars * (13 / 19));
+  const tailChars = keepChars - headChars;
+
+  // Avoid splitting a UTF-16 surrogate pair at either cut point.
+  let headEnd = headChars;
+  if (headEnd > 0 && headEnd < text.length) {
+    const code = text.charCodeAt(headEnd - 1);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      headEnd -= 1;
+    }
+  }
+  let tailStart = text.length - tailChars;
+  if (tailStart > 0 && tailStart < text.length) {
+    // If the tail's first kept unit is a lone low surrogate (its high-surrogate
+    // partner falls in the excluded middle region), advance past it instead of
+    // starting the tail mid-pair.
+    const code = text.charCodeAt(tailStart);
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      tailStart += 1;
+    }
+  }
+
+  const head = text.slice(0, headEnd);
+  const tail = tailChars > 0 ? text.slice(tailStart) : '';
+  return { text: `${head}${marker}${tail}`, truncated: true };
+}
+
 export class MetaAgentService {
   private static instance: MetaAgentService | null = null;
   private starting: Promise<void> | null = null;
@@ -1113,7 +1158,9 @@ export class MetaAgentService {
     ];
 
     if (result.originalPrompt) {
-      lines.push(`Original task: ${result.originalPrompt}`);
+      const preview = truncateNotificationPreview(result.originalPrompt);
+      const label = preview.truncated ? 'Original task preview' : 'Original task';
+      lines.push(`${label}: ${preview.text}`);
     }
     if (result.recentMessages.length > 0) {
       lines.push('Recent messages:');
