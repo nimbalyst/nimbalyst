@@ -46,6 +46,7 @@ const PROVIDERS: ProviderInfo[] = [
   { id: 'claude-code', name: 'Claude Agent', subtitle: 'CLI-based MCP', apiKeyField: 'claude-code' },
   { id: 'claude', name: 'Claude', subtitle: 'Anthropic API', apiKeyField: 'anthropic' },
   { id: 'openai', name: 'OpenAI', subtitle: 'GPT Models', apiKeyField: 'openai' },
+  { id: 'minimax', name: 'MiniMax', subtitle: 'MiniMax Models', apiKeyField: 'minimax' },
   { id: 'lmstudio', name: 'LM Studio', subtitle: 'Local Models' },
 ];
 

@@ -107,6 +107,11 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'providerSettings.openai' },
     { enabled: false, testStatus: 'idle' },
   ),
+  'ai.provider.minimax': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.minimax' },
+    { enabled: false, baseUrl: 'https://api.minimax.io/v1', testStatus: 'idle' },
+  ),
   'ai.provider.openai-codex': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.openai-codex' },
@@ -147,6 +152,11 @@ export const SETTINGS_REGISTRY = {
   'ai.apiKey.openai': setting(
     z.string(),
     { store: 'ai-settings', path: 'apiKeys.openai' },
+    '',
+  ),
+  'ai.apiKey.minimax': setting(
+    z.string(),
+    { store: 'ai-settings', path: 'apiKeys.minimax' },
     '',
   ),
   'ai.apiKey.openai-codex': setting(

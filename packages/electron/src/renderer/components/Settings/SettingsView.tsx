@@ -18,6 +18,7 @@ import { pushNavigationEntryAtom, isRestoringNavigationAtom } from '../../store'
 import { ClaudePanel } from '../GlobalSettings/panels/ClaudePanel';
 import { ClaudeCodePanel } from '../GlobalSettings/panels/ClaudeCodePanel';
 import { OpenAIPanel } from '../GlobalSettings/panels/OpenAIPanel';
+import { MiniMaxPanel } from '../GlobalSettings/panels/MiniMaxPanel';
 import { OpenAICodexPanel } from '../GlobalSettings/panels/OpenAICodexPanel';
 import { OpenCodePanel } from '../GlobalSettings/panels/OpenCodePanel';
 import { CopilotCLIPanel } from '../GlobalSettings/panels/CopilotCLIPanel';
@@ -866,6 +867,8 @@ export function SettingsView({
         );
       case 'openai':
         return wrapWithOverride('openai', 'OpenAI', <OpenAIPanel {...commonProps} />);
+      case 'minimax':
+        return wrapWithOverride('minimax', 'MiniMax', <MiniMaxPanel {...commonProps} />);
       case 'openai-codex':
         return wrapWithOverride('openai-codex', 'OpenAI Codex', <OpenAICodexPanel {...commonProps} />);
       case 'opencode':

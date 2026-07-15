@@ -64,6 +64,10 @@ export class ModelRegistry {
           const { OpenAIProvider } = await import('./providers/OpenAIProvider');
           models = await OpenAIProvider.getModels(apiKey);
           break;
+        case 'minimax':
+          const { MiniMaxProvider } = await import('./providers/MiniMaxProvider');
+          models = MiniMaxProvider.getModels();
+          break;
         case 'openai-codex':
           const { OpenAICodexProvider } = await import('./providers/OpenAICodexProvider');
           models = await OpenAICodexProvider.getModels(apiKey);
@@ -120,6 +124,7 @@ export class ModelRegistry {
     if (shouldFetch('claude-code')) promises.push(this.getModelsForProvider('claude-code'));
     if (shouldFetch('claude-code-cli')) promises.push(this.getModelsForProvider('claude-code-cli'));
     if (shouldFetch('openai')) promises.push(this.getModelsForProvider('openai', apiKeys['openai']));
+    if (shouldFetch('minimax')) promises.push(this.getModelsForProvider('minimax', apiKeys['minimax']));
     if (shouldFetch('openai-codex')) promises.push(this.getModelsForProvider('openai-codex', apiKeys['openai']));
     if (shouldFetch('openai-codex-acp')) promises.push(this.getModelsForProvider('openai-codex-acp', apiKeys['openai']));
     if (shouldFetch('opencode')) promises.push(this.getModelsForProvider('opencode'));
@@ -153,6 +158,9 @@ export class ModelRegistry {
       case 'openai':
         const { OpenAIProvider } = await import('./providers/OpenAIProvider');
         return OpenAIProvider.getDefaultModel();
+      case 'minimax':
+        const { MiniMaxProvider } = await import('./providers/MiniMaxProvider');
+        return MiniMaxProvider.getDefaultModel();
       case 'claude-code':
         const { ClaudeCodeProvider } = await import('./providers/ClaudeCodeProvider');
         return ClaudeCodeProvider.getDefaultModel();

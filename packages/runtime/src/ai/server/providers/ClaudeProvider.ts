@@ -30,6 +30,16 @@ export class ClaudeProvider extends BaseAIProvider {
 
   static readonly DEFAULT_MODEL = DEFAULT_MODELS.claude;
 
+  protected getProviderId(): AIModel['provider'] {
+    return 'claude';
+  }
+
+  protected getClientDefaultHeaders(): Record<string, string> | undefined {
+    return {
+      'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14',
+    };
+  }
+
   async initialize(config: ProviderConfig): Promise<void> {
     console.log('[ClaudeProvider] initialize called with config:', {
       hasApiKey: !!config.apiKey,
@@ -45,9 +55,8 @@ export class ClaudeProvider extends BaseAIProvider {
 
     this.anthropic = new Anthropic({
       apiKey: config.apiKey,
-      defaultHeaders: {
-        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14'
-      }
+      baseURL: config.baseUrl,
+      defaultHeaders: this.getClientDefaultHeaders(),
     });
   }
 
@@ -200,7 +209,7 @@ export class ClaudeProvider extends BaseAIProvider {
     // Log the input message
     // CRITICAL: Must await to ensure user message is persisted before proceeding
     if (sessionId) {
-      await this.logAgentMessage(sessionId, 'claude', 'input', message);
+      await this.logAgentMessage(sessionId, this.getProviderId(), 'input', message);
     }
 
     // Check if current message has attachments
@@ -769,7 +778,7 @@ export class ClaudeProvider extends BaseAIProvider {
           if (sessionId) {
             // Log text content if any
             if (fullContent) {
-              this.logAgentMessage(sessionId, 'claude', 'output', JSON.stringify({
+              this.logAgentMessage(sessionId, this.getProviderId(), 'output', JSON.stringify({
                 type: 'text',
                 content: fullContent
               }));
@@ -778,7 +787,7 @@ export class ClaudeProvider extends BaseAIProvider {
             // Log each tool use and result
             for (const toolUse of toolUses) {
               // Log the tool_use block
-              this.logAgentMessage(sessionId, 'claude', 'output', JSON.stringify({
+              this.logAgentMessage(sessionId, this.getProviderId(), 'output', JSON.stringify({
                 type: 'assistant',
                 message: {
                   content: [{
@@ -803,7 +812,7 @@ export class ClaudeProvider extends BaseAIProvider {
                 resultContent = JSON.stringify(result, null, 2);
               }
 
-              this.logAgentMessage(sessionId, 'claude', 'output', JSON.stringify({
+              this.logAgentMessage(sessionId, this.getProviderId(), 'output', JSON.stringify({
                 type: 'assistant',
                 message: {
                   content: [{
@@ -869,7 +878,7 @@ export class ClaudeProvider extends BaseAIProvider {
 
           // Log the output message - await to ensure it's saved before signaling completion
           if (sessionId && fullContent) {
-            await this.logAgentMessage(sessionId, 'claude', 'output', fullContent, {
+            await this.logAgentMessage(sessionId, this.getProviderId(), 'output', fullContent, {
               usage: totalUsageData
             });
           }

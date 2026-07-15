@@ -37,7 +37,7 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
 };
 
 function routeIcon(route: SettingsRoute): React.ReactNode {
-  if (['claude-code', 'claude', 'openai', 'openai-codex', 'opencode', 'copilot-cli', 'lmstudio'].includes(route.id)) {
+  if (['claude-code', 'claude', 'openai', 'openai-codex', 'minimax', 'opencode', 'copilot-cli', 'lmstudio'].includes(route.id)) {
     const providerId = route.id === 'openai-codex' ? 'openai' : route.id;
     return getProviderIcon(providerId, { size: 16 });
   }

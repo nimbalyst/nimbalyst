@@ -1172,6 +1172,7 @@ const defaultProviders: Record<string, ProviderConfig> = {
   // in the correct state.
   'claude-code-cli': { enabled: false, testStatus: 'idle' },
   openai: { enabled: false, testStatus: 'idle' },
+  minimax: { enabled: false, baseUrl: 'https://api.minimax.io/v1', testStatus: 'idle' },
   // Codex app server. On by default.
   'openai-codex': { enabled: true, testStatus: 'idle', installStatus: 'not-installed' },
   'openai-codex-acp': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
@@ -1187,6 +1188,7 @@ const defaultApiKeys: Record<string, string> = {
   anthropic: '',
   'claude-code': '',
   openai: '',
+  minimax: '',
   'openai-codex': '',
   opencode: '',
   lmstudio_url: 'http://127.0.0.1:8234',

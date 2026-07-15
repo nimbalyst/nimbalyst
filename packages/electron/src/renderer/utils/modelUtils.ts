@@ -161,6 +161,7 @@ export function getProviderDisplayName(provider: string): string {
     case 'claude-code': return 'Claude Agent';
     case 'claude-code-cli': return 'Claude Code CLI';
     case 'openai': return 'OpenAI';
+    case 'minimax': return 'MiniMax';
     case 'lmstudio': return 'LMStudio';
     case 'copilot-cli': return 'GitHub Copilot';
     default: return provider;
@@ -176,6 +177,7 @@ export function getProviderLabel(provider: string): string {
     case 'claude-code': return 'CODE';
     case 'claude-code-cli': return 'CLI';
     case 'openai': return 'GPT';
+    case 'minimax': return 'MINIMAX';
     case 'lmstudio': return 'LOCAL';
     default: return provider.toUpperCase();
   }

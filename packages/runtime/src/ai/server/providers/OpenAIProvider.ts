@@ -24,6 +24,10 @@ export class OpenAIProvider extends BaseAIProvider {
 
   static readonly DEFAULT_MODEL = DEFAULT_MODELS.openai;
 
+  protected getProviderId(): AIModel['provider'] {
+    return 'openai';
+  }
+
   async initialize(config: ProviderConfig): Promise<void> {
     const initStartTime = Date.now();
     console.log(`[OpenAIProvider] Initializing with config:`, {
@@ -47,6 +51,7 @@ export class OpenAIProvider extends BaseAIProvider {
     console.log(`[OpenAIProvider] Creating OpenAI client with timeout: ${timeout}ms, maxRetries: 0`);
     this.openai = new OpenAI({
       apiKey: config.apiKey,
+      baseURL: config.baseUrl,
       timeout,
       maxRetries: 0,  // NO RETRIES - fail fast
       dangerouslyAllowBrowser: false  // We're in Node.js/Electron main process
@@ -217,7 +222,7 @@ export class OpenAIProvider extends BaseAIProvider {
     // Log the input message
     // CRITICAL: Must await to ensure user message is persisted before proceeding
     if (sessionId) {
-      await this.logAgentMessage(sessionId, 'openai', 'input', message);
+      await this.logAgentMessage(sessionId, this.getProviderId(), 'input', message);
     }
 
     try {
@@ -469,7 +474,7 @@ export class OpenAIProvider extends BaseAIProvider {
               // Log tool call to database in format that UI can reconstruct
               if (sessionId) {
                 // Log the tool_use block
-                this.logAgentMessage(sessionId, 'openai', 'output', JSON.stringify({
+                this.logAgentMessage(sessionId, this.getProviderId(), 'output', JSON.stringify({
                   type: 'assistant',
                   message: {
                     content: [{
@@ -485,7 +490,7 @@ export class OpenAIProvider extends BaseAIProvider {
                 const resultContent = executionResult !== undefined
                   ? (typeof executionResult === 'string' ? executionResult : JSON.stringify(executionResult))
                   : 'Tool executed';
-                this.logAgentMessage(sessionId, 'openai', 'output', JSON.stringify({
+                this.logAgentMessage(sessionId, this.getProviderId(), 'output', JSON.stringify({
                   type: 'assistant',
                   message: {
                     content: [{
@@ -539,7 +544,7 @@ export class OpenAIProvider extends BaseAIProvider {
       // Log the text output message if there was any text content
       // Note: Tool calls are logged individually above, so we only log text here
       if (sessionId && fullContent) {
-        await this.logAgentMessage(sessionId, 'openai', 'output', fullContent, {
+        await this.logAgentMessage(sessionId, this.getProviderId(), 'output', fullContent, {
           usage: usageData
         });
       }

@@ -380,7 +380,7 @@ interface ElectronAPI {
   // AI operations (flat methods)
   aiHasApiKey: () => Promise<boolean>;
   aiInitialize: (provider?: string, apiKey?: string) => Promise<any>;
-  aiCreateSession: (provider: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai' | 'openai-codex' | 'opencode' | 'copilot-cli' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) => Promise<any>;
+  aiCreateSession: (provider: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai' | 'openai-codex' | 'opencode' | 'copilot-cli' | 'minimax' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) => Promise<any>;
   aiSendMessage: (message: string, documentContext?: any, sessionId?: string, workspacePath?: string) => Promise<any>;
   aiGetSessions: (workspacePath?: string) => Promise<any>;
   aiLoadSession: (sessionId: string, workspacePath?: string, trackAsResume?: boolean) => Promise<any>;
@@ -400,7 +400,7 @@ interface ElectronAPI {
 
   getAISettings: () => Promise<any>;
   saveAISettings: (settings: any) => Promise<void>;
-  testAIConnection: (provider: 'claude' | 'claude-code' | 'openai' | 'lmstudio') => Promise<any>;
+  testAIConnection: (provider: 'claude' | 'claude-code' | 'openai' | 'minimax' | 'lmstudio') => Promise<any>;
   getAIModels: () => Promise<{ success: boolean; models: any[]; grouped: Record<string, any[]> }>;
   aiGetSettings: () => Promise<any>;
   aiSaveSettings: (settings: any) => Promise<void>;
@@ -466,7 +466,7 @@ interface ElectronAPI {
   ai: {
     hasApiKey: () => Promise<boolean>;
     initialize: (provider?: string, apiKey?: string) => Promise<any>;
-    createSession: (provider: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai' | 'openai-codex' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) => Promise<any>;
+    createSession: (provider: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai' | 'openai-codex' | 'minimax' | 'lmstudio', documentContext?: any, workspacePath?: string, modelId?: string, sessionType?: string, worktreeId?: string) => Promise<any>;
     sendMessage: (message: string, documentContext?: any, sessionId?: string, workspacePath?: string) => Promise<any>;
     getSessions: (workspacePath?: string) => Promise<any>;
     getSessionList: (workspacePath?: string) => Promise<any>;
