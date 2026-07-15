@@ -66,10 +66,140 @@ export function getRelativeWorkspacePath(filePath: string, workspacePath: string
 }
 
 /**
+ * A path's git-worktree identity: whether it is a linked worktree, and if so,
+ * the canonical (symlink-resolved) path of its parent (main) repository.
+ */
+interface WorktreeIdentity {
+  isWorktree: boolean;
+  parentRoot: string | null;
+  canonical: string;
+}
+
+const WORKTREE_IDENTITY_CACHE = new Map<string, { value: WorktreeIdentity; expiresAt: number }>();
+const WORKTREE_IDENTITY_CACHE_TTL_MS = 30_000;
+
+/**
+ * Clear the worktree-identity cache. Exposed for tests and for callers that
+ * know a workspace's git structure just changed (e.g. a worktree was created
+ * or removed) and want a fresh resolution on the next call.
+ */
+export function clearWorktreeIdentityCache(): void {
+  WORKTREE_IDENTITY_CACHE.clear();
+}
+
+function cacheWorktreeIdentity(key: string, value: WorktreeIdentity): WorktreeIdentity {
+  WORKTREE_IDENTITY_CACHE.set(key, { value, expiresAt: Date.now() + WORKTREE_IDENTITY_CACHE_TTL_MS });
+  return value;
+}
+
+/**
+ * Resolve a path's real git-worktree identity by reading actual git metadata
+ * on disk, instead of lexically matching a `_worktrees` naming convention.
+ *
+ * A linked worktree's `.git` is a FILE (not a directory) containing a single
+ * `gitdir: <path>` line pointing at `<main-repo>/.git/worktrees/<name>` --
+ * this has been git's stable on-disk format for linked worktrees since the
+ * feature was introduced (git 2.5). We read that structure directly (no git
+ * subprocess) and verify it two ways before trusting it:
+ *
+ * 1. The gitdir path must resolve to a real `.git/worktrees/<name>` directory
+ *    (NOT `.git/modules/<name>`, which is a submodule -- submodules are a
+ *    distinct trust boundary, not a worktree relationship, so they must
+ *    never inherit the parent's trust/tool-approval settings).
+ * 2. SECURITY (bidirectional verification): that worktree-registration
+ *    directory's own `gitdir` back-pointer file must point back at this
+ *    exact path's `.git` file. Without this check, a directory with a
+ *    forged `.git` file could name ANY other project's worktree-registration
+ *    path and silently inherit that project's trust -- this check makes
+ *    that require write access to the target project's own `.git/worktrees/`
+ *    directory, which an attacker who could already do would not need this
+ *    to begin with.
+ *
+ * Fails CLOSED on any error (unreadable path, missing/malformed `.git`,
+ * mismatched back-pointer, submodule, or anything else unexpected): the path
+ * is treated as its own, non-worktree, standalone project. This is a
+ * deliberate inversion of the old lexical matcher, which failed OPEN (any
+ * path containing `_worktrees/<segment>` was trusted as a worktree even if
+ * nothing on disk backed that up). The worst case of failing closed is one
+ * extra trust prompt for a legitimate worktree Node could not introspect;
+ * the worst case of failing open is silently granting one project's tool
+ * approvals to an unrelated directory.
+ */
+function resolveWorktreeIdentity(workspacePath: string): WorktreeIdentity {
+  let canonical: string;
+  try {
+    canonical = fs.realpathSync.native(workspacePath);
+  } catch {
+    // Cannot even resolve the path (does not exist, unreadable, etc).
+    // Fail closed: treat as its own project, not a worktree.
+    return { isWorktree: false, parentRoot: null, canonical: workspacePath };
+  }
+
+  const cached = WORKTREE_IDENTITY_CACHE.get(canonical);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const notAWorktree: WorktreeIdentity = { isWorktree: false, parentRoot: null, canonical };
+
+  try {
+    const dotGitPath = path.join(canonical, '.git');
+    const dotGitStat = fs.lstatSync(dotGitPath);
+
+    if (dotGitStat.isDirectory()) {
+      // Main repository root (or an unrelated directory with its own
+      // unrelated `.git` dir) -- not a linked worktree.
+      return cacheWorktreeIdentity(canonical, notAWorktree);
+    }
+
+    if (!dotGitStat.isFile()) {
+      return cacheWorktreeIdentity(canonical, notAWorktree);
+    }
+
+    const dotGitContent = fs.readFileSync(dotGitPath, 'utf8');
+    const gitdirMatch = /^gitdir:\s*(.+?)\s*$/m.exec(dotGitContent);
+    if (!gitdirMatch) {
+      return cacheWorktreeIdentity(canonical, notAWorktree);
+    }
+
+    const gitdirRaw = gitdirMatch[1];
+    const gitdirAbs = path.isAbsolute(gitdirRaw) ? gitdirRaw : path.resolve(canonical, gitdirRaw);
+    const gitdirReal = fs.realpathSync.native(gitdirAbs);
+
+    // Must be exactly <parent>/.git/worktrees/<name> -- rejects submodules
+    // (.git/modules/<name>) and anything else non-standard.
+    const worktreesMatch = /^(.+)[\\/]\.git[\\/]worktrees[\\/][^\\/]+[\\/]?$/.exec(gitdirReal);
+    if (!worktreesMatch) {
+      return cacheWorktreeIdentity(canonical, notAWorktree);
+    }
+
+    // Bidirectional verification: the worktree-registration dir's own
+    // gitdir back-pointer must point back at this exact worktree's .git file.
+    const backPointerPath = path.join(gitdirReal, 'gitdir');
+    const backPointerRaw = fs.readFileSync(backPointerPath, 'utf8').trim();
+    const backPointerAbs = path.isAbsolute(backPointerRaw)
+      ? backPointerRaw
+      : path.resolve(gitdirReal, backPointerRaw);
+    const backPointerReal = fs.realpathSync.native(backPointerAbs);
+    const backPointerDirReal = fs.realpathSync.native(path.dirname(backPointerReal));
+    if (backPointerDirReal !== canonical) {
+      // Forged or stale registration -- do not trust it.
+      return cacheWorktreeIdentity(canonical, notAWorktree);
+    }
+
+    const parentRoot = fs.realpathSync.native(worktreesMatch[1]);
+    return cacheWorktreeIdentity(canonical, { isWorktree: true, parentRoot, canonical });
+  } catch {
+    // Any unexpected filesystem error -- fail closed.
+    return cacheWorktreeIdentity(canonical, notAWorktree);
+  }
+}
+
+/**
  * Resolve a workspace path to its parent project path.
- * If the path is a worktree (matches {project}_worktrees/<name> pattern, where
- * <name> may be nested for branch-style worktree names like `feature/foo`),
- * returns the parent project path. Otherwise returns the original path.
+ * If the path is a linked git worktree (verified via real git metadata on
+ * disk, not a naming convention), returns the parent (main) repository's
+ * canonical path. Otherwise returns the original path unchanged.
  *
  * This is used by the permission system to ensure worktrees inherit
  * trust status and tool patterns from their parent project.
@@ -82,34 +212,26 @@ export function resolveProjectPath(workspacePath: string): string {
     return workspacePath;
   }
 
-  // Normalize the path to remove trailing slashes for consistent matching
-  const normalizedPath = normalizeWorkspacePath(workspacePath);
-
-  // Match pattern: /{project}_worktrees/{...name}
-  // The trailing segment may itself contain slashes: branch-style worktree
-  // names like `feature/foo` create nested directories
-  // (`{project}_worktrees/feature/foo`). Match the whole remainder, not a
-  // single segment, so those resolve to the project too. The greedy (.+)
-  // anchors on the last `_worktrees/`. Use [\\/] for forward+backslash.
-  const match = normalizedPath.match(/^(.+)_worktrees[\\/].+$/);
-  return match ? match[1] : normalizedPath;
+  const identity = resolveWorktreeIdentity(workspacePath);
+  if (identity.isWorktree && identity.parentRoot) {
+    return identity.parentRoot;
+  }
+  return normalizeWorkspacePath(workspacePath);
 }
 
 /**
- * Check if a path is a worktree path.
+ * Check if a path is a linked git worktree, verified via real git metadata
+ * on disk (not a `_worktrees` naming convention).
  *
  * @param workspacePath - The path to check
- * @returns true if the path appears to be a worktree
+ * @returns true if the path is a linked git worktree
  */
 export function isWorktreePath(workspacePath: string): boolean {
   if (!workspacePath) {
     return false;
   }
 
-  const normalizedPath = normalizeWorkspacePath(workspacePath);
-  // Use [\\/] to match both forward and backslash (Windows and Unix).
-  // `.+$` (not `[^\\/]+$`) so nested/branch-style worktree names match too.
-  return /_worktrees[\\/].+$/.test(normalizedPath);
+  return resolveWorktreeIdentity(workspacePath).isWorktree;
 }
 
 /**
