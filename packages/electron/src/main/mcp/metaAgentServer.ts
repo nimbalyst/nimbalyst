@@ -50,6 +50,19 @@ type RespondToPromptArgs = {
   response: Record<string, unknown>;
 };
 
+type GetSessionResultArgs = {
+  sessionId: string;
+  /**
+   * Include the full last-agent-turn text (capped at 50,000 chars). Defaults
+   * to true for backward compatibility. Pass false for a compact response
+   * (status/prompts/recentMessages/editedFiles only) when the caller doesn't
+   * need the full turn text -- e.g. a supervising session polling many
+   * children, where the full text would otherwise be reinjected into its
+   * context on every poll.
+   */
+  includeFullResponse?: boolean;
+};
+
 type ListQueuedPromptsArgs = {
   sessionId: string;
   /**
@@ -87,7 +100,8 @@ interface MetaAgentToolFns {
   getSessionResult: (
     metaSessionId: string,
     workspaceId: string,
-    targetSessionId: string
+    targetSessionId: string,
+    options?: Pick<GetSessionResultArgs, "includeFullResponse">
   ) => Promise<string>;
   listQueuedPrompts: (
     metaSessionId: string,
@@ -267,6 +281,11 @@ export const META_AGENT_TOOL_DEFS: Array<{
           type: "string",
           description: "The session ID to inspect.",
         },
+        includeFullResponse: {
+          type: "boolean",
+          description:
+            "Optional. Include the full last-agent-turn text (capped at 50,000 chars). Defaults to true. Set to false for a compact response when polling many sessions or when only status/prompts/editedFiles are needed.",
+        },
       },
       required: ["sessionId"],
     },
@@ -443,7 +462,8 @@ export async function dispatchMetaAgentTool(
       return toolFns.getSessionResult(
         aiSessionId,
         effectiveWorkspaceId,
-        (args?.sessionId as string) ?? ""
+        (args?.sessionId as string) ?? "",
+        { includeFullResponse: args?.includeFullResponse !== false }
       );
     case "list_queued_prompts":
       return toolFns.listQueuedPrompts(

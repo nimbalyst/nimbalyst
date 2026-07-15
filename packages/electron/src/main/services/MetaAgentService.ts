@@ -179,8 +179,8 @@ export class MetaAgentService {
           this.spawnSession(callerSessionId, workspaceId, args),
         getSessionStatus: (_metaSessionId, workspaceId, targetSessionId) =>
           this.getSessionStatusJson(targetSessionId, workspaceId),
-        getSessionResult: (_metaSessionId, workspaceId, targetSessionId) =>
-          this.getSessionResultJson(targetSessionId, workspaceId),
+        getSessionResult: (_metaSessionId, workspaceId, targetSessionId, options) =>
+          this.getSessionResultJson(targetSessionId, workspaceId, options),
         listQueuedPrompts: (_metaSessionId, workspaceId, targetSessionId, options) =>
           this.listQueuedPromptsJson(targetSessionId, workspaceId, options),
         sendPrompt: (_metaSessionId, workspaceId, targetSessionId, prompt) =>
@@ -827,8 +827,17 @@ export class MetaAgentService {
     return JSON.stringify(result, null, 2);
   }
 
-  private async getSessionResultJson(sessionId: string, workspaceId: string): Promise<string> {
-    const data = await this.buildSessionResultData(sessionId, workspaceId);
+  private async getSessionResultJson(
+    sessionId: string,
+    workspaceId: string,
+    options: { includeFullResponse?: boolean } = {}
+  ): Promise<string> {
+    const data = await this.buildSessionResultData(
+      sessionId,
+      workspaceId,
+      undefined,
+      options.includeFullResponse ?? true
+    );
     return JSON.stringify(data, null, 2);
   }
 
