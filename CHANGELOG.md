@@ -10,12 +10,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.69.0] - 2026-07-15
+
+
+### Added
+<!-- New features go here -->
 - Shared documents now work offline: previously opened documents open instantly from an encrypted local copy, and edits and attachments made offline are queued durably and upload automatically when you reconnect.
 - In a shared document, typing `@` now suggests other shared documents and inserts a team-styled link that opens the referenced shared document.
 - Settings now separates Application, Personal, Organizations, and Project management, including per-account mobile-sync profiles, organization administration without an open workspace, explicit project access controls, and project-level MCP server configuration.
 - The Git extension now keeps a persistent, live command output history across panel and renderer reloads.
 - Tracker types can now be organized into manually ordered folders that stay in sync for everyone on a Nimbalyst Team project.
 - The Agent navigation icon now shows sessions awaiting input, running, or unread and opens a grouped attention list with a mark-all-read action.
+- Shared team documents now appear in Quick Open, so you can jump straight to any shared doc.
+- Document headers can now link a tracker plan, connecting a document to its plan item.
+- Reviewed HTTPS links can now be opened in your external browser.
+- Extensions can now request host filesystem access through the EditorHost, enabling editors that read and write project files directly.
+- Extensions can now reference and link tracker items with compact, typed tracker pickers.
+- New read-only `list_queued_prompts` MCP tool lets agents inspect a session's pending prompt queue.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -24,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Completed tracker reference chips now show a checkmark and crossed-out text in documents and AI chats.
 - Mobile session sync now skips messages the mobile transcript never displays, cutting sync storage and traffic.
 - Codex is now enabled by default and the Claude Code CLI is now opt-in; existing choices are preserved.
+- The Git log panel gains improved search and panel controls.
+- Tracker item popovers are clearer and easier to scan.
 
 ### Fixed
 - Next Tab and Previous Tab now navigate the active mode, including Shared Docs, without changing hidden tabs in another mode.
@@ -41,6 +64,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A long queue of pending prompts now scrolls within a capped area instead of pushing the message input off screen.
 - Opening several shared documents or tracker items at once no longer repeats team-resolution and encryption-status lookups for each one, removing redundant network round trips from the open path.
 - Restarting with several AI tabs or windows open no longer repeats slash-command and shared-link lookups for each one, removing redundant scans and network round trips from startup.
+- Recurring collaboration sign-in loops and JWT 401 errors on team login no longer recur; personal and team session tokens now refresh cleanly.
+- Codex usage now adapts to variable rate-limit windows instead of assuming a fixed window.
+- Codex model selection is preserved across turn refreshes and reconciles its fallback roster, so the chosen model no longer resets.
+- Effort controls are available again for current Claude model variants.
+- Sync no longer retries fatal session-limit errors, avoiding repeated failed attempts.
+- Packaged builds resolve the SQLite schema directory chunk-safely, fixing a startup failure.
+- The transcript diff view no longer crashes on re-render.
+- Tracker workstream tabs are now safe and durable and no longer resurrect closed tabs.
+- Filtered tracker empty states now offer an actionable next step instead of a dead end.
+- The mobile transcript resolves the SDK file-tree subpath correctly.
 
 ### Removed
 <!-- Removed features go here -->
