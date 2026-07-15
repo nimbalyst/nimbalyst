@@ -73,7 +73,7 @@ function baseResult(overrides: Record<string, unknown> = {}) {
     model: 'claude-code:sonnet',
     status: 'idle',
     lastActivity: 1,
-    originalPrompt: null,
+    originalPrompt: null as string | null,
     userPrompts: [],
     lastResponse: null,
     fullResponse: null,
@@ -156,6 +156,6 @@ describe('MetaAgentService.buildNotificationMessage originalPrompt preview (FIX 
     (service as any).buildNotificationMessage('session:completed', result);
 
     expect(result.originalPrompt).toBe(longPrompt);
-    expect(result.originalPrompt.length).toBe(5000);
+    expect(result.originalPrompt!.length).toBe(5000);
   });
 });
