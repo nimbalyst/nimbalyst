@@ -100,26 +100,70 @@ function mapFolderNode(f: FolderNode): SharedFolder {
  * are the only paths that shrink the set. Incoming order is preserved, with any
  * surviving local-only rows appended.
  */
-function reconcileById<T>(existing: T[], incoming: T[], getId: (row: T) => string): T[] {
+function reconcileById<T>(
+  existing: T[],
+  incoming: T[],
+  getId: (row: T) => string,
+  merge: (existingRow: T, incomingRow: T) => T = (_existingRow, incomingRow) => incomingRow,
+): T[] {
+  const existingById = new Map(existing.map(row => [getId(row), row]));
   const incomingIds = new Set(incoming.map(getId));
+  // Incoming wins, but merge against the row we already have so a blank/locked
+  // field never clobbers a known-good one (NIM-1636).
+  const reconciledIncoming = incoming.map(row => {
+    const prev = existingById.get(getId(row));
+    return prev ? merge(prev, row) : row;
+  });
   const survivors = existing.filter(row => !incomingIds.has(getId(row)));
-  return [...incoming, ...survivors];
+  return [...reconciledIncoming, ...survivors];
 }
 
-/** Reconcile a full-sync document snapshot without dropping known rows (NIM-1638). */
+/** True for a displayable (non-blank, decrypted) title/name. */
+function hasVisibleName(name: string | null | undefined): boolean {
+  return typeof name === 'string' && name.trim().length > 0;
+}
+
+/**
+ * NIM-1636: merge a fresh document row over the one we already have so a
+ * transient blank name never wins. A raw teamSync pass (before keys arrive) and
+ * a broadcast during key transition both surface `title: ''` + `decryptFailed`
+ * for a doc we had already decrypted — the row stays but its name goes blank.
+ * Incoming wins for every field EXCEPT: when its title is blank/locked, keep the
+ * previously-decrypted title (and clear the transient `decryptFailed`). A
+ * genuine rename (non-blank incoming) always wins, so the name fills in as soon
+ * as a real one arrives.
+ */
+export function mergeSharedDocument(existing: SharedDocument, incoming: SharedDocument): SharedDocument {
+  if (hasVisibleName(incoming.title)) return incoming;
+  if (hasVisibleName(existing.title)) {
+    return { ...incoming, title: existing.title, decryptFailed: false };
+  }
+  return incoming;
+}
+
+/** NIM-1636: folder counterpart to {@link mergeSharedDocument} (preserves `name`). */
+export function mergeSharedFolder(existing: SharedFolder, incoming: SharedFolder): SharedFolder {
+  if (hasVisibleName(incoming.name)) return incoming;
+  if (hasVisibleName(existing.name)) {
+    return { ...incoming, name: existing.name, decryptFailed: false };
+  }
+  return incoming;
+}
+
+/** Reconcile a full-sync document snapshot without dropping known rows or names (NIM-1638/NIM-1636). */
 export function reconcileSharedDocuments(
   existing: SharedDocument[],
   incoming: SharedDocument[],
 ): SharedDocument[] {
-  return reconcileById(existing, incoming, d => d.documentId);
+  return reconcileById(existing, incoming, d => d.documentId, mergeSharedDocument);
 }
 
-/** Reconcile a full-sync folder snapshot without dropping known rows (NIM-1638). */
+/** Reconcile a full-sync folder snapshot without dropping known rows or names (NIM-1638/NIM-1636). */
 export function reconcileSharedFolders(
   existing: SharedFolder[],
   incoming: SharedFolder[],
 ): SharedFolder[] {
-  return reconcileById(existing, incoming, f => f.folderId);
+  return reconcileById(existing, incoming, f => f.folderId, mergeSharedFolder);
 }
 
 // ============================================================
@@ -959,19 +1003,24 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       },
 
       onDocumentChanged: (document) => {
+        const incoming: SharedDocument = {
+          documentId: document.documentId,
+          title: document.title,
+          documentType: document.documentType,
+          createdBy: document.createdBy,
+          createdAt: document.createdAt,
+          updatedAt: document.updatedAt,
+          lastWriterUserId: document.lastWriterUserId,
+          parentFolderId: document.parentFolderId,
+          decryptFailed: document.decryptFailed,
+        };
         store.set(sharedDocumentsAtomFamily(workspacePath), (current) => {
-          const filtered = current.filter(d => d.documentId !== document.documentId);
-          return [{
-            documentId: document.documentId,
-            title: document.title,
-            documentType: document.documentType,
-            createdBy: document.createdBy,
-            createdAt: document.createdAt,
-            updatedAt: document.updatedAt,
-            lastWriterUserId: document.lastWriterUserId,
-            parentFolderId: document.parentFolderId,
-            decryptFailed: document.decryptFailed,
-          }, ...filtered];
+          // NIM-1636: a broadcast during key transition can arrive with a
+          // blank/locked title — merge so it never blanks a name we already have.
+          const existing = current.find(d => d.documentId === incoming.documentId);
+          const merged = existing ? mergeSharedDocument(existing, incoming) : incoming;
+          const filtered = current.filter(d => d.documentId !== incoming.documentId);
+          return [merged, ...filtered];
         });
       },
 
@@ -991,9 +1040,13 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       },
 
       onFolderChanged: (folder) => {
+        const incoming = mapFolderNode(folder);
         store.set(sharedFoldersAtomFamily(workspacePath), (current) => {
-          const filtered = current.filter(f => f.folderId !== folder.folderId);
-          return [...filtered, mapFolderNode(folder)];
+          // NIM-1636: keep a known folder name if this broadcast decrypts to empty.
+          const existing = current.find(f => f.folderId === incoming.folderId);
+          const merged = existing ? mergeSharedFolder(existing, incoming) : incoming;
+          const filtered = current.filter(f => f.folderId !== incoming.folderId);
+          return [...filtered, merged];
         });
       },
 

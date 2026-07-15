@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   reconcileSharedDocuments,
   reconcileSharedFolders,
+  mergeSharedDocument,
+  mergeSharedFolder,
   type SharedDocument,
   type SharedFolder,
 } from '../collabDocuments';
@@ -78,6 +80,78 @@ describe('reconcileSharedDocuments (NIM-1638: shared docs must not disappear)', 
     const once = reconcileSharedDocuments(existing, existing);
     const twice = reconcileSharedDocuments(once, existing);
     expect(twice.map(d => d.documentId).sort()).toEqual(['d1', 'd2']);
+  });
+});
+
+describe('reconcileSharedDocuments (NIM-1636: file name must not go blank)', () => {
+  it('keeps the known title when a transient sync delivers an empty (decrypt-failed) title', () => {
+    // Reproduces the bug: a raw/teamSync pass (or a broadcast during key
+    // transition) delivers title:'' + decryptFailed for a doc we already
+    // decrypted. Reconcile used to let that blank row win, blanking the name.
+    const existing = [doc('d1', 'latest meeting')];
+    const incoming = [doc('d1', '', { decryptFailed: true })];
+    const result = reconcileSharedDocuments(existing, incoming);
+    const d1 = result.find(d => d.documentId === 'd1');
+    expect(d1?.title).toBe('latest meeting');
+    expect(d1?.decryptFailed).toBe(false);
+  });
+
+  it('does not let a whitespace-only title blank a known name', () => {
+    const existing = [doc('d1', 'latest meeting')];
+    const incoming = [doc('d1', '   ')];
+    const result = reconcileSharedDocuments(existing, incoming);
+    expect(result.find(d => d.documentId === 'd1')?.title).toBe('latest meeting');
+  });
+
+  it('fills the name in as soon as a real title arrives after a blank one', () => {
+    // Row first appears blank (before its metadata decrypts), then the real
+    // title lands on a later pass — it must fill in, not stay blank.
+    const blank = reconcileSharedDocuments([], [doc('d1', '', { decryptFailed: true })]);
+    expect(blank.find(d => d.documentId === 'd1')?.title).toBe('');
+    const filled = reconcileSharedDocuments(blank, [doc('d1', 'latest meeting')]);
+    expect(filled.find(d => d.documentId === 'd1')?.title).toBe('latest meeting');
+  });
+
+  it('lets a genuine rename (non-blank) win', () => {
+    const existing = [doc('d1', 'old name')];
+    const incoming = [doc('d1', 'new name')];
+    const result = reconcileSharedDocuments(existing, incoming);
+    expect(result.find(d => d.documentId === 'd1')?.title).toBe('new name');
+  });
+});
+
+describe('mergeSharedDocument / mergeSharedFolder (NIM-1636: per-item broadcasts)', () => {
+  it('keeps the known title when a collaborator broadcast decrypts to empty', () => {
+    const merged = mergeSharedDocument(doc('d1', 'latest meeting'), doc('d1', '', { decryptFailed: true }));
+    expect(merged.title).toBe('latest meeting');
+    expect(merged.decryptFailed).toBe(false);
+  });
+
+  it('keeps the known folder name when a broadcast decrypts to empty', () => {
+    const merged = mergeSharedFolder(folder('f1', 'Specs'), folder('f1', '', { decryptFailed: true }));
+    expect(merged.name).toBe('Specs');
+    expect(merged.decryptFailed).toBe(false);
+  });
+
+  it('still applies fresh non-title metadata from an empty-title broadcast', () => {
+    const merged = mergeSharedDocument(
+      doc('d1', 'latest meeting', { parentFolderId: 'f_old', updatedAt: 1 }),
+      doc('d1', '', { decryptFailed: true, parentFolderId: 'f_new', updatedAt: 2 }),
+    );
+    expect(merged.title).toBe('latest meeting');
+    expect(merged.parentFolderId).toBe('f_new');
+    expect(merged.updatedAt).toBe(2);
+  });
+});
+
+describe('reconcileSharedFolders (NIM-1636: folder name must not go blank)', () => {
+  it('keeps the known folder name when a transient sync delivers an empty name', () => {
+    const existing = [folder('f1', 'Specs')];
+    const incoming = [folder('f1', '', { decryptFailed: true })];
+    const result = reconcileSharedFolders(existing, incoming);
+    const f1 = result.find(f => f.folderId === 'f1');
+    expect(f1?.name).toBe('Specs');
+    expect(f1?.decryptFailed).toBe(false);
   });
 });
 

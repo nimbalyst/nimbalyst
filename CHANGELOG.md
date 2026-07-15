@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 <!-- Bug fixes go here -->
 - Shared documents no longer disappear from the collaboration folder tree during sync or reconnect.
+- Shared document and folder names no longer briefly go blank in the collaboration folder tree during sync or reconnect.
 
 ### Removed
 <!-- Removed features go here -->
