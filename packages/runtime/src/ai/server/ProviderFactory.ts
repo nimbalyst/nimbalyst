@@ -7,6 +7,7 @@ import { ClaudeProvider } from './providers/ClaudeProvider';
 import { ClaudeCodeProvider } from './providers/ClaudeCodeProvider';
 import { ClaudeCodeCliProvider } from './providers/ClaudeCodeCliProvider';
 import { OpenAIProvider } from './providers/OpenAIProvider';
+import { MiniMaxProvider } from './providers/MiniMaxProvider';
 import { OpenAICodexProvider } from './providers/OpenAICodexProvider';
 import { OpenAICodexACPProvider } from './providers/OpenAICodexACPProvider';
 import { LMStudioProvider } from './providers/LMStudioProvider';
@@ -65,6 +66,9 @@ export class ProviderFactory {
         break;
       case 'openai':
         provider = new OpenAIProvider();
+        break;
+      case 'minimax':
+        provider = new MiniMaxProvider();
         break;
       case 'openai-codex':
         provider = new OpenAICodexProvider();

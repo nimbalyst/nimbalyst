@@ -33,7 +33,7 @@ vi.mock('@nimbalyst/runtime/ai/server/types', () => ({
     },
   },
   CLAUDE_CODE_VARIANTS: ['opus', 'sonnet', 'haiku'] as const,
-  AI_PROVIDER_TYPES: ['claude', 'claude-code', 'openai', 'openai-codex', 'lmstudio'] as const,
+  AI_PROVIDER_TYPES: ['claude', 'claude-code', 'openai', 'openai-codex', 'minimax', 'lmstudio'] as const,
 }));
 
 vi.mock('../../../utils/logger', () => ({

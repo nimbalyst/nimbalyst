@@ -1635,6 +1635,8 @@ export const RichTranscriptView = React.forwardRef<
       case 'openai':
       case 'openai-codex':
         return 'OpenAI';
+      case 'minimax':
+        return 'MiniMax';
       case 'lmstudio':
         return 'LM Studio';
       default:

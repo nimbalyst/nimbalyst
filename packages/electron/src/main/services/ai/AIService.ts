@@ -21,6 +21,8 @@ import {
   isAgentProvider,
   isSlashCommandCatalogProvider,
   ClaudeCodeProvider,
+  MiniMaxProvider,
+  MINIMAX_ENDPOINTS,
   OpenAICodexProvider,
 } from '@nimbalyst/runtime/ai/server';
 import { CLAUDE_CODE_SAFE_FALLBACK_MODEL } from '@nimbalyst/runtime/ai/modelConstants';
@@ -487,6 +489,11 @@ export class AIService {
               openai: {
                 enabled: false,
                 testStatus: "idle",
+              },
+              minimax: {
+                enabled: false,
+                testStatus: "idle",
+                baseUrl: MINIMAX_ENDPOINTS.global_en.openai,
               },
               'openai-codex': {
                 enabled: true,
@@ -1686,6 +1693,10 @@ export class AIService {
         if (hasOpenAI) return true;
       }
 
+      if (apiKeys['minimax'] && providerSettings['minimax']?.enabled === true) {
+        return true;
+      }
+
       // Check OpenAI Codex (uses its own auth, doesn't need API key in settings)
       const hasCodex = providerSettings['openai-codex']?.enabled === true;
       if (hasCodex) return true;
@@ -1786,6 +1797,11 @@ export class AIService {
           case 'openai':
             if (!apiKey) {
               throw new Error('OpenAI API key not configured');
+            }
+            break;
+          case 'minimax':
+            if (!apiKey) {
+              throw new Error('MiniMax API key not configured');
             }
             break;
           case 'openai-codex':
@@ -1949,6 +1965,11 @@ export class AIService {
         const lmstudioSettings = this.getSettingsStore().get('providerSettings.lmstudio', {}) as any;
         const storedApiKeys = this.getSettingsStore().get('apiKeys', {}) as Record<string, string>;
         initConfig.baseUrl = lmstudioSettings.baseUrl || storedApiKeys['lmstudio_url'] || 'http://127.0.0.1:8234';
+      }
+
+      if (provider === 'minimax') {
+        const providerSettings = this.getSettingsStore().get('providerSettings', {}) as any;
+        initConfig.baseUrl = providerSettings['minimax']?.baseUrl || MINIMAX_ENDPOINTS.global_en.openai;
       }
 
       // Pass through allowedTools and effort level settings for Claude Code
@@ -3003,6 +3024,7 @@ export class AIService {
         writeApiKey('anthropic', settings.apiKeys.anthropic);
         writeApiKey('claude-code', settings.apiKeys['claude-code']);
         writeApiKey('openai', settings.apiKeys.openai);
+        writeApiKey('minimax', settings.apiKeys.minimax);
         writeApiKey('openai-codex', settings.apiKeys['openai-codex']);
         if (settings.apiKeys.lmstudio_url !== undefined) {
           // lmstudio_url is a regular setting -- no masking, just write it.
@@ -3106,6 +3128,12 @@ export class AIService {
               return { success: false, error: 'OpenAI API key not configured' };
             }
             break;
+          case 'minimax':
+            apiKey = apiKeys['minimax'];
+            if (!apiKey) {
+              return { success: false, error: 'MiniMax API key not configured' };
+            }
+            break;
           case 'openai-codex':
             apiKey = apiKeys['openai-codex'];
             break;
@@ -3140,6 +3168,32 @@ export class AIService {
         if (provider === 'openai') {
           const models = await ModelRegistry.getModelsForProvider('openai', apiKey);
           return { success: models.length > 0, provider };
+        }
+
+        if (provider === 'minimax') {
+          const providerSettings = this.getSettingsStore().get('providerSettings', {}) as any;
+          const baseUrl = providerSettings['minimax']?.baseUrl || MINIMAX_ENDPOINTS.global_en.openai;
+          const testProvider = new MiniMaxProvider();
+          try {
+            await testProvider.initialize({
+              apiKey,
+              baseUrl,
+              model: MiniMaxProvider.getDefaultModel(),
+              maxTokens: 8,
+            });
+            const response = testProvider.sendMessage('Reply with exactly "ok".');
+            for await (const chunk of response) {
+              if (chunk.type === 'error') {
+                throw new Error(chunk.error || 'Unknown MiniMax error');
+              }
+              if (chunk.type === 'text') {
+                break;
+              }
+            }
+            return { success: true, provider };
+          } finally {
+            testProvider.destroy();
+          }
         }
 
         // For OpenAI Codex, run a real SDK request to validate credentials and connectivity
@@ -3316,6 +3370,7 @@ export class AIService {
       // checkboxes in the settings panel even before the user touches the toggle.
       if (providerSettings['claude-code-cli']?.enabled !== false) enabledSet.add('claude-code-cli');
       if (providerSettings['openai']?.enabled === true && !!apiKeys['openai']) enabledSet.add('openai');
+      if (providerSettings['minimax']?.enabled === true && !!apiKeys['minimax']) enabledSet.add('minimax');
       if (providerSettings['openai-codex']?.enabled === true) enabledSet.add('openai-codex');
       if (providerSettings['opencode']?.enabled === true) enabledSet.add('opencode');
       if (providerSettings['lmstudio']?.enabled === true) enabledSet.add('lmstudio');
@@ -3462,6 +3517,11 @@ export class AIService {
           enabled: providerSettings['openai']?.enabled === true && !!apiKeys['openai'],
           models: providerSettings['openai']?.models,
           hiddenModels: providerSettings['openai']?.hiddenModels
+        },
+        'minimax': {
+          enabled: providerSettings['minimax']?.enabled === true && !!apiKeys['minimax'],
+          models: providerSettings['minimax']?.models,
+          hiddenModels: providerSettings['minimax']?.hiddenModels
         },
         'openai-codex': {
           // Codex SDK uses its own auth (codex auth login), API key is optional
@@ -3810,7 +3870,7 @@ export class AIService {
 
     // Extension SDK: List available chat models
     safeHandle('extensions:ai-list-models', async () => {
-      const CHAT_PROVIDERS: AIProviderType[] = ['claude', 'openai', 'lmstudio'];
+      const CHAT_PROVIDERS: AIProviderType[] = ['claude', 'openai', 'minimax', 'lmstudio'];
       const providerSettings = this.getNormalizedProviderSettings() as any;
       const globalApiKeys = this.getSettingsStore().get('apiKeys', {}) as Record<string, string>;
 
@@ -3823,8 +3883,13 @@ export class AIService {
 
         const apiKey = provider === 'claude' ? globalApiKeys['anthropic']
           : provider === 'openai' ? globalApiKeys['openai']
+          : provider === 'minimax' ? globalApiKeys['minimax']
           : undefined;
-        const baseUrl = provider === 'lmstudio' ? (globalApiKeys['lmstudio_url'] || undefined) : undefined;
+        const baseUrl = provider === 'lmstudio'
+          ? (globalApiKeys['lmstudio_url'] || undefined)
+          : provider === 'minimax'
+            ? (providerSettings['minimax']?.baseUrl || MINIMAX_ENDPOINTS.global_en.openai)
+            : undefined;
 
         try {
           const models = await ModelRegistry.getModelsForProvider(provider, apiKey, baseUrl);
@@ -3996,7 +4061,16 @@ export class AIService {
       return this.cachedNormalizedProviderSettings;
     }
     const providerSettings = this.getSettingsStore().get('providerSettings', {}) as Record<string, any>;
-    const normalized = this.normalizeProviderSettings(providerSettings);
+    const normalizedProviders = this.normalizeProviderSettings(providerSettings);
+    const normalized = normalizedProviders.minimax
+      ? normalizedProviders
+      : {
+          ...normalizedProviders,
+          minimax: {
+            enabled: false,
+            baseUrl: MINIMAX_ENDPOINTS.global_en.openai,
+          },
+        };
     if (normalized !== providerSettings) {
       this.getSettingsStore().set('providerSettings', normalized);
     }
@@ -4123,13 +4197,13 @@ export class AIService {
 
   /**
    * Resolve which chat provider and config to use for an extension completion request.
-   * Only chat providers (claude, openai, lmstudio) are supported.
+   * Only built-in chat providers are supported.
    */
   private async resolveExtensionChatProvider(
     event: Electron.IpcMainInvokeEvent,
     options: { model?: string; maxTokens?: number; temperature?: number; responseFormat?: any }
   ): Promise<{ provider: AIProvider; providerConfig: ProviderConfig; providerType: AIProviderType; syntheticSessionId: string }> {
-    const CHAT_PROVIDERS: AIProviderType[] = ['claude', 'openai', 'lmstudio'];
+    const CHAT_PROVIDERS: AIProviderType[] = ['claude', 'openai', 'minimax', 'lmstudio'];
 
     // Determine provider from model ID or find first available
     let providerType: AIProviderType | undefined;
@@ -4164,7 +4238,7 @@ export class AIService {
     }
 
     if (!providerType) {
-      throw new Error('No chat provider available. Enable Claude, OpenAI, or LM Studio in Settings > AI.');
+      throw new Error('No chat provider available. Enable a chat provider in Settings > AI.');
     }
 
     // Get API key
@@ -4193,6 +4267,11 @@ export class AIService {
     if (providerType === 'lmstudio') {
       const globalApiKeys = this.getSettingsStore().get('apiKeys', {}) as Record<string, string>;
       providerConfig.baseUrl = globalApiKeys['lmstudio_url'] || 'http://127.0.0.1:1234';
+    }
+
+    if (providerType === 'minimax') {
+      const providerSettings = this.getNormalizedProviderSettings() as any;
+      providerConfig.baseUrl = providerSettings['minimax']?.baseUrl || MINIMAX_ENDPOINTS.global_en.openai;
     }
 
     const syntheticSessionId = `ext-completion-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

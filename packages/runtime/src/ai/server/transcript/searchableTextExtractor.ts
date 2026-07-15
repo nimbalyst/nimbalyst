@@ -281,7 +281,7 @@ function extractCodexOutput(parsed: unknown, content: string): ExtractedSearchab
 }
 
 function extractGenericOutput(content: string): ExtractedSearchable {
-  // Chat providers (claude, openai, lmstudio) write one row per semantic block.
+  // Chat providers write one row per semantic block.
   // The content is typically the assistant text directly (not provider-JSON).
   const parsed = safeJsonParse(content);
   if (parsed && typeof parsed === 'object') {

@@ -124,6 +124,7 @@ export function ModelSelector({
       case 'claude':
       case 'claude-code':
       case 'openai':
+      case 'minimax':
       case 'openai-codex':
       case 'opencode':
       case 'copilot-cli':
@@ -177,6 +178,7 @@ export function ModelSelector({
       case 'claude-code': return 'Claude Agent (Claude Code Based)';
       case 'claude-code-cli': return 'Claude Code CLI (Subscription)';
       case 'openai': return 'OpenAI';
+      case 'minimax': return 'MiniMax';
       case 'openai-codex': return 'OpenAI Codex';
       case 'openai-codex-acp': return 'OpenAI Codex (ACP)';
       case 'opencode': return 'OpenCode';
@@ -207,7 +209,7 @@ export function ModelSelector({
     return getProviderIcon(provider, { size });
   };
 
-  const CHAT_MODEL_PROVIDERS = new Set(['claude', 'openai', 'lmstudio']);
+  const CHAT_MODEL_PROVIDERS = new Set(['claude', 'openai', 'minimax', 'lmstudio']);
   const getProviderType = (provider: string): ProviderType => {
     if (isAgentProvider(provider)) return 'agent';
     if (CHAT_MODEL_PROVIDERS.has(provider)) return 'model';

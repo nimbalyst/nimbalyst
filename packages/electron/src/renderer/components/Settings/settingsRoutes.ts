@@ -11,6 +11,7 @@ export type ApplicationSettingsCategory =
   | 'claude-code'
   | 'claude'
   | 'openai'
+  | 'minimax'
   | 'openai-codex'
   | 'opencode'
   | 'copilot-cli'
@@ -105,6 +106,7 @@ export const settingsRoutes: readonly SettingsRoute[] = [
   { id: 'copilot-cli', scope: 'application', group: 'Agent Providers', label: 'GitHub Copilot', icon: 'terminal', isAlpha: true },
   { id: 'claude', scope: 'application', group: 'Chat Providers', label: 'Claude Chat', icon: 'chat' },
   { id: 'openai', scope: 'application', group: 'Chat Providers', label: 'OpenAI', icon: 'chat' },
+  { id: 'minimax', scope: 'application', group: 'Chat Providers', label: 'MiniMax', icon: 'bolt' },
   { id: 'lmstudio', scope: 'application', group: 'Chat Providers', label: 'LM Studio', icon: 'memory' },
   { id: 'marketplace', scope: 'application', group: 'Extensions', label: 'Marketplace', icon: 'storefront' },
   { id: 'installed-extensions', scope: 'application', group: 'Extensions', label: 'Installed', icon: 'extension' },

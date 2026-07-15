@@ -1159,7 +1159,7 @@ export interface ExtensionAIService {
     prompt: string;
     sessionName?: string;
     /** AI provider to use. Defaults to 'claude-code'. */
-    provider?: 'claude-code' | 'claude' | 'openai';
+    provider?: 'claude-code' | 'claude' | 'openai' | 'minimax';
     /** Model ID (e.g. 'claude-code:opus', 'claude-code:sonnet'). Uses provider default if omitted. */
     model?: string;
   }): Promise<{
@@ -1169,7 +1169,7 @@ export interface ExtensionAIService {
 
   /**
    * List available chat models.
-   * Returns models from enabled chat providers (Claude, OpenAI, LM Studio),
+   * Returns models from enabled chat providers,
    * filtered to models the user has enabled in settings.
    */
   listModels(): Promise<ExtensionAIModel[]>;
@@ -1196,7 +1196,7 @@ export interface ExtensionAIModel {
   id: string;
   /** Display name (e.g. "Claude Sonnet 4.6") */
   name: string;
-  /** Provider type (e.g. "claude", "openai", "lmstudio") */
+  /** Provider type returned by listModels(). */
   provider: string;
 }
 

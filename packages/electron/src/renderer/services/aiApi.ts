@@ -337,7 +337,7 @@ class AIApi {
   async createSession(
     documentContext?: DocumentContext,
     workspacePath?: string,
-    provider?: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai' | 'lmstudio',
+    provider?: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai' | 'minimax' | 'lmstudio',
     modelId?: string,
     sessionType?: string
   ): Promise<SessionData> {
@@ -350,7 +350,7 @@ class AIApi {
 
   // New method specifically for creating session with provider
   async createSessionWithProvider(
-    provider: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai',
+    provider: 'claude' | 'claude-code' | 'claude-code-cli' | 'openai' | 'minimax',
     documentContext?: DocumentContext,
     workspacePath?: string,
     modelId?: string,

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- MiniMax chat support with regional endpoint selection and MiniMax-M3 and MiniMax-M2.7 model presets.
 - In a shared document, typing `@` now suggests other shared documents and inserts a team-styled link that opens the referenced shared document.
 - Settings now separates Application, Personal, Organizations, and Project management, including per-account mobile-sync profiles, organization administration without an open workspace, explicit project access controls, and project-level MCP server configuration.
 - The Git extension now keeps a persistent, live command output history across panel and renderer reloads.

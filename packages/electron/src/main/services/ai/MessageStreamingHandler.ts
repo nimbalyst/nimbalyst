@@ -21,6 +21,7 @@ import {
   onAgentMessageBatch,
   buildMetaAgentSystemPrompt,
   buildDevAgentSystemPrompt,
+  MINIMAX_ENDPOINTS,
   type AIProvider,
   type SessionManager,
 } from '@nimbalyst/runtime/ai/server';
@@ -489,6 +490,9 @@ export class MessageStreamingHandler {
           case 'openai':
             errorMessage = 'OpenAI API key not configured';
             break;
+          case 'minimax':
+            errorMessage = 'MiniMax API key not configured';
+            break;
           case 'openai-codex':
             // Codex SDK uses its own auth (codex auth login), API key is optional
             requiresApiKey = false;
@@ -563,6 +567,11 @@ export class MessageStreamingHandler {
       if (session.provider === 'lmstudio') {
         const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
         reinitConfig.baseUrl = providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234';
+      }
+
+      if (session.provider === 'minimax') {
+        const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
+        reinitConfig.baseUrl = providerSettings['minimax']?.baseUrl || MINIMAX_ENDPOINTS.global_en.openai;
       }
 
       // Pass model to provider config for all providers including claude-code
@@ -691,7 +700,7 @@ export class MessageStreamingHandler {
     // their runtime config from the persisted session before each send so a
     // cached provider cannot keep an empty or stale model after the picker
     // updates session.model and invalidates the prior instance.
-    if (['claude', 'openai', 'lmstudio'].includes(session.provider)) {
+    if (['claude', 'openai', 'minimax', 'lmstudio'].includes(session.provider)) {
       let expectedModel: string | undefined;
       const fullModel = session.model || session.providerConfig?.model;
       if (fullModel) {
@@ -716,7 +725,12 @@ export class MessageStreamingHandler {
           ? 'not-required'
           : this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
         if (!apiKey && session.provider !== 'lmstudio') {
-          throw new Error(session.provider === 'openai' ? 'OpenAI API key not configured' : 'Anthropic API key not configured');
+          const errorMessage = session.provider === 'openai'
+            ? 'OpenAI API key not configured'
+            : session.provider === 'minimax'
+              ? 'MiniMax API key not configured'
+              : 'Anthropic API key not configured';
+          throw new Error(errorMessage);
         }
 
         const refreshedConfig: ProviderConfig = {
@@ -729,6 +743,11 @@ export class MessageStreamingHandler {
         if (session.provider === 'lmstudio') {
           const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
           refreshedConfig.baseUrl = providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234';
+        }
+
+        if (session.provider === 'minimax') {
+          const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
+          refreshedConfig.baseUrl = providerSettings['minimax']?.baseUrl || MINIMAX_ENDPOINTS.global_en.openai;
         }
 
         await provider.initialize(refreshedConfig);
@@ -1218,6 +1237,10 @@ export class MessageStreamingHandler {
           temperature: (session.providerConfig as any)?.temperature,
           ...(turnEffortLevel && { effortLevel: turnEffortLevel }),
         };
+        if (session.provider === 'minimax') {
+          const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
+          turnConfig.baseUrl = providerSettings['minimax']?.baseUrl || MINIMAX_ENDPOINTS.global_en.openai;
+        }
         const fullTurnModel = session.model || session.providerConfig?.model;
         if (fullTurnModel) {
           const modelForProvider = extractModelForProvider(fullTurnModel, session.provider as AIProviderType);
@@ -1921,7 +1944,7 @@ export class MessageStreamingHandler {
               // Agent providers (claude-code, codex, opencode) render tool calls
               // through the canonical transcript pipeline. The legacy addMessage +
               // streamResponse toolCalls path below is only for chat providers
-              // (claude, openai, lmstudio) that don't have canonical transcripts.
+              // that don't have canonical transcripts.
               // Running both paths creates duplicate tool call entries.
               if (!isAgentProvider(session.provider)) {
                 // Save tool call as a separate message in the session

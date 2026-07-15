@@ -445,6 +445,7 @@ export const CLAUDE_CODE_SAFE_FALLBACK_MODEL = 'claude-code:opus' as const;
 export const DEFAULT_MODELS = {
   claude: 'claude:claude-opus-4-8',
   openai: 'openai:gpt-5.6-sol',
+  minimax: 'minimax:MiniMax-M3',
   // Plain `opus` (not `opus-1m`): the current CLI runs plain Opus at 1M natively
   // at a flat price, so the `[1m]` suffix is a redundant no-op (GitHub #825).
   'claude-code': 'claude-code:opus',

@@ -29,7 +29,10 @@ These providers still use `BaseAIProvider`, not `BaseAgentProvider`.
 | --- | --- | --- | --- |
 | `claude` | Claude Chat | Direct Anthropic SDK | Standard chat provider with tool calling but no MCP/file-agent loop. |
 | `openai` | OpenAI | Direct OpenAI SDK | Standard chat/completions path. |
+| `minimax` | MiniMax | Direct compatibility SDK selected by endpoint | Fixed MiniMax-M3 and MiniMax-M2.7 catalog with global and China endpoint presets. |
 | `lmstudio` | LM Studio | Local OpenAI-compatible endpoint | Local-only chat provider. |
+
+Chat providers should extend `BaseAIProvider`, register fixed or discovered models through `ModelRegistry`, and expose their settings, API key, endpoint, and session-creation paths in Electron. When a service offers multiple compatibility protocols, keep one provider ID and select the existing SDK adapter from validated endpoint presets instead of adding duplicate provider IDs or persisting protocol-only fields.
 
 ## What Makes An Agent Provider Different
 
