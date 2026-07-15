@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {createRequire} from 'module';
+import { WINDOWS_KNOWN_FAILING_SUITES } from './scripts/windows-known-failing-suites.mjs';
 
 const runtimeRequire = createRequire(
   path.resolve(__dirname, './packages/runtime/package.json'),
@@ -69,6 +70,15 @@ const include = [
 
 const baseExclude = ['node_modules', 'dist', 'build', '.idea', '.git', '.cache'];
 
+// Set only by scripts/prepush-test-gate.mjs for a local Windows `git push`.
+// Vitest resolves file discovery per-project (each project below defines its
+// own exclude array), so a CLI --exclude flag never reaches this -- it must
+// be spliced into each project's own exclude list instead. Never active
+// outside that one gated invocation, so `npx vitest` / CI / a targeted
+// single-file run is always unaffected. See docs/WINDOWS_PREPUSH_GATE.md.
+const prepushGateExcludes =
+  process.env.NIMBALYST_PREPUSH_GATE === '1' ? WINDOWS_KNOWN_FAILING_SUITES : [];
+
 // Paths that must run under the node environment (vitest 4 removed
 // `environmentMatchGlobs`; expressed with `test.projects` instead).
 const nodeOnly = ['packages/electron/src/main/**', 'packages/runtime/src/ai/**'];
@@ -108,7 +118,7 @@ export default defineConfig({
           environment: 'jsdom',
           setupFiles,
           include,
-          exclude: [...baseExclude, ...nodeOnly],
+          exclude: [...baseExclude, ...nodeOnly, ...prepushGateExcludes],
           // Inline so vite transforms it and our monaco-editor stub alias
           // applies to its transitive `monaco-editor/esm/.../editor.api.js`.
           server: { deps: { inline: [/y-monaco/] } },
@@ -128,7 +138,7 @@ export default defineConfig({
             'packages/electron/src/main/**/__tests__/**/*.{test,spec}.{ts,tsx}',
             'packages/runtime/src/ai/**/__tests__/**/*.{test,spec}.{ts,tsx}',
           ],
-          exclude: baseExclude,
+          exclude: [...baseExclude, ...prepushGateExcludes],
           server: { deps: { inline: [/y-monaco/] } },
         },
       },
