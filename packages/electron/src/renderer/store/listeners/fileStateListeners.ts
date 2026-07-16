@@ -24,6 +24,7 @@ import {
 } from '../atoms/sessionFiles';
 import { workstreamStagedFilesAtom, setWorkstreamStagedFilesAtom } from '../atoms/workstreamState';
 import { getRelativeWorkspacePath } from '../../../shared/pathUtils';
+import { createPerKeyDebouncer } from './perKeyDebounce';
 
 /**
  * Track which workspace path is currently open.
@@ -214,6 +215,10 @@ export function initFileStateListeners(workspacePath: string): () => void {
   const enrichDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const gitStatusDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const pendingCountDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // session-files:updated fires once per file edit (hundreds/sec during active
+  // AI tool execution); coalesce its per-session git-status refresh so bursts
+  // collapse into a single trailing git:get-file-status call per session.
+  const sessionGitStatusRefresh = createPerKeyDebouncer(250);
   const GIT_STATUS_DEBOUNCE_MS = 300;
   const PENDING_COUNT_DEBOUNCE_MS = 250;
 
@@ -271,8 +276,13 @@ export function initFileStateListeners(workspacePath: string): () => void {
             }
           }, 200));
 
-          // Also refresh git status for these files
-          await refreshSessionGitStatus(sessionId);
+          // Also refresh git status for these files. This handler fires once
+          // per file edit (see the note below on session-files:updated volume),
+          // so coalesce the refresh per session instead of running a full
+          // git:get-file-status over the session's edited-file list every time.
+          sessionGitStatusRefresh.schedule(sessionId, () => {
+            void refreshSessionGitStatus(sessionId);
+          });
 
           // Note: we used to also fetch pending-review files here to keep the
           // atom in sync, but that fired once per session-files:updated event
@@ -401,6 +411,7 @@ export function initFileStateListeners(workspacePath: string): () => void {
     gitStatusDebounceTimers.clear();
     pendingCountDebounceTimers.forEach(timer => clearTimeout(timer));
     pendingCountDebounceTimers.clear();
+    sessionGitStatusRefresh.cancelAll();
   };
 }
 
