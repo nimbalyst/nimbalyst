@@ -20,6 +20,7 @@ const baseGlobal: GlobalAISettings = {
   apiKeys: {},
   providerSettings: {},
   showToolCalls: false,
+  collapseIntermediateProgress: false,
   aiDebugLogging: false,
   showPromptAdditions: false,
   customClaudeCodePath: '/usr/local/bin/claude-global',

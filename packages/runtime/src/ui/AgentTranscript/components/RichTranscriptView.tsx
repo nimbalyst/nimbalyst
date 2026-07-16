@@ -116,6 +116,16 @@ const injectRichTranscriptStyles = () => {
       transform: rotate(90deg);
     }
 
+    /* 折叠中间进展行使用自定义 chevron，隐藏原生 details marker */
+    .rich-transcript-progress-collapse details > summary::-webkit-details-marker,
+    .rich-transcript-progress-collapse details > summary::marker {
+      display: none;
+      content: '';
+    }
+    .rich-transcript-progress-collapse details[open] .progress-collapse-chevron {
+      transform: rotate(90deg);
+    }
+
     /* VList scrollbar styling */
     .rich-transcript-vlist {
       scrollbar-width: thin;
@@ -536,9 +546,81 @@ const defaultSettings: TranscriptSettings = {
   showToolCalls: true,
   compactMode: false,
   collapseTools: false,
+  collapseIntermediateProgress: false,
   showThinking: true,
   showSessionInit: false,
 };
+
+export interface IntermediateProgressCollapsePlan {
+  collapsedIndices: Set<number>;
+  groupsByStartIndex: Map<number, number[]>;
+}
+
+function isCollapsibleAssistantProgressMessage(message: TranscriptViewMessage): boolean {
+  if (message.type !== 'assistant_message') return false;
+  const text = message.text?.trim();
+  if (!text) return false;
+  if (message.isError || message.isAuthError || message.isCodexAuthRequired) return false;
+  if ((message.metadata?.promptType as string | undefined) === 'system_reminder') return false;
+
+  const lower = text.toLowerCase();
+  if (text.includes('[RATE_LIMIT')) return false;
+  if (lower.includes('api_error') || lower.includes('overloaded_error')) return false;
+  if (lower.includes('api.openai.com') && lower.includes('401')) return false;
+  if (
+    lower.includes('context limit') ||
+    lower.includes('context window') ||
+    lower.includes('prompt is too long') ||
+    lower.includes('maximum context length')
+  ) {
+    return false;
+  }
+  if (
+    lower.includes('session is being continued from') ||
+    lower.includes('context compacted') ||
+    lower.includes('compaction summary')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export function buildIntermediateProgressCollapsePlan(
+  messages: TranscriptViewMessage[],
+  enabled: boolean,
+): IntermediateProgressCollapsePlan {
+  const collapsedIndices = new Set<number>();
+  const groupsByStartIndex = new Map<number, number[]>();
+  if (!enabled) {
+    return { collapsedIndices, groupsByStartIndex };
+  }
+
+  const flushTurnCandidates = (candidateIndices: number[]) => {
+    if (candidateIndices.length <= 1) return;
+    // 同一轮对话中保留最后一条普通 assistant 文本作为最终结论，其余折叠为一个可展开分组。
+    const collapsed = candidateIndices.slice(0, -1);
+    for (const index of collapsed) {
+      collapsedIndices.add(index);
+    }
+    groupsByStartIndex.set(collapsed[0], collapsed);
+  };
+
+  let currentTurnCandidates: number[] = [];
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.type === 'user_message') {
+      flushTurnCandidates(currentTurnCandidates);
+      currentTurnCandidates = [];
+      continue;
+    }
+    if (isCollapsibleAssistantProgressMessage(message)) {
+      currentTurnCandidates.push(index);
+    }
+  }
+  flushTurnCandidates(currentTurnCandidates);
+
+  return { collapsedIndices, groupsByStartIndex };
+}
 
 // Lowercased tool names that should render with EditToolResultCard.
 // 'applypatch'/'apply_patch' covers Codex ACP's apply_patch tool, which
@@ -1132,6 +1214,10 @@ export const RichTranscriptView = React.forwardRef<
   const vlistBufferSize = isMobileWebKit ? MOBILE_TRANSCRIPT_BUFFER_PX : DESKTOP_TRANSCRIPT_BUFFER_PX;
 
   const settings = propsSettings || defaultSettings;
+  const intermediateProgressCollapsePlan = useMemo(
+    () => buildIntermediateProgressCollapsePlan(messages, settings.collapseIntermediateProgress === true),
+    [messages, settings.collapseIntermediateProgress]
+  );
   const previousRenderRef = useRef<{
     messagesRef: TranscriptViewMessage[];
     messageCount: number;
@@ -1530,6 +1616,61 @@ export const RichTranscriptView = React.forwardRef<
       }
       return next;
     });
+  };
+
+  const renderCollapsedProgressGroup = (startIndex: number, collapsedIndices: number[], messageKey: string) => {
+    const preview = [...collapsedIndices]
+      .reverse()
+      .map(index => messages[index]?.text?.trim())
+      .find((text): text is string => !!text);
+    const previewText = preview && preview.length > 140 ? `${preview.slice(0, 140)}...` : preview;
+
+    return (
+      <div
+        key={messageKey}
+        data-message-index={startIndex}
+        ref={(el) => {
+          if (el) {
+            messageRefs.current.set(startIndex, el);
+          } else {
+            messageRefs.current.delete(startIndex);
+          }
+        }}
+        className="rich-transcript-message rich-transcript-progress-collapse rounded-md relative max-w-full overflow-x-hidden break-words mb-2 assistant bg-[var(--nim-bg)] p-2"
+      >
+        <details>
+          <summary className="flex items-center gap-2 text-xs text-[var(--nim-text-muted)] cursor-pointer select-none">
+            <MaterialSymbol icon="chevron_right" size={16} className="progress-collapse-chevron text-[var(--nim-text-faint)] shrink-0 transition-transform" />
+            <span className="font-medium">
+              {collapsedIndices.length === 1 ? 'Intermediate progress collapsed' : `${collapsedIndices.length} intermediate updates collapsed`}
+            </span>
+            {previewText && (
+              <span className="min-w-0 flex-1 truncate text-[var(--nim-text-faint)]">
+                {previewText}
+              </span>
+            )}
+          </summary>
+          <div className="mt-2 ml-6 flex flex-col gap-2 border-l border-[var(--nim-border)] pl-3">
+            {collapsedIndices.map((index) => {
+              const collapsedMessage = messages[index];
+              const text = collapsedMessage?.text?.trim();
+              if (!text) return null;
+              return (
+                <div key={`${messageKey}-collapsed-${index}`} className="text-xs text-[var(--nim-text-muted)]">
+                  <MarkdownRenderer
+                    content={text}
+                    isUser={false}
+                    onOpenFile={onOpenFile}
+                    onOpenSession={onOpenSession}
+                    messageId={collapsedMessage.id}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      </div>
+    );
   };
 
   const toggleToolExpand = useCallback((toolId: string) => {
@@ -1993,6 +2134,14 @@ export const RichTranscriptView = React.forwardRef<
     const messageKey = getTranscriptMessageKey(sessionId, message, index);
     // Skip tool calls superseded by a later event with the same providerToolCallId
     if (supersededToolIndices.has(index)) {
+      return <div key={messageKey} style={{ display: 'none' }} />;
+    }
+
+    const collapsedProgressGroup = intermediateProgressCollapsePlan.groupsByStartIndex.get(index);
+    if (collapsedProgressGroup) {
+      return renderCollapsedProgressGroup(index, collapsedProgressGroup, messageKey);
+    }
+    if (intermediateProgressCollapsePlan.collapsedIndices.has(index)) {
       return <div key={messageKey} style={{ display: 'none' }} />;
     }
 

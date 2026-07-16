@@ -81,8 +81,9 @@ function setting<S extends z.ZodTypeAny>(
  * Domains we have so far:
  *   - ai.provider.<id>  -- per-provider config (enabled, models, baseUrl, ...)
  *   - ai.apiKey.<name>  -- per-provider API key (string, may be empty)
- *   - ai.defaultProvider, ai.showToolCalls, ai.chatShowToolCalls, ai.aiDebugLogging,
- *     ai.showPromptAdditions, ai.customClaudeCodePath, ai.autoCommitEnabled,
+ *   - ai.defaultProvider, ai.showToolCalls, ai.chatShowToolCalls,
+ *     ai.collapseIntermediateProgress, ai.aiDebugLogging, ai.showPromptAdditions,
+ *     ai.customClaudeCodePath, ai.autoCommitEnabled,
  *     ai.trackerAutomation, ai.diffPeekSize
  */
 export const SETTINGS_REGISTRY = {
@@ -183,6 +184,11 @@ export const SETTINGS_REGISTRY = {
     z.boolean(),
     { store: 'ai-settings', path: 'chatShowToolCalls' },
     true,
+  ),
+  'ai.collapseIntermediateProgress': setting(
+    z.boolean(),
+    { store: 'ai-settings', path: 'collapseIntermediateProgress' },
+    false,
   ),
   'ai.aiDebugLogging': setting(
     z.boolean(),

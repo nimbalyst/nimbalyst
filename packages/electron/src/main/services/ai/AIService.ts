@@ -508,6 +508,10 @@ export class AIService {
             type: 'boolean',
             default: true  // User-facing chat toggle; defaults true to preserve current UX
           },
+          collapseIntermediateProgress: {
+            type: 'boolean',
+            default: false  // 面向用户的转录折叠开关；默认关闭以保持现有体验
+          },
           aiDebugLogging: {
             type: 'boolean',
             default: false  // Hidden by default, developer mode only
@@ -1764,7 +1768,7 @@ export class AIService {
       }
 
       // Get API key using project-aware helper (considers project overrides)
-      let apiKey = this.getApiKeyForProvider(provider, workspacePath);
+      const apiKey = this.getApiKeyForProvider(provider, workspacePath);
 
       // Validate API key requirement based on provider.
       // Extension-agent providers defer auth to the extension itself, so they
@@ -2916,6 +2920,7 @@ export class AIService {
       const providerSettings = this.getNormalizedProviderSettings();
       const showToolCalls = this.getSettingsStore().get('showToolCalls', false) as boolean;
       const chatShowToolCalls = this.getSettingsStore().get('chatShowToolCalls', true) as boolean;
+      const collapseIntermediateProgress = this.getSettingsStore().get('collapseIntermediateProgress', false) as boolean;
       const aiDebugLogging = this.getSettingsStore().get('aiDebugLogging', false) as boolean;
       const showPromptAdditions = this.getSettingsStore().get('showPromptAdditions', false) as boolean;
       const showUsageIndicator = this.getSettingsStore().get('showUsageIndicator', true) as boolean;
@@ -2940,6 +2945,7 @@ export class AIService {
         providerSettings,
         showToolCalls,
         chatShowToolCalls,
+        collapseIntermediateProgress,
         aiDebugLogging,
         showPromptAdditions,
         showUsageIndicator,
@@ -3035,6 +3041,7 @@ export class AIService {
 
       if (settings.showToolCalls !== undefined)        safeSet('ai.showToolCalls', settings.showToolCalls);
       if (settings.chatShowToolCalls !== undefined)    safeSet('ai.chatShowToolCalls', settings.chatShowToolCalls);
+      if (settings.collapseIntermediateProgress !== undefined) safeSet('ai.collapseIntermediateProgress', settings.collapseIntermediateProgress);
       if (settings.aiDebugLogging !== undefined)       safeSet('ai.aiDebugLogging', settings.aiDebugLogging);
       if (settings.showPromptAdditions !== undefined)  safeSet('ai.showPromptAdditions', settings.showPromptAdditions);
       if (settings.customClaudeCodePath !== undefined) safeSet('ai.customClaudeCodePath', settings.customClaudeCodePath);
@@ -3631,6 +3638,7 @@ export class AIService {
       const providerSettings = this.getSettingsStore().get('providerSettings', {}) as any;
       const showToolCalls = this.getSettingsStore().get('showToolCalls', false) as boolean;
       const chatShowToolCalls = this.getSettingsStore().get('chatShowToolCalls', true) as boolean;
+      const collapseIntermediateProgress = this.getSettingsStore().get('collapseIntermediateProgress', false) as boolean;
       const aiDebugLogging = this.getSettingsStore().get('aiDebugLogging', false) as boolean;
       const showPromptAdditions = this.getSettingsStore().get('showPromptAdditions', false) as boolean;
       const defaultProvider = this.getSettingsStore().get('defaultProvider', 'claude-code') as string;
@@ -3641,6 +3649,7 @@ export class AIService {
         providerSettings,
         showToolCalls,
         chatShowToolCalls,
+        collapseIntermediateProgress,
         aiDebugLogging,
         showPromptAdditions,
       };
