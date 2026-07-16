@@ -29,6 +29,31 @@ export interface GitStatusResult {
  *
  * Exported for unit testing.
  */
+// Per-directory cache of `.git` existence. findGitRootForFile is called once
+// per file by getFileStatus, walking up the tree with an existsSync at every
+// level; without caching this is an O(files x depth) synchronous FS storm on
+// the main thread under multi-session editing of a large repo (nimbalyst#868).
+// Git roots do not move during a session, so memoizing is safe.
+const gitDirExistsCache = new Map<string, boolean>();
+
+/** Test-only: reset the git-root existence cache. */
+export function __resetGitRootCache(): void {
+  gitDirExistsCache.clear();
+}
+
+function hasGitDir(dir: string): boolean {
+  let cached = gitDirExistsCache.get(dir);
+  if (cached === undefined) {
+    try {
+      cached = existsSync(join(dir, '.git'));
+    } catch {
+      cached = false;
+    }
+    gitDirExistsCache.set(dir, cached);
+  }
+  return cached;
+}
+
 export function findGitRootForFile(filePath: string, boundary: string): string | null {
   const boundaryAbs = resolve(boundary);
   const fileAbs = isAbsolute(filePath) ? filePath : resolve(boundaryAbs, filePath);
@@ -47,7 +72,7 @@ export function findGitRootForFile(filePath: string, boundary: string): string |
   // Walk up until we leave the boundary, hit fs root, or find `.git`.
   while (true) {
     try {
-      if (existsSync(join(dir, '.git'))) {
+      if (hasGitDir(dir)) {
         return dir;
       }
     } catch {
