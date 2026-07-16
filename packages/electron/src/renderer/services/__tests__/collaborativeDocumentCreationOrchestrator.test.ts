@@ -33,14 +33,17 @@ vi.mock('../../utils/logger', () => ({
   logger: { ui: { warn: vi.fn() } },
 }));
 
-import type { CollaborativeDocumentTypeCatalog } from '../CollaborativeDocumentTypeCatalog';
+import type {
+  CollaborativeDocumentTypeCatalog,
+  CollaborativeDocumentTypeDescriptor,
+} from '../CollaborativeDocumentTypeCatalog';
 import type { SharedDocument, SharedFolder } from '../../store/atoms/collabDocuments';
 import {
   CollaborativeDocumentCreationOrchestrator,
   type CollaborativeDocumentCreationDependencies,
 } from '../collaborativeDocumentCreationOrchestrator';
 
-const markdownDescriptor = {
+const markdownDescriptor: CollaborativeDocumentTypeDescriptor = {
   documentType: 'markdown',
   displayName: 'Markdown',
   fileExtensions: ['.markdown', '.md'],
@@ -59,7 +62,7 @@ const markdownDescriptor = {
   },
 };
 
-const mockupDescriptor = {
+const mockupDescriptor: CollaborativeDocumentTypeDescriptor = {
   ...markdownDescriptor,
   documentType: 'mockup.html',
   displayName: 'Mockup',
@@ -70,7 +73,7 @@ const mockupDescriptor = {
 };
 
 function makeHarness(options: {
-  descriptor?: typeof markdownDescriptor | typeof mockupDescriptor;
+  descriptor?: CollaborativeDocumentTypeDescriptor;
   documents?: SharedDocument[];
   folders?: SharedFolder[];
   seedResults?: boolean[];
@@ -83,14 +86,17 @@ function makeHarness(options: {
   const seedResults = [...(options.seedResults ?? [true])];
   let extensionLoaded = options.extensionLoaded ?? true;
   let generated = 0;
+  const published: SharedDocument[] = [];
 
   const resolveMetadata = vi.fn(() => extensionLoaded
     ? { state: 'ready' as const, descriptor }
     : { state: 'unsupported' as const, descriptor, reason: 'The owning extension was unloaded.' });
   const catalog = {
-    editorIdForDescriptor: (item: typeof descriptor) => item.editor.kind === 'lexical'
-      ? 'builtin.lexical'
-      : item.editor.extensionId!,
+    editorIdForDescriptor: (item: CollaborativeDocumentTypeDescriptor) => {
+      if (item.editor.kind === 'lexical') return 'builtin.lexical';
+      if (item.editor.kind === 'monaco') return 'builtin.monaco';
+      return item.editor.extensionId!;
+    },
     resolveMetadata,
   } as unknown as CollaborativeDocumentTypeCatalog;
 
@@ -126,7 +132,10 @@ function makeHarness(options: {
       events.push('save-origin');
       return { success: true };
     },
-    publishPending: () => events.push('publish'),
+    publishPending: document => {
+      published.push(document);
+      events.push('publish');
+    },
     cleanup: async () => { events.push('cleanup'); },
     generateId: () => `doc-${++generated}`,
     now: () => 100,
@@ -137,6 +146,7 @@ function makeHarness(options: {
     deps,
     documents,
     events,
+    published,
     resolveMetadata,
     setExtensionLoaded(value: boolean) { extensionLoaded = value; },
   };
@@ -232,6 +242,48 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
       editorId: 'com.nimbalyst.mockup',
     });
   });
+
+  it.each([
+    ['markdown', 'Markdown', '.md', 'builtin.lexical', 'lexical'],
+    ['excalidraw', 'Excalidraw Diagram', '.excalidraw', 'com.nimbalyst.excalidraw', 'structured-yjs'],
+    ['prisma', 'Data Model', '.prisma', 'com.nimbalyst.datamodellm', 'structured-yjs'],
+    ['csv', 'CSV Spreadsheet', '.csv', 'com.nimbalyst.csv-spreadsheet', 'structured-yjs'],
+    ['mockup.html', 'Mockup', '.mockup.html', 'com.nimbalyst.mockuplm', 'text'],
+    ['mockupproject', 'Mockup Project', '.mockupproject', 'com.nimbalyst.mockuplm', 'structured-yjs'],
+    ['calc.md', 'Calc Sheet', '.calc.md', 'com.nimbalyst.calc-sheets', 'text'],
+  ] as const)(
+    'creates and publishes a correctly routed %s shared document',
+    async (documentType, displayName, suffix, editorId, strategy) => {
+      const descriptor: CollaborativeDocumentTypeDescriptor = documentType === 'markdown'
+        ? markdownDescriptor
+        : {
+            ...mockupDescriptor,
+            documentType,
+            displayName,
+            fileExtensions: [suffix],
+            defaultExtension: suffix,
+            editor: { kind: 'extension', extensionId: editorId },
+            content: { strategy, codecId: documentType },
+          };
+      const harness = makeHarness({ descriptor });
+
+      const document = await harness.orchestrator.create({
+        descriptor,
+        requestedName: 'Untitled',
+        parentFolderId: null,
+        sourceContent: descriptor.creation?.defaultContent ?? '',
+      });
+
+      expect(document).toMatchObject({
+        title: `Untitled${suffix}`,
+        documentType,
+        metadataVersion: 2,
+        fileExtension: suffix,
+        editorId,
+      });
+      expect(harness.published).toEqual([document]);
+    },
+  );
 
   it('rejects a sibling folder collision after applying the exact suffix', async () => {
     const harness = makeHarness({

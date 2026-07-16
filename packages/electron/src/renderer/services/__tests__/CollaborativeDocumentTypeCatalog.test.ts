@@ -299,6 +299,28 @@ describe('CollaborativeDocumentTypeCatalog', () => {
     });
     catalog.dispose();
   });
+
+  it('excludes openVirtualTab contributions from persistent shared creation', () => {
+    const catalog = makeCatalog(
+      new MutableExtensionSource([
+        extension({
+          id: 'com.example.browser',
+          menus: [{
+            extension: '.browser',
+            displayName: 'Browser Tab',
+            icon: 'language',
+            action: 'openVirtualTab',
+            virtualScheme: 'browser://',
+          }],
+        }),
+      ]),
+      new MutableCodecSource([codec('markdown', ['.md'])]),
+    );
+
+    expect(catalog.getDescriptors().some(item => item.defaultExtension === '.browser')).toBe(false);
+    expect(catalog.resolveShareability('tab.browser')).toMatchObject({ state: 'unsupported' });
+    catalog.dispose();
+  });
 });
 
 describe('shared document metadata and presentation', () => {

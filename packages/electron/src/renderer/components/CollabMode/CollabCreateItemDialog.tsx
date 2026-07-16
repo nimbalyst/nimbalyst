@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import type { SharedFolder } from '../../store/atoms/collabDocuments';
+import type { CollaborativeDocumentTypeDescriptor } from '../../services/CollaborativeDocumentTypeCatalog';
 import { flattenCollabFolderOptions } from './collabTree';
 
 interface CollabCreateItemDialogProps {
   isOpen: boolean;
   kind: 'document' | 'folder';
+  documentDescriptor?: CollaborativeDocumentTypeDescriptor;
   folders: SharedFolder[];
   targetFolderId: string | null;
   onTargetFolderChange: (folderId: string | null) => void;
@@ -16,6 +18,7 @@ interface CollabCreateItemDialogProps {
 export function CollabCreateItemDialog({
   isOpen,
   kind,
+  documentDescriptor,
   folders,
   targetFolderId,
   onTargetFolderChange,
@@ -54,10 +57,12 @@ export function CollabCreateItemDialog({
     return folderIds;
   }, [options]);
 
-  const title = kind === 'folder' ? 'New Shared Folder' : 'New Shared Document';
+  const documentDisplayName = documentDescriptor?.displayName ?? 'Document';
+  const documentSuffix = documentDescriptor?.defaultExtension ?? '';
+  const title = kind === 'folder' ? 'New Shared Folder' : `New Shared ${documentDisplayName}`;
   const itemLabel = kind === 'folder' ? 'folder' : 'document';
-  const placeholder = kind === 'folder' ? 'Folder name' : 'Document name';
-  const itemIcon = kind === 'folder' ? 'create_new_folder' : 'note_add';
+  const placeholder = kind === 'folder' ? 'Folder name' : `Untitled ${documentDisplayName}`;
+  const itemIcon = kind === 'folder' ? 'create_new_folder' : documentDescriptor?.icon ?? 'note_add';
   const titleId = `collab-create-${kind}-title`;
   const nameInputId = `collab-create-${kind}-name`;
   const locationLabelId = `collab-create-${kind}-location-label`;
@@ -154,7 +159,7 @@ export function CollabCreateItemDialog({
               htmlFor={nameInputId}
               className="block text-[11px] uppercase tracking-wider font-semibold text-[var(--nim-text-faint)] mb-1.5"
             >
-              {kind === 'folder' ? 'Folder name' : 'Document name'}
+              {kind === 'folder' ? 'Folder name' : `${documentDisplayName} name`}
             </label>
             <div className="flex items-center gap-1.5 px-2 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border-subtle,var(--nim-border))] rounded-md mb-4 focus-within:border-[var(--nim-primary)]">
               <MaterialSymbol icon="edit" size={14} className="text-[var(--nim-text-faint)]" />
@@ -166,8 +171,24 @@ export function CollabCreateItemDialog({
                 placeholder={placeholder}
                 value={name}
                 data-testid="collab-create-name-input"
-                onChange={event => setName(event.target.value)}
+                onChange={event => {
+                  const nextName = event.target.value;
+                  if (
+                    kind === 'document'
+                    && documentSuffix
+                    && nextName.toLowerCase().endsWith(documentSuffix.toLowerCase())
+                  ) {
+                    setName(nextName.slice(0, -documentSuffix.length));
+                  } else {
+                    setName(nextName);
+                  }
+                }}
               />
+              {kind === 'document' && documentSuffix && (
+                <span className="collab-create-name-suffix text-[12px] text-[var(--nim-text-muted)] pr-1 shrink-0">
+                  {documentSuffix}
+                </span>
+              )}
             </div>
 
             <div
@@ -250,8 +271,11 @@ export function CollabCreateItemDialog({
               <span className="text-[var(--nim-text)] font-medium truncate" title={destinationPath}>
                 {destinationPath}
               </span>
-              <span className="text-[var(--nim-primary)] truncate" title={name || placeholder}>
-                {name || placeholder}
+              <span
+                className="text-[var(--nim-primary)] truncate"
+                title={`${name || placeholder}${kind === 'document' ? documentSuffix : ''}`}
+              >
+                {name || placeholder}{kind === 'document' ? documentSuffix : ''}
               </span>
             </div>
           </div>
@@ -274,7 +298,7 @@ export function CollabCreateItemDialog({
               disabled={!name.trim()}
             >
               <MaterialSymbol icon={itemIcon} size={16} />
-              Create {kind === 'folder' ? 'Folder' : 'Document'}
+              Create {kind === 'folder' ? 'Folder' : documentDisplayName}
             </button>
           </div>
         </form>

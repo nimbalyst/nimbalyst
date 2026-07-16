@@ -71,4 +71,47 @@ describe('CollabCreateItemDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create Folder' }));
     expect(onConfirm).toHaveBeenCalledWith('Architecture');
   });
+
+  it('shows the selected catalog type and keeps its compound suffix fixed', () => {
+    const onConfirm = vi.fn();
+    render(
+      <CollabCreateItemDialog
+        isOpen
+        kind="document"
+        documentDescriptor={{
+          documentType: 'mockup.html',
+          displayName: 'Mockup',
+          fileExtensions: ['.mockup.html'],
+          defaultExtension: '.mockup.html',
+          icon: 'palette',
+          editor: { kind: 'extension', extensionId: 'com.nimbalyst.mockuplm' },
+          content: { strategy: 'text', codecId: 'mockup.html' },
+          creation: { defaultContent: '<main />', source: 'newFileMenu' },
+          capabilities: {
+            localCreate: true,
+            shareToTeam: true,
+            sharedCreate: true,
+            history: true,
+            export: true,
+            embed: false,
+          },
+        }}
+        folders={folders}
+        targetFolderId={null}
+        onTargetFolderChange={() => {}}
+        onConfirm={onConfirm}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect(screen.getByText('New Shared Mockup')).toBeTruthy();
+    expect(screen.getByText('.mockup.html')).toBeTruthy();
+    expect(document.querySelector('[data-icon="palette"]')).toBeTruthy();
+    fireEvent.change(screen.getByTestId('collab-create-name-input'), {
+      target: { value: 'Checkout.mockup.html' },
+    });
+    expect((screen.getByTestId('collab-create-name-input') as HTMLInputElement).value).toBe('Checkout');
+    fireEvent.click(screen.getByRole('button', { name: 'Create Mockup' }));
+    expect(onConfirm).toHaveBeenCalledWith('Checkout');
+  });
 });

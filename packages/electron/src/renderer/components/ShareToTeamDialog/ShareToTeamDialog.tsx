@@ -12,11 +12,13 @@ import {
   flattenCollabFolderOptions,
   normalizeCollabPath,
 } from '../CollabMode/collabTree';
+import type { CollaborativeDocumentTypeDescriptor } from '../../services/CollaborativeDocumentTypeCatalog';
 
 export interface ShareToTeamDialogProps {
   isOpen: boolean;
   onClose: () => void;
   fileName: string;
+  descriptor: CollaborativeDocumentTypeDescriptor;
   /** Workspace-relative path used as the source label in the dialog. */
   sourceRelPath: string;
   /**
@@ -32,6 +34,21 @@ export interface ShareFolderNode {
   name: string;
   depth: number;
   children: ShareFolderNode[];
+}
+
+export function splitShareFileName(
+  fileName: string,
+  descriptor: CollaborativeDocumentTypeDescriptor,
+): { baseName: string; suffix: string } {
+  const lowerName = fileName.toLowerCase();
+  const matchedSuffix = [...descriptor.fileExtensions]
+    .sort((left, right) => right.length - left.length || left.localeCompare(right))
+    .find(suffix => lowerName.endsWith(suffix.toLowerCase()));
+  const suffix = matchedSuffix
+    ? fileName.slice(fileName.length - matchedSuffix.length)
+    : descriptor.defaultExtension;
+  const baseName = matchedSuffix ? fileName.slice(0, -matchedSuffix.length) : fileName;
+  return { baseName, suffix };
 }
 
 /** Build the picker tree from authoritative first-class folder rows. */
@@ -65,6 +82,7 @@ export function ShareToTeamDialog({
   isOpen,
   onClose,
   fileName,
+  descriptor,
   sourceRelPath,
   onConfirm,
 }: ShareToTeamDialogProps) {
@@ -81,18 +99,22 @@ export function ShareToTeamDialog({
 
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const [sharedName, setSharedName] = useState<string>(fileName);
+  const fileNameParts = useMemo(
+    () => splitShareFileName(fileName, descriptor),
+    [descriptor, fileName],
+  );
+  const [sharedBaseName, setSharedBaseName] = useState<string>(fileNameParts.baseName);
   const [newFolderParentId, setNewFolderParentId] = useState<string | null | undefined>(undefined);
   const [newFolderName, setNewFolderName] = useState<string>('');
 
   // Reset transient state every time the dialog opens for a different file.
   useEffect(() => {
     if (!isOpen) return;
-    setSharedName(fileName);
+    setSharedBaseName(fileNameParts.baseName);
     setNewFolderParentId(undefined);
     setNewFolderName('');
     setHasInitializedSelection(false);
-  }, [isOpen, fileName]);
+  }, [fileNameParts.baseName, isOpen]);
 
   // Every open asks TeamRoom for a current folder-index snapshot. While that
   // round trip is pending, do not paint the previously cached tree.
@@ -292,7 +314,7 @@ export function ShareToTeamDialog({
   }, []);
 
   const handleConfirm = useCallback(() => {
-    const trimmedName = sharedName.trim();
+    const trimmedName = sharedBaseName.trim();
     if (
       !trimmedName
       || isRefreshingFolders
@@ -302,7 +324,7 @@ export function ShareToTeamDialog({
     onConfirm({
       folderId: selectedFolderId,
       folderPath: selectedFolderId ? (folderLookups.pathById.get(selectedFolderId) ?? '') : '',
-      sharedName: trimmedName,
+      sharedName: `${trimmedName}${fileNameParts.suffix}`,
     });
     onClose();
   }, [
@@ -313,7 +335,8 @@ export function ShareToTeamDialog({
     onClose,
     onConfirm,
     selectedFolderId,
-    sharedName,
+    fileNameParts.suffix,
+    sharedBaseName,
   ]);
 
   if (!isOpen) return null;
@@ -420,10 +443,11 @@ export function ShareToTeamDialog({
     : 'Team root /';
 
   const isRootCreateOpen = newFolderParentId === null;
-  const canConfirm = Boolean(sharedName.trim())
+  const canConfirm = Boolean(sharedBaseName.trim())
     && !isRefreshingFolders
     && !folderRefreshFailed
     && hasInitializedSelection;
+  const previewSharedName = `${sharedBaseName.trim() || fileNameParts.baseName}${fileNameParts.suffix}`;
 
   return (
     <div
@@ -465,10 +489,12 @@ export function ShareToTeamDialog({
             Source file
           </div>
           <div className="flex items-center gap-2.5 px-3 py-2 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border-subtle,var(--nim-border))] rounded-md mb-4">
-            <MaterialSymbol icon="description" size={20} className="text-[var(--nim-primary)] shrink-0" />
+            <MaterialSymbol icon={descriptor.icon} size={20} className="text-[var(--nim-primary)] shrink-0" />
             <div className="min-w-0 flex-1">
               <div className="text-[13px] font-medium text-[var(--nim-text)] truncate">{fileName}</div>
-              <div className="text-[11px] text-[var(--nim-text-faint)] truncate">{sourceRelPath}</div>
+              <div className="text-[11px] text-[var(--nim-text-faint)] truncate">
+                {descriptor.displayName} · {sourceRelPath}
+              </div>
             </div>
           </div>
 
@@ -479,8 +505,15 @@ export function ShareToTeamDialog({
             <MaterialSymbol icon="edit" size={14} className="text-[var(--nim-text-faint)]" />
             <input
               type="text"
-              value={sharedName}
-              onChange={(e) => setSharedName(e.target.value)}
+              value={sharedBaseName}
+              onChange={(e) => {
+                const nextName = e.target.value;
+                setSharedBaseName(
+                  nextName.toLowerCase().endsWith(fileNameParts.suffix.toLowerCase())
+                    ? nextName.slice(0, -fileNameParts.suffix.length)
+                    : nextName,
+                );
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && canConfirm) {
                   e.preventDefault();
@@ -488,8 +521,11 @@ export function ShareToTeamDialog({
                 }
               }}
               className="flex-1 bg-transparent border-none text-[var(--nim-text)] text-[13px] py-2 outline-none font-inherit"
-              placeholder="document.md"
+              placeholder="Document name"
             />
+            <span className="text-[12px] text-[var(--nim-text-muted)] pr-1 shrink-0">
+              {fileNameParts.suffix}
+            </span>
           </div>
 
           <div className="flex items-center justify-between mb-1.5">
@@ -590,8 +626,8 @@ export function ShareToTeamDialog({
             <span className="text-[var(--nim-text)] font-medium truncate" title={destinationFolderLabel}>
               {destinationFullPath}
             </span>
-            <span className="text-[var(--nim-primary)] truncate" title={sharedName}>
-              {sharedName || fileName}
+            <span className="text-[var(--nim-primary)] truncate" title={previewSharedName}>
+              {previewSharedName}
             </span>
           </div>
         </div>

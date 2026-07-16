@@ -25,6 +25,24 @@ vi.mock('../../../store/atoms/collabDocuments', async (importOriginal) => {
 });
 
 const workspacePath = '/workspace/share-picker-refresh';
+const markdownDescriptor = {
+  documentType: 'markdown',
+  displayName: 'Markdown',
+  fileExtensions: ['.md', '.markdown'],
+  defaultExtension: '.md',
+  icon: 'description',
+  editor: { kind: 'lexical' as const },
+  content: { strategy: 'lexical' as const, codecId: 'markdown' },
+  creation: { defaultContent: '', source: 'builtin' as const },
+  capabilities: {
+    localCreate: true,
+    shareToTeam: true,
+    sharedCreate: true,
+    history: true,
+    export: true,
+    embed: false,
+  },
+};
 
 function folder(folderId: string, name: string, parentFolderId: string | null): SharedFolder {
   return {
@@ -69,6 +87,7 @@ describe('ShareToTeamDialog folder refresh', () => {
           onClose={() => {}}
           fileName="notes.md"
           sourceRelPath="notes.md"
+          descriptor={markdownDescriptor}
           onConfirm={onConfirm}
         />
       </Provider>,
@@ -84,6 +103,7 @@ describe('ShareToTeamDialog folder refresh', () => {
           onClose={() => {}}
           fileName="notes.md"
           sourceRelPath="notes.md"
+          descriptor={markdownDescriptor}
           onConfirm={onConfirm}
         />
       </Provider>,
@@ -99,6 +119,7 @@ describe('ShareToTeamDialog folder refresh', () => {
           onClose={() => {}}
           fileName="notes.md"
           sourceRelPath="notes.md"
+          descriptor={markdownDescriptor}
           onConfirm={onConfirm}
         />
       </Provider>,

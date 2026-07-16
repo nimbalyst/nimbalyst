@@ -10,20 +10,21 @@
  * Each consumer provides CSS classes to match their own styling.
  */
 
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo, useSyncExternalStore } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { store } from '@nimbalyst/runtime/store';
 import { useAtomValue } from 'jotai';
 import { useFileActions } from '../hooks/useFileActions';
 import { workspaceHasTeamAtom } from '../store/atoms/collabDocuments';
 import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
-import { customEditorRegistry } from './CustomEditors';
-import { deriveCollabDocumentType } from '../utils/collabDocumentType';
 import { getRelativePath } from '../utils/pathUtils';
 import { dialogRef, DIALOG_IDS } from '../dialogs';
 import type { ShareToTeamData } from '../dialogs';
 import { joinCollabPath, normalizeCollabPath } from './CollabMode/collabTree';
-import { getCollaborativeDocumentTypeCatalog } from '../services/CollaborativeDocumentTypeCatalog';
+import {
+  getCollaborativeDocumentTypeCatalog,
+  type CollaborativeDocumentTypeDescriptor,
+} from '../services/CollaborativeDocumentTypeCatalog';
 import {
   CollaborativeDocumentCreationError,
   createCollaborativeDocument,
@@ -45,6 +46,27 @@ interface CommonFileActionsProps {
   useButtons?: boolean;
 }
 
+function decodeBase64Bytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  return Uint8Array.from(binary, character => character.charCodeAt(0));
+}
+
+export async function readShareToTeamSourceContent(
+  filePath: string,
+  descriptor: CollaborativeDocumentTypeDescriptor,
+): Promise<string | Uint8Array> {
+  const binary = descriptor.content.strategy === 'opaque-versioned';
+  const api = window.electronAPI;
+  const result = api?.readFileContent
+    ? await api.readFileContent(filePath, binary ? { binary: true } : undefined)
+    : await api?.invoke?.('read-file-content', filePath, binary ? { binary: true } : undefined);
+  if (!result?.success || typeof result.content !== 'string') {
+    const reason = result && 'error' in result ? result.error : 'The source file could not be read.';
+    throw new Error(reason);
+  }
+  return binary ? decodeBase64Bytes(result.content) : result.content;
+}
+
 export function CommonFileActions({
   filePath,
   fileName,
@@ -57,44 +79,52 @@ export function CommonFileActions({
 }: CommonFileActionsProps) {
   const actions = useFileActions(filePath, fileName);
   const hasTeam = useAtomValue(workspaceHasTeamAtom);
-  const collabDocumentType = useMemo(
-    () => deriveCollabDocumentType(fileName, customEditorRegistry),
-    [fileName]
+  const documentTypeCatalog = getCollaborativeDocumentTypeCatalog();
+  const catalogRevision = useSyncExternalStore(
+    documentTypeCatalog.subscribe,
+    documentTypeCatalog.getSnapshot,
+    documentTypeCatalog.getSnapshot,
+  );
+  const shareability = useMemo(
+    () => documentTypeCatalog.resolveShareability(fileName),
+    [catalogRevision, documentTypeCatalog, fileName],
   );
   const runShareToTeam = useCallback(async (
     folderId: string | null,
     folderPath: string,
     sharedName: string,
+    selectedDescriptor: CollaborativeDocumentTypeDescriptor,
   ) => {
     const { errorNotificationService } = await import('../services/ErrorNotificationService');
-
-    if (!collabDocumentType) {
-      // Defensive: button is gated on this being non-null, but guard anyway.
-      console.warn('[CommonFileActions] No collab document type for:', fileName);
-      return;
-    }
-    const documentType = collabDocumentType;
-    const descriptorResolution = getCollaborativeDocumentTypeCatalog().resolveShareability(fileName);
-    if (descriptorResolution.state !== 'ready') {
+    const matchedSuffix = [...selectedDescriptor.fileExtensions]
+      .sort((left, right) => right.length - left.length)
+      .find(suffix => fileName.toLowerCase().endsWith(suffix.toLowerCase()))
+      ?? selectedDescriptor.defaultExtension;
+    const liveResolution = documentTypeCatalog.resolveMetadata(
+      selectedDescriptor.documentType,
+      matchedSuffix,
+      documentTypeCatalog.editorIdForDescriptor(selectedDescriptor),
+    );
+    if (liveResolution.state !== 'ready') {
       errorNotificationService.showError(
         'Could not share to team',
-        descriptorResolution.reason,
+        liveResolution.reason,
       );
       return;
     }
-    const descriptor = descriptorResolution.descriptor;
+    const descriptor = liveResolution.descriptor;
+    const documentType = descriptor.documentType;
 
     // Read file content to seed the collaborative document on first share.
-    let initialContent: string | undefined;
+    let initialContent: string | Uint8Array;
     try {
-      if (window.electronAPI?.invoke) {
-        const result = await window.electronAPI.invoke('read-file-content', filePath);
-        if (result?.success && typeof result.content === 'string') {
-          initialContent = result.content;
-        }
-      }
+      initialContent = await readShareToTeamSourceContent(filePath, descriptor);
     } catch (err) {
-      console.warn('Failed to read file content for share:', err);
+      errorNotificationService.showError(
+        'Could not share to team',
+        err instanceof Error ? err.message : String(err),
+      );
+      return;
     }
 
     // Pre-seed migration of pasted image attachments. Local refs like
@@ -119,6 +149,7 @@ export function CommonFileActions({
 
     if (
       documentType === 'markdown' &&
+      typeof initialContent === 'string' &&
       initialContent &&
       workspacePath &&
       documentSync?.open &&
@@ -188,10 +219,10 @@ export function CommonFileActions({
         descriptor,
         requestedName: trimmedName,
         parentFolderId: folderId,
-        sourceContent: migratedContent ?? '',
+        sourceContent: migratedContent,
         localOrigin: {
           sourceFilePath: filePath,
-          sourceContent: initialContent ?? '',
+          sourceContent: initialContent,
         },
         operationId: documentId,
         documentId,
@@ -254,19 +285,22 @@ export function CommonFileActions({
         );
         break;
     }
-  }, [filePath, fileName, collabDocumentType]);
+  }, [documentTypeCatalog, filePath, fileName]);
 
   const openShareToTeamDialog = useCallback(() => {
+    if (shareability.state !== 'ready') return;
+    const descriptor = shareability.descriptor;
     const workspacePath = store.get(activeWorkspacePathAtom);
     const sourceRelPath = workspacePath ? getRelativePath(workspacePath, filePath) || fileName : fileName;
     dialogRef.current?.open<ShareToTeamData>(DIALOG_IDS.SHARE_TO_TEAM, {
       fileName,
       sourceRelPath,
+      descriptor,
       onConfirm: ({ folderId, folderPath, sharedName }) => {
-        runShareToTeam(folderId, folderPath, sharedName);
+        runShareToTeam(folderId, folderPath, sharedName, descriptor);
       },
     });
-  }, [filePath, fileName, runShareToTeam]);
+  }, [filePath, fileName, runShareToTeam, shareability]);
 
   const Item = useButtons ? 'button' : 'div';
 
@@ -321,16 +355,28 @@ export function CommonFileActions({
         </Item>
       )}
 
-      {/* Share to Team -- shown only when the file's type is actually
-          collab-supported (built-in markdown, or an extension that declares
-          `collaboration.supported: true`) AND the workspace has a team. */}
-      {collabDocumentType && hasTeam && (
+      {/* Team workspaces always explain catalog eligibility. Unsupported
+          types stay visible but cannot open the promotion dialog. */}
+      {hasTeam && (
         <Item
-          className={menuItemClass}
-          onClick={() => { openShareToTeamDialog(); onClose(); }}
+          className={`${menuItemClass} ${shareability.state === 'ready' ? '' : 'opacity-55 cursor-not-allowed'}`}
+          aria-disabled={shareability.state !== 'ready'}
+          title={shareability.state === 'unsupported' ? shareability.reason : undefined}
+          onClick={() => {
+            if (shareability.state !== 'ready') return;
+            openShareToTeamDialog();
+            onClose();
+          }}
         >
           {showIcons && <MaterialSymbol icon="group" size={iconSize} />}
-          <span>Share to Team</span>
+          <span className="min-w-0 flex-1">
+            <span className="block">Share to Team</span>
+            {shareability.state === 'unsupported' && (
+              <span className="block text-[11px] leading-snug text-nim-disabled mt-0.5">
+                {shareability.reason}
+              </span>
+            )}
+          </span>
         </Item>
       )}
     </>

@@ -5,6 +5,10 @@ import { MaterialSymbol } from '@nimbalyst/runtime';
 import { InputModal } from '../InputModal';
 import { WorkspaceSummaryHeader } from '../WorkspaceSummaryHeader';
 import { CollabCreateItemDialog } from './CollabCreateItemDialog';
+import {
+  buildSharedNewDocumentMenuItems,
+  CollabNewDocumentMenu,
+} from './CollabNewDocumentMenu';
 import { useFloatingMenu, FloatingPortal, virtualElement } from '../../hooks/useFloatingMenu';
 import {
   sharedDocumentsAtom,
@@ -56,7 +60,10 @@ import {
   markAllSharedDocsViewed,
   type CollabTreeFilter,
 } from '../../store/atoms/collabDiscovery';
-import { getCollaborativeDocumentTypeCatalog } from '../../services/CollaborativeDocumentTypeCatalog';
+import {
+  getCollaborativeDocumentTypeCatalog,
+  type CollaborativeDocumentTypeDescriptor,
+} from '../../services/CollaborativeDocumentTypeCatalog';
 import { resolveSharedDocumentTypePresentation } from '../../utils/sharedDocumentTypeMetadata';
 import { createCollaborativeDocument } from '../../services/collaborativeDocumentCreationOrchestrator';
 
@@ -141,7 +148,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
   // first-class folderId, so the rename rewrites descendant document titles.
   const [legacyFolderToRename, setLegacyFolderToRename] = useState<{ path: string; name: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [isCreateDocumentOpen, setIsCreateDocumentOpen] = useState(false);
+  const [createDocumentDescriptor, setCreateDocumentDescriptor] = useState<CollaborativeDocumentTypeDescriptor | null>(null);
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
   const [createTargetFolderId, setCreateTargetFolderId] = useState<string | null>(null);
   const [documentToRename, setDocumentToRename] = useState<SharedDocument | null>(null);
@@ -273,6 +280,13 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     open: overflowOpen,
     onOpenChange: setOverflowOpen,
   });
+  const newDocumentMenu = useFloatingMenu({
+    placement: 'bottom-start',
+  });
+  const sharedNewDocumentMenuItems = useMemo(
+    () => buildSharedNewDocumentMenuItems(documentTypeCatalog.getDescriptors()),
+    [catalogRevision, documentTypeCatalog],
+  );
 
   const handleMarkAllRead = useCallback(() => {
     setOverflowOpen(false);
@@ -587,12 +601,25 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     return resolveCollabCreateTargetFolderId(contextFolderId, selectedFolderId);
   }, [contextMenu, selectedFolderId]);
 
-  const openCreateDialog = useCallback((kind: 'document' | 'folder') => {
+  const openCreateFolderDialog = useCallback(() => {
     setCreateTargetFolderId(getCreationBaseFolderId());
-    if (kind === 'document') setIsCreateDocumentOpen(true);
-    else setIsCreateFolderOpen(true);
+    setIsCreateFolderOpen(true);
     setContextMenu(null);
   }, [getCreationBaseFolderId]);
+
+  const openCreateDocumentMenu = useCallback((reference: HTMLElement) => {
+    setCreateTargetFolderId(getCreationBaseFolderId());
+    const rect = reference.getBoundingClientRect();
+    newDocumentMenu.refs.setPositionReference(virtualElement(rect.left, rect.bottom));
+    newDocumentMenu.setIsOpen(true);
+    setContextMenu(null);
+  }, [getCreationBaseFolderId, newDocumentMenu.refs, newDocumentMenu.setIsOpen]);
+
+  const selectCreateDocumentType = useCallback((descriptor: CollaborativeDocumentTypeDescriptor) => {
+    if (!descriptor.capabilities.sharedCreate) return;
+    newDocumentMenu.setIsOpen(false);
+    setCreateDocumentDescriptor(descriptor);
+  }, [newDocumentMenu.setIsOpen]);
 
   const handleCreateFolder = useCallback(async (folderName: string) => {
     if (!canMutateMetadata('create folders')) return;
@@ -623,19 +650,16 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
 
   const handleCreateDocument = useCallback(async (documentName: string) => {
     if (!canMutateMetadata('create documents')) return;
+    const descriptor = createDocumentDescriptor;
+    if (!descriptor) return;
     const parentId = createTargetFolderId;
     const parentPath = parentId ? (folderPathById.get(parentId) ?? '') : '';
-    const markdown = documentTypeCatalog.resolveMetadata('markdown', '.md', 'builtin.lexical');
-    if (markdown.state !== 'ready') {
-      errorNotificationService.showError('Could not create shared document', markdown.reason);
-      return;
-    }
     try {
       await createCollaborativeDocument({
-        descriptor: markdown.descriptor,
+        descriptor,
         requestedName: documentName,
         parentFolderId: parentId,
-        sourceContent: '',
+        sourceContent: descriptor.creation?.defaultContent ?? '',
       });
     } catch (error) {
       errorNotificationService.showError(
@@ -655,9 +679,9 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
 
     setSelectedFolderPath(parentPath || null);
     setSelectedFolderId(parentId);
-    setIsCreateDocumentOpen(false);
+    setCreateDocumentDescriptor(null);
     setContextMenu(null);
-  }, [canMutateMetadata, createTargetFolderId, documentTypeCatalog, folderPathById]);
+  }, [canMutateMetadata, createDocumentDescriptor, createTargetFolderId, folderPathById]);
 
   const handleRenameDocument = useCallback(async (documentName: string) => {
     if (!documentToRename) return;
@@ -1008,10 +1032,12 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               </button>
             )}
             <button
+              ref={newDocumentMenu.refs.setReference}
+              {...newDocumentMenu.getReferenceProps()}
               type="button"
               className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
               title="New document"
-              onClick={() => openCreateDialog('document')}
+              onClick={event => openCreateDocumentMenu(event.currentTarget)}
             >
               <MaterialSymbol icon="note_add" size={16} />
             </button>
@@ -1019,7 +1045,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               type="button"
               className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
               title="New folder"
-              onClick={() => openCreateDialog('folder')}
+              onClick={openCreateFolderDialog}
             >
               <MaterialSymbol icon="create_new_folder" size={16} />
             </button>
@@ -1251,6 +1277,22 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
         </FloatingPortal>
       )}
 
+      {newDocumentMenu.isOpen && (
+        <FloatingPortal>
+          <div
+            ref={newDocumentMenu.refs.setFloating}
+            style={newDocumentMenu.floatingStyles}
+            {...newDocumentMenu.getFloatingProps()}
+            className="z-[10000]"
+          >
+            <CollabNewDocumentMenu
+              items={sharedNewDocumentMenuItems}
+              onSelect={selectCreateDocumentType}
+            />
+          </div>
+        </FloatingPortal>
+      )}
+
       {/* Context menu */}
       {contextMenu && (
         <FloatingPortal>
@@ -1265,7 +1307,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               <button
                 type="button"
                 className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover"
-                onClick={() => openCreateDialog('document')}
+                onClick={event => openCreateDocumentMenu(event.currentTarget)}
               >
                 <MaterialSymbol icon="note_add" size={18} />
                 <span>New Document</span>
@@ -1273,7 +1315,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               <button
                 type="button"
                 className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover"
-                onClick={() => openCreateDialog('folder')}
+                onClick={openCreateFolderDialog}
               >
                 <MaterialSymbol icon="create_new_folder" size={18} />
                 <span>New Folder</span>
@@ -1484,14 +1526,15 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
       )}
 
       <CollabCreateItemDialog
-        isOpen={isCreateDocumentOpen}
+        isOpen={createDocumentDescriptor !== null}
         kind="document"
+        documentDescriptor={createDocumentDescriptor ?? undefined}
         folders={sharedFolders}
         targetFolderId={createTargetFolderId}
         onTargetFolderChange={setCreateTargetFolderId}
         onConfirm={handleCreateDocument}
         onCancel={() => {
-          setIsCreateDocumentOpen(false);
+          setCreateDocumentDescriptor(null);
           setContextMenu(null);
         }}
       />

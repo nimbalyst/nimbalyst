@@ -10,6 +10,7 @@ import type { DialogConfig } from '../contexts/DialogContext.types';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { DIALOG_IDS } from './registry';
 import { ShareToTeamDialog } from '../components/ShareToTeamDialog';
+import type { CollaborativeDocumentTypeDescriptor } from '../services/CollaborativeDocumentTypeCatalog';
 
 // ============================================================================
 // Types
@@ -31,6 +32,7 @@ export interface CreateTeamData {
 export interface ShareToTeamData {
   fileName: string;
   sourceRelPath: string;
+  descriptor: CollaborativeDocumentTypeDescriptor;
   onConfirm: (params: { folderId: string | null; folderPath: string; sharedName: string }) => void;
 }
 
@@ -215,6 +217,7 @@ function ShareToTeamDialogWrapper({
       onClose={onClose}
       fileName={data.fileName}
       sourceRelPath={data.sourceRelPath}
+      descriptor={data.descriptor}
       onConfirm={data.onConfirm}
     />
   );
