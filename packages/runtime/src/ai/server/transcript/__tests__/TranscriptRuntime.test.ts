@@ -44,6 +44,27 @@ describe('TranscriptRuntime', () => {
     expect(events[0].searchableText).toBe('hello world');
   });
 
+  it('getViewMessages bounds the resident window to the most recent events (nimbalyst#892)', async () => {
+    const N = 30;
+    const raw = makeRawStore(
+      Array.from({ length: N }, (_, i) => userInput(i + 1, 's1', `msg ${i + 1}`)),
+    );
+    const runtime = new TranscriptRuntime(raw);
+
+    // maxEvents: 0 -> full history (opt-out)
+    const full = await runtime.getViewMessages('s1', 'claude-code', { maxEvents: 0 });
+    expect(full.length).toBe(N);
+
+    // default cap (5000) is well above N -> no regression for normal sessions
+    const def = await runtime.getViewMessages('s1', 'claude-code');
+    expect(def.length).toBe(N);
+
+    // an explicit small window only materializes the tail, not the whole history
+    const windowed = await runtime.getViewMessages('s1', 'claude-code', { maxEvents: 5 });
+    expect(windowed.length).toBeLessThan(full.length);
+    expect(windowed.length).toBeLessThanOrEqual(5);
+  });
+
   it('reports needsTransformation = true only for sessions not yet cached', async () => {
     const raw = makeRawStore([userInput(1, 's1', 'hi')]);
     const runtime = new TranscriptRuntime(raw);
