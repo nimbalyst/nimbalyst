@@ -299,6 +299,7 @@ function projectEvent(
           ...(p.teamName ? { team_name: p.teamName } : {}),
           ...(p.teammateMode ? { mode: p.teammateMode } : {}),
           ...(p.model ? { model: p.model } : {}),
+          ...(p.reasoningEffort ? { reasoningEffort: p.reasoningEffort } : {}),
         },
         targetFilePath: null,
         mcpServer: null,

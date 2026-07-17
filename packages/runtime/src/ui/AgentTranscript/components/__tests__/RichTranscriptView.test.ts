@@ -7,6 +7,7 @@ import {
   parseUnifiedDiffToReplacements,
   shouldAutoScrollTranscript,
   stripMcpPrefix,
+  formatSubagentAuditLabel,
   toolCallDiffsToEdits,
 } from '../RichTranscriptView';
 
@@ -450,5 +451,16 @@ describe('interactive widget tool name normalization', () => {
     expect(isInteractiveWidgetTool(undefined)).toBe(false);
     expect(isInteractiveWidgetTool(null)).toBe(false);
     expect(isInteractiveWidgetTool('')).toBe(false);
+  });
+});
+
+describe('sub-agent audit labels', () => {
+  it('renders exact model and effort values as an accessible compact label', () => {
+    expect(formatSubagentAuditLabel('gpt-5.4', 'high')).toBe('Model: gpt-5.4; Reasoning effort: high');
+  });
+
+  it('omits the label when metadata is absent and does not add placeholders', () => {
+    expect(formatSubagentAuditLabel(null, undefined)).toBeNull();
+    expect(formatSubagentAuditLabel('gpt-5.4', null)).toBe('Model: gpt-5.4');
   });
 });
