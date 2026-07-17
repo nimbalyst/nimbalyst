@@ -1023,7 +1023,9 @@ export function registerWorkspaceHandlers() {
         try {
             const { workspacePath, filePath } = options;
 
-            // Resolve workspace-relative paths (e.g. from git status) against workspacePath
+            // filePath arriving here is normally already absolute (e.g. absolutePath
+            // from the git panel); the workspacePath join below is a legacy fallback
+            // for callers that still pass a workspace-relative path.
             const absoluteFilePath = path.isAbsolute(filePath)
                 ? filePath
                 : workspacePath

@@ -71,9 +71,14 @@ export function resolveGitDiffTarget(
   filePath: string
 ): { gitWorkspacePath: string; gitFilePath: string } {
   const resolvedWorkspacePath = resolve(workspacePath);
+  // Single base for both resolving a relative filePath and bounding the
+  // findGitRootForFile walk below -- workspacePath may be a SUBFOLDER of the
+  // git repo root (#124), and relative filePath values (e.g. from
+  // git:working-changes) are repo-root-relative, not workspace-relative.
+  const gitBase = gitRootFor(resolvedWorkspacePath) ?? resolvedWorkspacePath;
   const absoluteFilePath = isAbsolute(filePath)
     ? resolve(filePath)
-    : resolve(resolvedWorkspacePath, filePath);
+    : resolve(gitBase, filePath);
 
   const relatedAbsolutePath = isAbsolute(filePath) && isFileInWorkspaceOrWorktree(absoluteFilePath, resolvedWorkspacePath)
     ? absoluteFilePath
@@ -81,11 +86,11 @@ export function resolveGitDiffTarget(
   // Files resolved as belonging to the workspace or a sibling worktree may live
   // outside the workspace's own repo root entirely (a linked worktree is a
   // separate working tree next to the main one), so this branch intentionally
-  // is not bounded by gitRootFor(resolvedWorkspacePath) -- only by the
+  // is not bounded by gitBase -- only by the
   // filesystem root -- to preserve the previous unbounded findNearestGitRoot walk.
   const gitWorkspacePath = relatedAbsolutePath
     ? findGitRootForFile(relatedAbsolutePath, parsePath(relatedAbsolutePath).root) ?? resolvedWorkspacePath
-    : findGitRootForFile(filePath, gitRootFor(resolvedWorkspacePath) ?? resolvedWorkspacePath) ?? resolvedWorkspacePath;
+    : findGitRootForFile(filePath, gitBase) ?? resolvedWorkspacePath;
 
   return {
     gitWorkspacePath,

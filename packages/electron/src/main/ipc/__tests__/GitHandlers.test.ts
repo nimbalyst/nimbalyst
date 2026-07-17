@@ -166,3 +166,59 @@ describe('git:working-changes / git:commit-detail absolutePath (subfolder worksp
     ]);
   });
 });
+
+// #124: resolveGitDiffTarget must resolve a RELATIVE filePath against the git
+// root (the boundary used by findGitRootForFile), not against workspacePath,
+// when workspacePath is a subfolder of the repo. git:working-changes emits
+// repo-root-relative paths, so a workspace opened at `<repo>/home` with a
+// changed file `home/inner.txt` must not double up to `home/home/inner.txt`.
+describe('resolveGitDiffTarget / git:file-diff (subfolder workspace, repo-root-relative path, #124)', () => {
+  let repoRoot: string;
+  let workspacePath: string;
+  let innerFilePath: string;
+
+  beforeAll(() => {
+    registerGitHandlers();
+  });
+
+  beforeEach(async () => {
+    const raw = await fs.mkdtemp(path.join(os.tmpdir(), 'nim-git-handlers-diff-target-'));
+    repoRoot = await fs.realpath(raw);
+    workspacePath = path.join(repoRoot, 'home');
+    await fs.mkdir(workspacePath, { recursive: true });
+    innerFilePath = path.join(workspacePath, 'inner.txt');
+
+    runGit(['init', '-q'], repoRoot);
+    runGit(['config', 'user.email', 'test@example.com'], repoRoot);
+    runGit(['config', 'user.name', 'Test User'], repoRoot);
+
+    await fs.writeFile(innerFilePath, 'line one\n');
+    runGit(['add', '.'], repoRoot);
+    runGit(['commit', '-q', '-m', 'initial'], repoRoot);
+
+    // Uncommitted modification, so the diff peek has content.
+    await fs.writeFile(innerFilePath, 'line one changed\n');
+  });
+
+  afterEach(async () => {
+    await fs.rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it('resolves a repo-root-relative filePath against the git root, not workspacePath', () => {
+    const target = resolveGitDiffTarget(workspacePath, 'home/inner.txt');
+
+    expect(target).toEqual({
+      gitWorkspacePath: repoRoot,
+      gitFilePath: 'home/inner.txt',
+    });
+  });
+
+  it('produces a non-empty diff via git:file-diff for the repo-root-relative path', async () => {
+    const handler = getGitIpcHandler('git:file-diff');
+    const result = await handler({}, workspacePath, { path: 'home/inner.txt', group: 'unstaged' });
+
+    expect(result.unifiedDiff).toContain('inner.txt');
+    expect(result.unifiedDiff).toContain('line one changed');
+    expect(result.unifiedDiff.length).toBeGreaterThan(0);
+  });
+});

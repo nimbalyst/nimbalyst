@@ -206,6 +206,29 @@ export class GitRefWatcher {
 
       const git: SimpleGit = simpleGit(gitRoot ?? workspacePath);
 
+      // Committed-file paths are later joined against entry.gitRoot and handed
+      // to HistoryManager (auto-approve) and renderer consumers, both of which
+      // key off the LOGICAL workspacePath the user opened -- not git's
+      // physical toplevel. When workspacePath is a symlink whose target IS
+      // the git root (workspace == repo root, just reached via a symlink),
+      // joining on the physical path would silently stop matching those
+      // logical paths. Detect that case via realpath and keep the join base
+      // as workspacePath so paths round-trip to HistoryManager keys. A
+      // subfolder workspace (#124, physical gitRoot is an ancestor of
+      // workspacePath) still needs the physical root, so it is left alone.
+      const commitFileJoinBase = ((): string => {
+        if (!gitRoot) return workspacePath;
+        try {
+          if (fs.realpathSync(gitRoot) === fs.realpathSync(workspacePath)) {
+            return workspacePath;
+          }
+        } catch {
+          // If either path can't be resolved, treat them as not-equal and
+          // fall back to the physical root (previous behavior).
+        }
+        return gitRoot;
+      })();
+
       // Pre-flight: get current branch + HEAD hash. Both can fail on a
       // fresh-init repo with zero commits ("fatal: your current branch X
       // does not have any commits yet"). Treat that as a known no-op rather
@@ -276,7 +299,7 @@ export class GitRefWatcher {
         lastCommitHash,
         currentBranch,
         git,
-        gitRoot: gitRoot ?? workspacePath,
+        gitRoot: commitFileJoinBase,
       });
 
       logger.main.info('[GitRefWatcher] Started watching:', {

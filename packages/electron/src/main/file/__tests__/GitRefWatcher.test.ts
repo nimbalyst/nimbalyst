@@ -1,5 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as path from 'path';
+import * as os from 'os';
+import * as fs from 'fs';
 
 // Hoisted mocks: simple-git fakes that individual tests can wire per scenario,
 // plus logger fakes that the vi.mock factory below references. Hoisting is
@@ -202,5 +204,65 @@ describe('GitRefWatcher - subfolder workspace (#124)', () => {
     // The committed file's absolute path must be joined against the repo
     // root, not the (sub-folder) workspace path.
     expect(event.committedFiles).toEqual([path.join(gitRoot, 'home', 'file.txt')]);
+  });
+});
+
+describe('GitRefWatcher - symlinked workspace == repo root (#124 invariant)', () => {
+  let realDir: string;
+  let symlinkPath: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // A real directory plus a real symlink pointing at it, so
+    // fs.realpathSync (unmocked -- only watchFile/unwatchFile/promises.stat
+    // /promises.readFile are stubbed above) resolves both to the same
+    // canonical path, the same way it would for a symlinked project folder.
+    realDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-gitrefwatcher-real-'));
+    symlinkPath = path.join(
+      os.tmpdir(),
+      `nim-gitrefwatcher-symlink-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    fs.symlinkSync(realDir, symlinkPath, 'dir');
+  });
+
+  afterEach(() => {
+    fs.rmSync(symlinkPath, { force: true });
+    fs.rmSync(realDir, { recursive: true, force: true });
+  });
+
+  it('joins committed-file paths against the logical (symlink) workspacePath, not the physical git root, when workspace == repo root', async () => {
+    // git rev-parse --show-toplevel resolves symlinks and returns the
+    // PHYSICAL path (realDir). workspacePath is the symlink the user
+    // actually opened, and is what HistoryManager auto-approve keys off.
+    mockResolveGitContext.mockReturnValue({ isRepo: true, gitRoot: realDir });
+
+    mockStatus.mockResolvedValue({ current: 'master' });
+    mockLog
+      .mockResolvedValueOnce({ latest: { hash: 'abc123', message: 'Initial commit' } })
+      .mockResolvedValueOnce({ latest: { hash: 'def456', message: 'Second commit' } });
+    mockDiffSummary.mockResolvedValue({ files: [{ file: 'file.txt' }] });
+
+    const watcher = new GitRefWatcher();
+    await watcher.start(symlinkPath);
+    expect(watcher.getStats().activeWatchers).toBe(1);
+
+    const commitEventPromise = new Promise<CommitDetectedEvent>((resolve) => {
+      watcher.onCommitDetected((event) => resolve(event));
+    });
+
+    // Simulate the ref file changing, the same way the native fs.watchFile
+    // callback would fire on a real commit.
+    const refListener = mockWatchFile.mock.calls[0]?.[2];
+    expect(refListener).toBeTypeOf('function');
+    const prevStats = { mtimeMs: 0, ctimeMs: 0, size: 0, ino: 0, nlink: 0 };
+    const currStats = { mtimeMs: 1, ctimeMs: 1, size: 1, ino: 1, nlink: 1 };
+    refListener(currStats, prevStats);
+
+    const event = await commitEventPromise;
+
+    // Must be joined against the symlink workspacePath (logical), not the
+    // realpath-resolved git root (physical) -- otherwise commit auto-approve
+    // silently stops matching for a symlinked workspace root.
+    expect(event.committedFiles).toEqual([path.join(symlinkPath, 'file.txt')]);
   });
 });
