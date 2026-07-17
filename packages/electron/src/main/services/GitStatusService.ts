@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { isGitAvailable, logEbadfDiagnostic } from '../utils/gitUtils';
 import { getAllFilesInDirectory } from '../utils/fileUtils';
+import { resolveGitContext } from './GitContextService';
 
 export interface FileGitStatus {
   filePath: string;
@@ -103,10 +104,13 @@ export class GitStatusService {
     // and either returns nothing (workspace not a repo) or returns paths
     // relative to the wrong root (workspace IS a repo but the file lives in
     // a nested submodule-style repo with its own .git).
+    const { gitRoot } = resolveGitContext(workspacePath);
+    const rootBoundary = gitRoot ?? workspacePath;
+
     const filesByRoot = new Map<string, string[]>();
     const filesWithoutRoot: string[] = [];
     for (const filePath of filePaths) {
-      const root = findGitRootForFile(filePath, workspacePath);
+      const root = findGitRootForFile(filePath, rootBoundary);
       if (!root) {
         filesWithoutRoot.push(filePath);
         continue;
@@ -289,12 +293,7 @@ export class GitStatusService {
    * Check if a directory is a git repository
    */
   private isGitRepository(workspacePath: string): boolean {
-    try {
-      const gitDir = join(workspacePath, '.git');
-      return existsSync(gitDir);
-    } catch {
-      return false;
-    }
+    return resolveGitContext(workspacePath).isRepo;
   }
 
   /**
@@ -343,7 +342,9 @@ export class GitStatusService {
    * - Unchanged files
    *
    * @param workspacePath The workspace/repository path
-   * @returns Array of file paths (relative to workspace) that have uncommitted changes
+   * @returns Array of file paths (relative to the owning git root - see
+   *   `resolveGitContext` - not necessarily the workspace) that have
+   *   uncommitted changes
    */
   async getUncommittedFiles(workspacePath: string): Promise<string[]> {
     if (!workspacePath) {
@@ -355,10 +356,12 @@ export class GitStatusService {
       return [];
     }
 
-    // Check if this is a git repository
-    if (!this.isGitRepository(workspacePath)) {
+    // Resolve the owning git root; may sit above workspacePath (#124).
+    const { isRepo, gitRoot } = resolveGitContext(workspacePath);
+    if (!isRepo) {
       return [];
     }
+    const root = gitRoot ?? workspacePath;
 
     // Check cache
     const cacheKey = `${workspacePath}:uncommitted`;
@@ -371,13 +374,13 @@ export class GitStatusService {
 
     try {
       // Get git status for the entire repository using porcelain format
-      const statusOutput = this.executeGitStatus(workspacePath);
+      const statusOutput = this.executeGitStatus(root);
 
       // Parse status output
       const statusMap = this.parseGitStatus(statusOutput);
 
-      // Filter for uncommitted files (untracked or modified, not deleted)
-      // Convert relative paths to absolute paths using path.resolve
+      // Filter for uncommitted files (untracked or modified, not deleted).
+      // git status --porcelain paths are already root-relative.
       const uncommittedFiles: string[] = [];
       const cacheResult: GitStatusResult = {};
 
@@ -387,18 +390,16 @@ export class GitStatusService {
             fileStatus.status === 'modified' ||
             fileStatus.status === 'staged' ||
             fileStatus.status === 'deleted') {
-          // Convert to absolute path (git returns paths relative to workspace)
-          const absolutePath = resolve(workspacePath, relativePath);
-
           // For untracked entries, check if it's a directory
           // git status --porcelain shows untracked directories with trailing slash (e.g., "?? newdir/")
           // or they may appear without trailing slash but be a directory
           if (fileStatus.status === 'untracked') {
+            const absolutePath = resolve(root, relativePath);
             try {
               const stats = statSync(absolutePath);
               if (stats.isDirectory()) {
-                // Expand directory to get all files inside (returns absolute paths)
-                const filesInDir = getAllFilesInDirectory(absolutePath);
+                // Expand directory to get all files inside, root-relative.
+                const filesInDir = getAllFilesInDirectory(absolutePath, { basePath: root, normalizeSlashes: true });
                 for (const filePath of filesInDir) {
                   uncommittedFiles.push(filePath);
                   cacheResult[filePath] = {
@@ -414,12 +415,12 @@ export class GitStatusService {
             }
           }
 
-          uncommittedFiles.push(absolutePath);
+          uncommittedFiles.push(relativePath);
 
-          // Cache with absolute path as key
-          cacheResult[absolutePath] = {
+          // Cache with root-relative path as key
+          cacheResult[relativePath] = {
             ...fileStatus,
-            filePath: absolutePath
+            filePath: relativePath
           };
         }
       }
@@ -601,15 +602,19 @@ export class GitStatusService {
     }
 
     try {
+      // Resolve the owning git root; may sit above workspacePath (#124).
+      const { gitRoot } = resolveGitContext(workspacePath);
+      const root = gitRoot ?? workspacePath;
+
       // Get the current branch of this worktree
-      const worktreeBranch = this.getCurrentBranch(workspacePath);
+      const worktreeBranch = this.getCurrentBranch(root);
       if (!worktreeBranch) {
         console.error('[GitStatusService] Could not determine worktree branch');
         return [];
       }
 
       // Get the main worktree path
-      const mainWorktreePath = this.getMainWorktreePath(workspacePath);
+      const mainWorktreePath = this.getMainWorktreePath(root);
       if (!mainWorktreePath) {
         console.error('[GitStatusService] Could not determine main worktree path');
         return [];
@@ -629,7 +634,7 @@ export class GitStatusService {
       // 1. Get files committed in worktree branch but not in main branch
       // Use three-dot diff to show changes in worktree branch since it diverged from main branch
       const diffOutput = execSync(`git diff --name-only ${mainBranch}...${worktreeBranch}`, {
-        cwd: workspacePath,
+        cwd: root,
         encoding: 'utf8',
         timeout: 5000,
         stdio: ['pipe', 'pipe', 'pipe']
@@ -641,7 +646,7 @@ export class GitStatusService {
           if (!line.trim()) continue;
 
           const relativePath = this.normalizePath(line);
-          const absolutePath = resolve(workspacePath, relativePath);
+          const absolutePath = resolve(root, relativePath);
           filePathSet.add(absolutePath);
 
           cacheResult[absolutePath] = {
@@ -651,9 +656,12 @@ export class GitStatusService {
         }
       }
 
-      // 2. Get uncommitted files (staged, modified, or untracked)
+      // 2. Get uncommitted files (staged, modified, or untracked).
+      // getUncommittedFiles returns root-relative paths; resolve to absolute
+      // to keep this method's own absolute-path contract.
       const uncommittedFiles = await this.getUncommittedFiles(workspacePath);
-      for (const absolutePath of uncommittedFiles) {
+      for (const relativePath of uncommittedFiles) {
+        const absolutePath = resolve(root, relativePath);
         filePathSet.add(absolutePath);
 
         // Only add to cache if not already there
@@ -695,10 +703,12 @@ export class GitStatusService {
       return {};
     }
 
-    // Check if this is a git repository
-    if (!this.isGitRepository(workspacePath)) {
+    // Resolve the owning git root; may sit above workspacePath (#124).
+    const { isRepo, gitRoot } = resolveGitContext(workspacePath);
+    if (!isRepo) {
       return {};
     }
+    const root = gitRoot ?? workspacePath;
 
     // Check cache (use null byte separator to avoid path collisions with colons on Windows)
     const cacheKey = `${workspacePath}\0all-statuses`;
@@ -709,7 +719,7 @@ export class GitStatusService {
 
     try {
       // Get git status for the entire repository using porcelain format
-      const statusOutput = this.executeGitStatus(workspacePath);
+      const statusOutput = this.executeGitStatus(root);
 
       // Parse status output
       const statusMap = this.parseGitStatus(statusOutput);
@@ -719,7 +729,7 @@ export class GitStatusService {
       for (const [relativePath, fileStatus] of statusMap.entries()) {
         // Only include changed files (not unchanged)
         if (fileStatus.status !== 'unchanged') {
-          const absolutePath = resolve(workspacePath, relativePath);
+          const absolutePath = resolve(root, relativePath);
 
           // For untracked entries, check if it's a directory and expand it
           if (fileStatus.status === 'untracked') {
@@ -771,8 +781,9 @@ export class GitStatusService {
       return false;
     }
 
-    // Check if this is a git repository
-    if (!this.isGitRepository(workspacePath)) {
+    // Resolve the owning git root; may sit above workspacePath (#124).
+    const { isRepo, gitRoot } = resolveGitContext(workspacePath);
+    if (!isRepo) {
       return false;
     }
 
@@ -784,7 +795,7 @@ export class GitStatusService {
     try {
       // Get remote URL (typically origin)
       const remoteUrl = execSync('git remote get-url origin', {
-        cwd: workspacePath,
+        cwd: gitRoot ?? workspacePath,
         encoding: 'utf8',
         timeout: 5000,
         stdio: ['pipe', 'pipe', 'pipe']
@@ -814,7 +825,9 @@ export class GitStatusService {
     if (!workspacePath) {
       return null;
     }
-    if (!this.isGitRepository(workspacePath)) {
+    // Resolve the owning git root; may sit above workspacePath (#124).
+    const { isRepo, gitRoot } = resolveGitContext(workspacePath);
+    if (!isRepo) {
       return null;
     }
     if (!isGitAvailable()) {
@@ -824,7 +837,7 @@ export class GitStatusService {
     let remoteUrl: string;
     try {
       remoteUrl = execSync('git remote get-url origin', {
-        cwd: workspacePath,
+        cwd: gitRoot ?? workspacePath,
         encoding: 'utf8',
         timeout: 5000,
         stdio: ['pipe', 'pipe', 'pipe'],

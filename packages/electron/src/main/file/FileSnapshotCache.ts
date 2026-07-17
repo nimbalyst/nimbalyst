@@ -2,6 +2,7 @@ import { execFile } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { logger } from '../utils/logger';
+import { resolveGitContext } from '../services/GitContextService';
 
 function execFileAsync(cmd: string, args: string[], opts: { cwd?: string; timeout?: number; maxBuffer?: number } = {}): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -45,6 +46,10 @@ export class FileSnapshotCache {
   private sessionId: string | null = null;
   private isGitRepo = false;
   private startSha: string | null = null;
+  // The resolved git repo root (may sit above workspacePath - #124). All
+  // git path math (cwd, porcelain-relative paths) must use this, not
+  // workspacePath, once the session is in git mode.
+  private gitRoot: string | null = null;
 
   async startSession(workspacePath: string, sessionId: string): Promise<void> {
     this.stopSession();
@@ -69,6 +74,7 @@ export class FileSnapshotCache {
     this.sessionId = null;
     this.isGitRepo = false;
     this.startSha = null;
+    this.gitRoot = null;
   }
 
   async getBeforeState(filePath: string): Promise<string | null> {
@@ -161,10 +167,15 @@ export class FileSnapshotCache {
   }
 
   private async initGitCache(workspacePath: string): Promise<void> {
+    // Resolve the owning git root; may sit above workspacePath (#124). All
+    // git cwd/path math below uses this root, not the raw workspace path.
+    const gitRoot = resolveGitContext(workspacePath).gitRoot ?? workspacePath;
+    this.gitRoot = gitRoot;
+
     // Capture starting commit SHA
     try {
       const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
-        cwd: workspacePath,
+        cwd: gitRoot,
         timeout: 5000,
       });
       this.startSha = stdout.trim();
@@ -179,7 +190,7 @@ export class FileSnapshotCache {
     // Get dirty files (tracked + untracked) via git status
     try {
       const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
-        cwd: workspacePath,
+        cwd: gitRoot,
         timeout: 10000,
         maxBuffer: 5_000_000, // 5MB cap on git status output
       });
@@ -205,7 +216,7 @@ export class FileSnapshotCache {
       for (const relativePath of dirtyFiles) {
         if (cached >= MAX_DIRTY_FILES) break;
 
-        const absPath = path.resolve(workspacePath, relativePath);
+        const absPath = path.resolve(gitRoot, relativePath);
         if (this.isBinaryPath(absPath)) continue;
 
         try {
@@ -281,31 +292,33 @@ export class FileSnapshotCache {
   }
 
   /**
-   * Resolve file path to a safe, workspace-relative path.
+   * Resolve file path to a safe, git-root-relative path (the base `gitShow`
+   * needs - #124 means this may differ from `workspacePath`).
    *
-   * Primary path uses raw workspace/file strings.
+   * Primary path uses raw root/file strings.
    * Fallback handles symlink/casing differences by comparing canonical realpaths.
    */
   private async resolveRelativePathInWorkspace(
     filePath: string
   ): Promise<{ workspacePath: string; relativePath: string } | null> {
-    if (!this.workspacePath) return null;
+    const root = this.gitRoot ?? this.workspacePath;
+    if (!root) return null;
 
-    const directRelative = path.relative(this.workspacePath, filePath);
+    const directRelative = path.relative(root, filePath);
     if (this.isRelativeInsideWorkspace(directRelative)) {
-      return { workspacePath: this.workspacePath, relativePath: directRelative };
+      return { workspacePath: root, relativePath: directRelative };
     }
 
     try {
-      const [realWorkspacePath, realFilePath] = await Promise.all([
-        fs.realpath(this.workspacePath),
+      const [realRoot, realFilePath] = await Promise.all([
+        fs.realpath(root),
         fs.realpath(filePath),
       ]);
-      const canonicalRelative = path.relative(realWorkspacePath, realFilePath);
+      const canonicalRelative = path.relative(realRoot, realFilePath);
       if (!this.isRelativeInsideWorkspace(canonicalRelative)) {
         return null;
       }
-      return { workspacePath: realWorkspacePath, relativePath: canonicalRelative };
+      return { workspacePath: realRoot, relativePath: canonicalRelative };
     } catch {
       return null;
     }
