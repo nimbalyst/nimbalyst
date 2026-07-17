@@ -342,9 +342,7 @@ export class GitStatusService {
    * - Unchanged files
    *
    * @param workspacePath The workspace/repository path
-   * @returns Array of file paths (relative to the owning git root - see
-   *   `resolveGitContext` - not necessarily the workspace) that have
-   *   uncommitted changes
+   * @returns Array of absolute file paths that have uncommitted changes
    */
   async getUncommittedFiles(workspacePath: string): Promise<string[]> {
     if (!workspacePath) {
@@ -379,8 +377,8 @@ export class GitStatusService {
       // Parse status output
       const statusMap = this.parseGitStatus(statusOutput);
 
-      // Filter for uncommitted files (untracked or modified, not deleted).
-      // git status --porcelain paths are already root-relative.
+      // Filter for uncommitted files (untracked or modified, not deleted)
+      // Convert relative paths to absolute paths using path.resolve
       const uncommittedFiles: string[] = [];
       const cacheResult: GitStatusResult = {};
 
@@ -390,16 +388,18 @@ export class GitStatusService {
             fileStatus.status === 'modified' ||
             fileStatus.status === 'staged' ||
             fileStatus.status === 'deleted') {
+          // Convert to absolute path (git returns paths relative to the root)
+          const absolutePath = resolve(root, relativePath);
+
           // For untracked entries, check if it's a directory
           // git status --porcelain shows untracked directories with trailing slash (e.g., "?? newdir/")
           // or they may appear without trailing slash but be a directory
           if (fileStatus.status === 'untracked') {
-            const absolutePath = resolve(root, relativePath);
             try {
               const stats = statSync(absolutePath);
               if (stats.isDirectory()) {
-                // Expand directory to get all files inside, root-relative.
-                const filesInDir = getAllFilesInDirectory(absolutePath, { basePath: root, normalizeSlashes: true });
+                // Expand directory to get all files inside (returns absolute paths)
+                const filesInDir = getAllFilesInDirectory(absolutePath);
                 for (const filePath of filesInDir) {
                   uncommittedFiles.push(filePath);
                   cacheResult[filePath] = {
@@ -415,12 +415,12 @@ export class GitStatusService {
             }
           }
 
-          uncommittedFiles.push(relativePath);
+          uncommittedFiles.push(absolutePath);
 
-          // Cache with root-relative path as key
-          cacheResult[relativePath] = {
+          // Cache with absolute path as key
+          cacheResult[absolutePath] = {
             ...fileStatus,
-            filePath: relativePath
+            filePath: absolutePath
           };
         }
       }
@@ -656,12 +656,9 @@ export class GitStatusService {
         }
       }
 
-      // 2. Get uncommitted files (staged, modified, or untracked).
-      // getUncommittedFiles returns root-relative paths; resolve to absolute
-      // to keep this method's own absolute-path contract.
+      // 2. Get uncommitted files (staged, modified, or untracked)
       const uncommittedFiles = await this.getUncommittedFiles(workspacePath);
-      for (const relativePath of uncommittedFiles) {
-        const absolutePath = resolve(root, relativePath);
+      for (const absolutePath of uncommittedFiles) {
         filePathSet.add(absolutePath);
 
         // Only add to cache if not already there

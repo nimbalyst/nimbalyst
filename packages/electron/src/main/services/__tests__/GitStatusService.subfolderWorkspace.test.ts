@@ -44,7 +44,7 @@ describe('GitStatusService with a subfolder workspace (#124)', () => {
     expect(result[abs]?.status).toBe('modified');
   });
 
-  it('lists uncommitted files repo-root-relative, including outside the workspace', async () => {
+  it('lists uncommitted files across the whole repo, including outside the workspace', async () => {
     await git(['init', '-q'], tmpRoot);
     await git(['config', 'user.email', 'test@example.com'], tmpRoot);
     await git(['config', 'user.name', 'Test User'], tmpRoot);
@@ -59,7 +59,7 @@ describe('GitStatusService with a subfolder workspace (#124)', () => {
     const service = new GitStatusService();
     const files = await service.getUncommittedFiles(sub);
 
-    expect(files).toContain('home/inner.txt');
-    expect(files).toContain('root.txt');
+    expect(files).toContain(path.join(tmpRoot, 'home', 'inner.txt'));
+    expect(files).toContain(path.join(tmpRoot, 'root.txt'));
   });
 });
