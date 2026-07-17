@@ -39,7 +39,8 @@ import {
   getAllExtensionUserCommands,
   subscribeToExtensionContributions,
 } from '../../extensions/extensionContributionsStore';
-import {INSERT_BOARD_COMMAND} from '../KanbanBoardPlugin/BoardCommands';
+// Kanban board insert item is commented out (feature unfinished); import unused.
+// import {INSERT_BOARD_COMMAND} from '../KanbanBoardPlugin/BoardCommands';
 import {
   TypeaheadMenuPlugin,
   TypeaheadMenuOption,
@@ -317,15 +318,17 @@ function getBaseOptions(editor: LexicalEditor, showModal: ShowModal): TypeaheadM
           <InsertLayoutDialog activeEditor={editor} onClose={onClose} />
         )),
     },
-    {
-      id: 'board',
-      label: 'Board',
-      icon: <MaterialIcon name="view_kanban" />,
-      keywords: ['board', 'kanban', 'tasks', 'cards', 'columns'],
-      section: 'Layout',
-      onSelect: () =>
-        editor.dispatchCommand(INSERT_BOARD_COMMAND, undefined),
-    },
+    // The Kanban "Board" insert item is commented out — the Kanban board
+    // feature was never finished. Re-enable when the board work resumes.
+    // {
+    //   id: 'board',
+    //   label: 'Board',
+    //   icon: <MaterialIcon name="view_kanban" />,
+    //   keywords: ['board', 'kanban', 'tasks', 'cards', 'columns'],
+    //   section: 'Layout',
+    //   onSelect: () =>
+    //     editor.dispatchCommand(INSERT_BOARD_COMMAND, undefined),
+    // },
     // {
     //   id: 'align-left',
     //   label: 'Align Left',

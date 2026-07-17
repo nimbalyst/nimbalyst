@@ -424,12 +424,11 @@ the consent prompt says so explicitly. The `permissions` array on the module
 declares **additional** host-brokered capabilities (database, secrets, etc.)
 beyond ambient Node access. It may be empty.
 
-Only allowlisted extensions can ship backend modules. Built-in extensions
-qualify automatically; marketplace extensions must be on the curated list in
-`packages/electron/src/main/extensions/backendModuleAllowlist.ts`; locally
-dev-installed extensions require `NIMBALYST_ALLOW_DEV_BACKEND_MODULES=1` and
-a non-packaged build. See [permissions.md](./permissions.md) for the full
-policy.
+Any extension can ship a backend module -- there is no provenance allowlist.
+The user's first-use consent prompt is the gate; built-in extensions ship
+inside the app bundle and are auto-granted. Malformed declarations are still
+dropped by shape validation. See [permissions.md](./permissions.md) for the
+full policy.
 
 ```json
 "backendModules": [

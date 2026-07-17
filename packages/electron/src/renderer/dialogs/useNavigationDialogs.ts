@@ -1,9 +1,9 @@
 /**
  * Hook for opening the unified navigation dialog with proper typing.
  *
- * The five legacy quick-open dialogs have been collapsed into one tabbed
- * dialog. Each opener picks the initial tab; while the dialog is open the
- * five global shortcuts (⌘O, ⌘⇧F, ⌘L, ⌘⇧L, ⌘⇧P) jump between tabs.
+ * Legacy quick-open dialogs have been collapsed into one tabbed dialog. Each
+ * opener picks its initial tab, and global shortcuts jump between tabs while
+ * the dialog is open.
  */
 
 import { useCallback } from 'react';
@@ -19,6 +19,7 @@ export interface UseNavigationDialogsReturn {
   openSessionQuickOpen: (data: Omit<UnifiedQuickOpenData, 'initialTab'>) => void;
   openPromptQuickOpen: (data: Omit<UnifiedQuickOpenData, 'initialTab'>) => void;
   openProjectQuickOpen: (data: Omit<UnifiedQuickOpenData, 'initialTab'>) => void;
+  openTeamQuickOpen: (data: Omit<UnifiedQuickOpenData, 'initialTab'>) => void;
   closeNavigationDialogs: () => void;
 }
 
@@ -53,6 +54,7 @@ export function useNavigationDialogs(): UseNavigationDialogsReturn {
     openSessionQuickOpen: openWithTab('sessions'),
     openPromptQuickOpen: openWithTab('prompts'),
     openProjectQuickOpen: openWithTab('projects'),
+    openTeamQuickOpen: openWithTab('team'),
     closeNavigationDialogs,
   };
 }

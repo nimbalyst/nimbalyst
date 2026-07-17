@@ -3,6 +3,7 @@
  * Shows bugs, tasks, plans, and ideas across all documents in workspace
  */
 
+import type { JSX } from 'react';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useFloating, offset, flip, shift, FloatingPortal } from '@floating-ui/react';
 import { useAtomValue } from 'jotai';
@@ -28,12 +29,15 @@ import {
   getTypeIcon as getTypeIconFromRegistry,
   formatRelativeDate,
   getCellValue,
+  getEffectiveUpdatedDate,
   type TrackerColumnDef,
   type TypeColumnConfig,
 } from './trackerColumns';
 import { UserAvatar } from './UserAvatar';
+import { TrackerUnreadDot } from '../../../readReceipts/TrackerUnreadDot';
 import { DisplayOptionsPanel } from './DisplayOptionsPanel';
 import { useTrackerRows } from './useTrackerRows';
+import { TrackerFavoriteStar } from './TrackerFavoriteStar';
 
 export type SortColumn = 'title' | 'type' | 'status' | 'priority' | 'progress' | 'module' | 'lastIndexed' | (string & {});
 export type SortDirection = 'asc' | 'desc';
@@ -63,10 +67,17 @@ interface TrackerTableProps {
   onCopyDeepLink?: (itemId: string) => void;
   /** External search query from parent toolbar (replaces internal search input) */
   searchQuery?: string;
+  /** Whether filters owned by the parent are active (for the filtered empty state). */
+  hasExternalFilters?: boolean;
+  /** Clears filters owned by the parent. */
+  onClearFilters?: () => void;
   /** Column configuration (visible columns, order, widths) */
   columnConfig?: import('./trackerColumns').TypeColumnConfig;
   /** Callback when column config changes (from display options panel) */
   onColumnConfigChange?: (config: import('./trackerColumns').TypeColumnConfig) => void;
+  favoriteItemIds?: ReadonlySet<string>;
+  onToggleFavorite?: (itemId: string) => void;
+  preserveItemOrder?: boolean;
 }
 
 /**
@@ -467,7 +478,7 @@ export function renderCell(
   setEditingCell: (cell: { itemId: string; field: 'status' | 'priority' | 'title' } | null) => void,
   editingTitle: string,
   setEditingTitle: (title: string) => void,
-  titleInputRef: React.RefObject<HTMLInputElement>,
+  titleInputRef: React.RefObject<HTMLInputElement | null>,
   handleFieldUpdate: (item: TrackerRecord, field: string, value: string) => void,
 ): React.ReactNode {
   // Resolve field values via schema roles (generic for any schema)
@@ -745,8 +756,13 @@ export function TrackerTable({
   onDeleteItems,
   onCopyDeepLink,
   searchQuery: externalSearchQuery,
+  hasExternalFilters = false,
+  onClearFilters,
   columnConfig: externalColumnConfig,
   onColumnConfigChange,
+  favoriteItemIds = new Set<string>(),
+  onToggleFavorite,
+  preserveItemOrder = false,
 }: TrackerTableProps): JSX.Element {
   // Type filter: use prop filterType when hideTypeTabs is true, otherwise use internal state
   const [internalTypeFilter, setInternalTypeFilter] = useState<TrackerItemType | 'all'>('all');
@@ -783,14 +799,7 @@ export function TrackerTable({
   // Items from source (atom or override)
   const items = useMemo(() => {
     return sourceItems.map((item: TrackerRecord) => {
-      const dateSource = item.system.updatedAt || item.system.createdAt;
-      let actualDate: Date | null = null;
-      if (dateSource) {
-        const parsed = new Date(dateSource);
-        if (!isNaN(parsed.getTime())) {
-          actualDate = parsed;
-        }
-      }
+      const actualDate = getEffectiveUpdatedDate(item);
       // Ensure lastIndexed is a valid ISO string for sorting
       const lastIndexed = actualDate ? actualDate.toISOString() : (item.system.lastIndexed || new Date(0).toISOString());
       return {
@@ -804,6 +813,8 @@ export function TrackerTable({
   const [error, setError] = useState<string | null>(null);
   const [currentSortBy, setCurrentSortBy] = useState<SortColumn>(sortBy);
   const [currentSortDirection, setCurrentSortDirection] = useState<SortDirection>(sortDirection);
+  useEffect(() => setCurrentSortBy(sortBy), [sortBy]);
+  useEffect(() => setCurrentSortDirection(sortDirection), [sortDirection]);
   const [internalSearchTerm, setInternalSearchTerm] = useState('');
   // Use external search query from parent when provided, otherwise use internal state
   const searchTerm = externalSearchQuery ?? internalSearchTerm;
@@ -814,7 +825,17 @@ export function TrackerTable({
   const [customFieldFilters, setCustomFieldFilters] = useState<Record<string, Set<string>>>({});
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const filterMenuRef = useRef<HTMLDivElement>(null);
-  const hasActiveFilters = statusFilter !== 'all' || priorityFilter !== 'all';
+  const hasCustomFieldFilters = Object.values(customFieldFilters).some(selected => selected.size > 0);
+  const hasActiveFilters = statusFilter !== 'all' || priorityFilter !== 'all' || hasCustomFieldFilters;
+  const hasAnyFilters = hasExternalFilters || Boolean(searchTerm.trim()) || hasActiveFilters;
+  const clearAllFilters = useCallback(() => {
+    setStatusFilter('all');
+    setPriorityFilter('all');
+    setCustomFieldFilters({});
+    setSearchTerm('');
+    setShowFilterMenu(false);
+    onClearFilters?.();
+  }, [onClearFilters, setSearchTerm]);
   const posthog = usePostHog();
 
   // Close filter menu on outside click
@@ -925,7 +946,7 @@ export function TrackerTable({
     });
 
   // console.log('[TrackerTable] Render - items:', items.length, 'filtered:', filteredItems.length, 'typeFilter:', typeFilter);
-  const sortedItems = sortItems(filteredItems, currentSortBy, currentSortDirection);
+  const sortedItems = preserveItemOrder ? filteredItems : sortItems(filteredItems, currentSortBy, currentSortDirection);
 
   // Row interaction model -- shared with TrackerTableGrid via useTrackerRows.
   const rows = useTrackerRows({
@@ -1183,7 +1204,7 @@ export function TrackerTable({
                     <div className="border-t border-[var(--nim-border)] my-1" />
                     <button
                       className="w-full text-left px-3 py-1 text-[var(--nim-text-faint)] hover:text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
-                      onClick={() => { setStatusFilter('all'); setPriorityFilter('all'); setShowFilterMenu(false); }}
+                      onClick={clearAllFilters}
                     >
                       Clear all filters
                     </button>
@@ -1232,6 +1253,26 @@ export function TrackerTable({
               <div className="tracker-table-loading flex items-center justify-center gap-3 py-6 px-6 text-[var(--nim-text-muted)]">
                 <div className="w-5 h-5 border-2 border-[var(--nim-border)] border-t-[var(--nim-primary)] rounded-full animate-spin"></div>
                 <span className="text-sm">Loading...</span>
+              </div>
+            ) : hasAnyFilters ? (
+              <div className="tracker-table-empty tracker-table-filtered-empty flex flex-col items-center justify-center gap-2 py-6 px-6 text-center">
+                <p className="text-sm text-[var(--nim-text-muted)] m-0">No tracker items match your filters</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="px-3 py-1.5 rounded-md text-xs font-medium text-white bg-[var(--nim-primary)] border-none cursor-pointer transition-colors hover:bg-[var(--nim-primary-hover)]"
+                    onClick={clearAllFilters}
+                  >
+                    Clear filters
+                  </button>
+                  {activeTypeFilter !== 'all' && onNewItem && globalRegistry.get(activeTypeFilter)?.creatable !== false && (
+                    <button
+                      className="px-3 py-1.5 rounded-md text-xs font-medium text-[var(--nim-text)] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-colors hover:bg-[var(--nim-bg-hover)]"
+                      onClick={() => onNewItem(activeTypeFilter as TrackerItemType)}
+                    >
+                      New {activeTypeFilter.charAt(0).toUpperCase() + activeTypeFilter.slice(1)}
+                    </button>
+                  )}
+                </div>
               </div>
             ) : activeTypeFilter !== 'all' ? (
               (() => {
@@ -1301,6 +1342,14 @@ export function TrackerTable({
                 onDoubleClick={() => { if (item.system.documentPath) openItemInEditor(item); }}
                 onContextMenu={(e) => handleContextMenu(e, item, index)}
               >
+                {/* Unread dot (nothing when read) */}
+                <TrackerUnreadDot itemId={item.id} className="w-2" />
+                <TrackerFavoriteStar
+                  itemId={item.id}
+                  isFavorite={favoriteItemIds.has(item.id)}
+                  onToggle={onToggleFavorite}
+                />
+
                 {/* Type icon - fixed width for alignment */}
                 <span className="shrink-0 w-5 flex items-center justify-center" style={{ color: getTypeColor(item.primaryType), opacity: 0.7 }}>
                   <span className="material-symbols-outlined" style={{ fontSize: '16px', fontVariationSettings: "'wght' 300" }}>{getTypeIcon(item.primaryType)}</span>

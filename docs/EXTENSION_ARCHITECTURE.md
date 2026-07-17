@@ -733,6 +733,8 @@ See [extension-live-test-infrastructure.md](../design/Extensions/extension-live-
 
 Extension editors can participate in Nimbalyst's E2E-encrypted real-time collaboration ("Share to Team") by opting in via the manifest and wiring an SDK hook. The host owns the `DocumentSyncProvider` lifecycle, encryption, awareness transport, and connection-status UI. Extensions implement a small yJS binding that maps their editor state to/from a shared `Y.Doc`.
 
+**One client-side contract, no host-process code.** An editor adds collaboration with exactly three things, all client-side: (1) the manifest flag below, (2) one pure `CollabCodec` registered once in `activate()`, and (3) `useCollaborativeEditor(host, { codec, bind })`. There is **no main-process adapter to write** — the renderer already has every extension loaded, so the host seeds/reads a shared room headlessly (Share-to-Team without the editor open, re-upload, plain-text projection) by running the extension's own registered codec in the renderer. This is what makes **external, structured** editors (e.g. mindmap) "just work" for Share-to-Team; earlier they failed with "No collab content adapter is registered for document type 'X'" because a headless seed was attempted in the main process, which cannot load extension code.
+
 ### Manifest opt-in
 
 ```json
@@ -752,38 +754,63 @@ Extension editors can participate in Nimbalyst's E2E-encrypted real-time collabo
 
 `awarenessFields` is advisory metadata (used for docs / validation) and does not gate runtime behaviour.
 
-### Editor hook
+### The codec — one pure `file bytes ↔ Y.Doc` contract
 
-When `collaboration.supported: true`, the host opens collab documents through `CollaborativeTabEditor`, populates `EditorHost.collaboration`, and routes to the extension component. The extension uses `useCollaborativeEditor` from `@nimbalyst/extension-sdk`:
+A `CollabCodec` is the single, PURE thing an editor defines for collaboration: no React, no host imports, usable headlessly. `isEmpty` / `seedFromFile` / `exportToFile` are defined exactly once here, so the live seed (the editor) and every headless seed (the host) provably run the same code.
 
 ```typescript
-import { useCollaborativeEditor, COLLAB_INIT_ORIGIN } from '@nimbalyst/extension-sdk';
-import * as Y from 'yjs';
-import { ExcalidrawBinding } from './collab/excalidrawBindings';
-import { isExcalidrawYDocEmpty, seedExcalidrawYDoc } from './collab/seed';
+import type { CollabCodec } from '@nimbalyst/extension-sdk';
 
-function ExcalidrawEditor({ host }) {
+export const myCodec: CollabCodec = {
+  documentType: 'mydoc',
+  fileExtensions: ['.mydoc'],
+  layoutVersion: 1,
+  isEmpty: (yDoc) => yDoc.getMap('nodes').size === 0,
+  seedFromFile: (yDoc, source) => seedMyYDoc(yDoc, source),   // PURE, deterministic
+  applyFromFile: (yDoc, source) => { /* wipe + reseed for re-upload */ },
+  exportToFile: (yDoc) => serialize(readMyYDoc(yDoc)),         // Y.Doc -> file bytes
+  toPlainText: (yDoc) => serialize(readMyYDoc(yDoc)),          // search / AI / diffs
+  // optional: migrations, toStructured/applyStructuredPatch, revision snapshots
+};
+```
+
+Register it once in `activate()` so the host can resolve it (for both the live editor and headless seed/re-upload):
+
+```typescript
+export function activate(context) {
+  context.services.collab.registerContentAdapter(myCodec);
+}
+```
+
+> `CollabCodec` was previously named `CollabContentAdapter`; the old name remains as a deprecation alias, so existing extensions keep compiling.
+
+### Editor hook
+
+When `collaboration.supported: true`, the host opens collab documents through `CollaborativeTabEditor`, populates `EditorHost.collaboration`, and routes to the extension component. Pass the **same codec** plus the one React-coupled piece (`bind`) to `useCollaborativeEditor`:
+
+```typescript
+import { useCollaborativeEditor } from '@nimbalyst/extension-sdk';
+import { myCodec } from './collab/codec';
+import { MyBinding } from './collab/binding';
+
+function MyEditor({ host }) {
   // ... useEditorLifecycle as before (local-only path) ...
 
   useCollaborativeEditor(host, {
-    isEmpty: isExcalidrawYDocEmpty,
-    initializeFromContent: seedExcalidrawYDoc,
-    createBinding: ({ yDoc, awareness, user }) => {
-      const undoManager = new Y.UndoManager(yDoc.getArray('elements'));
-      const binding = new ExcalidrawBinding(
-        yDoc.getArray('elements'),
-        yDoc.getMap('assets'),
-        excalidrawAPIRef.current!,
-        awareness,
-        { excalidrawDom: domRef.current!, undoManager },
-      );
-      return { destroy: () => { binding.destroy(); undoManager.destroy(); } };
+    codec: myCodec,
+    bind: ({ yDoc, awareness, user }) => {
+      const binding = new MyBinding(yDoc, apiRef.current!, awareness);
+      return { destroy: () => binding.destroy() };
     },
   });
 }
 ```
 
-The hook is a no-op when `host.collaboration` is undefined, so the same component renders the local-only flow unchanged for non-collab opens.
+The hook reads `isEmpty` / `seedFromFile` off the codec — an editor can no longer implement emptiness/seeding twice and have the two disagree. It is a no-op when `host.collaboration` is undefined, so the same component renders the local-only flow unchanged for non-collab opens.
+
+**Durable seeding.** After a first-open seed the hook awaits `host.collaboration.flushWithAck()`, which resolves only after the server confirms it persisted the update (not merely after the socket write). This closes the seed-then-teardown data-loss race; a failed/unconfirmed flush is surfaced through the host rather than a silent console error.
+
+> **Legacy config still works.** The older `{ createBinding, isEmpty, initializeFromContent }` shape is accepted with a deprecation warning. Prefer `{ codec, bind }` so the pure functions live on the codec and headless seeding uses them directly. No main-process (`packages/electron/.../collabContentAdapterRegistration.ts`) adapter is required for any editor; that registry is now an optional cache for in-repo / text-descriptor editors and its absence degrades to renderer seeding, never a hard error.
 
 ### yJS as a peer dependency
 

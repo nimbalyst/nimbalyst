@@ -1,28 +1,5 @@
 /* Document comments UI. Uses canonical --nim-* theme variables. */
 
-/* --- Floating "Add comment" affordance ------------------------------------ */
-.nim-add-comment-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--nim-text);
-  background: var(--nim-bg-secondary);
-  border: 1px solid var(--nim-border);
-  border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
-  cursor: pointer;
-  z-index: 60;
-}
-.nim-add-comment-button:hover {
-  background: var(--nim-bg-hover);
-}
-.nim-add-comment-button .material-symbols-outlined {
-  font-size: 16px;
-}
-
 /* --- Composer popover ------------------------------------------------------ */
 .nim-comment-composer-popover {
   z-index: 60;

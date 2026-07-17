@@ -30,10 +30,16 @@ import type {
   TeamDocIndexSyncResponseMessage,
   TeamDocIndexBroadcastMessage,
   TeamDocIndexRemoveBroadcastMessage,
+  TeamFolderIndexSyncResponseMessage,
+  TeamFolderBroadcastMessage,
+  TeamFolderRemoveBroadcastMessage,
   TeamOrgKeyRotatedMessage,
   TeamProjectAccessChangedMessage,
   EncryptedDocIndexEntry,
+  EncryptedFolderNode,
+  FolderNode,
   ServerTeamState,
+  SharedDocumentTypeMetadataV2,
 } from './teamSyncTypes';
 import type {
   InboxEventKind,
@@ -123,6 +129,9 @@ export class TeamSyncProvider {
   /** Local cache of decrypted doc index entries */
   private localEntries: Map<string, DocIndexEntry> = new Map();
 
+  /** Local cache of decrypted folder nodes (first-class folders) */
+  private folderEntries: Map<string, FolderNode> = new Map();
+
   /**
    * NIM-906: documentIds whose titles were recovered from a PRE-MIGRATION
    * legacy ciphertext row (non-empty iv) using the legacy org key. These are
@@ -140,6 +149,9 @@ export class TeamSyncProvider {
    * (still-encrypted) server entries so the caller can inspect `titleIv`.
    */
   private resyncWaiters: Array<(docs: EncryptedDocIndexEntry[]) => void> = [];
+
+  /** Resolvers waiting for the next decrypted folder-index snapshot. */
+  private folderResyncWaiters: Array<(folders: FolderNode[] | null) => void> = [];
 
   /**
    * Pending doc index messages queued while disconnected.
@@ -228,6 +240,9 @@ export class TeamSyncProvider {
     this.teamState = null;
     this.localEntries.clear();
     this.pendingDocIndexMessages = [];
+    const folderWaiters = this.folderResyncWaiters;
+    this.folderResyncWaiters = [];
+    for (const waiter of folderWaiters) waiter(null);
   }
 
   getStatus(): TeamSyncStatus {
@@ -289,13 +304,21 @@ export class TeamSyncProvider {
     return encryptTitle(title, this.config.encryptionKey!);
   }
 
-  async registerDocument(documentId: string, title: string, documentType: string): Promise<void> {
+  async registerDocument(
+    documentId: string,
+    title: string,
+    documentType: string,
+    parentFolderId: string | null = null,
+    metadata?: SharedDocumentTypeMetadataV2,
+  ): Promise<void> {
     const { encryptedTitle, titleIv } = await this.encodeTitleForWire(title);
     this.send({
       type: 'docIndexRegister', documentId, encryptedTitle, titleIv, documentType,
+      ...metadata,
       // Epic H3 P0/A: attribute the doc to the active project so the server's
       // project-partitioned doc index (and a future move) can scope it.
       projectId: this.config.teamProjectId ?? null,
+      parentFolderId,
       orgKeyFingerprint: this.wireOrgKeyFingerprint,
     });
   }
@@ -313,6 +336,112 @@ export class TeamSyncProvider {
     this.send({
       type: 'docIndexRemove', documentId,
       orgKeyFingerprint: this.wireOrgKeyFingerprint,
+    });
+  }
+
+  /** Move a document into recoverable Trash without changing its folder. */
+  trashDocument(documentId: string, trashedAt = Date.now()): void {
+    const existing = this.localEntries.get(documentId);
+    if (existing) {
+      this.localEntries.set(documentId, { ...existing, trashedAt });
+    }
+    this.send({
+      type: 'docTrash', documentId, trashedAt,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
+    });
+  }
+
+  /** Restore a document to the same folder it occupied before Trash. */
+  restoreDocument(documentId: string): void {
+    const existing = this.localEntries.get(documentId);
+    if (existing) {
+      this.localEntries.set(documentId, { ...existing, trashedAt: null });
+    }
+    this.send({
+      type: 'docRestore', documentId,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
+    });
+  }
+
+  /** Reparent a document into a folder (null = root). Content untouched. */
+  moveDocument(documentId: string, newParentFolderId: string | null): void {
+    const existing = this.localEntries.get(documentId);
+    if (existing) {
+      this.localEntries.set(documentId, { ...existing, parentFolderId: newParentFolderId });
+    }
+    this.send({
+      type: 'docMove', documentId, newParentFolderId,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // Public API: First-class folders
+  // --------------------------------------------------------------------------
+
+  /** Register (or upsert) a folder node. `parentFolderId` null = root level. */
+  async registerFolder(
+    folderId: string, name: string, parentFolderId: string | null, sortOrder = 0,
+  ): Promise<void> {
+    const { encryptedTitle: encryptedName, titleIv: nameIv } = await this.encodeTitleForWire(name);
+    this.send({
+      type: 'folderRegister', folderId, parentFolderId, encryptedName, nameIv, sortOrder,
+      projectId: this.config.teamProjectId ?? null,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
+    });
+  }
+
+  /** Rename a folder in place (single-row update of the encrypted name). */
+  async renameFolder(folderId: string, newName: string): Promise<void> {
+    const { encryptedTitle: encryptedName, titleIv: nameIv } = await this.encodeTitleForWire(newName);
+    this.send({
+      type: 'folderRename', folderId, encryptedName, nameIv,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
+    });
+  }
+
+  /** Move a folder to a new parent (null = root). Server rejects cycles. */
+  moveFolder(folderId: string, newParentFolderId: string | null, sortOrder?: number): void {
+    this.send({
+      type: 'folderMove', folderId, newParentFolderId, sortOrder,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
+    });
+  }
+
+  /** Delete a folder recursively (folder + descendants + their documents). */
+  removeFolder(folderId: string): void {
+    this.folderEntries.delete(folderId);
+    this.send({
+      type: 'folderRemove', folderId,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
+    });
+  }
+
+  /** Snapshot of the current decrypted folder nodes. */
+  getFolders(): FolderNode[] {
+    return Array.from(this.folderEntries.values());
+  }
+
+  /**
+   * Request the current first-class folder index from TeamRoom. The promise
+   * resolves only after the matching server snapshot has been decrypted and
+   * applied locally; null means the request timed out.
+   */
+  refreshFolders(timeoutMs = 6000): Promise<FolderNode[] | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const done = (folders: FolderNode[] | null) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        this.folderResyncWaiters = this.folderResyncWaiters.filter(waiting => waiting !== waiter);
+        resolve(folders);
+      };
+      const waiter = (folders: FolderNode[] | null) => done(folders);
+      this.folderResyncWaiters.push(waiter);
+      timer = setTimeout(() => done(null), timeoutMs);
+      this.send({ type: 'folderIndexSync' });
     });
   }
 
@@ -412,6 +541,15 @@ export class TeamSyncProvider {
         case 'docIndexRemoveBroadcast':
           this.handleDocIndexRemoveBroadcast(message);
           break;
+        case 'folderIndexSyncResponse':
+          await this.handleFolderIndexSyncResponse(message);
+          break;
+        case 'folderBroadcast':
+          await this.handleFolderBroadcast(message);
+          break;
+        case 'folderRemoveBroadcast':
+          this.handleFolderRemoveBroadcast(message);
+          break;
         case 'orgKeyRotated':
           this.handleOrgKeyRotated(message);
           break;
@@ -441,11 +579,14 @@ export class TeamSyncProvider {
     const documents = await this.decryptDocuments(server.documents, {
       quietLockedWarnings: this.serverManaged,
     });
+    // First-class folders. Absent when talking to a pre-folders server.
+    const folders = await this.decryptFolders(server.folders ?? []);
 
     this.teamState = {
       metadata: server.metadata,
       members: server.members,
       documents,
+      folders,
       keyEnvelope: server.keyEnvelope,
     };
 
@@ -453,6 +594,11 @@ export class TeamSyncProvider {
     this.localEntries.clear();
     for (const doc of documents) {
       this.localEntries.set(doc.documentId, doc);
+    }
+    // Update local folder cache
+    this.folderEntries.clear();
+    for (const f of folders) {
+      this.folderEntries.set(f.folderId, f);
     }
 
     this.setStatus('connected');
@@ -462,6 +608,9 @@ export class TeamSyncProvider {
     if (documents.length > 0) {
       this.config.onDocumentsLoaded?.(documents);
     }
+    if (folders.length > 0) {
+      this.config.onFoldersLoaded?.(folders);
+    }
 
     // Replay any doc index mutations that were queued while disconnected
     this.replayPendingDocIndexMessages();
@@ -470,8 +619,11 @@ export class TeamSyncProvider {
     // decrypt DEK rows on that path), so server-managed plaintext titles arrive
     // as undecryptable ciphertext and render as locked. Immediately request the
     // decrypting `docIndexSync` path, whose response is authoritative for the
-    // document list and overwrites the raw one.
+    // document list and overwrites the raw one. Folder names have the same
+    // server-managed raw-vs-decrypted split, so request the decrypting
+    // `folderIndexSync` path too.
     this.send({ type: 'docIndexSync' });
+    this.send({ type: 'folderIndexSync' });
 
     // NIM-906: self-heal any PRE-MIGRATION ciphertext titles we could recover.
     this.maybeAutoBackfillLegacyTitles();
@@ -581,9 +733,15 @@ export class TeamSyncProvider {
         documentId: msg.document.documentId,
         title: '',
         documentType: msg.document.documentType,
+        metadataVersion: msg.document.metadataVersion,
+        fileExtension: msg.document.fileExtension,
+        editorId: msg.document.editorId,
         createdBy: msg.document.createdBy,
         createdAt: msg.document.createdAt,
         updatedAt: msg.document.updatedAt,
+        lastWriterUserId: msg.document.lastWriterUserId ?? null,
+        parentFolderId: msg.document.parentFolderId ?? null,
+        trashedAt: msg.document.trashedAt ?? null,
         decryptFailed: true,
       };
     }
@@ -614,6 +772,100 @@ export class TeamSyncProvider {
       this.teamState.documents = this.teamState.documents.filter(d => d.documentId !== msg.documentId);
     }
     this.config.onDocumentRemoved?.(msg.documentId);
+  }
+
+  // --------------------------------------------------------------------------
+  // First-class folder message handlers
+  // --------------------------------------------------------------------------
+
+  private async handleFolderIndexSyncResponse(msg: TeamFolderIndexSyncResponseMessage): Promise<void> {
+    const folders = await this.decryptFolders(msg.folders);
+    this.folderEntries.clear();
+    for (const f of folders) {
+      this.folderEntries.set(f.folderId, f);
+    }
+    if (this.teamState) {
+      this.teamState.folders = folders;
+    }
+    const waiters = this.folderResyncWaiters;
+    this.folderResyncWaiters = [];
+    for (const waiter of waiters) waiter(folders);
+    this.config.onFoldersLoaded?.(folders);
+  }
+
+  private async handleFolderBroadcast(msg: TeamFolderBroadcastMessage): Promise<void> {
+    const folder = await this.decryptFolder(msg.folder);
+    this.folderEntries.set(folder.folderId, folder);
+    if (this.teamState) {
+      const idx = this.teamState.folders.findIndex(f => f.folderId === folder.folderId);
+      if (idx >= 0) this.teamState.folders[idx] = folder;
+      else this.teamState.folders.push(folder);
+    }
+    this.config.onFolderChanged?.(folder);
+  }
+
+  private handleFolderRemoveBroadcast(msg: TeamFolderRemoveBroadcastMessage): void {
+    for (const fid of msg.folderIds) this.folderEntries.delete(fid);
+    for (const did of msg.documentIds) this.localEntries.delete(did);
+    if (this.teamState) {
+      const removedFolders = new Set(msg.folderIds);
+      const removedDocs = new Set(msg.documentIds);
+      this.teamState.folders = this.teamState.folders.filter(f => !removedFolders.has(f.folderId));
+      this.teamState.documents = this.teamState.documents.filter(d => !removedDocs.has(d.documentId));
+    }
+    this.config.onFoldersRemoved?.(msg.folderIds, msg.documentIds);
+  }
+
+  private async decryptFolders(encrypted: EncryptedFolderNode[]): Promise<FolderNode[]> {
+    const results: FolderNode[] = [];
+    for (const e of encrypted) {
+      results.push(await this.decryptFolder(e));
+    }
+    return results;
+  }
+
+  private async decryptFolder(encrypted: EncryptedFolderNode): Promise<FolderNode> {
+    let name = '';
+    let decryptFailed = false;
+    try {
+      name = await this.decryptFolderName(encrypted.encryptedName, encrypted.nameIv);
+    } catch (err) {
+      console.warn('[TeamSync] Folder name decrypt failed; surfacing as locked:', encrypted.folderId, err);
+      decryptFailed = true;
+    }
+    return {
+      folderId: encrypted.folderId,
+      parentFolderId: encrypted.parentFolderId ?? null,
+      name,
+      sortOrder: encrypted.sortOrder,
+      projectId: encrypted.projectId ?? null,
+      createdBy: encrypted.createdBy,
+      createdAt: encrypted.createdAt,
+      updatedAt: encrypted.updatedAt,
+      decryptFailed: decryptFailed || undefined,
+    };
+  }
+
+  /**
+   * Resolve a wire folder name to plaintext. Mirrors `decryptTitleFromWire`
+   * but without legacy-title backfill tracking (folders are a new entity, so
+   * there are no pre-migration ciphertext folder rows to self-heal).
+   */
+  private async decryptFolderName(encryptedName: string, nameIv: string): Promise<string> {
+    if (this.serverManaged) {
+      if (!nameIv) return encryptedName;
+      const candidates = this.config.legacyOrgKeys ?? [];
+      let lastErr: unknown;
+      for (const key of candidates) {
+        try {
+          return await decryptTitle(encryptedName, nameIv, key);
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      throw lastErr instanceof Error ? lastErr : new Error('no key could decrypt folder name');
+    }
+    return decryptTitle(encryptedName, nameIv, this.config.encryptionKey!);
   }
 
   // --------------------------------------------------------------------------
@@ -655,9 +907,15 @@ export class TeamSyncProvider {
           documentId: e.documentId,
           title: '',
           documentType: e.documentType,
+          metadataVersion: e.metadataVersion,
+          fileExtension: e.fileExtension,
+          editorId: e.editorId,
           createdBy: e.createdBy,
           createdAt: e.createdAt,
           updatedAt: e.updatedAt,
+          lastWriterUserId: e.lastWriterUserId ?? null,
+          parentFolderId: e.parentFolderId ?? null,
+          trashedAt: e.trashedAt ?? null,
           decryptFailed: true,
         });
       }
@@ -680,9 +938,15 @@ export class TeamSyncProvider {
       documentId: encrypted.documentId,
       title,
       documentType: encrypted.documentType,
+      metadataVersion: encrypted.metadataVersion,
+      fileExtension: encrypted.fileExtension,
+      editorId: encrypted.editorId,
       createdBy: encrypted.createdBy,
       createdAt: encrypted.createdAt,
       updatedAt: encrypted.updatedAt,
+      lastWriterUserId: encrypted.lastWriterUserId ?? null,
+      parentFolderId: encrypted.parentFolderId ?? null,
+      trashedAt: encrypted.trashedAt ?? null,
     };
   }
 
@@ -830,23 +1094,29 @@ export class TeamSyncProvider {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
     } else if (this.isDocIndexMessage(message)) {
-      // Queue doc index mutations so they survive disconnection.
-      // Collapse duplicate register/update for the same documentId.
-      const docId = 'documentId' in message ? message.documentId : undefined;
-      if (docId) {
-        this.pendingDocIndexMessages = this.pendingDocIndexMessages.filter(m =>
-          !('documentId' in m) || m.documentId !== docId || m.type !== message.type
-        );
+      // Queue index mutations (docs + folders) so they survive disconnection.
+      // Collapse a duplicate mutation of the same type against the same entity.
+      const entityId = 'documentId' in message ? message.documentId
+        : 'folderId' in message ? message.folderId
+        : undefined;
+      if (entityId) {
+        this.pendingDocIndexMessages = this.pendingDocIndexMessages.filter(m => {
+          const mId = 'documentId' in m ? m.documentId : 'folderId' in m ? m.folderId : undefined;
+          return mId !== entityId || m.type !== message.type;
+        });
       }
       this.pendingDocIndexMessages.push(message);
       console.warn(`[TeamSync] Queued offline ${message.type} (${this.pendingDocIndexMessages.length} pending)`);
     }
-    // Non-doc-index messages (teamSync, identity key ops) are intentionally
+    // Non-index messages (teamSync, identity key ops) are intentionally
     // not queued -- they are re-sent on reconnect via the normal handshake.
   }
 
   private isDocIndexMessage(msg: TeamClientMessage): boolean {
-    return msg.type === 'docIndexRegister' || msg.type === 'docIndexUpdate' || msg.type === 'docIndexRemove';
+    return msg.type === 'docIndexRegister' || msg.type === 'docIndexUpdate' || msg.type === 'docIndexRemove'
+      || msg.type === 'docTrash' || msg.type === 'docRestore' || msg.type === 'docMove'
+      || msg.type === 'folderRegister' || msg.type === 'folderRename'
+      || msg.type === 'folderMove' || msg.type === 'folderRemove';
   }
 
   private replayPendingDocIndexMessages(): void {
@@ -887,6 +1157,7 @@ export class TeamSyncProvider {
       if (!this.destroyed) {
         this.connect().catch(err => {
           console.error('[TeamSync] Reconnect failed:', err);
+          this.scheduleReconnect();
         });
       }
     }, jittered);

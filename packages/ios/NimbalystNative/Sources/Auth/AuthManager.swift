@@ -22,6 +22,7 @@ public final class AuthManager: ObservableObject {
 
     /// Retained to prevent deallocation during the browser flow.
     private var authSession: ASWebAuthenticationSession?
+    private var authenticationAccountId: String?
 
     /// The JWT for sync server authentication.
     public var sessionJwt: String? {
@@ -39,9 +40,20 @@ public final class AuthManager: ObservableObject {
     }
 
     public init() {
-        // Check for existing session
-        isAuthenticated = KeychainManager.hasAuthSession()
+        reloadSelectedAccount()
+    }
+
+    /// Refresh published auth state after the user selects or pairs an account.
+    /// Session getters remain computed from Keychain, so this only updates the
+    /// SwiftUI-facing state for the newly selected account.
+    public func reloadSelectedAccount() {
+        let selectedIsAuthenticated = KeychainManager.hasAuthSession()
+        if isAuthenticated != selectedIsAuthenticated {
+            isAuthenticated = selectedIsAuthenticated
+        }
         email = KeychainManager.getAuthEmail()
+        authError = nil
+        magicLinkSent = false
     }
 
     // MARK: - Login
@@ -51,6 +63,7 @@ public final class AuthManager: ObservableObject {
     /// Opens a Safari sheet that redirects back to the app via `nimbalyst://` deep link.
     public func login(serverUrl: String) {
         guard !isAuthenticating else { return }
+        authenticationAccountId = KeychainManager.getActiveAccount()?.id
         authError = nil
 
         // Convert WebSocket URLs to HTTPS (ASWebAuthenticationSession requires HTTP/HTTPS)
@@ -112,6 +125,7 @@ public final class AuthManager: ObservableObject {
     /// the server's `/auth/callback` which then issues a `nimbalyst://auth/callback` deep link.
     public func sendMagicLink(email: String, serverUrl: String) {
         guard !isAuthenticating else { return }
+        authenticationAccountId = KeychainManager.getActiveAccount()?.id
         authError = nil
 
         let baseUrl = serverUrl
@@ -208,16 +222,19 @@ public final class AuthManager: ObservableObject {
         let email = params["email"] ?? ""
         let expiresAt = params["expires_at"] ?? ""
 
-        // Validate the login matches the paired account.
-        // The QR code includes syncEmail so we can check it here.
-        let pairedUserId = KeychainManager.getUserId()
-        NSLog("[AuthManager] email=\(email), pairedUserId=\(pairedUserId ?? "nil")")
-        if let pairedEmail = pairedUserId,
-           pairedEmail.contains("@"),
-           !email.isEmpty,
-           email.lowercased() != pairedEmail.lowercased() {
-            authError = "Wrong account. Sign in with \(pairedEmail) to match your desktop pairing."
-            NSLog("[AuthManager] EMAIL MISMATCH: logged in as \(email), paired with \(pairedEmail)")
+        if let authenticationAccountId,
+           authenticationAccountId != KeychainManager.getActiveAccount()?.id {
+            authError = "The selected account changed while sign-in was open. Please try again."
+            return
+        }
+
+        // Validate against only the account currently being paired/selected.
+        // Other paired accounts may intentionally use different email addresses.
+        do {
+            try KeychainManager.validateAuthenticatedEmail(email)
+        } catch {
+            authError = error.localizedDescription
+            NSLog("[AuthManager] EMAIL MISMATCH for selected account: logged in as \(email)")
             return
         }
 
@@ -233,6 +250,7 @@ public final class AuthManager: ObservableObject {
             isAuthenticated = true
             self.email = email
             authError = nil
+            authenticationAccountId = nil
             NSLog("[AuthManager] Authentication SUCCESS for \(email) orgId=\(orgId)")
         } catch {
             authError = "Failed to store auth session: \(error.localizedDescription)"
@@ -242,17 +260,27 @@ public final class AuthManager: ObservableObject {
 
     // MARK: - Refresh
 
-    public enum RefreshResult {
+    public enum RefreshResult: Equatable {
         case success
+        /// The selected account changed while the refresh request was in flight.
+        case accountChanged
         /// Session token is expired or revoked -- user must re-authenticate.
         case sessionExpired
         /// Transient failure (network error, server error) -- worth retrying.
         case failed
     }
 
+    nonisolated static func refreshResultWhenSelectionChanges(
+        startedAccountId: String,
+        currentAccountId: String?
+    ) -> RefreshResult? {
+        currentAccountId == startedAccountId ? nil : .accountChanged
+    }
+
     /// Refresh the session JWT using the session token.
     public func refreshSession(serverUrl: String) async -> RefreshResult {
-        guard let sessionToken = KeychainManager.getSessionToken() else {
+        guard let refreshAccountId = KeychainManager.getActiveAccount()?.id,
+              let sessionToken = KeychainManager.getSessionToken() else {
             logger.warning("No session token to refresh")
             return .sessionExpired
         }
@@ -274,6 +302,13 @@ public final class AuthManager: ObservableObject {
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            if let selectionResult = Self.refreshResultWhenSelectionChanges(
+                startedAccountId: refreshAccountId,
+                currentAccountId: KeychainManager.getActiveAccount()?.id
+            ) {
+                logger.info("Ignoring JWT refresh after account selection changed")
+                return selectionResult
+            }
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
 
             guard statusCode == 200 else {
@@ -313,6 +348,12 @@ public final class AuthManager: ObservableObject {
             logger.info("JWT refreshed successfully")
             return .success
         } catch {
+            if let selectionResult = Self.refreshResultWhenSelectionChanges(
+                startedAccountId: refreshAccountId,
+                currentAccountId: KeychainManager.getActiveAccount()?.id
+            ) {
+                return selectionResult
+            }
             logger.error("Refresh request failed: \(error.localizedDescription)")
             return .failed
         }

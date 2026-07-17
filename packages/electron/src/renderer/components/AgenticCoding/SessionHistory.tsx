@@ -272,7 +272,9 @@ const SessionHistoryComponent: React.FC = () => {
     void dispatchCreateNewSession(undefined);
   }, [dispatchCreateNewSession]);
   const onNewWorktreeSession: ((options?: { baseBranch?: string; name?: string }) => void | Promise<void>) | undefined = isWorktreesFeatureAvailable
-    ? (options?: { baseBranch?: string; name?: string }) => dispatchCreateNewWorktreeSession(options)
+    ? async (options?: { baseBranch?: string; name?: string }) => {
+        await dispatchCreateNewWorktreeSession(options);
+      }
     : undefined;
   const onAddSessionToWorktree: ((worktreeId: string) => void) | undefined = isWorktreesFeatureAvailable
     ? (worktreeId: string) => { void dispatchAddSessionToWorktree(worktreeId); }

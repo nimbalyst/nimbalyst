@@ -246,7 +246,7 @@ export function extractModelForProvider(
   fullModel: string,
   provider: AIProviderType
 ): string | null {
-  if (provider === 'openai-codex') {
+  if (provider === 'openai-codex' || provider === 'openai-codex-acp') {
     const parsed = ModelIdentifier.tryParse(fullModel);
     const rawModel = parsed ? parsed.model : fullModel;
     const normalized = OpenAICodexProvider.normalizeModelSelection(rawModel);

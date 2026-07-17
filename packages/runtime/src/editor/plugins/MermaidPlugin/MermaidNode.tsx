@@ -2,6 +2,7 @@
  * MermaidNode - A Lexical node for rendering Mermaid diagrams
  */
 
+import type { JSX } from 'react';
 import {
   $applyNodeReplacement,
   DecoratorNode,

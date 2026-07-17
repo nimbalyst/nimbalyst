@@ -21,6 +21,7 @@ import { ghCliDetector, type GhCliStatus } from '../services/GhCliDetector';
 import {
   GhApiService,
   GhApiError,
+  getWorkflowScopeRecoveryMessage,
   type ListFilters,
   type TimelineEntry,
   type MergeMethod,
@@ -45,6 +46,7 @@ import {
   initPullRequestPollScheduler,
   type PullRequestPollScheduler,
 } from '../services/PullRequestPollScheduler';
+import { applyPrMergeToTrackers } from '../services/PrTrackerLifecycle';
 import type {
   PullRequestRow,
   PullRequestFileRow,
@@ -68,6 +70,10 @@ function errorResponse(error: unknown): IPCResponse<never> {
 function ghErrorResponse(error: unknown): IPCResponse<never> {
   if (error instanceof GhApiError) {
     const stderr = error.stderr.trim();
+    const workflowScopeRecovery = getWorkflowScopeRecoveryMessage(stderr);
+    if (workflowScopeRecovery) {
+      return { success: false, error: workflowScopeRecovery };
+    }
     // A 404 on a repo endpoint almost always means the *active* gh account
     // can't see the repo (private repo + wrong account, e.g. an EMU), not
     // that the repo is missing. Point the user at the likely fix.
@@ -578,6 +584,14 @@ export function registerPullRequestHandlers(): void {
         // Re-fetch (cache-bypass) so the PR flips to merged in the cache + UI.
         await service.getPullRequest(workspaceId, remote, number, { noCache: true });
         emitPrListUpdated(workspaceId, remote);
+        if (result.merged) {
+          // Tracker lifecycle: prMergedStatus-role transition / merge comment
+          // on referencing items. Best-effort — a tracker failure must not
+          // turn a successful merge into an error.
+          applyPrMergeToTrackers(workspaceId, remote, number).catch((err) => {
+            logger.error('pr:merge tracker lifecycle failed', { remote, number, error: err });
+          });
+        }
         return { success: true, data: { merged: result.merged, sha: result.sha } };
       } catch (error: unknown) {
         logger.error('pr:merge failed', { remote, number, method, error });

@@ -11,6 +11,7 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.nimbalyst.app.MainActivity
 import com.nimbalyst.app.NimbalystApplication
+import com.nimbalyst.app.R
 
 /**
  * Receives inbound FCM messages for the Nimbalyst Android app.
@@ -74,7 +75,7 @@ class NimbalystFirebaseMessagingService : FirebaseMessagingService() {
         val contentIntent = buildContentIntent(sessionId)
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(body)
             .setAutoCancel(true)

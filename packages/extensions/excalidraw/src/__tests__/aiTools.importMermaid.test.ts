@@ -61,4 +61,54 @@ describe('import_mermaid tool', () => {
     expect(api.addFiles).not.toHaveBeenCalled();
     expect(api.updateScene).toHaveBeenCalled();
   });
+
+  it('succeeds when the diagram converts natively and files is undefined', async () => {
+    // parseMermaidToExcalidraw only populates `files` for the image fallback;
+    // natively-converted diagrams return `files: undefined`. The handler must
+    // not throw "Cannot convert undefined or null to object" on it.
+    parseMock.mockResolvedValue({ elements: [{ type: 'rectangle' }], files: undefined });
+
+    const api = makeApi();
+    const result = await importMermaidHandler()({ mermaid: 'graph TD; A-->B' }, { editorAPI: api });
+
+    expect(result).toMatchObject({ success: true });
+    expect(api.addFiles).not.toHaveBeenCalled();
+    expect(api.updateScene).toHaveBeenCalled();
+  });
+
+  it('rewrites <br/> tags in skeleton labels to newlines before conversion', async () => {
+    parseMock.mockResolvedValue({
+      elements: [
+        { type: 'rectangle', label: { text: 'iOS app<br/>SwiftUI' } },
+        { type: 'text', text: 'a<br>b<BR />c' },
+      ],
+      files: undefined,
+    });
+
+    const api = makeApi();
+    const result = await importMermaidHandler()({ mermaid: 'graph TD; A-->B' }, { editorAPI: api });
+
+    expect(result).toMatchObject({ success: true });
+    const sceneElements = api.updateScene.mock.calls[0][0].elements;
+    expect(sceneElements.find((el: any) => el.type === 'rectangle').label.text).toBe('iOS app\nSwiftUI');
+    expect(sceneElements.find((el: any) => el.type === 'text').text).toBe('a\nb\nc');
+  });
+
+  it('reports the image fallback instead of claiming a native import', async () => {
+    // When mermaid-to-excalidraw cannot convert natively it renders the whole
+    // diagram as a single image element. That must be surfaced to the caller,
+    // not reported as a normal "1 skeleton -> 1 elements" success.
+    const fileId = 'mermaid-file-2';
+    const files = {
+      [fileId]: { id: fileId, mimeType: 'image/svg+xml', dataURL: 'data:image/svg+xml;base64,AAAA', created: 1 },
+    };
+    parseMock.mockResolvedValue({ elements: [{ type: 'image', fileId }], files });
+
+    const api = makeApi();
+    const result = await importMermaidHandler()({ mermaid: 'graph TD; A-->B' }, { editorAPI: api });
+
+    expect(result.success).toBe(true);
+    expect(String(result.message)).toMatch(/image/i);
+    expect(String(result.message)).not.toMatch(/1 skeleton → 1 elements/);
+  });
 });

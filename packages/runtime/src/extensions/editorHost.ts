@@ -14,4 +14,10 @@ export type {
   CollaboratorInfo,
   RevisionSnapshotAdapter,
   StandardAwarenessState,
+  ProjectFileSnapshot,
+  ProjectFileChange,
+  ProjectFileEdit,
+  ProjectFileWriteReceipt,
+  ProjectFileActor,
+  EditorHostFileSystem,
 } from '@nimbalyst/extension-sdk';

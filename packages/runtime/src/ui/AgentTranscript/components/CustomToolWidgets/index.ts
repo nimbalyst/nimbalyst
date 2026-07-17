@@ -54,6 +54,8 @@ export { SuperProgressSnapshotWidget } from './SuperProgressSnapshotWidget';
 export { SuperLoopProgressWidget } from './SuperLoopProgressWidget';
 export { UpdateSessionMetaWidget } from './UpdateSessionMetaWidget';
 export { TrackerToolWidget } from './TrackerToolWidget';
+export { CrossSessionToolWidget } from './CrossSessionToolWidget';
+export { MemoryToolWidget } from './MemoryToolWidget';
 export { ToolWidgetErrorBoundary } from './ToolWidgetErrorBoundary';
 
 // Re-export host types (for use in SessionTranscript to set the host)
@@ -108,6 +110,8 @@ import { SuperProgressSnapshotWidget } from './SuperProgressSnapshotWidget';
 import { SuperLoopProgressWidget } from './SuperLoopProgressWidget';
 import { UpdateSessionMetaWidget } from './UpdateSessionMetaWidget';
 import { TrackerToolWidget } from './TrackerToolWidget';
+import { MemoryToolWidget } from './MemoryToolWidget';
+import { CrossSessionToolWidget } from './CrossSessionToolWidget';
 
 import {
   getTranscriptToolWidget,
@@ -190,6 +194,26 @@ const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
   'tracker_update': TrackerToolWidget,
   'tracker_link_session': TrackerToolWidget,
   'tracker_link_file': TrackerToolWidget,
+
+  // nimbalyst-memory MCP tools - recall/search show the query + returned
+  // source documents (title + snippet) instead of a raw JSON blob. Both the
+  // bare engine tool names and the `memory_`-prefixed variants used by the
+  // packaged extension are registered since either may appear in a session.
+  'recall': MemoryToolWidget,
+  'memory_recall': MemoryToolWidget,
+  'search_project_knowledge': MemoryToolWidget,
+  'memory_search_project_knowledge': MemoryToolWidget,
+
+  // Meta-agent (child-session orchestration) tools - render a clickable session
+  // chip for the target/child session(s) instead of the raw UUID.
+  'send_prompt': CrossSessionToolWidget,
+  'respond_to_prompt': CrossSessionToolWidget,
+  'spawn_session': CrossSessionToolWidget,
+  'create_session': CrossSessionToolWidget,
+  'get_session_status': CrossSessionToolWidget,
+  'get_session_result': CrossSessionToolWidget,
+  'list_queued_prompts': CrossSessionToolWidget,
+  'list_spawned_sessions': CrossSessionToolWidget,
 };
 
 // Identifier used when the host registers built-in widgets to the runtime

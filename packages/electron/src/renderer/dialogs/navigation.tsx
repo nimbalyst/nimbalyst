@@ -1,9 +1,9 @@
 /**
  * Navigation Dialog Registration
  *
- * Single tabbed dialog combining Files, In Files, Sessions, Prompts, and
- * Projects search. Opened with an initialTab; the global shortcuts each map
- * to one tab and also jump tabs while the dialog is open.
+ * Single tabbed dialog combining the app's quick navigation surfaces. Opened
+ * with an initialTab; global shortcuts map to tabs and also jump between them
+ * while the dialog is open.
  */
 
 import React from 'react';

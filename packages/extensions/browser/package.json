@@ -13,8 +13,8 @@
   "dependencies": {},
   "devDependencies": {
     "@nimbalyst/extension-sdk": "*",
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.2",
     "typescript": "^5.0.0",
     "vite": "^7.1.12",

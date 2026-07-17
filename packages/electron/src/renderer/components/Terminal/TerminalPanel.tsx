@@ -13,6 +13,7 @@ import { TerminalContextMenu } from './TerminalContextMenu';
 import { sanitizeScrollback, stripProblematicEscapeSequences, cleanScrollback } from './scrollbackSanitization';
 import { loadTerminalGhostty } from './ghosttyInstance';
 import { isElementMeasurable, waitUntilElementMeasurable } from './terminalVisibility';
+import { canPersistTerminalRenderState } from './terminalRenderState';
 
 // Type for terminal API is defined in electron.d.ts
 
@@ -201,7 +202,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
   // Handle terminal restart after exit
   // Use a ref to store the restart function to avoid effect re-runs
-  const handleRestartRef = useRef<() => Promise<void>>();
+  const handleRestartRef = useRef<(() => Promise<void>) | undefined>(undefined);
   handleRestartRef.current = async () => {
     hasExitedRef.current = false; // Reset ref for callbacks
     setHasExited(false);
@@ -269,9 +270,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     let focusInHandler: (() => void) | null = null;
     let focusOutHandler: (() => void) | null = null;
     let renderStatePersistTimer: ReturnType<typeof setTimeout> | null = null;
+    let renderStateReadyToPersist = false;
 
     const persistRenderStateNow = async () => {
-      if (!terminal || disposed) return;
+      if (!terminal || !canPersistTerminalRenderState(true, disposed, renderStateReadyToPersist)) return;
 
       const maxCols = Math.max(1, terminal.cols);
       const maxRows = Math.max(1, terminal.rows);
@@ -612,6 +614,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
           // Mark scrollback restoration as complete and flush any queued output
           scrollbackRestoreComplete = true;
+          renderStateReadyToPersist = true;
           if (pendingOutput.length > 0 && terminal && !disposed) {
             for (const pending of pendingOutput) {
               if (pending.sequence <= lastAppliedSequence) continue;
@@ -749,6 +752,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
         clearTimeout(renderStatePersistTimer);
         renderStatePersistTimer = null;
       }
+      // Never mirror the blank/partial terminal created before the persisted
+      // snapshot has established an authoritative render-state baseline.
       void persistRenderStateNow();
       disposed = true;
       disposedRef.current = true;

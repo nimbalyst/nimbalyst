@@ -10,8 +10,15 @@ import type { SessionData } from '@nimbalyst/runtime/ai/server/types';
 import { exportSessionToHtml } from '../services/SessionHtmlExporter';
 import { loadViewMessages } from '../utils/transcriptHelpers';
 import { exportFileToHtml } from '../services/FileHtmlExporter';
-import { getSessionJwt, refreshSession } from '../services/StytchAuthService';
+import {
+  getAccounts,
+  getPersonalSessionJwtForAccount,
+  getSyncAccount,
+  refreshPersonalSessionForAccount,
+} from '../services/StytchAuthService';
+import { findTeamForWorkspace } from '../services/TeamService';
 import { store } from '../utils/store';
+import { createTtlCache } from '../utils/asyncCache';
 
 const SHARE_SERVER_URL = 'https://sync.nimbalyst.com';
 const DEFAULT_SHARE_EXPIRATION_DAYS = 7;
@@ -106,6 +113,7 @@ function removeShareKey(sessionId: string): void {
 interface ShareDisplayMetadata {
   contentType: 'session' | 'file';
   title: string;
+  owningPersonalOrgId: string;
 }
 
 let shareMetadataCache: Record<string, ShareDisplayMetadata> | null = null;
@@ -222,27 +230,54 @@ function normalizeShareExpirationDays(
  * Stytch JWTs have short lifetimes (~5 min), so we refresh on every
  * share operation rather than risk sending an expired token.
  */
-async function getValidJwt(): Promise<string | null> {
-  // Save cached JWT before refresh attempt, since refresh used to
-  // call signOut() on failure which would nuke credentials.
-  const cachedJwt = getSessionJwt();
-
-  let refreshed = false;
+async function getValidJwt(personalOrgId: string): Promise<string | null> {
+  const cachedJwt = getPersonalSessionJwtForAccount(personalOrgId);
   try {
-    refreshed = await refreshSession(SHARE_SERVER_URL);
+    const refreshed = await refreshPersonalSessionForAccount(personalOrgId);
+    if (refreshed) return refreshed;
   } catch {
     // Network error -- fall through to cached JWT
   }
-  if (refreshed) {
-    return getSessionJwt();
-  }
-
-  // Refresh failed - try the cached JWT as a last resort.
-  // The server may still accept it if it hasn't expired yet.
   if (cachedJwt) {
     logger.file.warn('[ShareHandlers] JWT refresh failed, falling back to cached JWT');
   }
   return cachedJwt;
+}
+
+export interface ShareAccountResolution {
+  personalOrgId: string;
+  source: 'workspace-binding' | 'sync-account' | 'explicit-picker';
+}
+
+export interface ShareAccountOptionsResult {
+  success: boolean;
+  accounts?: ReturnType<typeof getAccounts>;
+  defaultPersonalOrgId?: string;
+  defaultSource?: 'workspace-binding' | 'sync-account' | 'only-account';
+  error?: string;
+}
+
+/** Account-selection seam for the deferred share-account picker. */
+export async function resolveDefaultShareAccount(
+  workspacePath?: string | null,
+  requestedPersonalOrgId?: string,
+): Promise<ShareAccountResolution | null> {
+  const signedInIds = new Set(getAccounts().map((account) => account.personalOrgId));
+  if (requestedPersonalOrgId) {
+    return signedInIds.has(requestedPersonalOrgId)
+      ? { personalOrgId: requestedPersonalOrgId, source: 'explicit-picker' }
+      : null;
+  }
+  if (workspacePath) {
+    const team = await findTeamForWorkspace(workspacePath);
+    if (team?.boundPersonalOrgId && signedInIds.has(team.boundPersonalOrgId)) {
+      return { personalOrgId: team.boundPersonalOrgId, source: 'workspace-binding' };
+    }
+  }
+  const syncAccount = getSyncAccount();
+  return syncAccount
+    ? { personalOrgId: syncAccount.personalOrgId, source: 'sync-account' }
+    : null;
 }
 
 export interface ShareInfo {
@@ -253,12 +288,137 @@ export interface ShareInfo {
   createdAt: string;
   expiresAt: string | null;
   viewCount: number;
+  owningPersonalOrgId: string;
+}
+
+export interface ShareListResult {
+  success: boolean;
+  shares?: ShareInfo[];
+  error?: string;
+}
+
+/**
+ * share:list returns global, user-scoped data (not workspace-specific) --
+ * every open window asks the server for the identical share list. Without
+ * this, N windows open at once means N Stytch JWT refreshes + N identical
+ * GET /shares round trips (observed: 7+ concurrent share:list calls at
+ * startup, see nimbalyst-local/investigations/startup-contention.md).
+ */
+const SHARE_LIST_TTL_MS = 5000;
+const shareListCache = createTtlCache<'all', ShareListResult>(SHARE_LIST_TTL_MS);
+
+/** Force the next share:list call to refetch instead of reusing the cached list. */
+export function invalidateShareListCache(): void {
+  shareListCache.invalidate();
+}
+
+/** Single-flight + short-TTL wrapper around the uncached share list fetch. */
+export async function getShareList(): Promise<ShareListResult> {
+  return shareListCache.get('all', listSharesUncached);
+}
+
+/**
+ * List the user's shared sessions.
+ */
+async function listSharesUncached(): Promise<ShareListResult> {
+  const signedInAccounts = getAccounts();
+  if (signedInAccounts.length === 0) {
+    return { success: false, error: 'Not signed in' };
+  }
+
+  try {
+    const results = await Promise.allSettled(signedInAccounts.map(async (account) => {
+      const jwt = await getValidJwt(account.personalOrgId);
+      if (!jwt) return [];
+      const response = await net.fetch(`${SHARE_SERVER_URL}/shares`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${jwt}` },
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Account ${account.personalOrgId}: ${errorText || response.status}`);
+      }
+      const data = await response.json() as { shares: ShareInfo[] };
+      return data.shares.map((share) => ({
+        ...share,
+        owningPersonalOrgId: share.owningPersonalOrgId || account.personalOrgId,
+      }));
+    }));
+    const serverShares = results.flatMap((result) => (
+      result.status === 'fulfilled' ? result.value : []
+    ));
+    if (results.every((result) => result.status === 'rejected')) {
+      throw results[0].status === 'rejected' ? results[0].reason : new Error('Not signed in');
+    }
+    const shareMetadata = loadShareMetadata();
+
+    const shares = await Promise.all(
+      serverShares.map(async (share) => {
+        const shareKeyId = typeof share.sessionId === 'string' ? share.sessionId : '';
+        const localMetadata = shareKeyId ? shareMetadata[shareKeyId] : undefined;
+        if (localMetadata?.title) {
+          return { ...share, title: localMetadata.title };
+        }
+
+        if (shareKeyId && !shareKeyId.startsWith('file:')) {
+          try {
+            const session = await AISessionsRepository.get(shareKeyId);
+            if (session?.title) {
+              return { ...share, title: session.title };
+            }
+          } catch (error) {
+            logger.main.warn('[ShareHandlers] Failed to resolve shared session title:', shareKeyId, error);
+          }
+        }
+
+        return share;
+      })
+    );
+
+    shares.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    return { success: true, shares };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.file.error(`[ShareHandlers] List shares failed: ${errorMessage}`);
+    return { success: false, error: errorMessage };
+  }
 }
 
 /**
  * Registers IPC handlers for session sharing functionality.
  */
 export function registerShareHandlers() {
+  safeHandle(
+    'share:get-account-options',
+    async (_event, options: { contentType: 'session' | 'file'; sessionId?: string; filePath?: string }): Promise<ShareAccountOptionsResult> => {
+      try {
+        const accounts = getAccounts();
+        let workspacePath: string | null = null;
+        if (options.contentType === 'session' && options.sessionId) {
+          const session = await AISessionsRepository.get(options.sessionId);
+          workspacePath = session
+            ? ((session.metadata as any)?.workspaceId ?? session.workspacePath ?? null)
+            : null;
+        } else if (options.contentType === 'file' && options.filePath) {
+          workspacePath = path.dirname(options.filePath);
+        }
+        const resolution = await resolveDefaultShareAccount(workspacePath);
+        return {
+          success: true,
+          accounts,
+          defaultPersonalOrgId: resolution?.personalOrgId,
+          defaultSource: accounts.length === 1
+            ? 'only-account'
+            : resolution?.source === 'workspace-binding'
+              ? 'workspace-binding'
+              : 'sync-account',
+        };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  );
+
   /**
    * Share a session as a link.
    * Generates HTML, encrypts client-side, uploads ciphertext to server.
@@ -268,23 +428,12 @@ export function registerShareHandlers() {
     'share:sessionAsLink',
     async (
       _event,
-      options: { sessionId: string; expirationDays?: number | null }
-    ): Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }> => {
+      options: { sessionId: string; expirationDays?: number | null; personalOrgId?: string }
+    ): Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }> => {
       const { sessionId, expirationDays } = options;
 
       if (!sessionId) {
         return { success: false, error: 'sessionId is required' };
-      }
-
-      // Check auth
-      const jwt = await getValidJwt();
-      if (!jwt) {
-        AnalyticsService.getInstance().sendEvent('known_error', {
-          errorId: 'share_not_signed_in',
-          context: 'share',
-          content_type: 'session',
-        });
-        return { success: false, error: 'Not signed in. Sign in via Settings > Account & Sync.' };
       }
 
       const serverUrl = SHARE_SERVER_URL;
@@ -294,6 +443,25 @@ export function registerShareHandlers() {
         const chatSession = await AISessionsRepository.get(sessionId);
         if (!chatSession) {
           return { success: false, error: `Session not found: ${sessionId}` };
+        }
+
+        const workspacePath = (chatSession.metadata as any)?.workspaceId
+          ?? chatSession.workspacePath
+          ?? '';
+        const accountResolution = await resolveDefaultShareAccount(
+          workspacePath,
+          options.personalOrgId,
+        );
+        const jwt = accountResolution
+          ? await getValidJwt(accountResolution.personalOrgId)
+          : null;
+        if (!jwt || !accountResolution) {
+          AnalyticsService.getInstance().sendEvent('known_error', {
+            errorId: 'share_not_signed_in',
+            context: 'share',
+            content_type: 'session',
+          });
+          return { success: false, error: 'No signed-in account is available for this share.' };
         }
 
         const msgResult = await loadViewMessages(sessionId, chatSession.provider ?? 'unknown');
@@ -310,7 +478,7 @@ export function registerShareHandlers() {
           createdAt: new Date(chatSession.createdAt as any).getTime(),
           updatedAt: new Date(chatSession.updatedAt as any).getTime(),
           messages: msgResult.messages,
-          workspacePath: (chatSession.metadata as any)?.workspaceId ?? chatSession.workspacePath ?? '',
+          workspacePath,
           title: chatSession.title ?? 'New conversation',
         };
 
@@ -358,7 +526,9 @@ export function registerShareHandlers() {
         setShareMetadata(sessionId, {
           contentType: 'session',
           title: chatSession.title ?? 'New conversation',
+          owningPersonalOrgId: accountResolution.personalOrgId,
         });
+        invalidateShareListCache();
 
         // Track successful session share
         AnalyticsService.getInstance().sendEvent('content_shared', {
@@ -366,7 +536,14 @@ export function registerShareHandlers() {
           is_update: !!data.isUpdate,
         });
 
-        return { success: true, url: fullUrl, shareId: data.shareId, isUpdate: data.isUpdate, encryptionKey: urlSafeKey };
+        return {
+          success: true,
+          url: fullUrl,
+          shareId: data.shareId,
+          isUpdate: data.isUpdate,
+          encryptionKey: urlSafeKey,
+          owningPersonalOrgId: accountResolution.personalOrgId,
+        };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         logger.file.error(`[ShareHandlers] Share failed: ${errorMessage}`);
@@ -386,67 +563,7 @@ export function registerShareHandlers() {
   /**
    * List the user's shared sessions.
    */
-  safeHandle(
-    'share:list',
-    async (): Promise<{ success: boolean; shares?: ShareInfo[]; error?: string }> => {
-      const jwt = await getValidJwt();
-      if (!jwt) {
-        return { success: false, error: 'Not signed in' };
-      }
-
-      const serverUrl = SHARE_SERVER_URL;
-
-      try {
-        const response = await net.fetch(`${serverUrl}/shares`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${jwt}`,
-          },
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          logger.file.error(`[ShareHandlers] List shares failed: ${response.status} ${errorText}`);
-          if (response.status === 401 || response.status === 403) {
-            return { success: false, error: 'Not signed in' };
-          }
-          return { success: false, error: `Failed to list shares: ${errorText || response.status}` };
-        }
-
-        const data = await response.json() as { shares: ShareInfo[] };
-        const shareMetadata = loadShareMetadata();
-
-        const shares = await Promise.all(
-          data.shares.map(async (share) => {
-            const shareKeyId = typeof share.sessionId === 'string' ? share.sessionId : '';
-            const localMetadata = shareKeyId ? shareMetadata[shareKeyId] : undefined;
-            if (localMetadata?.title) {
-              return { ...share, title: localMetadata.title };
-            }
-
-            if (shareKeyId && !shareKeyId.startsWith('file:')) {
-              try {
-                const session = await AISessionsRepository.get(shareKeyId);
-                if (session?.title) {
-                  return { ...share, title: session.title };
-                }
-              } catch (error) {
-                logger.main.warn('[ShareHandlers] Failed to resolve shared session title:', shareKeyId, error);
-              }
-            }
-
-            return share;
-          })
-        );
-
-        return { success: true, shares };
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.file.error(`[ShareHandlers] List shares failed: ${errorMessage}`);
-        return { success: false, error: errorMessage };
-      }
-    }
-  );
+  safeHandle('share:list', async (): Promise<ShareListResult> => getShareList());
 
   /**
    * Delete (unshare) a shared session.
@@ -455,7 +572,7 @@ export function registerShareHandlers() {
     'share:delete',
     async (
       _event,
-      options: { shareId: string; sessionId?: string }
+      options: { shareId: string; sessionId?: string; owningPersonalOrgId?: string }
     ): Promise<{ success: boolean; error?: string }> => {
       const { shareId, sessionId } = options;
 
@@ -463,7 +580,8 @@ export function registerShareHandlers() {
         return { success: false, error: 'shareId is required' };
       }
 
-      const jwt = await getValidJwt();
+      const ownerAccountId = options.owningPersonalOrgId ?? getSyncAccount()?.personalOrgId;
+      const jwt = ownerAccountId ? await getValidJwt(ownerAccountId) : null;
       if (!jwt) {
         return { success: false, error: 'Not signed in' };
       }
@@ -489,6 +607,7 @@ export function registerShareHandlers() {
           removeShareKey(sessionId);
           removeShareMetadata(sessionId);
         }
+        invalidateShareListCache();
 
         logger.file.info(`[ShareHandlers] Share deleted: ${shareId}`);
 
@@ -513,22 +632,28 @@ export function registerShareHandlers() {
     'share:fileAsLink',
     async (
       _event,
-      options: { filePath: string; expirationDays?: number | null }
-    ): Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }> => {
+      options: { filePath: string; expirationDays?: number | null; personalOrgId?: string }
+    ): Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }> => {
       const { filePath, expirationDays } = options;
 
       if (!filePath) {
         return { success: false, error: 'filePath is required' };
       }
 
-      const jwt = await getValidJwt();
-      if (!jwt) {
+      const accountResolution = await resolveDefaultShareAccount(
+        path.dirname(filePath),
+        options.personalOrgId,
+      );
+      const jwt = accountResolution
+        ? await getValidJwt(accountResolution.personalOrgId)
+        : null;
+      if (!jwt || !accountResolution) {
         AnalyticsService.getInstance().sendEvent('known_error', {
           errorId: 'share_not_signed_in',
           context: 'share',
           content_type: 'file',
         });
-        return { success: false, error: 'Not signed in. Sign in via Settings > Account & Sync.' };
+        return { success: false, error: 'No signed-in account is available for this share.' };
       }
 
       const serverUrl = SHARE_SERVER_URL;
@@ -593,7 +718,9 @@ export function registerShareHandlers() {
         setShareMetadata(keyId, {
           contentType: 'file',
           title: path.basename(filePath),
+          owningPersonalOrgId: accountResolution.personalOrgId,
         });
+        invalidateShareListCache();
 
         // Track successful file share
         AnalyticsService.getInstance().sendEvent('content_shared', {
@@ -601,7 +728,14 @@ export function registerShareHandlers() {
           is_update: !!data.isUpdate,
         });
 
-        return { success: true, url: fullUrl, shareId: data.shareId, isUpdate: data.isUpdate, encryptionKey: urlSafeKey };
+        return {
+          success: true,
+          url: fullUrl,
+          shareId: data.shareId,
+          isUpdate: data.isUpdate,
+          encryptionKey: urlSafeKey,
+          owningPersonalOrgId: accountResolution.personalOrgId,
+        };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         logger.file.error(`[ShareHandlers] File share failed: ${errorMessage}`);

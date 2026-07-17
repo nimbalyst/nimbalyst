@@ -42,7 +42,7 @@ import { getFileType } from '../../utils/fileTypeDetector';
 import { customEditorRegistry, CustomEditorWrapper } from '../CustomEditors';
 import { logger } from '../../utils/logger';
 import { createEditorHost } from './createEditorHost';
-import type { EditorHost, DiffConfig } from '@nimbalyst/runtime';
+import type { EditorHost, DiffConfig, ProjectFileWriteReceipt, EditorHostFileSystem } from '@nimbalyst/runtime';
 import { createExtensionStorage } from '@nimbalyst/runtime';
 import { setEditorContext, clearEditorContext } from '../../stores/editorContextStore';
 import { store, editorHasUnacceptedChangesAtom, makeEditorKey } from '@nimbalyst/runtime/store';
@@ -1219,6 +1219,14 @@ export const TabEditor: React.FC<TabEditorProps> = ({
           onDirtyChange?.(false);
           try {
             await handle.resolveDiff(true);
+            // resolveDiff's notifyFileChanged fired while our diff guards were
+            // still set, so the subscribeToFileChanges wrapper dropped it -- and
+            // onDiffResolved excludes the resolving editor, so nothing else
+            // clears the pending tag. Without these two lines the open custom
+            // editor never sees this edit and stays deaf to every subsequent
+            // file change until the tab is reopened (NIM-1484).
+            setPendingAIEditTag(null);
+            editorHostFileChangeCallbackRef.current?.(newContent);
           } catch (err) {
             logger.ui.error('[TabEditor] Auto-accept diff failed for no-diff-view custom editor:', err);
           }
@@ -2082,6 +2090,23 @@ export const TabEditor: React.FC<TabEditorProps> = ({
   // This is memoized and uses refs for changing values to stay stable across renders
   // Only recreate when filePath or workspaceId changes (genuinely new file/workspace)
   const editorHost = useMemo<EditorHost>(() => {
+    const refreshCurrentFileAfterProjectWrite = async (receipt: ProjectFileWriteReceipt): Promise<void> => {
+      if (!receipt.files.some((entry) => normalizePathForCompare(entry.path) === normalizePathForCompare(filePath))) return;
+      const result = await window.electronAPI.readFileContent(filePath);
+      if (!result?.success || typeof result.content !== 'string') {
+        throw new Error(`A project file write changed ${fileName}, but the editor could not reload it.`);
+      }
+      contentRef.current = result.content;
+      initialContentRef.current = result.content;
+      lastSavedContentRef.current = result.content;
+      isDirtyRef.current = false;
+      documentModel?.setLastPersistedContent(result.content);
+      documentModelHandleRef.current?.setDirty(false);
+      documentModelHandleRef.current?.notifySiblingsSaved(result.content);
+      onDirtyChange?.(false);
+      editorHostFileChangeCallbackRef.current?.(result.content);
+    };
+
     return createEditorHost({
       filePath,
       fileName,
@@ -2233,6 +2258,31 @@ export const TabEditor: React.FC<TabEditorProps> = ({
       openHistory: () => {
         store.set(historyDialogFileAtom, filePath);
       },
+
+      ...(workspaceId && !filePath.startsWith('virtual://') ? {
+        fs: {
+          read: (paths: string[]) =>
+            window.electronAPI.invoke('project-fs:read', paths),
+          write: async (edit) => {
+            const receipt = await window.electronAPI.invoke('project-fs:write', edit) as ProjectFileWriteReceipt;
+            await refreshCurrentFileAfterProjectWrite(receipt);
+            return receipt;
+          },
+          onChanged: (callback: (paths: string[]) => void) => {
+            const offDisk = window.electronAPI.onFileChangedOnDisk((data: { path: string }) => callback([data.path]));
+            const offWrite = window.electronAPI.on('project-fs:changed', (receipt: ProjectFileWriteReceipt) => {
+              callback(receipt.files.map((entry) => entry.path));
+            });
+            return () => {
+              offDisk();
+              offWrite();
+            };
+          },
+        } satisfies EditorHostFileSystem,
+      } : {}),
+
+      // Open only host-normalized HTTPS references outside the renderer.
+      openExternal: (url: string) => window.electronAPI.openExternal(url),
 
       // Subscribe to diff requests (optional - for editors that support diff mode)
       subscribeToDiffRequests: customEditorSupportsDiffMode

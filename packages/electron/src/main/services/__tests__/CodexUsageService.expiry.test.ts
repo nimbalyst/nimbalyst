@@ -14,7 +14,10 @@
  * still-active sibling window.
  */
 import { describe, it, expect } from 'vitest';
-import { filterRateLimitsByExpiry } from '../CodexUsageService';
+import {
+  convertAccountRateLimitsResponse,
+  filterRateLimitsByExpiry,
+} from '../CodexUsageService';
 
 // 2026-05-14T12:00:00Z, in Unix seconds. Each test pins a specific "now"
 // relative to this anchor so resets_at math is human-readable.
@@ -130,5 +133,85 @@ describe('filterRateLimitsByExpiry', () => {
     const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
     expect(out).not.toBeNull();
     expect(out!.limit_id).toBe('usage-bucket-7');
+  });
+});
+
+describe('convertAccountRateLimitsResponse', () => {
+  it('uses window duration rather than the primary slot to identify a weekly-only limit', () => {
+    const usage = convertAccountRateLimitsResponse({
+      rateLimits: {
+        limitId: 'codex',
+        limitName: null,
+        primary: {
+          usedPercent: 36,
+          windowDurationMins: 10_080,
+          resetsAt: 1_784_666_300,
+        },
+        secondary: null,
+        credits: null,
+        individualLimit: null,
+        planType: 'pro',
+        rateLimitReachedType: null,
+      },
+      rateLimitsByLimitId: null,
+      rateLimitResetCredits: null,
+    });
+
+    expect(usage.limits).toHaveLength(1);
+    expect(usage.limits[0].windows).toEqual([
+      {
+        slot: 'primary',
+        usedPercent: 36,
+        windowDurationMins: 10_080,
+        resetsAt: '2026-07-21T20:38:20.000Z',
+      },
+    ]);
+  });
+
+  it('preserves dual windows, named limit buckets, and earned resets', () => {
+    const usage = convertAccountRateLimitsResponse({
+      rateLimits: {
+        limitId: 'codex',
+        limitName: null,
+        primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1_784_620_000 },
+        secondary: { usedPercent: 40, windowDurationMins: 10_080, resetsAt: 1_784_900_000 },
+        credits: { hasCredits: false, unlimited: false, balance: '0' },
+        individualLimit: null,
+        planType: 'pro',
+        rateLimitReachedType: null,
+      },
+      rateLimitsByLimitId: {
+        codex: {
+          limitId: 'codex',
+          limitName: null,
+          primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1_784_620_000 },
+          secondary: { usedPercent: 40, windowDurationMins: 10_080, resetsAt: 1_784_900_000 },
+          credits: { hasCredits: false, unlimited: false, balance: '0' },
+          individualLimit: null,
+          planType: 'pro',
+          rateLimitReachedType: null,
+        },
+        codex_bengalfox: {
+          limitId: 'codex_bengalfox',
+          limitName: 'GPT-5.3-Codex-Spark',
+          primary: { usedPercent: 0, windowDurationMins: 10_080, resetsAt: 1_784_736_735 },
+          secondary: null,
+          credits: null,
+          individualLimit: null,
+          planType: 'pro',
+          rateLimitReachedType: null,
+        },
+      },
+      rateLimitResetCredits: {
+        availableCount: 4,
+        credits: null,
+      },
+    });
+
+    expect(usage.limits.map((limit) => [limit.id, limit.windows.length])).toEqual([
+      ['codex', 2],
+      ['codex_bengalfox', 1],
+    ]);
+    expect(usage.rateLimitResetCredits?.availableCount).toBe(4);
   });
 });

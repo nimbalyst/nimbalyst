@@ -21,6 +21,11 @@ import WebKit
 public final class AppState: ObservableObject {
     private let logger = Logger(subsystem: "com.nimbalyst.app", category: "AppState")
     @Published public var isPaired: Bool = false
+    @Published public private(set) var accounts: [MobileAccount] = []
+    @Published public private(set) var activeAccountId: String?
+    /// True when the account-array blob exists but cannot be decoded or recovered.
+    /// The unreadable Keychain value remains preserved until the user explicitly resets it.
+    @Published public private(set) var accountStorageNeedsRepair: Bool = false
     @Published public var isConnected: Bool = false
     @Published public var availableModels: [SyncedAvailableModel] = ModelPreferences.loadAvailableModels()
     @Published public var desktopDefaultModel: String? = ModelPreferences.loadDefaultModel()
@@ -48,12 +53,18 @@ public final class AppState: ObservableObject {
     /// Voice mode agent. One instance shared across the app (iOS only).
     #if os(iOS)
     @Published public private(set) var voiceAgent: VoiceAgent?
+
+    /// Session the UI should navigate to because the voice agent just created it
+    /// on this device. Observed by the navigation views (iPhone stack / iPad
+    /// split) to open the new session. Set back to nil by the view once handled.
+    @Published public var voiceNavigationRequest: String?
     #endif
 
     private var cryptoManager: CryptoManager?
     public private(set) var syncManager: SyncManager?
     public private(set) var documentSyncManager: DocumentSyncManager?
     private var cancellables = Set<AnyCancellable>()
+    private var managerCancellables = Set<AnyCancellable>()
     private var jwtRefreshTimer: Timer?
 
     // MARK: - Sync auth-degraded tracking
@@ -89,8 +100,8 @@ public final class AppState: ObservableObject {
         // Initialize analytics early so events can be captured throughout the lifecycle
         AnalyticsManager.shared.initialize()
 
-        // Check if we have stored credentials (pairing state)
-        isPaired = KeychainManager.hasEncryptionKey()
+        // Loading account state also performs the one-time legacy Keychain migration.
+        refreshAccountsFromKeychain()
 
         // If both paired and authenticated from a previous session, set up and connect immediately
         if isPaired && authManager.isAuthenticated {
@@ -120,23 +131,22 @@ public final class AppState: ObservableObject {
     /// The userId parameter is informational only (e.g., syncEmail from QR) -- the actual
     /// user ID for crypto and routing comes from Stytch auth.
     public func pair(with seed: String, serverUrl: String, userId: String, analyticsId: String? = nil, personalOrgId: String? = nil, personalUserId: String? = nil) throws {
-        // Delete any leftover database from a previous pairing.
-        // This ensures stale decrypted data from a different account doesn't survive
-        // into the new pairing (e.g., if unpair() couldn't delete the locked file).
-        DatabaseManager.deleteDatabase()
+        let wasAuthenticated = authManager.isAuthenticated
+        let account = try KeychainManager.upsertPairingAccount(
+            email: userId,
+            personalOrgId: personalOrgId ?? "",
+            stytchUserId: personalUserId,
+            e2eSeed: seed,
+            serverUrl: serverUrl,
+            analyticsId: analyticsId
+        )
 
-        try KeychainManager.storeEncryptionKey(seed: seed)
-        try KeychainManager.storeServerUrl(serverUrl)
-        // Store the QR userId as a fallback identifier (not used for crypto or routing)
-        try KeychainManager.storeUserId(userId)
-        // Store desktop's personalOrgId/personalUserId for room routing (v5+).
-        // This ensures the mobile connects to the same index room as the desktop.
-        if let personalOrgId, !personalOrgId.isEmpty {
-            try KeychainManager.storePairingPersonalOrgId(personalOrgId)
-        }
-        if let personalUserId, !personalUserId.isEmpty {
-            try KeychainManager.storePairingPersonalUserId(personalUserId)
-        }
+        // Pairing selects the scanned account. Tear down every room belonging
+        // to the prior selection before rebuilding the selected account scope.
+        tearDownManagers()
+        DatabaseManager.deleteDatabase(at: DatabaseManager.path(for: account))
+        refreshAccountsFromKeychain()
+        authManager.reloadSelectedAccount()
         logger.info("Paired with userId=\(userId), personalOrgId=\(personalOrgId ?? "nil"), personalUserId=\(personalUserId ?? "nil")")
         isPaired = true
 
@@ -145,7 +155,7 @@ public final class AppState: ObservableObject {
         AnalyticsManager.shared.capture("mobile_pairing_completed")
         // If already authenticated (re-pairing scenario), set up managers and connect.
         // On fresh install this won't fire -- the auth observer handles post-login setup.
-        if authManager.isAuthenticated {
+        if authManager.isAuthenticated && wasAuthenticated {
             setupManagers()
             connectIfReady()
             warmupTranscriptWebViewIfAppropriate()
@@ -157,29 +167,51 @@ public final class AppState: ObservableObject {
         AnalyticsManager.shared.capture("mobile_device_unpairing")
         AnalyticsManager.shared.reset()
 
-        jwtRefreshTimer?.invalidate()
-        jwtRefreshTimer = nil
-        #if os(iOS)
-        voiceAgent?.deactivate()
-        voiceAgent = nil
-        #endif
-        documentSyncManager?.disconnectAll()
-        syncManager?.disconnect()
         // Erase all rows while the database connection is still open.
         // Deleting the file after nilling refs is unreliable because ARC may
         // not immediately dealloc the DatabasePool, leaving the file locked.
         try? databaseManager?.eraseAllData()
+        tearDownManagers()
         KeychainManager.deleteAll()
         authManager.logout()
-        cryptoManager = nil
-        databaseManager = nil
-        syncManager = nil
-        documentSyncManager = nil
         // Also attempt file deletion for a clean slate on re-pair.
         DatabaseManager.deleteDatabase()
         isPaired = false
+        accounts = []
+        activeAccountId = nil
+        accountStorageNeedsRepair = false
         isConnected = false
         clearSyncAuthDegradedState()
+    }
+
+    /// Select one paired account as the sole mobile runtime scope.
+    public func switchAccount(to accountId: String) throws {
+        guard accountId != activeAccountId else { return }
+        guard accounts.contains(where: { $0.id == accountId }) else {
+            throw MobileAccountError.accountNotFound(accountId)
+        }
+
+        tearDownManagers()
+        _ = try KeychainManager.setActiveAccount(id: accountId)
+        refreshAccountsFromKeychain()
+        let wasAuthenticated = authManager.isAuthenticated
+        authManager.reloadSelectedAccount()
+
+        if authManager.isAuthenticated && wasAuthenticated {
+            setupManagers()
+            connectIfReady()
+            warmupTranscriptWebViewIfAppropriate()
+        }
+    }
+
+    private func refreshAccountsFromKeychain() {
+        let result = KeychainManager.getAccountLoadResult()
+        accounts = result.state.accounts
+        activeAccountId = result.state.activeAccountId
+        accountStorageNeedsRepair = result.requiresExplicitRepair
+        // A corrupt present blob is not equivalent to an unpaired phone. Keep it
+        // out of the pairing flow until the user explicitly chooses to reset.
+        isPaired = !result.state.accounts.isEmpty || result.requiresExplicitRepair
     }
 
     /// Disconnect sync and log out of Stytch, routing the user to LoginView.
@@ -226,10 +258,9 @@ public final class AppState: ObservableObject {
                     self.connectIfReady()
                     self.warmupTranscriptWebViewIfAppropriate()
                 } else {
-                    // Auth lost (logout, session expired, escalation): tear down
-                    // the degraded-banner state so LoginView doesn't render with
-                    // the banner still on screen.
-                    self.clearSyncAuthDegradedState()
+                    // Auth lost for the selected account: no rooms or database
+                    // observations from that account may remain live.
+                    self.tearDownManagers()
                 }
             }
             .store(in: &cancellables)
@@ -250,34 +281,13 @@ public final class AppState: ObservableObject {
         #endif
     }
 
-    /// Set up managers if they haven't been initialized yet.
-    /// If managers exist but the encryption key may have changed (e.g. after re-login),
-    /// re-derives the CryptoManager key to match the current userId.
+    /// Set up managers after authentication. Rebuild existing managers because
+    /// SyncManager and DocumentSyncManager retain the CryptoManager supplied at init.
     private func setupManagersIfNeeded() {
         if databaseManager != nil {
-            // Managers exist, but re-derive the encryption key in case the userId changed
-            // (e.g. after session expiry + re-login). This is cheap (PBKDF2 once) and
-            // ensures we always decrypt with the correct key.
-            rederiveCryptoKeyIfNeeded()
-            return
+            tearDownManagers()
         }
         setupManagers()
-    }
-
-    /// Re-derive the CryptoManager key using the current best userId.
-    /// Called after re-authentication when managers already exist.
-    private func rederiveCryptoKeyIfNeeded() {
-        guard let seed = KeychainManager.getEncryptionKey() else { return }
-        let keyUserId: String
-        if let pairingUserId = KeychainManager.getPairingPersonalUserId() {
-            keyUserId = pairingUserId
-        } else if let authUserId = authManager.authUserId {
-            keyUserId = authUserId
-        } else {
-            return
-        }
-        logger.info("Re-deriving encryption key (keyUserId=\(keyUserId))")
-        cryptoManager = CryptoManager(seed: seed, userId: keyUserId)
     }
 
     /// Connect to the sync server if both paired and authenticated.
@@ -416,6 +426,10 @@ public final class AppState: ObservableObject {
             consecutiveRefreshFailures = 0
             // Reconnect with fresh JWT
             connectIfReady()
+        case .accountChanged:
+            // A switch already rebuilt (or will rebuild) the selected account.
+            // The old in-flight refresh must not affect its failure counters.
+            return
         case .sessionExpired:
             // Session is dead -- log the user out so they see the login screen
             // with an explanation of what happened.
@@ -518,10 +532,11 @@ public final class AppState: ObservableObject {
     }
 
     private func setupManagers() {
-        guard let seed = KeychainManager.getEncryptionKey() else {
-            logger.warning("setupManagers: no encryption key in Keychain")
+        guard let account = KeychainManager.getActiveAccount() else {
+            logger.warning("setupManagers: no selected account in Keychain")
             return
         }
+        let seed = account.e2eSeed
 
         // Key derivation must use the same userId as the desktop.
         // The desktop derives: PBKDF2(seed, "nimbalyst:<personalUserId>")
@@ -529,9 +544,9 @@ public final class AppState: ObservableObject {
         // Prefer the pairing personalUserId (from QR v5+) because that's exactly
         // what the desktop uses. Fall back to authUserId for older QR versions.
         let keyUserId: String
-        if let pairingUserId = KeychainManager.getPairingPersonalUserId() {
+        if let pairingUserId = account.stytchUserId {
             keyUserId = pairingUserId
-        } else if let authUserId = authManager.authUserId {
+        } else if let authUserId = account.authUserId {
             keyUserId = authUserId
         } else {
             logger.debug("setupManagers: no userId available for key derivation, deferring until auth completes")
@@ -549,7 +564,7 @@ public final class AppState: ObservableObject {
 
         // Initialize DatabaseManager
         do {
-            databaseManager = try DatabaseManager(path: DatabaseManager.defaultPath)
+            databaseManager = try DatabaseManager(path: DatabaseManager.path(for: account))
         } catch {
             logger.error("Failed to initialize DatabaseManager: \(error.localizedDescription)")
             return
@@ -570,7 +585,10 @@ public final class AppState: ObservableObject {
         // Observe sync connection state
         sync.$isConnected
             .receive(on: DispatchQueue.main)
-            .assign(to: &$isConnected)
+            .sink { [weak self] connected in
+                self?.isConnected = connected
+            }
+            .store(in: &managerCancellables)
 
         // Drive degraded-banner tracking from the same publisher. We use a
         // separate subscription because `assign(to:&)` is a terminal Combine
@@ -582,12 +600,15 @@ public final class AppState: ObservableObject {
             .sink { [weak self] connected in
                 self?.handleSyncConnectionChange(connected: connected)
             }
-            .store(in: &cancellables)
+            .store(in: &managerCancellables)
 
         // Observe encryption key mismatch (wrong pairing / stale key)
         sync.$encryptionKeyMismatch
             .receive(on: DispatchQueue.main)
-            .assign(to: &$needsRepair)
+            .sink { [weak self] mismatch in
+                self?.needsRepair = mismatch
+            }
+            .store(in: &managerCancellables)
 
         #if os(iOS)
         // Initialize voice agent
@@ -598,6 +619,18 @@ public final class AppState: ObservableObject {
         sync.onSessionCompleted = { [weak voice] sessionId, summary in
             Task { @MainActor in
                 voice?.onSessionCompleted(sessionId: sessionId, summary: summary)
+            }
+        }
+
+        // When the voice agent creates a session, switch this device's UI to it.
+        // Only the device that issued the request navigates (matched by requestId);
+        // other paired devices just see the session appear in their list.
+        sync.onSessionCreated = { [weak self, weak voice] requestId, sessionId in
+            Task { @MainActor in
+                guard let self, let voice,
+                      voice.consumePendingCreateSession(requestId: requestId) else { return }
+                voice.activeSessionId = sessionId
+                await self.navigateWhenSessionAvailable(sessionId)
             }
         }
 
@@ -620,8 +653,34 @@ public final class AppState: ObservableObject {
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
-            .store(in: &cancellables)
+            .store(in: &managerCancellables)
         #endif
+    }
+
+    /// Stop every account-scoped resource before selecting or authenticating
+    /// another account. Removing the manager subscriptions is important: an old
+    /// SyncManager publishing after a switch must not mutate the new UI scope.
+    private func tearDownManagers() {
+        jwtRefreshTimer?.invalidate()
+        jwtRefreshTimer = nil
+        degradedBannerCheckTimer?.invalidate()
+        degradedBannerCheckTimer = nil
+
+        #if os(iOS)
+        voiceAgent?.deactivate()
+        voiceAgent = nil
+        #endif
+
+        documentSyncManager?.disconnectAll()
+        syncManager?.disconnect()
+        managerCancellables.removeAll()
+        documentSyncManager = nil
+        syncManager = nil
+        cryptoManager = nil
+        databaseManager = nil
+        isConnected = false
+        needsRepair = false
+        clearSyncAuthDegradedState()
     }
 
     /// Configure the voice agent with a specific project context.
@@ -634,6 +693,25 @@ public final class AppState: ObservableObject {
         voice.configure(database: database, syncManager: sync, projectId: projectId)
         #endif
     }
+
+    #if os(iOS)
+    /// Publish a navigation request to the just-created session once its row has
+    /// synced into the local database. The `createSessionResponseBroadcast` can
+    /// arrive before the session's `indexBroadcast`, so we briefly wait for the
+    /// row rather than navigate to a session the views can't yet resolve.
+    @MainActor
+    private func navigateWhenSessionAvailable(_ sessionId: String) async {
+        for _ in 0..<25 { // ~5s max (25 * 200ms)
+            if let db = databaseManager, (try? db.session(byId: sessionId)) != nil {
+                voiceNavigationRequest = sessionId
+                return
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        // Fall back: navigate anyway; the view retries the row lookup itself.
+        voiceNavigationRequest = sessionId
+    }
+    #endif
 
     // MARK: - Screenshot Mode
 

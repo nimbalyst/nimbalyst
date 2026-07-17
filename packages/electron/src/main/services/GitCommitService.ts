@@ -83,6 +83,8 @@ export async function executeGitCommit(
      * When omitted, git inherits process.env as usual.
      */
     env?: Record<string, string>;
+    /** Stream git and hook output while the commit workflow is running. */
+    onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
   }
 ): Promise<GitCommitExecutionResult> {
   const logContext = options?.logContext || '[git:commit]';
@@ -115,6 +117,12 @@ export async function executeGitCommit(
         const git: SimpleGit = options?.env
           ? simpleGit(workspacePath, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(options.env)
           : simpleGit(workspacePath);
+        if (options?.onOutput) {
+          git.outputHandler((_command, stdout, stderr) => {
+            stdout.on('data', (chunk: Buffer | string) => options.onOutput?.('stdout', chunk.toString()));
+            stderr.on('data', (chunk: Buffer | string) => options.onOutput?.('stderr', chunk.toString()));
+          });
+        }
         const repoHasCommits = await hasCommits(git);
         // log.info(`${logContext} Starting commit in ${workspacePath} with ${filesToStage?.length || 0} files (hasCommits: ${repoHasCommits})`);
 

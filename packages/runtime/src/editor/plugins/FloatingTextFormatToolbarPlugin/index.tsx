@@ -37,6 +37,7 @@ import {getDOMRangeRect} from '../../utils/getDOMRangeRect';
 import {getSelectedNode} from '../../utils/getSelectedNode';
 import {setFloatingElemPosition} from '../../utils/setFloatingElemPosition';
 import {SHORTCUTS} from '../ShortcutsPlugin/shortcuts';
+import type {FloatingTextToolbarAction} from './types';
 import {
   formatBulletList,
   formatCheckList,
@@ -171,6 +172,7 @@ function TextFormatFloatingToolbar({
   isSuperscript,
   blockType,
   setIsLinkEditMode,
+  actions,
 }: {
   editor: LexicalEditor;
   anchorElem: HTMLElement;
@@ -187,6 +189,7 @@ function TextFormatFloatingToolbar({
   isUnderline: boolean;
   blockType: keyof typeof blockTypeToBlockName;
   setIsLinkEditMode: Dispatch<boolean>;
+  actions: ReadonlyArray<FloatingTextToolbarAction>;
 }): JSX.Element {
   const popupCharStylesEditorRef = useRef<HTMLDivElement | null>(null);
 
@@ -431,6 +434,20 @@ function TextFormatFloatingToolbar({
             aria-label="Insert link">
             <i className="format link" />
           </button>
+          {actions.length > 0 && <div className="divider" />}
+          {actions.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              className="popup-item spaced floating-toolbar-action"
+              title={action.label}
+              aria-label={action.label}
+              data-testid={`floating-toolbar-action-${action.id}`}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={action.onSelect}>
+              <span className="material-symbols-outlined">{action.icon}</span>
+            </button>
+          ))}
         </>
       )}
     </div>
@@ -441,6 +458,7 @@ function useFloatingTextFormatToolbar(
   editor: LexicalEditor,
   anchorElem: HTMLElement,
   setIsLinkEditMode: Dispatch<boolean>,
+  actions: ReadonlyArray<FloatingTextToolbarAction>,
 ): JSX.Element | null {
   const [isText, setIsText] = useState(false);
   const [isLink, setIsLink] = useState(false);
@@ -596,6 +614,7 @@ function useFloatingTextFormatToolbar(
       isCode={isCode}
       blockType={blockType}
       setIsLinkEditMode={setIsLinkEditMode}
+      actions={actions}
     />,
     anchorElem,
   );
@@ -604,10 +623,12 @@ function useFloatingTextFormatToolbar(
 export default function FloatingTextFormatToolbarPlugin({
   anchorElem = document.body,
   setIsLinkEditMode,
+  actions = [],
 }: {
   anchorElem?: HTMLElement;
   setIsLinkEditMode: Dispatch<boolean>;
+  actions?: ReadonlyArray<FloatingTextToolbarAction>;
 }): JSX.Element | null {
   const [editor] = useLexicalComposerContext();
-  return useFloatingTextFormatToolbar(editor, anchorElem, setIsLinkEditMode);
+  return useFloatingTextFormatToolbar(editor, anchorElem, setIsLinkEditMode, actions);
 }

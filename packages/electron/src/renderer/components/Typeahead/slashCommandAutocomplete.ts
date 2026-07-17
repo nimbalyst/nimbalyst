@@ -8,6 +8,10 @@ export interface SlashCommandEntry {
   argumentHint?: string;
   source: 'builtin' | 'project' | 'user' | 'plugin';
   kind?: 'command' | 'skill';
+  /** Full command body (instructions). Present for project/user/plugin entries. */
+  content?: string;
+  /** Absolute path to the command/skill source file, when it is file-backed. */
+  filePath?: string;
 }
 
 export function supportsWorkspaceSlashCommands(provider?: string | null): boolean {

@@ -60,6 +60,7 @@ The project builds with JDK 17. It targets `JavaVersion.VERSION_17` / `jvmTarget
 npm run android:test:unit         # ./gradlew :app:testDebugUnitTest
 npm run android:assemble:debug    # ./gradlew :app:assembleDebug
 npm run android:assemble:release  # ./gradlew :app:assembleRelease
+npm run android:bundle:release    # ./gradlew :app:bundleRelease
 ```
 
 To run Gradle directly, point `JAVA_HOME` at a Temurin 17 install:
@@ -75,8 +76,9 @@ If `JAVA_HOME` points at GraalVM, Android builds can fail during the AGP `jlink`
 ### Builds, signing, and CI
 
 - `google-services` is applied conditionally (only when `app/google-services.json` exists), so the build is green without it and push stays inert until the file is added.
+- CI can inject Firebase config from the optional `ANDROID_GOOGLE_SERVICES_JSON_BASE64` GitHub secret by decoding it to `app/google-services.json` before the Gradle build.
 - The release `signingConfig` reads the keystore path and credentials from environment variables: `NIMBALYST_ANDROID_KEYSTORE`, `NIMBALYST_ANDROID_KEYSTORE_PASSWORD`, `NIMBALYST_ANDROID_KEY_ALIAS`, `NIMBALYST_ANDROID_KEY_PASSWORD`. With no keystore the release build is unsigned. Minification stays off.
-- `.github/workflows/android-build.yml` builds the APK in CI and supplies the signing secrets to produce a signed release artifact.
+- `.github/workflows/android-build.yml` builds both the APK and Play-ready AAB in CI and supplies the signing secrets to produce signed release artifacts when secrets are present.
 
 The app currently boots into a native Compose shell with placeholder project, session, and settings screens plus a `TranscriptWebView` container that will load the generated transcript asset bundle once `dist-transcript/` has been synced into the Android build assets.
 
@@ -94,7 +96,7 @@ Android can now:
 - send AskUserQuestion, ToolPermission, ExitPlanMode, and GitCommit widget responses from the transcript bridge
 - clear unread indicators as sessions are viewed on Android
 - show desktop-synced available models and the current default model in settings
-- request notification permission and attempt FCM token registration when Firebase config is present
+- enable push notifications from Settings, request notification permission, and attempt FCM token registration when Firebase config is present
 
 Current push blocker:
 

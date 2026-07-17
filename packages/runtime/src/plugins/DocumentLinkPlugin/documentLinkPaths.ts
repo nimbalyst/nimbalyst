@@ -141,6 +141,43 @@ export function exportDocumentLinkHref(storedPath: string): string {
   return normalizeDocumentLinkHref(storedPath);
 }
 
+/**
+ * A collaborative-document reference target. Inside a collab document the `@`
+ * typeahead stores a shareable deep link (`nimbalyst://doc/{id}?orgId={org}`)
+ * or the internal collab URI (`collab://org:{org}:doc:{id}`) as the reference
+ * path instead of a workspace-relative file path. These must be opened through
+ * the collab opener, not the local document service.
+ */
+export function isCollabReferenceHref(href: string | null | undefined): boolean {
+  if (!href) {
+    return false;
+  }
+  const trimmed = href.trim();
+  return trimmed.startsWith('nimbalyst://doc/') || trimmed.startsWith('collab://');
+}
+
+/**
+ * Extract the documentId from a collab reference target. Supports both the
+ * `nimbalyst://doc/{id}?orgId={org}` deep link and the internal
+ * `collab://org:{org}:doc:{id}` URI. Returns null when the href is not a
+ * recognizable collab reference.
+ */
+export function parseCollabReferenceDocumentId(href: string | null | undefined): string | null {
+  if (!href) {
+    return null;
+  }
+  const trimmed = href.trim();
+  const deepLinkMatch = trimmed.match(/^nimbalyst:\/\/doc\/([^/?#]+)/);
+  if (deepLinkMatch) {
+    return decodeURIComponent(deepLinkMatch[1]);
+  }
+  const collabUriMatch = trimmed.match(/^collab:\/\/org:[^:]+:doc:(.+)$/);
+  if (collabUriMatch) {
+    return collabUriMatch[1];
+  }
+  return null;
+}
+
 export function resolveDocumentLinkLookupPath(
   storedPath: string,
   currentDocumentPath: string | null,

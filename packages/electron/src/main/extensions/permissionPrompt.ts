@@ -79,7 +79,25 @@ export function hasPermissionPromptResolver(): boolean {
 }
 
 /**
+ * In-flight prompts keyed by `extensionId::moduleId`. Consent to run a backend
+ * module is a per-module trust decision, not a per-workspace one -- so when
+ * several open workspaces try to start the same module at once (each
+ * runStartAttempt raises its own request), they must share ONE dialog instead
+ * of stacking a separate prompt per workspace. Every concurrent caller awaits
+ * the same resolution; the entry clears once the dialog resolves so a later
+ * start can re-prompt.
+ */
+const inFlightByModule = new Map<string, Promise<PermissionPromptResolution>>();
+
+function moduleConsentKey(request: PermissionPromptRequest): string {
+  return `${request.extensionId}::${request.moduleId}`;
+}
+
+/**
  * Raise a permission prompt. Returns the user's decision.
+ *
+ * Concurrent prompts for the same (extension, module) coalesce onto a single
+ * dialog -- N open workspaces do not produce N prompts.
  *
  * If no resolver is registered, returns `{ decision: 'not-now' }` immediately
  * and logs a warning. The host treats that as "do not start the module" -
@@ -94,14 +112,32 @@ export async function raisePermissionPrompt(
     );
     return { decision: 'not-now' };
   }
-  try {
-    return await resolver(request);
-  } catch (err) {
-    logger.main.error(
-      `[permissionPrompt] Resolver threw for ${request.extensionId}/${request.moduleId}; treating as not-now:`,
-      err
+
+  const key = moduleConsentKey(request);
+  const existing = inFlightByModule.get(key);
+  if (existing) {
+    logger.main.info(
+      `[permissionPrompt] Coalescing prompt for ${key}; a dialog is already open (workspace ${request.workspacePath})`
     );
-    return { decision: 'not-now' };
+    return existing;
+  }
+
+  const pending = (async () => {
+    try {
+      return await resolver!(request);
+    } catch (err) {
+      logger.main.error(
+        `[permissionPrompt] Resolver threw for ${request.extensionId}/${request.moduleId}; treating as not-now:`,
+        err
+      );
+      return { decision: 'not-now' } as PermissionPromptResolution;
+    }
+  })();
+  inFlightByModule.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    inFlightByModule.delete(key);
   }
 }
 

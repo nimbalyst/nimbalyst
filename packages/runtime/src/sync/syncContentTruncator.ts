@@ -79,6 +79,56 @@ const CLAUDE_CODE_TRANSIENT_SYSTEM_SUBTYPES = new Set([
 // assistant branch, rendering a stray bubble desktop never shows. Drop it.
 const CLAUDE_CODE_NON_SYNCED_SYSTEM_SUBTYPES = new Set(['init']);
 
+// Legacy codex SDK/exec transport events that render nothing on mobile.
+// `thread.started` only captures a thread id; `token_count` (bare or wrapped in
+// an `event_msg` envelope) only feeds a turn_ended descriptor, which the
+// projector drops. Text deltas / item events DO render and must pass through.
+const CODEX_LEGACY_TRANSIENT_EVENT_TYPES = new Set(['thread.started', 'token_count']);
+
+// OpenCode SSE event types that can produce something the mobile transcript
+// renders, mirroring the switch in OpenCodeRawParser.parseOutputMessage. That
+// parser returns [] for every type not listed there, so anything outside this
+// set is dead weight on the wire. `message.updated` renders nothing itself but
+// MUST sync: it builds the user/assistant role map that stops user-message
+// part deltas rendering as assistant text. `session.idle` only yields a
+// turn_ended descriptor, which the projector drops, so it is excluded.
+// KEEP IN SYNC with OpenCodeRawParser -- if the parser learns to render a new
+// SSE type, add it here or mobile will never see it.
+const OPENCODE_SYNCED_EVENT_TYPES = new Set([
+  'message.updated',
+  'file.edited',
+  'session.error',
+  'todo.updated',
+]);
+
+/** OpenCode `message.part.updated` renders only tool parts; text/reasoning
+ * parts on this event are cumulative snapshots the parser suppresses (text
+ * arrives via `message.part.delta`), so syncing them is O(n^2) dead weight. */
+function isOpenCodeSyncedPartUpdated(content: string | undefined): boolean {
+  if (!content) return true;
+  try {
+    const parsed = JSON.parse(content) as { properties?: { part?: { type?: string } } };
+    return parsed?.properties?.part?.type === 'tool';
+  } catch {
+    return true;
+  }
+}
+
+/** OpenCode `message.part.delta` renders only non-empty text-field deltas. */
+function isOpenCodeSyncedPartDelta(content: string | undefined): boolean {
+  if (!content) return true;
+  try {
+    const parsed = JSON.parse(content) as { properties?: { field?: string; delta?: unknown } };
+    return (
+      parsed?.properties?.field === 'text'
+      && typeof parsed.properties.delta === 'string'
+      && parsed.properties.delta.length > 0
+    );
+  } catch {
+    return true;
+  }
+}
+
 export interface PerMessageTruncationStats {
   bytesBefore: number;
   bytesAfter: number;
@@ -91,35 +141,120 @@ export function shouldSyncMessageForSessionRoom(
   source: string,
   metadata?: Record<string, unknown> | null,
   content?: string,
+  hidden?: boolean,
 ): boolean {
-  if (source.startsWith('openai-codex') || source.startsWith('opencode')) {
+  // Hidden rows never render on mobile: every raw-message parser early-returns
+  // on `msg.hidden` -- EXCEPT OpenCode, whose entire SSE event stream is
+  // persisted with hidden:true and re-rendered from those hidden output rows.
+  if (hidden && !source.startsWith('opencode')) {
+    return false;
+  }
+
+  // Codex ACP shares the 'openai-codex' prefix, so check it first. Its parser
+  // returns [] for usage_update session updates (only caches context locally)
+  // and for permission previews (the canonical args arrive via a tool_call).
+  if (source.startsWith('openai-codex-acp')) {
+    if (
+      content
+      && (content.includes('"usage_update"') || content.includes('"session/request_permission_preview"'))
+    ) {
+      try {
+        const parsed = JSON.parse(content) as { type?: string; update?: { sessionUpdate?: string } };
+        if (parsed?.type === 'session/request_permission_preview') return false;
+        if (parsed?.update?.sessionUpdate === 'usage_update') return false;
+      } catch {
+        // Unparseable -- let it through.
+      }
+    }
+    return true;
+  }
+
+  // Copilot CLI streams agent_message_chunk rows (text and thinking) that the
+  // parser never renders: text is re-delivered self-contained on the separate
+  // item.completed row, and thinking chunks are dropped by design.
+  if (source.startsWith('copilot-cli')) {
+    if (content && content.includes('"agent_message_chunk"')) {
+      try {
+        const parsed = JSON.parse(content) as { params?: { update?: { sessionUpdate?: string } } };
+        if (parsed?.params?.update?.sessionUpdate === 'agent_message_chunk') return false;
+      } catch {
+        // Unparseable -- let it through.
+      }
+    }
+    return true;
+  }
+
+  if (source.startsWith('opencode')) {
+    const eventType = typeof metadata?.eventType === 'string' ? metadata.eventType : '';
+    // Rows without an eventType are not SSE events (e.g. user input) -- sync.
+    if (!eventType) return true;
+    if (OPENCODE_SYNCED_EVENT_TYPES.has(eventType)) return true;
+    if (eventType === 'message.part.updated') return isOpenCodeSyncedPartUpdated(content);
+    if (eventType === 'message.part.delta') return isOpenCodeSyncedPartDelta(content);
+    // session.idle and every SSE type outside the parser's switch render
+    // nothing -- drop.
+    return false;
+  }
+
+  if (source.startsWith('openai-codex')) {
     const transport = typeof metadata?.transport === 'string' ? metadata.transport : '';
     const eventType = typeof metadata?.eventType === 'string' ? metadata.eventType : '';
 
     if (transport !== 'app-server') {
+      // Legacy SDK/exec transport persists every raw event. Drop the ones
+      // that render nothing; text deltas and item events DO render.
+      if (CODEX_LEGACY_TRANSIENT_EVENT_TYPES.has(eventType)) return false;
+      if (eventType === 'event_msg' && content && content.includes('"token_count"')) {
+        try {
+          const parsed = JSON.parse(content) as { payload?: { type?: string } };
+          if (parsed?.payload?.type === 'token_count') return false;
+        } catch {
+          // Unparseable -- let it through.
+        }
+      }
       return true;
     }
 
     return !CODEX_APP_SERVER_TRANSIENT_EVENT_TYPES.has(eventType);
   }
 
-  if (source === 'claude-code' && content) {
+  // startsWith (not ===) so claude-code-cli sessions get the same filtering.
+  if (source.startsWith('claude-code') && content) {
     // Cheap structural prefilter: only parse JSON when the content could
     // be one of the transient chunk shapes. Skips the JSON.parse for the
-    // overwhelmingly common assistant / user / result chunks.
+    // overwhelmingly common assistant / user chunks.
     if (
       content.includes('"type":"system"')
       || content.includes('"type":"tool_progress"')
       || content.includes('"type":"tool_use_summary"')
       || content.includes('"type":"auth_status"')
       || content.includes('"type":"rate_limit_event"')
+      || content.includes('"type":"result"')
     ) {
       try {
-        const parsed = JSON.parse(content) as { type?: string; subtype?: string };
+        const parsed = JSON.parse(content) as {
+          type?: string;
+          subtype?: string;
+          num_turns?: number;
+          result?: unknown;
+        };
         if (parsed?.type === 'system' && typeof parsed.subtype === 'string') {
           return (
             !CLAUDE_CODE_TRANSIENT_SYSTEM_SUBTYPES.has(parsed.subtype)
             && !CLAUDE_CODE_NON_SYNCED_SYSTEM_SUBTYPES.has(parsed.subtype)
+          );
+        }
+        // Result chunks duplicate the final assistant text and carry
+        // usage/cost fields no mobile consumer reads (mobile context display
+        // is fed by the index clientMetadata channel, not this row). The one
+        // case the parser renders a result chunk is num_turns === 0 with
+        // result text -- e.g. an unknown slash command, where the result
+        // chunk is the turn's entire output. Sync only that case.
+        if (parsed?.type === 'result') {
+          return (
+            parsed.num_turns === 0
+            && typeof parsed.result === 'string'
+            && parsed.result.trim().length > 0
           );
         }
         if (typeof parsed?.type === 'string') {
@@ -539,15 +674,68 @@ function truncateClaudeToolUseResultInPlace(
 }
 
 /**
- * Walk a parsed Codex SDK event and truncate any oversize string fields on
- * its `item` record in place. Codex events look like
+ * Walk a parsed Codex event and truncate any oversize fields on its `item`
+ * record in place. SDK events look like
  *   { type: 'item.completed', item: { type: 'command_execution',
  *     aggregated_output: '...full shell stdout...' } }
- * with the bloat almost always in `aggregated_output`. `output` and `result`
- * are also listed because the Codex tool-call extractor in
- * `codexEventParser.ts` accepts them as aliases for the same payload.
+ * while app-server events wrap the item under `{ method, params: { item } }`
+ * and currently use camel-case command fields. MCP results are structured as
+ * `{ result: { content: [{ type: 'text', text: '...' }] } }`.
  */
-const CODEX_TRUNCATE_FIELDS = ['aggregated_output', 'output', 'result'] as const;
+const CODEX_TRUNCATE_FIELDS = ['aggregated_output', 'aggregatedOutput', 'output', 'result'] as const;
+
+function recordCodexTruncation(
+  originalBytes: number,
+  truncatedBytes: number,
+  stats: PerMessageTruncationStats,
+  blockBytesBefore: number[],
+): void {
+  const elided = originalBytes - truncatedBytes;
+  stats.blocksTruncated++;
+  stats.elidedBytes += elided;
+  if (elided > stats.largestBlockElidedBytes) {
+    stats.largestBlockElidedBytes = elided;
+  }
+  blockBytesBefore.push(originalBytes);
+}
+
+function truncateCodexStructuredResultInPlace(
+  value: unknown,
+  stats: PerMessageTruncationStats,
+  blockBytesBefore: number[],
+): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+
+  const resultObj = value as Record<string, unknown>;
+  let modified = false;
+
+  for (const [key, fieldValue] of Object.entries(resultObj)) {
+    const result = truncateBlockContent(fieldValue);
+    if (result) {
+      resultObj[key] = result.content;
+      recordCodexTruncation(result.originalBytes, result.truncatedBytes, stats, blockBytesBefore);
+      modified = true;
+      continue;
+    }
+
+    // Structured sidecars are not consumed by the transcript parser. Keep the
+    // field name and a compact marker rather than allowing a large opaque
+    // object to force the entire app-server envelope through the whole-message
+    // clamp.
+    if (fieldValue && typeof fieldValue === 'object') {
+      const json = JSON.stringify(fieldValue);
+      const originalBytes = utf8ByteLen(json);
+      if (originalBytes > TRUNCATE_THRESHOLD_BYTES) {
+        const marker = `[... ${formatBytes(originalBytes)} elided from mobile sync; view on desktop for full output]`;
+        resultObj[key] = marker;
+        recordCodexTruncation(originalBytes, utf8ByteLen(marker), stats, blockBytesBefore);
+        modified = true;
+      }
+    }
+  }
+
+  return modified;
+}
 
 function truncateCodexItemInPlace(
   parsed: unknown,
@@ -555,7 +743,8 @@ function truncateCodexItemInPlace(
   blockBytesBefore: number[],
 ): boolean {
   if (!parsed || typeof parsed !== 'object') return false;
-  const item = (parsed as { item?: unknown }).item;
+  const parsedRecord = parsed as { item?: unknown; params?: { item?: unknown } };
+  const item = parsedRecord.item ?? parsedRecord.params?.item;
   if (!item || typeof item !== 'object') return false;
 
   const itemObj = item as Record<string, unknown>;
@@ -563,17 +752,15 @@ function truncateCodexItemInPlace(
 
   for (const field of CODEX_TRUNCATE_FIELDS) {
     const value = itemObj[field];
-    if (typeof value !== 'string') continue;
+    if (field === 'result' && truncateCodexStructuredResultInPlace(value, stats, blockBytesBefore)) {
+      modified = true;
+      continue;
+    }
+
     const result = truncateBlockContent(value);
     if (!result) continue;
     itemObj[field] = result.content;
-    const elided = result.originalBytes - result.truncatedBytes;
-    stats.blocksTruncated++;
-    stats.elidedBytes += elided;
-    if (elided > stats.largestBlockElidedBytes) {
-      stats.largestBlockElidedBytes = elided;
-    }
-    blockBytesBefore.push(result.originalBytes);
+    recordCodexTruncation(result.originalBytes, result.truncatedBytes, stats, blockBytesBefore);
     modified = true;
   }
   return modified;

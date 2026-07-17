@@ -2,6 +2,7 @@
  * PlansPanel - Main container for plans view in workspace sidebar
  */
 
+import type { JSX } from 'react';
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { PlanListItem, type PlanData } from './PlanListItem';
 import { PlanFilters } from './PlanFilters';
@@ -25,6 +26,7 @@ export function PlansPanel({ currentFilePath, onPlanSelect }: PlansPanelProps): 
 
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
+    let cancelled = false;
 
     async function loadPlans() {
       try {
@@ -45,21 +47,29 @@ export function PlansPanel({ currentFilePath, onPlanSelect }: PlansPanelProps): 
 
         // Load initial metadata
         const metadata = await documentService.listDocumentMetadata();
+        if (cancelled) return;
         const planDocs = extractPlanData(metadata || []);
         setPlans(planDocs);
         setLoading(false);
 
         // Subscribe to changes
         if (documentService.watchDocumentMetadata) {
-          unsubscribe = documentService.watchDocumentMetadata((change: MetadataChangeEvent) => {
+          const nextUnsubscribe = documentService.watchDocumentMetadata((_change: MetadataChangeEvent) => {
             // Re-fetch all metadata on change
             documentService.listDocumentMetadata().then((updatedMetadata: DocumentMetadataEntry[]) => {
+              if (cancelled) return;
               const updatedPlans = extractPlanData(updatedMetadata);
               setPlans(updatedPlans);
             });
           });
+          if (cancelled) {
+            nextUnsubscribe();
+          } else {
+            unsubscribe = nextUnsubscribe;
+          }
         }
       } catch (err) {
+        if (cancelled) return;
         console.error('Failed to load plan documents:', err);
         setError('Failed to load plans');
         setLoading(false);
@@ -69,6 +79,7 @@ export function PlansPanel({ currentFilePath, onPlanSelect }: PlansPanelProps): 
     loadPlans();
 
     return () => {
+      cancelled = true;
       if (unsubscribe) {
         unsubscribe();
       }

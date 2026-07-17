@@ -24,6 +24,8 @@ import {
   OpenAICodexProvider,
 } from '@nimbalyst/runtime/ai/server';
 import { CLAUDE_CODE_SAFE_FALLBACK_MODEL } from '@nimbalyst/runtime/ai/modelConstants';
+import { reconcileClaudeCodeModels } from './claudeCodeModelReconcile';
+import { isModelEnabled } from './modelEnablementFilter';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
@@ -46,6 +48,7 @@ import {
 // MCP imports removed - no longer using MCP HTTP server
 import { ToolExecutor, toolRegistry, BUILT_IN_TOOLS } from './tools';
 import { initMobileSessionControlHandler } from './MobileSessionControlHandler';
+import { handleMobileVoiceToolCall } from '../voice/mobileVoiceToolHandler';
 import { SoundNotificationService } from '../SoundNotificationService';
 import { getTerminalSessionManager } from '../TerminalSessionManager';
 import { flushNextClaudeCliQueuedPromptForSession } from './claudeCliQueueFlushSingleton';
@@ -53,6 +56,7 @@ import { notificationService } from '../NotificationService';
 import { TrayManager } from '../../tray/TrayManager';
 import { logger } from '../../utils/logger';
 import { getSettingsService } from '../SettingsService';
+import { subscribeProviderSettingsInvalidation } from './providerSettingsCacheInvalidation';
 import { windowStates, findWindowByWorkspace, getWindowId, createWindow } from '../../window/WindowManager';
 import { resolveActiveWorkspacePathForWindowId } from '../../window/windowState';
 import { sessionFileTracker } from '../SessionFileTracker';
@@ -83,6 +87,8 @@ import {
 import { mergeAISettings, getAIProviderOverridesWithWorktreeFallback } from '../../utils/aiSettingsMerge';
 import { DocumentContextService, type RawDocumentContext, type PreparedDocumentContext } from '@nimbalyst/runtime';
 import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
+import { applyRemoteReadReceipt } from '../../ipc/ReadReceiptHandlers';
+import { applyRemoteTrackerPersonalState } from '../../ipc/TrackerPersonalStateHandlers';
 import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
 import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/workspaceDetection';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
@@ -122,6 +128,25 @@ import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claud
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 
 const execFileAsync = promisify(execFile);
+
+// Debounced re-sync of the available-models list to mobile. The renderer can
+// send rapid providerSettings slices when toggling providers, so coalesce them
+// into a single mobile sync. Enabling an agent provider (e.g. openai-codex)
+// must refresh the mobile model picker, which otherwise only happens on
+// desktop startup / mobile reconnect / OpenAI-key change (NIM-976).
+let mobileSettingsSyncTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleMobileSettingsSync(): void {
+  if (mobileSettingsSyncTimer) clearTimeout(mobileSettingsSyncTimer);
+  mobileSettingsSyncTimer = setTimeout(() => {
+    mobileSettingsSyncTimer = null;
+    import('../SyncManager').then(({ syncSettingsToMobile }) => {
+      // Pass the stored OpenAI key so we don't drop it from the mobile payload;
+      // mobile keeps its existing key when the field is absent, so either is safe.
+      const apiKeys = new Store<Record<string, unknown>>({ name: 'ai-settings' }).get('apiKeys', {}) as Record<string, string>;
+      syncSettingsToMobile(apiKeys['openai']);
+    }).catch(() => { /* sync manager may not be available */ });
+  }, 500);
+}
 
 export class AIService {
   private sessionManager: SessionManager;
@@ -180,6 +205,18 @@ export class AIService {
     // Initialize mobile sync handler if sync is enabled
     this.initializeMobileSyncHandler().catch(err => {
       logger.main.error('[AIService] initializeMobileSyncHandler threw:', err);
+    });
+
+    // Invalidate the normalized-provider-settings cache whenever a provider
+    // config changes through the per-key SettingsService path (the renderer
+    // settings panels use `settingsSet('ai.provider.<id>', ...)`). Without this,
+    // toggling a provider off (e.g. Claude Code CLI) wrote enabled:false to disk
+    // but `ai:getModels` kept serving the stale enabled:true snapshot until
+    // restart. Mirrors the inline invalidation in the legacy ai:saveSettings
+    // handler, including the mobile-picker refresh.
+    subscribeProviderSettingsInvalidation(getSettingsService(), () => {
+      this.cachedNormalizedProviderSettings = null;
+      scheduleMobileSettingsSync();
     });
 
     // Initialize SessionStateManager with the database worker
@@ -379,47 +416,39 @@ export class AIService {
   }
 
   /**
-   * Append any claude-code variants that were added after this user's
-   * `providerSettings['claude-code'].models` list was first persisted. Without
-   * this, `ai:getModels` filters out newly-introduced variants (e.g. the
-   * `opus-4-6` pinned variant) because they aren't in the saved list and
-   * there's no UI in ClaudeCodePanel to re-enable them.
+   * Back-fill any claude-code variants that shipped after this user's
+   * `providerSettings['claude-code'].models` allow-list was first persisted.
+   * Without this, `ai:getModels` filters out newly-introduced variants (they
+   * aren't in the saved list and ClaudeCodePanel has no per-model UI to re-enable
+   * them) — the drift that silently hid Fable 5 and sonnet-4-6.
    *
-   * Each variant gets its own migration key so we can introduce new pinned
-   * variants incrementally without re-running prior insertions.
+   * This is a single self-reconciliation against the catalog source of truth
+   * (`CLAUDE_CODE_VARIANTS`) rather than one hand-written migration per variant:
+   * a persisted snapshot of "known" variant ids records what we've seen before,
+   * so any future variant is enabled by default with no code change, while a
+   * variant the user has deliberately removed (already in the snapshot) is never
+   * re-added. See `claudeCodeModelReconcile.ts`.
    */
-  private migrateClaudeCodeModelList(): void {
-    this.migrateClaudeCodeVariantInsertion(
-      'migrations.claudeCodeOpus46Added',
-      'claude-code:opus-4-6',
-      'claude-code:opus',
-    );
-    this.migrateClaudeCodeVariantInsertion(
-      'migrations.claudeCodeOpus47Added',
-      'claude-code:opus-4-7',
-      'claude-code:opus',
-    );
-  }
-
-  private migrateClaudeCodeVariantInsertion(
-    migrationKey: string,
-    variantId: string,
-    insertAfterId: string,
-  ): void {
-    if (this.settingsStore!.get(migrationKey)) return;
+  private reconcileClaudeCodeModelList(): void {
+    const KNOWN_KEY = 'migrations.knownClaudeCodeVariants';
+    const known = this.settingsStore!.get(KNOWN_KEY) as string[] | undefined;
     const providerSettings = this.settingsStore!.get('providerSettings', {}) as any;
     const claudeCode = providerSettings?.['claude-code'];
-    if (claudeCode && Array.isArray(claudeCode.models) && !claudeCode.models.includes(variantId)) {
-      const anchorIndex = claudeCode.models.indexOf(insertAfterId);
-      const insertAt = anchorIndex >= 0 ? anchorIndex + 1 : claudeCode.models.length;
-      claudeCode.models = [
-        ...claudeCode.models.slice(0, insertAt),
-        variantId,
-        ...claudeCode.models.slice(insertAt),
-      ];
-      this.settingsStore!.set('providerSettings', providerSettings);
+
+    // An empty/undefined models array means "allow all", so there is nothing to
+    // back-fill — only reconcile an explicit allow-list.
+    if (claudeCode && Array.isArray(claudeCode.models) && claudeCode.models.length > 0) {
+      const result = reconcileClaudeCodeModels(claudeCode.models, known);
+      if (result.changed) {
+        claudeCode.models = result.models;
+        this.settingsStore!.set('providerSettings', providerSettings);
+      }
+      this.settingsStore!.set(KNOWN_KEY, result.known);
+    } else {
+      // Still advance the snapshot so a later switch to an explicit list starts
+      // from the current catalog instead of re-flagging everything as new.
+      this.settingsStore!.set(KNOWN_KEY, reconcileClaudeCodeModels([], known).known);
     }
-    this.settingsStore!.set(migrationKey, true);
   }
 
   private getSettingsStore(): Store<Record<string, unknown>> {
@@ -446,14 +475,22 @@ export class AIService {
                 enabled: true,
                 testStatus: "idle",
                 installStatus: "not-installed",
-                models: ["claude-code:opus", "claude-code:opus-4-7", "claude-code:opus-4-6", "claude-code:sonnet", "claude-code:haiku"]
+                // Allow-all: no curated default list. There is no UI to curate
+                // claude-code models and nothing writes this array, so shipping a
+                // hardcoded subset only creates drift — a newly-added variant that
+                // someone forgets to list gets silently filtered out of the picker
+                // (this is how Fable 5 and sonnet-4-6 disappeared, NIM-1486). An
+                // empty list means "show whatever the catalog emits", so the
+                // catalog (ClaudeCodeProvider.getModels) is the single source of
+                // truth and cannot drift.
+                models: []
               },
               openai: {
                 enabled: false,
                 testStatus: "idle",
               },
               'openai-codex': {
-                enabled: false,
+                enabled: true,
                 testStatus: "idle",
                 installStatus: "not-installed",
               },
@@ -478,7 +515,7 @@ export class AIService {
           }
         }
       });
-      this.migrateClaudeCodeModelList();
+      this.reconcileClaudeCodeModelList();
     }
     return this.settingsStore;
   }
@@ -1010,6 +1047,20 @@ export class AIService {
         // logger.main.info('[AIService] onIndexChange not available on sync provider');
       }
 
+      // Personal read receipts arriving from the user's other devices — persist
+      // locally (advance-only) and notify renderers so unread dots recompute.
+      if (syncProvider.onReadReceipt) {
+        syncProvider.onReadReceipt((receipt) => {
+          void applyRemoteReadReceipt(receipt);
+        });
+      }
+
+      if (syncProvider.onTrackerPersonalState) {
+        syncProvider.onTrackerPersonalState((change) => {
+          void applyRemoteTrackerPersonalState(change);
+        });
+      }
+
       // Listen for session creation requests from mobile
       if (syncProvider.onCreateSessionRequest) {
         syncProvider.onCreateSessionRequest(async (request) => {
@@ -1157,6 +1208,8 @@ export class AIService {
                 mode: session.mode,
                 sessionType: session.sessionType,
                 parentSessionId: request.parentSessionId ?? session.parentSessionId ?? undefined,
+                agentRole: session.agentRole,
+                createdBySessionId: session.createdBySessionId ?? undefined,
                 workspaceId: session.workspacePath,
                 workspacePath: session.workspacePath,
                 messageCount: session.messages.length,
@@ -1237,6 +1290,48 @@ export class AIService {
         // logger.main.info('[AIService] Session creation request handler initialized');
       } else {
         // logger.main.info('[AIService] onCreateSessionRequest not available on sync provider');
+      }
+
+      // Handle voice-tool requests from mobile (e.g. project-memory lookups).
+      // The mobile voice agent proxies desktop-hosted voice tools through here;
+      // we run the tool (gated to voiceAgent:true tools) and return the result.
+      if (syncProvider.onVoiceToolRequest && syncProvider.sendVoiceToolResponse) {
+        syncProvider.onVoiceToolRequest(async (request) => {
+          // Deduplicate - the same request can be delivered more than once.
+          if (this.processingMobileSessionRequests.has(request.requestId)) {
+            return;
+          }
+          this.processingMobileSessionRequests.add(request.requestId);
+          setTimeout(() => {
+            this.processingMobileSessionRequests.delete(request.requestId);
+          }, 60000);
+
+          try {
+            // Static import (top of file): a dynamic import() here re-runs the
+            // electron-log init chain in a separate chunk -> "Attempted to
+            // register a second handler for '__ELECTRON_LOG__'" crash. See the
+            // "No Dynamic Imports in Electron Main Process" rule in CLAUDE.md.
+            // request.projectId is the desktop workspace path.
+            const outcome = await handleMobileVoiceToolCall(
+              request.toolName,
+              request.argsJson,
+              request.projectId,
+            );
+            await syncProvider.sendVoiceToolResponse!({
+              requestId: request.requestId,
+              success: outcome.success,
+              resultJson: outcome.result ? JSON.stringify({ result: outcome.result }) : undefined,
+              error: outcome.error,
+            });
+          } catch (error) {
+            logger.main.error('[AIService] Voice tool request failed:', error);
+            await syncProvider.sendVoiceToolResponse!({
+              requestId: request.requestId,
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
       }
 
       // Handle worktree creation requests from mobile
@@ -2941,6 +3036,10 @@ export class AIService {
         // Provider cache must be invalidated after writes so the next read
         // returns the new value rather than the pre-save snapshot.
         this.cachedNormalizedProviderSettings = null;
+        // Enabling/disabling a provider changes the model list mobile can pick
+        // from (e.g. openai-codex). Push a refreshed list so the iOS picker
+        // updates without waiting for a restart/reconnect (NIM-976).
+        scheduleMobileSettingsSync();
       }
 
       if (settings.showToolCalls !== undefined)        safeSet('ai.showToolCalls', settings.showToolCalls);
@@ -3222,6 +3321,9 @@ export class AIService {
       const enabledSet = new Set<AIProviderType>();
       if (providerSettings['claude']?.enabled === true && !!apiKeys['anthropic']) enabledSet.add('claude');
       if (providerSettings['claude-code']?.enabled !== false) enabledSet.add('claude-code');
+      // Include the subscription CLI (on by default) so its variants render as
+      // checkboxes in the settings panel even before the user touches the toggle.
+      if (providerSettings['claude-code-cli']?.enabled !== false) enabledSet.add('claude-code-cli');
       if (providerSettings['openai']?.enabled === true && !!apiKeys['openai']) enabledSet.add('openai');
       if (providerSettings['openai-codex']?.enabled === true) enabledSet.add('openai-codex');
       if (providerSettings['opencode']?.enabled === true) enabledSet.add('opencode');
@@ -3346,25 +3448,29 @@ export class AIService {
       // });
 
       // Build enabled providers map (needed before fetching to skip disabled providers)
-      const enabledProviders: Record<AIProviderType, { enabled: boolean; models?: string[] }> = {
+      const enabledProviders: Record<AIProviderType, { enabled: boolean; models?: string[]; hiddenModels?: string[] }> = {
         'claude': {
           enabled: providerSettings['claude']?.enabled === true && !!apiKeys['anthropic'],
-          models: providerSettings['claude']?.models
+          models: providerSettings['claude']?.models,
+          hiddenModels: providerSettings['claude']?.hiddenModels
         },
         'claude-code': {
           // Respect the user's toggle but don't require an API key—Claude Code uses CLI auth
           enabled: claudeCodeSettings.enabled !== false,
-          models: claudeCodeSettings.models
+          models: claudeCodeSettings.models,
+          hiddenModels: claudeCodeSettings.hiddenModels
         },
         'claude-code-cli': {
           // Genuine `claude` CLI on the user's subscription. On by default (like
           // `claude-code`); no API key required — the CLI uses its own login.
           enabled: providerSettings['claude-code-cli']?.enabled !== false,
-          models: providerSettings['claude-code-cli']?.models
+          models: providerSettings['claude-code-cli']?.models,
+          hiddenModels: providerSettings['claude-code-cli']?.hiddenModels
         },
         'openai': {
           enabled: providerSettings['openai']?.enabled === true && !!apiKeys['openai'],
-          models: providerSettings['openai']?.models
+          models: providerSettings['openai']?.models,
+          hiddenModels: providerSettings['openai']?.hiddenModels
         },
         'openai-codex': {
           // Codex SDK uses its own auth (codex auth login), API key is optional
@@ -3384,7 +3490,8 @@ export class AIService {
         },
         'lmstudio': {
           enabled: providerSettings['lmstudio']?.enabled === true,
-          models: providerSettings['lmstudio']?.models
+          models: providerSettings['lmstudio']?.models,
+          hiddenModels: providerSettings['lmstudio']?.hiddenModels
         }
       };
 
@@ -3404,35 +3511,12 @@ export class AIService {
       // console.log('[AIService] ai:getModels - claude-code models from registry:',
       //   claudeCodeModels.map(m => ({ id: m.id, name: m.name })));
 
-      // Filter to only enabled models
-      const enabledModels = allModels.filter(model => {
-        const provider = enabledProviders[model.provider as AIProviderType];
-        // if (model.provider === 'openai-codex') {
-        //   console.log('[AIService] Filtering openai-codex model:', {
-        //     modelId: model.id,
-        //     providerEnabled: provider?.enabled,
-        //     selectedModels: provider?.models
-        //   });
-        // }
-        if (!provider?.enabled) return false;
-        // If specific models are selected, filter to those
-        if (provider.models && provider.models.length > 0) {
-          if (model.provider === 'claude-code' && provider.models.includes('claude-code')) {
-            return true;
-          }
-          // For Claude Code: if base model is selected, also include 1M variants
-          // e.g., if 'claude-code:sonnet' is selected, also include 'claude-code:sonnet-1m'
-          if (model.provider === 'claude-code' && model.id.includes('-1m')) {
-            const baseModelId = model.id.replace(/-1m$/, '');
-            if (provider.models.includes(baseModelId)) {
-              return true;
-            }
-          }
-          return provider.models.includes(model.id);
-        }
-        // Otherwise include all models for this provider
-        return true;
-      });
+      // Filter to only enabled models. The gate is extracted to a pure,
+      // unit-tested function so the claude-code family (SDK + CLI) can't silently
+      // hide a shipped variant again (NIM-1486).
+      const enabledModels = allModels.filter(model =>
+        isModelEnabled(model, enabledProviders[model.provider as AIProviderType]),
+      );
 
       // Surface extension-contributed agent providers (aiAgentProviders) in the
       // picker. The built-in `enabledProviders` map is keyed on AIProviderType,

@@ -15,6 +15,11 @@ import { getGitSubprocessEnv, simpleGitWithHookEnv } from '../services/gitEnv';
 import { safeHandle } from '../utils/ipcRegistry';
 import { findGitRootForFile } from '../services/GitStatusService';
 import { isFileInWorkspaceOrWorktree } from '../utils/workspaceDetection';
+import {
+  getGitOperationLogService,
+  runGitCommandStreaming,
+  withGitOperationLog,
+} from '../services/GitOperationLogService';
 
 function isGitRepository(workspacePath: string): boolean {
   try {
@@ -123,6 +128,19 @@ interface GitCommit {
  * Register all git-related IPC handlers
  */
 export function registerGitHandlers(): void {
+  const operationLog = getGitOperationLogService();
+
+  safeHandle('git:operation-log:get', async (_event, workspacePath: string) => {
+    if (!workspacePath) throw new Error('workspacePath is required');
+    return operationLog.list(workspacePath);
+  });
+
+  safeHandle('git:operation-log:clear', async (_event, workspacePath: string) => {
+    if (!workspacePath) throw new Error('workspacePath is required');
+    await operationLog.clear(workspacePath);
+    return { success: true };
+  });
+
   /**
    * Get git status for a workspace or worktree
    */
@@ -296,17 +314,18 @@ export function registerGitHandlers(): void {
             };
           }
 
-          const pushArgs: string[] = [];
+          const pushArgs: string[] = ['push'];
           const remote = options?.remote || 'origin';
 
           if (options?.setUpstream) {
-            pushArgs.push('--set-upstream', remote, branch);
+            pushArgs.push('--set-upstream');
           } else if (options?.force) {
             pushArgs.push('--force-with-lease');
           }
 
-          await git.push(remote, branch, pushArgs);
-          return { success: true };
+          pushArgs.push(remote, branch);
+          const result = await runGitCommandStreaming(operationLog, workspacePath, pushArgs);
+          return result.success ? { success: true } : { success: false, error: result.error };
         } catch (error) {
           log.error('[git:push] Failed:', error);
           return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -336,13 +355,17 @@ export function registerGitHandlers(): void {
               error: 'You are in detached HEAD. Checkout a branch before pulling.',
             };
           }
-          const pullArgs: string[] = [];
+          const pullArgs: string[] = ['pull'];
           if (options?.rebase) {
             pullArgs.push('--rebase');
           } else if (options?.ffOnly) {
             pullArgs.push('--ff-only');
           }
-          await git.pull(undefined, undefined, pullArgs);
+          const result = await runGitCommandStreaming(operationLog, workspacePath, pullArgs);
+          if (!result.success) {
+            const statusAfterFailure = await git.status();
+            return { success: false, error: result.error, conflicts: statusAfterFailure.conflicted };
+          }
           return { success: true };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -372,9 +395,12 @@ export function registerGitHandlers(): void {
       if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
 
       try {
-        const git: SimpleGit = simpleGit(workspacePath);
-        await git.fetch(options?.remote || 'origin');
-        return { success: true };
+        const result = await runGitCommandStreaming(
+          operationLog,
+          workspacePath,
+          ['fetch', options?.remote || 'origin'],
+        );
+        return result.success ? { success: true } : { success: false, error: result.error };
       } catch (error) {
         log.error('[git:fetch] Failed:', error);
         return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -393,34 +419,18 @@ export function registerGitHandlers(): void {
       if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(workspacePath, 'git:rebase', async () => {
-        try {
-          const git: SimpleGit = simpleGitWithHookEnv(workspacePath);
-
-          if (options.action === 'continue') {
-            await git.rebase(['--continue']);
-          } else if (options.action === 'abort') {
-            await git.rebase(['--abort']);
-          } else if (options.action === 'skip') {
-            await git.rebase(['--skip']);
-          } else if (options.target) {
-            await git.rebase([options.target]);
-          } else {
-            throw new Error('rebase requires either a target branch or an action (continue/abort/skip)');
-          }
-
-          return { success: true };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          log.error('[git:rebase] Failed:', error);
-
-          if (message.includes('CONFLICT') || message.includes('conflict')) {
-            const git: SimpleGit = simpleGit(workspacePath);
-            const status = await git.status();
-            return { success: false, error: message, conflicts: status.conflicted };
-          }
-
-          return { success: false, error: message };
+        const args = options.action
+          ? ['rebase', `--${options.action}`]
+          : options.target
+            ? ['rebase', options.target]
+            : null;
+        if (!args) {
+          throw new Error('rebase requires either a target branch or an action (continue/abort/skip)');
         }
+        const result = await runGitCommandStreaming(operationLog, workspacePath, args);
+        if (result.success) return { success: true };
+        const status = await simpleGit(workspacePath).status();
+        return { success: false, error: result.error, conflicts: status.conflicted };
       });
     }
   );
@@ -479,8 +489,12 @@ export function registerGitHandlers(): void {
             error: 'You are in detached HEAD. Checkout a branch before setting upstream.',
           };
         }
-        await git.push(['--set-upstream', remote, targetBranch]);
-        return { success: true };
+        const result = await runGitCommandStreaming(
+          operationLog,
+          workspacePath,
+          ['push', '--set-upstream', remote, targetBranch],
+        );
+        return result.success ? { success: true } : { success: false, error: result.error };
       } catch (error) {
         log.error('[git:set-upstream] Failed:', error);
         return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -500,14 +514,8 @@ export function registerGitHandlers(): void {
       if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(workspacePath, 'git:checkout', async () => {
-        try {
-          const git: SimpleGit = simpleGit(workspacePath);
-          await git.checkout(ref);
-          return { success: true };
-        } catch (error) {
-          log.error('[git:checkout] Failed:', error);
-          return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
+        const result = await runGitCommandStreaming(operationLog, workspacePath, ['checkout', ref]);
+        return result.success ? { success: true } : { success: false, error: result.error };
       });
     }
   );
@@ -524,20 +532,10 @@ export function registerGitHandlers(): void {
       if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(workspacePath, 'git:cherry-pick', async () => {
-        try {
-          const git: SimpleGit = simpleGitWithHookEnv(workspacePath);
-          await git.raw(['cherry-pick', hash]);
-          return { success: true };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          log.error('[git:cherry-pick] Failed:', error);
-          if (message.includes('CONFLICT') || message.includes('conflict')) {
-            const git2: SimpleGit = simpleGit(workspacePath);
-            const status = await git2.status();
-            return { success: false, error: message, conflicts: status.conflicted };
-          }
-          return { success: false, error: message };
-        }
+        const result = await runGitCommandStreaming(operationLog, workspacePath, ['cherry-pick', hash]);
+        if (result.success) return { success: true };
+        const status = await simpleGit(workspacePath).status();
+        return { success: false, error: result.error, conflicts: status.conflicted };
       });
     }
   );
@@ -554,14 +552,12 @@ export function registerGitHandlers(): void {
       if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(workspacePath, 'git:create-branch', async () => {
-        try {
-          const git: SimpleGit = simpleGit(workspacePath);
-          await git.checkoutBranch(branchName, fromHash || 'HEAD');
-          return { success: true };
-        } catch (error) {
-          log.error('[git:create-branch] Failed:', error);
-          return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
+        const result = await runGitCommandStreaming(
+          operationLog,
+          workspacePath,
+          ['checkout', '-b', branchName, fromHash || 'HEAD'],
+        );
+        return result.success ? { success: true } : { success: false, error: result.error };
       });
     }
   );
@@ -709,14 +705,8 @@ export function registerGitHandlers(): void {
       if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(workspacePath, 'git:stage', async () => {
-        try {
-          const git: SimpleGit = simpleGit(workspacePath);
-          await git.add(files);
-          return { success: true };
-        } catch (error) {
-          log.error('[git:stage] Failed:', error);
-          return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
+        const result = await runGitCommandStreaming(operationLog, workspacePath, ['add', '--', ...files]);
+        return result.success ? { success: true } : { success: false, error: result.error };
       });
     }
   );
@@ -732,20 +722,12 @@ export function registerGitHandlers(): void {
       if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(workspacePath, 'git:unstage', async () => {
-        try {
-          const git: SimpleGit = simpleGit(workspacePath);
-          const repoHasCommits = await hasCommits(git);
-          if (repoHasCommits) {
-            await git.reset(['HEAD', '--', ...files]);
-          } else {
-            // Fresh repo: use git rm --cached
-            await git.raw(['rm', '--cached', ...files]);
-          }
-          return { success: true };
-        } catch (error) {
-          log.error('[git:unstage] Failed:', error);
-          return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
+        const git: SimpleGit = simpleGit(workspacePath);
+        const args = await hasCommits(git)
+          ? ['reset', 'HEAD', '--', ...files]
+          : ['rm', '--cached', '--', ...files];
+        const result = await runGitCommandStreaming(operationLog, workspacePath, args);
+        return result.success ? { success: true } : { success: false, error: result.error };
       });
     }
   );
@@ -761,14 +743,8 @@ export function registerGitHandlers(): void {
       if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(workspacePath, 'git:discard-changes', async () => {
-        try {
-          const git: SimpleGit = simpleGit(workspacePath);
-          await git.checkout(['--', ...files]);
-          return { success: true };
-        } catch (error) {
-          log.error('[git:discard-changes] Failed:', error);
-          return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
+        const result = await runGitCommandStreaming(operationLog, workspacePath, ['checkout', '--', ...files]);
+        return result.success ? { success: true } : { success: false, error: result.error };
       });
     }
   );
@@ -979,10 +955,17 @@ export function registerGitHandlers(): void {
       message: string,
       filesToStage: string[]
     ): Promise<{ success: boolean; commitHash?: string; commitDate?: string; error?: string }> => {
-      return executeGitCommit(workspacePath, message, filesToStage, {
-        logContext: '[git:commit]',
-        env: getGitSubprocessEnv(),
-      });
+      return withGitOperationLog(
+        operationLog,
+        workspacePath,
+        ['commit', '-m', message],
+        entry => executeGitCommit(workspacePath, message, filesToStage, {
+          logContext: '[git:commit]',
+          env: getGitSubprocessEnv(),
+          onOutput: (stream, chunk) => operationLog.appendOutput(workspacePath, entry.id, stream, chunk),
+        }),
+        result => result.commitHash ? `[${result.commitHash}] commit created` : undefined,
+      );
     }
   );
 

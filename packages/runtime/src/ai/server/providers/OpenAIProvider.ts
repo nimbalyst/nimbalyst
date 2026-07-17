@@ -28,12 +28,15 @@ export class OpenAIProvider extends BaseAIProvider {
     const initStartTime = Date.now();
     console.log(`[OpenAIProvider] Initializing with config:`, {
       hasApiKey: !!config.apiKey,
-      model: config.model,
+      model: config.model || OpenAIProvider.DEFAULT_MODEL,
       temperature: config.temperature,
       maxTokens: config.maxTokens
     });
 
-    this.config = config;
+    this.config = {
+      ...config,
+      model: config.model || OpenAIProvider.DEFAULT_MODEL,
+    };
 
     if (!config.apiKey) {
       throw new Error('API key required for OpenAI provider');
@@ -225,13 +228,9 @@ export class OpenAIProvider extends BaseAIProvider {
         console.warn('[OpenAIProvider] WARNING: No tools available! Check tool registration.');
       }
 
-      // Create the chat completion with streaming
-      if (!this.config.model) {
-        throw new Error('No model specified for OpenAI provider');
-      }
-
       // Remove provider prefix from model ID for API call
-      const modelId = this.config.model.replace('openai:', '');
+      const configuredModel = this.config.model || OpenAIProvider.DEFAULT_MODEL;
+      const modelId = configuredModel.replace('openai:', '');
       console.log(`[OpenAIProvider] Using model: ${modelId}`);
 
       const completionParams: any = {

@@ -59,7 +59,8 @@ describe('claude-code-cli provider wiring (Phase 0)', () => {
 
     it('has a parseable default model', () => {
       const id = ModelIdentifier.getDefaultModelId('claude-code-cli');
-      expect(id).toBe('claude-code-cli:opus-1m');
+      // Default is plain opus, not opus-1m: we never silently send paid 1M context.
+      expect(id).toBe('claude-code-cli:opus');
       expect(() => ModelIdentifier.parse(id)).not.toThrow();
     });
   });

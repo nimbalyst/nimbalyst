@@ -212,6 +212,13 @@ packages/marketplace/.wrangler/
 # Firebase config (commit only after auditing Security Rules)
 packages/android/app/google-services.json
 
+# Android signing keystores — never commit. Secrets come from 1Password via op run.
+*.jks
+*.keystore
+nimbalyst-android-upload.jks
+# op-run env template with resolved secrets (the op:// template itself is safe to commit)
+.env.android-signing.local
+
 # Generated bundle / packaged extension artifact
 packages/electron/index.js
 packages/browser-extension/nimbalyst-web-clipper.zip

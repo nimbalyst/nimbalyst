@@ -16,13 +16,19 @@
 
 import { store } from '../index';
 import { setWindowModeAtom } from '../atoms/windowMode';
-import { pendingCollabDocumentAtom } from '../atoms/collabDocuments';
+import { pendingCollabDocumentAtom, pendingCollabFolderAtom } from '../atoms/collabDocuments';
 import { setTrackerModeLayoutAtom } from '../atoms/trackers';
 import { activeWorkspacePathAtom } from '../atoms/openProjects';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 
 interface SharedDocPayload {
   documentId: string;
+  orgId: string;
+  workspacePath: string;
+}
+
+interface SharedFolderPayload {
+  folderId: string;
   orgId: string;
   workspacePath: string;
 }
@@ -49,6 +55,13 @@ function applySharedDocPayload(data: SharedDocPayload): void {
   store.set(pendingCollabDocumentAtom, { documentId: data.documentId });
 }
 
+function applySharedFolderPayload(data: SharedFolderPayload): void {
+  if (!data?.folderId || !data?.workspacePath) return;
+  ensureActiveWorkspace(data.workspacePath);
+  store.set(setWindowModeAtom, 'collab');
+  store.set(pendingCollabFolderAtom, { folderId: data.folderId });
+}
+
 function applyTrackerPayload(data: TrackerPayload): void {
   if (!data?.trackerId || !data?.workspacePath) return;
   ensureActiveWorkspace(data.workspacePath);
@@ -63,11 +76,13 @@ function applyTrackerPayload(data: TrackerPayload): void {
 async function drainPendingFor(workspacePath: string | null): Promise<void> {
   if (!workspacePath) return;
   try {
-    const [docPending, trackerPending] = await Promise.all([
+    const [docPending, folderPending, trackerPending] = await Promise.all([
       window.electronAPI.invoke('deep-link:consume-pending-shared-doc', workspacePath) as Promise<SharedDocPayload | null>,
+      window.electronAPI.invoke('deep-link:consume-pending-shared-folder', workspacePath) as Promise<SharedFolderPayload | null>,
       window.electronAPI.invoke('deep-link:consume-pending-tracker', workspacePath) as Promise<TrackerPayload | null>,
     ]);
     if (docPending) applySharedDocPayload(docPending);
+    if (folderPending) applySharedFolderPayload(folderPending);
     if (trackerPending) applyTrackerPayload(trackerPending);
   } catch (err) {
     console.error('[DeepLink] Failed to consume pending payload:', err);
@@ -84,6 +99,37 @@ export function initDeepLinkListeners(): () => void {
   cleanups.push(
     window.electronAPI.on('deep-link:open-shared-document', (data: SharedDocPayload) => {
       applySharedDocPayload(data);
+    })
+  );
+
+  // Live: shared folder link routed to this window.
+  cleanups.push(
+    window.electronAPI.on('deep-link:open-shared-folder', (data: SharedFolderPayload) => {
+      applySharedFolderPayload(data);
+    })
+  );
+
+  // Live: no known workspace matches the folder link's orgId, or not signed in.
+  cleanups.push(
+    window.electronAPI.on('deep-link:shared-folder-not-available', (data: {
+      folderId: string;
+      orgId: string;
+      reason?: 'not-authenticated' | 'no-workspace';
+    }) => {
+      if (data?.reason === 'not-authenticated') {
+        errorNotificationService.showWarning(
+          'Sign in required',
+          'Sign in to your Nimbalyst team account to open this shared folder.',
+          { duration: 6000 }
+        );
+      } else {
+        errorNotificationService.showWarning(
+          'No matching workspace',
+          'You do not have a workspace open for the team that owns this folder.',
+          { duration: 6000 }
+        );
+      }
+      console.warn('[DeepLink] No workspace available for shared folder:', data);
     })
   );
 

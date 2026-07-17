@@ -8,6 +8,7 @@
  * - Unified storage in JSONB
  */
 
+import type { JSX } from 'react';
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import {
@@ -1019,6 +1020,7 @@ export { StatusBar } from './components/StatusBar';
 export { TrackerTable, convertFullDocumentToTrackerItems, resolveTrackerFrontmatter, renderCell, ContextSubmenu } from './components/TrackerTable';
 export type { SortColumn, SortDirection } from './components/TrackerTable';
 export { TrackerTableGrid } from './components/TrackerTableGrid';
+export { TrackerFavoriteStar } from './components/TrackerFavoriteStar';
 export { useTrackerRows } from './components/useTrackerRows';
 export type { UseTrackerRowsOptions, UseTrackerRowsResult, EditingCellRef, EditingField } from './components/useTrackerRows';
 export { TrackerFieldEditor } from './components/TrackerFieldEditor';

@@ -38,6 +38,7 @@ import type {
   TrackerTypeSummary,
   UpdateInput,
 } from './types.js';
+import { deriveIssueKeyPrefix } from './issueKeyPrefix.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 250;
@@ -400,7 +401,7 @@ export class DirectGateway implements TrackerGateway {
       .get({ ref: reference });
   }
 
-  /** Derive the workspace's issue-key prefix from an existing key, else 'NIM'. */
+  /** Derive the prefix from an existing key, else from the project name. */
   private issueKeyPrefix(db: DB, workspace: string): string {
     try {
       const row = db
@@ -417,7 +418,7 @@ export class DirectGateway implements TrackerGateway {
     } catch {
       /* fall through to default */
     }
-    return 'NIM';
+    return deriveIssueKeyPrefix(workspace);
   }
 
   /** Mark a row pending iff it is already part of the sync set. Local-only items

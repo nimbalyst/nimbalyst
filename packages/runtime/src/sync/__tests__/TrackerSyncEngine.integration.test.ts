@@ -90,6 +90,7 @@ async function buildEngine(opts: {
   serverConnect: () => WebSocket;
   encryptionKey: CryptoKey;
   refreshKey?: () => Promise<TrackerKeyMaterial | null>;
+  initializeIssueKeyPrefix?: string;
 }): Promise<BuiltEngine> {
   const fingerprint = await fingerprintTrackerKey(opts.encryptionKey);
   const persistence = new InMemoryTrackerPersistence();
@@ -101,6 +102,7 @@ async function buildEngine(opts: {
     encryptionKey: opts.encryptionKey,
     orgKeyFingerprint: fingerprint,
     persistence,
+    initializeIssueKeyPrefix: opts.initializeIssueKeyPrefix,
     getJwt: async () => 'fake-jwt',
     refreshKey: opts.refreshKey,
     createWebSocket: () => opts.serverConnect(),
@@ -229,6 +231,72 @@ describe('TrackerSyncEngine (in-memory)', () => {
     await waitUntil(() => cApplied.some(def => def.type === 'epic' && def.model === model));
 
     expect(cApplied[0].syncId).toBe(bApplied[0].syncId);
+
+    a.engine.destroy();
+    b.engine.destroy();
+    c.engine.destroy();
+  });
+
+  it('syncs tracker folders and type placements through outbox, live delta, and bootstrap', async () => {
+    const server = createFakeServer();
+    const folder = JSON.stringify({
+      entryId: 'folder:delivery',
+      kind: 'folder',
+      folderId: 'delivery',
+      name: 'Delivery',
+      sortKey: 'a0',
+    });
+
+    const b = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const bApplied: Array<{ entryId: string; payload: string | null; syncId: number }> = [];
+    b.config.navigationSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => [],
+      applyRemote: async (def) => { bApplied.push(def); },
+    };
+    await b.engine.connect();
+    await waitUntil(() => b.engine.getStatus() === 'connected');
+
+    let pending = [{ entryId: 'folder:delivery', payload: folder, deleted: false }];
+    const a = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    a.config.navigationSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => pending,
+      applyRemote: async (def) => {
+        pending = pending.filter((entry) => entry.entryId !== def.entryId);
+      },
+    };
+    await a.engine.connect();
+    await waitUntil(() => a.engine.getStatus() === 'connected');
+    await waitUntil(() => bApplied.some((entry) => entry.entryId === 'folder:delivery'));
+    expect(JSON.parse(bApplied[0].payload!)).toMatchObject({ name: 'Delivery' });
+
+    const placement = JSON.stringify({
+      entryId: 'type:task',
+      kind: 'type-placement',
+      trackerType: 'task',
+      folderId: 'delivery',
+      sortKey: 'a0',
+    });
+    pending = [{ entryId: 'type:task', payload: placement, deleted: false }];
+    await a.engine.flushNavigation();
+    await waitUntil(() => bApplied.some((entry) => entry.entryId === 'type:task'));
+
+    const c = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const cApplied: Array<{ entryId: string; payload: string | null; syncId: number }> = [];
+    c.config.navigationSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => [],
+      applyRemote: async (def) => { cApplied.push(def); },
+    };
+    await c.engine.connect();
+    await waitUntil(() => c.engine.getStatus() === 'connected');
+    await waitUntil(() => cApplied.length === 2);
+    expect(cApplied.map((entry) => entry.entryId)).toEqual(['folder:delivery', 'type:task']);
+    expect(server.room.receivedNavigationMutations.map((entry) => entry.entryId)).toEqual([
+      'folder:delivery',
+      'type:task',
+    ]);
 
     a.engine.destroy();
     b.engine.destroy();
@@ -571,6 +639,50 @@ describe('TrackerSyncEngine (in-memory)', () => {
 
     a.engine.destroy();
     b.engine.destroy();
+  });
+
+  it('initializes an empty room with the project-derived issue prefix', async () => {
+    const server = createFakeServer();
+    const a = await buildEngine({
+      room: server.room,
+      serverConnect: server.connect,
+      encryptionKey: key,
+      initializeIssueKeyPrefix: 'STR',
+    });
+    const seen: string[] = [];
+    a.config.onConfigChange = (config) => seen.push(config.issueKeyPrefix);
+
+    await a.engine.connect();
+    await waitUntil(() => seen.includes('STR'));
+    await a.engine.upsertItem(basePayload('first-derived'));
+    await waitUntil(() => server.room.getStoredItems().length === 1);
+
+    expect(server.room.getStoredItems()[0]?.issueKey).toBe('STR-1');
+    a.engine.destroy();
+  });
+
+  it('does not replace the prefix of a room that already has items', async () => {
+    const server = createFakeServer();
+    const seed = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    await seed.engine.connect();
+    await seed.engine.upsertItem(basePayload('existing'));
+    await waitUntil(() => server.room.getStoredItems().length === 1);
+    seed.engine.destroy();
+
+    const next = await buildEngine({
+      room: server.room,
+      serverConnect: server.connect,
+      encryptionKey: key,
+      initializeIssueKeyPrefix: 'STR',
+    });
+    const seen: string[] = [];
+    next.config.onConfigChange = (config) => seen.push(config.issueKeyPrefix);
+    await next.engine.connect();
+    await waitUntil(() => next.engine.getStatus() === 'connected');
+
+    expect(seen).toContain('NIM');
+    expect(seen).not.toContain('STR');
+    next.engine.destroy();
   });
 
   // ==========================================================================

@@ -17,6 +17,40 @@ const diffLineStyles = {
   },
 };
 
+// A single diff line. This is a real component (not a render helper) so that
+// its hover `useState` is a stable hook — calling useState from a plain helper
+// invoked a variable number of times per render breaks the Rules of Hooks and
+// throws "Rendered more hooks than during the previous render."
+const DiffLine: React.FC<{ type: 'added' | 'removed' | 'info'; marker: string; content: string }> = ({ type, marker, content }) => {
+  const [isHovered, setIsHovered] = React.useState(false);
+
+  let bgStyle: React.CSSProperties = {};
+  let markerColor = '';
+
+  if (type === 'removed') {
+    bgStyle = isHovered ? diffLineStyles.removedHover : diffLineStyles.removed;
+    markerColor = 'text-[var(--nim-error)]';
+  } else if (type === 'added') {
+    bgStyle = isHovered ? diffLineStyles.addedHover : diffLineStyles.added;
+    markerColor = 'text-[var(--nim-success)]';
+  } else {
+    bgStyle = isHovered ? { backgroundColor: 'var(--nim-bg-hover)' } : { backgroundColor: 'var(--nim-bg-secondary)' };
+    markerColor = 'text-[var(--nim-text-faint)]';
+  }
+
+  return (
+    <div
+      className={`diff-line ${type} flex items-start px-3 py-0.5 min-h-6 whitespace-pre leading-normal text-[var(--nim-text)]`}
+      style={bgStyle}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <span className={`diff-line-marker inline-block w-6 shrink-0 font-semibold select-none text-center ${markerColor}`}>{marker}</span>
+      <span className="diff-line-content pl-2 leading-normal whitespace-pre">{content || ' '}</span>
+    </div>
+  );
+};
+
 interface DiffViewerProps {
   edit: any;
   filePath?: string; // File path from session context
@@ -61,37 +95,11 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({ edit, filePath: contextF
     return <div className="diff-file-header px-3 py-2 bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)] font-medium border-b border-[var(--nim-border)] text-[0.7rem] shrink-0">{displayPath}</div>;
   };
 
-  // Render a diff line with appropriate styling
-  const renderDiffLine = (type: 'added' | 'removed' | 'info', marker: string, content: string, key: string) => {
-    const [isHovered, setIsHovered] = React.useState(false);
-
-    let bgStyle: React.CSSProperties = {};
-    let markerColor = '';
-
-    if (type === 'removed') {
-      bgStyle = isHovered ? diffLineStyles.removedHover : diffLineStyles.removed;
-      markerColor = 'text-[var(--nim-error)]';
-    } else if (type === 'added') {
-      bgStyle = isHovered ? diffLineStyles.addedHover : diffLineStyles.added;
-      markerColor = 'text-[var(--nim-success)]';
-    } else {
-      bgStyle = isHovered ? { backgroundColor: 'var(--nim-bg-hover)' } : { backgroundColor: 'var(--nim-bg-secondary)' };
-      markerColor = 'text-[var(--nim-text-faint)]';
-    }
-
-    return (
-      <div
-        key={key}
-        className={`diff-line ${type} flex items-start px-3 py-0.5 min-h-6 whitespace-pre leading-normal text-[var(--nim-text)]`}
-        style={bgStyle}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-      >
-        <span className={`diff-line-marker inline-block w-6 shrink-0 font-semibold select-none text-center ${markerColor}`}>{marker}</span>
-        <span className="diff-line-content pl-2 leading-normal whitespace-pre">{content || ' '}</span>
-      </div>
-    );
-  };
+  // Render a diff line via the DiffLine component so each line owns its own
+  // hover state as a stable hook (see DiffLine above).
+  const renderDiffLine = (type: 'added' | 'removed' | 'info', marker: string, content: string, key: string) => (
+    <DiffLine key={key} type={type} marker={marker} content={content} />
+  );
 
   // Handle single edit with old_string/new_string (Claude Code Edit tool format)
   if (!replacements.length && (edit.old_string || edit.new_string)) {

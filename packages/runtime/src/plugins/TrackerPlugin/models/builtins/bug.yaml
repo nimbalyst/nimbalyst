@@ -8,7 +8,12 @@ modes:
   inline: true
   fullDocument: false
 
+sync:
+  mode: shared
+  scope: project
+
 idPrefix: bug
+idFormat: ulid
 
 fields:
   - name: title
@@ -25,6 +30,10 @@ fields:
       - value: in-progress
         label: In Progress
         icon: motion_photos_on
+      - value: in-review
+        label: In Review
+        icon: rate_review
+        color: "#3b82f6"
       - value: done
         label: Done
         icon: check_circle
@@ -42,9 +51,21 @@ fields:
         label: Critical
 
   - name: owner
-    type: string
+    type: user
 
   - name: description
     type: text
 
+  - name: tags
+    type: array
+    itemType: string
+    displayInline: false
+
 inlineTemplate: "{icon} {title} {status} {priority}"
+
+roles:
+  title: title
+  workflowStatus: status
+  priority: priority
+  assignee: owner
+  tags: tags

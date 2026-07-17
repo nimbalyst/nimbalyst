@@ -54,3 +54,11 @@ export const trackerSyncRejectionAtom = atom<TrackerSyncRejectionState>({
   staleKeyEpoch: null,
   rotationLocked: null,
 });
+
+export interface TrackerSyncConnectionState {
+  workspacePath: string;
+  status: string;
+  projectId: string | null;
+}
+
+export const trackerSyncConnectionAtom = atom<TrackerSyncConnectionState | null>(null);

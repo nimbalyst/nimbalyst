@@ -114,7 +114,7 @@ Examples:
 - Claude Code ultimately needs a real `claude` or `claude.exe` binary path.
 - Codex needs a real `codex` or `codex.exe` binary path.
 - Codex ACP needs a real `codex-acp` or `codex-acp.exe` binary path.
-- Dynamic ESM imports such as `@openai/codex-sdk` and `@opencode-ai/sdk/client` must resolve from the packaged app tree, not from the developer checkout.
+- Dynamic ESM imports such as the legacy `@openai/codex-sdk` escape hatch and `@opencode-ai/sdk/client` must resolve from the packaged app tree, not from the developer checkout.
 
 If these dependencies are missing, packed into the wrong place, or resolved from the wrong tree, the build may appear healthy but the shipped app will fail only when the feature is exercised.
 
@@ -127,7 +127,7 @@ The current packaging checks are centered around these runtime-sensitive depende
 - `@anthropic-ai/claude-agent-sdk-<platform>-<arch>`
   Native Claude CLI binary package.
 - `@openai/codex-sdk`
-  JS SDK package imported at runtime.
+  JS SDK package imported at runtime only for the legacy Codex SDK transport escape hatch; its package tree also anchors the bundled Codex binary used by the default app-server transport.
 - `@openai/codex-<platform>-<arch>`
   Native Codex binary package.
 - `@zed-industries/codex-acp`
@@ -248,7 +248,7 @@ This avoids a false pass where Node walks upward and accidentally resolves a pac
 It currently checks runtime imports for:
 
 - `@anthropic-ai/claude-agent-sdk`
-- `@openai/codex-sdk`
+- `@openai/codex-sdk` (legacy SDK transport import check)
 - `@opencode-ai/sdk`
 - `@opencode-ai/sdk/client`
 

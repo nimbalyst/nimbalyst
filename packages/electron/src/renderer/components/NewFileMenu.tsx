@@ -48,39 +48,44 @@ export function NewFileMenu({
     onClose();
   };
 
+  // Markdown is pinned to the top; every other file type is listed
+  // alphabetically. Labels drop the "New " prefix — the menu title already
+  // implies "new", so we just name the file type.
+  const items = useMemo(() => {
+    const rest: { key: string; label: string; icon: string; fileType: NewFileType }[] = [
+      // NOTE: Mockup is not listed here — it's contributed by the mockuplm
+      // extension's newFileMenu (.mockup.html). A hardcoded built-in entry
+      // here would duplicate it.
+      ...extensionFileTypes.map((extType) => ({
+        key: `ext:${extType.extension}`,
+        label: extType.displayName,
+        icon: extType.icon,
+        fileType: `ext:${extType.extension}` as NewFileType,
+      })),
+    ];
+    rest.sort((a, b) => a.label.localeCompare(b.label));
+    return [
+      { key: 'markdown', label: 'Markdown File', icon: 'description', fileType: 'markdown' as NewFileType },
+      ...rest,
+    ];
+  }, [extensionFileTypes]);
+
   return (
     <FloatingPortal>
       <div
         ref={menu.refs.setFloating}
         style={menu.floatingStyles}
         {...menu.getFloatingProps()}
-        className="new-file-menu bg-nim-secondary border border-nim rounded-md shadow-lg p-1 min-w-[180px] z-[10000] text-[13px] backdrop-blur-[10px]"
+        className="new-file-menu bg-nim-secondary border border-nim rounded-md shadow-lg p-1 min-w-[180px] max-h-[min(70vh,480px)] overflow-y-auto z-[10000] text-[13px] backdrop-blur-[10px]"
       >
-        <div
-          className="new-file-menu-item flex items-center gap-2.5 py-2 px-3 rounded cursor-pointer transition-colors text-nim hover:bg-nim-hover"
-          onClick={() => handleSelect('markdown')}
-        >
-          <MaterialSymbol icon="description" size={18} />
-          <span>New Markdown File</span>
-        </div>
-
-        <div
-          className="new-file-menu-item flex items-center gap-2.5 py-2 px-3 rounded cursor-pointer transition-colors text-nim hover:bg-nim-hover"
-          onClick={() => handleSelect('mockup')}
-        >
-          <MaterialSymbol icon="web" size={18} />
-          <span>New Mockup</span>
-        </div>
-
-        {/* Extension-contributed file types */}
-        {extensionFileTypes.map((extType) => (
+        {items.map((item) => (
           <div
-            key={extType.extension}
+            key={item.key}
             className="new-file-menu-item flex items-center gap-2.5 py-2 px-3 rounded cursor-pointer transition-colors text-nim hover:bg-nim-hover"
-            onClick={() => handleSelect(`ext:${extType.extension}`)}
+            onClick={() => handleSelect(item.fileType)}
           >
-            <MaterialSymbol icon={extType.icon} size={18} />
-            <span>New {extType.displayName}</span>
+            <MaterialSymbol icon={item.icon} size={18} />
+            <span>{item.label}</span>
           </div>
         ))}
 

@@ -44,13 +44,17 @@ describe('GitCommitService', () => {
 
     await fs.writeFile(path.join(tmpRoot, 'a.txt'), 'hello\n', 'utf8');
 
+    const streamed: string[] = [];
     const result = await executeGitCommit(tmpRoot, 'test commit', ['a.txt'], {
       logContext: '[test:git-commit]',
+      onOutput: (stream, chunk) => streamed.push(`${stream}:${chunk}`),
     });
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('PRECOMMIT_STDOUT');
     expect(result.error).toContain('HOOK_DETAIL: lint failed');
+    expect(streamed.join('')).toContain('stderr:PRECOMMIT_STDOUT');
+    expect(streamed.join('')).toContain('HOOK_DETAIL: lint failed');
   });
 
   it('runs hooks with the injected subprocess env so PATH-dependent hooks resolve', async () => {

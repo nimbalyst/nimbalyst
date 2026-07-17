@@ -183,6 +183,32 @@ describe('CodexAppServerRawParser', () => {
     expect(descs[1]).toMatchObject({ type: 'tool_call_completed', exitCode: 0, result: 'a\nb\nc' });
   });
 
+  it('parses camel-case commandExecution fields emitted by the app server', async () => {
+    const parser = new CodexAppServerRawParser();
+    const msg = makeRawMessage({
+      content: envelope('item/completed', {
+        threadId: 't-1',
+        turnId: 'turn-1',
+        item: {
+          id: 'cmd-2',
+          type: 'commandExecution',
+          status: 'completed',
+          command: 'pwd',
+          aggregatedOutput: '/tmp/project',
+          exitCode: 0,
+        },
+      }),
+    });
+
+    const descs = await parser.parseMessage(msg, makeContext());
+
+    expect(descs[1]).toMatchObject({
+      type: 'tool_call_completed',
+      exitCode: 0,
+      result: '/tmp/project',
+    });
+  });
+
   it('emits a system_message for an error notification', async () => {
     const parser = new CodexAppServerRawParser();
     const msg = makeRawMessage({
@@ -203,6 +229,17 @@ describe('CodexAppServerRawParser', () => {
       const descs = await parser.parseMessage(msg, makeContext());
       expect(descs).toEqual([]);
     }
+  });
+
+  it('does not render legacy mobile-sync whole-message markers as assistant messages', async () => {
+    const parser = new CodexAppServerRawParser();
+    const msg = makeRawMessage({
+      content: '[Full openai-codex message elided from mobile sync: 32.1 KB raw. View on desktop for the full content.]',
+    });
+
+    const descs = await parser.parseMessage(msg, makeContext());
+
+    expect(descs).toEqual([]);
   });
 
   it('emits tool_call_started for item/started on mcpToolCall items and does not duplicate on later completion', async () => {

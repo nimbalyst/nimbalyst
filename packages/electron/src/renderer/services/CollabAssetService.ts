@@ -42,18 +42,8 @@ export class CollabAssetService {
     };
   }
 
-  /**
-   * Notify main that these specific `collab-asset://` URIs disappeared
-   * from the live editor state since the previous scan. Main deletes
-   * exactly those R2 objects -- no diff against the server-side asset
-   * list, so concurrent inserts on other peers are not at risk.
-   */
-  async notifyAssetReferencesRemoved(removedUris: string[]): Promise<void> {
-    if (removedUris.length === 0) return;
-    await window.electronAPI.documentSync.gcAssets({
-      orgId: this.config.orgId,
-      documentId: this.config.documentId,
-      removedUris,
-    });
-  }
+  // NIM-1683: the former `notifyAssetReferencesRemoved` (collab-asset GC) was
+  // removed. Deleting an asset when it leaves the current editor state destroys
+  // data still referenced by revision history / undo. Asset lifetime is tied to
+  // document lifetime; the server reclaims blobs only on document deletion.
 }

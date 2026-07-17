@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.nimbalyst.app.analytics.AnalyticsManager
 import com.nimbalyst.app.auth.AuthCallbackParseResult
 import com.nimbalyst.app.ui.NimbalystAndroidApp
@@ -13,6 +14,7 @@ import com.nimbalyst.app.ui.theme.NimbalystAndroidTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         handleIntent(intent)

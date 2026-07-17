@@ -583,3 +583,58 @@ describe('ProjectFileSyncService deferred remote delete', () => {
     expect(pushFileContent).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('ProjectFileSyncService local delete', () => {
+  let tmpDir: string;
+  let service: ProjectFileSyncService;
+  let deleteFile: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    dbBaselineStore.clear();
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), 'pfs-localdel-'));
+    service = new ProjectFileSyncService();
+    deleteFile = vi.fn();
+    (service as any).provider = { deleteFile, isConnected: vi.fn(() => true), disconnectAll: vi.fn() };
+    (service as any)._fileMapCache = new Map();
+    (service as any)._fileMapCache.set('proj-enc', { fileMap: new Map(), workspacePath: tmpDir });
+    (service as any).projectStates.set('proj-enc', new Map());
+  });
+
+  afterEach(async () => {
+    service.shutdown();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('pushes the deletion with the path-derived syncId and clears baseline + file map', async () => {
+    const rel = path.join('design', 'gone.md');
+    const filePath = path.join(tmpDir, rel);
+    const syncId = syncIdFromPath(rel);
+
+    (service as any).projectStates.get('proj-enc').set(syncId, {
+      syncId, contentHash: 'abc', lastSyncedMtime: 123,
+    });
+    (service as any)._fileMapCache.get('proj-enc').fileMap.set(syncId, filePath);
+    dbBaselineStore.set(`proj-enc|${syncId}`, {
+      project_id: 'proj-enc', sync_id: syncId, content_hash: 'abc', last_synced_mtime: 123,
+    });
+
+    service.handleFileDeletedByPath(filePath, tmpDir, 'proj-enc');
+    // deleteBaseline persists asynchronously
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(deleteFile).toHaveBeenCalledWith('proj-enc', syncId);
+    expect((service as any).projectStates.get('proj-enc').has(syncId)).toBe(false);
+    expect((service as any)._fileMapCache.get('proj-enc').fileMap.has(syncId)).toBe(false);
+    expect(dbBaselineStore.has(`proj-enc|${syncId}`)).toBe(false);
+  });
+
+  it('reports per-project stats for the settings UI', () => {
+    const syncId = syncIdFromPath('a.md');
+    (service as any).projectStates.get('proj-enc').set(syncId, {
+      syncId, contentHash: 'abc', lastSyncedMtime: 123,
+    });
+
+    expect(service.getProjectStats('proj-enc')).toEqual({ connected: true, fileCount: 1 });
+    expect(service.getProjectStats('unknown')).toEqual({ connected: true, fileCount: 0 });
+  });
+});

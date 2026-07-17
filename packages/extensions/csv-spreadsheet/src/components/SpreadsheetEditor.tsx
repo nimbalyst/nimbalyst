@@ -198,6 +198,8 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   // Ref for spreadsheetMeta so callbacks stay current
   const spreadsheetMetaRef = useRef(spreadsheetMeta);
   spreadsheetMetaRef.current = spreadsheetMeta;
+  const hostRef = useRef(host);
+  hostRef.current = host;
 
   // Selection state (refs to avoid re-renders)
   const selectedCellRef = useRef<{ row: number; col: number } | null>(null);
@@ -242,6 +244,14 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   // ---- EditorHost lifecycle (loading, echo detection, file changes, save, theme) ----
   const { isLoading, error: loadError, theme, markDirty: _markDirty } = useEditorLifecycle(host, {
     applyContent: (content: string) => {
+      // Collab guard (NIM-1529): once the collab binding is active the Y.Doc
+      // owns the content. A reopen of a shared doc has no file bytes, so the
+      // lifecycle loads '' here -- applying it would blank pendingDataRef
+      // after the binding already staged the synced content, and the next
+      // grid->Y.Text poll would push a delete-all into the shared room.
+      if (collabActiveRef.current && !content) {
+        return;
+      }
       loadedCsvContentRef.current = content;
       // Parse CSV and set RevoGrid source imperatively
       const { data } = parseCSV(content);
@@ -541,45 +551,60 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   // they apply hardcoded colors that override our CSS variables.
   // Instead, we rely entirely on our CSS that maps --revo-* to --nim-* variables.
 
-  // Initialize grid operations when grid is ready
+  // Initialize grid operations once for this mounted grid. The host and metadata
+  // objects can be recreated by parent renders, but rebuilding the plugin here
+  // would discard its undo/redo stacks.
   useEffect(() => {
-    if (!revoGridRef.current) return;
+    const grid = revoGridRef.current;
+    if (isLoading || !grid) return;
 
     let plugin: UndoRedoPlugin | null = null;
+    let cancelled = false;
 
     // Create undo plugin (get providers asynchronously)
-    revoGridRef.current.getProviders().then((providers) => {
-      if (!revoGridRef.current) return;
-      plugin = new UndoRedoPlugin(revoGridRef.current, providers || {} as any, {
-        onStateChange: () => {
-          // Could update UI here if needed
-        },
+    grid.getProviders()
+      .then((providers) => {
+        if (cancelled || revoGridRef.current !== grid) return;
+        plugin = new UndoRedoPlugin(grid, providers || {} as any, {
+          onStateChange: () => {
+            // Could update UI here if needed
+          },
+        });
+        undoPluginRef.current = plugin;
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error('[CSV] Failed to initialize undo/redo:', error);
+        }
       });
-      undoPluginRef.current = plugin;
-    });
 
     // Create grid operations - use getter to access undoPlugin dynamically
     const gridOps = createGridOperations(revoGridRef, {
-      getHeaderRowCount: () => spreadsheetMeta.metadata.headerRowCount,
-      getColumnCount: () => spreadsheetMeta.metadata.columnCount,
-      setColumnCount: spreadsheetMeta.setColumnCount,
-      getDelimiter: () => spreadsheetMeta.delimiter,
-      getColumnFormats: () => spreadsheetMeta.metadata.columnFormats,
-      getColumnWidths: () => spreadsheetMeta.metadata.columnWidths,
-      getFrozenColumnCount: () => spreadsheetMeta.metadata.frozenColumnCount,
-      onDirty: () => host.setDirty(true),
+      getHeaderRowCount: () => spreadsheetMetaRef.current.metadata.headerRowCount,
+      getColumnCount: () => spreadsheetMetaRef.current.metadata.columnCount,
+      setColumnCount: (count) => spreadsheetMetaRef.current.setColumnCount(count),
+      getDelimiter: () => spreadsheetMetaRef.current.delimiter,
+      getColumnFormats: () => spreadsheetMetaRef.current.metadata.columnFormats,
+      getColumnWidths: () => spreadsheetMetaRef.current.metadata.columnWidths,
+      getFrozenColumnCount: () => spreadsheetMetaRef.current.metadata.frozenColumnCount,
+      onDirty: () => hostRef.current.setDirty(true),
       getUndoPlugin: () => undoPluginRef.current,
     });
     gridOpsRef.current = gridOps;
 
     return () => {
+      cancelled = true;
       if (plugin) {
         plugin.destroy();
       }
-      undoPluginRef.current = null;
-      gridOpsRef.current = null;
+      if (undoPluginRef.current === plugin) {
+        undoPluginRef.current = null;
+      }
+      if (gridOpsRef.current === gridOps) {
+        gridOpsRef.current = null;
+      }
     };
-  }, [revoGridRef.current, spreadsheetMeta.metadata, spreadsheetMeta.delimiter, host]);
+  }, [isLoading]);
 
   // (Loading, saving, file changes, echo detection, diff mode are all handled by useEditorLifecycle above)
 
@@ -1602,7 +1627,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         ref={gridContainerRef}
         className="flex-1 overflow-hidden relative"
         tabIndex={0}
-        {...(!isActive ? { inert: '' } : {})}
+        {...(!isActive ? { inert: true } : {})}
         data-is-active={isActive}
         onContextMenu={handleContextMenu}
         onMouseDown={handleHeaderMouseDown}

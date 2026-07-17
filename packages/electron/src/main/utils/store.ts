@@ -10,6 +10,7 @@ import { DEFAULT_ONBOARDING_CONFIG } from '../../shared/types/workspace';
 import { AlphaFeatureTag, getDefaultAlphaFeatures, ALPHA_FEATURES } from '../../shared/alphaFeatures';
 import { DeveloperFeatureTag, getDefaultDeveloperFeatures, DEVELOPER_FEATURES } from '../../shared/developerFeatures';
 import { BetaFeatureTag, getDefaultBetaFeatures, enableAllBetaFeatures as enableAllBetaFeaturesUtil, BETA_FEATURES } from '../../shared/betaFeatures';
+import { deriveIssueKeyPrefix } from '../../shared/trackerIssueKeyPrefix';
 import { normalizeCodexProviderConfig, omitModelsField } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
 
 // Theme can be a built-in theme or an extension theme ID (format: "extensionId:themeId")
@@ -112,6 +113,14 @@ interface AppStoreSchema {
     projectCommandsEnabled?: boolean;
     // Enable user-level commands (~/.claude/commands/)
     userCommandsEnabled?: boolean;
+    // Advanced: route the Claude CLI's API traffic through a custom upstream
+    // before it reaches Anthropic. The observation proxy forwards `/v1/messages`
+    // here (a base path like `/anthropic` is honored) instead of straight to
+    // api.anthropic.com — enabling user-supplied middleware (token-compression,
+    // gateways, caching, observability). Empty/unset = direct to Anthropic.
+    // SECURITY: the target receives the CLI's subscription OAuth token + prompt
+    // content, so only loopback hosts are accepted (see setClaudeCodeApiUpstreamUrl).
+    apiUpstreamUrl?: string;
   };
   // OpenAI Codex settings
   openaiCodex?: {
@@ -206,6 +215,13 @@ interface AppStoreSchema {
   lastKnownVersion?: string;
   // One-shot migration flag: plain fable default bumped to fable-1m (NIM-827)
   fableDefaultMigratedTo1m?: boolean;
+  // Gutter icon visibility/order preferences (GLOBAL). Moved off per-project
+  // workspace state so the preference applies across all projects.
+  hiddenGutterItems?: string[];
+  gutterItemOrder?: Record<string, string[]>;
+  // One-shot migration flag: per-project hiddenGutterButtons unioned into the
+  // global hiddenGutterItems key above.
+  gutterButtonsMigratedToGlobal?: boolean;
   // Extension marketplace install tracking
   marketplaceInstalls?: Record<string, MarketplaceInstallRecord>;
   // Multi-project rail: opt-in flag to host multiple projects in a single
@@ -448,13 +464,16 @@ export interface WorkspaceState {
   workstreamStates?: Record<string, unknown>;
   // Agent mode file scope mode (shared across all sessions in workspace)
   agentFileScopeMode?: AgentFileScopeMode;
-  // Collab mode tree state (expanded folders and local placeholder folders)
+  // Collab mode tree state.
   collabTree?: {
     expandedFolders: string[];
+    /** @deprecated Legacy local-only path folders. */
     customFolders: string[];
     // Folder path most recently used as the destination for "Share to Team".
-    // Pre-selected on next share so users don't re-pick the same folder.
+    // Retained for compatibility with clients predating first-class folders.
     lastSharedFolder?: string;
+    // Stable first-class folder id most recently used. Null means Team root.
+    lastSharedFolderId?: string | null;
   };
   collabPendingUpdates?: Record<string, {
     mergedUpdateBase64: string;
@@ -470,7 +489,7 @@ export interface WorkspaceState {
   issueKeyPrefix?: string;
   // Account identity bound to this workspace (personalOrgId).
   // Set once when the workspace is first synced. Different workspaces can use different accounts.
-  // Defaults to the primary account if not set.
+  // Defaults to the account selected for personal sync if not set.
   accountId?: string;
   // Hidden gutter buttons (navigation sidebar)
   hiddenGutterButtons?: string[];
@@ -652,6 +671,7 @@ function createDefaultWorkspaceState(workspacePath: string): WorkspaceState {
       customFolders: [],
     },
     collabPendingUpdates: {},
+    issueKeyPrefix: deriveIssueKeyPrefix(workspacePath),
     lastUpdated: Date.now(),
   };
 }
@@ -678,6 +698,13 @@ function normalizeWorkspaceState(raw: any, wsPath: string): WorkspaceState {
 
   // Deep merge raw data - this automatically preserves all fields
   deepMerge(state, raw);
+
+  // Preserve the historical NIM fallback for existing workspaces that never
+  // saved a prefix. Only newly-created workspace state gets the derived
+  // project-name default, so existing issue-key sequences do not change.
+  if (!Object.prototype.hasOwnProperty.call(raw, 'issueKeyPrefix')) {
+    state.issueKeyPrefix = undefined;
+  }
 
   // Ensure workspacePath is set correctly (in case raw had a different value)
   state.workspacePath = wsPath;
@@ -1567,6 +1594,11 @@ export interface SessionSyncConfig {
   // login order doesn't affect which index room sessions sync to.
   personalOrgId?: string;
   personalUserId?: string;
+  personalSyncProfiles?: Record<string, {
+    enabledProjects: string[];
+    docSyncEnabledProjects: string[];
+    preventSleepMode?: 'off' | 'always' | 'pluggedIn';
+  }>;
   // DEPRECATED: migrated to preventSleepMode
   preventSleepWhenSyncing?: boolean;
   // Prevent system sleep while sync is active (uses Electron powerSaveBlocker).
@@ -1718,12 +1750,72 @@ export function setExtensionPermissionGrantsGlobal(
 }
 
 // Claude Code settings
-export function getClaudeCodeSettings(): { projectCommandsEnabled: boolean; userCommandsEnabled: boolean } {
+export function getClaudeCodeSettings(): {
+  projectCommandsEnabled: boolean;
+  userCommandsEnabled: boolean;
+  apiUpstreamUrl?: string;
+} {
   const settings = getAppStore().get('claudeCode', {});
   return {
     projectCommandsEnabled: settings.projectCommandsEnabled ?? true,
     userCommandsEnabled: settings.userCommandsEnabled ?? true,
+    apiUpstreamUrl: settings.apiUpstreamUrl,
   };
+}
+
+/**
+ * Whether a custom Claude API upstream URL is well-formed AND loopback-bound.
+ * The Claude CLI's requests carry the user's subscription OAuth token + full
+ * prompt content; routing them to a non-loopback host would hand that to a
+ * remote third party, so we hard-restrict to loopback (127.0.0.0/8, localhost,
+ * ::1). Returns false for anything else (incl. unparseable input).
+ */
+export function isValidClaudeCodeApiUpstreamUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  const host = parsed.hostname.replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+}
+
+/**
+ * The configured custom upstream for the Claude CLI observation proxy, or
+ * undefined when unset/blank/invalid (→ proxy talks directly to Anthropic). We
+ * re-validate on read so a value that somehow bypassed the setter (hand-edited
+ * store, downgraded build) can never silently route OAuth traffic off-box.
+ */
+export function getClaudeCodeApiUpstreamUrl(): string | undefined {
+  const raw = getAppStore().get('claudeCode', {}).apiUpstreamUrl?.trim();
+  if (!raw) return undefined;
+  if (!isValidClaudeCodeApiUpstreamUrl(raw)) {
+    logger.main.warn(`[store] Ignoring non-loopback claudeCode.apiUpstreamUrl: ${raw}`);
+    return undefined;
+  }
+  return raw;
+}
+
+/**
+ * Persist (or clear, with empty string) the custom Claude API upstream URL.
+ * Throws on a non-empty value that isn't a valid loopback http(s) URL so the
+ * caller (settings IPC) surfaces the error instead of saving a footgun.
+ */
+export function setClaudeCodeApiUpstreamUrl(url: string): void {
+  const trimmed = url.trim();
+  const current = getAppStore().get('claudeCode', {});
+  if (!trimmed) {
+    getAppStore().set('claudeCode', { ...current, apiUpstreamUrl: undefined });
+    return;
+  }
+  if (!isValidClaudeCodeApiUpstreamUrl(trimmed)) {
+    throw new Error(
+      'Claude API upstream URL must be a loopback http(s) URL (e.g. http://127.0.0.1:8787/anthropic).',
+    );
+  }
+  getAppStore().set('claudeCode', { ...current, apiUpstreamUrl: trimmed });
 }
 
 export function setClaudeCodeProjectCommandsEnabled(enabled: boolean): void {
@@ -2451,6 +2543,30 @@ export function runMigrations(currentVersion: string): void {
       getAppStore().set('defaultAIModel', migrated);
     }
     getAppStore().set('fableDefaultMigratedTo1m', true);
+  }
+
+  // One-shot, version-independent migration: gutter icon visibility moved from
+  // per-project workspace state (hiddenGutterButtons) to a single global app
+  // setting (hiddenGutterItems). Union every project's hidden set so a user who
+  // had hidden, say, Voice Mode in one project keeps it hidden everywhere
+  // rather than having it silently reappear. Flag-guarded so it runs once.
+  if (!getAppStore().get('gutterButtonsMigratedToGlobal')) {
+    try {
+      const workspaces = getWorkspaceStore().store;
+      const union = new Set<string>(getAppStore().get('hiddenGutterItems') ?? []);
+      for (const state of Object.values(workspaces ?? {})) {
+        for (const id of state?.hiddenGutterButtons ?? []) {
+          union.add(id);
+        }
+      }
+      if (union.size > 0) {
+        logger.store.info(`[Migrations] Unioning ${union.size} hidden gutter button(s) into global setting`);
+        getAppStore().set('hiddenGutterItems', Array.from(union));
+      }
+    } catch (err) {
+      logger.store.warn('[Migrations] Failed to migrate hiddenGutterButtons to global:', err);
+    }
+    getAppStore().set('gutterButtonsMigratedToGlobal', true);
   }
 
   // Same version - no migration needed

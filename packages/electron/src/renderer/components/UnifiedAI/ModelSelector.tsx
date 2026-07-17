@@ -141,7 +141,7 @@ export function ModelSelector({
     setIsOpen(false);
     navigateToSettings({
       category: getSettingsCategoryForModel(currentModel),
-      scope: 'user',
+      scope: 'application',
     });
     setWindowMode('settings');
   };

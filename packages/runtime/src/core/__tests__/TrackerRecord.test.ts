@@ -88,6 +88,41 @@ describe('trackerItemToRecord', () => {
     expect(record.system.documentId).toBe('doc-1');
   });
 
+  it('does not fabricate now for missing created/updated (NIM-1559)', () => {
+    // A frontmatter plan with no dates but a stable file mtime in lastIndexed.
+    const mtime = new Date('2026-06-19T18:29:37.000Z');
+    const item = makeTrackerItem({ created: undefined, updated: undefined, lastIndexed: mtime });
+    const before = Date.now();
+    const record = trackerItemToRecord(item);
+
+    // Must fall back to the stable lastIndexed, NOT the current time.
+    expect(record.system.updatedAt).toBe(mtime.toISOString());
+    expect(record.system.createdAt).toBe(mtime.toISOString());
+    // Guard: not stamped with ~now.
+    expect(new Date(record.system.updatedAt).getTime()).toBeLessThan(before - 1000);
+  });
+
+  it('uses frontmatter file mtime for day-precision updated timestamps', () => {
+    const mtime = new Date('2026-07-08T16:36:30.000Z');
+    const item = makeTrackerItem({
+      source: 'frontmatter',
+      created: '2026-07-08',
+      updated: '2026-07-08T00:00:00.000Z',
+      lastIndexed: mtime,
+    });
+    const record = trackerItemToRecord(item);
+
+    expect(record.system.createdAt).toBe('2026-07-08');
+    expect(record.system.updatedAt).toBe(mtime.toISOString());
+  });
+
+  it('falls back to epoch when both dates and lastIndexed are absent', () => {
+    const item = makeTrackerItem({ created: undefined, updated: undefined, lastIndexed: undefined });
+    const record = trackerItemToRecord(item);
+    expect(record.system.updatedAt).toBe(new Date(0).toISOString());
+    expect(record.system.createdAt).toBe(new Date(0).toISOString());
+  });
+
   it('sets top-level routing fields', () => {
     const item = makeTrackerItem();
     const record = trackerItemToRecord(item);
@@ -400,4 +435,3 @@ describe('trackerItemToRecord comments/activity via customFields', () => {
     expect(record.system.activity![0].action).toBe('created');
   });
 });
-

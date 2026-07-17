@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import * as path from 'path';
 
 // Hoisted mocks: simple-git fakes that individual tests can wire per scenario,
 // plus logger fakes that the vi.mock factory below references. Hoisting is
@@ -11,6 +12,8 @@ const {
   loggerError,
   loggerWarn,
   loggerDebug,
+  mockWatchFile,
+  mockUnwatchFile,
 } = vi.hoisted(() => ({
   mockStatus: vi.fn(),
   mockLog: vi.fn(),
@@ -18,6 +21,8 @@ const {
   loggerError: vi.fn(),
   loggerWarn: vi.fn(),
   loggerDebug: vi.fn(),
+  mockWatchFile: vi.fn(),
+  mockUnwatchFile: vi.fn(),
 }));
 
 vi.mock('simple-git', () => ({
@@ -27,23 +32,13 @@ vi.mock('simple-git', () => ({
   }),
 }));
 
-// chokidar.watch is invoked at .start() once preflight passes. We never want
-// real file watchers in tests, so return a no-op that satisfies the FSWatcher
-// interface enough for our assertions.
-vi.mock('chokidar', () => ({
-  default: {
-    watch: vi.fn(() => ({
-      on: vi.fn().mockReturnThis(),
-      close: vi.fn().mockResolvedValue(undefined),
-    })),
-  },
-}));
-
 // Pretend `<workspace>/.git` is a regular directory.
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
     ...actual,
+    watchFile: mockWatchFile,
+    unwatchFile: mockUnwatchFile,
     promises: {
       ...actual.promises,
       stat: vi.fn().mockResolvedValue({
@@ -126,6 +121,26 @@ describe('GitRefWatcher.start - empty repo handling', () => {
       '[GitRefWatcher] Skipping detached HEAD workspace:',
       '/fake/workspace',
     );
+    expect(watcher.getStats().activeWatchers).toBe(0);
+  });
+
+  it('uses native file polling for git ref and index files', async () => {
+    mockStatus.mockResolvedValue({ current: 'master' });
+    mockLog.mockResolvedValue({ latest: { hash: 'abc123', message: 'Initial commit' } });
+
+    const watcher = new GitRefWatcher();
+    await watcher.start('/fake/workspace');
+
+    expect(mockWatchFile).toHaveBeenCalledTimes(2);
+    expect(mockWatchFile.mock.calls[0]?.[0]).toBe(path.join('/fake/workspace', '.git', 'refs', 'heads', 'master'));
+    expect(mockWatchFile.mock.calls[1]?.[0]).toBe(path.join('/fake/workspace', '.git', 'index'));
+    expect(watcher.getStats().activeWatchers).toBe(1);
+
+    await watcher.stop('/fake/workspace');
+
+    expect(mockUnwatchFile).toHaveBeenCalledTimes(2);
+    expect(mockUnwatchFile.mock.calls[0]?.[0]).toBe(path.join('/fake/workspace', '.git', 'refs', 'heads', 'master'));
+    expect(mockUnwatchFile.mock.calls[1]?.[0]).toBe(path.join('/fake/workspace', '.git', 'index'));
     expect(watcher.getStats().activeWatchers).toBe(0);
   });
 });

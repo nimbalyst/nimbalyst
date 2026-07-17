@@ -19,6 +19,8 @@ import * as ReactDOM from 'react-dom';
 import * as ReactDOMClient from 'react-dom/client';
 import * as jsxRuntime from 'react/jsx-runtime';
 import * as jsxDevRuntime from 'react/jsx-dev-runtime';
+import { createJsxDevRuntimeBridge } from './jsxDevRuntimeBridge';
+import { createReactDomCompat } from './reactDomCompat';
 
 // PDF.js and virtua are shared for the pdf-viewer extension
 import * as pdfjsLib from 'pdfjs-dist';
@@ -44,6 +46,10 @@ import {
   COLLAB_INIT_ORIGIN,
   setTranscriptMarkdownContributions,
   clearTranscriptMarkdownContributions,
+  TrackerReferenceChip,
+  TrackerReferencePicker,
+  navigateToTrackerReference,
+  useResolvedTrackerReference,
 } from '@nimbalyst/runtime';
 
 // yJS singletons shared with extensions: the host's Y.Doc passes by reference
@@ -405,34 +411,22 @@ CHECK:
     const w = window as any;
     if (w.__nimbalyst_extensions) return;
 
-    // Create a shimmed jsx-dev-runtime that works even in production builds
-    // This handles the case where an extension was built in dev mode but the host is in prod mode
-    // jsxDEV signature: (type, props, key, isStaticChildren, source, self)
-    // jsx signature: (type, props, key)
-    // The extra dev params (isStaticChildren, source, self) are only for dev warnings, safe to ignore
-    const shimmedJsxDevRuntime = {
-      ...jsxDevRuntime,
-      // If jsxDEV is undefined (production build), shim it with jsx
-      jsxDEV:
-        jsxDevRuntime.jsxDEV ??
-        ((
-          type: any,
-          props: any,
-          key: any,
-          _isStaticChildren?: boolean,
-          _source?: any,
-          _self?: any
-        ) => {
-          return jsxRuntime.jsx(type, props, key);
-        }),
-    };
+    // React 19 exposes Fragment + jsxDEV from jsx-dev-runtime. Preserve that
+    // shape and supply jsxDEV only when a production condition omits it.
+    const shimmedJsxDevRuntime = createJsxDevRuntimeBridge(
+      jsxDevRuntime,
+      jsxRuntime
+    );
 
     // Use the imported modules from the top of this file
     // IMPORTANT: Use namespace imports (* as) to prevent tree-shaking in production builds
     w.__nimbalyst_extensions = {
       // React core - multiple instances break hooks
       react: React,
-      'react-dom': ReactDOM,
+      // Compat shape: pre-React-19 extension bundles resolve createRoot off
+      // the 'react-dom' key (bundled react-dom/client CJS interop), so keep
+      // exposing it there even though React 19 moved it to the client entry.
+      'react-dom': createReactDomCompat(ReactDOM, ReactDOMClient),
       'react-dom/client': ReactDOMClient,
       'react/jsx-runtime': jsxRuntime,
       'react/jsx-dev-runtime': shimmedJsxDevRuntime,
@@ -475,6 +469,10 @@ CHECK:
         COLLAB_INIT_ORIGIN,
         setTranscriptMarkdownContributions,
         clearTranscriptMarkdownContributions,
+        TrackerReferenceChip,
+        TrackerReferencePicker,
+        navigateToTrackerReference,
+        useResolvedTrackerReference,
         // Editor components - extensions can use these instead of bundling their own
         // MarkdownEditor is the configured wrapper with platform features (image handling, toolbar)
         MarkdownEditor: NimbalystMarkdownEditor,

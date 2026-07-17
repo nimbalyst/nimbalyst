@@ -73,9 +73,6 @@ fun SessionListScreen(
     var showCreateMenu by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
-    // Group sessions: workstreams first, then standalone by time
-    val groupedSessions = remember(sessions) { groupSessionsByTime(sessions) }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -145,16 +142,11 @@ fun SessionListScreen(
                     )
                 }
             } else {
-                // Separate workstream parents and their children
-                val workstreamParents = sessions.filter { it.sessionType == "workstream" }
-                val childSessionsByParent = sessions
-                    .filter { !it.parentSessionId.isNullOrBlank() }
-                    .groupBy { it.parentSessionId!! }
-                val standaloneIds = buildSet {
-                    workstreamParents.forEach { add(it.id) }
-                    sessions.filter { !it.parentSessionId.isNullOrBlank() }.forEach { add(it.id) }
-                }
-                val standaloneSessions = sessions.filter { it.id !in standaloneIds }
+                // Interleave workstreams and standalone sessions in one list, bucketed by
+                // time period (matches iOS SessionListView -- no separate Workstreams section).
+                val timeGrouped = SessionListGrouping.groupByTime(
+                    SessionListGrouping.buildItems(sessions)
+                )
 
                 LazyColumn(
                     modifier = Modifier
@@ -162,30 +154,7 @@ fun SessionListScreen(
                         .padding(horizontal = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Workstream groups at the top
-                    if (workstreamParents.isNotEmpty()) {
-                        item(key = "header-workstreams") {
-                            Text(
-                                text = "Workstreams",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
-                            )
-                        }
-                        items(workstreamParents, key = { "ws-${it.id}" }) { parent ->
-                            WorkstreamGroup(
-                                parent = parent,
-                                children = childSessionsByParent[parent.id] ?: emptyList(),
-                                onSessionClick = { sessionId ->
-                                    navController.navigate("sessions/$sessionId")
-                                }
-                            )
-                        }
-                    }
-
-                    // Standalone sessions grouped by time
-                    val timeGrouped = groupSessionsByTime(standaloneSessions)
-                    timeGrouped.forEach { (label, groupSessions) ->
+                    timeGrouped.forEach { (label, groupItems) ->
                         item(key = "header-$label") {
                             Text(
                                 text = label,
@@ -194,11 +163,20 @@ fun SessionListScreen(
                                 modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
                             )
                         }
-                        items(groupSessions, key = { it.id }) { session ->
-                            SessionRow(
-                                session = session,
-                                onClick = { navController.navigate("sessions/${session.id}") }
-                            )
+                        items(groupItems, key = { it.key }) { item ->
+                            when (item) {
+                                is SessionListGrouping.Item.Standalone -> SessionRow(
+                                    session = item.session,
+                                    onClick = { navController.navigate("sessions/${item.session.id}") }
+                                )
+                                is SessionListGrouping.Item.Workstream -> WorkstreamGroup(
+                                    parent = item.parent,
+                                    children = item.children,
+                                    onSessionClick = { sessionId ->
+                                        navController.navigate("sessions/$sessionId")
+                                    }
+                                )
+                            }
                         }
                     }
 
@@ -376,31 +354,96 @@ private fun WorkstreamGroup(
     }
 }
 
-private fun groupSessionsByTime(sessions: List<SessionEntity>): List<Pair<String, List<SessionEntity>>> {
-    val today = Calendar.getInstance().apply {
-        set(Calendar.HOUR_OF_DAY, 0)
-        set(Calendar.MINUTE, 0)
-        set(Calendar.SECOND, 0)
-        set(Calendar.MILLISECOND, 0)
-    }
-    val yesterday = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -1) }
-    val thisWeek = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -7) }
-    val lastWeek = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -14) }
-    val thisMonth = (today.clone() as Calendar).apply { add(Calendar.MONTH, -1) }
+/**
+ * Pure grouping logic for the session list, matching iOS `SessionListView`:
+ * workstream groups and standalone sessions are interleaved into a single list and
+ * bucketed by relative time period using each item's last-update timestamp. A workstream's
+ * timestamp is its newest child's `updatedAt` (falling back to the parent), so an active
+ * workstream floats up next to recently-touched standalone sessions instead of being pinned
+ * to a separate section.
+ */
+internal object SessionListGrouping {
+    sealed interface Item {
+        val effectiveUpdatedAt: Long
+        val key: String
 
-    val groups = linkedMapOf<String, MutableList<SessionEntity>>()
-
-    sessions.sortedByDescending { it.updatedAt }.forEach { session ->
-        val label = when {
-            session.updatedAt >= today.timeInMillis -> "Today"
-            session.updatedAt >= yesterday.timeInMillis -> "Yesterday"
-            session.updatedAt >= thisWeek.timeInMillis -> "This Week"
-            session.updatedAt >= lastWeek.timeInMillis -> "Last Week"
-            session.updatedAt >= thisMonth.timeInMillis -> "This Month"
-            else -> "Older"
+        data class Standalone(val session: SessionEntity) : Item {
+            override val effectiveUpdatedAt: Long get() = session.updatedAt
+            override val key: String get() = session.id
         }
-        groups.getOrPut(label) { mutableListOf() }.add(session)
+
+        data class Workstream(
+            val parent: SessionEntity,
+            val children: List<SessionEntity>
+        ) : Item {
+            override val effectiveUpdatedAt: Long
+                get() = children.maxOfOrNull { it.updatedAt } ?: parent.updatedAt
+            override val key: String get() = "ws-${parent.id}"
+        }
     }
 
-    return groups.map { (label, list) -> label to list.toList() }
+    /**
+     * Partition raw sessions into standalone rows and workstream groups. Workstream parents are
+     * `sessionType == "workstream"`; a session with a non-blank `parentSessionId` is a child of
+     * its parent. Everything else is standalone. Children are sorted newest-first.
+     */
+    fun buildItems(sessions: List<SessionEntity>): List<Item> {
+        val workstreamParents = sessions.filter { it.sessionType == "workstream" }
+        val childSessionsByParent = sessions
+            .filter { !it.parentSessionId.isNullOrBlank() }
+            .groupBy { it.parentSessionId!! }
+        val claimedIds = buildSet {
+            workstreamParents.forEach { add(it.id) }
+            sessions.filter { !it.parentSessionId.isNullOrBlank() }.forEach { add(it.id) }
+        }
+
+        val items = mutableListOf<Item>()
+        sessions.filter { it.id !in claimedIds }.forEach { items.add(Item.Standalone(it)) }
+        workstreamParents.forEach { parent ->
+            items.add(
+                Item.Workstream(
+                    parent = parent,
+                    children = (childSessionsByParent[parent.id] ?: emptyList())
+                        .sortedByDescending { it.updatedAt }
+                )
+            )
+        }
+        return items
+    }
+
+    /**
+     * Bucket interleaved items by relative time period using `effectiveUpdatedAt`, newest
+     * bucket first, newest item first within each bucket. Empty buckets are omitted.
+     */
+    fun groupByTime(
+        items: List<Item>,
+        now: Calendar = Calendar.getInstance()
+    ): List<Pair<String, List<Item>>> {
+        val today = (now.clone() as Calendar).apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val yesterday = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -1) }
+        val thisWeek = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -7) }
+        val lastWeek = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -14) }
+        val thisMonth = (today.clone() as Calendar).apply { add(Calendar.MONTH, -1) }
+
+        val groups = linkedMapOf<String, MutableList<Item>>()
+
+        items.sortedByDescending { it.effectiveUpdatedAt }.forEach { item ->
+            val label = when {
+                item.effectiveUpdatedAt >= today.timeInMillis -> "Today"
+                item.effectiveUpdatedAt >= yesterday.timeInMillis -> "Yesterday"
+                item.effectiveUpdatedAt >= thisWeek.timeInMillis -> "This Week"
+                item.effectiveUpdatedAt >= lastWeek.timeInMillis -> "Last Week"
+                item.effectiveUpdatedAt >= thisMonth.timeInMillis -> "This Month"
+                else -> "Older"
+            }
+            groups.getOrPut(label) { mutableListOf() }.add(item)
+        }
+
+        return groups.map { (label, list) -> label to list.toList() }
+    }
 }

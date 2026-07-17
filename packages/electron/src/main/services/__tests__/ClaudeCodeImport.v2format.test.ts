@@ -11,7 +11,7 @@
  *  - Sync status is timestamp-based, not entry-count-based
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -154,11 +154,18 @@ describe('Claude Code v2 format support', () => {
 });
 
 describe('Claude Code v2 sync', () => {
+  // Load the sync module once. It pulls in the whole @nimbalyst/runtime graph;
+  // doing it inline in the first test made that test bear the full first-time
+  // compile cost and flake past the 5s timeout under full-suite load.
+  let syncSessions: typeof import('../ClaudeCodeSessionSync').syncSessions;
+  beforeAll(async () => {
+    ({ syncSessions } = await import('../ClaudeCodeSessionSync'));
+  });
+
   it('imports follow-up user prompts as input direction even when parentUuid is set', async () => {
     // Repro of the live-import bug: 2.1.x threads parentUuid on every entry
     // so user prompts after the first turn have a parentUuid. They must
     // still be imported as user input, not as system messages.
-    const { syncSessions } = await import('../ClaudeCodeSessionSync');
     const stored: Array<{ direction: string; content: string }> = [];
 
     const fakeSessionStore: any = {
@@ -225,7 +232,6 @@ describe('Claude Code v2 sync', () => {
   });
 
   it('skips CLI bookkeeping (slash commands, command output) wrapped in user-role messages', async () => {
-    const { syncSessions } = await import('../ClaudeCodeSessionSync');
     const stored: Array<{ direction: string; content: string }> = [];
     const fakeSessionStore: any = { get: async () => null, create: async () => {}, updateMetadata: async () => {}, list: async () => [] };
     const fakeMessagesStore: any = {
@@ -277,9 +283,6 @@ describe('Claude Code v2 sync', () => {
   });
 
   it('inlines persisted-output references and ingests subagent jsonl as parent-session messages', async () => {
-    // Import sync from the source to avoid the SessionStore dependency at
-    // module top level. We exercise the conversion logic only.
-    const { syncSessions } = await import('../ClaudeCodeSessionSync');
     const stored: Array<{ direction: string; content: string }> = [];
     let createdSession: any = null;
 

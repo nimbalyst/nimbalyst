@@ -6,6 +6,7 @@
  * from enabled extensions.
  */
 
+import type { JSX } from 'react';
 import { useState, useEffect } from 'react';
 import { getExtensionLoader } from '@nimbalyst/runtime';
 import type { ComponentType } from 'react';

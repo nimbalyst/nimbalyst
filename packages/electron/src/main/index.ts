@@ -15,6 +15,7 @@ import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
 import { getRestartSignalPath } from './utils/appPaths';
 import { createWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
+import { setupTeamManagementHandlers } from './window/TeamManagementWindow';
 import { showSplashScreen, closeSplashScreen } from './window/SplashScreen';
 import { registerFileHandlers } from './ipc/FileHandlers';
 import { registerWorkspaceHandlers } from './ipc/WorkspaceHandlers.ts';
@@ -42,6 +43,8 @@ import { registerMultiProjectRailHandlers } from './ipc/MultiProjectRailHandlers
 import { registerUsageAnalyticsHandlers } from './ipc/UsageAnalyticsHandlers';
 import { registerWorktreeHandlers } from './ipc/WorktreeHandlers';
 import { registerPullRequestHandlers, stopPullRequestPollScheduler } from './ipc/PullRequestHandlers';
+import { registerReadReceiptHandlers } from './ipc/ReadReceiptHandlers';
+import { registerTrackerPersonalStateHandlers } from './ipc/TrackerPersonalStateHandlers';
 import { registerWakeupHandlers } from './ipc/WakeupHandlers';
 import { registerBlitzHandlers } from './ipc/BlitzHandlers';
 import { registerProjectMigrationHandlers } from './ipc/ProjectMigrationHandlers';
@@ -170,14 +173,20 @@ import { AnalyticsService } from "./services/analytics/AnalyticsService.ts";
 import { registerAnalyticsHandlers } from "./ipc/AnalyticsHandlers.ts";
 import { registerFeatureUsageHandlers } from "./ipc/FeatureUsageHandlers.ts";
 import { FeatureUsageService, FEATURES } from "./services/FeatureUsageService.ts";
-import { shutdownStytchAuth, handleAuthCallback, isAuthenticated } from './services/StytchAuthService';
+import { shutdownStytchAuth, handleAuthCallback, isAuthenticated, getPersonalUserId } from './services/StytchAuthService';
 import { registerTrackerSyncHandlers, initializeTrackerSync } from './services/TrackerSyncManager';
 import { initTrackerSchemaService, updateTrackerSchemaWorkspace } from './services/TrackerSchemaService';
+import { initTrackerNavigationService } from './services/TrackerNavigationService';
 import { registerTeamHandlers, autoMatchTeamForWorkspace, getOrgScopedJwt, findTeamForWorkspace } from './services/TeamService';
 import { windowStates, windows, resolveActiveWorkspacePath } from './window/windowState';
 import { getRecentItems } from './utils/store';
 import { registerOrgKeyHandlers, getOrgKey } from './services/OrgKeyService';
 import { registerDocumentSyncHandlers } from './ipc/DocumentSyncHandlers';
+import { getCollabOutboxDrainCoordinator } from './services/CollabOutboxDrainerService';
+import { getCollabAssetOutboxDrainCoordinator } from './services/CollabAssetOutboxDrainCoordinator';
+import { getCollabAssetStore } from './services/CollabAssetStore';
+import { registerCollabBackupHandlers } from './ipc/CollabBackupHandlers';
+import { flushPendingCollabBackups } from './services/CollabBackupService';
 import { registerBuiltinCollabContentAdapters } from './services/collabContentAdapterRegistration';
 import { registerCollabV3TestHandlers } from './ipc/CollabV3TestHandlers';
 import { getPermissionService } from './services/PermissionService';
@@ -185,6 +194,7 @@ import { ClaudeSettingsManager } from './services/ClaudeSettingsManager';
 import { TrayManager } from './tray/TrayManager';
 import { pathToFileURL } from 'url';
 import { registerLinuxAppImageProtocolHandler } from './services/LinuxProtocolRegistration';
+import { installWindowOpenGuard } from './window/windowOpenGuard';
 
 // CRITICAL: Hide dock icon when running as background Node process
 // This prevents Terminal icon from appearing when Claude Code spawns child processes
@@ -208,6 +218,11 @@ if (process.platform === 'win32') {
 registerNimAssetSchemeAsPrivileged();
 registerNimPreviewSchemeAsPrivileged();
 registerCollabAssetSchemeAsPrivileged();
+
+// NIM-1487: no window may be spawned by an unhandled window.open — relative
+// file links that slip past the renderer's link routing used to open blank
+// white child windows.
+installWindowOpenGuard();
 
 // NOTE: User data directory configuration is handled in bootstrap.ts
 // which runs BEFORE this file is imported, ensuring electron-store
@@ -704,6 +719,17 @@ safeHandle('deep-link:consume-pending-tracker', (_event, workspacePath: string) 
     return { ...pending, workspacePath };
 });
 
+// Same pattern for shared-folder deep links: nimbalyst://folder/{folderId}?orgId=...
+const pendingSharedFolderLinks = new Map<string, { folderId: string; orgId: string }>();
+
+safeHandle('deep-link:consume-pending-shared-folder', (_event, workspacePath: string) => {
+    if (!workspacePath) return null;
+    const pending = pendingSharedFolderLinks.get(workspacePath);
+    if (!pending) return null;
+    pendingSharedFolderLinks.delete(workspacePath);
+    return { ...pending, workspacePath };
+});
+
 // Sensitive query params that must not be logged verbatim. Anything not in
 // this set is logged as-is so worker-supplied error codes/messages are visible.
 const SENSITIVE_DEEP_LINK_PARAMS = new Set([
@@ -850,6 +876,26 @@ async function handleDeepLink(url: string): Promise<void> {
             }
 
             await openSharedDocumentFromDeepLink(documentId, orgId);
+        } else if (parsed.host === 'folder' || parsed.pathname?.startsWith('/folder/')) {
+            // Handle shared folder link: nimbalyst://folder/{folderId}?orgId={orgId}
+            const encoded = parsed.host === 'folder'
+                ? parsed.pathname?.replace(/^\//, '')
+                : parsed.pathname?.replace('/folder/', '');
+            let folderId: string | undefined;
+            try {
+                folderId = encoded ? decodeURIComponent(encoded) : undefined;
+            } catch {
+                logger.main.warn('[DeepLink] Shared folder link has malformed folderId:', summarizeDeepLink(url));
+                return;
+            }
+            const orgId = parsed.searchParams.get('orgId');
+
+            if (!folderId || !orgId) {
+                logger.main.warn('[DeepLink] Shared folder link missing folderId or orgId:', summarizeDeepLink(url));
+                return;
+            }
+
+            await openSharedFolderFromDeepLink(folderId, orgId);
         } else if (parsed.host === 'tracker' || parsed.pathname?.startsWith('/tracker/')) {
             // Handle tracker link: nimbalyst://tracker/{trackerId}?orgId={orgId}
             const encoded = parsed.host === 'tracker'
@@ -1030,6 +1076,45 @@ async function openSharedDocumentFromDeepLink(documentId: string, orgId: string)
     // No window has this workspace open — create one. The renderer's
     // deep-link listener will drain the pending queue once it mounts.
     logger.main.info('[DeepLink] Opening new window for shared doc workspace:', { workspacePath, documentId });
+    createWindow(false, true, workspacePath);
+}
+
+/**
+ * Route a shared-folder deep link to the renderer holding the matching team
+ * workspace. Mirrors the shared-document flow, but targets Collab mode focused
+ * on the folder (expand ancestors + select).
+ */
+async function openSharedFolderFromDeepLink(folderId: string, orgId: string): Promise<void> {
+    const reason = !isAuthenticated() ? 'not-authenticated' : 'no-workspace';
+    const workspacePath = isAuthenticated() ? await findWorkspaceForOrgId(orgId) : null;
+
+    if (!workspacePath) {
+        logger.main.warn('[DeepLink] Cannot route shared folder:', { reason, orgId, folderId });
+        const fallback = getMostRecentlyFocusedWorkspaceWindow();
+        if (fallback) {
+            if (fallback.isMinimized()) fallback.restore();
+            fallback.focus();
+            fallback.webContents.send('deep-link:shared-folder-not-available', { folderId, orgId, reason });
+        }
+        return;
+    }
+
+    pendingSharedFolderLinks.set(workspacePath, { folderId, orgId });
+
+    const existing = findWindowByWorkspace(workspacePath);
+    if (existing && !existing.isDestroyed()) {
+        if (existing.isMinimized()) existing.restore();
+        existing.focus();
+        existing.webContents.send('deep-link:open-shared-folder', {
+            folderId,
+            orgId,
+            workspacePath,
+        });
+        logger.main.info('[DeepLink] Routed shared folder to existing window:', { workspacePath, folderId });
+        return;
+    }
+
+    logger.main.info('[DeepLink] Opening new window for shared folder workspace:', { workspacePath, folderId });
     createWindow(false, true, workspacePath);
 }
 
@@ -1280,6 +1365,8 @@ app.whenReady().then(async () => {
     installCollabAssetProtocolHandler({
         getOrgKey,
         getOrgScopedJwt,
+        getAccountId: getPersonalUserId,
+        assetStore: getCollabAssetStore(),
         getCollabHttpUrl: () => {
             const config = getSessionSyncConfig();
             const isDev = process.env.NODE_ENV !== 'production';
@@ -1478,6 +1565,7 @@ app.whenReady().then(async () => {
     await registerSessionStateHandlers();
     await registerThemeHandlers();
     setupWorkspaceManagerHandlers();
+    setupTeamManagementHandlers();
     setupSessionFileHandlers();
     registerSlashCommandHandlers();
     registerActionPromptHandlers();
@@ -1502,6 +1590,8 @@ app.whenReady().then(async () => {
     registerGitHandlers();
     registerWorktreeHandlers();
     registerPullRequestHandlers();
+    registerReadReceiptHandlers();
+    registerTrackerPersonalStateHandlers();
     registerWakeupHandlers();
     registerBlitzHandlers();
     registerProjectMigrationHandlers();
@@ -1530,6 +1620,7 @@ app.whenReady().then(async () => {
     // serve Quick Open semantic search.
     SemanticCatalogService.getInstance().start();
     initTrackerSchemaService(); // Register IPC handlers + load built-in schemas
+    initTrackerNavigationService();
 
     // Initialize commit-tracker linking (listens to GitRefWatcher for all commits)
     commitTrackerLinker.initialize({ getDatabase: () => database });
@@ -1539,6 +1630,9 @@ app.whenReady().then(async () => {
     registerOrgKeyHandlers();
     registerBuiltinCollabContentAdapters();
     registerDocumentSyncHandlers();
+    getCollabOutboxDrainCoordinator().start();
+    getCollabAssetOutboxDrainCoordinator().start();
+    registerCollabBackupHandlers();
     registerCollabV3TestHandlers();
     markEnd('ipc-handlers');
 
@@ -1836,7 +1930,13 @@ app.whenReady().then(async () => {
     // common dir from a worktree, and (for Codex) escape its workspace-write
     // sandbox when an orchestrator session needs to edit sibling worktrees.
     // Issue #37 problem 1.
-    ClaudeCodeProvider.setAdditionalDirectoriesLoader(getAdditionalDirectoriesForWorkspace);
+    // Claude opts out of sibling worktrees: the Claude CLI loads .claude/commands
+    // skills from every additional directory, so N worktrees = N duplicate
+    // copies of every project skill in the system prompt (~7K tokens wasted per
+    // session). Claude has no Codex-style sandbox; cross-worktree file access
+    // still works through the normal permission flow.
+    ClaudeCodeProvider.setAdditionalDirectoriesLoader((workspacePath: string) =>
+      getAdditionalDirectoriesForWorkspace(workspacePath, { includeSiblingWorktrees: false }));
     OpenAICodexProvider.setAdditionalDirectoriesLoader(getAdditionalDirectoriesForWorkspace);
 
     // Wire the Codex PreToolUse hook (LEGACY -- only consulted by the SDK
@@ -2637,6 +2737,8 @@ app.on('activate', () => {
 
 // Before quit handler
 app.on('before-quit', async (event) => {
+    getCollabOutboxDrainCoordinator().stop();
+    getCollabAssetOutboxDrainCoordinator().stop();
     console.log('[QUIT] before-quit event triggered');
 
     // If auto-updater is updating, don't prevent quit
@@ -2670,6 +2772,7 @@ app.on('before-quit', async (event) => {
         // Save session state so the session is restored after restart
         try {
             await saveSessionState();
+            await flushPendingCollabBackups();
             console.log('[QUIT] Session state saved for restart');
         } catch (error) {
             console.error('[QUIT] Error saving session state for restart:', error);
@@ -2723,6 +2826,10 @@ app.on('before-quit', async (event) => {
 
     // Mark app as quitting to prevent interval operations
     isAppQuitting = true;
+
+    // Live collaboration backups are debounced. Flush the latest decrypted
+    // snapshots before renderer teardown so a quick quit cannot drop them.
+    await flushPendingCollabBackups();
 
     // Setup force quit timer - allow enough time for database backup + close
     // Database operations: backup (up to 5s) + close worker (up to 5s) + buffer (5s/3s)

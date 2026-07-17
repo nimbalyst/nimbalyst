@@ -1,7 +1,7 @@
 {
   "id": "com.nimbalyst.image-generation",
   "name": "Image Generation",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI-powered image generation with support for sketches, diagrams, and illustrations",
   "author": "Nimbalyst",
   "main": "dist/index.js",
@@ -9,6 +9,7 @@
   "apiVersion": "1.0.0",
   "requiredReleaseChannel": "alpha",
   "marketplace": {
+    "changelog": "1.0.1: Light-theme readability and external file edit fixes.",
     "categories": ["ai-tools"],
     "tags": ["image", "generation", "ai", "sketch", "illustration", "diagram"],
     "icon": "image",

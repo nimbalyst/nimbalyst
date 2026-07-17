@@ -31,6 +31,13 @@ describe('translateSql - positional params', () => {
   });
 });
 
+describe('translateSql - binary length', () => {
+  it('translates PostgreSQL OCTET_LENGTH to SQLite BLOB LENGTH', () => {
+    const r = translateSql('SELECT SUM(OCTET_LENGTH(encrypted_update)) FROM updates');
+    expect(r.sql).toBe('SELECT SUM(LENGTH(encrypted_update)) FROM updates');
+  });
+});
+
 describe('translateSql - NOW()', () => {
   it('translates bare NOW() to strftime ISO-8601 UTC', () => {
     const r = translateSql('SELECT NOW() AS ts');

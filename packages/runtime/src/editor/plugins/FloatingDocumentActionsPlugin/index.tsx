@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { $createTextNode, $getRoot } from 'lexical';

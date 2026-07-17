@@ -39,6 +39,7 @@ import {
   CLAUDE_CODE_MODEL_LABELS,
   CLAUDE_CODE_VARIANTS_WITH_1M,
   DEFAULT_MODELS,
+  baseContextWindowForVariant,
 } from '../../modelConstants';
 import type { ProviderSessionData } from './ProviderSessionManager';
 
@@ -87,7 +88,8 @@ export class ClaudeCodeCliProvider extends BaseAgentProvider {
         name: `Claude Code CLI · ${CLAUDE_CODE_MODEL_LABELS[variant]} ${CLAUDE_CODE_VARIANT_VERSIONS[variant]}`,
         provider: 'claude-code-cli' as const,
         maxTokens: 8192,
-        contextWindow: 200000,
+        // Current-gen variants run 1M natively (see baseContextWindowForVariant / #825).
+        contextWindow: baseContextWindowForVariant(variant),
       });
 
       if ((CLAUDE_CODE_VARIANTS_WITH_1M as readonly string[]).includes(variant)) {

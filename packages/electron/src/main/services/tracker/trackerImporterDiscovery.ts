@@ -3,9 +3,9 @@
  *
  * Walks the same extension directories as the rest of the extension system,
  * parses each manifest, and returns the importers it declares along with the
- * backend module that implements them. Backend modules are validated and
- * allowlist-checked exactly like {@link ExtensionHandlers.validateAndScrubBackendModules}
- * so an importer can never smuggle in unvetted native code.
+ * backend module that implements them. Backend modules are shape-validated
+ * exactly like `ExtensionHandlers.validateAndScrubBackendModules`; whether the
+ * native code may run is the user's first-use consent prompt, not a gate here.
  *
  * Results are cached briefly; call {@link clearImporterDiscoveryCache} after an
  * install/uninstall to force a re-scan.
@@ -19,12 +19,8 @@ import type {
   BackendModuleContribution,
   TrackerImporterContribution,
 } from '@nimbalyst/extension-sdk';
-import {
-  getAllExtensionDirectories,
-  getUserExtensionsDirectory,
-} from '../../ipc/ExtensionHandlers';
+import { getAllExtensionDirectories } from '../../ipc/ExtensionHandlers';
 import { getExtensionEnabled, getReleaseChannel } from '../../utils/store';
-import { isAllowedToContributeBackendModules } from '../../extensions/backendModuleAllowlist';
 
 export interface ResolvedImporter {
   extensionId: string;
@@ -54,12 +50,10 @@ export async function discoverImporters(): Promise<ResolvedImporter[]> {
 
   const importers: ResolvedImporter[] = [];
   const seenExtensionIds = new Set<string>();
-  const userDir = await getUserExtensionsDirectory();
   const extensionDirs = await getAllExtensionDirectories();
   const channel = getReleaseChannel();
 
   for (const extensionsDir of extensionDirs) {
-    const isBuiltinDir = extensionsDir !== userDir;
     let subdirs;
     try {
       subdirs = await fs.readdir(extensionsDir, { withFileTypes: true });
@@ -116,22 +110,12 @@ export async function discoverImporters(): Promise<ResolvedImporter[]> {
         continue;
       }
 
-      // Reject malformed backend modules and unvetted native-code shippers.
+      // Reject malformed backend modules (shape only). Native-code consent is
+      // the user's first-use prompt, not a provenance gate.
       const moduleIssues = validateBackendModules(backendModules);
       if (moduleIssues.some((i) => i.severity !== 'warning')) {
         logger.main.error(
           `[TrackerImporterDiscovery] ${extensionId} has invalid backendModules; skipping importers`
-        );
-        continue;
-      }
-      const allow = isAllowedToContributeBackendModules({
-        extensionId,
-        isBuiltin: isBuiltinDir,
-        isSymlink,
-      });
-      if (!allow.allowed) {
-        logger.main.warn(
-          `[TrackerImporterDiscovery] ${extensionId} not allowlisted for backend modules (${allow.reason}); skipping importers`
         );
         continue;
       }

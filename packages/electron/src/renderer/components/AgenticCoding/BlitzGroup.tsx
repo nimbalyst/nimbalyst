@@ -127,7 +127,7 @@ const BlitzSessionRow: React.FC<{
   isActive: boolean;
   isRenaming: boolean;
   isAnalysis?: boolean;
-  renameInputRef: React.RefObject<HTMLInputElement>;
+  renameInputRef: React.RefObject<HTMLInputElement | null>;
   renameValue: string;
   onRenameChange: (value: string) => void;
   onRenameKeyDown: (e: React.KeyboardEvent) => void;

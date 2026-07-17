@@ -295,6 +295,25 @@ describe('PGLiteToSQLiteMigrator', () => {
         updated_at TIMESTAMPTZ NOT NULL,
         PRIMARY KEY (org_id, document_id)
       );
+
+      CREATE TABLE collab_document_assets (
+        account_id TEXT NOT NULL,
+        org_id TEXT NOT NULL,
+        document_id TEXT NOT NULL,
+        asset_id TEXT NOT NULL,
+        encrypted_asset BYTEA NOT NULL,
+        encoding_version INTEGER NOT NULL DEFAULT 1,
+        asset_checksum TEXT NOT NULL,
+        plaintext_size BIGINT NOT NULL,
+        upload_state TEXT NOT NULL DEFAULT 'queued',
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_error_code TEXT,
+        next_attempt_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (account_id, org_id, document_id, asset_id)
+      );
     `);
   }
 
@@ -426,6 +445,19 @@ describe('PGLiteToSQLiteMigrator', () => {
        VALUES ($1,$2,$3,$4,$5,NOW(),NOW())`,
       ['org-A', 'doc-1', 'docs/intro.md', 'markdown', 'intro.md'],
     );
+
+    await pglite.query(
+      `INSERT INTO collab_document_assets(
+         account_id, org_id, document_id, asset_id, encrypted_asset,
+         asset_checksum, plaintext_size, upload_state, attempt_count,
+         last_error_code, next_attempt_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [
+        'account-A', 'org-A', 'doc-1', 'asset-1', Buffer.from([1, 2, 3]),
+        'checksum', 3, 'queued', 2, 'http_500',
+        new Date('2026-07-15T05:00:00.000Z'),
+      ],
+    );
   }
 
   it('round-trips every table type-by-type with zero verification failures', async () => {
@@ -446,6 +478,12 @@ describe('PGLiteToSQLiteMigrator', () => {
     expect(summary.integrityCheck).toBe('ok');
     expect(summary.totalRowsCopied).toBeGreaterThan(0);
     expect(summary.spotCheckCount).toBeGreaterThan(0);
+    const migratedRetry = sqlite.getRawHandle()!
+      .prepare('SELECT next_attempt_at FROM collab_document_assets WHERE asset_id = ?')
+      .get('asset-1') as { next_attempt_at: string };
+    expect(new Date(migratedRetry.next_attempt_at).toISOString()).toBe(
+      '2026-07-15T05:00:00.000Z',
+    );
 
     // Progress events fired through every phase and ended at 100%.
     const phases = new Set(progressEvents.map((p) => p.phase));

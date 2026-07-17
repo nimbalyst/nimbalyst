@@ -36,7 +36,7 @@ import { ProtocolEvent, ProtocolSession } from '../protocols/ProtocolInterface';
 import { ToolPermissionService } from '../permissions/ToolPermissionService';
 import { PermissionMode, TrustChecker, PermissionPatternSaver, PermissionPatternChecker, SecurityLogger } from './ProviderPermissionMixin';
 import { McpConfigService } from '../services/McpConfigService';
-import { getMcpConfigService, isInternalMcpServerEnabled } from '../services/mcpServerConfig';
+import { getMcpConfigService, isInternalMcpServerEnabled, areTrackerToolsEnabled, resolveTrackersWorkspacePath } from '../services/mcpServerConfig';
 import { MCPServerConfig } from '../../../types/MCPServerConfig';
 import { safeJSONSerialize } from '../../../utils/serialization';
 import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
@@ -57,13 +57,12 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
     contextWindow: number;
     maxTokens: number;
   }> = [
+    { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', contextWindow: 372000, maxTokens: 128000 },
+    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', contextWindow: 372000, maxTokens: 128000 },
+    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', contextWindow: 372000, maxTokens: 128000 },
     { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 400000, maxTokens: 128000 },
     { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 128000, maxTokens: 128000 },
-    { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini', contextWindow: 400000, maxTokens: 128000 },
+    { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', contextWindow: 400000, maxTokens: 128000 },
   ];
 
   private readonly protocol: CodexACPProtocol;
@@ -515,6 +514,7 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
       isVoiceMode,
       voiceModeCodingAgentPrompt,
       enableAgentTeams: false,
+      trackersEnabled: areTrackerToolsEnabled(resolveTrackersWorkspacePath(documentContext)),
     });
   }
 
@@ -528,7 +528,7 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
           .replace(/^openai-codex:/, '');
     const normalized = resolved.toLowerCase();
     if (!normalized || normalized === 'default' || normalized === 'cli') {
-      return 'gpt-5.5';
+      return 'gpt-5.6-sol';
     }
     return resolved;
   }

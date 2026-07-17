@@ -388,9 +388,6 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
         );
       }
     });
-
-    // Focus editor on mount
-    editor.focus();
   }, [getContent, setEditorContent, onGetContent, onEditorReady, onDirtyChange, showDiff, exitDiffMode, acceptDiff, rejectDiff, goToNextDiff, goToPreviousDiff, getDiffChangeCount]);
 
   /**

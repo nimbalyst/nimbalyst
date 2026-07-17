@@ -47,6 +47,7 @@ import { isClaudeCliTerminalSession } from './claudeCliInputRouting';
 import { diffTreeGroupByDirectoryAtom, setDiffTreeGroupByDirectoryAtom } from '../../store/atoms/projectState';
 import {
   sessionDraftInputAtom,
+  sessionDraftHydratedAtom,
   sessionDraftAttachmentsAtom,
   sessionStoreAtom,
   sessionLoadedAtom,
@@ -90,7 +91,7 @@ import {
   loadInitialQueuedPrompts,
 } from '../../store';
 import { streamCompletionSignalAtom } from '../../store/atoms/sessionTranscript';
-import { convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitAtAtom, sessionDraftLocalModifiedAtAtom, nextOptimisticId } from '../../store/atoms/sessions';
+import { canPersistSessionDraft, convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitAtAtom, sessionDraftLocalModifiedAtAtom, nextOptimisticId } from '../../store/atoms/sessions';
 import { clearAIInputHistoryAtom } from '../../store/atoms/aiInputUndo';
 import {
   cliTerminalExpandedAtom,
@@ -370,8 +371,9 @@ const SessionAIInput = forwardRef<AIInputRef, SessionAIInputProps>(function Sess
   ref,
 ) {
   const [draftInput, setDraftInputRaw] = useAtom(sessionDraftInputAtom(sessionId));
+  const draftHydrated = useAtomValue(sessionDraftHydratedAtom(sessionId));
   const draftAttachments = useAtomValue(sessionDraftAttachmentsAtom(sessionId));
-  const setDraftLocalModifiedAt = useSetAtom(sessionDraftLocalModifiedAtAtom(sessionId));
+  const [draftLocalModifiedAt, setDraftLocalModifiedAt] = useAtom(sessionDraftLocalModifiedAtAtom(sessionId));
 
   const handleChange = useCallback((value: string) => {
     setDraftInputRaw(value);
@@ -381,12 +383,13 @@ const SessionAIInput = forwardRef<AIInputRef, SessionAIInputProps>(function Sess
   // Debounced persistence of draft input to database — survives restarts.
   useEffect(() => {
     if (!workspacePath) return;
+    if (!canPersistSessionDraft(draftHydrated, draftLocalModifiedAt)) return;
     const timeoutId = setTimeout(() => {
       window.electronAPI.invoke('ai:saveDraftInput', sessionId, draftInput, workspacePath)
         .catch(err => console.error('[SessionAIInput] Failed to persist draft input:', err));
     }, 1000);
     return () => clearTimeout(timeoutId);
-  }, [sessionId, draftInput, workspacePath]);
+  }, [sessionId, draftInput, draftHydrated, draftLocalModifiedAt, workspacePath]);
 
   return (
     <AIInput

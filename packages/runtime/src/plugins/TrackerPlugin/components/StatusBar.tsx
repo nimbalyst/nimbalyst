@@ -14,9 +14,14 @@ export interface StatusBarProps {
   data: Record<string, any>;
   onChange: (updates: Record<string, any>) => void;
   onClose?: () => void;
+  trackerItemLink?: {
+    label: string;
+    title: string;
+    onOpen: () => void;
+  };
 }
 
-export const StatusBar: React.FC<StatusBarProps> = ({ model, data, onChange, onClose }) => {
+export const StatusBar: React.FC<StatusBarProps> = ({ model, data, onChange, onClose, trackerItemLink }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [localData, setLocalData] = useState<Record<string, any>>(data);
 
@@ -75,6 +80,21 @@ export const StatusBar: React.FC<StatusBarProps> = ({ model, data, onChange, onC
         <div className="status-bar-title flex items-center gap-2 font-semibold text-[var(--nim-text)] text-sm">
           <MaterialSymbol icon={model.icon} size={20} />
           <span>{model.displayName}</span>
+          {trackerItemLink && (
+            <button
+              type="button"
+              className="status-bar-tracker-item-link inline-flex items-center gap-1 rounded-full border border-[var(--nim-border)] bg-[var(--nim-bg-tertiary)] px-2 py-0.5 font-mono text-[11px] font-medium text-[var(--nim-text-muted)] transition-colors hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+              title={`Open tracker item: ${trackerItemLink.title}`}
+              aria-label={`Open tracker item ${trackerItemLink.label}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                trackerItemLink.onOpen();
+              }}
+            >
+              <MaterialSymbol icon="tag" size={13} />
+              {trackerItemLink.label}
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-3">
           {localData.created && (() => {

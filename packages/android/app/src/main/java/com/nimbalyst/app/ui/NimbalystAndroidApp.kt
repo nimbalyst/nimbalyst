@@ -1,9 +1,5 @@
 package com.nimbalyst.app.ui
 
-import android.Manifest
-import android.os.Build
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -93,20 +89,6 @@ private fun MainApp() {
     val coroutineScope = rememberCoroutineScope()
     val navController = rememberNavController()
 
-    // Request notification permission once after auth
-    val notificationPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        app.notificationManager.handlePermissionResult(granted)
-    }
-    LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            app.notificationManager.handlePermissionResult(true)
-        }
-    }
-
     // Route to a session when opened via a notification tap (nimbalyst://session/<id>).
     val pendingSessionId by app.pendingSessionNavigation.collectAsState()
     LaunchedEffect(pendingSessionId) {
@@ -175,6 +157,16 @@ private fun MainApp() {
                     }
                     app.pairingStore.clearPairing()
                     AnalyticsManager.capture("mobile_device_unpairing")
+                    AnalyticsManager.reset()
+                },
+                onAccountDeleted = {
+                    // Server-side data is already purged; clear all local state.
+                    app.syncManager.disconnect()
+                    coroutineScope.launch {
+                        app.repository.clearPrototypeData()
+                    }
+                    app.pairingStore.clearPairing()
+                    AnalyticsManager.capture("mobile_account_deleted")
                     AnalyticsManager.reset()
                 }
             )

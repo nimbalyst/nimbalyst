@@ -1046,6 +1046,15 @@ export async function createApplicationMenu() {
                         if (focused) focused.webContents.send('open-navigation-dialog', 'global-search');
                     }
                 },
+                {
+                    label: 'Team Quick Open',
+                    accelerator: KeyboardShortcuts.window.teamQuickOpen,
+                    registerAccelerator: false, // Handled by renderer keyboard handler
+                    click: () => {
+                        const focused = getFocusedWindow();
+                        if (focused) focused.webContents.send('open-navigation-dialog', 'team-quick-open');
+                    }
+                },
                 { type: 'separator' },
                 {
                     label: 'AI Usage Report',

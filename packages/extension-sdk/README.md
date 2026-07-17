@@ -93,6 +93,38 @@ const previewHost = createReadOnlyHost(code, {
 
 Type imports for props: `MonacoEditorProps`, `MonacoEditorConfig`, `MarkdownEditorProps`, `MarkdownEditorConfig` from `@nimbalyst/extension-sdk`.
 
+## Tracker References
+
+Custom editors and panels can link their own data to tracker items without
+querying Nimbalyst's internal tracker store. Persist only the reference keys
+returned by the picker; chips resolve live metadata and open the item through
+the host's contextual navigation.
+
+```tsx
+import {
+  TrackerReferenceChip,
+  TrackerReferencePicker,
+} from '@nimbalyst/extension-sdk';
+
+<TrackerReferencePicker
+  value={trackerRefs}
+  onChange={setTrackerRefs}
+  disabled={host.readOnly}
+/>
+
+{trackerRefs.map(referenceKey => (
+  <TrackerReferenceChip
+    key={referenceKey}
+    referenceKey={referenceKey}
+    variant="compact"
+  />
+))}
+```
+
+The picker supports single or multiple selection, search, unresolved keys, and
+read-only mutation state. `TrackerReferenceChip` supports `default` and
+`compact` variants; both retain live preview and navigation behavior.
+
 ## AI Tool Example
 
 ```ts

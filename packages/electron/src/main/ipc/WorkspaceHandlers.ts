@@ -6,7 +6,6 @@ import * as path from 'path';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
-import * as chardet from 'chardet';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { openWorkspaceFile, openFile } from '../file/FileOpener';
 import { fuzzyMatchPath } from '@nimbalyst/runtime';
@@ -19,6 +18,7 @@ const execFileAsync = promisify(execFile);
 import { windowStates, getWindowId, createWindow, markRecentlyDeleted, clearRecentlyDeleted } from '../window/WindowManager';
 import { startFileWatcher, stopFileWatcher } from '../file/FileWatcher';
 import { getFolderContents } from '../utils/FileTree';
+import { decodeTextFileBuffer } from '../utils/textEncoding';
 import { RIPGREP_EXCLUDE_ARGS_ARRAY, QUICKOPEN_FILE_TYPE_ARGS } from '../utils/fileFilters';
 import {
     getWorkspaceRecentFiles,
@@ -327,31 +327,20 @@ export function registerWorkspaceHandlers() {
                 return { success: true, content, isBinary: true };
             } else {
                 // Read text files - auto-detect encoding or use specified encoding
-                let encoding: BufferEncoding = 'utf-8';
-
                 if (options?.encoding === 'auto' || !options?.encoding) {
-                    // Auto-detect encoding for text files
+                    // Prefer UTF-8 whenever the bytes are valid UTF-8 (matching the
+                    // save path, which always writes UTF-8). Only genuinely non-UTF-8
+                    // files fall back to chardet detection. This avoids chardet
+                    // misclassifying mostly-ASCII UTF-8 markdown (em dashes, curly
+                    // quotes) as windows-1252 -> latin1 -> `â` mojibake + reload loop
+                    // (GitHub #794, NIM-1575).
                     const buffer = readFileSync(filePath);
-                    const detected = chardet.detect(buffer);
-
-                    if (detected) {
-                        // Map detected encoding to Node.js encoding name
-                        const encodingMap: Record<string, BufferEncoding> = {
-                            'UTF-8': 'utf8',
-                            'UTF-16LE': 'utf16le',
-                            'UTF-16BE': 'utf16le', // Node doesn't have utf16be, use utf16le
-                            'ISO-8859-1': 'latin1',
-                            'windows-1252': 'latin1',
-                            'Shift_JIS': 'utf8', // Fallback to utf8 for unsupported
-                            'GB18030': 'utf8', // Fallback to utf8 for unsupported
-                        };
-
-                        encoding = encodingMap[detected] || 'utf8';
-                    }
-                } else if (options.encoding !== 'binary') {
-                    encoding = options.encoding as BufferEncoding;
+                    const { content, encoding } = decodeTextFileBuffer(buffer);
+                    return { success: true, content, isBinary: false, detectedEncoding: encoding };
                 }
 
+                const encoding: BufferEncoding =
+                    options.encoding !== 'binary' ? (options.encoding as BufferEncoding) : 'utf-8';
                 const content = readFileSync(filePath, encoding);
                 return { success: true, content, isBinary: false, detectedEncoding: encoding };
             }

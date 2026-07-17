@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import React, { useEffect } from 'react';
 
 // Inject JSON viewer styles once (for theme-specific syntax highlighting)

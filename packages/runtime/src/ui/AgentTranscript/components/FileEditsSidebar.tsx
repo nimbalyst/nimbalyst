@@ -2,6 +2,12 @@ import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import type { FileEditSummary } from '../types';
 import { MaterialSymbol } from '../../icons/MaterialSymbol';
 import { useDiffPeek } from '../../git/useDiffPeek';
+import {
+  buildFileDirectoryTree,
+  getFileDirectoryPaths,
+  getWorkspaceRelativeFilePath,
+  type FileDirectoryNode,
+} from '@nimbalyst/extension-sdk/file-tree';
 
 interface FileEditsSidebarProps {
   fileEdits: FileEditSummary[];
@@ -76,13 +82,16 @@ interface FileGitStatus {
   gitStatusCode?: string;
 }
 
-interface DirectoryNode {
-  path: string;
-  displayPath: string;
-  files: Array<{ filePath: string; edits: FileEditSummary[]; totalAdded: number; totalRemoved: number; operation?: string; timestamp: string }>;
-  subdirectories: Map<string, DirectoryNode>;
-  fileCount: number;
-}
+type EditedFile = {
+  filePath: string;
+  edits: FileEditSummary[];
+  totalAdded: number;
+  totalRemoved: number;
+  operation?: string;
+  timestamp: string;
+};
+
+type DirectoryNode = FileDirectoryNode<EditedFile>;
 
 export const FileEditsSidebar: React.FC<FileEditsSidebarProps> = ({
   fileEdits,
@@ -134,119 +143,13 @@ export const FileEditsSidebar: React.FC<FileEditsSidebarProps> = ({
 
   // Convert absolute path to relative path from workspace root
   const getRelativePath = useCallback((filePath: string): string => {
-    if (!workspacePath || !filePath.startsWith(workspacePath)) {
-      return filePath;
-    }
-    const relativePath = filePath.slice(workspacePath.length);
-    // Remove leading slash if present
-    return relativePath.startsWith('/') ? relativePath.slice(1) : relativePath;
+    return getWorkspaceRelativeFilePath(filePath, workspacePath);
   }, [workspacePath]);
 
   // Build directory tree from file list
-  const buildDirectoryTree = (files: Array<{ filePath: string; edits: FileEditSummary[]; totalAdded: number; totalRemoved: number; operation?: string; timestamp: string }>): DirectoryNode => {
-    const root: DirectoryNode = {
-      path: '',
-      displayPath: '',
-      files: [],
-      subdirectories: new Map(),
-      fileCount: 0
-    };
-
-    files.forEach(file => {
-      const relativePath = getRelativePath(file.filePath);
-      const parts = relativePath.split('/');
-
-      // If file is at root level (no directory)
-      if (parts.length === 1) {
-        root.files.push(file);
-        root.fileCount++;
-        return;
-      }
-
-      // Build directory tree
-      let currentNode = root;
-      const dirParts = parts.slice(0, -1);
-
-      dirParts.forEach((part, index) => {
-        const pathSoFar = dirParts.slice(0, index + 1).join('/');
-
-        if (!currentNode.subdirectories.has(part)) {
-          currentNode.subdirectories.set(part, {
-            path: pathSoFar,
-            displayPath: part,
-            files: [],
-            subdirectories: new Map(),
-            fileCount: 0
-          });
-        }
-
-        currentNode = currentNode.subdirectories.get(part)!;
-      });
-
-      currentNode.files.push(file);
-
-      // Update file counts up the tree
-      let node: DirectoryNode | undefined = currentNode;
-      while (node) {
-        node.fileCount++;
-        // Walk back up to parent
-        const parentPath = node.path.split('/').slice(0, -1).join('/');
-        if (!parentPath && node.path) {
-          // Reached root's child
-          node = root;
-        } else if (!node.path) {
-          // At root
-          node = undefined;
-        } else {
-          // Find parent
-          node = findNodeByPath(root, parentPath);
-        }
-      }
-    });
-
-    return collapseDirectoryTree(root);
-  };
-
-  // Helper to find a node by path
-  const findNodeByPath = (root: DirectoryNode, path: string): DirectoryNode | undefined => {
-    if (!path) return root;
-
-    const parts = path.split('/');
-    let current = root;
-
-    for (const part of parts) {
-      const next = current.subdirectories.get(part);
-      if (!next) return undefined;
-      current = next;
-    }
-
-    return current;
-  };
-
-  // Collapse single-child directory paths
-  const collapseDirectoryTree = (node: DirectoryNode): DirectoryNode => {
-    // First, recursively collapse all subdirectories
-    node.subdirectories.forEach((subdir, key) => {
-      node.subdirectories.set(key, collapseDirectoryTree(subdir));
-    });
-
-    // If this node has exactly one subdirectory and no files, collapse it
-    if (node.subdirectories.size === 1 && node.files.length === 0) {
-      const [, childNode] = Array.from(node.subdirectories.entries())[0];
-
-      // Merge the paths
-      const newDisplayPath = node.displayPath
-        ? `${node.displayPath}/${childNode.displayPath}`
-        : childNode.displayPath;
-
-      return {
-        ...childNode,
-        displayPath: newDisplayPath
-      };
-    }
-
-    return node;
-  };
+  const buildDirectoryTree = useCallback((files: EditedFile[]): DirectoryNode => (
+    buildFileDirectoryTree(files, file => file.filePath, workspacePath)
+  ), [workspacePath]);
 
   // Group edited files by file path
   const editedFiles = useMemo(() => {
@@ -337,23 +240,13 @@ export const FileEditsSidebar: React.FC<FileEditsSidebarProps> = ({
     });
   };
 
-  const getAllFolderPaths = (node: DirectoryNode, paths: string[] = []): string[] => {
-    if (node.path) {
-      paths.push(node.path);
-    }
-    node.subdirectories.forEach(subdir => {
-      getAllFolderPaths(subdir, paths);
-    });
-    return paths;
-  };
-
   const expandAll = useCallback(() => {
     if (editedFiles.length > 0) {
       const tree = buildDirectoryTree(editedFiles);
-      const allPaths = getAllFolderPaths(tree);
+      const allPaths = getFileDirectoryPaths(tree);
       setExpandedFolders(new Set(allPaths));
     }
-  }, [editedFiles]);
+  }, [buildDirectoryTree, editedFiles]);
 
   const collapseAll = useCallback(() => {
     setExpandedFolders(new Set());
@@ -369,7 +262,7 @@ export const FileEditsSidebar: React.FC<FileEditsSidebarProps> = ({
     }
 
     const tree = buildDirectoryTree(editedFiles);
-    const allPaths = getAllFolderPaths(tree);
+    const allPaths = getFileDirectoryPaths(tree);
 
     if (!prevGroupByDirectoryRef.current && groupByDirectory) {
       // groupByDirectory was just turned on - expand everything
@@ -391,7 +284,7 @@ export const FileEditsSidebar: React.FC<FileEditsSidebarProps> = ({
     }
 
     prevGroupByDirectoryRef.current = groupByDirectory;
-  }, [groupByDirectory, editedFiles]);
+  }, [buildDirectoryTree, groupByDirectory, editedFiles]);
 
   // Listen for external expand/collapse events (when hideControls is true)
   useEffect(() => {

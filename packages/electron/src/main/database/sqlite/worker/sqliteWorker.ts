@@ -43,6 +43,7 @@ import {
   type QueryPayload,
   type QueryReadOnlyPayload,
   type ExecPayload,
+  type TransactionPayload,
   type GetSlowQueriesPayload,
   type GetPerformancePayload,
   type VerifyBackupPayload,
@@ -354,6 +355,12 @@ async function handle(req: RequestEnvelope): Promise<unknown> {
     case 'exec': {
       const { sql } = req.payload as ExecPayload;
       await ensureInitialized().exec(sql);
+      return { ok: true };
+    }
+
+    case 'transaction': {
+      const { statements } = req.payload as TransactionPayload;
+      await ensureInitialized().runTransaction(statements);
       return { ok: true };
     }
 

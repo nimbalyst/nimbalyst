@@ -11,8 +11,10 @@ import { BranchPicker } from './BranchPicker';
 import { ChangesTab } from './ChangesTab';
 import { OutputTab } from './OutputTab';
 import { GitStatusBar } from './GitStatusBar';
+import { PanelHideButton } from './PanelHideButton';
 import { useOperationLog, getSuggestionForError } from '../hooks/useOperationLog';
 import { usePanelState, readSelectedHash } from '../hooks/usePanelState';
+import { filterCommits } from '../commitFilters';
 
 interface GitCommit {
   hash: string;
@@ -49,8 +51,6 @@ interface FetchResult {
   error?: string;
 }
 
-type DateFilter = 'all' | 'day' | 'week' | 'month';
-
 // Access the generic Electron IPC invoke
 const ipc = (window as unknown as {
   electronAPI: {
@@ -75,28 +75,13 @@ function formatRelativeDate(dateStr: string): string {
   return date.toLocaleDateString();
 }
 
-function getDateSince(filter: DateFilter): string | undefined {
-  if (filter === 'all') return undefined;
-  const now = new Date();
-  if (filter === 'day') {
-    now.setDate(now.getDate() - 1);
-  } else if (filter === 'week') {
-    now.setDate(now.getDate() - 7);
-  } else if (filter === 'month') {
-    now.setMonth(now.getMonth() - 1);
-  }
-  return now.toISOString();
-}
-
 export function GitLogPanel({ host }: PanelHostProps) {
   const workspacePath = host.workspacePath;
 
-  const [commits, setCommits] = useState<GitCommit[]>([]);
+  const [unfilteredCommits, setUnfilteredCommits] = useState<GitCommit[]>([]);
   const [status, setStatus] = useState<GitStatusResult | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
   const [selectedBranch, setSelectedBranch] = useState<string>('');
-  const [authorFilter, setAuthorFilter] = useState<string>('');
-  const [dateFilter, setDateFilter] = useState<DateFilter>('all');
   const [searchFilter, setSearchFilter] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -139,6 +124,10 @@ export function GitLogPanel({ host }: PanelHostProps) {
 
   // Tab + selection state (persisted across panel close/open per workspace)
   const { activeTab, selectedHash, setActiveTab, setSelectedHash } = usePanelState(workspacePath);
+  const commits = useMemo(
+    () => filterCommits(unfilteredCommits, searchFilter),
+    [unfilteredCommits, searchFilter],
+  );
   const selectedIndex = useMemo(() => {
     if (!selectedHash) return null;
     const idx = commits.findIndex(c => c.hash === selectedHash);
@@ -161,7 +150,47 @@ export function GitLogPanel({ host }: PanelHostProps) {
     },
     [workspacePath, commits, setSelectedHash],
   );
-  const { entries: logEntries, clearLog, withLog } = useOperationLog();
+  const subscribeToGitEvents = useCallback(
+    (event: string, callback: (data: unknown) => void) => host.onWorkspaceEvent(event, callback),
+    [host],
+  );
+  const { entries: logEntries, clearLog, withLog } = useOperationLog(
+    workspacePath,
+    subscribeToGitEvents,
+  );
+  const runningEntry = useMemo(
+    () => [...logEntries].reverse().find(entry => entry.status === 'running'),
+    [logEntries],
+  );
+  const observedRunningIdsRef = useRef(new Set<string>());
+  const [terminalPillEntry, setTerminalPillEntry] = useState<typeof runningEntry>();
+  const [operationClock, setOperationClock] = useState(Date.now());
+
+  useEffect(() => {
+    if (!runningEntry) return;
+    observedRunningIdsRef.current.add(runningEntry.id);
+    setOperationClock(Date.now());
+    const timer = window.setInterval(() => setOperationClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [runningEntry?.id]);
+
+  useEffect(() => {
+    const latest = logEntries[logEntries.length - 1];
+    if (!latest || latest.status === 'running' || !observedRunningIdsRef.current.has(latest.id)) return;
+    observedRunningIdsRef.current.delete(latest.id);
+    setTerminalPillEntry(latest);
+    if (latest.status !== 'success') return;
+    const timer = window.setTimeout(() => setTerminalPillEntry(undefined), 4000);
+    return () => window.clearTimeout(timer);
+  }, [logEntries]);
+
+  const statusPillEntry = runningEntry ?? terminalPillEntry;
+
+  const runningLatestLine = useMemo(() => {
+    if (!runningEntry?.output) return undefined;
+    const lines = runningEntry.output.split('\n').map(line => line.trim()).filter(Boolean);
+    return lines[lines.length - 1];
+  }, [runningEntry?.output]);
 
   // Changes tab: file mask filter (active value per-workspace, history shared globally)
   const [fileMaskEnabled, setFileMaskEnabled] = useState<boolean>(
@@ -268,30 +297,18 @@ export function GitLogPanel({ host }: PanelHostProps) {
   const loadCommits = useCallback(async () => {
     setLoading(true);
     try {
-      const since = getDateSince(dateFilter);
       const result = await ipc.invoke('git:log', workspacePath, 100, {
         branch: selectedBranch || undefined,
-        author: authorFilter || undefined,
-        since,
         aheadBehind: true,
       }) as GitCommit[];
 
-      // Client-side text search filter
-      const filtered = searchFilter
-        ? result.filter(c =>
-            c.message.toLowerCase().includes(searchFilter.toLowerCase()) ||
-            c.author.toLowerCase().includes(searchFilter.toLowerCase()) ||
-            c.hash.startsWith(searchFilter)
-          )
-        : result;
-
-      setCommits(filtered);
+      setUnfilteredCommits(result);
     } catch (err) {
       console.error('[GitLogPanel] Failed to load commits:', err);
     } finally {
       setLoading(false);
     }
-  }, [workspacePath, selectedBranch, authorFilter, dateFilter, searchFilter]);
+  }, [workspacePath, selectedBranch]);
 
   // Initial load
   useEffect(() => {
@@ -576,7 +593,9 @@ export function GitLogPanel({ host }: PanelHostProps) {
               className={`git-tab-btn${activeTab === 'output' ? ' git-tab-btn--active' : ''}`}
               onClick={() => setActiveTab('output')}
             >
-              Output{logEntries.some(e => e.status === 'error') ? <span className="git-tab-dot git-tab-dot--error" /> : null}
+              Output
+              {runningEntry ? <span className="git-tab-running" /> : null}
+              {logEntries.some(e => e.status === 'error') ? <span className="git-tab-dot git-tab-dot--error" /> : null}
             </button>
           </div>
 
@@ -600,7 +619,43 @@ export function GitLogPanel({ host }: PanelHostProps) {
           )}
         </div>
 
+        {/* Changes-specific filters (only shown on changes tab) */}
+        {activeTab === 'changes' && (
+          <FileMaskFilter
+            enabled={fileMaskEnabled}
+            value={fileMaskInput}
+            history={fileMaskHistory}
+            onEnabledChange={updateFileMaskEnabled}
+            onValueChange={updateFileMaskInput}
+            onCommitToHistory={commitFileMaskToHistory}
+            onRemoveHistoryEntry={removeFileMaskHistoryEntry}
+          />
+        )}
+
         <div className="git-log-toolbar-actions">
+          {statusPillEntry && (
+            <button
+              type="button"
+              className={`git-operation-status-pill git-operation-status-pill--${statusPillEntry.status}`}
+              onClick={() => {
+                setTerminalPillEntry(undefined);
+                setActiveTab('output');
+              }}
+              title={statusPillEntry.command}
+            >
+              {statusPillEntry.status === 'running' && <span className="git-output-spinner" />}
+              <span className="git-operation-status-label">
+                {statusPillEntry.status === 'running'
+                  ? `Running ${Math.max(0, Math.floor((operationClock - statusPillEntry.timestamp.getTime()) / 1000))}s`
+                  : statusPillEntry.status === 'success'
+                    ? `Completed${statusPillEntry.durationMs != null ? ` in ${(statusPillEntry.durationMs / 1000).toFixed(1)}s` : ''}`
+                    : `Failed${statusPillEntry.exitCode != null ? ` (exit ${statusPillEntry.exitCode})` : ''}`}
+              </span>
+              {statusPillEntry.status === 'running' && runningLatestLine && (
+                <span className="git-operation-status-line">{runningLatestLine}</span>
+              )}
+            </button>
+          )}
           {/* Action buttons */}
           <button
             className="git-log-action-btn"
@@ -608,7 +663,7 @@ export function GitLogPanel({ host }: PanelHostProps) {
             disabled={!!actionLoading || isDetachedHead}
             title={isDetachedHead ? detachedHeadMessage : 'Push'}
           >
-            {actionLoading === 'push' ? '...' : '\u2191 Push'}
+            {'\u2191 Push'}
           </button>
           <div className="git-log-split-btn">
             <button
@@ -617,15 +672,18 @@ export function GitLogPanel({ host }: PanelHostProps) {
               disabled={!!actionLoading || isDetachedHead}
               title={isDetachedHead ? detachedHeadMessage : `Pull (${pullStrategy})`}
             >
-              {actionLoading === 'pull' ? '...' : '\u2193 Pull'}
+              {'\u2193 Pull'}
             </button>
             <button
               className="git-log-action-btn git-log-split-btn-arrow"
               onClick={() => setPullMenuOpen(v => !v)}
-              disabled={!!actionLoading || isDetachedHead}
-              title={isDetachedHead ? detachedHeadMessage : 'Pull strategy'}
-            >
-              {'\u25BE'}
+            disabled={!!actionLoading || isDetachedHead}
+            title={isDetachedHead ? detachedHeadMessage : 'Pull strategy'}
+            aria-label="Pull strategy"
+          >
+              <svg className="git-log-split-btn-chevron" aria-hidden="true" viewBox="0 0 12 12" width="12" height="12">
+                <path d="m3 4.5 3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
             </button>
             {pullMenuOpen && (
               <div className="git-log-split-menu">
@@ -656,7 +714,7 @@ export function GitLogPanel({ host }: PanelHostProps) {
             disabled={!!actionLoading}
             title="Fetch"
           >
-            {actionLoading === 'fetch' ? '...' : 'Fetch'}
+            Fetch
           </button>
           <button
             className="git-log-action-btn git-log-action-btn--refresh"
@@ -666,50 +724,8 @@ export function GitLogPanel({ host }: PanelHostProps) {
           >
             {'\u21BA'}
           </button>
+          <PanelHideButton onHide={() => host.close()} />
         </div>
-
-        {/* Log-specific filters (only shown on log tab) */}
-        {activeTab === 'log' && (
-          <div className="git-log-toolbar-filters">
-            <input
-              className="git-log-input"
-              type="text"
-              placeholder="Author..."
-              value={authorFilter}
-              onChange={e => setAuthorFilter(e.target.value)}
-            />
-            <select
-              className="git-log-select git-log-select--sm"
-              value={dateFilter}
-              onChange={e => setDateFilter(e.target.value as DateFilter)}
-            >
-              <option value="all">All time</option>
-              <option value="day">Last day</option>
-              <option value="week">Last week</option>
-              <option value="month">Last month</option>
-            </select>
-            <input
-              className="git-log-input git-log-input--search"
-              type="text"
-              placeholder="Search commits..."
-              value={searchFilter}
-              onChange={e => setSearchFilter(e.target.value)}
-            />
-          </div>
-        )}
-
-        {/* Changes-specific filters (only shown on changes tab) */}
-        {activeTab === 'changes' && (
-          <FileMaskFilter
-            enabled={fileMaskEnabled}
-            value={fileMaskInput}
-            history={fileMaskHistory}
-            onEnabledChange={updateFileMaskEnabled}
-            onValueChange={updateFileMaskInput}
-            onCommitToHistory={commitFileMaskToHistory}
-            onRemoveHistoryEntry={removeFileMaskHistoryEntry}
-          />
-        )}
       </div>
 
       {/* Status message (visible on all tabs) */}
@@ -720,6 +736,40 @@ export function GitLogPanel({ host }: PanelHostProps) {
         onDismissError={dismissError}
         onShowDetails={() => setActiveTab('output')}
       />
+
+      {activeTab === 'log' && (
+        <div className="git-log-search-bar">
+          <svg className="git-log-search-icon" aria-hidden="true" viewBox="0 0 16 16" width="14" height="14">
+            <circle cx="7" cy="7" r="4.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+            <path d="m10.25 10.25 3 3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+          <input
+            className="git-log-search-input"
+            type="search"
+            placeholder="Search commits by message, author, or hash"
+            aria-label="Search commits"
+            value={searchFilter}
+            onChange={event => setSearchFilter(event.target.value)}
+            spellCheck={false}
+          />
+          {searchFilter && (
+            <>
+              <span className="git-log-search-count">
+                {commits.length} result{commits.length === 1 ? '' : 's'}
+              </span>
+              <button
+                type="button"
+                className="git-log-search-clear"
+                onClick={() => setSearchFilter('')}
+                title="Clear search"
+                aria-label="Clear search"
+              >
+                &#10005;
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Context menu (log tab only) */}
       {contextMenu && (
@@ -755,7 +805,9 @@ export function GitLogPanel({ host }: PanelHostProps) {
             {loading ? (
               <div className="git-log-empty">Loading commits...</div>
             ) : commits.length === 0 ? (
-              <div className="git-log-empty">No commits found</div>
+              <div className="git-log-empty">
+                {unfilteredCommits.length > 0 ? 'No commits match the search' : 'No commits found'}
+              </div>
             ) : (
               <table className="git-log-table">
                 <thead>

@@ -83,6 +83,23 @@ interface HelpTooltipProps {
   extraContent?: React.ReactNode;
 }
 
+interface HelpTooltipChildProps {
+  ref?: React.Ref<HTMLElement>;
+  onMouseEnter?: React.MouseEventHandler<HTMLElement>;
+  onMouseLeave?: React.MouseEventHandler<HTMLElement>;
+  onMouseDown?: React.MouseEventHandler<HTMLElement>;
+  onFocus?: React.FocusEventHandler<HTMLElement>;
+  onBlur?: React.FocusEventHandler<HTMLElement>;
+}
+
+function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null): void {
+  if (typeof ref === 'function') {
+    ref(value);
+  } else if (ref) {
+    ref.current = value;
+  }
+}
+
 interface TooltipPosition {
   top: number;
   left: number;
@@ -301,39 +318,34 @@ export function HelpTooltip({
   }
 
   // Clone children to add event handlers and ref
-  const childWithHandlers = React.cloneElement(children, {
+  const child = children as React.ReactElement<HelpTooltipChildProps>;
+  const childWithHandlers = React.cloneElement(child, {
     ref: (el: HTMLElement | null) => {
       targetRef.current = el;
-      // Preserve existing ref if any
-      const originalRef = (children as any).ref;
-      if (typeof originalRef === 'function') {
-        originalRef(el);
-      } else if (originalRef && 'current' in originalRef) {
-        originalRef.current = el;
-      }
+      assignRef(child.props.ref, el);
     },
-    onMouseEnter: (e: React.MouseEvent) => {
+    onMouseEnter: (e: React.MouseEvent<HTMLElement>) => {
       handleMouseEnter();
-      children.props.onMouseEnter?.(e);
+      child.props.onMouseEnter?.(e);
     },
-    onMouseLeave: (e: React.MouseEvent) => {
+    onMouseLeave: (e: React.MouseEvent<HTMLElement>) => {
       handleMouseLeave();
-      children.props.onMouseLeave?.(e);
+      child.props.onMouseLeave?.(e);
     },
-    onMouseDown: (e: React.MouseEvent) => {
+    onMouseDown: (e: React.MouseEvent<HTMLElement>) => {
       // Hide tooltip immediately on click and start cooldown
       lastClickTimeRef.current = Date.now();
       hideTooltip();
-      children.props.onMouseDown?.(e);
+      child.props.onMouseDown?.(e);
     },
-    onFocus: (e: React.FocusEvent) => {
+    onFocus: (e: React.FocusEvent<HTMLElement>) => {
       // console.log('[HelpTooltip] onFocus', testId);
       handleMouseEnter();
-      children.props.onFocus?.(e);
+      child.props.onFocus?.(e);
     },
-    onBlur: (e: React.FocusEvent) => {
+    onBlur: (e: React.FocusEvent<HTMLElement>) => {
       handleMouseLeave();
-      children.props.onBlur?.(e);
+      child.props.onBlur?.(e);
     },
   });
 

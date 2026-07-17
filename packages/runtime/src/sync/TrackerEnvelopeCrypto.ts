@@ -31,6 +31,7 @@
 import type {
   EncryptedTrackerItemEnvelope,
   EncryptedTrackerSchemaEnvelope,
+  EncryptedTrackerNavigationEnvelope,
   TrackerItemPayload,
 } from './trackerProtocol';
 import { stripLocalOnlyFields } from './trackerProtocol';
@@ -84,6 +85,10 @@ function buildItemIdAad(itemId: string): Uint8Array {
 
 function buildSchemaTypeAad(schemaType: string): Uint8Array {
   return new TextEncoder().encode(`tracker-schema:${schemaType}`);
+}
+
+function buildNavigationEntryAad(entryId: string): Uint8Array {
+  return new TextEncoder().encode(`tracker-navigation:${entryId}`);
 }
 
 // ============================================================================
@@ -202,6 +207,44 @@ export async function decryptTrackerSchemaEnvelope(
   return new TextDecoder().decode(plaintext);
 }
 
+export async function encryptTrackerNavigationPayload(
+  payloadJson: string,
+  key: CryptoKey,
+  entryId: string,
+): Promise<{ encryptedPayload: string; iv: string }> {
+  const cleartext = new TextEncoder().encode(payloadJson);
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTE_LENGTH));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: buildNavigationEntryAad(entryId) as BufferSource },
+    key,
+    cleartext as BufferSource,
+  );
+  return {
+    encryptedPayload: uint8ArrayToBase64(new Uint8Array(ciphertext)),
+    iv: uint8ArrayToBase64(iv),
+  };
+}
+
+export async function decryptTrackerNavigationEnvelope(
+  envelope: EncryptedTrackerNavigationEnvelope,
+  key: CryptoKey,
+): Promise<string> {
+  if (envelope.encryptedPayload === null) {
+    throw new Error('decryptTrackerNavigationEnvelope called on a tombstone');
+  }
+  if (!envelope.iv) throw new Error('decryptTrackerNavigationEnvelope: envelope missing iv');
+  const plaintext = await crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: base64ToUint8Array(envelope.iv) as BufferSource,
+      additionalData: buildNavigationEntryAad(envelope.entryId) as BufferSource,
+    },
+    key,
+    base64ToUint8Array(envelope.encryptedPayload) as BufferSource,
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
 // ============================================================================
 // Epic H2 — server-managed pass-through (no client-side crypto)
 // ============================================================================
@@ -244,6 +287,15 @@ export function decodeTrackerSchemaEnvelopePlaintext(
 ): string {
   if (envelope.encryptedPayload === null) {
     throw new Error('decodeTrackerSchemaEnvelopePlaintext called on a tombstone (encryptedPayload=null)');
+  }
+  return envelope.encryptedPayload;
+}
+
+export function decodeTrackerNavigationEnvelopePlaintext(
+  envelope: EncryptedTrackerNavigationEnvelope,
+): string {
+  if (envelope.encryptedPayload === null) {
+    throw new Error('decodeTrackerNavigationEnvelopePlaintext called on a tombstone');
   }
   return envelope.encryptedPayload;
 }

@@ -67,6 +67,29 @@ describe('scan recovery (NIM-879)', () => {
     expect((service as any).lastScanStoppedEarly).toBe(false);
   });
 
+  it('uses numeric frontmatter dates as stable tracker fallback timestamps', async () => {
+    const updatedAt = Date.parse('2023-11-14T22:13:20.000Z');
+    service = new ElectronDocumentService(tempDir);
+    (service as any).initializationPromise = Promise.resolve();
+    (service as any).metadataCache.set('doc-1', {
+      id: 'doc-1',
+      path: 'nimbalyst-local/plans/numeric-date-plan.md',
+      workspace: tempDir,
+      frontmatter: {
+        planStatus: {
+          title: 'Numeric Date Plan',
+          updated: updatedAt,
+        },
+      },
+      lastIndexed: new Date(),
+    });
+
+    const items = await (service as any).listFullDocumentTrackerItemsFromMetadata();
+    const plan = items.find((i: any) => i.sourceRef?.endsWith('numeric-date-plan.md'));
+    expect(plan).toBeTruthy();
+    expect(plan.lastIndexed.getTime()).toBe(updatedAt);
+  });
+
   it('schedules an extended-budget completion pass when a scan stops early', async () => {
     vi.useFakeTimers();
     service = new ElectronDocumentService(tempDir);

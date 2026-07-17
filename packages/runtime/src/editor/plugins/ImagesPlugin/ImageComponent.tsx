@@ -197,16 +197,29 @@ function LazyImage({
 
 function BrokenImage(): JSX.Element {
   return (
-    <img
-      src={brokenImage}
+    <div
+      className="collab-asset-unavailable-placeholder"
       style={{
-        height: 200,
-        opacity: 0.2,
-        width: 200,
+        alignItems: 'center',
+        color: 'var(--nim-text-muted)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        justifyContent: 'center',
+        minHeight: 200,
+        minWidth: 200,
       }}
-      draggable="false"
-      alt="Broken image"
-    />
+      role="img"
+      aria-label="Image unavailable"
+    >
+      <img
+        src={brokenImage}
+        style={{height: 144, opacity: 0.2, width: 144}}
+        draggable="false"
+        alt=""
+      />
+      <span style={{fontSize: 12}}>Image unavailable</span>
+    </div>
   );
 }
 

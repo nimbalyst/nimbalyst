@@ -40,6 +40,8 @@ export interface DocCompactMessage {
   encryptedState: string;
   iv: string;
   replacesUpTo: number;
+  /** Correlates the server acknowledgement with this compaction attempt. */
+  clientCompactId?: string;
   /** Org key fingerprint for epoch enforcement. Server rejects stale-key writes. */
   orgKeyFingerprint?: string;
 }
@@ -79,6 +81,7 @@ export type DocServerMessage =
   | DocSyncResponseMessage
   | DocUpdateBroadcastMessage
   | DocUpdateAckMessage
+  | DocCompactAckMessage
   | DocAwarenessBroadcastMessage
   | KeyEnvelopeMessage
   | DocRoomMovedMessage
@@ -101,6 +104,17 @@ export interface DocSyncResponseMessage {
   snapshot?: EncryptedDocSnapshot;
   hasMore: boolean;
   cursor: number;
+  /**
+   * Persisted sequence high-watermark for the room. Optional only for
+   * compatibility with servers that predate the explicit head contract.
+   */
+  serverHead?: number;
+  /**
+   * Whether the room has ever accepted document state. This remains true when
+   * compaction has pruned the transport update rows. Optional only for
+   * compatibility with older servers.
+   */
+  serverHasState?: boolean;
   /**
    * The room-authed userId of whoever applied the most recent content update,
    * and when (server clock, ms). Plaintext metadata (the writer identity is not
@@ -129,6 +143,19 @@ export interface DocUpdateAckMessage {
   sequence: number;
 }
 
+/** Acknowledge a compaction only after its snapshot and pruning commit. */
+export interface DocCompactAckMessage {
+  type: 'docCompactAck';
+  clientCompactId?: string;
+  accepted: boolean;
+  replacesUpTo: number;
+  deduplicated?: boolean;
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
 /** Broadcast encrypted awareness state to other connections */
 export interface DocAwarenessBroadcastMessage {
   type: 'docAwarenessBroadcast';
@@ -152,6 +179,8 @@ export interface DocErrorMessage {
   type: 'error';
   code: string;
   message: string;
+  /** Present when the error rejects a specific client-originated update. */
+  clientUpdateId?: string;
 }
 
 // ============================================================================

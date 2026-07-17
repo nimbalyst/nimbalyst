@@ -116,6 +116,56 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'collab_local_origins_project_id',
       sqlFile: path.join(schemaDir, '0015_collab_local_origins_project_id.sql'),
     },
+    {
+      version: 16,
+      name: 'read_receipts',
+      sqlFile: path.join(schemaDir, '0016_read_receipts.sql'),
+    },
+    {
+      version: 17,
+      name: 'tracker_type_navigation',
+      sqlFile: path.join(schemaDir, '0017_tracker_type_navigation.sql'),
+    },
+    {
+      version: 18,
+      name: 'history_preedit_session_index',
+      sqlFile: path.join(schemaDir, '0018_history_preedit_session_index.sql'),
+    },
+    {
+      version: 19,
+      name: 'collab_document_replicas',
+      sqlFile: path.join(schemaDir, '0019_collab_document_replicas.sql'),
+    },
+    {
+      version: 20,
+      name: 'collab_replica_staged_snapshots',
+      sqlFile: path.join(schemaDir, '0020_collab_replica_staged_snapshots.sql'),
+    },
+    {
+      version: 21,
+      name: 'collab_replica_quarantine_observability',
+      sqlFile: path.join(schemaDir, '0021_collab_replica_quarantine_observability.sql'),
+    },
+    {
+      version: 22,
+      name: 'collab_document_assets',
+      sqlFile: path.join(schemaDir, '0022_collab_document_assets.sql'),
+    },
+    {
+      version: 23,
+      name: 'collab_asset_retry_schedule',
+      sqlFile: path.join(schemaDir, '0023_collab_asset_retry_schedule.sql'),
+    },
+    {
+      version: 24,
+      name: 'tracker_personal_state',
+      sqlFile: path.join(schemaDir, '0024_tracker_personal_state.sql'),
+    },
+    {
+      version: 25,
+      name: 'account_org_bindings',
+      sqlFile: path.join(schemaDir, '0025_account_org_bindings.sql'),
+    },
   ];
 }
 

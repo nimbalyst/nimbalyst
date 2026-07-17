@@ -1,7 +1,9 @@
 import React, { useId, useMemo, useState, useRef, useCallback, useEffect } from 'react';
+import { useSetAtom } from 'jotai';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { getHelpContent } from '../../help';
+import { openSettingsCommandAtom } from '../../store';
 
 const CATEGORY_COLORS = [
   'var(--nim-primary)',
@@ -60,6 +62,8 @@ export function ContextUsageDisplay({
   const hasContextWindow = displayContextWindow > 0;
   const [tooltipVisible, setTooltipVisible] = useState(false);
   const [helpExpanded, setHelpExpanded] = useState(false);
+  const [toolBaselineTokens, setToolBaselineTokens] = useState<number | null>(null);
+  const openSettings = useSetAtom(openSettingsCommandAtom);
   const tooltipId = useId();
   const helpContent = getHelpContent('context-indicator');
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -135,6 +139,28 @@ export function ContextUsageDisplay({
       closeTooltip();
     }
   }, [toggleTooltip, closeTooltip]);
+
+  // Fetch the fixed tool baseline (eager core surface) once when the panel
+  // first opens, so the breakdown can show the floor a fresh session starts at.
+  useEffect(() => {
+    if (!tooltipVisible || toolBaselineTokens !== null) {
+      return;
+    }
+    let cancelled = false;
+    (window as any).electronAPI
+      ?.invoke('mcp-config:get-tool-budget')
+      .then((snapshot: { eagerEstTokens?: number } | null) => {
+        if (!cancelled && typeof snapshot?.eagerEstTokens === 'number') {
+          setToolBaselineTokens(snapshot.eagerEstTokens);
+        }
+      })
+      .catch(() => {
+        // Budget info is a nice-to-have in this popover; skip on failure.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tooltipVisible, toolBaselineTokens]);
 
   // Dismiss on outside click or Escape while the panel is open.
   useEffect(() => {
@@ -305,6 +331,25 @@ export function ContextUsageDisplay({
               </div>
             </>
           )}
+
+          {/* Fixed tool floor + jump to the Tools & MCP panel */}
+          <div className="tooltip-tools-footer flex justify-between items-center gap-2 pt-2 mt-2 border-t border-[var(--nim-border)] text-[11px]">
+            <span className="tooltip-baseline text-[var(--nim-text-muted)]">
+              {toolBaselineTokens !== null
+                ? `Always-loaded tools: ~${toolBaselineTokens.toLocaleString()} tokens`
+                : 'Other tool groups load on demand'}
+            </span>
+            <button
+              className="tooltip-manage-tools text-[var(--nim-primary)] hover:underline whitespace-nowrap"
+              onClick={(e) => {
+                e.stopPropagation();
+                setTooltipVisible(false);
+                openSettings({ category: 'tools-mcp', timestamp: Date.now() });
+              }}
+            >
+              Manage tools
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -8,15 +8,31 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 
 | SDK version | Minimum Nimbalyst app version |
 | --- | --- |
+| 0.2.2 | 0.58.5 |
+| 0.2.1 | 0.58.5 |
 | 0.2.0 | 0.58.5 |
 | 0.1.5 | 0.58.5 |
 | 0.1.0 | 0.58.5 |
 
 ## [Unreleased]
 
+## [0.2.2]
+
+### Added
+
+- Host-provided tracker reference chips and pickers let extensions persist stable item keys while using Nimbalyst's live metadata and navigation.
+
+## [0.2.1]
+
 ### Added
 
 - `ExtensionAITool.access` declares whether a tool uses filesystem, editor-read, or editor-write access; `readOnly` remains as a compatibility alias.
+- `useCollaborativeEditor` accepts `{ codec, bind }` so an editor's pure collab codec is defined once and shared with the host's headless seeding; the previous `createBinding`/`initializeFromContent` config keeps working.
+- `CollaborationContext.flushWithAck` (server-persisted flush) and optional `hasUndecodedContent`.
+
+### Fixed
+
+- The first-open seed no longer runs from empty initial content or when the transport skipped payloads it could not decode — both cases wrote a default document over the shared room's real content.
 
 ## [0.2.0]
 

@@ -15,7 +15,11 @@
     "types": [],
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "@nimbalyst/extension-sdk/file-tree": ["../../extension-sdk/src/fileDirectoryTree.ts"]
+    }
   },
   "include": ["src"]
 }

@@ -2,6 +2,7 @@
  * CommitsTab — chronological list of the PR's commits.
  */
 
+import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import {

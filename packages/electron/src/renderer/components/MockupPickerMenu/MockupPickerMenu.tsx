@@ -5,6 +5,7 @@
  * Shows "New Mockup" at top + list of existing mockups.
  */
 
+import type { JSX } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getMockupPlatformService,

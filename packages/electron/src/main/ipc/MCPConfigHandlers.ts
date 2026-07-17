@@ -10,6 +10,7 @@ import {
   revokeMcpRemoteOAuth,
   triggerMcpRemoteOAuth,
 } from '../services/MCPRemoteOAuth';
+import { getToolBudgetSnapshot } from '../mcp/toolBudgetService';
 
 const mcpConfigService = new MCPConfigService();
 
@@ -78,6 +79,15 @@ export function registerMCPConfigHandlers() {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { valid: false, error: message };
+    }
+  });
+
+  safeHandle('mcp-config:get-tool-budget', async (_event, workspacePath?: string) => {
+    try {
+      return await getToolBudgetSnapshot(workspacePath);
+    } catch (error) {
+      logger.main.error('[MCP] Failed to build tool budget snapshot:', error);
+      throw error;
     }
   });
 

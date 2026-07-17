@@ -1,124 +1,119 @@
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+
+const ipc = (window as unknown as {
+  electronAPI: {
+    invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
+  };
+}).electronAPI;
 
 export interface OperationLogEntry {
   id: string;
   timestamp: Date;
+  updatedAt: number;
   command: string;
-  status: 'running' | 'success' | 'error';
-  output?: string;
+  executable: 'git';
+  args: string[];
+  cwd: string;
+  status: 'running' | 'success' | 'error' | 'interrupted';
+  output: string;
+  stdout: string;
+  stderr: string;
   error?: string;
   suggestion?: string;
+  exitCode?: number;
   durationMs?: number;
 }
 
-// Module-level store so the log survives panel close/open and component remounts
-// within the same renderer process. A renderer hard-reload still resets it.
-let entriesState: OperationLogEntry[] = [];
-let nextId = 0;
-const listeners = new Set<() => void>();
-
-function emit() {
-  for (const listener of listeners) listener();
+interface WireOperationLogEntry extends Omit<OperationLogEntry, 'timestamp' | 'suggestion'> {
+  timestamp: number;
 }
 
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
+type OperationLogEvent =
+  | { workspacePath: string; type: 'upsert'; entry: WireOperationLogEntry }
+  | { workspacePath: string; type: 'clear' };
 
-function getSnapshot(): OperationLogEntry[] {
-  return entriesState;
-}
+type WorkspaceEventSubscriber = (
+  event: string,
+  callback: (data: unknown) => void,
+) => () => void;
 
-function appendEntry(command: string): string {
-  const id = `op-${nextId++}`;
-  const entry: OperationLogEntry = {
-    id,
-    timestamp: new Date(),
-    command,
-    status: 'running',
+function normalizeEntry(entry: WireOperationLogEntry): OperationLogEntry {
+  return {
+    ...entry,
+    timestamp: new Date(entry.timestamp),
+    suggestion: entry.error ? getSuggestionForError(entry.error) : undefined,
   };
-  entriesState = [...entriesState, entry];
-  emit();
-  return id;
 }
 
-function patchEntry(id: string, update: Partial<OperationLogEntry>) {
-  entriesState = entriesState.map(e => e.id === id ? { ...e, ...update } : e);
-  emit();
-}
-
-function clearAllEntries() {
-  entriesState = [];
-  emit();
-}
-
-/**
- * Hook for managing a process-wide log of git operations.
- * Backed by a module-level store so the log persists across panel
- * unmount/remount within the same renderer.
- */
-export function useOperationLog() {
-  const entries = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-
-  const addEntry = useCallback((command: string) => appendEntry(command), []);
-  const updateEntry = useCallback((id: string, update: Partial<OperationLogEntry>) => patchEntry(id, update), []);
-  const clearLog = useCallback(() => clearAllEntries(), []);
-
-  /**
-   * Wraps an async git operation with logging.
-   * Returns the result of the operation.
-   */
-  const withLog = useCallback(async <T>(
-    command: string,
-    operation: () => Promise<T>,
-    opts?: {
-      /** Extract a user-friendly output string from the result */
-      formatOutput?: (result: T) => string | undefined;
-      /** Extract error suggestion from a failed result */
-      formatSuggestion?: (result: T) => string | undefined;
-      /** Check if the result represents an error (for { success, error } patterns) */
-      isError?: (result: T) => boolean;
-      /** Extract error message from the result */
-      getError?: (result: T) => string | undefined;
+export function mergeOperationEntries(
+  current: OperationLogEntry[],
+  incoming: OperationLogEntry[],
+): OperationLogEntry[] {
+  const byId = new Map(current.map(entry => [entry.id, entry]));
+  for (const entry of incoming) {
+    const existing = byId.get(entry.id);
+    if (!existing || entry.updatedAt >= existing.updatedAt) {
+      byId.set(entry.id, entry);
     }
-  ): Promise<T> => {
-    const id = appendEntry(command);
-    const startTime = Date.now();
+  }
+  return Array.from(byId.values()).sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+}
 
-    try {
-      const result = await operation();
-      const durationMs = Date.now() - startTime;
+/** Main-process journal projection. Renderer reloads cannot lose Git output. */
+export function useOperationLog(
+  workspacePath: string,
+  subscribeToWorkspaceEvent: WorkspaceEventSubscriber,
+) {
+  const [entries, setEntries] = useState<OperationLogEntry[]>([]);
 
-      // Check if the result itself indicates an error (e.g. { success: false, error: '...' })
-      if (opts?.isError?.(result)) {
-        patchEntry(id, {
-          status: 'error',
-          error: opts.getError?.(result) ?? 'Operation failed',
-          suggestion: opts.formatSuggestion?.(result),
-          durationMs,
-        });
-      } else {
-        patchEntry(id, {
-          status: 'success',
-          output: opts?.formatOutput?.(result),
-          durationMs,
-        });
+  useEffect(() => {
+    let disposed = false;
+    setEntries([]);
+    const unsubscribe = subscribeToWorkspaceEvent('git:operation-log-changed', data => {
+      if (disposed) return;
+      const event = data as OperationLogEvent;
+      if (event.type === 'clear') {
+        setEntries([]);
+        return;
       }
+      setEntries(current => mergeOperationEntries(current, [normalizeEntry(event.entry)]));
+    });
 
-      return result;
-    } catch (err) {
-      const durationMs = Date.now() - startTime;
-      patchEntry(id, {
-        status: 'error',
-        error: err instanceof Error ? err.message : String(err),
-        durationMs,
+    void ipc.invoke('git:operation-log:get', workspacePath)
+      .then(result => {
+        if (disposed) return;
+        const hydrated = (result as WireOperationLogEntry[]).map(normalizeEntry);
+        // Preserve live events that arrived while the initial read was in flight.
+        setEntries(current => mergeOperationEntries(hydrated, current));
+      })
+      .catch(error => {
+        console.error('[GitOperationLog] Failed to hydrate operation history:', error);
       });
-      throw err;
-    }
-  }, []);
 
-  return { entries, addEntry, updateEntry, clearLog, withLog };
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [workspacePath, subscribeToWorkspaceEvent]);
+
+  const clearLog = useCallback(async () => {
+    setEntries([]);
+    await ipc.invoke('git:operation-log:clear', workspacePath);
+  }, [workspacePath]);
+
+  /** Existing call-site compatibility; recording now happens in Electron main. */
+  const withLog = useCallback(async <T>(
+    _command: string,
+    operation: () => Promise<T>,
+    _opts?: {
+      formatOutput?: (result: T) => string | undefined;
+      formatSuggestion?: (result: T) => string | undefined;
+      isError?: (result: T) => boolean;
+      getError?: (result: T) => string | undefined;
+    },
+  ): Promise<T> => operation(), []);
+
+  return { entries, clearLog, withLog };
 }
 
 /** Map common git errors to actionable suggestions */

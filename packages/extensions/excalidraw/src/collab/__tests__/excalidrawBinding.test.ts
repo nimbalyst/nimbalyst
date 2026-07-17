@@ -16,7 +16,7 @@ vi.mock('@excalidraw/excalidraw', () => ({
 }));
 
 import * as Y from 'yjs';
-import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types/types';
+import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import { ExcalidrawBinding } from '../excalidrawBindings';
 import { seedExcalidrawYDoc } from '../seed';
 

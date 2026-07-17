@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { VList, type VListHandle, type CacheSnapshot } from 'virtua';
 import type { TranscriptViewMessage, SessionData } from '../../../ai/server/types';
@@ -581,9 +582,20 @@ const WRITE_TOOL_NAMES = new Set(['write', 'notebookedit']);
 /**
  * Interactive tool widgets that require the user to act. These render even when
  * `settings.showToolCalls` is false, so the user can still respond to prompts
- * (permission grants, plan-mode exits, AskUserQuestion answers, commit proposals).
+ * (permission grants, plan-mode exits, question answers, structured input
+ * prompts, commit proposals).
  */
-const INTERACTIVE_WIDGET_TOOLS = new Set(['ToolPermission', 'ExitPlanMode', 'AskUserQuestion', 'GitCommitProposal']);
+const INTERACTIVE_WIDGET_TOOLS = new Set([
+  'ToolPermission',
+  'ExitPlanMode',
+  'AskUserQuestion',
+  'PromptForUserInput',
+  'RequestUserInput',
+  'GitCommitProposal',
+  'git_commit_proposal',
+  'developer_git_commit_proposal',
+  'developer.git_commit_proposal',
+]);
 
 /**
  * MCP tools arrive as `mcp__<server>__<toolName>` (server name may contain
@@ -2060,7 +2072,8 @@ export const RichTranscriptView = React.forwardRef<
     // When settings.showToolCalls is false, hide non-interactive tool
     // rows from the chat view but always render interactive widgets
     // (ToolPermission / ExitPlanMode / AskUserQuestion /
-    // GitCommitProposal) so the user can still act on prompts.
+    // PromptForUserInput / RequestUserInput / GitCommitProposal)
+    // so the user can still act on prompts.
     if (isTool && message.toolCall) {
       const isInteractiveWidget = isInteractiveWidgetTool(message.toolCall.toolName);
       if (!settings.showToolCalls && !isInteractiveWidget) {

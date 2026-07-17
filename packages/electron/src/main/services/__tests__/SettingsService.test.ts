@@ -75,6 +75,29 @@ describe('SettingsService', () => {
     expect(svc.get('ai.defaultProvider')).toBe('claude-code');
     expect(svc.get('ai.chatShowToolCalls')).toBe(true);
     expect(svc.get('ai.apiKey.anthropic')).toBe('');
+    // Subscription CLI is off by default (opt-in).
+    expect(svc.get('ai.provider.claude-code-cli')).toMatchObject({ enabled: false });
+    // Codex (app server) is on by default.
+    expect(svc.get('ai.provider.openai-codex')).toMatchObject({ enabled: true });
+  });
+
+  it('persists a claude-code-cli hidden-model denylist round-trip', async () => {
+    const { getSettingsService } = await import('../SettingsService');
+    const svc = getSettingsService();
+
+    // The picker-trim feature stores hidden model ids per provider. Persisting
+    // the CLI provider must not be rejected as an unknown key, and hiddenModels
+    // must survive the round-trip.
+    svc.set('ai.provider.claude-code-cli', {
+      enabled: false,
+      hiddenModels: ['claude-code-cli:haiku'],
+    } as any);
+    expect(svc.get('ai.provider.claude-code-cli')).toMatchObject({
+      enabled: false,
+      hiddenModels: ['claude-code-cli:haiku'],
+    });
+    // Independent from the SDK provider.
+    expect(svc.get('ai.provider.claude-code')).toMatchObject({ enabled: true });
   });
 
   it('round-trips a per-key write without touching other keys', async () => {
@@ -227,6 +250,26 @@ describe('SettingsService', () => {
     expect(svc.get('ai.apiKey.opencode')).toBe('');
     svc.set('ai.apiKey.opencode', 'sk-opencode-test');
     expect(svc.get('ai.apiKey.opencode')).toBe('sk-opencode-test');
+  });
+
+  it('round-trips an extension-contributed agent provider key (NIM-1581 / #803)', async () => {
+    const { getSettingsService, isSettingKey } = await import('../SettingsService');
+    const svc = getSettingsService();
+
+    // Extension-contributed agent providers (e.g. antigravity-gemini-agent) are
+    // registered dynamically at runtime, so their `ai.provider.<id>` key is not
+    // in the static SETTINGS_REGISTRY. The per-key flush must still accept it or
+    // the provider's config can never be saved (the `settings:set` handler threw
+    // "Unknown setting key: ai.provider.antigravity-gemini-agent").
+    const key = 'ai.provider.antigravity-gemini-agent';
+    expect(isSettingKey(key)).toBe(true);
+    svc.set(key as any, { enabled: true } as any);
+    expect(svc.get(key as any)).toMatchObject({ enabled: true });
+
+    // Stored under the same providerSettings.<id> shape as built-in providers so
+    // the legacy AIService reads keep working.
+    const onDisk = JSON.parse(fs.readFileSync(STORE_FALLBACK, 'utf8'));
+    expect(onDisk.providerSettings['antigravity-gemini-agent']).toMatchObject({ enabled: true });
   });
 
   it('preserves the existing on-disk shape (providerSettings.<id> path)', async () => {

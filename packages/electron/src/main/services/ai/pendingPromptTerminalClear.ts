@@ -27,6 +27,15 @@ export function isTerminalSessionEvent(type: string): boolean {
   return TERMINAL_SESSION_EVENT_TYPES.has(type);
 }
 
+/** Find historical rows whose workflow is complete but prompt bit is stale. */
+export function findCompletedSessionsWithPendingPrompt(
+  sessions: Array<{ id: string; metadata: Record<string, unknown> }>,
+): string[] {
+  return sessions
+    .filter(({ metadata }) => metadata.phase === 'complete' && metadata.hasPendingPrompt === true)
+    .map(({ id }) => id);
+}
+
 export interface PendingPromptTerminalClearDeps {
   /**
    * Read the current persisted `hasPendingPrompt` bit for a session. Returns

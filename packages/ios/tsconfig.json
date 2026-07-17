@@ -6,6 +6,7 @@
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
@@ -15,8 +16,14 @@
     "baseUrl": ".",
     "paths": {
       "@nimbalyst/runtime": ["../runtime/src/index.ts"],
-      "@nimbalyst/runtime/*": ["../runtime/src/*"]
+      "@nimbalyst/runtime/*": ["../runtime/src/*"],
+      "@nimbalyst/extension-sdk": ["../extension-sdk/src/index.ts"],
+      "@nimbalyst/extension-sdk/*": ["../extension-sdk/src/*"]
     }
   },
-  "include": ["src", "../electron/src/renderer/electron.d.ts"]
+  "include": [
+    "src",
+    "../electron/src/renderer/electron.d.ts",
+    "../runtime/src/editor/types/*.d.ts"
+  ]
 }

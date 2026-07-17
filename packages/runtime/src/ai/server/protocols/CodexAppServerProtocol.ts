@@ -58,6 +58,7 @@ import type {
   ItemCommandExecutionRequestApprovalParams,
   ItemPermissionsRequestApprovalParams,
   ItemStartedNotification,
+  McpElicitationResponse,
   ThreadResumeResponse,
   ThreadStartParams,
   ThreadStartResponse,
@@ -91,8 +92,8 @@ export interface CodexAppServerHostBindings {
   approveCommandExecution?: (params: ItemCommandExecutionRequestApprovalParams) => Promise<ApprovalResponse> | ApprovalResponse;
   /** Decide an arbitrary codex permissions request. */
   approvePermissions?: (params: ItemPermissionsRequestApprovalParams) => Promise<ApprovalResponse> | ApprovalResponse;
-  /** Handle an MCP elicitation prompt. */
-  handleMcpElicitation?: (params: unknown) => Promise<unknown> | unknown;
+  /** Handle an MCP elicitation prompt (MCP tool approval / form prompt). */
+  handleMcpElicitation?: (params: unknown) => Promise<McpElicitationResponse> | McpElicitationResponse;
   /** Handle a tool-driven user-input prompt. */
   handleToolUserInput?: (params: unknown) => Promise<unknown> | unknown;
   /** Execute a host-registered dynamic tool. Phase 2 plumbing; no callers yet. */
@@ -269,11 +270,16 @@ export class CodexAppServerProtocol implements AgentProtocol {
 
   async *sendMessage(session: ProtocolSession, message: ProtocolMessage): AsyncIterable<ProtocolEvent> {
     const raw = this.assertRaw(session);
-    const abortSignal = (raw.options as unknown as { abortSignal?: AbortSignal })?.abortSignal ?? (session.raw as { options?: { abortSignal?: AbortSignal } })?.options?.abortSignal;
+    // Prefer the per-message signal: `raw.options.abortSignal` is the signal
+    // of the turn that CREATED the session, which is stale for every turn
+    // that reuses the cached ProtocolSession (NIM-1607).
+    const abortSignal = message.abortSignal
+      ?? (raw.options as unknown as { abortSignal?: AbortSignal })?.abortSignal
+      ?? (session.raw as { options?: { abortSignal?: AbortSignal } })?.options?.abortSignal;
 
     // Drain queue: notifications and one terminating turn event are pushed by
     // the JsonRpcClient handler; the generator below awaits them.
-    const queue: Array<{ kind: 'event'; event: ProtocolEvent } | { kind: 'end' } | { kind: 'fail'; error: Error }> = [];
+    const queue: Array<{ kind: 'event'; event: ProtocolEvent } | { kind: 'end' } | { kind: 'fail'; error: Error } | { kind: 'abort' }> = [];
     let waiters: Array<(v: unknown) => void> = [];
     const push = (entry: typeof queue[number]) => {
       queue.push(entry);
@@ -301,6 +307,33 @@ export class CodexAppServerProtocol implements AgentProtocol {
     // duplicate tool_call from a single item/completed, duplicate completion.
     unsubscribers.push(raw.client.onNotification(onNotification));
 
+    // Wake the pump on abort. Without this, a cancel that lands while we're
+    // parked awaiting the next notification is never observed (the aborted
+    // check in the loop only runs after an event arrives): turn/interrupt is
+    // never sent, the generator never unwinds, and the session stays
+    // 'running' forever (NIM-1607). The interrupt is fire-and-forget -- the
+    // child may be dead (slept machine, hung codex), and the pump must end
+    // regardless of whether codex ever responds.
+    let interruptRequested = false;
+    const requestInterrupt = () => {
+      if (interruptRequested) return;
+      interruptRequested = true;
+      Promise.resolve(raw.client.request('turn/interrupt', { threadId: raw.threadId }))
+        .catch((err) => console.warn('[CODEX][APPSERVER] turn/interrupt failed:', err));
+    };
+    const onAbort = () => {
+      requestInterrupt();
+      push({ kind: 'abort' });
+    };
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        onAbort();
+      } else {
+        abortSignal.addEventListener('abort', onAbort, { once: true });
+        unsubscribers.push(() => abortSignal.removeEventListener('abort', onAbort));
+      }
+    }
+
     // Start the turn. Errors from the request itself are surfaced as fail.
     const turnInput = await this.buildInput(message);
     let turnStartResultId: string | null = null;
@@ -324,14 +357,17 @@ export class CodexAppServerProtocol implements AgentProtocol {
     try {
       while (true) {
         if (abortSignal?.aborted) {
-          // Issue interrupt; codex will emit a turn/failed or turn/completed.
-          try { await raw.client.request('turn/interrupt', { threadId: raw.threadId }); }
-          catch (err) { console.warn('[CODEX][APPSERVER] turn/interrupt failed:', err); }
+          requestInterrupt();
         }
         while (queue.length === 0) {
           await new Promise<void>((resolve) => waiters.push(() => resolve()));
         }
         const entry = queue.shift()!;
+        if (entry.kind === 'abort') {
+          // Cancelled turn: unwind silently -- no complete (the turn didn't
+          // finish) and no error (the caller asked for this).
+          return;
+        }
         if (entry.kind === 'event') {
           yield entry.event;
           continue;
@@ -583,7 +619,13 @@ export class CodexAppServerProtocol implements AgentProtocol {
 
     client.setServerRequestHandler('mcpServer/elicitation/request', async (raw) => {
       if (this.host.handleMcpElicitation) return this.host.handleMcpElicitation(raw);
-      return null;
+      // No host binding: auto-accept, mirroring this transport's permissive
+      // exec/file defaults (approvalPolicy: 'never'). Returning `null` fails
+      // codex's deserializer ("invalid type: null, expected struct
+      // McpServerElicitationRequestResponse") and codex then reports every
+      // nimbalyst MCP tool call as "user rejected MCP tool call" (#797).
+      const autoAccept: McpElicitationResponse = { action: 'accept', content: null, _meta: null };
+      return autoAccept;
     });
 
     client.setServerRequestHandler('item/tool/requestUserInput', async (raw) => {

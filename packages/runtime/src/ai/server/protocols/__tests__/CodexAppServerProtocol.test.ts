@@ -86,6 +86,30 @@ function nextWrittenMatching(child: FakeChildProcess, method: string, timeoutMs 
   });
 }
 
+/** Wait for the client's response line to a server-initiated request `id`. */
+function nextResponseFor(child: FakeChildProcess, id: unknown, timeoutMs = 1000): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const check = () => {
+      for (const line of child.writtenLines) {
+        if (line && typeof line === 'object') {
+          const obj = line as Record<string, unknown>;
+          if (obj.id === id && ('result' in obj || 'error' in obj)) {
+            resolve(obj);
+            return;
+          }
+        }
+      }
+      if (Date.now() - start > timeoutMs) {
+        reject(new Error(`timeout waiting for response to ${JSON.stringify(id)}; saw: ${JSON.stringify(child.writtenLines)}`));
+        return;
+      }
+      setTimeout(check, 5);
+    };
+    check();
+  });
+}
+
 describe('CodexAppServerProtocol', () => {
   let child: FakeChildProcess;
 
@@ -269,6 +293,33 @@ describe('CodexAppServerProtocol', () => {
     });
     child.emitLine({ id: startReq.id, result: { thread: { id: 't-mcp' } } });
     const session = await sessionPromise;
+    protocol.cleanupSession(session);
+  });
+
+  it('answers mcpServer/elicitation/request with an accept struct, not null (#797)', async () => {
+    // Regression: codex forwards MCP tool-approval as an elicitation request.
+    // Replying `null` fails codex's deserializer and it reports every nimbalyst
+    // MCP tool call as "user rejected MCP tool call" with no visible prompt.
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 'thread-elicit' } } });
+    const session = await sessionPromise;
+
+    // Codex asks the client to handle an MCP elicitation (tool approval).
+    child.emitLine({
+      id: 'elicit-1',
+      method: 'mcpServer/elicitation/request',
+      params: { serverName: 'nimbalyst-trackers', message: 'approve tracker_list?' },
+    });
+
+    const response = await nextResponseFor(child, 'elicit-1');
+    expect(response.error).toBeUndefined();
+    expect(response.result).not.toBeNull();
+    expect(response.result).toMatchObject({ action: 'accept' });
+
     protocol.cleanupSession(session);
   });
 
@@ -592,6 +643,58 @@ describe('CodexAppServerProtocol', () => {
 
     // Spawn count must still be 1: no extra child for the second turn.
     expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    protocol.cleanupSession(session);
+  });
+
+  it('sends turn/interrupt and ends the stream when aborted while parked between notifications (NIM-1607)', async () => {
+    // Regression: a cancel (e.g. Stop from mobile) that lands while the event
+    // pump is awaiting the next codex notification was never observed -- the
+    // aborted check only ran after an event arrived. With a silent child
+    // (machine slept, codex hung), turn/interrupt was never sent, the
+    // generator never unwound, and the session stayed 'running' forever.
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 't-abort' } } });
+    const session = await sessionPromise;
+
+    // The controller for THIS turn, passed per-message. Session-level
+    // raw.abortSignal is stale on cached sessions (it belongs to the turn
+    // that created the session), so the per-turn signal must win.
+    const controller = new AbortController();
+    const events: ProtocolEvent[] = [];
+    const collector = (async () => {
+      for await (const ev of protocol.sendMessage(session, { content: 'long task', abortSignal: controller.signal })) {
+        events.push(ev);
+      }
+    })();
+
+    const turnReq = await nextWrittenMatching(child, 'turn/start');
+    child.emitLine({ id: turnReq.id, result: { turn: { id: 'turn-1', items: [], status: 'inProgress' } } });
+    // Reasoning starts, then codex goes silent -- no further notifications.
+    child.emitLine({ method: 'item/started', params: { threadId: 't-abort', turnId: 'turn-1', item: { id: 'rs-1', type: 'reasoning' } } });
+    await new Promise((r) => setTimeout(r, 20));
+
+    controller.abort();
+
+    // The interrupt must go out even though no further notification arrives.
+    const interruptReq = await nextWrittenMatching(child, 'turn/interrupt', 500);
+    expect((interruptReq.params as { threadId: string }).threadId).toBe('t-abort');
+
+    // The generator must unwind promptly so the stream consumer can finalize
+    // and mark the session idle.
+    const settled = await Promise.race([
+      collector.then(() => 'settled'),
+      new Promise<string>((r) => setTimeout(() => r('hung'), 500)),
+    ]);
+    expect(settled).toBe('settled');
+
+    // Silent unwind: no complete (the turn didn't finish) and no error.
+    expect(events.some((e) => e.type === 'complete')).toBe(false);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
 
     protocol.cleanupSession(session);
   });

@@ -1,24 +1,33 @@
 /**
- * CollabContentAdapter
+ * CollabCodec
  *
- * Per-extension Y.Doc content contract that lets host features
- * (re-upload, history, export, AI editing, search indexing, comments,
- * backup, restore) operate on any extension's collaborative document
- * without knowing its internal layout.
+ * Per-extension Y.Doc content contract: the single, PURE thing an editor
+ * defines for collaboration. Pure functions `file bytes <-> Y.Doc shape` (no
+ * React, no host imports) so the same code seeds a live editor AND runs
+ * headlessly (Share-to-Team without the editor open, re-upload from local
+ * origin, plain-text projection for search/AI). It lets host features
+ * (re-upload, history, export, AI editing, search indexing, comments, backup,
+ * restore) operate on any extension's collaborative document without knowing
+ * its internal layout.
  *
- * Extensions register an adapter via
+ * Extensions register a codec via
  * `context.services.collab.registerContentAdapter(...)` from their
- * `activate()` function. See
- * `packages/extension-sdk-docs/custom-editors.md` for the full guide
- * and `design/Collaboration/collab-content-adapter.md` for the design.
+ * `activate()` function, and pass the SAME codec to
+ * `useCollaborativeEditor(host, { codec, bind })`. `isEmpty` / `seedFromFile`
+ * / `exportToFile` are therefore defined exactly ONCE, on the codec -- the
+ * live seed and the headless seed are provably the same code.
  *
- * Adapters run only client-side (main process, renderer, extensions).
- * The collab Worker stays adapter-agnostic and treats Y.Doc state as
- * opaque ciphertext.
+ * Codecs run only client-side (main process, renderer, extensions). The collab
+ * Worker stays codec-agnostic and treats Y.Doc state as opaque ciphertext. The
+ * renderer registry is authoritative; the main-process registry is an optional
+ * cache (in-repo statics + text descriptors) and its absence degrades to
+ * client seeding, never a hard error.
  *
  * NOTE: This is the canonical definition. The host-internal
  * `@nimbalyst/collab-adapters` registry re-imports this type --
  * do not fork the interface there.
+ *
+ * @see CollabContentAdapter -- the former name, kept as a deprecated alias.
  */
 import type { Doc } from 'yjs';
 
@@ -42,14 +51,17 @@ export interface TextCollabAdapterDescriptor {
 
 export type CollabAdapterDescriptor = TextCollabAdapterDescriptor;
 
-export interface CollabContentAdapterMigration {
+export interface CollabCodecMigration {
   from: number;
   to: number;
   run(yDoc: Doc): void;
 }
 
-export interface CollabContentAdapter<TStructured = unknown> {
-  /** Identifies this adapter; matches the shared doc's documentType. */
+/** @deprecated Renamed to {@link CollabCodecMigration}. */
+export type CollabContentAdapterMigration = CollabCodecMigration;
+
+export interface CollabCodec<TStructured = unknown> {
+  /** Identifies this codec; matches the shared doc's documentType. */
   documentType: string;
 
   /** File extensions this adapter is the on-disk codec for. Include
@@ -69,10 +81,11 @@ export interface CollabContentAdapter<TStructured = unknown> {
    *  registry before `applyFromFile` / `applyStructuredPatch` when
    *  the Y.Doc's recorded layoutVersion is older than this adapter's
    *  layoutVersion. */
-  migrations?: CollabContentAdapterMigration[];
+  migrations?: CollabCodecMigration[];
 
   /** True iff the Y.Doc has no extension content yet. Used to gate
-   *  the initial-share seed flow. */
+   *  the initial-share seed flow. Shared by the live seed (the hook)
+   *  and every headless seed path, so they can never disagree. */
   isEmpty(yDoc: Doc): boolean;
 
   /** Seed an empty Y.Doc from on-disk file bytes/text. Initial share
@@ -120,16 +133,25 @@ export interface CollabContentAdapter<TStructured = unknown> {
 }
 
 /**
+ * @deprecated Renamed to {@link CollabCodec}. Same shape -- a codec is a pure
+ * `file bytes <-> Y.Doc shape` contract. Kept so existing extensions and the
+ * host-internal `@nimbalyst/collab-adapters` registry keep compiling.
+ */
+export type CollabContentAdapter<TStructured = unknown> = CollabCodec<TStructured>;
+
+/**
  * The collab surface on the extension context. Extensions call into
- * this from their `activate()` to register a content adapter for any
+ * this from their `activate()` to register a collab codec for any
  * document type they ship.
  */
 export interface ExtensionCollabService {
   /**
-   * Register a CollabContentAdapter for one of the extension's
-   * document types. Returns a Disposable that unregisters on
-   * deactivation; the host also tracks the registration in
-   * `context.subscriptions` automatically.
+   * Register a CollabCodec for one of the extension's document types.
+   * Returns a Disposable that unregisters on deactivation; the host also
+   * tracks the registration in `context.subscriptions` automatically.
+   *
+   * (Named `registerContentAdapter` for backwards compatibility; it accepts a
+   * {@link CollabCodec}.)
    */
-  registerContentAdapter(adapter: CollabContentAdapter): { dispose(): void };
+  registerContentAdapter(codec: CollabCodec): { dispose(): void };
 }

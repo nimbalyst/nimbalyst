@@ -82,6 +82,12 @@ export const blitzDialogOpenAtom = atom<boolean>(false);
  */
 export const isGitRepoAtom = atomFamily((_workspacePath: string) => atom<boolean>(false));
 
+export interface CreateNewWorktreeSessionOptions {
+  baseBranch?: string;
+  name?: string;
+  initialDraft?: string;
+}
+
 // ============================================================
 // Internal helpers — shared logic between several action atoms
 // ============================================================
@@ -446,17 +452,23 @@ export const createNewSessionActionAtom = atom(
  */
 export const createNewWorktreeSessionActionAtom = atom(
   null,
-  async (get, set, options?: { baseBranch?: string; name?: string }) => {
+  async (
+    get,
+    set,
+    options?: CreateNewWorktreeSessionOptions,
+  ): Promise<string | undefined> => {
     const workspacePath = getWorkspacePath(get);
-    if (!workspacePath || typeof window === 'undefined' || !window.electronAPI) return;
+    if (!workspacePath || typeof window === 'undefined' || !window.electronAPI) return undefined;
 
-    if (!get(worktreesFeatureAvailableAtom)) return;
-    if (!get(isGitRepoAtom(workspacePath))) return;
+    if (!get(worktreesFeatureAvailableAtom)) return undefined;
+    if (!get(isGitRepoAtom(workspacePath))) return undefined;
 
     const defaultModel = get(defaultAgentModelAtom);
 
     try {
-      const ipcOptions = options?.baseBranch || options?.name ? options : undefined;
+      const ipcOptions = options?.baseBranch || options?.name
+        ? { baseBranch: options.baseBranch, name: options.name }
+        : undefined;
       const worktreeResult: WorktreeCreateResult = await window.electronAPI.invoke(
         'worktree:create',
         workspacePath,
@@ -503,15 +515,25 @@ export const createNewWorktreeSessionActionAtom = atom(
           type: 'worktree',
           worktreeId: worktree.id,
         });
+        if (options?.initialDraft) {
+          set(setSessionDraftInputAtom, {
+            sessionId: result.id,
+            draftInput: options.initialDraft,
+            workspacePath,
+            persist: true,
+          });
+        }
         set(setSelectedWorkstreamAtom, {
           workspacePath,
           selection: { type: 'worktree', id: result.id },
         });
+        return result.id;
       }
     } catch (error) {
       console.error('[sessionHistoryActions] Failed to create worktree session:', error);
       throw error;
     }
+    return undefined;
   },
 );
 
@@ -662,9 +684,10 @@ export function dispatchCreateNewSession(initialDraft?: string): Promise<string 
 }
 
 export function dispatchCreateNewWorktreeSession(
-  options?: { baseBranch?: string; name?: string },
+  options?: CreateNewWorktreeSessionOptions,
 ): Promise<void> {
-  return store.set(createNewWorktreeSessionActionAtom, options) as Promise<void>;
+  return (store.set(createNewWorktreeSessionActionAtom, options) as Promise<string | undefined>)
+    .then(() => undefined);
 }
 
 export function dispatchOpenSessionInTab(sessionId: string): Promise<void> {

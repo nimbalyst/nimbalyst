@@ -3,13 +3,13 @@ import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcr
 
 const mocks = vi.hoisted(() => ({
   getMatchesForSession: vi.fn(),
-  getDiffsForToolCall: vi.fn(),
+  getDiffsForSession: vi.fn(),
 }));
 
 vi.mock('../ToolCallMatcher', () => ({
   toolCallMatcher: {
     getMatchesForSession: mocks.getMatchesForSession,
-    getDiffsForToolCall: mocks.getDiffsForToolCall,
+    getDiffsForSession: mocks.getDiffsForSession,
   },
 }));
 
@@ -40,7 +40,7 @@ function makeToolMessage(overrides: Partial<TranscriptViewMessage['toolCall']> &
 describe('enrichTranscriptMessagesWithToolCallDiffs', () => {
   beforeEach(() => {
     mocks.getMatchesForSession.mockReset();
-    mocks.getDiffsForToolCall.mockReset();
+    mocks.getDiffsForSession.mockReset();
   });
 
   it('hydrates matched tool rows and file_change rows without mutating the input transcript', async () => {
@@ -62,20 +62,30 @@ describe('enrichTranscriptMessagesWithToolCallDiffs', () => {
     mocks.getMatchesForSession.mockResolvedValue([
       { toolCallItemId: 'bash-call-1' },
     ]);
-    mocks.getDiffsForToolCall.mockImplementation(async (_sessionId: string, toolCallItemId: string) => {
-      if (toolCallItemId === 'nimtc|item_1|100|1') {
-        return [{ filePath: '/repo/a.ts', operation: 'edit', diffs: [{ oldString: 'a', newString: 'b' }] }];
-      }
-      if (toolCallItemId === 'bash-call-1') {
-        return [{ filePath: '/repo/b.ts', operation: 'bash', diffs: [], linesAdded: 1, linesRemoved: 0 }];
-      }
-      return [];
-    });
+    // Batched entry point: given the candidate refs, return a map keyed by
+    // `${toolCallItemId} ${timestamp}` (matching the enricher's refKey).
+    mocks.getDiffsForSession.mockImplementation(
+      async (_sessionId: string, refs: Array<{ toolCallItemId: string; toolCallTimestamp?: number }>) => {
+        const out = new Map<string, unknown[]>();
+        for (const { toolCallItemId, toolCallTimestamp } of refs) {
+          const key = `${toolCallItemId} ${toolCallTimestamp ?? ''}`;
+          if (toolCallItemId === 'nimtc|item_1|100|1') {
+            out.set(key, [{ filePath: '/repo/a.ts', operation: 'edit', diffs: [{ oldString: 'a', newString: 'b' }] }]);
+          } else if (toolCallItemId === 'bash-call-1') {
+            out.set(key, [{ filePath: '/repo/b.ts', operation: 'bash', diffs: [], linesAdded: 1, linesRemoved: 0 }]);
+          }
+        }
+        return out;
+      },
+    );
 
     const enriched = await enrichTranscriptMessagesWithToolCallDiffs('session-1', messages);
 
     expect(mocks.getMatchesForSession).toHaveBeenCalledWith('session-1');
-    expect(mocks.getDiffsForToolCall).toHaveBeenCalledTimes(2);
+    // One batched call for the whole session (not one per tool call).
+    expect(mocks.getDiffsForSession).toHaveBeenCalledTimes(1);
+    const passedRefs = mocks.getDiffsForSession.mock.calls[0][1] as Array<{ toolCallItemId: string }>;
+    expect(passedRefs.map((r) => r.toolCallItemId).sort()).toEqual(['bash-call-1', 'nimtc|item_1|100|1']);
     expect(enriched[0]?.toolCall?.fileDiffs?.[0]?.filePath).toBe('/repo/a.ts');
     expect(enriched[1]?.toolCall?.fileDiffs?.[0]?.filePath).toBe('/repo/b.ts');
     expect(enriched[2]?.toolCall?.fileDiffs).toBeUndefined();

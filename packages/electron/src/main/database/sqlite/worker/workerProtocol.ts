@@ -149,6 +149,10 @@ export interface ExecPayload {
   sql: string;
 }
 
+export interface TransactionPayload {
+  statements: Array<{ sql: string; params?: unknown[] }>;
+}
+
 // ============================================================================
 // Stats / instrumentation
 // ============================================================================
@@ -283,6 +287,7 @@ export type WorkerRequestType =
   | 'query'
   | 'queryReadOnly'
   | 'exec'
+  | 'transaction'
   | 'getStats'
   | 'getSlowQueries'
   | 'getPerformance'

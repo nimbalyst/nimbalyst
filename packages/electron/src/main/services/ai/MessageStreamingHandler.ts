@@ -37,7 +37,7 @@ import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStat
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { parseThinkingMode, resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
-import { AISessionsRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository, resolveClaudeCodeParentContextWindow } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
 import { resolveExtensionAgentRef } from './providerResolution';
 import { getAgentProviderRegistry } from '../../extensions/AgentProviderRegistry';
@@ -689,6 +689,55 @@ export class MessageStreamingHandler {
       }
     }
 
+    // Chat providers are lightweight direct API clients, and unlike agent
+    // providers they do not maintain provider-side conversation state. Refresh
+    // their runtime config from the persisted session before each send so a
+    // cached provider cannot keep an empty or stale model after the picker
+    // updates session.model and invalidates the prior instance.
+    if (['claude', 'openai', 'lmstudio'].includes(session.provider)) {
+      let expectedModel: string | undefined;
+      const fullModel = session.model || session.providerConfig?.model;
+      if (fullModel) {
+        const modelForProvider = extractModelForProvider(fullModel, session.provider as AIProviderType);
+        if (modelForProvider !== null) {
+          expectedModel = modelForProvider;
+        }
+      }
+
+      if (!expectedModel) {
+        const defaultModel = await ModelRegistry.getDefaultModel(session.provider as AIProviderType);
+        const defaultModelForProvider = extractModelForProvider(defaultModel, session.provider as AIProviderType);
+        if (defaultModelForProvider !== null) {
+          expectedModel = defaultModelForProvider;
+        }
+      }
+
+      const currentModel = ((provider as any).config as ProviderConfig | undefined)?.model;
+      if (expectedModel && currentModel !== expectedModel) {
+        const effectiveWorkspacePath = session.workspacePath || workspacePath;
+        const apiKey = session.provider === 'lmstudio'
+          ? 'not-required'
+          : this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
+        if (!apiKey && session.provider !== 'lmstudio') {
+          throw new Error(session.provider === 'openai' ? 'OpenAI API key not configured' : 'Anthropic API key not configured');
+        }
+
+        const refreshedConfig: ProviderConfig = {
+          apiKey,
+          model: expectedModel,
+          maxTokens: (session.providerConfig as any)?.maxTokens,
+          temperature: (session.providerConfig as any)?.temperature,
+        };
+
+        if (session.provider === 'lmstudio') {
+          const providerSettings = this.svc.getSettingsStore().get('providerSettings', {}) as any;
+          refreshedConfig.baseUrl = providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234';
+        }
+
+        await provider.initialize(refreshedConfig);
+      }
+    }
+
     // NOTE: No longer tracking provider per-window - each session has its own provider instance
 
     // Resolve the selected model's context window from the model registry.
@@ -1033,6 +1082,32 @@ export class MessageStreamingHandler {
     };
     this.installListener(provider, 'teammates:allCompleted', onTeammatesAllCompleted);
 
+    // Listen for a background sub-agent drain settling. When the lead finished but
+    // a native (non-teammate) sub-agent was still running, endSession was deferred
+    // (willResumeAfterCompletion). Once the drain settles with no continuation, end
+    // the deferred session. Mirrors onTeammatesAllCompleted. See NIM-1344 / #732.
+    const onSubagentsDrainSettled = async (data: { sessionId: string }) => {
+      if (!data.sessionId) return;
+      if (!stateManager.isSessionActive(data.sessionId)) return;
+      const isLeadBusy = typeof (provider as any).isLeadBusy === 'function'
+        && (provider as any).isLeadBusy();
+      if (isLeadBusy) {
+        logger.main.info(`[AIService] Sub-agent drain settled for ${data.sessionId}, but lead is busy — deferring endSession`);
+        return;
+      }
+      // A queued/continuation turn may already be taking over; let it own the end.
+      if (this.svc.sessionsProcessingQueue.has(data.sessionId)) return;
+
+      logger.main.info(`[AIService] Sub-agent drain settled for session ${data.sessionId}, ending deferred session`);
+      await stateManager.endSession(data.sessionId);
+      await this.svc.hooklessWatcher.stopForSession(data.sessionId);
+      codexEditWindowRegistry.clearSession(data.sessionId);
+
+      const soundService = SoundNotificationService.getInstance();
+      soundService.playCompletionSound(workspacePath);
+    };
+    this.installListener(provider, 'subagents:drainSettled', onSubagentsDrainSettled);
+
     // Track user @ mentions in the message
     try {
       await sessionFileTracker.trackUserMessage(
@@ -1140,15 +1215,20 @@ export class MessageStreamingHandler {
         // Refresh credentials every turn for all providers so key changes in settings apply immediately.
         const freshApiKey = this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
         const turnEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
-        await provider.initialize({
+        const turnConfig: any = {
           apiKey: freshApiKey,
           maxTokens: (session.providerConfig as any)?.maxTokens,
           temperature: (session.providerConfig as any)?.temperature,
           ...(turnEffortLevel && { effortLevel: turnEffortLevel }),
-          ...(isClaudeCode ? {
-            thinkingMode: parseThinkingMode((session.metadata as any)?.thinkingMode),
-          } : {}),
-        });
+        };
+        const fullTurnModel = session.model || session.providerConfig?.model;
+        if (fullTurnModel) {
+          const modelForProvider = extractModelForProvider(fullTurnModel, session.provider as AIProviderType);
+          if (modelForProvider !== null) {
+            turnConfig.model = modelForProvider;
+          }
+        }
+        await provider.initialize(turnConfig);
       }
 
       // Attach @ mentioned files for non-agent providers
@@ -2174,11 +2254,16 @@ export class MessageStreamingHandler {
                 newCostUSD += modelUsage[modelName].costUSD || 0;
               }
 
-              // Use the selected model's context window (resolved from model registry at session start).
-              // modelUsage from the SDK contains entries for both the parent model AND subagent models
-              // (e.g., Haiku 200k), and iteration order is not guaranteed, so extracting contextWindow
-              // from modelUsage would intermittently pick up a subagent's smaller window.
-              const contextWindowForDisplay = selectedModelContextWindow || currentUsage.contextWindow;
+              // Prefer the REAL per-model context window the CLI reports in
+              // modelUsage — the registry value is only a static seed and was
+              // wrong for models that changed window across CLI versions (the
+              // #825 "265k / 200k (132%)" bug). modelUsage also carries subagent
+              // entries (e.g. Haiku 200k) and iteration order isn't guaranteed,
+              // so resolveClaudeCodeParentContextWindow deterministically picks
+              // the PARENT model's window by matching the session's family.
+              // Fall back to the registry seed before the first result arrives.
+              const reportedContextWindow = resolveClaudeCodeParentContextWindow(sessionModelId, modelUsage);
+              const contextWindowForDisplay = reportedContextWindow || selectedModelContextWindow || currentUsage.contextWindow;
 
               const updatedUsage: NonNullable<SessionData['tokenUsage']> = {
                 inputTokens: currentUsage.inputTokens + newInputTokens,

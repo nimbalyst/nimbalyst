@@ -14,6 +14,10 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 **At release time, condense — don't ship the dev-time bullets verbatim.** `[Unreleased]` accumulates verbose per-commit bullets during development. Before tagging, collapse them: merge a feature's scattered bullets into one line, drop scaffolding, squash near-duplicates. If the release notes are longer than the equivalent section in a recent shipped version, cut harder.
 
+### Write and Run Tests for Behavioral Changes
+
+**Any change to runtime behavior ships with a unit test** — a new test, or an extension of an existing one. Pure refactors already covered by tests, formatting, docs, and config-only changes are exempt. Before pushing, run the gate locally: `npm run typecheck && npm run test:prepush`. The repo's pre-push hook runs this automatically; it installs on `npm install` (or `npm run hooks:install`). Never push to `main` with a red suite — CI on `main` is a backstop, not the gate. For high-risk areas (sync/collab, main-process init, IPC, restart-to-verify bugs) the test comes **first** and must fail before the fix — see [end-to-end-verification.md](./.claude/rules/end-to-end-verification.md).
+
 ### Use @floating-ui/react for All Popover/Tooltip/Menu Positioning
 
 See [floating-ui.md](./.claude/rules/floating-ui.md). Never manually calculate `position: fixed` coordinates — always use `@floating-ui/react` with `FloatingPortal`.
@@ -42,7 +46,7 @@ If you are tempted to add `|| process.env.SOME_API_KEY` as a convenience fallbac
 
 Stytch B2B gives a user a **different member id per org**. The **personal JWT** (`getPersonalSessionJwt()` / `personalUserId`) is for **personal sync ONLY** (the personal index room + session/prompt/draft/settings sync to the **mobile app**). The **team JWT** (`getSessionJwt()` / `getOrgScopedJwt(orgId)`) authorizes **ALL team collaboration** (tracker rooms, schema sync, document rooms, team room, project-access gate). Conflating them is this codebase's most-repeated sync bug.
 
-Use the branded types in `packages/runtime/src/auth/jwtScopes.ts` so a mix-up is a compile error. When "a second client can't see shared data", first check it's actually authenticated (an expired session is silently logged out → no team JWT). See [jwt-scopes.md](./.claude/rules/jwt-scopes.md) and [SYNC_JWT_MODEL.md](./docs/SYNC_JWT_MODEL.md).
+Use the branded types in `packages/runtime/src/auth/jwtScopes.ts` so a mix-up is a compile error. When "a second client can't see shared data", first check it's actually authenticated (an expired session is silently logged out → no team JWT).
 
 ### Database Access Rules
 
@@ -189,7 +193,6 @@ Two-tier architecture — `ai_agent_messages` (raw append-only log, sole source 
 | [TRACKER_WORKFLOWS.md](./docs/TRACKER_WORKFLOWS.md) | Creating decision or bug tracker items as part of a fix or design decision. |
 | [ARCHITECTURE_DIAGRAMS.md](./docs/ARCHITECTURE_DIAGRAMS.md) | Making any architectural decision — create an Excalidraw diagram. |
 | [DEBUGGING_LOGS.md](./docs/DEBUGGING_LOGS.md) | Investigating bugs — use the log access tools, don't ask the user to paste logs. |
-| [SYNC_JWT_MODEL.md](./docs/SYNC_JWT_MODEL.md) | Touching sync/auth — personal vs team JWT scopes, which JWT/identity each room uses, and the branded types that enforce it. |
 | [MAIN_PROCESS_INIT.md](./packages/electron/MAIN_PROCESS_INIT.md) | Working on Electron main-process bootstrap, singleton init, or IPC handler registration. |
 | [DATABASE.md](./packages/electron/DATABASE.md) | Working with PGLite tables, shutdown, or timestamp handling. |
 

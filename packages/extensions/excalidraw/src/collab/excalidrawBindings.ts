@@ -15,7 +15,8 @@ import type {
   BinaryFileData,
   Collaborator,
   ExcalidrawImperativeAPI,
-} from '@excalidraw/excalidraw/types/types';
+  SocketId,
+} from '@excalidraw/excalidraw/types';
 import type * as awarenessProtocol from 'y-protocols/awareness';
 import * as Y from 'yjs';
 import { restoreElements } from '@excalidraw/excalidraw';
@@ -49,7 +50,7 @@ export class ExcalidrawBinding {
   undoManager?: Y.UndoManager;
 
   subscriptions: Array<() => void> = [];
-  collaborators: Map<string, Collaborator> = new Map();
+  collaborators: Map<SocketId, Collaborator> = new Map();
   lastKnownElements: LastKnownOrderedElement[] = [];
   lastKnownFileIds: Set<string> = new Set();
 
@@ -318,13 +319,13 @@ export class ExcalidrawBinding {
     );
 
     // Init collaborators.
-    const collaborators = new Map<string, Collaborator>();
+    const collaborators = new Map<SocketId, Collaborator>();
     if (this.awareness) {
       for (const id of this.awareness.getStates().keys()) {
         if (id === this.awareness.clientID) continue;
         const state = this.awareness.getStates().get(id);
         if (state) {
-          collaborators.set(id.toString(), this.collaboratorFromAwarenessState(state, id));
+          collaborators.set(id.toString() as SocketId, this.collaboratorFromAwarenessState(state, id));
         }
       }
     }
@@ -429,15 +430,15 @@ export class ExcalidrawBinding {
   }): void => {
     if (!this.awareness) return;
     const states = this.awareness.getStates();
-    const collaborators = new Map<string, Collaborator>(this.collaborators);
+    const collaborators = new Map<SocketId, Collaborator>(this.collaborators);
     for (const id of [...added, ...updated]) {
       if (id === this.awareness.clientID) continue;
       const state = states.get(id);
       if (!state) continue;
-      collaborators.set(id.toString(), this.collaboratorFromAwarenessState(state, id));
+      collaborators.set(id.toString() as SocketId, this.collaboratorFromAwarenessState(state, id));
     }
     for (const id of removed) {
-      collaborators.delete(id.toString());
+      collaborators.delete(id.toString() as SocketId);
     }
     this.api.updateScene({ collaborators });
     this.collaborators = collaborators;
@@ -462,11 +463,13 @@ export class ExcalidrawBinding {
         ? { background: user.color, stroke: user.color }
         : undefined,
       avatarUrl: user.avatarUrl,
-      userState: user.state,
-      // Cast: Collaborator type marks socketId as optional but Excalidraw
-      // requires a string at runtime for keying purposes.
-      socketId: clientId.toString() as unknown as Collaborator['socketId'],
-    };
+      // Cast: our wire value is the plain string, Excalidraw types it as the
+      // UserIdleState enum (same runtime values).
+      userState: user.state as unknown as Collaborator['userState'],
+      // Excalidraw keys collaborators by socketId at runtime; 0.18 types it as
+      // the branded SocketId (a plain string underneath).
+      socketId: clientId.toString() as SocketId,
+    } as Collaborator;
   }
 
   /**

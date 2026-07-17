@@ -1,8 +1,26 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
+import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
+import {
+  pendingCollabDocumentAtom,
+  sharedDocumentsAtom,
+  workspaceHasTeamAtom,
+} from '../../store/atoms/collabDocuments';
+import { windowModeAtom } from '../../store/atoms/windowMode';
+import { openNavigationDialogRequestAtom } from '../../store/atoms/appCommands';
+
+const { openUnifiedQuickOpenMock } = vi.hoisted(() => ({
+  openUnifiedQuickOpenMock: vi.fn(),
+}));
+
+vi.mock('../../dialogs', () => ({
+  useNavigationDialogs: () => ({
+    openUnifiedQuickOpen: openUnifiedQuickOpenMock,
+  }),
+}));
 
 // The four legacy quick-open dialogs are now collapsed into UnifiedQuickOpen.
 // This test still exercises the Projects-tab pathway, asserting the lightweight
@@ -74,6 +92,9 @@ function setupElectronApiMock() {
       buildQuickOpenCache: vi.fn().mockResolvedValue(undefined),
       searchWorkspaceFileNames: vi.fn().mockResolvedValue([]),
       searchWorkspaceFileContent: vi.fn().mockResolvedValue([]),
+      semanticSearch: {
+        isAvailable: vi.fn().mockResolvedValue(false),
+      },
     },
   });
 
@@ -151,6 +172,57 @@ describe('UnifiedQuickOpen — Projects tab', () => {
     });
 
     expect(screen.getByText('aurora')).toBeTruthy();
+  });
+
+  it('finds a shared file in the Files tab and opens it collaboratively', async () => {
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+    const store = createStore();
+    const onClose = vi.fn();
+    const onFileSelect = vi.fn();
+    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+    store.set(workspaceHasTeamAtom, true);
+    store.set(sharedDocumentsAtom, [
+      {
+        documentId: 'doc-roadmap',
+        title: 'Planning/Product Roadmap',
+        documentType: 'markdown',
+        createdBy: 'user-1',
+        createdAt: 100,
+        updatedAt: 200,
+      },
+    ]);
+
+    render(
+      <JotaiProvider store={store}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={onClose}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="files"
+          onFileSelect={onFileSelect}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
+      target: { value: 'roadmap' },
+    });
+
+    const sharedResult = await screen.findByTestId('shared-file-quick-open-doc-roadmap');
+    expect(sharedResult.textContent).toContain('Product Roadmap');
+    expect(sharedResult.textContent).toContain('Shared');
+
+    fireEvent.click(sharedResult);
+
+    expect(onFileSelect).not.toHaveBeenCalled();
+    expect(store.get(pendingCollabDocumentAtom)).toEqual({
+      documentId: 'doc-roadmap',
+      documentType: 'markdown',
+    });
+    expect(store.get(windowModeAtom)).toBe('collab');
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it('passes the file mask to file-name search before result truncation', async () => {
@@ -266,6 +338,282 @@ describe('UnifiedQuickOpen — Projects tab', () => {
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: /Trackers/ }).getAttribute('aria-selected')).toBe('true');
       expect(screen.getByPlaceholderText('custom-type')).toBeTruthy();
+    });
+  });
+});
+
+describe('UnifiedQuickOpen — Team tab', () => {
+  beforeEach(() => {
+    setupElectronApiMock();
+    openUnifiedQuickOpenMock.mockReset();
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  });
+
+  it('only shows shared documents when the active workspace has a team', async () => {
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+    const withoutTeamStore = createStore();
+    withoutTeamStore.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+
+    const { unmount } = render(
+      <JotaiProvider store={withoutTeamStore}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={vi.fn()}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          onFileSelect={vi.fn()}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    expect(screen.queryByRole('tab', { name: /Team/ })).toBeNull();
+    unmount();
+
+    const withTeamStore = createStore();
+    withTeamStore.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+    withTeamStore.set(workspaceHasTeamAtom, true);
+    withTeamStore.set(sharedDocumentsAtom, [
+      {
+        documentId: 'doc-roadmap',
+        title: 'Planning/Product Roadmap',
+        documentType: 'markdown',
+        createdBy: 'user-1',
+        createdAt: 100,
+        updatedAt: 200,
+      },
+    ]);
+
+    render(
+      <JotaiProvider store={withTeamStore}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={vi.fn()}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="team"
+          onFileSelect={vi.fn()}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    expect(await screen.findByRole('tab', { name: /Team/ })).toBeTruthy();
+    expect(screen.getByText('Product Roadmap')).toBeTruthy();
+  });
+
+  it('filters by display name and excludes locked documents', async () => {
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+    const store = createStore();
+    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+    store.set(workspaceHasTeamAtom, true);
+    store.set(sharedDocumentsAtom, [
+      {
+        documentId: 'doc-roadmap',
+        title: 'Planning/Product Roadmap',
+        documentType: 'markdown',
+        createdBy: 'user-1',
+        createdAt: 100,
+        updatedAt: 300,
+      },
+      {
+        documentId: 'doc-retro',
+        title: 'Planning/Team Retrospective',
+        documentType: 'markdown',
+        createdBy: 'user-1',
+        createdAt: 100,
+        updatedAt: 200,
+      },
+      {
+        documentId: 'doc-locked',
+        title: 'Planning/Locked Strategy',
+        documentType: 'markdown',
+        createdBy: 'user-1',
+        createdAt: 100,
+        updatedAt: 400,
+        decryptFailed: true,
+      },
+    ]);
+
+    render(
+      <JotaiProvider store={store}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={vi.fn()}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="team"
+          onFileSelect={vi.fn()}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    expect(screen.getByText('Product Roadmap')).toBeTruthy();
+    expect(screen.getByText('Team Retrospective')).toBeTruthy();
+    expect(screen.queryByText('Locked Strategy')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
+      target: { value: 'roadmap' },
+    });
+
+    expect(screen.getByText('Product Roadmap')).toBeTruthy();
+    expect(screen.queryByText('Team Retrospective')).toBeNull();
+  });
+
+  it('routes selection through the pending shared-document atom and collab mode', async () => {
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+    const store = createStore();
+    const onClose = vi.fn();
+    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+    store.set(workspaceHasTeamAtom, true);
+    store.set(sharedDocumentsAtom, [
+      {
+        documentId: 'doc-canvas',
+        title: 'Design/Launch Canvas',
+        documentType: 'excalidraw',
+        createdBy: 'user-1',
+        createdAt: 100,
+        updatedAt: 200,
+      },
+    ]);
+
+    render(
+      <JotaiProvider store={store}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={onClose}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="team"
+          onFileSelect={vi.fn()}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    fireEvent.click(screen.getByText('Launch Canvas'));
+
+    expect(store.get(pendingCollabDocumentAtom)).toEqual({
+      documentId: 'doc-canvas',
+      documentType: 'excalidraw',
+    });
+    expect(store.get(windowModeAtom)).toBe('collab');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('jumps to the Team tab with Cmd+Shift+D while the palette is open', async () => {
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+    const store = createStore();
+    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+    store.set(workspaceHasTeamAtom, true);
+
+    render(
+      <JotaiProvider store={store}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={vi.fn()}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="files"
+          onFileSelect={vi.fn()}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    fireEvent.keyDown(window, { key: 'd', code: 'KeyD', ctrlKey: true, shiftKey: true });
+
+    expect(screen.getByRole('tab', { name: /Team/ }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('opens on Team with Cmd+Shift+D only when the workspace has a team', async () => {
+    const { NavigationDialogKeyboardHandler } = await import('../NavigationDialogKeyboardHandler');
+    const handlerProps = {
+      workspaceMode: true,
+      workspacePath: '/Users/ghinkle/sources/crystal',
+      currentFilePath: null,
+      onFileSelect: vi.fn(),
+      onSessionSelect: vi.fn(),
+      onPromptSelect: vi.fn(),
+      documentContext: {},
+    };
+
+    const withoutTeamStore = createStore();
+    withoutTeamStore.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+    const { unmount } = render(
+      <JotaiProvider store={withoutTeamStore}>
+        <NavigationDialogKeyboardHandler {...handlerProps} />
+      </JotaiProvider>
+    );
+
+    fireEvent.keyDown(window, { key: 'd', code: 'KeyD', ctrlKey: true, shiftKey: true });
+    expect(openUnifiedQuickOpenMock).not.toHaveBeenCalled();
+    unmount();
+
+    const withTeamStore = createStore();
+    withTeamStore.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+    withTeamStore.set(workspaceHasTeamAtom, true);
+    render(
+      <JotaiProvider store={withTeamStore}>
+        <NavigationDialogKeyboardHandler {...handlerProps} />
+      </JotaiProvider>
+    );
+
+    fireEvent.keyDown(window, { key: 'd', code: 'KeyD', ctrlKey: true, shiftKey: true });
+
+    expect(openUnifiedQuickOpenMock).toHaveBeenCalledWith(
+      expect.objectContaining({ initialTab: 'team' }),
+    );
+  });
+
+  it('does not replay a rejected Team menu request when team availability changes', async () => {
+    const { NavigationDialogKeyboardHandler } = await import('../NavigationDialogKeyboardHandler');
+    const store = createStore();
+    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+
+    render(
+      <JotaiProvider store={store}>
+        <NavigationDialogKeyboardHandler
+          workspaceMode={true}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          currentFilePath={null}
+          onFileSelect={vi.fn()}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+          documentContext={{}}
+        />
+      </JotaiProvider>
+    );
+
+    act(() => {
+      store.set(openNavigationDialogRequestAtom, {
+        version: 1,
+        dialogId: 'team-quick-open',
+      });
+    });
+    expect(openUnifiedQuickOpenMock).not.toHaveBeenCalled();
+
+    act(() => {
+      store.set(workspaceHasTeamAtom, true);
+    });
+    expect(openUnifiedQuickOpenMock).not.toHaveBeenCalled();
+
+    act(() => {
+      store.set(openNavigationDialogRequestAtom, {
+        version: 2,
+        dialogId: 'team-quick-open',
+      });
+    });
+
+    await waitFor(() => {
+      expect(openUnifiedQuickOpenMock).toHaveBeenCalledWith(
+        expect.objectContaining({ initialTab: 'team' }),
+      );
     });
   });
 });

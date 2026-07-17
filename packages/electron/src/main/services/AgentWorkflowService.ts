@@ -13,6 +13,7 @@ import {
   type ReleaseChannel,
 } from '../utils/store';
 import { usesCodexStyleAgentWorkflows } from '../../shared/agentWorkflowProviders';
+import { createTtlCache } from '../utils/asyncCache';
 
 export type AgentWorkflowKind = 'command' | 'skill';
 export type AgentWorkflowInvocation = 'explicit' | 'implicit' | 'both';
@@ -377,7 +378,12 @@ export class AgentWorkflowService {
   private readonly extensionDirectoriesLoader: () => Promise<string[]>;
   private readonly nativeClaudePluginPathsLoader: (workspacePath?: string) => Promise<Array<{ type: 'local'; path: string }>>;
   private readonly releaseChannelLoader: () => ReleaseChannel;
-  private cache: { snapshot: RegistrySnapshot; cacheTime: number } | null = null;
+  // Single-flight + TTL: listEntries() is fanned out from every mounted AI
+  // input on startup (one per open tab/pane), with no shared cache at the
+  // renderer layer. Without this, N concurrent callers before the first
+  // buildSnapshot() resolves each race into their own full filesystem scan.
+  // See nimbalyst-local/investigations/startup-contention.md.
+  private snapshotCache = createTtlCache<'snapshot', RegistrySnapshot>(DEFAULT_CACHE_TTL_MS);
   private codexExportSyncPromise: Promise<void> | null = null;
   private claudePluginSyncPromise: Promise<string[]> | null = null;
 
@@ -390,7 +396,7 @@ export class AgentWorkflowService {
   }
 
   clearCache(): void {
-    this.cache = null;
+    this.snapshotCache.invalidate();
   }
 
   async listEntries(options: AgentWorkflowQueryOptions = {}): Promise<AgentWorkflowEntry[]> {
@@ -476,14 +482,7 @@ export class AgentWorkflowService {
   }
 
   private async getSnapshot(): Promise<RegistrySnapshot> {
-    const now = Date.now();
-    if (this.cache && (now - this.cache.cacheTime) < DEFAULT_CACHE_TTL_MS) {
-      return this.cache.snapshot;
-    }
-
-    const snapshot = await this.buildSnapshot();
-    this.cache = { snapshot, cacheTime: now };
-    return snapshot;
+    return this.snapshotCache.get('snapshot', () => this.buildSnapshot());
   }
 
   private async buildSnapshot(): Promise<RegistrySnapshot> {

@@ -32,13 +32,17 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MarkdownEditor, DocumentPathProvider } from '@nimbalyst/runtime';
+import { MarkdownEditor, MonacoEditor, DocumentPathProvider } from '@nimbalyst/runtime';
 import { $convertFromEnhancedMarkdownString, getEditorTransformers, type CommentsConfig } from '@nimbalyst/runtime/editor';
-import { getTeamSyncProvider } from '../../store/atoms/collabDocuments';
+import {
+  getTeamSyncProvider,
+  sharedDocumentsAtom,
+  sharedFoldersAtom,
+} from '../../store/atoms/collabDocuments';
 import { buildCollabUri } from '../../utils/collabUri';
 import { FixedTabHeaderContainer, FixedTabHeaderRegistry } from '@nimbalyst/runtime/plugins/shared/fixedTabHeader';
 import { LexicalDiffHeaderAdapter } from '../UnifiedDiffHeader';
-import { DocumentSyncProvider, CollabHistoryClient } from '@nimbalyst/runtime/sync';
+import { DocumentSyncProvider, CollabHistoryClient, LocalDocumentReplica } from '@nimbalyst/runtime/sync';
 import { CollabLexicalProvider } from '@nimbalyst/runtime/sync';
 import { createRevisionAdapterFromCollabContent } from '@nimbalyst/runtime/sync';
 import { historyDialogFileAtom } from '../../store/atoms/historyDialog';
@@ -56,26 +60,55 @@ import type { Doc } from 'yjs';
 import type { Provider } from '@lexical/yjs';
 import {
   collabAwarenessAtom,
-  collabConnectionStatusAtom,
   collabKeyRotationEpochAtom,
-  hasCollabUnsyncedChanges,
+  collabProductStatusAtom,
   type RemoteUser,
 } from '../../store/atoms/collabEditor';
 import { documentSyncRegistry } from '../../store/atoms/documentSyncRegistry';
 import { CollabAssetService } from '../../services/CollabAssetService';
+import { ElectronLocalReplicaStore } from '../../services/ElectronLocalReplicaStore';
+import {
+  buildDocumentReplicaCacheKey,
+  getDocumentReplicaCache,
+  type DocumentReplicaAcquisition,
+  type DocumentReplicaCacheListener,
+} from '../../services/DocumentReplicaCache';
+import {
+  publishCollabTransportState,
+  resetCollabDocumentState,
+  setCollabOutboxState,
+  setCollabReplicaState,
+} from '../../store/listeners/collabStateListeners';
+import { closeActiveTabRequestAtom } from '../../store/atoms/appCommands';
+// dialogRef, not useDialog: TabContent mounts this component in a separate
+// React root (one per tab), so the app-root DialogProvider context is not
+// reachable through the tree. The module-level ref is the cross-root path.
+import { dialogRef } from '../../contexts/DialogContext';
 import { customEditorRegistry } from '../CustomEditors';
 import type { CustomEditorRegistration } from '../CustomEditors/types';
 import { useCollabLocalOrigin } from '../../hooks/useCollabLocalOrigin';
-import { getCollabContentAdapter } from '@nimbalyst/collab-adapters';
+import { markDocViewed } from '../../hooks/useDocUnread';
+import { recordDocOpened } from '../../store/atoms/collabDiscovery';
+import { exportCollabRecoveryPlaintext, getCollabContentAdapter } from '@nimbalyst/collab-adapters';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
-import { FilePathBreadcrumb } from '../common/FilePathBreadcrumb';
 import { UnifiedEditorHeaderBar } from './UnifiedEditorHeaderBar';
+import {
+  CollabDocumentHeaderMeta,
+  CollabRecoveryBanner,
+} from './CollabDocumentHeaderMeta';
+import {
+  getSharedDocumentDisplayPath,
+  getSharedDocumentDisplayPathWithFallback,
+} from '../CollabMode/collabTree';
 import {
   createCollaborationContext,
   createCollabExtensionHost,
   createExtensionAwarenessBridge,
   notifyCollabStatus,
 } from './collabExtensionHost';
+import { hasCollabReplicaPreloadSupport } from '../../store/listeners/collabReplicaListeners';
+import { getCollaborativeDocumentTypeCatalog } from '../../services/CollaborativeDocumentTypeCatalog';
+import { getCodeCollabExportFileName } from '../../utils/CodeCollabContentAdapter';
 
 interface CollaborativeTabEditorProps {
   /** The collab:// URI for this document */
@@ -119,97 +152,6 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Collaborative user avatars (subscribes to Jotai atom -- isolated re-renders)
-// ---------------------------------------------------------------------------
-
-const CollabAvatars: React.FC<{ filePath: string }> = ({ filePath }) => {
-  const users = useAtomValue(collabAwarenessAtom(filePath));
-  if (users.size === 0) return null;
-
-  return (
-    <div className="flex items-center -space-x-1.5">
-      {[...users.entries()].map(([userId, user]) => {
-        const initials = user.name
-          .split(/\s+/)
-          .map(w => w[0])
-          .join('')
-          .toUpperCase()
-          .slice(0, 2) || '?';
-        return (
-          <div
-            key={userId}
-            className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-medium"
-            style={{
-              backgroundColor: user.color,
-              color: '#fff',
-              border: '1.5px solid var(--nim-bg-secondary)',
-            }}
-            title={user.name}
-          >
-            {initials}
-          </div>
-        );
-      })}
-    </div>
-  );
-};
-
-// ---------------------------------------------------------------------------
-// Status bar (subscribes to Jotai atom -- isolated re-renders)
-// ---------------------------------------------------------------------------
-
-const CollabStatusBar: React.FC<{
-  filePath: string;
-  fileName: string;
-}> = ({ filePath, fileName }) => {
-  const status = useAtomValue(collabConnectionStatusAtom(filePath));
-
-  const statusDot = status === 'connected'
-    ? 'bg-green-500'
-    : status === 'replaying'
-      ? 'bg-blue-500'
-      : status === 'offline-unsynced'
-        ? 'bg-orange-500'
-    : status === 'error'
-      ? 'bg-red-500'
-    : status === 'connecting' || status === 'syncing'
-      ? 'bg-yellow-500'
-      : 'bg-gray-500';
-
-  const statusLabel = status === 'connected'
-    ? 'Connected'
-    : status === 'replaying'
-      ? 'Replaying local changes...'
-      : status === 'offline-unsynced'
-        ? 'Offline - unsynced changes'
-    : status === 'error'
-      ? 'Decryption failed - encryption key mismatch'
-    : status === 'connecting'
-      ? 'Connecting...'
-    : status === 'syncing'
-        ? 'Syncing...'
-        : 'Disconnected';
-
-  return (
-    <div
-      className="flex items-center gap-2 px-3 py-1 text-xs"
-      style={{
-        borderBottom: '1px solid var(--nim-border)',
-        color: 'var(--nim-text-muted)',
-        backgroundColor: 'var(--nim-bg-secondary)',
-      }}
-    >
-      <div className={`w-2 h-2 rounded-full ${statusDot}`} />
-      <span>{statusLabel}</span>
-      <CollabAvatars filePath={filePath} />
-      <span className="mx-1">|</span>
-      <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>group</span>
-      <span>{fileName}</span>
-    </div>
-  );
-};
-
-// ---------------------------------------------------------------------------
 // Hydration gate overlay (NIM-949)
 //
 // Shared docs (especially server-only ones with no local file backing) must not
@@ -221,8 +163,7 @@ const CollabStatusBar: React.FC<{
 // ---------------------------------------------------------------------------
 
 const CollabHydrationOverlay: React.FC<{ filePath: string }> = ({ filePath }) => {
-  const status = useAtomValue(collabConnectionStatusAtom(filePath));
-  const reconnecting = status === 'error' || status === 'disconnected' || status === 'offline-unsynced';
+  const status = useAtomValue(collabProductStatusAtom(filePath));
   return (
     <div
       className="collab-hydration-overlay absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 text-nim-muted"
@@ -232,7 +173,11 @@ const CollabHydrationOverlay: React.FC<{ filePath: string }> = ({ filePath }) =>
     >
       <span className="material-symbols-outlined animate-spin" style={{ fontSize: '20px' }}>progress_activity</span>
       <span className="text-sm">
-        {reconnecting ? 'Reconnecting to server…' : 'Loading from server…'}
+        {status.kind === 'local-copy-damaged'
+          ? status.label
+          : status.kind === 'local-saving-unavailable'
+            ? status.label
+            : 'Loading from server…'}
       </span>
     </div>
   );
@@ -253,7 +198,11 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
 }) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [activeConfig, setActiveConfig] = useState(initialCollabConfig);
+  const activeConfigRef = useRef(initialCollabConfig);
+  const [keyRotationPending, setKeyRotationPending] = useState(false);
   const syncProviderRef = useRef<DocumentSyncProvider | null>(null);
+  const replicaRef = useRef<LocalDocumentReplica | null>(null);
+  const replicaAcquisitionRef = useRef<DocumentReplicaAcquisition | null>(null);
   const collabProviderRef = useRef<CollabLexicalProvider | null>(null);
   const getContentRef = useRef<(() => string) | null>(null);
   const lexicalEditorRef = useRef<LexicalEditor | null>(null);
@@ -267,6 +216,27 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   const setHistoryDialogFile = useSetAtom(historyDialogFileAtom);
   const bumpHistoryControllers = useSetAtom(collabHistoryControllerBumpAtom);
   const isActiveRef = useRef(isActive);
+  const docIndexUpdatedAtRef = useRef<number | null>(null);
+  const sharedDocuments = useAtomValue(sharedDocumentsAtom);
+  const sharedFolders = useAtomValue(sharedFoldersAtom);
+  const sharedDisplayPath = useMemo(() => {
+    const fallbackPath = getSharedDocumentDisplayPath({
+      documentId: activeConfig.documentId,
+      title: activeConfig.displayPath || activeConfig.title || fileName,
+      parentFolderId: null,
+    }, []);
+    const currentDocument = sharedDocuments.find(
+      document => document.documentId === activeConfig.documentId,
+    );
+    if (currentDocument) {
+      return getSharedDocumentDisplayPathWithFallback(
+        currentDocument,
+        sharedFolders,
+        fallbackPath,
+      );
+    }
+    return fallbackPath;
+  }, [activeConfig.displayPath, activeConfig.documentId, activeConfig.title, fileName, sharedDocuments, sharedFolders]);
   const cursorColor = useMemo(() => randomCursorColor(), []);
   const assetService = useMemo(() => new CollabAssetService(activeConfig), [activeConfig]);
   const localOrigin = useCollabLocalOrigin(
@@ -275,6 +245,19 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     activeConfig.documentType ?? 'markdown',
   );
   const keyRotationEpoch = useAtomValue(collabKeyRotationEpochAtom);
+  const latestKeyRotationRequestRef = useRef(0);
+  const replicaKeyGenerationRef = useRef(0);
+  const offlineReplicaEnabled = hasCollabReplicaPreloadSupport();
+  const recordOfflineMetric = useCallback((event: {
+    metric: string;
+    [property: string]: string | number | boolean | null;
+  }) => {
+    // console.info('[CollabOfflineMetric]', JSON.stringify(event));
+  }, []);
+
+  useEffect(() => {
+    activeConfigRef.current = activeConfig;
+  }, [activeConfig]);
   // Captured Lexical editor instance -- needed by FixedTabHeader plugins
   // (search/replace, the unified diff header, etc.) when the agent applies edits.
   const [lexicalEditor, setLexicalEditor] = useState<any | null>(null);
@@ -288,6 +271,18 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     lastRecordedRevisionHashRef.current = null;
     lastAutoRevisionAtRef.current = 0;
   }, [activeConfig.orgId, activeConfig.documentId, filePath]);
+
+  useEffect(() => {
+    const doc = sharedDocuments.find((entry) => entry.documentId === activeConfig.documentId);
+    docIndexUpdatedAtRef.current = doc?.updatedAt ?? null;
+  }, [sharedDocuments, activeConfig.documentId]);
+
+  const getDocReadWatermark = useCallback((provider: DocumentSyncProvider | null): number | null => {
+    const contentUpdatedAt = provider?.getLastUpdatedAt() ?? null;
+    const indexUpdatedAt = docIndexUpdatedAtRef.current;
+    const watermark = Math.max(contentUpdatedAt ?? 0, indexUpdatedAt ?? 0);
+    return watermark > 0 ? watermark : null;
+  }, []);
 
   const createHistoryClient = useCallback(() => new CollabHistoryClient({
     serverUrl: activeConfig.serverUrl,
@@ -382,26 +377,49 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     if (keyRotationEpoch === 0) return; // Initial render, no rotation yet
 
     console.log('[CollaborativeTabEditor] Key rotation detected (epoch:', keyRotationEpoch, '), re-fetching config...');
+    latestKeyRotationRequestRef.current = keyRotationEpoch;
+    replicaKeyGenerationRef.current += 1;
+    setKeyRotationPending(true);
+    // Retire the old-key connection immediately. The next provider is not
+    // acquired until resolveCollabConfigForUri returns the actual new key
+    // fingerprint, so an epoch notification can never cache stale key bytes.
+    void replicaAcquisitionRef.current?.supersede().catch((error) => {
+      console.warn('[CollaborativeTabEditor] Failed to retire rotated replica provider:', error);
+    });
+
+    const config = activeConfigRef.current;
 
     resolveCollabConfigForUri(
-      activeConfig.workspacePath,
+      config.workspacePath,
       filePath,
-      activeConfig.documentId,
-      activeConfig.title,
+      config.documentId,
+      config.title,
+      config.documentType,
+      { forceRefresh: true },
     ).then((freshConfig) => {
+      if (latestKeyRotationRequestRef.current !== keyRotationEpoch) return;
       if (freshConfig) {
         console.log('[CollaborativeTabEditor] Got fresh config with new key, recreating providers');
         setActiveConfig(freshConfig);
+        setKeyRotationPending(false);
       } else {
         console.warn('[CollaborativeTabEditor] Failed to get fresh config after key rotation');
+        setCollabReplicaState(filePath, 'unavailable');
       }
+    }).catch((error) => {
+      if (latestKeyRotationRequestRef.current !== keyRotationEpoch) return;
+      console.warn('[CollaborativeTabEditor] Failed to resolve fresh config after key rotation:', error);
+      setCollabReplicaState(filePath, 'unavailable');
     });
-  }, [keyRotationEpoch]); // eslint-disable-line react-hooks/exhaustive-deps
-  // providerReady flips once from false->true. Using a ref + forceUpdate
-  // avoids the render loop from useState. We only need one re-render to
-  // mount MarkdownEditor, then never again.
-  const providerReadyRef = useRef(false);
-  const [, forceUpdate] = React.useReducer(x => x + 1, 0);
+  }, [filePath, keyRotationEpoch]);
+   // Increments each time a fresh CollabLexicalProvider is ready; 0 = not
+  // ready. Also used as the editor subtree's key so every (re)acquisition
+  // mounts a fresh CollaborationPlugin. The previous ref+forceUpdate gate
+  // let HMR re-renders slip through with a destroyed/nulled provider
+  // (CollaborationPlugin guards its init with an internal ref, so a stale
+  // plugin instance keeps using the dead provider -- same trap
+  // useTrackerContentCollab's providerEpoch solves).
+  const [providerEpoch, setProviderEpoch] = useState(0);
   // NIM-949: flips false->true the first time the room hydrates (status reaches
   // 'connected'/'replaying'). Drives the hydration-gate overlay. One-time flip.
   const [hasHydrated, setHasHydrated] = useState(false);
@@ -414,121 +432,379 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   useEffect(() => {
     isActiveRef.current = isActive;
     if (window.electronAPI?.setDocumentEdited) {
-      const status = syncProviderRef.current?.getStatus() ?? 'disconnected';
       window.electronAPI.setDocumentEdited(
-        isActive && hasCollabUnsyncedChanges(status)
+        isActive && !!replicaRef.current && replicaRef.current.getOutboxState() !== 'clean'
       );
     }
-  }, [isActive]);
+    // Switching to this doc (already synced) marks it read and counts as a
+    // genuine open (drives the "Recent" list).
+    if (isActive && activeConfig.orgId && syncProviderRef.current?.isSynced()) {
+      void markDocViewed(
+        activeConfig.documentId,
+        activeConfig.orgId,
+        getDocReadWatermark(syncProviderRef.current),
+      );
+      recordDocOpened(activeConfig.documentId);
+    }
+  }, [isActive, activeConfig.documentId, activeConfig.orgId, getDocReadWatermark]);
 
   useEffect(() => {
-    console.log('[CollaborativeTabEditor] Creating providers, initialContent:', !!activeConfig.initialContent);
-
-    const syncProvider = new DocumentSyncProvider({
-      serverUrl: activeConfig.serverUrl,
-      getJwt: activeConfig.getJwt,
+    // console.log('[CollaborativeTabEditor] Acquiring replica, initialContent:', !!activeConfig.initialContent);
+    setProviderEpoch(0);
+    setHasHydrated(false);
+    resetCollabDocumentState(filePath);
+    if (keyRotationPending) return;
+    const acquisitionKeyGeneration = replicaKeyGenerationRef.current;
+    const tabOpenedAt = performance.now();
+    let interactiveRecorded = false;
+    let caughtUpRecorded = false;
+    const recordInteractive = (source: 'local_replica' | 'server_hydration') => {
+      if (interactiveRecorded) return;
+      interactiveRecorded = true;
+      recordOfflineMetric({ metric: 'first_paint_source', source });
+      recordOfflineMetric({
+        metric: 'time_to_interactive',
+        source,
+        durationMs: Math.round(performance.now() - tabOpenedAt),
+      });
+    };
+    if (!offlineReplicaEnabled) {
+      // Compatibility path for the staged rollout. It intentionally keeps the
+      // legacy collabPendingUpdates writer and starts from server hydration;
+      // no durable cursor, cache, headless drain, or asset outbox is assumed.
+      setCollabReplicaState(filePath, 'ready');
+      const syncProvider = new DocumentSyncProvider({
+        serverUrl: activeConfig.serverUrl,
+        getJwt: activeConfig.getJwt,
+        orgId: activeConfig.orgId,
+        keyCustody: activeConfig.keyCustody,
+        documentKey: activeConfig.documentKey,
+        legacyDocumentKey: activeConfig.legacyDocumentKey,
+        orgKeyFingerprint: activeConfig.orgKeyFingerprint,
+        userId: activeConfig.userId,
+        documentId: activeConfig.documentId,
+        createWebSocket: activeConfig.createWebSocket,
+        onContentChanged: (yDoc) => {
+          const adapter = getCollabContentAdapter(activeConfig.documentType ?? 'markdown');
+          if (!adapter) return;
+          try {
+            const plaintext = exportCollabRecoveryPlaintext(adapter, yDoc);
+            if (plaintext === null) return;
+            void window.electronAPI.collabBackup.contentChanged({
+              workspacePath: activeConfig.workspacePath,
+              documentId: activeConfig.documentId,
+              documentType: activeConfig.documentType ?? 'markdown',
+              title: activeConfig.title,
+              plaintext,
+              kind: 'document',
+            });
+          } catch (error) {
+            console.warn('[CollaborativeTabEditor] Backup serialization failed:', error);
+          }
+        },
+        onStatusChange: (status) => {
+          publishCollabTransportState(filePath, status);
+          setCollabOutboxState(
+            filePath,
+            status === 'replaying'
+              ? 'replaying'
+              : status === 'offline-unsynced'
+                ? 'pending'
+                : 'clean',
+          );
+          if (status === 'connected' || status === 'replaying') {
+            setHasHydrated(true);
+            recordInteractive('server_hydration');
+          }
+          collabProviderRef.current?.handleStatusChange(status);
+          notifyCollabStatus(syncProvider, status);
+          if (status === 'connected') {
+            if (!caughtUpRecorded) {
+              caughtUpRecorded = true;
+              recordOfflineMetric({
+                metric: 'time_to_caught_up',
+                durationMs: Math.round(performance.now() - tabOpenedAt),
+              });
+            }
+            void ensureBootstrapRevision();
+          }
+        },
+        initialPendingUpdateBase64: activeConfig.pendingUpdateBase64,
+        onPendingUpdateChange: async (pendingUpdateBase64) => {
+          await window.electronAPI.documentSync.setPendingUpdate(
+            activeConfig.workspacePath,
+            activeConfig.orgId,
+            activeConfig.documentId,
+            pendingUpdateBase64,
+          );
+        },
+        onRemoteUpdate: (origin) => collabProviderRef.current?.handleRemoteUpdate(origin),
+        onOfflineMetric: recordOfflineMetric,
+        reviewGateEnabled: false,
+      });
+      const awarenessUnsub = syncProvider.onAwarenessChange((states) => {
+        const users = new Map<string, RemoteUser>();
+        for (const [userId, state] of states) {
+          users.set(userId, { name: state.user.name, color: state.user.color });
+        }
+        store.set(collabAwarenessAtom(filePath), users);
+      });
+      const collabProvider = new CollabLexicalProvider(syncProvider, {
+        deferInitialSync: true,
+      });
+      syncProviderRef.current = syncProvider;
+      collabProviderRef.current = collabProvider;
+      documentSyncRegistry.register(syncProvider);
+      setProviderEpoch((epoch) => epoch + 1);
+      return () => {
+        awarenessUnsub();
+        documentSyncRegistry.unregister(syncProvider);
+        collabProviderRef.current?.destroy();
+        syncProvider.destroy();
+        syncProviderRef.current = null;
+        collabProviderRef.current = null;
+        resetCollabDocumentState(filePath);
+      };
+    }
+    let cancelled = false;
+    let awarenessUnsub: (() => void) | null = null;
+    let acquisition: DocumentReplicaAcquisition | null = null;
+    const replicaIdentity = {
+      accountId: activeConfig.accountId,
       orgId: activeConfig.orgId,
-      keyCustody: activeConfig.keyCustody,
-      documentKey: activeConfig.documentKey,
-      // Legacy org key so pre-migration shared-doc rows still decrypt (NIM-878).
-      legacyDocumentKey: activeConfig.legacyDocumentKey,
-      orgKeyFingerprint: activeConfig.orgKeyFingerprint,
-      userId: activeConfig.userId,
       documentId: activeConfig.documentId,
-      createWebSocket: activeConfig.createWebSocket,
-      onStatusChange: (status) => {
-        console.log('[CollaborativeTabEditor] Status change:', status);
-        // Write to Jotai atom -- only CollabStatusBar re-renders
-        store.set(collabConnectionStatusAtom(filePath), status);
-        // NIM-949: the room has hydrated once it reaches a synced state. From
-        // then on the editor is safe to interact with even if it later goes
-        // offline-unsynced (we now hold the content). setState bails out on the
-        // repeat 'connected' values, so this re-renders the editor only once.
-        if (status === 'connected' || status === 'replaying') {
+    };
+    const cacheKey = buildDocumentReplicaCacheKey(
+      replicaIdentity,
+      activeConfig.keyCustody,
+      activeConfig.orgKeyFingerprint,
+    );
+
+    const listener: DocumentReplicaCacheListener = {
+      onReplicaStateChange: (state) => {
+        setCollabReplicaState(filePath, state);
+        const replica = replicaRef.current;
+        if (state === 'ready' && replica?.wasHydratedFromStore()) {
           setHasHydrated(true);
         }
+      },
+      onOutboxStateChange: (state) => {
+        setCollabOutboxState(filePath, state);
         if (isActiveRef.current && window.electronAPI?.setDocumentEdited) {
-          window.electronAPI.setDocumentEdited(hasCollabUnsyncedChanges(status));
+          window.electronAPI.setDocumentEdited(state !== 'clean');
         }
-        // Forward to CollabLexicalProvider (markdown path) and to any SDK
-        // subscribers registered via host.collaboration.onStatusChange
-        // (extension path). Both fan-outs are no-ops when the corresponding
-        // branch isn't active.
+      },
+      onTransportStateChange: (status) => {
+        // console.log('[CollaborativeTabEditor] Transport status change:', status);
+        publishCollabTransportState(filePath, status);
+        if (status === 'connected' || status === 'replaying') {
+          setHasHydrated(true);
+          recordInteractive('server_hydration');
+        }
         collabProviderRef.current?.handleStatusChange(status);
         if (syncProviderRef.current) {
           notifyCollabStatus(syncProviderRef.current, status);
         }
         if (status === 'connected') {
+          if (!caughtUpRecorded) {
+            caughtUpRecorded = true;
+            recordOfflineMetric({
+              metric: 'time_to_caught_up',
+              durationMs: Math.round(performance.now() - tabOpenedAt),
+            });
+          }
           void ensureBootstrapRevision();
+          if (isActiveRef.current && activeConfig.orgId && syncProviderRef.current) {
+            void markDocViewed(
+              activeConfig.documentId,
+              activeConfig.orgId,
+              getDocReadWatermark(syncProviderRef.current),
+            );
+            recordDocOpened(activeConfig.documentId);
+          }
         }
       },
-      initialPendingUpdateBase64: activeConfig.pendingUpdateBase64,
-      onPendingUpdateChange: async (pendingUpdateBase64) => {
-        await window.electronAPI.documentSync.setPendingUpdate(
-          activeConfig.workspacePath,
-          activeConfig.orgId,
-          activeConfig.documentId,
-          pendingUpdateBase64,
-        );
-      },
       onRemoteUpdate: (origin) => {
-        // Forward to CollabLexicalProvider
         collabProviderRef.current?.handleRemoteUpdate(origin);
       },
-      // Review gate disabled for now -- will be enabled in Phase 4c
-      reviewGateEnabled: false,
-    });
+    };
 
-    // Subscribe to awareness changes and write to Jotai atom
-    const awarenessUnsub = syncProvider.onAwarenessChange((states) => {
-      const users = new Map<string, RemoteUser>();
-      for (const [userId, state] of states) {
-        users.set(userId, { name: state.user.name, color: state.user.color });
+    void getDocumentReplicaCache().acquire(
+      cacheKey,
+      async (events) => {
+        const attachmentId = crypto.randomUUID();
+        const providerAttached = window.electronAPI.documentSync.setReplicaProviderAttached(
+          replicaIdentity,
+          attachmentId,
+          true,
+        );
+        const detachProvider = async () => {
+          try {
+            await window.electronAPI.documentSync.setReplicaProviderAttached(
+              replicaIdentity,
+              attachmentId,
+              false,
+            );
+          } catch (error) {
+            console.warn('[CollaborativeTabEditor] Replica-provider detach failed:', error);
+          }
+        };
+        const replica = new LocalDocumentReplica({
+          identity: replicaIdentity,
+          documentType: activeConfig.documentType ?? 'markdown',
+          store: new ElectronLocalReplicaStore(activeConfig.workspacePath),
+          onReplicaStateChange: events.onReplicaStateChange,
+          onOutboxStateChange: events.onOutboxStateChange,
+          onOfflineMetric: recordOfflineMetric,
+        });
+
+        try {
+          const hydrationStartedAt = performance.now();
+          await Promise.all([replica.whenReady, providerAttached]);
+          recordOfflineMetric({
+            metric: 'replica_hydration',
+            hit: replica.wasHydratedFromStore(),
+            durationMs: Math.round(performance.now() - hydrationStartedAt),
+          });
+          const syncProvider = new DocumentSyncProvider({
+            replica,
+            serverUrl: activeConfig.serverUrl,
+            getJwt: activeConfig.getJwt,
+            orgId: activeConfig.orgId,
+            keyCustody: activeConfig.keyCustody,
+            documentKey: activeConfig.documentKey,
+            legacyDocumentKey: activeConfig.legacyDocumentKey,
+            orgKeyFingerprint: activeConfig.orgKeyFingerprint,
+            userId: activeConfig.userId,
+            documentId: activeConfig.documentId,
+            createWebSocket: activeConfig.createWebSocket,
+            onContentChanged: (yDoc) => {
+              const adapter = getCollabContentAdapter(activeConfig.documentType ?? 'markdown');
+              if (!adapter) return;
+              try {
+                const plaintext = exportCollabRecoveryPlaintext(adapter, yDoc);
+                if (plaintext === null) {
+                  console.warn('[CollaborativeTabEditor] Backup skipped: adapter export is not UTF-8 plaintext');
+                  return;
+                }
+                void window.electronAPI.collabBackup.contentChanged({
+                  workspacePath: activeConfig.workspacePath,
+                  documentId: activeConfig.documentId,
+                  documentType: activeConfig.documentType ?? 'markdown',
+                  title: activeConfig.title,
+                  plaintext,
+                  kind: 'document',
+                });
+              } catch (error) {
+                console.warn('[CollaborativeTabEditor] Backup serialization failed:', error);
+              }
+            },
+            onStatusChange: events.onTransportStateChange,
+            onOfflineMetric: recordOfflineMetric,
+            initialPendingUpdateBase64: activeConfig.pendingUpdateBase64,
+            onPendingUpdateChange: async (pendingUpdateBase64) => {
+              if (replica.getState() !== 'unavailable') return;
+              await window.electronAPI.documentSync.setPendingUpdate(
+                activeConfig.workspacePath,
+                activeConfig.orgId,
+                activeConfig.documentId,
+                pendingUpdateBase64,
+              );
+            },
+            onRemoteUpdate: events.onRemoteUpdate,
+            reviewGateEnabled: false,
+          });
+          return { replica, syncProvider, detachProvider };
+        } catch (error) {
+          await replica.destroy().catch(() => {});
+          await detachProvider();
+          throw error;
+        }
+      },
+      listener,
+    ).then((nextAcquisition) => {
+      if (cancelled) {
+        if (acquisitionKeyGeneration !== replicaKeyGenerationRef.current) {
+          void nextAcquisition.supersede();
+        } else {
+          nextAcquisition.release();
+        }
+        return;
       }
-      store.set(collabAwarenessAtom(filePath), users);
+      acquisition = nextAcquisition;
+      replicaAcquisitionRef.current = nextAcquisition;
+      replicaRef.current = nextAcquisition.replica;
+      syncProviderRef.current = nextAcquisition.syncProvider;
+      if (
+        nextAcquisition.replica.wasHydratedFromStore() &&
+        nextAcquisition.replica.getState() === 'ready'
+      ) {
+        setHasHydrated(true);
+        recordInteractive('local_replica');
+      }
+
+      awarenessUnsub = nextAcquisition.syncProvider.onAwarenessChange((states) => {
+        const users = new Map<string, RemoteUser>();
+        for (const [userId, state] of states) {
+          users.set(userId, { name: state.user.name, color: state.user.color });
+        }
+        store.set(collabAwarenessAtom(filePath), users);
+      });
+
+      const collabProvider = new CollabLexicalProvider(nextAcquisition.syncProvider, {
+        // A durable local hit is immediately bindable. A first open still waits
+        // for the server's explicit room-state response before bootstrapping.
+        deferInitialSync: !(
+          nextAcquisition.replica.wasHydratedFromStore() &&
+          nextAcquisition.replica.getState() === 'ready'
+        ),
+      });
+      collabProviderRef.current = collabProvider;
+      // A warm provider may already be connected before this new Lexical
+      // adapter exists. Re-publish its current status so the adapter and the
+      // CollaborationPlugin catch-up path cannot leave an empty doc blank.
+      collabProvider.handleStatusChange(nextAcquisition.syncProvider.getStatus());
+      documentSyncRegistry.register(nextAcquisition.syncProvider);
+      setProviderEpoch((epoch) => epoch + 1);
+    }).catch((error) => {
+      console.error('[CollaborativeTabEditor] Failed to acquire local replica/provider:', error);
+      if (!cancelled) {
+        setProviderEpoch(0);
+        setCollabReplicaState(filePath, 'unavailable');
+      }
     });
-
-    const collabProvider = new CollabLexicalProvider(syncProvider, {
-      // Shared docs are server-authoritative. Let the server's initial sync
-      // land before Lexical considers the room bootstrapped, otherwise a local
-      // seed can duplicate or resurrect content.
-      deferInitialSync: true,
-    });
-
-    syncProviderRef.current = syncProvider;
-    collabProviderRef.current = collabProvider;
-
-    // Register with the DocumentSync registry so the network-available cascade
-    // can kick this provider's reconnect loop after the CollabV3 index is
-    // confirmed healthy (see networkAvailabilityListeners.ts).
-    documentSyncRegistry.register(syncProvider);
-
-    // One-time flip: mount MarkdownEditor
-    if (!providerReadyRef.current) {
-      providerReadyRef.current = true;
-      forceUpdate();
-    }
 
     return () => {
-      awarenessUnsub();
-      documentSyncRegistry.unregister(syncProvider);
-      syncProvider.destroy();
+      cancelled = true;
+      awarenessUnsub?.();
+      if (acquisition) {
+        documentSyncRegistry.unregister(acquisition.syncProvider);
+        if (acquisitionKeyGeneration !== replicaKeyGenerationRef.current) {
+          void acquisition.supersede();
+        } else {
+          acquisition.release();
+        }
+      }
+      if (replicaAcquisitionRef.current === acquisition) {
+        replicaAcquisitionRef.current = null;
+      }
       syncProviderRef.current = null;
+      replicaRef.current = null;
+      collabProviderRef.current?.destroy();
       collabProviderRef.current = null;
       if (isActiveRef.current && window.electronAPI?.setDocumentEdited) {
         window.electronAPI.setDocumentEdited(false);
       }
-      // Clean up the atoms
-      store.set(collabConnectionStatusAtom(filePath), 'disconnected');
+      resetCollabDocumentState(filePath);
       store.set(collabAwarenessAtom(filePath), new Map());
     };
-  }, [activeConfig, ensureBootstrapRevision, filePath]);
+  }, [activeConfig, ensureBootstrapRevision, filePath, getDocReadWatermark, keyRotationPending, offlineReplicaEnabled, recordOfflineMetric]);
 
   // Build the provider factory for CollaborationPlugin
   // This function is called by CollaborationPlugin with a doc ID and yjsDocMap.
   // We return our adapter which already has the Y.Doc from DocumentSyncProvider.
   const providerFactory = useCallback((id: string, yjsDocMap: Map<string, Doc>): Provider => {
-    console.log('[CollaborativeTabEditor] providerFactory called, id:', id, 'providerReady:', !!collabProviderRef.current);
+    // console.log('[CollaborativeTabEditor] providerFactory called, id:', id, 'providerReady:', !!collabProviderRef.current);
     const provider = collabProviderRef.current;
     if (!provider) {
       throw new Error('[CollaborativeTabEditor] CollabLexicalProvider not initialized');
@@ -537,7 +813,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     // Register our Y.Doc in the yjsDocMap so CollaborationPlugin can find it
     const ydoc = provider.getYDoc();
     yjsDocMap.set(id, ydoc);
-    console.log('[CollaborativeTabEditor] Y.Doc registered in yjsDocMap');
+    // console.log('[CollaborativeTabEditor] Y.Doc registered in yjsDocMap');
 
     return provider;
   }, []);
@@ -607,14 +883,12 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
 
   const markdownConfig = useMemo(() => ({
     onUploadAsset: (file: File) => assetService.uploadFile(file),
-    onAssetReferencesRemoved: (removedUris: string[]) => {
-      // Fire-and-forget; main deletes exactly the URIs the plugin saw
-      // disappear (never the full server set), so we can't accidentally
-      // delete a peer's still-live attachment.
-      void assetService.notifyAssetReferencesRemoved(removedUris).catch(err => {
-        console.warn('[CollaborativeTabEditor] gc-assets failed', err);
-      });
-    },
+    // NIM-1683: intentionally do NOT wire onAssetReferencesRemoved. Deleting an
+    // asset the moment it leaves the *current* editor state is data-loss --
+    // revision history and undo / cut-paste still reference the same
+    // `collab-asset://` URI. Asset lifetime is tied to document lifetime; the
+    // server reclaims all of a doc's blobs only when the document itself is
+    // deleted. Leaving this unset keeps the asset-GC extension idle.
   }), [assetService]);
 
   // Create a minimal EditorHost for collaboration mode
@@ -811,18 +1085,20 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   // ---- Branch selection ---------------------------------------------------
   const documentType = activeConfig.documentType ?? 'markdown';
   const extensionRegistration: CustomEditorRegistration | null = useMemo(() => {
-    if (documentType === 'markdown') return null;
+    if (documentType === 'markdown' || documentType === 'code') return null;
     // Look up by the share filename, which carries the extension (e.g.
     // `MyDrawing.excalidraw`). Falls back to `<title>.<documentType>` so
     // recipients of a doc shared with a bare title still get routed to
     // the right editor.
-    const lookupName =
-      fileName.includes('.') ? fileName : `${activeConfig.title}.${documentType}`;
+    const lookupName = activeConfig.fileExtension
+      ? `document${activeConfig.fileExtension}`
+      : fileName.includes('.') ? fileName : `${activeConfig.title}.${documentType}`;
     const match = customEditorRegistry.findRegistrationForFile(lookupName);
     if (!match) return null;
+    if (activeConfig.editorId && match.extensionId !== activeConfig.editorId) return null;
     if (!match.collaboration?.supported) return null;
     return match;
-  }, [documentType, fileName, activeConfig.title]);
+  }, [documentType, fileName, activeConfig.editorId, activeConfig.fileExtension, activeConfig.title]);
   // Manual resync ("Re-upload to Shared Doc"). For an OPEN custom-editor collab
   // doc we MUST write through the live renderer connection: the default IPC
   // path opens a throwaway main-process provider that connects -> writes ->
@@ -846,6 +1122,20 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
           const fileRes = await window.electronAPI.readFileContent(localPath);
           if (fileRes?.success && typeof fileRes.content === 'string') {
             adapter.applyFromFile(provider.getYDoc(), fileRes.content);
+            // Durably persist to the server before reporting success -- a
+            // timed-out flush means a teammate / reopen may still see the old
+            // room, so surface that instead of a false "updated" toast.
+            const acked = await provider.flushWithAck(8000);
+            console.log(
+              `[CollaborativeTabEditor] live re-upload flushed: acked=${acked} type=${documentType} doc=${activeConfig.documentId} bytes=${fileRes.content.length}`,
+            );
+            if (!acked) {
+              errorNotificationService.showError(
+                'Re-upload not confirmed',
+                'The push was sent but the server did not confirm persisting it. Check your connection and retry.',
+              );
+              return;
+            }
             errorNotificationService.showInfo(
               'Shared document updated',
               'Pushed the current local file into the shared document.',
@@ -863,9 +1153,50 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     void localOrigin.reuploadFromLocalSource();
   }, [documentType, activeConfig, localOrigin]);
 
-  const localOriginActionItems = useMemo(() => {
+  const handleSaveCodeCopy = useCallback(async (): Promise<void> => {
+    const provider = syncProviderRef.current;
+    const adapter = getCollabContentAdapter('code');
+    if (!provider || !adapter) {
+      errorNotificationService.showError(
+        'Could not save a copy',
+        'The collaborative code exporter is unavailable.',
+      );
+      return;
+    }
+
+    const preferredSuffix = activeConfig.fileExtension || adapter.fileExtensions[0] || '.txt';
+    const defaultFileName = getCodeCollabExportFileName(
+      activeConfig.title || fileName || 'document',
+      activeConfig.fileExtension,
+    );
+    const content = adapter.exportToFile(provider.getYDoc());
+    const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content;
+    const result = await window.electronAPI.invoke('document-sync:export-to-file', {
+      documentType: 'code',
+      defaultFileName,
+      fileExtensions: Array.from(new Set([preferredSuffix, ...adapter.fileExtensions])),
+      bytes,
+    }) as { success: boolean; cancelled?: boolean; error?: string };
+
+    if (!result.success && !result.cancelled) {
+      errorNotificationService.showError(
+        'Could not save a copy',
+        result.error ?? 'The file could not be exported.',
+      );
+    }
+  }, [activeConfig.fileExtension, activeConfig.title, fileName]);
+
+  const collabActionItems = useMemo(() => {
     const actionDisabled = localOrigin.busyAction !== null;
     return [
+      ...(documentType === 'code' ? [{
+        label: 'Save a Copy',
+        icon: 'download',
+        disabled: !hasHydrated,
+        onClick: () => {
+          void handleSaveCodeCopy();
+        },
+      }] : []),
       {
         label: 'Open Local',
         icon: 'folder_open',
@@ -899,7 +1230,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         },
       },
     ];
-  }, [localOrigin, handleReuploadFromLocal]);
+  }, [documentType, handleSaveCodeCopy, hasHydrated, localOrigin, handleReuploadFromLocal]);
   const handleLexicalEditorReady = useCallback((editor: any) => {
     setLexicalEditor((prev: any) => (prev === editor ? prev : editor));
     lexicalEditorRef.current = editor ?? null;
@@ -912,6 +1243,57 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     getContentRef.current = fn;
     onGetContentReady?.(fn);
   }, [onGetContentReady]);
+
+  const handleCopyCurrentDocument = useCallback(async (): Promise<void> => {
+    try {
+      let plaintext = getContentRef.current?.() ?? null;
+      if (plaintext === null) {
+        const replica = replicaRef.current;
+        const adapter = getCollabContentAdapter(activeConfig.documentType ?? 'markdown');
+        if (!replica || !adapter) throw new Error('No plaintext exporter is available');
+        plaintext = exportCollabRecoveryPlaintext(adapter, replica.getYDoc());
+      }
+      if (plaintext === null) throw new Error('This editor cannot export UTF-8 text');
+      await window.electronAPI.copyToClipboard(plaintext);
+      errorNotificationService.showInfo(
+        'Current document copied',
+        'The complete current document was copied so the unsent edits can be preserved.',
+        { duration: 4000 },
+      );
+    } catch (error) {
+      errorNotificationService.showError(
+        'Could not copy current document',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }, [activeConfig.documentType]);
+
+  const handleDiscardLocalCopy = useCallback(async (): Promise<void> => {
+    const confirm = dialogRef.current?.confirm;
+    if (!confirm) {
+      console.error('[CollaborativeTabEditor] DialogProvider not mounted; refusing destructive discard');
+      return;
+    }
+    const confirmed = await confirm({
+      title: 'Discard local copy?',
+      message: 'This permanently deletes the local replica and its unuploaded edits, then closes the document. This cannot be undone.',
+      confirmLabel: 'Discard and close',
+      cancelLabel: 'Keep local copy',
+      destructive: true,
+    });
+    if (!confirmed) return;
+    try {
+      const acquisition = replicaAcquisitionRef.current;
+      if (!acquisition) throw new Error('The local replica is no longer attached');
+      await acquisition.discardLocalCopy();
+      store.set(closeActiveTabRequestAtom, (value) => value + 1);
+    } catch (error) {
+      errorNotificationService.showError(
+        'Could not discard local copy',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }, []);
 
   // Publish a per-tab history controller so the CollabHistoryDialog can
   // list / load / create revisions against the live document key without
@@ -967,68 +1349,48 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
 
   return (
     <div ref={rootRef} className="collaborative-tab-editor" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Connection status bar -- subscribes to Jotai atom, isolated re-renders */}
-      <CollabStatusBar
-        filePath={filePath}
-        fileName={fileName}
-      />
-
       <UnifiedEditorHeaderBar
         filePath={filePath}
         fileName={fileName}
         workspaceId={activeConfig.workspacePath}
         isMarkdown={documentType === 'markdown'}
         lexicalEditor={documentType === 'markdown' ? (lexicalEditor ?? undefined) : undefined}
-        breadcrumbContent={
-          localOrigin.binding?.resolvedPath ? (
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span className="shrink-0 text-[var(--nim-text-faint)] text-[12px] uppercase tracking-wide">
-                Uploaded from
-              </span>
-              <FilePathBreadcrumb
-                filePath={localOrigin.binding.resolvedPath}
-                workspacePath={activeConfig.workspacePath}
-                className="min-w-0 flex-1"
-              />
-            </div>
-          ) : localOrigin.binding ? (
-            <div className="flex min-w-0 items-center gap-1.5 text-[13px]">
-              <span className="shrink-0 text-[var(--nim-text-faint)] text-[12px] uppercase tracking-wide">
-                Uploaded from
-              </span>
-              <span className="truncate text-[var(--nim-warning)]">
-                {localOrigin.binding.relativePath} (missing)
-              </span>
-            </div>
-          ) : (
-            <div className="flex min-w-0 items-center gap-1.5 text-[13px]">
-              <span className="shrink-0 text-[var(--nim-text-faint)] text-[12px] uppercase tracking-wide">
-                Shared doc
-              </span>
-              <span className="truncate text-[var(--nim-text)] font-medium">{fileName}</span>
-            </div>
-          )
-        }
+        breadcrumbContent={(
+          <CollabDocumentHeaderMeta filePath={filePath} displayPath={sharedDisplayPath} />
+        )}
         showShareLinkButton={false}
         showSharedDocButton={false}
         showHistoryAction={true}
         showCommonFileActions={false}
-        extraActionItems={localOriginActionItems}
+        sharedDocumentLinkTarget={{
+          documentId: activeConfig.documentId,
+          orgId: activeConfig.orgId,
+        }}
+        extraActionItems={collabActionItems}
+      />
+
+      <CollabRecoveryBanner
+        filePath={filePath}
+        onCopyCurrentDocument={handleCopyCurrentDocument}
+        onDiscardLocalCopy={handleDiscardLocalCopy}
       />
 
       {/* Editor area */}
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative' }}>
         {/* NIM-949: gate editing until the room hydrates, so a server-only doc
             never presents a blank editable surface during a connection/auth blip. */}
-        {providerReadyRef.current && !hasHydrated && (
+        {providerEpoch > 0 && !hasHydrated && (
           <CollabHydrationOverlay filePath={filePath} />
         )}
-        {!providerReadyRef.current ? (
+        {providerEpoch === 0 ? (
           <div className="flex items-center justify-center h-full text-nim-muted">
             Connecting to document...
           </div>
         ) : documentType === 'markdown' ? (
-          <DocumentPathProvider documentPath={filePath}>
+          // Keyed by providerEpoch: a re-acquisition (HMR, key rotation) must
+          // mount a FRESH CollaborationPlugin -- a surviving instance keeps
+          // the destroyed provider via its one-time-init guard.
+          <DocumentPathProvider key={providerEpoch} documentPath={filePath}>
             <FixedTabHeaderContainer
               filePath={filePath}
               fileName={fileName}
@@ -1052,8 +1414,26 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
               />
             </div>
           </DocumentPathProvider>
+        ) : documentType === 'code' && syncProviderRef.current ? (
+          <MonacoCollabBranch
+            key={providerEpoch}
+            syncProvider={syncProviderRef.current}
+            filePath={filePath}
+            fileName={fileName}
+            isActive={isActive}
+            activeConfig={activeConfig}
+            createHistoryClient={createHistoryClient}
+            onHistoryControllerChange={(controller) => {
+              historyControllerRef.current = controller;
+              if (controller?.exportSnapshot) {
+                void ensureBootstrapRevision();
+              }
+            }}
+            onDirtyChange={onDirtyChange}
+          />
         ) : extensionRegistration && syncProviderRef.current ? (
           <ExtensionCollabBranch
+            key={providerEpoch}
             registration={extensionRegistration}
             syncProvider={syncProviderRef.current}
             filePath={filePath}
@@ -1076,6 +1456,158 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         )}
       </div>
     </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Built-in Monaco branch (text/code)
+// ---------------------------------------------------------------------------
+
+interface MonacoCollabBranchProps {
+  syncProvider: DocumentSyncProvider;
+  filePath: string;
+  fileName: string;
+  isActive: boolean;
+  activeConfig: CollabDocumentConfig;
+  createHistoryClient: () => CollabHistoryClient;
+  onHistoryControllerChange: (controller: CollabHistoryController | null) => void;
+  onDirtyChange?: (isDirty: boolean) => void;
+}
+
+const MonacoCollabBranch: React.FC<MonacoCollabBranchProps> = ({
+  syncProvider,
+  filePath,
+  fileName,
+  isActive,
+  activeConfig,
+  createHistoryClient,
+  onHistoryControllerChange,
+  onDirtyChange,
+}) => {
+  const setHistoryDialogFile = useSetAtom(historyDialogFileAtom);
+  const bumpHistoryControllers = useSetAtom(collabHistoryControllerBumpAtom);
+  const unregisterControllerRef = useRef<(() => void) | null>(null);
+
+  const syntheticName = useMemo(() => {
+    const catalog = getCollaborativeDocumentTypeCatalog();
+    const suffix = activeConfig.fileExtension
+      ?? catalog.inferFileExtension('code', fileName)
+      ?? catalog.inferFileExtension('code', activeConfig.title)
+      ?? '.txt';
+    return `document${suffix}`;
+  }, [activeConfig.fileExtension, activeConfig.title, fileName]);
+
+  const bridgeRef = useRef<ReturnType<typeof createExtensionAwarenessBridge> | null>(null);
+  if (!bridgeRef.current) {
+    bridgeRef.current = createExtensionAwarenessBridge({
+      syncProvider,
+      yDoc: syncProvider.getYDoc(),
+      user: {
+        id: activeConfig.userId,
+        name: activeConfig.userName ?? activeConfig.userId,
+        color: '#3A8FD6',
+      },
+    });
+  }
+  useEffect(() => {
+    return () => {
+      bridgeRef.current?.destroy();
+      bridgeRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    void syncProvider.connect().catch((error) => {
+      console.error('[MonacoCollabBranch] Failed to connect DocumentSyncProvider:', {
+        documentId: activeConfig.documentId,
+        error,
+      });
+    });
+  }, [syncProvider, activeConfig.documentId]);
+
+  const collaboration = useMemo(
+    () => createCollaborationContext({
+      syncProvider,
+      awareness: bridgeRef.current!.awareness,
+      activeConfig,
+    }),
+    [activeConfig, syncProvider],
+  );
+
+  useEffect(() => {
+    const adapter = createRevisionAdapterFromCollabContent({
+      documentType: 'code',
+      getYDoc: () => syncProvider.getYDoc(),
+    });
+    const controller: CollabHistoryController = {
+      client: createHistoryClient(),
+      editorType: 'code',
+      contentFormat: adapter?.contentFormat ?? 'code',
+      previewKind: adapter?.previewKind ?? 'metadata-only',
+      exportSnapshot: adapter ? () => adapter.exportRevisionSnapshot() : undefined,
+      applySnapshot: adapter ? (bytes) => adapter.restoreRevisionSnapshot(bytes) : undefined,
+      getBasisSequence: () => syncProvider.getLastSeq(),
+      getStatus: () => syncProvider.getStatus(),
+      waitForPendingWrites: (timeoutMs?: number) => syncProvider.waitForPendingWrites(timeoutMs),
+    };
+
+    onHistoryControllerChange(controller);
+    unregisterControllerRef.current = registerCollabHistoryController(
+      filePath,
+      controller,
+      () => bumpHistoryControllers(),
+    );
+
+    return () => {
+      onHistoryControllerChange(null);
+      unregisterControllerRef.current?.();
+      unregisterControllerRef.current = null;
+    };
+  }, [bumpHistoryControllers, createHistoryClient, filePath, onHistoryControllerChange, syncProvider]);
+
+  const themeChangeCallbackRef = useRef<((theme: string) => void) | null>(null);
+  useEffect(() => {
+    const unsubscribe = store.sub(themeIdAtom, () => {
+      const next = store.get(themeIdAtom);
+      themeChangeCallbackRef.current?.(next);
+    });
+    return unsubscribe;
+  }, []);
+
+  const hostWithCollaboration = useMemo(
+    () => createCollabExtensionHost({
+      filePath,
+      fileName,
+      isActive,
+      workspaceId: activeConfig.workspacePath,
+      activeConfig,
+      collaboration,
+      onDirtyChange,
+      onOpenHistory: () => setHistoryDialogFile(filePath),
+      getTheme: () => store.get(themeIdAtom),
+      subscribeToThemeChanges: (callback) => {
+        themeChangeCallbackRef.current = callback;
+        return () => {
+          if (themeChangeCallbackRef.current === callback) {
+            themeChangeCallbackRef.current = null;
+          }
+        };
+      },
+    }),
+    [activeConfig, collaboration, fileName, filePath, isActive, onDirtyChange, setHistoryDialogFile],
+  );
+
+  return (
+    <DocumentPathProvider documentPath={filePath}>
+      <div className="monaco-collab-branch" style={{ flex: 1, overflow: 'hidden' }}>
+        <MonacoEditor
+          host={hostWithCollaboration}
+          fileName={syntheticName}
+          config={{ isActive }}
+          collab={{ textField: 'content' }}
+        />
+      </div>
+    </DocumentPathProvider>
   );
 };
 

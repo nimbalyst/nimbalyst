@@ -2,7 +2,7 @@
  * Factory functions for creating Excalidraw elements
  */
 
-import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
+import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -47,7 +47,6 @@ export function createRectangle(options: RectangleOptions): ExcalidrawElement {
     y,
     width = 150,
     height = 80,
-    text,
     style = 'default',
     backgroundColor,
     strokeColor,
@@ -256,7 +255,6 @@ export function createLabeledRectangle(options: RectangleOptions): LabeledRectan
     width = 150,
     height = 80,
     text,
-    style = 'default',
     groupIds = [],
   } = options;
 

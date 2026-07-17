@@ -6,7 +6,7 @@
  * Yjs updates, and manages awareness state.
  *
  * The provider:
- * - Creates and owns a Y.Doc instance
+ * - Attaches to a LocalDocumentReplica/Y.Doc (or creates one for back-compat)
  * - Encrypts all outgoing Yjs updates with AES-256-GCM
  * - Decrypts incoming updates and applies them to the Y.Doc
  * - Handles sync (initial load), realtime broadcasts, and awareness
@@ -34,6 +34,7 @@ import type {
 } from './documentSyncTypes';
 import { appendSyncClientParams } from './syncClientInfo';
 import { encodeDocumentRoomId, isValidCollabDocumentId } from './collabDocumentId';
+import { isConfirmedOutboxRevocationCode } from './OutboxDrainer';
 
 // ============================================================================
 // Base64 / Encryption Utilities
@@ -154,10 +155,14 @@ interface BufferedRemoteUpdate {
 
 export class DocumentSyncProvider {
   private ydoc: Y.Doc;
+  private readonly ownsYDoc: boolean;
   private ws: WebSocket | null = null;
   private config: DocumentSyncConfig;
   private status: DocumentSyncStatus = 'disconnected';
   private lastSeq = 0;
+  private lastSyncRequestSeq = 0;
+  private serverCapability: 'unknown' | 'explicit-head' | 'legacy' = 'unknown';
+  private cursorLagRecordedForConnection = false;
   private synced = false;
   // Last-writer attribution from the server (who/when last edited the content).
   // Populated from docSyncResponse; used by the overwrite confirm before a push.
@@ -201,6 +206,9 @@ export class DocumentSyncProvider {
   private pendingPersistTimer: ReturnType<typeof setTimeout> | null = null;
   private replayAckTimer: ReturnType<typeof setTimeout> | null = null;
   private replayingClientUpdateId: string | null = null;
+  private replayingReplicaOutboxIds: string[] = [];
+  private replayStartedAt: number | null = null;
+  private replayAttemptCount = 0;
   private surfaceReplayStatus = false;
   private pendingWriteWaiters: Set<() => void> = new Set();
   private static readonly RECONNECT_BASE_MS = 1000;
@@ -210,16 +218,40 @@ export class DocumentSyncProvider {
   // Compaction state
   /**
    * Server sequence covered by the latest snapshot we know about. Updated
-   * when (a) we apply a server snapshot during sync, and (b) we send our
-   * own `docCompact`. Used to compute how many updates have accumulated.
+   * when (a) we apply a server snapshot during sync, and (b) the server
+   * acknowledges our own `docCompact`. Used to compute how many updates have
+   * accumulated.
    */
   private lastSnapshotSeq = 0;
+  private pendingCompactionId: string | null = null;
+  private compactionAckTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly COMPACTION_ACK_TIMEOUT_MS = 10_000;
+  /**
+   * Resolver for an in-flight `forceReplaceServerState` awaiting its
+   * `docCompactAck`. Distinct from routine compaction (which is fire-and-forget)
+   * because the recovery caller must know whether the server accepted the
+   * replacement snapshot.
+   */
+  private forceReplaceWaiter: { clientCompactId: string; resolve: (accepted: boolean) => void } | null = null;
+  private forceReplaceCounter = 0;
+
+  /**
+   * True once ANY snapshot/update/broadcast failed to decode and was skipped
+   * (the NIM-878 tolerant-skip). `lastSeq` still advances past skipped rows, so
+   * this doc is missing server content it can never re-fetch on this provider
+   * (resync resumes from `lastSeq`). While set, this client must NEVER win
+   * compaction: a `docCompact` of an incomplete doc buries the unread rows
+   * behind `replacesUpTo` for every client and prune later deletes them
+   * (NIM-1519). Deliberately never reset for the provider's lifetime.
+   */
+  private skippedUndecodablePayload = false;
   private lastCompactionAttemptAt = 0;
   private compactionTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: DocumentSyncConfig) {
     this.config = config;
-    this.ydoc = new Y.Doc();
+    this.ydoc = config.replica?.getYDoc() ?? config.ydoc ?? new Y.Doc();
+    this.ownsYDoc = !config.replica && !config.ydoc;
     this.setupUpdateObserver();
 
     if (config.initialPendingUpdateBase64) {
@@ -235,6 +267,19 @@ export class DocumentSyncProvider {
         console.error('[DocumentSync] Failed to restore pending local update:', err);
         this.queuedPendingUpdate = null;
       }
+    }
+
+    if (config.replica) {
+      void config.replica.whenReady.then(() => {
+        if (this.destroyed) return;
+        const durablePending = config.replica?.getPendingOutboxUpdate();
+        if (durablePending) {
+          this.queuedPendingUpdate = this.queuedPendingUpdate
+            ? Y.mergeUpdates([this.queuedPendingUpdate, durablePending])
+            : durablePending;
+          this.setStatus('offline-unsynced');
+        }
+      });
     }
   }
 
@@ -254,6 +299,28 @@ export class DocumentSyncProvider {
     this.suppressReconnect = false;
     this.connecting = true;
     this.setStatus('connecting');
+
+    if (this.config.replica) {
+      await this.config.replica.whenReady;
+      if (this.destroyed) {
+        this.connecting = false;
+        return;
+      }
+      if (this.config.replica.needsCleanServerHydration()) {
+        try {
+          await this.config.replica.beginCleanServerHydration();
+          // This connection is a new, full repair attempt. A skip from the
+          // previous connection must not permanently veto a later clean pass.
+          this.skippedUndecodablePayload = false;
+        } catch (error) {
+          console.warn('[DocumentSync] Failed to prepare damaged replica for clean hydration:', error);
+        }
+      }
+      this.lastSeq = this.config.replica.getLastServerSeq();
+      this.queuedPendingUpdate =
+        this.config.replica.getPendingOutboxUpdate() ??
+        this.queuedPendingUpdate;
+    }
 
     const { serverUrl, orgId, documentId } = this.config;
 
@@ -342,6 +409,13 @@ export class DocumentSyncProvider {
   disconnect(): void {
     this.cancelReconnect();
     this.clearReplayAckTimer();
+    this.clearCompactionAckTimer();
+    this.pendingCompactionId = null;
+    if (this.forceReplaceWaiter) {
+      const waiter = this.forceReplaceWaiter;
+      this.forceReplaceWaiter = null;
+      waiter.resolve(false);
+    }
     this.connecting = false;
     this.suppressReconnect = true;
     this.requeueInflightPendingUpdate();
@@ -358,15 +432,13 @@ export class DocumentSyncProvider {
     );
   }
 
-  /**
-   * Destroy the provider and its Y.Doc. Cannot be reused after this.
-   */
+  /** Destroy this network attachment. Externally supplied Y.Docs survive. */
   destroy(): void {
     this.destroyed = true;
     this.disconnect();
     this.teardownUpdateObserver();
     this.flushPendingPersistImmediately();
-    this.ydoc.destroy();
+    if (this.ownsYDoc) this.ydoc.destroy();
     this.awarenessListeners.clear();
     this.awarenessStates.clear();
     this.unreviewedUpdates = [];
@@ -414,6 +486,18 @@ export class DocumentSyncProvider {
   /** Get the last known server sequence number. */
   getLastSeq(): number {
     return this.lastSeq;
+  }
+
+  /**
+   * True when any snapshot/update/broadcast was skipped as undecodable this
+   * provider's lifetime. While true, the Y.Doc looking "empty" does NOT mean
+   * the room is empty — server content exists that this client cannot read.
+   * Hosts must gate first-open seeding on this (seeding a default document
+   * over unreadable-but-real content clobbers it for every client) and this
+   * provider will never compact (NIM-1519).
+   */
+  hasUndecodedContent(): boolean {
+    return this.skippedUndecodablePayload;
   }
 
   /**
@@ -623,6 +707,11 @@ export class DocumentSyncProvider {
    * Used by custom-editor collaboration bootstrap after a first-open seed from
    * in-memory share payloads. This avoids depending on observer/replay timing
    * when the seed happens after the initial empty sync completes.
+   *
+   * @deprecated Fire-and-forget: this resolves after the socket write, NOT
+   * after the server confirms persistence, so a teardown immediately after can
+   * lose the seed (the mindmap seed data-loss race). Prefer {@link flushWithAck},
+   * which awaits a server-persisted `docUpdateAck`.
    */
   async flushLocalState(): Promise<void> {
     const update = Y.encodeStateAsUpdate(this.ydoc);
@@ -631,6 +720,32 @@ export class DocumentSyncProvider {
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.synced) {
       await this.replayPendingUpdate();
     }
+  }
+
+  /**
+   * Flush the current Y.Doc state upstream and resolve ONLY after the server
+   * acknowledges persistence (`docUpdateAck`), not merely after the socket
+   * write. This is the durability guarantee for first-open seeds and headless
+   * re-uploads: content the user sees locally must reach the server before the
+   * provider tears down.
+   *
+   * Returns `true` when the server ack'd within `timeoutMs`, `false` on timeout
+   * or when not connected/synced — the caller decides whether to warn / retry
+   * rather than silently discarding the seed. An empty doc (encoded state
+   * <= 2 bytes) resolves `true` immediately (nothing to persist).
+   *
+   * The server-ack semantics come from `waitForPendingWrites`, which settles
+   * only once the inflight `docUpdate` is cleared by a matching `docUpdateAck`
+   * (the DocumentRoom persists synchronously to DO storage before acking).
+   */
+  async flushWithAck(timeoutMs = 5_000): Promise<boolean> {
+    const update = Y.encodeStateAsUpdate(this.ydoc);
+    if (update.length <= 2) return true;
+    this.enqueuePendingLocalUpdate(update);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.synced) {
+      await this.replayPendingUpdate();
+    }
+    return this.waitForPendingWrites(timeoutMs);
   }
 
   // --------------------------------------------------------------------------
@@ -746,6 +861,7 @@ export class DocumentSyncProvider {
   // --------------------------------------------------------------------------
 
   private requestSync(): void {
+    this.lastSyncRequestSeq = this.lastSeq;
     this.send({ type: 'docSyncRequest', sinceSeq: this.lastSeq });
   }
 
@@ -765,7 +881,10 @@ export class DocumentSyncProvider {
           await this.handleUpdateBroadcast(msg);
           break;
         case 'docUpdateAck':
-          this.handleUpdateAck(msg);
+          await this.handleUpdateAck(msg);
+          break;
+        case 'docCompactAck':
+          this.handleCompactionAck(msg);
           break;
         case 'docAwarenessBroadcast':
           await this.handleAwarenessBroadcast(msg);
@@ -786,6 +905,7 @@ export class DocumentSyncProvider {
           break;
         case 'error':
           console.error('[DocumentSync] Server error:', msg.code, msg.message);
+          await this.handleWriteRejection(msg.code, msg.clientUpdateId);
           break;
       }
     } catch (err) {
@@ -804,6 +924,29 @@ export class DocumentSyncProvider {
   }
 
   private async handleSyncResponse(msg: DocSyncResponseMessage): Promise<void> {
+    const hasExplicitHead =
+      typeof msg.serverHead === 'number' &&
+      typeof msg.serverHasState === 'boolean';
+    if (hasExplicitHead) {
+      this.serverCapability = 'explicit-head';
+      if (!this.cursorLagRecordedForConnection) {
+        this.cursorLagRecordedForConnection = true;
+        this.config.onOfflineMetric?.({
+          metric: 'cursor_lag_at_reconnect',
+          cursorLag: Math.max(0, msg.serverHead! - this.lastSyncRequestSeq),
+        });
+      }
+    } else if (this.serverCapability !== 'legacy') {
+      this.serverCapability = 'legacy';
+      if (this.lastSyncRequestSeq !== 0) {
+        // An older server cannot safely answer a durable-cursor reconnect: an
+        // empty-at-head response is indistinguishable from an empty room. Fall
+        // back once to a complete replay and never infer bootstrap eligibility.
+        this.lastSeq = 0;
+        this.requestSync();
+        return;
+      }
+    }
     // Capture last-writer attribution (sent on every sync response; the value
     // reflects the latest content update, so it's stable across pagination).
     if (msg.lastWriterUserId !== undefined) {
@@ -816,16 +959,33 @@ export class DocumentSyncProvider {
     // Apply snapshot if present (covers the entire doc state up to replacesUpTo).
     // If the snapshot can't be decrypted (stale key epoch, corruption), skip it
     // and continue with the incremental updates -- a single broken payload
-    // must not kill the whole sync. If nothing decrypts, the Y.Doc stays
-    // empty and the host can bootstrap from local content, pushing a fresh
-    // authoritative update up to the server.
+    // must not kill the whole sync. Explicit serverHasState remains the only
+    // bootstrap authority even when nothing decrypts locally.
+    const replicaUpdates: Array<{
+      update: Uint8Array;
+      source: 'remote' | 'server-snapshot';
+      serverSequence: number | null;
+    }> = [];
+    let decodedCompleteBatch = true;
+
     if (msg.snapshot) {
       try {
         const stateBytes = await this.decryptFromWire(
           msg.snapshot.encryptedState,
           msg.snapshot.iv,
         );
-        Y.applyUpdate(this.ydoc, stateBytes, SNAPSHOT_ORIGIN);
+        if (this.config.replica) {
+          replicaUpdates.push({
+            update: stateBytes,
+            source: 'server-snapshot',
+            // Snapshots cover a sequence but are not themselves an update at
+            // that sequence. Keeping this null avoids collision-drops against
+            // an already persisted broadcast row.
+            serverSequence: null,
+          });
+        } else {
+          Y.applyUpdate(this.ydoc, stateBytes, SNAPSHOT_ORIGIN);
+        }
       } catch (err) {
         // Any per-payload failure -- stale key epoch (OperationError), an
         // un-migrated legacy-e2e row with no legacy key, or corrupt bytes that
@@ -833,6 +993,8 @@ export class DocumentSyncProvider {
         // payload, never abort the whole sync. One bad row must not blank the
         // entire document body. See NIM-878.
         console.warn('[DocumentSync] Skipping undecodable snapshot; sync will continue:', err instanceof Error ? err.message : err);
+        this.skippedUndecodablePayload = true;
+        decodedCompleteBatch = false;
       }
       this.lastSeq = Math.max(this.lastSeq, msg.snapshot.replacesUpTo);
       this.lastSnapshotSeq = Math.max(this.lastSnapshotSeq, msg.snapshot.replacesUpTo);
@@ -845,13 +1007,51 @@ export class DocumentSyncProvider {
           update.encryptedUpdate,
           update.iv,
         );
-        Y.applyUpdate(this.ydoc, updateBytes, REMOTE_ORIGIN);
+        if (this.config.replica) {
+          replicaUpdates.push({
+            update: updateBytes,
+            source: 'remote',
+            serverSequence: update.sequence,
+          });
+        } else {
+          Y.applyUpdate(this.ydoc, updateBytes, REMOTE_ORIGIN);
+        }
       } catch (err) {
         // Skip only this update (stale key epoch, un-migrated legacy row, or
         // corrupt bytes); never abort the whole sync. See NIM-878.
         console.warn(`[DocumentSync] Skipping undecodable update at seq ${update.sequence}:`, err instanceof Error ? err.message : err);
+        this.skippedUndecodablePayload = true;
+        decodedCompleteBatch = false;
       }
       this.lastSeq = Math.max(this.lastSeq, update.sequence);
+    }
+
+    if (this.config.replica) {
+      try {
+        const durablePageCursor =
+          decodedCompleteBatch &&
+          !msg.hasMore &&
+          this.serverCapability === 'explicit-head'
+            ? msg.serverHead!
+            : msg.cursor;
+        const appliedCompleteBatch = await this.config.replica.applyRemoteUpdates(
+          replicaUpdates,
+          decodedCompleteBatch
+            ? durablePageCursor
+            : this.config.replica.getLastServerSeq(),
+        );
+        if (!appliedCompleteBatch) {
+          decodedCompleteBatch = false;
+          this.skippedUndecodablePayload = true;
+        }
+        if (!decodedCompleteBatch && this.config.replica.isComplete()) {
+          await this.config.replica.markIncomplete();
+        }
+      } catch (err) {
+        console.warn('[DocumentSync] Failed to apply/persist validated remote batch:', err);
+        this.skippedUndecodablePayload = true;
+        await this.config.replica.markIncomplete();
+      }
     }
 
     // If there are more updates, fetch the next page
@@ -866,14 +1066,19 @@ export class DocumentSyncProvider {
     // the document state the user chose to open. The review gate only
     // applies to new realtime updates from collaborators.
     if (!this.synced) {
+      await this.config.replica?.completeCleanServerHydration(
+        !this.skippedUndecodablePayload,
+      );
       this.synced = true;
+      if (this.serverCapability === 'explicit-head') {
+        this.lastSeq = Math.max(this.lastSeq, msg.serverHead!);
+      }
 
-      // Signal to the host whether the server had any content at all.
-      // Y.encodeStateAsUpdate encodes to ~2 bytes for a fully empty Y.Doc,
-      // so `byteLength > 2` reliably detects server content across paginated
-      // sync responses (checking just the last `msg` would miss earlier pages).
-      const serverIsEmpty = Y.encodeStateAsUpdate(this.ydoc).byteLength <= 2;
-      this.config.onFirstSyncComplete?.(serverIsEmpty);
+      // Bootstrap is allowed only from the server's explicit room-state bit.
+      // Legacy servers deliberately report non-empty to callers so no local
+      // state is pushed from message shape or merged-document inference.
+      this.config.onFirstSyncComplete?.(msg.serverHasState === false);
+      this.notifyContentChanged();
 
       if (this.reviewGateEnabled) {
         this.reviewedStateVector = Y.encodeStateVector(this.ydoc);
@@ -907,12 +1112,37 @@ export class DocumentSyncProvider {
         msg.encryptedUpdate,
         msg.iv,
       );
-      Y.applyUpdate(this.ydoc, updateBytes, REMOTE_ORIGIN);
+      if (this.config.replica) {
+        const applied = await this.config.replica.applyRemoteUpdates(
+          [{ update: updateBytes, source: 'remote', serverSequence: msg.sequence }],
+          // A broadcast sequence does not prove contiguous coverage below it.
+          // The next sync response persists an authoritative page cursor.
+          this.config.replica.getLastServerSeq(),
+          { coalescePersistence: true },
+        );
+        if (!applied) {
+          this.skippedUndecodablePayload = true;
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.close();
+          return;
+        }
+      } else {
+        Y.applyUpdate(this.ydoc, updateBytes, REMOTE_ORIGIN);
+      }
     } catch (err) {
       // Skip only this broadcast (stale key epoch, un-migrated legacy row, or
       // corrupt bytes that make Y.applyUpdate throw); never abort sync. The
       // applyUpdate is INSIDE the try so garbage bytes can't escape. See NIM-878.
-      console.warn(`[DocumentSync] Skipping undecodable broadcast at seq ${msg.sequence}:`, err instanceof Error ? err.message : err);
+      console.warn(`[DocumentSync] Skipping undecodable or unpersisted broadcast at seq ${msg.sequence}:`, err instanceof Error ? err.message : err);
+      this.skippedUndecodablePayload = true;
+      if (this.config.replica) {
+        try {
+          await this.config.replica.markIncomplete();
+        } catch {
+          // The persistence failure that brought us here may also prevent the
+          // marker write. Provider-level compaction remains disabled below.
+        }
+      }
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.close();
       this.lastSeq = Math.max(this.lastSeq, msg.sequence);
       return;
     }
@@ -930,6 +1160,7 @@ export class DocumentSyncProvider {
     }
 
     this.config.onRemoteUpdate?.(REMOTE_ORIGIN);
+    this.notifyContentChanged();
   }
 
   private async handleAwarenessBroadcast(
@@ -966,12 +1197,14 @@ export class DocumentSyncProvider {
     const handler = async (update: Uint8Array, origin: unknown) => {
       // Only send updates that originated locally (not remote/snapshot)
       if (
+        this.config.replica?.isInternalOrigin(origin) ||
         origin === REMOTE_ORIGIN ||
         origin === SNAPSHOT_ORIGIN ||
         origin === PERSISTED_PENDING_ORIGIN
       ) {
         return;
       }
+      this.notifyContentChanged();
       this.enqueuePendingLocalUpdate(update);
       if (this.ws && this.ws.readyState === WebSocket.OPEN && this.synced) {
         await this.replayPendingUpdate();
@@ -985,6 +1218,17 @@ export class DocumentSyncProvider {
   private teardownUpdateObserver(): void {
     this.updateObserverDispose?.();
     this.updateObserverDispose = null;
+  }
+
+  private notifyContentChanged(): void {
+    // Never persist a state assembled after any undecodable server payload;
+    // it is necessarily incomplete and must not become a recovery source.
+    if (this.skippedUndecodablePayload) return;
+    try {
+      this.config.onContentChanged?.(this.ydoc);
+    } catch (err) {
+      console.warn('[DocumentSync] Content-change callback failed:', err);
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -1030,10 +1274,7 @@ export class DocumentSyncProvider {
    * and send it as an update.
    */
   private async pushLocalState(syncMsg: DocSyncResponseMessage): Promise<void> {
-    // Build the server state vector from what we received.
-    // If the server sent no updates and no snapshot, it has an empty state.
-    const serverHasNoState = syncMsg.updates.length === 0 && !syncMsg.snapshot;
-    if (!serverHasNoState) return; // Server already has content, nothing to push
+    if (syncMsg.serverHasState !== false) return;
 
     // Check if our local Y.Doc has any content worth sending
     const diff = Y.encodeStateAsUpdate(this.ydoc);
@@ -1052,6 +1293,9 @@ export class DocumentSyncProvider {
       return;
     }
 
+    if (!this.queuedPendingUpdate && this.config.replica) {
+      this.queuedPendingUpdate = this.config.replica.getPendingOutboxUpdate();
+    }
     if (!this.queuedPendingUpdate) {
       this.setStatus('connected');
       return;
@@ -1063,13 +1307,50 @@ export class DocumentSyncProvider {
     }
 
     try {
-      const clientUpdateId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      // beginOutboxReplay snapshots durable IDs synchronously before its first
+      // await. Swap the matching in-memory bytes immediately so edits arriving
+      // during the durable flush remain queued for the next replay.
+      const replicaReplay =
+        this.config.replica && this.config.replica.getState() !== 'unavailable'
+        ? this.config.replica.beginOutboxReplay()
+        : Promise.resolve(null);
       const pendingUpdate = this.queuedPendingUpdate;
       this.inflightPendingUpdate = pendingUpdate;
       this.queuedPendingUpdate = null;
       this.surfaceReplayStatus = this.status !== 'connected';
-      const { encrypted, iv } = await this.encryptForWire(pendingUpdate);
+      let durableBatch = await replicaReplay;
+      if (this.config.replica && !durableBatch) {
+        const durablePending = this.config.replica.getPendingOutboxUpdate();
+        if (durablePending) {
+          this.inflightPendingUpdate = null;
+          this.queuedPendingUpdate = durablePending;
+          this.surfaceReplayStatus = false;
+          this.setStatus('offline-unsynced');
+          return;
+        }
+        if (this.config.replica.getState() === 'ready') {
+          await this.config.replica.persistPendingOutboxUpdate(pendingUpdate);
+          durableBatch = await this.config.replica.beginOutboxReplay();
+        }
+        if (!durableBatch && this.config.replica.getState() !== 'unavailable') {
+          this.inflightPendingUpdate = null;
+          this.queuedPendingUpdate = this.config.replica.getPendingOutboxUpdate();
+          this.surfaceReplayStatus = false;
+          this.setStatus(this.queuedPendingUpdate ? 'offline-unsynced' : 'connected');
+          return;
+        }
+      }
+      const updateToSend = durableBatch?.update ?? pendingUpdate;
+      const clientUpdateId = durableBatch?.batchId ??
+        (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      this.inflightPendingUpdate = updateToSend;
       this.replayingClientUpdateId = clientUpdateId;
+      this.replayingReplicaOutboxIds = durableBatch ? durableBatch.batchIds : [];
+      this.replayStartedAt ??= Date.now();
+      this.replayAttemptCount += 1;
+      const { encrypted, iv } = await this.encryptForWire(updateToSend);
       if (this.surfaceReplayStatus) {
         this.setStatus('replaying');
       } else {
@@ -1095,19 +1376,22 @@ export class DocumentSyncProvider {
       this.clearReplayAckTimer();
       console.error('[DocumentSync] Failed to replay pending local update:', err);
       if (this.inflightPendingUpdate) {
-        this.queuedPendingUpdate = this.queuedPendingUpdate
-          ? Y.mergeUpdates([this.inflightPendingUpdate, this.queuedPendingUpdate])
-          : this.inflightPendingUpdate;
+        this.queuedPendingUpdate = this.config.replica
+          ? this.config.replica.getPendingOutboxUpdate()
+          : this.queuedPendingUpdate
+            ? Y.mergeUpdates([this.inflightPendingUpdate, this.queuedPendingUpdate])
+            : this.inflightPendingUpdate;
         this.inflightPendingUpdate = null;
       }
       this.replayingClientUpdateId = null;
+      this.replayingReplicaOutboxIds = [];
       this.surfaceReplayStatus = false;
       this.schedulePendingPersist();
       this.setStatus('offline-unsynced');
     }
   }
 
-  private handleUpdateAck(msg: DocUpdateAckMessage): void {
+  private async handleUpdateAck(msg: DocUpdateAckMessage): Promise<void> {
     this.lastSeq = Math.max(this.lastSeq, msg.sequence);
     if (msg.clientUpdateId !== this.replayingClientUpdateId) {
       return;
@@ -1122,7 +1406,70 @@ export class DocumentSyncProvider {
     //   msg.sequence
     // );
     this.clearReplayAckTimer();
+    if (this.config.replica && this.replayingReplicaOutboxIds.length > 0) {
+      try {
+        await this.config.replica.acknowledgeOutbox(
+          this.replayingReplicaOutboxIds,
+          msg.sequence,
+        );
+      } catch (error) {
+        console.warn('[DocumentSync] Failed to persist outbox acknowledgement:', error);
+        this.requeueInflightPendingUpdate();
+        this.setStatus('offline-unsynced');
+        return;
+      }
+    }
+    this.config.onOfflineMetric?.({
+      metric: 'outbox_replay',
+      durationMs: this.replayStartedAt === null ? 0 : Date.now() - this.replayStartedAt,
+      retryCount: Math.max(0, this.replayAttemptCount - 1),
+      rejectionCode: null,
+    });
+    this.replayStartedAt = null;
+    this.replayAttemptCount = 0;
+    this.replayingReplicaOutboxIds = [];
     this.finishReplayingPendingUpdate();
+  }
+
+  private async handleWriteRejection(
+    errorCode: string,
+    clientUpdateId: string | undefined,
+  ): Promise<void> {
+    if (!clientUpdateId || clientUpdateId !== this.replayingClientUpdateId) {
+      return;
+    }
+    if (!this.config.replica || this.replayingReplicaOutboxIds.length === 0) {
+      return;
+    }
+    const rejectedIds = [...this.replayingReplicaOutboxIds];
+    this.clearReplayAckTimer();
+    this.config.onOfflineMetric?.({
+      metric: 'outbox_replay',
+      durationMs: this.replayStartedAt === null ? 0 : Date.now() - this.replayStartedAt,
+      retryCount: Math.max(0, this.replayAttemptCount - 1),
+      rejectionCode: errorCode,
+    });
+    if (!isConfirmedOutboxRevocationCode(errorCode)) {
+      try {
+        await this.config.replica.recordOutboxError(rejectedIds, errorCode);
+      } catch (error) {
+        console.warn('[DocumentSync] Failed to persist retryable outbox error:', error);
+      }
+      this.requeueInflightPendingUpdate();
+      this.setStatus('offline-unsynced');
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.close();
+      return;
+    }
+    await this.config.replica.rejectOutbox(rejectedIds, errorCode);
+    this.inflightPendingUpdate = null;
+    this.replayingClientUpdateId = null;
+    this.replayingReplicaOutboxIds = [];
+    this.queuedPendingUpdate = this.config.replica.getPendingOutboxUpdate();
+    this.surfaceReplayStatus = false;
+    this.replayStartedAt = null;
+    this.replayAttemptCount = 0;
+    this.setStatus('error');
+    this.notifyPendingWriteWaiters();
   }
 
   private schedulePendingPersist(): void {
@@ -1132,10 +1479,7 @@ export class DocumentSyncProvider {
     }
     this.pendingPersistTimer = setTimeout(() => {
       this.pendingPersistTimer = null;
-      const mergedPendingUpdate = this.getMergedPendingUpdate();
-      void this.config.onPendingUpdateChange?.(
-        mergedPendingUpdate ? uint8ArrayToBase64(mergedPendingUpdate) : null
-      );
+      void this.persistLegacyPendingUpdate();
     }, 250);
   }
 
@@ -1145,9 +1489,20 @@ export class DocumentSyncProvider {
       clearTimeout(this.pendingPersistTimer);
       this.pendingPersistTimer = null;
     }
+    void this.persistLegacyPendingUpdate();
+  }
+
+  private async persistLegacyPendingUpdate(): Promise<void> {
+    if (!this.config.onPendingUpdateChange) return;
+    if (this.config.replica) {
+      // Wait for the durable append outcome. The plaintext workspace-settings
+      // writer is only a fallback when encrypted replica persistence failed.
+      await this.config.replica.flush();
+      if (this.config.replica.getState() !== 'unavailable') return;
+    }
     const mergedPendingUpdate = this.getMergedPendingUpdate();
-    void this.config.onPendingUpdateChange(
-      mergedPendingUpdate ? uint8ArrayToBase64(mergedPendingUpdate) : null
+    await this.config.onPendingUpdateChange(
+      mergedPendingUpdate ? uint8ArrayToBase64(mergedPendingUpdate) : null,
     );
   }
 
@@ -1158,6 +1513,7 @@ export class DocumentSyncProvider {
     this.ws = null;
     this.synced = false;
     this.connecting = false;
+    this.cursorLagRecordedForConnection = false;
     this.requeueInflightPendingUpdate();
     this.stopAwarenessCleanup();
     this.clearAwarenessThrottle();
@@ -1209,15 +1565,19 @@ export class DocumentSyncProvider {
   private requeueInflightPendingUpdate(): void {
     this.clearReplayAckTimer();
     if (!this.inflightPendingUpdate) {
+      this.replayingReplicaOutboxIds = [];
       this.surfaceReplayStatus = false;
       this.notifyPendingWriteWaiters();
       return;
     }
-    this.queuedPendingUpdate = this.queuedPendingUpdate
-      ? Y.mergeUpdates([this.inflightPendingUpdate, this.queuedPendingUpdate])
-      : this.inflightPendingUpdate;
+    this.queuedPendingUpdate = this.config.replica
+      ? this.config.replica.getPendingOutboxUpdate()
+      : this.queuedPendingUpdate
+        ? Y.mergeUpdates([this.inflightPendingUpdate, this.queuedPendingUpdate])
+        : this.inflightPendingUpdate;
     this.inflightPendingUpdate = null;
     this.replayingClientUpdateId = null;
+    this.replayingReplicaOutboxIds = [];
     this.surfaceReplayStatus = false;
     this.schedulePendingPersist();
     this.notifyPendingWriteWaiters();
@@ -1227,6 +1587,9 @@ export class DocumentSyncProvider {
     this.clearReplayAckTimer();
     this.inflightPendingUpdate = null;
     this.replayingClientUpdateId = null;
+    if (this.config.replica) {
+      this.queuedPendingUpdate = this.config.replica.getPendingOutboxUpdate();
+    }
     this.surfaceReplayStatus = false;
     this.schedulePendingPersist();
     this.notifyPendingWriteWaiters();
@@ -1433,12 +1796,17 @@ export class DocumentSyncProvider {
     if (this.destroyed) return;
     if (!this.synced) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (this.pendingCompactionId) return;
     // Skip while we have unacked local writes -- otherwise the snapshot would
     // include local state beyond `replacesUpTo`, and that state would also
     // appear in the subsequent update once acked, doubling the payload (benign
     // for CRDTs but wasteful).
     if (this.queuedPendingUpdate || this.inflightPendingUpdate) return;
     if (this.replayingClientUpdateId) return;
+    if (this.config.replica?.hasPendingOutbox()) return;
+    // NIM-1519: this doc is missing rows we could not decode; a snapshot from
+    // us would bury them behind replacesUpTo for every other client.
+    if (this.skippedUndecodablePayload) return;
 
     const updatesSinceSnapshot = this.lastSeq - this.lastSnapshotSeq;
     if (updatesSinceSnapshot <= 0) return;
@@ -1462,24 +1830,143 @@ export class DocumentSyncProvider {
     const currentSeq = this.lastSeq;
     const stateBytes = Y.encodeStateAsUpdate(this.ydoc);
 
+    // NIM-1519: never replace server rows with an EMPTY snapshot. An empty doc
+    // with a non-zero lastSeq means we hold none of the content those rows
+    // carry (undecodable rows, or a doc we never applied) -- compacting would
+    // hide it from every client and prune would delete it.
+    if (stateBytes.byteLength <= 2) {
+      console.warn(
+        `[DocumentSync] Refusing empty-doc compaction (lastSeq=${currentSeq}); leaving server rows untouched`
+      );
+      return;
+    }
+
     try {
       const { encrypted, iv } = await this.encryptForWire(stateBytes);
+      const clientCompactId = `compact-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       this.send({
         type: 'docCompact',
         encryptedState: encrypted,
         iv,
         replacesUpTo: currentSeq,
+        clientCompactId,
         orgKeyFingerprint: this.wireOrgKeyFingerprint,
       });
-      this.lastSnapshotSeq = currentSeq;
+      this.pendingCompactionId = clientCompactId;
+      this.scheduleCompactionAckTimeout(clientCompactId);
       this.lastCompactionAttemptAt = Date.now();
       console.log(
-        `[DocumentSync] Sent docCompact: replacesUpTo=${currentSeq}, snapshotBytes=${stateBytes.byteLength}`
+        `[DocumentSync] Sent docCompact awaiting ack: replacesUpTo=${currentSeq}, snapshotBytes=${stateBytes.byteLength}`
       );
     } catch (err) {
       // Optimistic: leave lastSnapshotSeq untouched so the next check retries.
       console.warn('[DocumentSync] Failed to send compaction snapshot:', err);
     }
+  }
+
+  /**
+   * Deliberately replace the server's authoritative state for this room with the
+   * CURRENT local Y.Doc, dropping every prior server row -- including rows this
+   * client could not decrypt. This is the recovery override for a room whose
+   * server state became undecryptable (backup review HIGH finding 1): after a
+   * plaintext backup is applied into the otherwise-empty Y.Doc, this promotes it
+   * to the sole authoritative snapshot via `docCompact(replacesUpTo = lastSeq)`.
+   *
+   * Unlike routine compaction it bypasses the `hasUndecodedContent()` guard --
+   * that guard protects against ACCIDENTALLY burying unreadable rows, but here
+   * discarding them is the whole point. It still refuses an empty snapshot so a
+   * blank Y.Doc can never wipe a room. Resolves true once the server acks.
+   */
+  async forceReplaceServerState(timeoutMs = 15_000): Promise<boolean> {
+    if (this.destroyed) throw new Error('Cannot force-replace a destroyed room provider');
+    if (!this.synced) throw new Error('Cannot force-replace before the room has synced');
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('Cannot force-replace while the room is disconnected');
+    }
+
+    // Let any just-applied local content reach the server first, so
+    // `replacesUpTo` covers it and no racing incremental update re-introduces a
+    // sequence above the replacement snapshot.
+    await this.waitForPendingWrites(timeoutMs);
+
+    const stateBytes = Y.encodeStateAsUpdate(this.ydoc);
+    // An empty Y.Doc encodes to ~2 bytes; never let it wipe the room.
+    if (stateBytes.byteLength <= 2) {
+      throw new Error('Refusing to force-replace the room with an empty document');
+    }
+
+    const { encrypted, iv } = await this.encryptForWire(stateBytes);
+    const clientCompactId = `force-replace-${this.lastSeq}-${this.config.userId}-${this.forceReplaceCounter++}`;
+
+    const acked = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        if (this.forceReplaceWaiter?.clientCompactId === clientCompactId) {
+          this.forceReplaceWaiter = null;
+          if (this.pendingCompactionId === clientCompactId) this.pendingCompactionId = null;
+          resolve(false);
+        }
+      }, timeoutMs);
+      this.forceReplaceWaiter = {
+        clientCompactId,
+        resolve: (accepted) => { clearTimeout(timer); resolve(accepted); },
+      };
+    });
+
+    this.pendingCompactionId = clientCompactId;
+    this.send({
+      type: 'docCompact',
+      encryptedState: encrypted,
+      iv,
+      replacesUpTo: this.lastSeq,
+      clientCompactId,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
+    });
+
+    return acked;
+  }
+
+  private handleCompactionAck(msg: Extract<DocServerMessage, { type: 'docCompactAck' }>): void {
+    if (msg.clientCompactId && msg.clientCompactId !== this.pendingCompactionId) {
+      return;
+    }
+
+    this.clearCompactionAckTimer();
+    this.pendingCompactionId = null;
+    this.lastCompactionAttemptAt = Date.now();
+
+    const waiter = this.forceReplaceWaiter;
+    if (waiter && (!msg.clientCompactId || waiter.clientCompactId === msg.clientCompactId)) {
+      this.forceReplaceWaiter = null;
+      waiter.resolve(!!msg.accepted);
+    }
+
+    if (!msg.accepted) {
+      console.warn(
+        `[DocumentSync] Compaction rejected: ${msg.error?.code ?? 'unknown'} ${msg.error?.message ?? ''}`.trim()
+      );
+      return;
+    }
+
+    this.lastSnapshotSeq = Math.max(this.lastSnapshotSeq, msg.replacesUpTo);
+    console.log(
+      `[DocumentSync] Compaction acknowledged: replacesUpTo=${msg.replacesUpTo}${msg.deduplicated ? ', deduplicated=true' : ''}`
+    );
+  }
+
+  private scheduleCompactionAckTimeout(clientCompactId: string): void {
+    this.clearCompactionAckTimer();
+    this.compactionAckTimer = setTimeout(() => {
+      this.compactionAckTimer = null;
+      if (this.pendingCompactionId !== clientCompactId) return;
+      this.pendingCompactionId = null;
+      console.warn('[DocumentSync] Compaction acknowledgement timed out; will retry when eligible');
+    }, DocumentSyncProvider.COMPACTION_ACK_TIMEOUT_MS);
+  }
+
+  private clearCompactionAckTimer(): void {
+    if (!this.compactionAckTimer) return;
+    clearTimeout(this.compactionAckTimer);
+    this.compactionAckTimer = null;
   }
 }
 

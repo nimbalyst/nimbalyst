@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { computeSessionPhaseTransition } from '../sessionPhaseTransition';
+import {
+  computeSessionPhaseTransition,
+  normalizeSessionPhaseMetadataUpdate,
+} from '../sessionPhaseTransition';
 
 const NOW = 1_700_000_000_000;
 
@@ -95,5 +98,17 @@ describe('computeSessionPhaseTransition', () => {
     expect(result.changed).toBe(true);
     expect(result.metadata.phase).toBe('backlog');
     expect(result.metadata.activity).toHaveLength(1);
+  });
+});
+
+describe('normalizeSessionPhaseMetadataUpdate', () => {
+  it('clears awaiting-input state when a session is completed', () => {
+    expect(normalizeSessionPhaseMetadataUpdate({ phase: 'complete', hasPendingPrompt: true, tags: ['ai'] }))
+      .toEqual({ phase: 'complete', hasPendingPrompt: false, tags: ['ai'] });
+  });
+
+  it('preserves pending state for non-terminal workflow phases', () => {
+    const metadata = { phase: 'validating', hasPendingPrompt: true };
+    expect(normalizeSessionPhaseMetadataUpdate(metadata)).toBe(metadata);
   });
 });

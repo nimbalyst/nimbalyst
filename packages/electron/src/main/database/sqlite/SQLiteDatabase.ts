@@ -280,6 +280,23 @@ export class SQLiteDatabase {
     await this.runWriteExec(sql);
   }
 
+  async runTransaction(statements: Array<{ sql: string; params?: unknown[] }>): Promise<void> {
+    if (!this.initialized || !this.db) {
+      throw new Error('SQLiteDatabase not initialized. Call initialize() first.');
+    }
+    if (statements.length === 0) throw new Error('transaction requires at least one statement');
+    const db = this.db;
+    const run = db.transaction(() => {
+      for (const statement of statements) {
+        const adapted = adaptSqlForSQLite(statement.sql, statement.params ?? []);
+        const prepared = db.prepare(adapted.sql);
+        if (stmtReturnsRows(prepared)) prepared.all(...adapted.params);
+        else prepared.run(...adapted.params);
+      }
+    });
+    run();
+  }
+
   /**
    * Run a long-running write operation through the coordinator's background
    * lane. Use for FTS rebuilds, bulk imports, the PGLite→SQLite migrator.

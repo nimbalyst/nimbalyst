@@ -35,12 +35,16 @@ export type ClientMessage =
   | CreateSessionResponseMessage
   | CreateWorktreeRequestMessage
   | CreateWorktreeResponseMessage
+  | VoiceToolRequestMessage
+  | VoiceToolResponseMessage
   | SessionControlCommandMessage
   | RegisterPushTokenMessage
   | UnregisterPushTokenMessage
   | RequestMobilePushMessage
   | ProjectConfigUpdateMessage
   | SettingsSyncMessage
+  | ReadReceiptSyncMessage
+  | TrackerPersonalStateSyncMessage
   | InboxSyncRequestMessage
   | MarkInboxReadMessage
   | PingMessage;
@@ -210,6 +214,40 @@ export interface EncryptedCreateWorktreeResponse {
   error?: string;
 }
 
+/** Request a desktop-hosted voice tool from mobile (e.g. project memory) */
+export interface VoiceToolRequestMessage {
+  type: 'voiceToolRequest';
+  request: EncryptedVoiceToolRequest;
+}
+
+/** Response to a voice-tool request from desktop */
+export interface VoiceToolResponseMessage {
+  type: 'voiceToolResponse';
+  response: EncryptedVoiceToolResponse;
+}
+
+/** Encrypted voice-tool request (toolName/args carry project knowledge). */
+export interface EncryptedVoiceToolRequest {
+  requestId: string;
+  encryptedProjectId: string;
+  projectIdIv: string;
+  encryptedToolName: string;
+  toolNameIv: string;
+  encryptedArgs: string;
+  argsIv: string;
+  timestamp: number;
+}
+
+/** Encrypted voice-tool response. */
+export interface EncryptedVoiceToolResponse {
+  requestId: string;
+  success: boolean;
+  encryptedResult?: string;
+  resultIv?: string;
+  encryptedError?: string;
+  errorIv?: string;
+}
+
 /** Generic session control command - the sync layer just passes these through */
 export interface SessionControlCommandMessage {
   type: 'sessionControl';
@@ -271,6 +309,55 @@ export interface SettingsSyncMessage {
   settings: EncryptedSettingsPayload;
 }
 
+/**
+ * Sync a personal read receipt (unread-indicator state for a tracker/doc) to
+ * the user's other devices. Personal channel ONLY — read receipts are personal
+ * per-user state ABOUT team objects and must never travel on team rooms.
+ */
+export interface ReadReceiptSyncMessage {
+  type: 'readReceipt';
+  receipt: EncryptedReadReceiptPayload;
+}
+
+/**
+ * Encrypted read-receipt payload. The `receiptKey` (a hash of
+ * entityKind|entityId|scope) is plaintext so the server can last-writer-wins
+ * dedup per entity without learning the id/scope; `version` (the receipt's
+ * epoch-ms watermark) drives that LWW. The entity id/scope + watermark values
+ * live inside the encrypted blob.
+ */
+export interface EncryptedReadReceiptPayload {
+  /** Opaque per-entity routing/LWW key: hex(sha256(entityKind|entityId|scope)). */
+  receiptKey: string;
+  /** Encrypted JSON { entityKind, entityId, scope, lastViewedAt, lastSeenVersion } (base64). */
+  encryptedReceipt: string;
+  /** IV for receipt decryption (base64). */
+  receiptIv: string;
+  /** Device id of sender. */
+  deviceId: string;
+  /** Advance-only LWW version — the receipt's `lastViewedAt` (epoch ms). */
+  version: number;
+  /** Timestamp of the sync (epoch ms). */
+  timestamp: number;
+}
+
+/** Sync an opaque tracker favorite/open mutation over the personal lane. */
+export interface TrackerPersonalStateSyncMessage {
+  type: 'trackerPersonalState';
+  state: EncryptedTrackerPersonalStatePayload;
+}
+
+/** Server-visible envelope; scope, item id, and value remain encrypted. */
+export interface EncryptedTrackerPersonalStatePayload {
+  /** Hash of scope|itemId|field-kind, enabling independent LWW merges. */
+  stateKey: string;
+  encryptedState: string;
+  stateIv: string;
+  deviceId: string;
+  version: number;
+  timestamp: number;
+}
+
 /** Encrypted settings payload for wire transmission */
 export interface EncryptedSettingsPayload {
   /** Encrypted JSON blob containing settings (base64) */
@@ -306,8 +393,12 @@ export type ServerMessage =
   | CreateSessionResponseBroadcastMessage
   | CreateWorktreeRequestBroadcastMessage
   | CreateWorktreeResponseBroadcastMessage
+  | VoiceToolRequestBroadcastMessage
+  | VoiceToolResponseBroadcastMessage
   | SessionControlBroadcastMessage
   | SettingsSyncBroadcastMessage
+  | ReadReceiptSyncBroadcastMessage
+  | TrackerPersonalStateSyncBroadcastMessage
   | InboxSyncResponseMessage
   | InboxEventBroadcastMessage
   | MarkInboxReadResponseMessage
@@ -422,6 +513,20 @@ export interface CreateWorktreeRequestBroadcastMessage {
   fromConnectionId?: string;
 }
 
+/** Broadcast voice-tool request to other devices (desktop receives this) */
+export interface VoiceToolRequestBroadcastMessage {
+  type: 'voiceToolRequestBroadcast';
+  request: EncryptedVoiceToolRequest;
+  fromConnectionId?: string;
+}
+
+/** Broadcast voice-tool response to other devices (mobile receives this) */
+export interface VoiceToolResponseBroadcastMessage {
+  type: 'voiceToolResponseBroadcast';
+  response: EncryptedVoiceToolResponse;
+  fromConnectionId?: string;
+}
+
 /** Broadcast worktree creation response to other devices (mobile receives this) */
 export interface CreateWorktreeResponseBroadcastMessage {
   type: 'createWorktreeResponseBroadcast';
@@ -440,6 +545,20 @@ export interface SessionControlBroadcastMessage {
 export interface SettingsSyncBroadcastMessage {
   type: 'settingsSyncBroadcast';
   settings: EncryptedSettingsPayload;
+  fromConnectionId?: string;
+}
+
+/** Broadcast a read receipt to the user's other devices (or replay on connect). */
+export interface ReadReceiptSyncBroadcastMessage {
+  type: 'readReceiptBroadcast';
+  receipt: EncryptedReadReceiptPayload;
+  fromConnectionId?: string;
+}
+
+/** Broadcast/replay of an encrypted tracker personal-state mutation. */
+export interface TrackerPersonalStateSyncBroadcastMessage {
+  type: 'trackerPersonalStateBroadcast';
+  state: EncryptedTrackerPersonalStatePayload;
   fromConnectionId?: string;
 }
 
@@ -559,6 +678,10 @@ export interface SessionIndexEntry {
   sessionType?: string;
   /** Worktree ID for git worktree association (plaintext UUID) */
   worktreeId?: string;
+  /** Agent role marker (e.g. 'meta-agent', 'standard'). Plaintext - drives mobile meta-agent grouping. */
+  agentRole?: string;
+  /** Meta-agent parent session ID for spawned children (plaintext UUID). Drives mobile meta-agent grouping. */
+  createdBySessionId?: string;
   /** Whether the session is archived */
   isArchived?: boolean;
   /** Whether the session is pinned */

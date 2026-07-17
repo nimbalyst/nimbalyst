@@ -1,7 +1,7 @@
 {
   "id": "com.nimbalyst.git",
   "name": "Git",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Git log viewer with push, pull, and rebase support",
   "author": "Nimbalyst",
   "main": "dist/index.js",
@@ -9,6 +9,7 @@
   "apiVersion": "1.0.0",
   "requiredReleaseChannel": "alpha",
   "marketplace": {
+    "changelog": "1.0.1: Redesigned Changes pane with inline diff peek, per-workspace tab memory, detached-HEAD handling, and Output log fixes.",
     "categories": ["developer-tools"],
     "tags": ["git", "version-control", "log", "commit", "branch", "diff"],
     "icon": "call_split",

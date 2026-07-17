@@ -9,6 +9,7 @@
  * `onDismiss` callback (wired to workspace-settings).
  */
 
+import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { getGhCliService, type GhCliStatus } from '../../services/RendererGhCliService';

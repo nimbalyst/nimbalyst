@@ -408,6 +408,62 @@ export interface AccountUpdatedNotification {
   planType: string | null;
 }
 
+export interface AccountRateLimitWindow {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+}
+
+export interface AccountCreditsSnapshot {
+  hasCredits: boolean;
+  unlimited: boolean;
+  balance: string | null;
+}
+
+export interface AccountSpendControlLimitSnapshot {
+  limit: string;
+  used: string;
+  remainingPercent: number;
+  resetsAt: number;
+}
+
+export interface AccountRateLimitSnapshot {
+  limitId: string | null;
+  limitName: string | null;
+  primary: AccountRateLimitWindow | null;
+  secondary: AccountRateLimitWindow | null;
+  credits: AccountCreditsSnapshot | null;
+  individualLimit: AccountSpendControlLimitSnapshot | null;
+  spendControlReached?: boolean | null;
+  planType: string | null;
+  rateLimitReachedType: string | null;
+}
+
+export interface AccountRateLimitResetCredit {
+  id: string;
+  resetType: string;
+  status: string;
+  grantedAt: number;
+  expiresAt: number | null;
+  title: string | null;
+  description: string | null;
+}
+
+export interface AccountRateLimitResetCredits {
+  availableCount: number;
+  credits: AccountRateLimitResetCredit[] | null;
+}
+
+export interface AccountRateLimitsReadResponse {
+  rateLimits: AccountRateLimitSnapshot | null;
+  rateLimitsByLimitId?: Record<string, AccountRateLimitSnapshot> | null;
+  rateLimitResetCredits?: AccountRateLimitResetCredits | null;
+}
+
+export interface AccountRateLimitsUpdatedNotification {
+  rateLimits: AccountRateLimitSnapshot;
+}
+
 // ---- Server-to-client requests (we respond to these) ----
 
 export interface ItemFileChangeRequestApprovalParams {
@@ -446,6 +502,22 @@ export interface ApplyPatchApprovalParams {
 // Generic approval response. Codex accepts a decision string.
 export interface ApprovalResponse {
   decision: 'approved' | 'denied' | 'abort';
+}
+
+// Response to codex's `mcpServer/elicitation/request` (server -> client). Codex
+// forwards an MCP server's elicitation -- used both for MCP tool approval and
+// for form-style prompts -- and expects this structured reply. Shape mirrors
+// codex's `McpServerElicitationRequestResponse` (action + optional content and
+// `_meta`). Returning `null` fails codex's deserializer ("invalid type: null,
+// expected struct McpServerElicitationRequestResponse") and surfaces to the
+// user as "user rejected MCP tool call" for every nimbalyst MCP tool (#797).
+export type McpElicitationAction = 'accept' | 'decline' | 'cancel';
+
+export interface McpElicitationResponse {
+  action: McpElicitationAction;
+  /** Structured user input for accepted elicitations; null for decline/cancel. */
+  content?: unknown | null;
+  _meta?: unknown | null;
 }
 
 // Dynamic tool call (codex asks the host to run a host-registered tool).

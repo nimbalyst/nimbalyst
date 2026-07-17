@@ -31,6 +31,7 @@ export const ProviderConfigSchema = z.object({
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
   models: z.array(z.string()).optional(),
+  hiddenModels: z.array(z.string()).optional(),
   testStatus: ProviderTestStatusSchema,
   testMessage: z.string().optional(),
   installed: z.boolean().optional(),
@@ -96,6 +97,11 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'providerSettings.claude-code' },
     { enabled: true, testStatus: 'idle', installStatus: 'not-installed' },
   ),
+  'ai.provider.claude-code-cli': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.claude-code-cli' },
+    { enabled: false, testStatus: 'idle' },
+  ),
   'ai.provider.openai': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.openai' },
@@ -104,7 +110,7 @@ export const SETTINGS_REGISTRY = {
   'ai.provider.openai-codex': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.openai-codex' },
-    { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
+    { enabled: true, testStatus: 'idle', installStatus: 'not-installed' },
   ),
   'ai.provider.openai-codex-acp': setting(
     ProviderConfigSchema,
@@ -233,14 +239,50 @@ export type SettingValue<K extends SettingKey> = z.infer<typeof SETTINGS_REGISTR
 
 export const SETTING_KEYS = Object.keys(SETTINGS_REGISTRY) as SettingKey[];
 
+/**
+ * Dynamic AI provider / API-key keys.
+ *
+ * Built-in providers are declared statically above, but extension-contributed
+ * agent providers (e.g. `antigravity-gemini-agent`) are registered at runtime,
+ * so their `ai.provider.<id>` / `ai.apiKey.<id>` keys can never appear in the
+ * static registry. Rejecting them made the provider look configurable while
+ * every save threw "Unknown setting key" (issue #803 / NIM-1581).
+ *
+ * We accept any well-formed single-segment id under these two namespaces and
+ * synthesize a descriptor that maps to the same on-disk shape as the built-ins
+ * (`providerSettings.<id>` / `apiKeys.<id>`). The value is still Zod-validated,
+ * so this is a scoped namespace, not a blanket bypass. The `<id>` charset is
+ * kept conservative (dot-free) so a key stays a single storage segment.
+ */
+const DYNAMIC_PROVIDER_KEY = /^ai\.provider\.[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
+const DYNAMIC_API_KEY = /^ai\.apiKey\.[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
+
+function dynamicDescriptor(key: string): SettingDescriptor<z.ZodTypeAny> | undefined {
+  if (DYNAMIC_PROVIDER_KEY.test(key)) {
+    const id = key.slice('ai.provider.'.length);
+    return setting(
+      ProviderConfigSchema,
+      { store: 'ai-settings', path: `providerSettings.${id}` },
+      { enabled: false, testStatus: 'idle' },
+    );
+  }
+  if (DYNAMIC_API_KEY.test(key)) {
+    const name = key.slice('ai.apiKey.'.length);
+    return setting(z.string(), { store: 'ai-settings', path: `apiKeys.${name}` }, '');
+  }
+  return undefined;
+}
+
 export function isSettingKey(key: string): key is SettingKey {
-  return key in SETTINGS_REGISTRY;
+  return key in SETTINGS_REGISTRY || dynamicDescriptor(key) !== undefined;
 }
 
 export function getDescriptor<K extends SettingKey>(key: K): SettingDescriptor<typeof SETTINGS_REGISTRY[K]['schema']> {
   const d = SETTINGS_REGISTRY[key];
-  if (!d) throw new Error(`Unknown setting key: ${key}`);
-  return d as SettingDescriptor<typeof SETTINGS_REGISTRY[K]['schema']>;
+  if (d) return d as SettingDescriptor<typeof SETTINGS_REGISTRY[K]['schema']>;
+  const dynamic = dynamicDescriptor(key);
+  if (dynamic) return dynamic as SettingDescriptor<typeof SETTINGS_REGISTRY[K]['schema']>;
+  throw new Error(`Unknown setting key: ${key}`);
 }
 
 /**

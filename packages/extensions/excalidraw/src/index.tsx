@@ -10,6 +10,14 @@
  * - Lexical integration for embedding diagrams in documents
  */
 
+// Excalidraw 0.18 no longer auto-injects its stylesheet (ESM packaging change);
+// the CSS must be imported explicitly. Import it BEFORE our own styles.css so
+// the extension's `.excalidraw-editor` overrides win the cascade. Font assets
+// referenced by this CSS are inlined as base64 at build time (see
+// build.assetsInlineLimit in vite.config.ts) because the host injects extension
+// CSS as an inline <style>, where relative url(./fonts/...) paths would not
+// resolve.
+import '@excalidraw/excalidraw/index.css';
 import './styles.css';
 import type { ExtensionContext } from '@nimbalyst/extension-sdk';
 import { ExcalidrawEditor } from './components/ExcalidrawEditor';

@@ -3,12 +3,19 @@
  * (NIM-806, Phase 3 / B3, Slice B).
  *
  * We point the genuine `claude` CLI at this proxy via `ANTHROPIC_BASE_URL`. It
- * forwards `/v1/messages` to `api.anthropic.com` BYTE-FOR-BYTE (the CLI's OAuth
- * token rides along in the headers; we never read or store it) and tees the
- * streaming SSE response into `onSSEEvent` so `ClaudeApiMessageAssembler` can
- * reassemble whole assistant turns for the rich transcript. The request body is
- * parsed for `onRequestBody` (Slice E reads `tool_result` blocks from the next
- * request's last user message).
+ * forwards `/v1/messages` to the configured upstream (default `api.anthropic.com`)
+ * BYTE-FOR-BYTE (the CLI's OAuth token rides along in the headers; we never read
+ * or store it) and tees the streaming SSE response into `onSSEEvent` so
+ * `ClaudeApiMessageAssembler` can reassemble whole assistant turns for the rich
+ * transcript. The request body is parsed for `onRequestBody` (Slice E reads
+ * `tool_result` blocks from the next request's last user message).
+ *
+ * The upstream is configurable (`upstreamUrl`) so the CLI's traffic can be routed
+ * through a user-supplied middleware proxy (token-compression, gateways, caching,
+ * observability) before reaching Anthropic. A base PATH on the upstream origin
+ * (e.g. `http://127.0.0.1:8787/anthropic`) is preserved by prepending it to the
+ * request path — WHATWG `new URL(reqPath, origin)` would otherwise DROP it because
+ * `reqPath` is root-absolute (`/v1/messages`).
  *
  * Two transforms on the forwarded request are load-bearing:
  *   - `accept-encoding` is STRIPPED so upstream returns uncompressed,
@@ -87,7 +94,9 @@ export function createClaudeApiProxy(
 ): http.Server {
   const upstreamOrigin = options.upstreamUrl ?? DEFAULT_UPSTREAM;
   const upstreamTimeoutMs = options.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
-  const transport = upstreamOrigin.startsWith("https:") ? https : http;
+  const originUrl = new URL(upstreamOrigin);
+  const upstreamBasePath = originUrl.pathname.replace(/\/+$/, "");
+  const transport = originUrl.protocol === "https:" ? https : http;
   const onError = callbacks.onProxyError ?? (() => {});
 
   return http.createServer((clientReq, clientRes) => {
@@ -95,7 +104,10 @@ export function createClaudeApiProxy(
     const method = clientReq.method || "GET";
     const requestId = String(++nextProxyRequestId);
 
-    const upstream = new URL(reqPath, upstreamOrigin);
+    // Prepend the upstream's base path (if any) to the root-absolute reqPath, so
+    // a prefixed proxy like `http://127.0.0.1:8787/anthropic` receives
+    // `/anthropic/v1/messages` rather than `/v1/messages`.
+    const upstream = new URL(`${originUrl.origin}${upstreamBasePath}${reqPath}`);
     const forwardHeaders: Record<string, string> = {};
     for (const [key, value] of Object.entries(clientReq.headers)) {
       if (STRIPPED_REQUEST_HEADERS.has(key.toLowerCase())) continue;

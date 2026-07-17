@@ -17,7 +17,7 @@ vi.mock('@nimbalyst/runtime/ai/server', () => ({
         normalized === 'openai-codex:cli' ||
         normalized === 'cli'
       ) {
-        return 'openai-codex:gpt-5.5';
+        return 'openai-codex:gpt-5.6-sol';
       }
       return m;
     },
@@ -261,8 +261,12 @@ describe('aiServiceUtils', () => {
     });
 
     it('maps legacy openai-codex default aliases through provider normalization', () => {
-      expect(extractModelForProvider('openai-codex:openai-codex-cli', 'openai-codex')).toBe('gpt-5.5');
-      expect(extractModelForProvider('openai-codex:default', 'openai-codex')).toBe('gpt-5.5');
+      expect(extractModelForProvider('openai-codex:openai-codex-cli', 'openai-codex')).toBe('gpt-5.6-sol');
+      expect(extractModelForProvider('openai-codex:default', 'openai-codex')).toBe('gpt-5.6-sol');
+    });
+
+    it('normalizes legacy Codex aliases for ACP sessions', () => {
+      expect(extractModelForProvider('openai-codex-acp:default', 'openai-codex-acp')).toBe('gpt-5.6-sol');
     });
 
     it('returns the full model unchanged for claude-code', () => {

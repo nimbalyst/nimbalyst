@@ -268,6 +268,28 @@ export function formatRelativeDate(date: Date): string {
   return date.toLocaleDateString();
 }
 
+function parseValidDate(value: string | undefined): Date | undefined {
+  if (!value) return undefined;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function isDateOnlyOrMidnightUtc(value: string | undefined): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
+    || /^\d{4}-\d{2}-\d{2}T00:00:00(?:\.000)?Z$/.test(trimmed);
+}
+
+export function getEffectiveUpdatedDate(record: TrackerRecord): Date | undefined {
+  const lastIndexed = parseValidDate(record.system.lastIndexed);
+  const dateSource = record.system.updatedAt || record.system.createdAt;
+  if (record.source === 'frontmatter' && lastIndexed && isDateOnlyOrMidnightUtc(dateSource)) {
+    return lastIndexed;
+  }
+  return parseValidDate(dateSource) ?? lastIndexed;
+}
+
 /**
  * Get the cell value for a column from a tracker record.
  * Column IDs match field names in the schema, so this is generic.
@@ -277,7 +299,7 @@ export function getCellValue(record: TrackerRecord, columnId: string): any {
   switch (columnId) {
     case 'type': return record.primaryType;
     case 'key': return record.issueKey ?? '';
-    case 'updated': return record.system.lastIndexed ? new Date(record.system.lastIndexed) : undefined;
+    case 'updated': return getEffectiveUpdatedDate(record);
     case 'module': return record.system.documentPath;
     case 'shared': return getItemShareState(record);
     default: return record.fields[columnId];

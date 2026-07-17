@@ -9,14 +9,16 @@
 import { BrowserWindow, dialog, net } from 'electron';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl, getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
-import { isAuthenticated, getStytchUserId, getUserEmail, getAuthState, getPersonalOrgId, getPersonalSessionJwt, refreshPersonalSession } from '../services/StytchAuthService';
+import { isAuthenticated, getStytchUserId, getUserEmail, getAuthState, getPersonalOrgId, getPersonalUserId, getPersonalSessionJwt, refreshPersonalSession } from '../services/StytchAuthService';
 import { findTeamForWorkspace, getOrgScopedJwt } from '../services/TeamService';
 import { getOrgIdFromJwt, getJwtExp } from '../services/jwtOrg';
-import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIdentityKeyToOrg, fetchAndUnwrapOrgKey, clearOrgKey, fetchTeamKeyStatus, getArchivedOrgKeys } from '../services/OrgKeyService';
+import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIdentityKeyToOrg, fetchAndUnwrapOrgKey, clearOrgKey, fetchTeamKeyStatus, getLastKnownTeamKeyStatus, getArchivedOrgKeys } from '../services/OrgKeyService';
 import { getWorkspaceState, updateWorkspaceState } from '../utils/store';
+import { createSingleFlight } from '../utils/asyncCache';
 import { getPersonalDocSyncConfig, isSyncEnabled } from '../services/SyncManager';
 import { resolveCollabDocumentType } from './collabDocumentTypeResolver';
 import { getSyncId } from '../services/DocSyncService';
@@ -26,7 +28,6 @@ import {
   isCollabAssetDocumentRegisteredForSender,
   clearCollabAssetSender,
 } from '../protocols/collabAssetProtocol';
-import { deleteRemovedAssets } from '../services/CollabAssetGC';
 import { encryptAndUploadCollabAsset } from '../services/CollabAssetUploader';
 import {
   scanMarkdownImageRefs,
@@ -45,6 +46,17 @@ import {
 import { registerCollabContentAdapterFromDescriptor } from '../services/collabContentAdapterRegistration';
 import type { CollabAdapterDescriptor } from '@nimbalyst/runtime';
 import WebSocket from 'ws';
+import { getCollabDocumentReplicaStore } from '../services/CollabDocumentReplicaStore';
+import { getCollabOutboxDrainCoordinator } from '../services/CollabOutboxDrainerService';
+import { getCollabAssetStore } from '../services/CollabAssetStore';
+import { getCollabAssetOutboxDrainCoordinator } from '../services/CollabAssetOutboxDrainCoordinator';
+import type {
+  AppendLocalReplicaUpdateInput,
+  AppendRemoteReplicaUpdatesInput,
+  LocalReplicaIdentity,
+  LocalReplicaOutboxState,
+  ReplaceLocalReplicaSnapshotInput,
+} from '@nimbalyst/runtime/sync';
 
 /** Max concurrent uploads in a single migrate-local-assets pass. Keeps a    */
 /** multi-image share from saturating the collab worker.                    */
@@ -67,6 +79,18 @@ let wsIdCounter = 0;
 
 function getCollabPendingKey(orgId: string, documentId: string): string {
   return `org:${orgId}:doc:${documentId}`;
+}
+
+function assertReplicaAccount(requestedAccountId: string): void {
+  if (process.env.PLAYWRIGHT === '1') return;
+  const activeAccountId = getPersonalUserId() ?? getStytchUserId();
+  if (!activeAccountId || requestedAccountId !== activeAccountId) {
+    throw new Error('Local replica account does not match the active account');
+  }
+}
+
+function assertReplicaAccess(identity: LocalReplicaIdentity): void {
+  assertReplicaAccount(identity.accountId);
 }
 
 /**
@@ -204,7 +228,10 @@ export function registerDocumentSyncHandlers(): void {
       const orgJwt = await getOrgScopedJwt(orgId);
       serverManaged = (await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed';
     } catch (err) {
-      logger.main.warn('[DocumentSyncHandlers] key-status fetch failed; assuming legacy-e2e:', err);
+      // Offline JWT mint failure (NIM-1778): fall back to the last-known mode
+      // instead of assuming legacy-e2e, which bricks a server-managed team.
+      serverManaged = getLastKnownTeamKeyStatus(orgId)?.mode === 'server-managed';
+      logger.main.warn('[DocumentSyncHandlers] key-status resolve failed; using last-known mode (serverManaged:', serverManaged, '):', err);
     }
 
     // Get org encryption key (legacy mode only).
@@ -251,7 +278,7 @@ export function registerDocumentSyncHandlers(): void {
       orgKeyBase64 = Buffer.from(rawBytes).toString('base64');
       orgKeyFp = getOrgKeyFingerprint(orgId) ?? undefined;
     } else {
-      logger.main.info('[DocumentSyncHandlers] team', orgId, 'is server-managed; skipping ECDH org-key unwrap');
+      // logger.main.info('[DocumentSyncHandlers] team', orgId, 'is server-managed; skipping ECDH org-key unwrap');
       // NIM-878/959: documents created before this team migrated to server-
       // managed still have legacy-e2e AES-ciphertext rows on the server (passed
       // through with their original iv), and those rows may span multiple org-
@@ -289,14 +316,14 @@ export function registerDocumentSyncHandlers(): void {
       } catch (err) {
         logger.main.info('[DocumentSyncHandlers] no legacy org keys for server-managed migration read (pre-migration rows may not load):', err);
       }
-      logger.main.info('[DocumentSyncHandlers] doc server-managed legacy key epochs available:', legacyOrgKeysBase64.length);
+      // logger.main.info('[DocumentSyncHandlers] doc server-managed legacy key epochs available:', legacyOrgKeysBase64.length);
     }
     logPhase('total', handlerStart);
 
     const serverUrl = getCollabSyncWsUrl();
     const workspaceState = getWorkspaceState(payload.workspacePath);
     const pendingKey = getCollabPendingKey(orgId, payload.documentId);
-    const pendingUpdateBase64 = workspaceState
+    let pendingUpdateBase64 = workspaceState
       .collabPendingUpdates?.[pendingKey]?.mergedUpdateBase64;
 
     // Defensive: if the caller didn't pass documentType, fall back to the
@@ -309,6 +336,25 @@ export function registerDocumentSyncHandlers(): void {
       workspaceState: workspaceState as unknown as { openCollabDocumentEntries?: unknown },
       documentId: payload.documentId,
     });
+
+    const accountId = getPersonalUserId() ?? userId;
+    if (pendingUpdateBase64) {
+      try {
+        const legacyUpdateCommitted = await getCollabDocumentReplicaStore().migrateLegacyPendingUpdate(
+          { accountId, orgId, documentId: payload.documentId },
+          resolvedDocumentType ?? 'markdown',
+          Buffer.from(pendingUpdateBase64, 'base64'),
+        );
+        if (legacyUpdateCommitted) {
+          updateWorkspaceState(payload.workspacePath, state => {
+            delete state.collabPendingUpdates?.[pendingKey];
+          });
+          pendingUpdateBase64 = undefined;
+        }
+      } catch (error) {
+        logger.main.error('[DocumentSyncHandlers] Failed to migrate legacy pending update:', error);
+      }
+    }
 
     // logger.main.info('[DocumentSyncHandlers] Resolved collab config', {
     //   orgId,
@@ -334,6 +380,7 @@ export function registerDocumentSyncHandlers(): void {
       event.sender.once('destroyed', () => {
         senderDestroyedHooked.delete(senderId);
         clearCollabAssetSender(senderId);
+        getCollabOutboxDrainCoordinator().clearSender(senderId);
       });
     }
 
@@ -352,6 +399,7 @@ export function registerDocumentSyncHandlers(): void {
         legacyOrgKeysBase64,
         orgKeyFingerprint: orgKeyFp,
         serverUrl,
+        accountId,
         userId,
         userName: getUserDisplayName(userId),
         userEmail: getUserEmail() || undefined,
@@ -396,14 +444,31 @@ export function registerDocumentSyncHandlers(): void {
       return { success: false, error: 'Document not open in this window' };
     }
 
-    return encryptAndUploadCollabAsset({
-      orgId: payload.orgId,
-      documentId: payload.documentId,
-      fileBytes: payload.fileBytes,
-      mimeType: payload.mimeType,
-      fileName: payload.fileName,
-      syncHttpUrl: getCollabSyncHttpUrl(),
+    const accountId = getPersonalUserId();
+    if (!accountId) {
+      return { success: false, error: 'Local account identity unavailable' };
+    }
+    const assetId = randomUUID();
+    await getCollabAssetStore().enqueueUpload({
+      identity: {
+        accountId,
+        orgId: payload.orgId,
+        documentId: payload.documentId,
+        assetId,
+      },
+      bytes: new Uint8Array(payload.fileBytes),
+      mimeType: payload.mimeType || 'application/octet-stream',
+      fileName: payload.fileName || assetId,
     });
+    // The URI is usable from the local cache immediately. Network upload is
+    // deliberately detached so the body edit that references it never waits.
+    getCollabAssetOutboxDrainCoordinator().trigger('asset-enqueued');
+    return {
+      success: true,
+      assetId,
+      uri: `collab-asset://doc/${encodeURIComponent(payload.documentId)}/asset/${encodeURIComponent(assetId)}`,
+      queued: true,
+    };
   });
 
   /**
@@ -531,43 +596,17 @@ export function registerDocumentSyncHandlers(): void {
   });
 
   /**
-   * Delete the specific list of `collab-asset://` URIs reported by the
-   * renderer's AssetGCPlugin as having disappeared from the live Yjs
-   * state since the previous scan. Diff-only: we never delete an asset
-   * the client never observed, so concurrent inserts on other peers
-   * (which we may not have received yet) are safe.
+   * NIM-1683: retained as an inert no-op. This channel used to delete the R2
+   * blobs for `collab-asset://` URIs that disappeared from the live editor
+   * state. That is data-loss -- an image removed from the current state is
+   * still referenced by document revision history and undo / cut-paste, which
+   * re-insert the SAME URI. Asset lifetime is now tied to document lifetime;
+   * the collab worker reclaims a doc's assets only when the document is
+   * deleted. The renderer no longer calls this (see CollaborativeTabEditor),
+   * but the handler stays as a safe sink for any stale caller.
    */
-  safeHandle('document-sync:gc-assets', async (event, payload: {
-    orgId: string;
-    documentId: string;
-    removedUris: string[];
-  }) => {
-    if (!isAuthenticated()) {
-      return { success: false, error: 'Not authenticated' };
-    }
-    if (!payload?.orgId || !payload?.documentId) {
-      return { success: false, error: 'orgId and documentId required' };
-    }
-    if (!isCollabAssetDocumentRegisteredForSender(event.sender.id, payload.orgId, payload.documentId)) {
-      return { success: false, error: 'Document not open in this window' };
-    }
-    if (!payload.removedUris || payload.removedUris.length === 0) {
-      return { success: true, requested: 0, deleted: 0, failed: 0, skipped: 0 };
-    }
-
-    try {
-      const orgJwt = await getOrgScopedJwt(payload.orgId);
-      const result = await deleteRemovedAssets(
-        getCollabSyncHttpUrl(),
-        orgJwt,
-        payload.documentId,
-        payload.removedUris
-      );
-      return { success: true, ...result };
-    } catch (err) {
-      logger.main.error('[DocumentSyncHandlers] gc-assets threw', err);
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+  safeHandle('document-sync:gc-assets', async () => {
+    return { success: true, requested: 0, deleted: 0, failed: 0, skipped: 0 };
   });
 
 
@@ -590,6 +629,249 @@ export function registerDocumentSyncHandlers(): void {
       };
     });
     return { success: true };
+  });
+
+  safeHandle('document-sync:replica-load', async (_event, payload: {
+    workspacePath: string;
+    identity: LocalReplicaIdentity;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-load requires workspacePath');
+    assertReplicaAccess(payload.identity);
+    return getCollabDocumentReplicaStore().load(payload.identity);
+  });
+
+  safeHandle('document-sync:replica-append-local', async (event, payload: {
+    workspacePath: string;
+    input: AppendLocalReplicaUpdateInput;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-append-local requires workspacePath');
+    assertReplicaAccess(payload.input.identity);
+    const replicaStore = getCollabDocumentReplicaStore();
+    const drainCoordinator = getCollabOutboxDrainCoordinator();
+    await replicaStore.prepareForAppend(
+      payload.input.identity.accountId,
+      replicaStore.estimateLocalAppendBytes(payload.input),
+      (identity) => drainCoordinator.isProviderAttached(identity),
+    );
+    await replicaStore.appendLocalUpdate(payload.input);
+    const siblingSenderIds = new Set(
+      drainCoordinator.getAttachedSenderIds(
+        payload.input.identity,
+        event.sender.id,
+      ),
+    );
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (
+        siblingSenderIds.has(window.webContents.id) &&
+        !window.webContents.isDestroyed()
+      ) {
+        window.webContents.send('document-sync:replica-local-update', {
+          identity: payload.input.identity,
+          updateId: payload.input.updateId,
+          update: payload.input.update,
+        });
+      }
+    }
+  });
+
+  safeHandle('document-sync:replica-append-remote', async (_event, payload: {
+    workspacePath: string;
+    input: AppendRemoteReplicaUpdatesInput;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-append-remote requires workspacePath');
+    assertReplicaAccess(payload.input.identity);
+    const replicaStore = getCollabDocumentReplicaStore();
+    const drainCoordinator = getCollabOutboxDrainCoordinator();
+    await replicaStore.prepareForAppend(
+      payload.input.identity.accountId,
+      replicaStore.estimateRemoteAppendBytes(payload.input),
+      (identity) => drainCoordinator.isProviderAttached(identity),
+    );
+    await replicaStore.appendRemoteUpdates(payload.input);
+  });
+
+  safeHandle('document-sync:replica-set-outbox-state', async (_event, payload: {
+    workspacePath: string;
+    identity: LocalReplicaIdentity;
+    batchIds: string[];
+    state: LocalReplicaOutboxState;
+    lastErrorCode?: string | null;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-set-outbox-state requires workspacePath');
+    assertReplicaAccess(payload.identity);
+    await getCollabDocumentReplicaStore().setOutboxState(
+      payload.identity,
+      payload.batchIds,
+      payload.state,
+      payload.lastErrorCode,
+    );
+  });
+
+  safeHandle('document-sync:replica-claim-outbox', async (_event, payload: {
+    workspacePath: string;
+    identity: LocalReplicaIdentity;
+    batchIds: string[];
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-claim-outbox requires workspacePath');
+    assertReplicaAccess(payload.identity);
+    return getCollabDocumentReplicaStore().claimOutboxBatch(
+      payload.identity,
+      payload.batchIds,
+    );
+  });
+
+  safeHandle('document-sync:replica-load-outbox', async (_event, payload: {
+    workspacePath: string;
+    identity: LocalReplicaIdentity;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-load-outbox requires workspacePath');
+    assertReplicaAccess(payload.identity);
+    return getCollabDocumentReplicaStore().loadOutbox(payload.identity);
+  });
+
+  safeHandle('document-sync:replica-record-outbox-error', async (_event, payload: {
+    workspacePath: string;
+    identity: LocalReplicaIdentity;
+    batchIds: string[];
+    errorCode: string;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-record-outbox-error requires workspacePath');
+    assertReplicaAccess(payload.identity);
+    await getCollabDocumentReplicaStore().recordOutboxError(
+      payload.identity,
+      payload.batchIds,
+      payload.errorCode,
+    );
+  });
+
+  safeHandle('document-sync:replica-ack-outbox', async (_event, payload: {
+    workspacePath: string;
+    identity: LocalReplicaIdentity;
+    batchIds: string[];
+    serverSequence: number;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-ack-outbox requires workspacePath');
+    assertReplicaAccess(payload.identity);
+    await getCollabDocumentReplicaStore().acknowledgeOutbox(
+      payload.identity,
+      payload.batchIds,
+      payload.serverSequence,
+    );
+  });
+
+  safeHandle('document-sync:replica-replace-snapshot', async (_event, payload: {
+    workspacePath: string;
+    input: ReplaceLocalReplicaSnapshotInput;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-replace-snapshot requires workspacePath');
+    assertReplicaAccess(payload.input.identity);
+    return getCollabDocumentReplicaStore().replaceSnapshot(payload.input);
+  });
+
+  safeHandle('document-sync:replica-mark-incomplete', async (_event, payload: {
+    workspacePath: string;
+    identity: LocalReplicaIdentity;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-mark-incomplete requires workspacePath');
+    assertReplicaAccess(payload.identity);
+    await getCollabDocumentReplicaStore().markIncomplete(payload.identity);
+  });
+
+  safeHandle('document-sync:replica-mark-complete', async (_event, payload: {
+    workspacePath: string;
+    identity: LocalReplicaIdentity;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-mark-complete requires workspacePath');
+    assertReplicaAccess(payload.identity);
+    await getCollabDocumentReplicaStore().markComplete(payload.identity);
+  });
+
+  safeHandle('document-sync:replica-quarantine', async (_event, payload: {
+    workspacePath: string;
+    identity: LocalReplicaIdentity;
+    reason: string;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-quarantine requires workspacePath');
+    assertReplicaAccess(payload.identity);
+    await getCollabDocumentReplicaStore().quarantine(payload.identity, payload.reason);
+  });
+
+  safeHandle('document-sync:replica-reset-clean-hydration', async (_event, payload: {
+    workspacePath: string;
+    identity: LocalReplicaIdentity;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-reset-clean-hydration requires workspacePath');
+    assertReplicaAccess(payload.identity);
+    await getCollabDocumentReplicaStore().resetForCleanHydration(payload.identity);
+  });
+
+  safeHandle('document-sync:replica-discard', async (_event, payload: {
+    workspacePath: string;
+    identity: LocalReplicaIdentity;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-discard requires workspacePath');
+    assertReplicaAccess(payload.identity);
+    await getCollabDocumentReplicaStore().discard(payload.identity);
+  });
+
+  safeHandle('document-sync:replica-purge-account', async (_event, payload: {
+    workspacePath: string;
+    accountId: string;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-purge-account requires workspacePath');
+    assertReplicaAccount(payload.accountId);
+    await getCollabDocumentReplicaStore().purgeByAccount(payload.accountId);
+  });
+
+  safeHandle('document-sync:replica-purge-org', async (_event, payload: {
+    workspacePath: string;
+    accountId: string;
+    orgId: string;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-purge-org requires workspacePath');
+    assertReplicaAccount(payload.accountId);
+    await getCollabDocumentReplicaStore().purgeByOrg(payload.accountId, payload.orgId);
+  });
+
+  safeHandle('document-sync:replica-storage-usage', async (_event, payload: {
+    workspacePath: string;
+    accountId: string;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-storage-usage requires workspacePath');
+    assertReplicaAccount(payload.accountId);
+    return getCollabDocumentReplicaStore().getStorageUsage(payload.accountId);
+  });
+
+  safeHandle('document-sync:replica-list-pending-outboxes', async (_event, payload: {
+    workspacePath: string;
+    accountId?: string;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('document-sync:replica-list-pending-outboxes requires workspacePath');
+    const accountId = payload.accountId ?? getPersonalUserId() ?? getStytchUserId();
+    if (!accountId) {
+      throw new Error('Local replica account identity is unavailable');
+    }
+    assertReplicaAccount(accountId);
+    return getCollabDocumentReplicaStore().listPendingOutboxes(accountId);
+  });
+
+  safeHandle('document-sync:replica-provider-attached', async (event, payload: {
+    identity: LocalReplicaIdentity;
+    attachmentId: string;
+    attached: boolean;
+  }) => {
+    // Detach must remain best-effort after logout; it only removes this
+    // renderer's ownership claim and must never leave the coordinator stuck.
+    if (!payload.attachmentId) {
+      throw new Error('document-sync:replica-provider-attached requires attachmentId');
+    }
+    if (payload.attached) assertReplicaAccess(payload.identity);
+    await getCollabOutboxDrainCoordinator().setProviderAttached(
+      event.sender.id,
+      payload.identity,
+      payload.attachmentId,
+      payload.attached,
+    );
   });
 
   safeHandle('document-sync:seed-shared-document', async (_event, payload: {
@@ -858,9 +1140,9 @@ export function registerDocumentSyncHandlers(): void {
    * Returns: { success: true, config: { orgId, orgKeyBase64, serverUrl, userId } }
    *       | { success: false, error: string }
    */
-  safeHandle('document-sync:resolve-index-config', async (_event, payload: {
+  async function resolveIndexConfig(payload: {
     workspacePath: string;
-  }) => {
+  }) {
     if (!isAuthenticated()) {
       return { success: false, error: 'Not authenticated. Sign in first.' };
     }
@@ -883,7 +1165,11 @@ export function registerDocumentSyncHandlers(): void {
       const orgJwt = await getOrgScopedJwt(orgId);
       serverManaged = (await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed';
     } catch (err) {
-      logger.main.warn('[DocumentSyncHandlers] index key-status fetch failed; assuming legacy-e2e:', err);
+      // Offline JWT mint failure (NIM-1778): fall back to the last-known mode
+      // instead of assuming legacy-e2e -- the wrong lane makes every doc-index
+      // title fail decrypt and surface as locked until restart.
+      serverManaged = getLastKnownTeamKeyStatus(orgId)?.mode === 'server-managed';
+      logger.main.warn('[DocumentSyncHandlers] index key-status resolve failed; using last-known mode (serverManaged:', serverManaged, '):', err);
     }
 
     let orgKeyBase64 = '';
@@ -915,7 +1201,7 @@ export function registerDocumentSyncHandlers(): void {
       orgKeyBase64 = Buffer.from(rawBytes).toString('base64');
       orgKeyFingerprint = (await getOrgKeyFingerprint(orgId)) ?? null;
     } else {
-      logger.main.info('[DocumentSyncHandlers] index for', orgId, 'is server-managed; skipping ECDH org-key unwrap');
+      // logger.main.info('[DocumentSyncHandlers] index for', orgId, 'is server-managed; skipping ECDH org-key unwrap');
       // NIM-906/910: gather EVERY candidate legacy org-key epoch so the renderer
       // can read (and self-heal) pre-migration ciphertext titles, even when the
       // org key was rotated and titles span epochs. If none are available, those
@@ -948,7 +1234,7 @@ export function registerDocumentSyncHandlers(): void {
       } catch (err) {
         logger.main.info('[DocumentSyncHandlers] no legacy org keys for server-managed index (pre-migration titles may show as locked):', err);
       }
-      logger.main.info('[DocumentSyncHandlers] index server-managed legacy key epochs available:', legacyOrgKeysBase64.length);
+      // logger.main.info('[DocumentSyncHandlers] index server-managed legacy key epochs available:', legacyOrgKeysBase64.length);
     }
     const serverUrl = getCollabSyncWsUrl();
 
@@ -978,6 +1264,19 @@ export function registerDocumentSyncHandlers(): void {
         userEmail: getUserEmail() || undefined,
       },
     };
+  }
+
+  // Collapses a burst of concurrent `document-sync:resolve-index-config`
+  // calls for the same workspace (initSharedDocuments, tracker sync, collab
+  // backup, local-origin service all fan out at startup) into one team-
+  // resolve + key-status + org-key-envelope run. collab-open-latency
+  // investigation (RC4).
+  const resolveIndexConfigSingleFlight = createSingleFlight<string, Awaited<ReturnType<typeof resolveIndexConfig>>>();
+
+  safeHandle('document-sync:resolve-index-config', async (_event, payload: {
+    workspacePath: string;
+  }) => {
+    return resolveIndexConfigSingleFlight(payload.workspacePath, () => resolveIndexConfig(payload));
   });
 
   // --------------------------------------------------------------------------
@@ -1086,6 +1385,7 @@ export function registerDocumentSyncHandlers(): void {
             title: payload.title || payload.documentId,
             orgKeyBase64: payload.encryptionKeyBase64,
             serverUrl: payload.serverUrl,
+            accountId: payload.userId,
             userId: payload.userId,
             userName: 'Test User',
             userEmail: 'test@test.com',

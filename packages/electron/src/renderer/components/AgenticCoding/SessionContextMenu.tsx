@@ -131,7 +131,11 @@ export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
     onClose();
     if (!shareInfo) return;
     try {
-      const result = await (window as any).electronAPI?.deleteShare({ shareId: shareInfo.shareId, sessionId });
+      const result = await (window as any).electronAPI?.deleteShare({
+        shareId: shareInfo.shareId,
+        sessionId,
+        owningPersonalOrgId: shareInfo.owningPersonalOrgId,
+      });
       if (result?.success) {
         removeShare(sessionId);
         errorNotificationService.showInfo('Session unshared', 'The share link has been removed.', { duration: 3000 });

@@ -104,10 +104,40 @@ export interface CollaborationContext {
   loadInitialContent(): Promise<string | ArrayBuffer>;
 
   /**
-   * Ask the host transport to flush the current Y.Doc state upstream.
+   * Flush the current Y.Doc state upstream and resolve ONLY after the server
+   * confirms it persisted the update (not merely after the socket write).
    *
-   * The SDK uses this after seeding a first-open collaborative document from
-   * in-memory share payloads. Most editors should not call it directly.
+   * The SDK awaits this after seeding a first-open collaborative document so the
+   * seed is durably on the server before the provider can tear down. Resolves
+   * `true` on a server-acked persist, `false` on timeout / not-yet-connected —
+   * the host surfaces a failed flush to the user (pending-seed machinery)
+   * rather than silently losing the seed. Required on the collab context: a
+   * host that can't guarantee the flush would reintroduce the seed data-loss
+   * race that made this method necessary.
+   */
+  flushWithAck(timeoutMs?: number): Promise<boolean>;
+
+  /**
+   * True when the transport skipped server payloads it could not decode
+   * (stale key epoch, corruption). An "empty" Y.Doc then does NOT mean the
+   * room is empty — the SDK must not run the first-open seed, or a default
+   * document gets written over real-but-unreadable content for every client.
+   */
+  hasUndecodedContent?(): boolean;
+
+  /**
+   * Host-level reporting hook for first-open seed durability. The SDK calls
+   * this when seeding succeeds, throws, or its server-persisted flush is not
+   * confirmed, so extension authors do not have to wire their own toast to
+   * avoid silent blank-room failures.
+   */
+  reportSeedOutcome?(outcome: { ok: boolean; error?: unknown }): void;
+
+  /**
+   * @deprecated Use {@link flushWithAck}, which awaits a server-persisted ack.
+   * `flushLocalState` fires-and-forgets (resolves after the socket write, not
+   * the server ack) and rode in the mindmap seed data-loss race. Retained only
+   * so existing callers keep compiling.
    */
   flushLocalState?(): Promise<void>;
 
@@ -386,6 +416,24 @@ export interface EditorHost {
    */
   openHistory(): void;
 
+  /**
+   * Host-backed project filesystem: read files with SHA-256 version tokens,
+   * apply compare-and-swap grouped writes, and observe out-of-band changes.
+   *
+   * Optional because read-only, embedded, offscreen, and collaborative hosts
+   * cannot honor raw disk semantics. Undo/redo is intentionally NOT here — a
+   * write is a plain filesystem edit; the editor owns its own undo history and
+   * reverses an edit by writing the prior content back (see EditorHostFileSystem).
+   */
+  fs?: EditorHostFileSystem;
+
+  /**
+   * Open a reviewed HTTPS URL in the operating system's external browser.
+   * The host normalizes and validates the URL before crossing the Electron
+   * boundary; custom editors must not navigate the renderer directly.
+   */
+  openExternal?(url: string): Promise<void>;
+
   // ============ DIFF MODE (OPTIONAL) ============
 
   /**
@@ -570,6 +618,70 @@ export interface EditorHost {
    * ```
    */
   registerMenuItems(items: EditorMenuItem[]): void;
+}
+
+export type ProjectFileActor = 'user' | 'agent';
+
+export interface ProjectFileSnapshot {
+  path: string;
+  exists: boolean;
+  content: string | null;
+  sha256: string | null;
+}
+
+export interface ProjectFileChange {
+  path: string;
+  /** SHA-256 from a prior read, or null to require the file does not yet exist. */
+  expectedSha256: string | null;
+  /** New UTF-8 content, or null to delete the file (e.g. to reverse a creation). */
+  content: string | null;
+}
+
+export interface ProjectFileEdit {
+  label: string;
+  actor: ProjectFileActor;
+  changes: ProjectFileChange[];
+}
+
+export interface ProjectFileWriteReceiptFile {
+  path: string;
+  beforeSha256: string | null;
+  afterSha256: string | null;
+}
+
+export interface ProjectFileWriteReceipt {
+  id: string;
+  label: string;
+  actor: ProjectFileActor;
+  timestamp: number;
+  files: ProjectFileWriteReceiptFile[];
+  /**
+   * Multi-file writes are coordinated and rolled back on failure, not
+   * filesystem-atomic. A receipt is only returned for a fully-applied write;
+   * a failure rejects (restoring prior content when it can), so callers observe
+   * failure as a thrown error, never a partial receipt.
+   */
+  atomic: false;
+}
+
+export interface EditorHostFileSystem {
+  /**
+   * Read a bounded set of UTF-8 files with stable SHA-256 version tokens. Paths
+   * may be absolute or workspace-relative; paths that escape the workspace
+   * (including through a symlink) are rejected. Missing files come back with
+   * `exists: false` and a null hash.
+   */
+  read(paths: string[]): Promise<ProjectFileSnapshot[]>;
+
+  /**
+   * Apply one labeled, compare-and-swap grouped write. Every change is recorded
+   * in Nimbalyst document history. The host refuses the write if any affected
+   * file is dirty in an open editor or no longer matches its expected hash.
+   */
+  write(edit: ProjectFileEdit): Promise<ProjectFileWriteReceipt>;
+
+  /** Subscribe to workspace file changes outside the active document. */
+  onChanged(callback: (paths: string[]) => void): () => void;
 }
 
 /**

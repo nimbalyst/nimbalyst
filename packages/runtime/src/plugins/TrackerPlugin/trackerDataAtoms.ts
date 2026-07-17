@@ -105,6 +105,27 @@ export const trackerItemByReferenceKeyAtom = atomFamily((referenceKey: string) =
 );
 
 /**
+ * The set of distinct issue-key prefixes present in the workspace (uppercased),
+ * derived from existing records' `issueKey`s (e.g. `NIM-123` -> `NIM`).
+ *
+ * Used to auto-link bare tracker keys in transcript prose without hardcoding a
+ * prefix (prefixes are workspace-configurable via `tracker_set_issue_key_prefix`)
+ * and without matching unrelated tokens like `UTF-8` or `COVID-19` — only a
+ * prefix that actually has a tracker item in this workspace is eligible.
+ */
+export const trackerIssueKeyPrefixesAtom = atom<Set<string>>((get) => {
+  const map = get(trackerItemsMapAtom);
+  const prefixes = new Set<string>();
+  for (const record of map.values()) {
+    const key = record.issueKey;
+    if (!key) continue;
+    const match = /^([A-Za-z][A-Za-z0-9]*)-\d+$/.exec(key);
+    if (match) prefixes.add(match[1].toUpperCase());
+  }
+  return prefixes;
+});
+
+/**
  * Count of non-archived records per type.
  */
 export const trackerItemCountByTypeAtom = atomFamily((type: string) =>

@@ -1,4 +1,6 @@
 export type {
+  CollabCodec,
+  CollabCodecMigration,
   CollabContentAdapter,
   CollabContentAdapterMigration,
   FileSource,
@@ -18,3 +20,4 @@ export {
   defaultExportRevisionSnapshot,
   defaultRestoreRevisionSnapshot,
 } from './snapshot';
+export { exportCollabRecoveryPlaintext } from './recovery';

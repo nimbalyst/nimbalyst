@@ -26,6 +26,13 @@ interface ScheduledAutomation {
   filePath: string;
   status: AutomationStatus;
   timerId: ReturnType<typeof setTimeout> | null;
+  /**
+   * Absolute epoch-ms target for the next run. Resolved once when the
+   * automation is (re)scheduled and only recomputed after a run or a
+   * schedule/enabled change — so the interval clock survives 30s rescans and
+   * restarts instead of resetting to `now + interval` every scan.
+   */
+  nextRunAt: number | null;
 }
 
 /** Result returned by the onFire callback. */
@@ -102,14 +109,21 @@ export class AutomationScheduler {
 
           existing.status = status;
           if (scheduleChanged) {
+            // Schedule or enabled flag changed — recompute the target from the
+            // updated status (honoring a freshly-written nextRun) rather than
+            // keeping the old one.
             this.clearTimer(existing);
+            existing.nextRunAt = null;
             this.scheduleNext(existing);
           }
+          // Otherwise keep the existing timer and nextRunAt untouched so the
+          // interval clock is not reset by the 30s poll.
         } else {
           const automation: ScheduledAutomation = {
             filePath,
             status,
             timerId: null,
+            nextRunAt: null,
           };
           this.automations.set(filePath, automation);
           this.scheduleNext(automation);
@@ -117,6 +131,44 @@ export class AutomationScheduler {
       } catch (err) {
         console.error(`[Automations] Failed to read ${filePath}:`, err);
       }
+    }
+  }
+
+  /**
+   * (Re)schedule an automation immediately from in-memory content, bypassing
+   * the 30s disk poll. Called when the document header edits a definition so
+   * enabling/toggling takes effect at once instead of after up to 30s. Uses the
+   * content the header already holds, so there is no race with the autosave
+   * flush to disk.
+   */
+  applyDefinition(filePath: string, content: string): void {
+    if (this.disposed) return;
+
+    const status = parseAutomationStatus(content);
+    const existing = this.automations.get(filePath);
+
+    if (!status) {
+      if (existing) {
+        this.clearTimer(existing);
+        this.automations.delete(filePath);
+      }
+      return;
+    }
+
+    if (existing) {
+      existing.status = status;
+      this.clearTimer(existing);
+      existing.nextRunAt = null;
+      this.scheduleNext(existing);
+    } else {
+      const automation: ScheduledAutomation = {
+        filePath,
+        status,
+        timerId: null,
+        nextRunAt: null,
+      };
+      this.automations.set(filePath, automation);
+      this.scheduleNext(automation);
     }
   }
 
@@ -162,28 +214,61 @@ export class AutomationScheduler {
   private scheduleNext(automation: ScheduledAutomation): void {
     if (this.disposed || !automation.status.enabled) return;
 
-    const ms = msUntilNextRun(automation.status.schedule);
-    if (ms === null) return;
+    // Resolve the absolute target once. Prefer a persisted `nextRun` (so the
+    // clock survives rescans/restarts and an overdue run catches up); fall back
+    // to `now + interval` for a freshly-enabled/created automation.
+    if (automation.nextRunAt === null) {
+      automation.nextRunAt = this.resolveNextRunAt(automation.status);
+    }
+    if (automation.nextRunAt === null) return; // schedule can never fire
 
-    // Cap at ~24 hours to prevent setTimeout overflow issues
-    const cappedMs = Math.min(ms, 86_400_000);
+    this.armTimer(automation);
+  }
+
+  /**
+   * Arm a setTimeout toward `automation.nextRunAt`. The delay is capped at ~24h
+   * to avoid setTimeout overflow; when the timer fires early because of the cap,
+   * the callback compares against the absolute target and re-arms. This works
+   * for interval schedules too, unlike recomputing the schedule at fire time.
+   */
+  private armTimer(automation: ScheduledAutomation): void {
+    if (this.disposed || automation.nextRunAt === null) return;
+
+    const SLACK_MS = 1000;
+    const delay = Math.max(0, automation.nextRunAt - Date.now());
+    const cappedMs = Math.min(delay, 86_400_000);
 
     automation.timerId = setTimeout(async () => {
       if (this.disposed) return;
 
-      // Re-check if enough time passed (handles the cap case)
-      const now = new Date();
-      const nextRun = calculateNextRun(automation.status.schedule, new Date(now.getTime() - 1000));
-      if (nextRun && nextRun > now) {
-        // Not yet time - reschedule
-        this.scheduleNext(automation);
+      // Not yet due (the 24h cap fired us early) — re-arm toward the same target.
+      if (automation.nextRunAt !== null && Date.now() < automation.nextRunAt - SLACK_MS) {
+        this.armTimer(automation);
         return;
       }
 
       await this.executeAutomation(automation.filePath, automation.status);
-      // Reschedule for next run
-      this.scheduleNext(automation);
+
+      // Compute the next target from a fresh now (a single overdue run catches
+      // up, then cadence resumes going forward).
+      const next = calculateNextRun(automation.status.schedule);
+      automation.nextRunAt = next ? next.getTime() : null;
+      if (automation.nextRunAt !== null) this.armTimer(automation);
     }, cappedMs);
+  }
+
+  /**
+   * Resolve the initial absolute run target for an automation. Honors a valid
+   * persisted `nextRun` (including one already in the past, which triggers an
+   * immediate catch-up run); otherwise arms `now + msUntilNextRun`.
+   */
+  private resolveNextRunAt(status: AutomationStatus): number | null {
+    if (status.nextRun) {
+      const parsed = Date.parse(status.nextRun);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+    const ms = msUntilNextRun(status.schedule);
+    return ms === null ? null : Date.now() + ms;
   }
 
   private clearTimer(automation: ScheduledAutomation): void {

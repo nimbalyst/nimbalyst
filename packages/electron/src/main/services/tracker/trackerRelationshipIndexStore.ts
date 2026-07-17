@@ -14,6 +14,7 @@ import type { FieldDefinition, RelationshipEdge } from '@nimbalyst/runtime/plugi
 import { deriveRelationshipEdges } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { getDatabase } from '../../database/initialize';
 import { logger } from '../../utils/logger';
+import { flattenDataForRead } from './relationshipFieldStorage';
 
 export interface RelationshipIndexDb {
   query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] } | unknown>;
@@ -148,7 +149,8 @@ export async function getOutgoingRelationships(
 /**
  * Derive a single item's relationship edges from its fields bag + the schema
  * field definitions for its type, then replace its index rows. The fields bag is
- * the parsed `data` column (relationship values live at `data[fieldName]`).
+ * the parsed `data` column; relationship values may sit top-level (local) or
+ * nested under `data.customFields` (synced), so flatten first (NIM-1305).
  */
 export async function reindexItemRelationships(
   workspace: string,
@@ -158,7 +160,7 @@ export async function reindexItemRelationships(
   sourceUpdatedAt: string | null,
   dbOverride?: RelationshipIndexDb,
 ): Promise<void> {
-  const edges = deriveRelationshipEdges(sourceItemId, fields, fieldDefs);
+  const edges = deriveRelationshipEdges(sourceItemId, flattenDataForRead(fields), fieldDefs);
   await rebuildItemRelationships(workspace, sourceItemId, edges, sourceUpdatedAt, dbOverride);
 }
 
@@ -187,7 +189,7 @@ export async function rebuildWorkspaceRelationshipIndex(
     for (const row of rows) {
       const data = parseMeta(row.data);
       const defs = fieldDefsFor(row.type) ?? [];
-      const edges = deriveRelationshipEdges(row.id, data, defs);
+      const edges = deriveRelationshipEdges(row.id, flattenDataForRead(data), defs);
       if (edges.length === 0) continue;
       const updatedAt = typeof row.updated === 'string' ? row.updated : null;
       // No per-item delete needed (workspace was just cleared); rebuild inserts.

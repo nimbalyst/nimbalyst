@@ -15,6 +15,10 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
     public var sessionType: String?
     /// Parent session ID for workstream/worktree hierarchy
     public var parentSessionId: String?
+    /// Agent role marker (e.g. "meta-agent"); nil for standard sessions
+    public var agentRole: String?
+    /// Session ID of the meta-agent that spawned this session (sub-agent link)
+    public var createdBySessionId: String?
     /// Kanban phase: backlog, planning, implementing, validating, complete
     public var phase: String?
     /// Arbitrary tags for categorization (stored as JSON array string in DB)
@@ -80,6 +84,8 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
         mode: String? = nil,
         sessionType: String? = nil,
         parentSessionId: String? = nil,
+        agentRole: String? = nil,
+        createdBySessionId: String? = nil,
         phase: String? = nil,
         tagsJson: String? = nil,
         worktreeId: String? = nil,
@@ -110,6 +116,8 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
         self.mode = mode
         self.sessionType = sessionType
         self.parentSessionId = parentSessionId
+        self.agentRole = agentRole
+        self.createdBySessionId = createdBySessionId
         self.phase = phase
         self.tagsJson = tagsJson
         self.worktreeId = worktreeId
@@ -139,7 +147,7 @@ extension Session: FetchableRecord, PersistableRecord {
 
     public enum Columns: String, ColumnExpression {
         case id, projectId, titleEncrypted, titleIv, titleDecrypted
-        case provider, model, mode, sessionType, parentSessionId, phase, tagsJson, worktreeId
+        case provider, model, mode, sessionType, parentSessionId, agentRole, createdBySessionId, phase, tagsJson, worktreeId
         case isArchived, isPinned, branchedFromSessionId, branchPointMessageId, branchedAt
         case isExecuting, hasQueuedPrompts
         case contextTokens, contextWindow

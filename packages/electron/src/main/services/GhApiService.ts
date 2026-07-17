@@ -141,6 +141,35 @@ export class GhApiError extends Error {
   }
 }
 
+/** Find the endpoint in a `gh api` argv list, including mutations with leading flags. */
+export function getGhApiEndpoint(args: string[]): string {
+  const valueOptions = new Set([
+    '-X', '--method', '-H', '--header', '-f', '--raw-field', '-F', '--field', '--cache',
+  ]);
+  for (let index = args[0] === 'api' ? 1 : 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (valueOptions.has(arg)) {
+      index += 1;
+      continue;
+    }
+    if (!arg.startsWith('-')) return arg;
+  }
+  return '';
+}
+
+export const GH_WORKFLOW_SCOPE_REFRESH_COMMAND = 'gh auth refresh -h github.com -s workflow';
+
+/** Return actionable guidance for GitHub's workflow-file OAuth restriction. */
+export function getWorkflowScopeRecoveryMessage(stderr: string): string | null {
+  const missingScope =
+    /refusing to allow an OAuth App to create or update workflow .* without [`'"]?workflow[`'"]? scope/i;
+  if (!missingScope.test(stderr)) return null;
+  return (
+    'GitHub blocked this merge because the PR changes a workflow file and the active GitHub CLI token lacks the `workflow` scope. ' +
+    `Run: ${GH_WORKFLOW_SCOPE_REFRESH_COMMAND}`
+  );
+}
+
 interface SpawnResult {
   stdout: string;
   stderr: string;
@@ -575,8 +604,7 @@ export class GhApiService {
     const dur = Date.now() - t0;
     if (result.exitCode !== 0) {
       logger.warn('gh api failed', { args, exitCode: result.exitCode, stderr: result.stderr });
-      // args[0] is always 'api'; args[1] is the endpoint. Don't repeat 'api'.
-      const endpoint = args[1] ?? '';
+      const endpoint = getGhApiEndpoint(args);
       throw new GhApiError(
         `gh api ${endpoint} failed`,
         result.stderr,

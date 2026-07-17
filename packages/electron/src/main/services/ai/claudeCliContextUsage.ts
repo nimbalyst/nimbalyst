@@ -18,7 +18,7 @@
  */
 
 import { BrowserWindow } from 'electron';
-import { AISessionsRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository, CLAUDE_CODE_NATIVE_1M_VARIANTS, normalizeClaudeCodeVariant } from '@nimbalyst/runtime';
 import { SessionManager } from '@nimbalyst/runtime/ai/server';
 import type { SessionData } from '@nimbalyst/runtime/ai/server/types';
 import type { AssembledUsage } from './claudeCliObservation/claudeApiMessageAssembler';
@@ -26,21 +26,31 @@ import type { AssembledUsage } from './claudeCliObservation/claudeApiMessageAsse
 type TokenUsage = NonNullable<SessionData['tokenUsage']>;
 
 /**
- * 1M extended-context CLI variants are suffixed `-1m`; everything else is 200k.
- * This applies to Fable 5 too: although the Anthropic API serves Fable at 1M
- * natively, Claude Code windows plain `fable` at 200k client-side and gates
- * the 1M window behind the `fable[1m]` model value (verified on CLI 2.1.175 —
- * plain-fable sessions auto-compact at ~177k). Our `fable-1m` picker variant
- * maps to `fable[1m]`, so the generic `-1m` rule covers it.
+ * Context window for a CLI model id (`claude-code-cli:opus` / `…-1m`).
+ *
+ * The proxy assembler (`AssembledUsage`) does not carry a real per-model window,
+ * so unlike the SDK path we can't read the CLI-reported value — we map by
+ * variant. All 1M variants (`opus`/`fable`/`sonnet` and the pinned legacy
+ * `opus-4-7`/`opus-4-6`/`sonnet-4-6`) run 1M natively at a flat price on the
+ * current CLI, so their single base row is 1M — the earlier "plain fable windows
+ * at 200k" behavior (real on 2.1.175) is stale. Only `haiku` stays 200k.
  */
 const CLI_DEFAULT_CONTEXT_WINDOW = 200_000;
 const CLI_1M_CONTEXT_WINDOW = 1_000_000;
 
-/** Context window for a CLI model id (`claude-code-cli:opus` / `…-1m`). */
 export function contextWindowForCliModel(model: string | undefined): number {
-  return model && model.toLowerCase().includes('-1m')
-    ? CLI_1M_CONTEXT_WINDOW
-    : CLI_DEFAULT_CONTEXT_WINDOW;
+  if (!model) return CLI_DEFAULT_CONTEXT_WINDOW;
+  // Explicit `-1m` selection is always 1M.
+  if (model.toLowerCase().includes('-1m')) return CLI_1M_CONTEXT_WINDOW;
+  // Current-gen variants run 1M at their base row too. Use the EXACT variant
+  // (not the family) so legacy `opus-4-6`/`opus-4-7`/`sonnet-4-6` — which share
+  // the opus/sonnet family — are not mistaken for the current-gen 1M variants.
+  const modelPart = model.includes(':') ? model.slice(model.indexOf(':') + 1) : model;
+  const variant = normalizeClaudeCodeVariant(modelPart.toLowerCase().replace(/-1m$/, ''));
+  if (variant && (CLAUDE_CODE_NATIVE_1M_VARIANTS as readonly string[]).includes(variant)) {
+    return CLI_1M_CONTEXT_WINDOW;
+  }
+  return CLI_DEFAULT_CONTEXT_WINDOW;
 }
 
 /** Tokens occupying the context window for this step (excludes generated output). */

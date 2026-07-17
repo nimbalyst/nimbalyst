@@ -9,6 +9,7 @@ import {
 } from '@nimbalyst/runtime';
 import { trackerItemCountByTypeAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { trackerSyncConfigChangeAtom } from '../../../store/atoms/trackerSync';
+import { deriveIssueKeyPrefix, LEGACY_ISSUE_KEY_PREFIX } from '../../../../shared/trackerIssueKeyPrefix';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
 import { useDialog } from '../../../contexts/DialogContext';
 import {
@@ -724,7 +725,7 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
   const [trackers, setTrackers] = useState<TrackerTypeConfig[]>([]);
   const [schemaOverrides, setSchemaOverrides] = useState<Record<string, TrackerSchemaOverrideState>>({});
   const [isAdmin, setIsAdmin] = useState(false);
-  const [issueKeyPrefix, setIssueKeyPrefix] = useState('NIM');
+  const [issueKeyPrefix, setIssueKeyPrefix] = useState(() => deriveIssueKeyPrefix(workspacePath ?? ''));
   const [isSyncConnected, setIsSyncConnected] = useState(false);
   const [agentAccessEnabled, setAgentAccessEnabled] = useState(true);
   const { confirm } = useDialog();
@@ -757,9 +758,7 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
         try {
           const state = await (window as any).electronAPI.invoke('workspace:get-state', workspacePath);
           savedPolicies = state?.trackerSyncPolicies ?? {};
-          if (state?.issueKeyPrefix) {
-            setIssueKeyPrefix(state.issueKeyPrefix);
-          }
+          setIssueKeyPrefix(state?.issueKeyPrefix || LEGACY_ISSUE_KEY_PREFIX);
           setAgentAccessEnabled(state?.trackersEnabled ?? true);
         } catch {
           // Workspace state not available

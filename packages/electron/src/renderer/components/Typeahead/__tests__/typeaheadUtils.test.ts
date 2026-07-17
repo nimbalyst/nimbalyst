@@ -15,7 +15,7 @@ describe('extractTriggerMatch', () => {
     expect(getSlashTypeaheadScope(match)).toBe('commands');
   });
 
-  it('matches slash triggers after whitespace for in-sentence skills', () => {
+  it('matches slash triggers after whitespace and offers the full command list', () => {
     const value = 'Please use /my-skill';
     const match = extractTriggerMatch(value, value.length, ['/']);
 
@@ -25,7 +25,9 @@ describe('extractTriggerMatch', () => {
       startIndex: value.indexOf('/'),
       endIndex: value.length,
     });
-    expect(getSlashTypeaheadScope(match)).toBe('skills');
+    // Commands and skills are offered wherever a `/` trigger is valid, so a
+    // mid-message trigger yields the same 'commands' scope as one at column 0.
+    expect(getSlashTypeaheadScope(match)).toBe('commands');
   });
 
   it('does not match path-like slash sequences', () => {

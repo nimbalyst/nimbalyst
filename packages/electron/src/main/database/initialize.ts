@@ -34,6 +34,27 @@ let sqliteDatabase: SQLiteDatabaseProxy | null = null;
 let migrationProxy: SQLiteDatabaseProxy | null = null;
 
 /**
+ * Resolve the packaged sqlite/schemas directory in a chunk-safe way. The
+ * schema files are emitted to out/main/sqlite/schemas, but Vite is free to
+ * place this module either in out/main or in out/main/chunks depending on
+ * how the import graph splits; __dirname alone breaks in the chunked case
+ * (schemas end up one level up). Probe the known candidates instead.
+ */
+function resolveSchemaDir(): string {
+  const candidates = [
+    path.resolve(__dirname, 'sqlite', 'schemas'),
+    path.resolve(__dirname, '..', 'sqlite', 'schemas'),
+    path.join(app.getAppPath(), 'out', 'main', 'sqlite', 'schemas'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[0];
+}
+
+/**
  * Return a `SQLiteDatabaseProxy` configured for the migration pipeline.
  *
  * Migration only runs when PGLite is the live backend; if SQLite is already
@@ -56,7 +77,7 @@ export async function getMigrationProxy(): Promise<SQLiteDatabaseProxy> {
         : null)
       || app.getPath('userData');
     const sqliteDir = path.join(userDataPath, 'sqlite-db');
-    const schemaDir = path.resolve(__dirname, 'sqlite', 'schemas');
+    const schemaDir = resolveSchemaDir();
     migrationProxy = new SQLiteDatabaseProxy({ dbDir: sqliteDir, schemaDir });
     migrationProxy.setPgliteReader({
       queryReadOnly: <T>(sql: string, params?: unknown[], timeoutMs?: number) =>
@@ -141,7 +162,7 @@ export async function initializeDatabase(): Promise<SessionStore> {
       // main holds a reference to it; the proxy's getBackupService() is a
       // facade that forwards createBackup() through the worker.
       const sqliteDir = path.join(userDataPath, 'sqlite-db');
-      const schemaDir = path.resolve(__dirname, 'sqlite', 'schemas');
+      const schemaDir = resolveSchemaDir();
       sqliteDatabase = new SQLiteDatabaseProxy({
         dbDir: sqliteDir,
         schemaDir,

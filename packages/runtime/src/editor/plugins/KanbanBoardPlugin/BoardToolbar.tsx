@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import { useState } from 'react';
 import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
 import {INSERT_BOARD_COMMAND, INSERT_CONFIGURED_BOARD_COMMAND} from './BoardCommands';

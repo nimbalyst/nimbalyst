@@ -36,14 +36,16 @@ const windowModeWorkspaceAtom = atom<string | null>(null);
 // Debounced Persistence
 // ============================================================
 
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
+const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function schedulePersist(workspacePath: string, mode: ContentMode): void {
-  if (persistTimer) {
-    clearTimeout(persistTimer);
+  const existing = persistTimers.get(workspacePath);
+  if (existing) {
+    clearTimeout(existing);
   }
 
-  persistTimer = setTimeout(async () => {
+  const timer = setTimeout(async () => {
+    persistTimers.delete(workspacePath);
     try {
       await window.electronAPI.invoke('workspace:update-state', workspacePath, {
         activeMode: mode,
@@ -52,6 +54,7 @@ function schedulePersist(workspacePath: string, mode: ContentMode): void {
       console.error('[windowMode] Failed to persist:', err);
     }
   }, 500);
+  persistTimers.set(workspacePath, timer);
 }
 
 // ============================================================
@@ -87,6 +90,7 @@ export const setWindowModeAtom = atom(
 
     const workspacePath = get(windowModeWorkspaceAtom);
     if (workspacePath) {
+      initializedModes.set(workspacePath, mode);
       schedulePersist(workspacePath, mode);
     }
   }
@@ -96,9 +100,10 @@ export const setWindowModeAtom = atom(
 // Initialization
 // ============================================================
 
-// Guard against double-initialization (React StrictMode calls effects twice)
-let initPromise: Promise<void> | null = null;
-let initializedWorkspace: string | null = null;
+// Cache initialization per workspace. A single global promise lets a stale
+// response from project A overwrite the active mode after switching to B.
+const initPromises = new Map<string, Promise<void>>();
+const initializedModes = new Map<string, ContentMode>();
 
 /**
  * Initialize window mode from workspace state.
@@ -108,20 +113,18 @@ let initializedWorkspace: string | null = null;
  * same workspace, returns the existing promise.
  */
 export async function initWindowMode(workspacePath: string): Promise<void> {
-  // If already initialized for this workspace, return existing promise
-  if (initializedWorkspace === workspacePath && initPromise) {
-    return initPromise;
+  store.set(windowModeWorkspaceAtom, workspacePath);
+
+  const cachedMode = initializedModes.get(workspacePath);
+  if (cachedMode) {
+    store.set(windowModeAtom, cachedMode);
+    return;
   }
 
-  // If initializing a different workspace, reset
-  if (initializedWorkspace !== workspacePath) {
-    initializedWorkspace = workspacePath;
-    initPromise = null;
-  }
+  const existing = initPromises.get(workspacePath);
+  if (existing) return existing;
 
-  // Create the initialization promise
-  initPromise = (async () => {
-    store.set(windowModeWorkspaceAtom, workspacePath);
+  const initPromise = (async () => {
 
     try {
       const workspaceState = await window.electronAPI.invoke(
@@ -129,18 +132,28 @@ export async function initWindowMode(workspacePath: string): Promise<void> {
         workspacePath
       );
 
-      if (workspaceState?.activeMode) {
-        const validModes: ContentMode[] = ['files', 'agent', 'tracker', 'collab', 'pr-review', 'settings'];
-        if (validModes.includes(workspaceState.activeMode)) {
-          store.set(windowModeAtom, workspaceState.activeMode);
-        }
+      const validModes: ContentMode[] = ['files', 'agent', 'tracker', 'collab', 'pr-review', 'settings'];
+      const restoredMode = validModes.includes(workspaceState?.activeMode)
+        ? workspaceState.activeMode as ContentMode
+        : 'files';
+      initializedModes.set(workspacePath, restoredMode);
+
+      // Only the workspace that is still active may publish into the global
+      // compatibility atom. Late responses remain cached for their own path.
+      if (store.get(windowModeWorkspaceAtom) === workspacePath) {
+        store.set(windowModeAtom, restoredMode);
       }
     } catch (err) {
       console.error('[windowMode] Failed to load:', err);
     }
   })();
 
-  return initPromise;
+  initPromises.set(workspacePath, initPromise);
+  try {
+    await initPromise;
+  } finally {
+    initPromises.delete(workspacePath);
+  }
 }
 
 /**
@@ -149,6 +162,8 @@ export async function initWindowMode(workspacePath: string): Promise<void> {
 export function resetWindowMode(): void {
   store.set(windowModeAtom, 'files');
   store.set(windowModeWorkspaceAtom, null);
-  initPromise = null;
-  initializedWorkspace = null;
+  for (const timer of persistTimers.values()) clearTimeout(timer);
+  persistTimers.clear();
+  initPromises.clear();
+  initializedModes.clear();
 }

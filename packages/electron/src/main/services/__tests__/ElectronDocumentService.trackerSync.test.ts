@@ -365,3 +365,23 @@ describe('tracker change event watchers', () => {
     expect(events[0].updated[0].id).toBe('bug-001');
   });
 });
+
+// ============================================================================
+// getTrackerItemContent decoding
+// ============================================================================
+
+describe('getTrackerItemContent', () => {
+  it('decodes the JSON-encoded content column back into plain markdown', async () => {
+    // content is persisted as JSON.stringify(markdown) by updateTrackerItemContent.
+    // Reading it back without JSON.parse leaves literal quotes/escaped \n --
+    // this is the bug: markdown rendered fine on create, then as a raw string
+    // after closing and reopening the item (fresh DB read).
+    const markdown = '**Objetivo**: validar\n\n### Links';
+    mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ id: 'bug-001' })] }); // resolve row
+    mockQuery.mockResolvedValueOnce({ rows: [{ content: JSON.stringify(markdown) }] }); // SELECT content
+
+    const content = await service.getTrackerItemContent('bug-001');
+
+    expect(content).toBe(markdown);
+  });
+});

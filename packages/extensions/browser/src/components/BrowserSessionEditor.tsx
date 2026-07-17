@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import type { EditorHostProps } from '@nimbalyst/extension-sdk';
 import { useEditorLifecycle } from '@nimbalyst/extension-sdk';

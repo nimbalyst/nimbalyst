@@ -37,11 +37,13 @@ import { $convertFromEnhancedMarkdownString, getEditorTransformers } from '@nimb
 import { $getRoot } from 'lexical';
 import { resolveCollabConfigForUri } from '../utils/collabDocumentOpener';
 import { getBodyDocCache, type BodyDocAcquisition, type BodyDocConfigFactory } from '../services/BodyDocCache';
+import { exportCollabRecoveryPlaintext, getCollabContentAdapter } from '@nimbalyst/collab-adapters';
 
 const TRACKER_CONTENT_TTL_MS = String(90 * 24 * 60 * 60 * 1000);
 
 interface UseTrackerContentCollabOptions {
   itemId: string;
+  title?: string;
   workspacePath?: string;
   syncMode: string;
   /** Number of team members -- enables review gate when > 1 */
@@ -121,6 +123,7 @@ function randomCursorColor(): string {
 
 export function useTrackerContentCollab({
   itemId,
+  title,
   workspacePath,
   syncMode,
   teamMemberCount,
@@ -228,6 +231,24 @@ export function useTrackerContentCollab({
         userId: config.userId,
         documentId: config.documentId,
         createWebSocket: config.createWebSocket,
+        onContentChanged: (yDoc) => {
+          const adapter = getCollabContentAdapter('markdown');
+          if (!adapter) return;
+          try {
+            const plaintext = exportCollabRecoveryPlaintext(adapter, yDoc);
+            if (plaintext === null) return;
+            void window.electronAPI.collabBackup.contentChanged({
+              workspacePath,
+              documentId,
+              documentType: 'markdown',
+              title: title || id,
+              plaintext,
+              kind: 'body',
+            });
+          } catch (error) {
+            console.warn('[useTrackerContentCollab] Backup serialization failed:', error);
+          }
+        },
         // reviewGateEnabled is per-room; setting it at first-acquire is
         // correct -- multi-user state for a single team-room does not
         // change mid-session.
@@ -306,10 +327,11 @@ export function useTrackerContentCollab({
       acquisition?.release();
       acquisition = null;
       syncProviderRef.current = null;
+      collabProviderRef.current?.destroy();
       collabProviderRef.current = null;
       setStatus('disconnected');
     };
-  }, [itemId, workspacePath, isCollabActive, isCollabPending, isMultiUser]);
+  }, [itemId, workspacePath, isCollabActive, isCollabPending, isMultiUser, title]);
 
   const acceptRemoteChanges = useCallback(() => {
     syncProviderRef.current?.acceptRemoteChanges();

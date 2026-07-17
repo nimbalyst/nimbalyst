@@ -948,6 +948,13 @@ export class PGLiteDatabaseWorker {
     }
   }
 
+  async runTransaction(statements: Array<{ sql: string; params?: any[] }>): Promise<void> {
+    if (!this.initialized) {
+      throw new Error('Database not initialized. Call initialize() first.');
+    }
+    await this.sendMessage('transaction', { statements });
+  }
+
   /**
    * Extract table name from SQL query (simple heuristic)
    */
@@ -1164,6 +1171,7 @@ export interface AppDatabase {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
   queryReadOnly<T = any>(sql: string, params?: any[], timeoutMs?: number): Promise<{ rows: T[] }>;
   exec(sql: string, timeoutMs?: number): Promise<void>;
+  runTransaction(statements: Array<{ sql: string; params?: any[] }>): Promise<void>;
   close(): Promise<void>;
   getStats(): Promise<any>;
   getDB(): any;
@@ -1236,6 +1244,10 @@ class ActiveDatabaseFacade implements AppDatabase {
 
   exec(sql: string, timeoutMs?: number): Promise<void> {
     return this.active.exec(sql, timeoutMs);
+  }
+
+  runTransaction(statements: Array<{ sql: string; params?: any[] }>): Promise<void> {
+    return this.active.runTransaction(statements);
   }
 
   close(): Promise<void> {

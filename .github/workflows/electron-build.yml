@@ -42,6 +42,12 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Make npm resilient to transient registry socket drops (ECONNRESET): retry
+  # individual failed requests instead of aborting the whole `npm ci`.
+  npm_config_fetch_retries: '5'
+  npm_config_fetch_retry_mintimeout: '20000'
+  npm_config_fetch_retry_maxtimeout: '120000'
+  npm_config_fetch_timeout: '300000'
   # Keep this enabled for exactly the transition build so existing alpha
   # installs still hard-coded to the R2 feed can migrate to the new
   # GitHub-backed alpha channel. After shipping that bridge release, flip
@@ -86,17 +92,17 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: '**/package-lock.json'
 
-      - name: Upgrade npm to 10.x
-        run: npm install -g npm@10
+      - name: Upgrade npm to 11.x
+        run: npm install -g npm@11
 
       - name: Install dependencies
         shell: bash
@@ -542,7 +548,7 @@ jobs:
 
       # Upload artifacts
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }}-${{ matrix.arch }}
           path: |
@@ -571,7 +577,7 @@ jobs:
       DIGICERT_CLIENT_CERT_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_BASE64 }}
     steps:
       - name: Download win-arm64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: win-arm64
           path: win-arm64
@@ -603,7 +609,7 @@ jobs:
       # we don't silently drop blockmap/yml/etc. The download step unpacks
       # into ./win-arm64, and upload-artifact re-archives that directory.
       - name: Re-upload signed win-arm64 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: win-arm64
           path: win-arm64/*
@@ -617,19 +623,19 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-artifacts
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Prepare release assets
         run: |

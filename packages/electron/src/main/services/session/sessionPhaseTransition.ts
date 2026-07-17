@@ -47,6 +47,18 @@ export interface SessionPhaseTransitionResult {
 const MAX_ACTIVITY_ENTRIES = 100;
 
 /**
+ * A completed session cannot still be awaiting interactive input. Normalize
+ * phase metadata at every write boundary so the durable prompt bit, mobile
+ * sync payload, and renderer session list cannot disagree.
+ */
+export function normalizeSessionPhaseMetadataUpdate(
+  metadata: Record<string, unknown>,
+): Record<string, unknown> {
+  if (metadata.phase !== 'complete') return metadata;
+  return { ...metadata, hasPendingPrompt: false };
+}
+
+/**
  * Compute the next `metadata` payload and append a phase transition entry when
  * the phase actually changes.
  *

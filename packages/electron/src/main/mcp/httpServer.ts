@@ -42,6 +42,14 @@ import {
   getEditorToolSchemas,
 } from "./tools/editorToolHandlers";
 import {
+  handleCreateSharedDoc,
+  handleCreateSharedFolder,
+  handleMoveSharedItem,
+  handleRenameSharedItem,
+  handleDeleteSharedItem,
+  getCollabIndexToolSchemas,
+} from "./tools/collabIndexToolHandlers";
+import {
   handleTrackerList,
   handleTrackerGet,
   handleTrackerListTypes,
@@ -94,6 +102,7 @@ import {
   isMcpEndpoint,
   selectFirstPartyToolsForEndpoint,
   selectExtensionToolsForEndpoint,
+  applyCoreAlwaysLoadMeta,
 } from "./mcpEndpointRouting";
 
 // Re-export functions that don't need transport state
@@ -424,6 +433,7 @@ function createSharedMcpServer(
 
     const builtInTools: Array<{ name: string; description: string; inputSchema: any }> = [
       ...getEditorToolSchemas(sessionId),
+      ...getCollabIndexToolSchemas(),
       ...displayToolSchemas,
       ...voiceToolSchemas,
       ...getInteractiveToolSchemas(sessionId),
@@ -449,6 +459,9 @@ function createSharedMcpServer(
       if (excludeHostSettings) {
         allTools = allTools.filter((tool) => !SETTINGS_TOOL_NAMES.has(tool.name));
       }
+      // Core endpoint: mark the always-load subset with per-tool _meta so the
+      // interactive/session tools stay eager while display/screenshot defer.
+      allTools = applyCoreAlwaysLoadMeta(allTools, endpoint.configKey);
     } else {
       // Fallback (bare `/mcp` or an unknown `/mcp/<x>`): the consolidation is
       // complete and the legacy monolith is retired, so no first-party tools are
@@ -482,6 +495,21 @@ function createSharedMcpServer(
 
         case "readCollabDoc":
           return handleReadCollabDoc(args);
+
+        case "createSharedDoc":
+          return handleCreateSharedDoc(args, workspacePath);
+
+        case "createSharedFolder":
+          return handleCreateSharedFolder(args, workspacePath);
+
+        case "moveSharedItem":
+          return handleMoveSharedItem(args, workspacePath);
+
+        case "renameSharedItem":
+          return handleRenameSharedItem(args, workspacePath);
+
+        case "deleteSharedItem":
+          return handleDeleteSharedItem(args, workspacePath);
 
         case "streamContent":
           return handleStreamContent(args);

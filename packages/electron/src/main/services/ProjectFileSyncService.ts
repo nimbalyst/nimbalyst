@@ -61,6 +61,15 @@ export class ProjectFileSyncService {
       return;
     }
 
+    // A prior shutdown() (sync reinitialize) removed the dirty-editor clean
+    // listener; without it, deferred remote writes/deletes would never flush.
+    if (!this.cleanUnsubscribe) {
+      this.cleanUnsubscribe = dirtyEditorRegistry.onBecameClean((filePath) => {
+        void this.flushDeferredWrite(filePath);
+        void this.flushDeferredDelete(filePath);
+      });
+    }
+
     this.provider = new ProjectSyncProvider({
       serverUrl: config.serverUrl,
       orgId: config.orgId,
@@ -261,6 +270,20 @@ export class ProjectFileSyncService {
     if (!this.provider) return;
     this.provider.deleteFile(encryptedProjectId, syncId);
     void this.deleteBaseline(encryptedProjectId, syncId);
+    const cache = (this as any)._fileMapCache?.get(encryptedProjectId) as { fileMap: Map<string, string> } | undefined;
+    cache?.fileMap.delete(syncId);
+  }
+
+  /**
+   * Handle a local file deletion by absolute path (from the file watcher).
+   * The syncId is derived deterministically from the relative path, so no
+   * disk access is needed even though the file is already gone.
+   */
+  handleFileDeletedByPath(filePath: string, workspacePath: string, encryptedProjectId: string): void {
+    const relativePath = path.relative(workspacePath, filePath);
+    const syncId = this.syncIdFromPath(relativePath);
+    logger.main.info(`[ProjectFileSync] Local delete: ${relativePath}`);
+    this.handleFileDeleted(syncId, encryptedProjectId);
   }
 
   /**
@@ -753,6 +776,16 @@ export class ProjectFileSyncService {
       projectCount: this.projectStates.size,
       fileCount,
       connected,
+    };
+  }
+
+  /**
+   * Per-project sync status for the settings UI (Docs toggle feedback).
+   */
+  getProjectStats(encryptedProjectId: string): { connected: boolean; fileCount: number } {
+    return {
+      connected: this.provider?.isConnected(encryptedProjectId) ?? false,
+      fileCount: this.projectStates.get(encryptedProjectId)?.size ?? 0,
     };
   }
 

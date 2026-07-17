@@ -19,6 +19,7 @@ import {
 } from '../../store';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
 import type { SerializableDocumentContext } from '../../hooks/useDocumentContext';
+import { useResizeDragShield } from '../../hooks/useResizeDragShield';
 
 export interface ChatSidebarRef {
   focusInput: () => void;
@@ -59,7 +60,6 @@ export const ChatSidebar = forwardRef<ChatSidebarRef, ChatSidebarProps>(({
 }, ref) => {
   const transcriptRef = useRef<SessionTranscriptRef>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const isResizingRef = useRef(false);
   const isInitializingRef = useRef(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -230,45 +230,17 @@ export const ChatSidebar = forwardRef<ChatSidebarRef, ChatSidebarProps>(({
     refreshSessions();
   }, [workspacePath, refreshSessions]);
 
-  // Handle resize drag
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (!onWidthChange) return;
-    e.preventDefault();
-    isResizingRef.current = true;
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  }, [onWidthChange]);
-
-  useEffect(() => {
-    if (!onWidthChange) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizingRef.current) return;
-
+  const startResize = useResizeDragShield({
+    onMove: (event) => {
+      if (!onWidthChange) return;
       // Calculate new width from right edge
-      const newWidth = window.innerWidth - e.clientX;
+      const newWidth = window.innerWidth - event.clientX;
       // Allow up to 50% of window width, with minimum of 280px
       const maxWidth = Math.floor(window.innerWidth * 0.5);
       const clampedWidth = Math.min(Math.max(280, newWidth), maxWidth);
       onWidthChange(clampedWidth);
-    };
-
-    const handleMouseUp = () => {
-      if (!isResizingRef.current) return;
-
-      isResizingRef.current = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [onWidthChange]);
+    },
+  });
 
   // When collapsed, render nothing (toggle button is in the title bar)
   if (isCollapsed || !isActive) {
@@ -310,7 +282,11 @@ export const ChatSidebar = forwardRef<ChatSidebarRef, ChatSidebarProps>(({
       {onWidthChange && (
         <div
           className="chat-sidebar-resize-handle absolute -left-0.5 top-0 bottom-0 w-[5px] cursor-col-resize z-10 before:content-[''] before:absolute before:left-0.5 before:top-0 before:bottom-0 before:w-0.5 before:bg-nim hover:before:bg-nim-primary"
-          onMouseDown={handleMouseDown}
+          data-testid="chat-sidebar-resize-handle"
+          onPointerDown={startResize}
+          role="separator"
+          aria-label="Resize AI chat sidebar"
+          aria-orientation="vertical"
         />
       )}
 

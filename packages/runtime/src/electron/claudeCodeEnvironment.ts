@@ -72,6 +72,77 @@ function getSystemClaudeExecutableCandidates(pathValue?: string): string[] {
 }
 
 /**
+ * The unpacked native package dir + binary name for the current platform in a
+ * packaged build. Returns undefined in dev (where require.resolve handles it).
+ * Shared by resolveNativeBinaryPath and the orphaned-self-update detection so
+ * both look in exactly the same place.
+ */
+function getPackagedNativeBinaryLocation(): { dir: string; binaryName: string } | undefined {
+  if (!app.isPackaged) return undefined;
+  const platform = process.platform;
+  const arch = process.arch;
+  const binaryName = getClaudeExecutableNameForPlatform(platform);
+  const packageName = `@anthropic-ai/claude-agent-sdk-${platform}-${arch}`;
+
+  const appPath = app.getAppPath();
+  const unpackedPath = appPath.includes('app.asar')
+    ? appPath.replace(/app\.asar(?=[\/\\]|$)/, 'app.asar.unpacked')
+    : appPath;
+
+  return { dir: path.join(unpackedPath, 'node_modules', packageName), binaryName };
+}
+
+/**
+ * Base message shown when the bundled Claude runtime can't be resolved. Kept in
+ * one place so the run path (sdkOptionsBuilder / cliPathResolver) and the
+ * check-login path surface identical, honest wording -- never the SDK's
+ * misleading "does not match this system's libc ... musl" ReferenceError that a
+ * missing binary otherwise produces. See NIM-1573 / NIM-895.
+ */
+export const MISSING_CLAUDE_RUNTIME_MESSAGE =
+  "Nimbalyst's bundled Claude runtime is missing or could not be found. " +
+  'A failed update can leave it in a broken state -- reinstall or repair Nimbalyst.';
+
+/**
+ * List orphaned `claude(.exe).old.<ts>` files left in the unpacked native
+ * package dir by an interrupted CLI self-update (rename-then-download that
+ * never finished). Their presence is the fingerprint of the NIM-1573 breakage.
+ * We deliberately do NOT restore them -- a truncated/partial download must not
+ * be resurrected as a runnable binary; we only detect them to report honestly.
+ */
+export function findOrphanedClaudeUpdateFiles(): string[] {
+  const location = getPackagedNativeBinaryLocation();
+  if (!location) return [];
+  try {
+    if (!fs.existsSync(location.dir)) return [];
+    const prefix = `${location.binaryName}.old.`;
+    return fs
+      .readdirSync(location.dir)
+      .filter((name) => name.startsWith(prefix))
+      .map((name) => path.join(location.dir, name));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Honest, user-facing message for a missing bundled runtime. Appends an
+ * explicit note when the interrupted-self-update fingerprint (orphaned `.old`
+ * files) is detected, so main.log and the UI name the actual cause.
+ */
+export function describeMissingClaudeRuntime(): string {
+  const orphans = findOrphanedClaudeUpdateFiles();
+  if (orphans.length > 0) {
+    return (
+      `${MISSING_CLAUDE_RUNTIME_MESSAGE} ` +
+      `(An interrupted Claude CLI self-update left ${orphans.length} orphaned file(s) ` +
+      `and no runnable binary.)`
+    );
+  }
+  return MISSING_CLAUDE_RUNTIME_MESSAGE;
+}
+
+/**
  * Resolve the path to the SDK's native binary for the current platform.
  *
  * SDK 0.2.114+ ships per-platform native binaries as optional dependencies
@@ -96,12 +167,9 @@ export function resolveNativeBinaryPath(): string | undefined {
   }
 
   // Packaged mode: construct path to the asar-unpacked binary
+  const location = getPackagedNativeBinaryLocation()!;
   const appPath = app.getAppPath();
-  const unpackedPath = appPath.includes('app.asar')
-    ? appPath.replace(/app\.asar(?=[\/\\]|$)/, 'app.asar.unpacked')
-    : appPath;
-
-  const binaryPath = path.join(unpackedPath, 'node_modules', packageName, binaryName);
+  const binaryPath = path.join(location.dir, binaryName);
 
   if (fs.existsSync(binaryPath)) {
     return binaryPath;
@@ -111,7 +179,7 @@ export function resolveNativeBinaryPath(): string | undefined {
   console.error(`[resolveNativeBinaryPath] Binary not found at: ${binaryPath}`);
   console.error(`[resolveNativeBinaryPath] platform=${platform} arch=${arch} appPath=${appPath}`);
   try {
-    const anthropicDir = path.join(unpackedPath, 'node_modules', '@anthropic-ai');
+    const anthropicDir = path.resolve(location.dir, '..');
     if (fs.existsSync(anthropicDir)) {
       const entries = fs.readdirSync(anthropicDir);
       console.error(`[resolveNativeBinaryPath] Contents of ${anthropicDir}: ${entries.join(', ')}`);
@@ -132,6 +200,14 @@ export function resolveNativeBinaryPath(): string | undefined {
     const normalizedResourcesRoot = path.normalize(resourcesRoot);
     if (!normalizedResolvedPath.startsWith(`${normalizedResourcesRoot}${path.sep}`)) {
       console.error(`[resolveNativeBinaryPath] Ignoring packaged fallback outside resources root: ${resolvedPath}`);
+      return undefined;
+    }
+    // NIM-1573: never hand back a path that doesn't exist. require.resolve can
+    // succeed off a stale module cache while the file itself was renamed away by
+    // an interrupted self-update; returning it would defeat the honest-error
+    // path and resurface the misleading SDK libc error at spawn time.
+    if (!fs.existsSync(resolvedPath)) {
+      console.error(`[resolveNativeBinaryPath] require.resolve path no longer exists on disk: ${resolvedPath}`);
       return undefined;
     }
     return resolvedPath;
@@ -213,6 +289,13 @@ function getCandidateNodePaths(isPackaged: boolean): string[] {
 export function setupClaudeCodeEnvironment(): NodeJS.ProcessEnv {
   const isPackaged = app.isPackaged;
   const env = { ...process.env };
+
+  // NIM-1573: Pin the bundled CLI's self-updater OFF for the login/check-login
+  // spawns too, so they never mutate the in-place binary out from under the run
+  // path. Default only -- a user-set value wins. See sdkOptionsBuilder for the
+  // full rationale (the self-update rename that orphans claude.exe).
+  if (env.DISABLE_AUTOUPDATER == null) env.DISABLE_AUTOUPDATER = '1';
+  if (env.DISABLE_UPDATES == null) env.DISABLE_UPDATES = '1';
 
   const nodePaths = getCandidateNodePaths(isPackaged);
   if (nodePaths.length > 0) {

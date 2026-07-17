@@ -15,7 +15,10 @@ import {
 } from '../../shared/sessionWorkspaceRouting';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
 import { setSessionPendingPrompt } from '../services/ai/pendingPromptPersistence';
-import { clearStalePendingPromptOnTerminal } from '../services/ai/pendingPromptTerminalClear';
+import {
+  clearStalePendingPromptOnTerminal,
+  findCompletedSessionsWithPendingPrompt,
+} from '../services/ai/pendingPromptTerminalClear';
 
 // Track if handlers are registered to prevent double registration
 let handlersRegistered = false;
@@ -79,6 +82,26 @@ async function readPersistedHasPendingPrompt(sessionId: string): Promise<boolean
   }
 }
 
+/** One-time-by-state startup repair for rows created before NIM-871. */
+async function clearHistoricalCompletedPendingPrompts(): Promise<void> {
+  try {
+    const { rows } = await database.query<{ id: string; metadata: unknown }>(
+      `SELECT id, metadata FROM ai_sessions`,
+    );
+    const staleIds = findCompletedSessionsWithPendingPrompt(
+      rows.map((row) => ({ id: row.id, metadata: parseJsonObjectColumn(row.metadata) })),
+    );
+    for (const sessionId of staleIds) {
+      await setSessionPendingPrompt(sessionId, false);
+    }
+    if (staleIds.length > 0) {
+      console.log(`[SessionStateHandlers] Cleared stale pending-prompt state from ${staleIds.length} completed session(s)`);
+    }
+  } catch (error) {
+    console.error('[SessionStateHandlers] Failed to repair completed pending prompts:', error);
+  }
+}
+
 export async function registerSessionStateHandlers() {
   if (handlersRegistered) {
     console.log('[SessionStateHandlers] Handlers already registered, skipping');
@@ -89,6 +112,7 @@ export async function registerSessionStateHandlers() {
 
   // Initialize the state manager
   await stateManager.initialize();
+  await clearHistoricalCompletedPendingPrompts();
 
   // Subscribe to state changes and sync to mobile
   setupSyncSubscription(stateManager);

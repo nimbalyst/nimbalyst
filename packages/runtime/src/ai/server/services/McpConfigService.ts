@@ -124,15 +124,18 @@ export class McpConfigService {
       const endpointUrl = (endpointPath: string) =>
         `http://127.0.0.1:${port}${endpointPath}${query}`;
 
-      // nimbalyst (eager core) — alwaysLoad. Universal agent↔host glue and the
-      // ONLY Nimbalyst surface that stays eager. Carries the long tool timeout
-      // because developer_git_commit_proposal / AskUserQuestion / PromptForUserInput
+      // nimbalyst (core) — universal agent↔host glue. Eagerness is per-TOOL,
+      // not server-level: /mcp/core ListTools marks CORE_ALWAYS_LOAD_TOOLS with
+      // `_meta['anthropic/alwaysLoad']` (applyCoreAlwaysLoadMeta). The
+      // interactive/session tools plus the visual tools (display_to_user /
+      // capture_editor_screenshot, which the prompt tells the model to use)
+      // stay in the prompt this way. Carries the long tool timeout because
+      // developer_git_commit_proposal / AskUserQuestion / PromptForUserInput
       // block indefinitely on user input.
       config[MCP_CORE] = {
         type: 'sse',
         transport: 'sse',
         url: endpointUrl('/mcp/core'),
-        alwaysLoad: true,
         tool_timeout_sec: 604800,
         ...(authHeaders ? { headers: { ...authHeaders } } : {}),
       };

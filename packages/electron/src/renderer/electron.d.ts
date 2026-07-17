@@ -143,6 +143,34 @@ interface SemanticSearchResult {
 }
 
 interface ElectronAPI {
+  team: {
+    getKeyCustodyStatus: (orgId: string) => Promise<{ success: boolean; mode?: 'legacy-e2e' | 'server-managed'; error?: string }>;
+    getEncryptionMigrationStatus?: (orgId: string) => Promise<{
+      success: boolean;
+      migration?:
+        | { status: 'migrating'; startedAt: string }
+        | { status: 'complete'; finishedAt: string }
+        | { status: 'stuck'; failedAt: string; message: string }
+        | null;
+    }>;
+    [method: string]: any;
+  };
+  organization: {
+    list: () => Promise<any>;
+    get: (orgId: string) => Promise<any>;
+    create: (input: { name: string; workspacePath?: string; sourcePersonalOrgId?: string }) => Promise<any>;
+    acceptInvitation: (orgId: string) => Promise<any>;
+    listMembers: (orgId: string) => Promise<any>;
+    inviteMember: (orgId: string, email: string) => Promise<any>;
+    removeMember: (orgId: string, memberId: string) => Promise<any>;
+    updateMemberRole: (orgId: string, memberId: string, role: string) => Promise<any>;
+    listProjects: (orgId: string) => Promise<any>;
+    addProject: (input: { orgId: string; workspacePath?: string; name?: string }) => Promise<any>;
+    moveProject: (input: { sourceOrgId: string; projectId: string; destinationOrgId: string; dropMemberEmails?: string[] }) => Promise<any>;
+    deleteOrganization: (orgId: string) => Promise<any>;
+    getEncryptionStatus: (orgId: string) => Promise<any>;
+    getEncryptionMigrationStatus: (orgId: string) => Promise<any>;
+  };
   // Global semantic search (nimbalyst-memory). Empty/false when memory is off.
   semanticSearch: {
     isAvailable: (workspacePath: string) => Promise<boolean>;
@@ -239,11 +267,12 @@ interface ElectronAPI {
   exportSessionToClipboard: (options: { sessionId: string }) => Promise<{ success: boolean; error?: string }>;
 
   // Share operations
-  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>;
-  listShares: () => Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number }>; error?: string }>;
-  deleteShare: (options: { shareId: string; sessionId?: string }) => Promise<{ success: boolean; error?: string }>;
+  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number; personalOrgId?: string }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>;
+  getShareAccountOptions: (options: { contentType: 'session' | 'file'; sessionId?: string; filePath?: string }) => Promise<{ success: boolean; accounts?: Array<{ personalOrgId: string; email: string; isSyncAccount: boolean; sessionStatus: 'active' | 'expired' }>; defaultPersonalOrgId?: string; defaultSource?: 'workspace-binding' | 'sync-account' | 'only-account'; error?: string }>;
+  listShares: () => Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number; owningPersonalOrgId: string }>; error?: string }>;
+  deleteShare: (options: { shareId: string; sessionId?: string; owningPersonalOrgId?: string }) => Promise<{ success: boolean; error?: string }>;
   getShareKeys: () => Promise<Record<string, string>>;
-  shareFileAsLink: (options: { filePath: string; expirationDays?: number }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>;
+  shareFileAsLink: (options: { filePath: string; expirationDays?: number; personalOrgId?: string }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>;
   getShareExpirationPreference: () => Promise<number>;
   setShareExpirationPreference: (days: number) => Promise<void>;
 
@@ -418,6 +447,12 @@ interface ElectronAPI {
   sendMcpApplyDiffResult: (resultChannel: string, result: any) => void;
   sendMcpStreamContentResult: (resultChannel: string, result: any) => void;
   sendMcpReadCollabDocResult: (resultChannel: string, result: { success: boolean; content?: string; error?: string }) => void;
+  onMcpCreateSharedDoc: (callback: (data: { title: string, documentType?: string, parentFolderId?: string | null, folderPath?: string, initialContent?: string, resultChannel: string }) => void) => () => void;
+  onMcpCreateSharedFolder: (callback: (data: { name: string, parentFolderId?: string | null, folderPath?: string, resultChannel: string }) => void) => () => void;
+  onMcpMoveSharedItem: (callback: (data: { itemId: string, kind: 'doc' | 'folder', newParentFolderId?: string | null, folderPath?: string, resultChannel: string }) => void) => () => void;
+  onMcpRenameSharedItem: (callback: (data: { itemId: string, kind: 'doc' | 'folder', newName: string, resultChannel: string }) => void) => () => void;
+  onMcpDeleteSharedItem: (callback: (data: { itemId: string, kind: 'doc' | 'folder', resultChannel: string }) => void) => () => void;
+  sendMcpCollabIndexResult: (resultChannel: string, result: { success: boolean; error?: string; [key: string]: unknown }) => void;
   updateMcpDocumentState: (state: any) => void;
   clearMcpDocumentState: () => Promise<void>;
 
@@ -603,8 +638,12 @@ interface ElectronAPI {
     isAuthenticated: () => Promise<boolean>;
     signInWithGoogle: () => Promise<{ success: boolean; error?: string }>;
     sendMagicLink: (email: string) => Promise<{ success: boolean; error?: string }>;
-    signOut: () => Promise<{ success: boolean }>;
-    deleteAccount: () => Promise<{ success: boolean; error?: string }>;
+    signOut: (forceOfflinePurge?: boolean) => Promise<{
+      success: boolean;
+      requiresOfflinePurgeConfirmation?: boolean;
+      pendingDocumentCount?: number;
+    }>;
+    deleteAccount: (personalOrgId?: string) => Promise<{ success: boolean; error?: string }>;
     getSessionJwt: () => Promise<string | null>;
     refreshSession: () => Promise<boolean>;
     subscribeAuthState: () => Promise<any>;
@@ -615,10 +654,25 @@ interface ElectronAPI {
       personalUserId: string | null;
       email: string | null;
       userName?: string;
-      isPrimary: boolean;
+      isSyncAccount: boolean;
+      sessionStatus: 'active' | 'expired';
     }>>;
+    getSyncAccount: () => Promise<{
+      personalOrgId: string;
+      personalUserId: string | null;
+      email: string | null;
+      userName?: string;
+      isSyncAccount: boolean;
+      sessionStatus: 'active' | 'expired';
+    } | null>;
+    setSyncAccount: (personalOrgId: string) => Promise<{ success: boolean }>;
     addAccount: () => Promise<{ success: boolean; error?: string }>;
-    removeAccount: (personalOrgId: string) => Promise<{ success: boolean; error?: string }>;
+    removeAccount: (personalOrgId: string, forceOfflinePurge?: boolean) => Promise<{
+      success: boolean;
+      error?: string;
+      requiresOfflinePurgeConfirmation?: boolean;
+      pendingDocumentCount?: number;
+    }>;
   };
 
   // Extensions API
@@ -700,9 +754,10 @@ interface ElectronAPI {
 
   // Claude Code API
   claudeCode: {
-    getSettings: () => Promise<{ projectCommandsEnabled: boolean; userCommandsEnabled: boolean }>;
+    getSettings: () => Promise<{ projectCommandsEnabled: boolean; userCommandsEnabled: boolean; apiUpstreamUrl?: string }>;
     setProjectCommandsEnabled: (enabled: boolean) => Promise<void>;
     setUserCommandsEnabled: (enabled: boolean) => Promise<void>;
+    setApiUpstreamUrl: (url: string) => Promise<{ success: true } | { success: false; error: string }>;
     getEnv: () => Promise<Record<string, string>>;
     setEnv: (env: Record<string, string>) => Promise<void>;
   };
@@ -886,6 +941,34 @@ interface ElectronAPI {
     createSession: (workspacePath: string, options?: { cwd?: string; worktreeId?: string; worktreePath?: string }) => Promise<{ success: boolean; sessionId: string; error?: string }>;
   };
 
+  // Plaintext recovery copies for collaborative content
+  collabBackup: {
+    contentChanged: (payload: {
+      workspacePath: string;
+      documentId: string;
+      documentType: string;
+      title?: string;
+      plaintext: string;
+      kind?: 'document' | 'body';
+    }) => Promise<{ success: boolean; scheduled?: boolean; error?: string }>;
+    backupAll: (workspacePath: string) => Promise<{
+      success: boolean;
+      orgId: string;
+      projectId: string | null;
+      total: number;
+      backedUp: number;
+      skipped: number;
+      failures: Array<{ documentId: string; error: string }>;
+    }>;
+    list: (workspacePath: string) => Promise<{
+      orgId: string;
+      projectId: string | null;
+      updatedAt: string;
+      documents: Record<string, unknown>;
+    } | null>;
+    restore: (workspacePath: string, documentId: string, force?: boolean) => Promise<{ success: boolean; error?: string }>;
+  };
+
   // Document Sync (collaborative editing)
   documentSync: {
     open: (
@@ -908,6 +991,7 @@ interface ElectronAPI {
         legacyOrgKeysBase64?: string[];
         orgKeyFingerprint?: string;
         serverUrl: string;
+        accountId: string;
         userId: string;
         userName?: string;
         userEmail?: string;
@@ -924,6 +1008,91 @@ interface ElectronAPI {
       success: boolean;
       error?: string;
     }>;
+    replicaLoad: (
+      workspacePath: string,
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+    ) => Promise<import('@nimbalyst/runtime/sync').LoadedLocalReplica | null>;
+    replicaAppendLocal: (
+      workspacePath: string,
+      input: import('@nimbalyst/runtime/sync').AppendLocalReplicaUpdateInput,
+    ) => Promise<void>;
+    onReplicaLocalUpdate: (callback: (payload: {
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity;
+      updateId: string;
+      update: Uint8Array;
+    }) => void) => () => void;
+    replicaAppendRemote: (
+      workspacePath: string,
+      input: import('@nimbalyst/runtime/sync').AppendRemoteReplicaUpdatesInput,
+    ) => Promise<void>;
+    replicaSetOutboxState: (
+      workspacePath: string,
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+      batchIds: string[],
+      state: import('@nimbalyst/runtime/sync').LocalReplicaOutboxState,
+      lastErrorCode?: string | null,
+    ) => Promise<void>;
+    replicaClaimOutbox: (
+      workspacePath: string,
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+      batchIds: string[],
+    ) => Promise<boolean>;
+    replicaLoadOutbox: (
+      workspacePath: string,
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+    ) => Promise<import('@nimbalyst/runtime/sync').LocalReplicaOutboxEntry[]>;
+    replicaRecordOutboxError: (
+      workspacePath: string,
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+      batchIds: string[],
+      errorCode: string,
+    ) => Promise<void>;
+    replicaAckOutbox: (
+      workspacePath: string,
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+      batchIds: string[],
+      serverSequence: number,
+    ) => Promise<void>;
+    replicaReplaceSnapshot: (
+      workspacePath: string,
+      input: import('@nimbalyst/runtime/sync').ReplaceLocalReplicaSnapshotInput,
+    ) => Promise<boolean>;
+    replicaMarkIncomplete: (
+      workspacePath: string,
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+    ) => Promise<void>;
+    replicaMarkComplete: (
+      workspacePath: string,
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+    ) => Promise<void>;
+    replicaQuarantine: (
+      workspacePath: string,
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+      reason: string,
+    ) => Promise<void>;
+    replicaResetForCleanHydration: (
+      workspacePath: string,
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+    ) => Promise<void>;
+    replicaDiscard: (
+      workspacePath: string,
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+    ) => Promise<void>;
+    replicaPurgeAccount: (workspacePath: string, accountId: string) => Promise<void>;
+    replicaPurgeOrg: (workspacePath: string, accountId: string, orgId: string) => Promise<void>;
+    replicaStorageUsage: (
+      workspacePath: string,
+      accountId: string,
+    ) => Promise<import('@nimbalyst/runtime/sync').LocalReplicaStorageUsage>;
+    replicaListPendingOutboxes: (
+      workspacePath: string,
+      accountId?: string,
+    ) => Promise<import('@nimbalyst/runtime/sync').LocalReplicaPendingOutbox[]>;
+    setReplicaProviderAttached: (
+      identity: import('@nimbalyst/runtime/sync').LocalReplicaIdentity,
+      attachmentId: string,
+      attached: boolean,
+    ) => Promise<void>;
     seedSharedDocument: (
       workspacePath: string,
       documentId: string,
@@ -1137,7 +1306,7 @@ interface ElectronAPI {
       fileBytes: ArrayBuffer;
       mimeType: string;
       fileName: string;
-    }) => Promise<{ success: boolean; assetId?: string; uri?: string; error?: string }>;
+    }) => Promise<{ success: boolean; assetId?: string; uri?: string; queued?: boolean; error?: string }>;
     migrateLocalAssets: (payload: {
       workspacePath: string;
       orgId: string;

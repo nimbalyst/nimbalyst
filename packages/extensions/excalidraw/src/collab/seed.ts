@@ -17,7 +17,7 @@
  *     deterministic for a given `n`).
  */
 
-import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
+import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
 import { generateNKeysBetween } from 'fractional-indexing';
 import * as Y from 'yjs';
 import type { ExcalidrawFile } from '../types';

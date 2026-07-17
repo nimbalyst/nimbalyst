@@ -35,6 +35,48 @@ export interface TabData {
   contentHash?: string;
   contentLoadedAt?: Date;
   isVirtual?: boolean;
+  /**
+   * Resource kind for the tab. Undefined/`'file'` = a disk-backed file
+   * (default). `'tracker'` = a tracker item rendered by the workstream host
+   * (its `filePath` is a `tracker://<itemId>` resource id, NOT a real path).
+   */
+  kind?: 'file' | 'tracker';
+  /** For tracker tabs: the tracker item id (also encoded in filePath). */
+  trackerItemId?: string;
+}
+
+/**
+ * Prefix for tracker resource tab ids. Kept in sync with the canonical
+ * `trackerResourceId` helper in store/atoms/workstreamState.ts — a tracker tab
+ * carries `filePath = tracker://<itemId>` so path-based dedup keeps working
+ * while the file-watch/disk-read paths are skipped.
+ */
+const TRACKER_TAB_PREFIX = 'tracker://';
+
+/** True when a tab filePath identifies a tracker resource (not a real file). */
+export function isTrackerTabPath(filePath: string): boolean {
+  return filePath.startsWith(TRACKER_TAB_PREFIX);
+}
+
+/** True when a tab represents a non-filesystem resource (virtual/collab/tracker). */
+function isNonFilesystemTab(filePath: string): boolean {
+  return (
+    filePath.startsWith('virtual://') ||
+    isCollabUri(filePath) ||
+    isTrackerTabPath(filePath)
+  );
+}
+
+const UNRESOLVED_COLLAB_TAB_NAME = 'Shared document';
+
+function resolveTabDisplayName(filePath: string, displayName?: string): string {
+  const requestedName = displayName?.trim();
+  if (!isCollabUri(filePath)) return requestedName || getFileName(filePath);
+
+  const transportName = getFileName(filePath);
+  return requestedName && requestedName !== transportName
+    ? requestedName
+    : UNRESOLVED_COLLAB_TAB_NAME;
 }
 
 interface TabsStore {
@@ -50,7 +92,7 @@ interface TabsContextValue {
   getSnapshot: () => TabsStore;
 
   // Actions (don't trigger re-renders in caller)
-  addTab: (filePath: string, content?: string, switchToTab?: boolean) => string | null;
+  addTab: (filePath: string, content?: string, switchToTab?: boolean, displayName?: string) => string | null;
   removeTab: (tabId: string) => void;
   switchTab: (tabId: string) => void;
   updateTab: (tabId: string, updates: Partial<TabData>) => void;
@@ -245,8 +287,8 @@ export function TabsProvider({
     store.tabs.delete(tabId);
     store.tabOrder = store.tabOrder.filter(id => id !== tabId);
 
-    // Stop watching file (skip virtual and collaborative documents)
-    if (window.electronAPI && !tab.filePath.startsWith('virtual://') && !isCollabUri(tab.filePath)) {
+    // Stop watching file (skip virtual, collaborative, and tracker documents)
+    if (window.electronAPI && !isNonFilesystemTab(tab.filePath)) {
       window.electronAPI.invoke('stop-watching-file', tab.filePath).catch(() => {});
       // Closing drops any unsaved buffer, so clear the dirty flag in main; this
       // lets personal docs sync flush a deferred remote write (NIM-853, Layer 4).
@@ -268,21 +310,40 @@ export function TabsProvider({
   }, [notify]);
 
   // Add a tab
-  const addTab = useCallback((filePath: string, content: string = '', switchToTab: boolean = true): string | null => {
+  const addTab = useCallback((
+    filePath: string,
+    content: string = '',
+    switchToTab: boolean = true,
+    displayName?: string,
+  ): string | null => {
     const store = slotRef.current.store;
 
     // Check if tab already exists
     const existingTab = Array.from(store.tabs.values()).find(tab => tab.filePath === filePath);
     if (existingTab) {
+      let didChange = false;
+      const nextDisplayName = displayName === undefined
+        ? undefined
+        : resolveTabDisplayName(filePath, displayName);
+      if (nextDisplayName && existingTab.fileName !== nextDisplayName) {
+        store.tabs.set(existingTab.id, { ...existingTab, fileName: nextDisplayName });
+        didChange = true;
+      }
       if (switchToTab && store.activeTabId !== existingTab.id) {
         store.activeTabId = existingTab.id;
-        notify();
+        didChange = true;
       }
+      if (didChange) notify();
       return existingTab.id;
     }
 
     const tabId = generateTabId();
-    const fileName = getFileName(filePath);
+    const isTracker = isTrackerTabPath(filePath);
+    // Tracker tabs use the item id as their label fallback; the live title is
+    // resolved by the tab bar from the canonical tracker atom.
+    const fileName = isTracker
+      ? displayName?.trim() || filePath.slice(TRACKER_TAB_PREFIX.length)
+      : resolveTabDisplayName(filePath, displayName);
 
     const newTab: TabData = {
       id: tabId,
@@ -292,6 +353,8 @@ export function TabsProvider({
       isDirty: false,
       isPinned: false,
       isVirtual: filePath.startsWith('virtual://'),
+      kind: isTracker ? 'tracker' : 'file',
+      trackerItemId: isTracker ? filePath.slice(TRACKER_TAB_PREFIX.length) : undefined,
       contentHash: simpleHash(content),
       contentLoadedAt: new Date()
     };
@@ -305,8 +368,8 @@ export function TabsProvider({
       store.activeTabId = tabId;
     }
 
-    // Start watching filesystem-backed files only.
-    if (window.electronAPI && !filePath.startsWith('virtual://') && !isCollabUri(filePath)) {
+    // Start watching filesystem-backed files only (skip virtual/collab/tracker).
+    if (window.electronAPI && !isNonFilesystemTab(filePath)) {
       window.electronAPI.invoke('start-watching-file', filePath).catch(() => {});
     }
 
@@ -457,7 +520,12 @@ export function TabsProvider({
         if (!existingTab) {
           try {
             if (isCollabUri(candidateTab.filePath)) {
-              const reopenedTabId = addTab(candidateTab.filePath, '', true);
+              const reopenedTabId = addTab(
+                candidateTab.filePath,
+                '',
+                true,
+                candidateTab.fileName,
+              );
               if (reopenedTabId) {
                 updateTab(reopenedTabId, {
                   fileName: candidateTab.fileName,
@@ -537,7 +605,7 @@ export function TabsProvider({
           // Start watching restored filesystem-backed tabs only.
           if (window.electronAPI) {
             for (const tab of restoredTabs.values()) {
-              if (!tab.filePath.startsWith('virtual://') && !isCollabUri(tab.filePath)) {
+              if (!isNonFilesystemTab(tab.filePath)) {
                 window.electronAPI.invoke('start-watching-file', tab.filePath).catch(() => {});
               }
             }
@@ -721,6 +789,42 @@ export function useTabsActions() {
     // Expose subscribe for components that need custom subscription logic
     subscribe: context.subscribe
   };
+}
+
+/**
+ * Own the application-menu tab navigation events for one active tab context.
+ * Modes stay mounted while hidden, so inactive contexts must not register.
+ */
+export function useTabNavigationShortcuts(isActive: boolean): void {
+  const context = useContext(TabsContext);
+  if (!context) {
+    throw new Error('useTabNavigationShortcuts must be used within a TabsProvider');
+  }
+
+  const { getSnapshot, switchTab } = context;
+
+  React.useEffect(() => {
+    if (!isActive) return;
+
+    const navigate = (offset: -1 | 1) => {
+      const snapshot = getSnapshot();
+      if (!snapshot.activeTabId || snapshot.tabOrder.length < 2) return;
+
+      const currentIndex = snapshot.tabOrder.indexOf(snapshot.activeTabId);
+      const targetTabId = snapshot.tabOrder[currentIndex + offset];
+      if (currentIndex >= 0 && targetTabId) {
+        switchTab(targetTabId);
+      }
+    };
+
+    const cleanupNext = window.electronAPI?.onNextTab?.(() => navigate(1));
+    const cleanupPrevious = window.electronAPI?.onPreviousTab?.(() => navigate(-1));
+
+    return () => {
+      cleanupNext?.();
+      cleanupPrevious?.();
+    };
+  }, [getSnapshot, isActive, switchTab]);
 }
 
 // Hook to check if there's an active tab (minimal subscription for conditional rendering)

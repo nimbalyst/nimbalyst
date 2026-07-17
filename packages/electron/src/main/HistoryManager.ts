@@ -163,8 +163,9 @@ export class HistoryManager {
     const now = Date.now();
 
     // If there's already a pending snapshot with the same content within dedup window, wait for it and skip
+    const isGroupedProjectWrite = typeof extraMetadata?.projectWriteId === 'string';
     const existing = this.pendingSnapshots.get(snapshotKey);
-    if (existing) {
+    if (existing && !isGroupedProjectWrite) {
       const timeSinceStart = now - existing.timestamp;
       if (timeSinceStart < this.DEDUP_WINDOW_MS) {
         logger.main.debug('[HistoryManager] Skipping duplicate snapshot (already in progress, within dedup window):', snapshotKey);
@@ -212,7 +213,7 @@ export class HistoryManager {
         LIMIT 1
       `, [filePath]);
 
-      if (recentResult.rows.length > 0) {
+      if (recentResult.rows.length > 0 && typeof extraMetadata?.projectWriteId !== 'string') {
         const recentMetadata = recentResult.rows[0].metadata;
         if (recentMetadata?.baseMarkdownHash === baseMarkdownHash) {
           logger.main.debug('[HistoryManager] Skipping duplicate snapshot (same content hash in DB):', filePath);

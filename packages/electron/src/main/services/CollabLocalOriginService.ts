@@ -839,9 +839,15 @@ export async function seedSharedDocumentFromContent(params: {
 }): Promise<boolean> {
   const adapter = resolveAdapterForSharedDocumentType(params.documentType);
   if (!adapter) {
-    throw new Error(
-      `No collab content adapter is registered for document type '${params.documentType}'.`,
+    // The main-process adapter is now an OPTIONAL cache, not a requirement.
+    // External, structured editors (mindmap) supply a renderer codec but no
+    // main adapter -- the renderer-side seeding orchestrator handles those.
+    // Returning false (instead of throwing) lets the orchestrator treat a
+    // missing main adapter as "main can't seed this type", not a hard error.
+    logger.main.info(
+      `[CollabLocalOrigin] No main-process adapter for document type '${params.documentType}'; deferring seed to the renderer.`,
     );
+    return false;
   }
 
   return overwriteSharedDocFromSource(

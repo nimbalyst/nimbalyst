@@ -7,7 +7,7 @@
  */
 
 import './styles.css';
-import { AutomationDocumentHeader, setRunNowCallback } from './components/AutomationDocumentHeader';
+import { AutomationDocumentHeader, setRunNowCallback, setDefinitionChangedCallback } from './components/AutomationDocumentHeader';
 import { AutomationScheduler } from './scheduler/AutomationScheduler';
 import { OutputWriter } from './output/OutputWriter';
 import type { AutomationStatus } from './frontmatter/types';
@@ -87,6 +87,12 @@ export async function activate(context: {
   // Wire up "Run Now" from the document header
   setRunNowCallback((filePath: string) => {
     scheduler?.runNow(filePath);
+  });
+
+  // Re-arm immediately when the header edits a definition (enable toggle,
+  // schedule change) so it doesn't wait for the 30s poll.
+  setDefinitionChangedCallback((filePath: string, content: string) => {
+    scheduler?.applyDefinition(filePath, content);
   });
 
   // Initialize scheduler (discover and schedule automations)

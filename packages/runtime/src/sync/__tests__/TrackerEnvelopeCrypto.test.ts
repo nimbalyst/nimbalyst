@@ -18,10 +18,13 @@ import { webcrypto } from 'crypto';
 import {
   encryptTrackerPayload,
   decryptTrackerEnvelope,
+  encryptTrackerNavigationPayload,
+  decryptTrackerNavigationEnvelope,
 } from '../TrackerEnvelopeCrypto';
 import type {
   EncryptedTrackerItemEnvelope,
   TrackerItemPayload,
+  EncryptedTrackerNavigationEnvelope,
 } from '../trackerProtocol';
 
 async function genKey(): Promise<CryptoKey> {
@@ -110,5 +113,26 @@ describe('TrackerEnvelopeCrypto itemId AAD binding', () => {
     const key = await genKey();
     const tombstone = envelopeOf('A', '', '', { encryptedPayload: null, iv: undefined });
     await expect(decryptTrackerEnvelope(tombstone, key)).rejects.toThrow(/tombstone/);
+  });
+});
+
+describe('TrackerEnvelopeCrypto navigation entryId AAD binding', () => {
+  it('round-trips and rejects ciphertext spliced onto another entry id', async () => {
+    const key = await genKey();
+    const payloadJson = JSON.stringify({ entryId: 'folder:a', kind: 'folder', folderId: 'a', name: 'A', sortKey: 'a0' });
+    const encrypted = await encryptTrackerNavigationPayload(payloadJson, key, 'folder:a');
+    const envelope: EncryptedTrackerNavigationEnvelope = {
+      entryId: 'folder:a',
+      syncId: 1,
+      encryptedPayload: encrypted.encryptedPayload,
+      iv: encrypted.iv,
+      updatedAt: 0,
+      deletedAt: null,
+      orgKeyFingerprint: 'fp',
+    };
+    await expect(decryptTrackerNavigationEnvelope(envelope, key)).resolves.toBe(payloadJson);
+    await expect(decryptTrackerNavigationEnvelope({ ...envelope, entryId: 'folder:b' }, key)).rejects.toMatchObject({
+      name: 'OperationError',
+    });
   });
 });

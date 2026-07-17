@@ -8,8 +8,8 @@
 
 import { useEffect, useRef, useCallback, useState, forwardRef } from 'react';
 import { Excalidraw, exportToBlob } from '@excalidraw/excalidraw';
-import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
-import type { ExcalidrawImperativeAPI, AppState, BinaryFiles } from '@excalidraw/excalidraw/types/types';
+import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
+import type { ExcalidrawImperativeAPI, AppState, BinaryFiles } from '@excalidraw/excalidraw/types';
 import {
   useEditorLifecycle,
   useCollaborativeEditor,
@@ -54,7 +54,7 @@ function createEmptyFile(bgColor: string): ExcalidrawFile {
   };
 }
 
-export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function ExcalidrawEditor({ host }, ref) {
+export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function ExcalidrawEditor({ host }, _ref) {
   const { filePath } = host;
 
   // The persisted background is always light-space; the app theme drives the
@@ -101,7 +101,7 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
   } | null>(null);
 
   // Helper: update version tracking refs from parsed data
-  const updateTrackingRefs = useCallback((data: ExcalidrawFile, bgColor: string) => {
+  const updateTrackingRefs = useCallback((data: ExcalidrawFile, _bgColor: string) => {
     const elements = data.elements as ExcalidrawElement[];
     const files = data.files || {};
 

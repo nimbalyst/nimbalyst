@@ -59,7 +59,7 @@ interface SearchMatch {
 interface TranscriptSearchBarProps {
   isVisible: boolean;
   messages: TranscriptViewMessage[];
-  containerRef: React.RefObject<HTMLDivElement>;
+  containerRef: React.RefObject<HTMLDivElement | null>;
   onClose: () => void;
   onScrollToMessage: (index: number) => void;
 }

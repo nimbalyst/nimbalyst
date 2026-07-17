@@ -93,7 +93,35 @@ export const CORE_TOOLS: readonly string[] = [
   'capture_editor_screenshot',
   'get_session_edited_files',
   'developer_git_commit_proposal',
-  'developer_git_log',
+  // NOTE: `developer_git_log` is NOT here — it is contributed by the built-in
+  // "Developer Tools" extension (com.nimbalyst.developer, enabledByDefault) and
+  // served on its own deferred `nimbalyst-developer` server
+  // (`mcp__nimbalyst-developer__developer_git_log`), never on eager core. Only
+  // `developer_git_commit_proposal` has a first-party core handler (the
+  // interactive commit widget in interactiveToolHandlers).
+  'update_session_meta',
+];
+
+/**
+ * The subset of CORE_TOOLS that is always loaded into the prompt. Eagerness is
+ * now per-TOOL, not per-server: the core server config no longer sets
+ * `alwaysLoad: true`; instead the `/mcp/core` ListTools marks these tools with
+ * `_meta['anthropic/alwaysLoad']`, which the Claude CLI honors per tool.
+ *
+ * `display_to_user` and `capture_editor_screenshot` are always-loaded: the
+ * system prompt actively instructs the model to use them for inline visuals, so
+ * their schemas must be in context. Deferring them (a ~1.1K-token saving) meant
+ * the model invoked them from memory with the wrong shape and hit
+ * schema-validation errors instead of rendering — charts silently failed
+ * (NIM-1766). The token cost is worth reliable visual output.
+ */
+export const CORE_ALWAYS_LOAD_TOOLS: readonly string[] = [
+  'AskUserQuestion',
+  'PromptForUserInput',
+  'display_to_user',
+  'capture_editor_screenshot',
+  'get_session_edited_files',
+  'developer_git_commit_proposal',
   'update_session_meta',
 ];
 
@@ -129,14 +157,17 @@ export const HOST_TOOLS: readonly string[] = [
   'create_session',
   'spawn_session',
   'send_prompt',
+  'list_queued_prompts',
   'respond_to_prompt',
   'get_session_status',
   'get_session_result',
   'list_spawned_sessions',
   'list_worktrees',
-  // File / content (IPC-backed; surfaced on the host endpoint)
-  'applyDiff',
-  'streamContent',
+  // NOTE: `applyDiff` / `streamContent` are intentionally NOT declared here.
+  // They have live CallTool handlers (httpServer switch) + renderer IPC
+  // listeners, but no ListTools schema — they are deliberately unadvertised so
+  // agents reach for Edit/Write instead. Declaring them in the topology made
+  // them phantom entries that no endpoint could ever surface.
 ];
 
 /**
@@ -166,8 +197,11 @@ export const TRACKER_TOOLS: readonly string[] = [
 ];
 
 /**
- * Situational: registered only when its mode is in context. Costs nothing
- * outside its mode.
+ * Situational: voice + collab-doc + feedback. Registered as a DEFERRED server
+ * (not conditional) — config-time mode gating was dropped as over-engineering
+ * for a deferred server (Phase 6). Because it never loads eagerly it costs
+ * nothing until ToolSearch surfaces a tool on intent (voice mode, an open
+ * collab doc, filing feedback).
  */
 export const SITUATIONAL_TOOLS: readonly string[] = [
   // voice mode only
@@ -176,6 +210,12 @@ export const SITUATIONAL_TOOLS: readonly string[] = [
   // collab doc in context only
   'readCollabDoc',
   'applyCollabDocEdit',
+  // shared-index (first-class shared folders + documents) management
+  'createSharedDoc',
+  'createSharedFolder',
+  'moveSharedItem',
+  'renameSharedItem',
+  'deleteSharedItem',
   // feedback (deferred)
   'feedback_anonymize_text',
   'feedback_get_environment',

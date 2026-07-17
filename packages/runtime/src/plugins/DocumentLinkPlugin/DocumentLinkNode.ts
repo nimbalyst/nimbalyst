@@ -20,7 +20,20 @@ import {
     buildImportedDocumentReference,
     exportDocumentLinkHref,
     normalizeDocumentLinkHref,
+    parseCollabReferenceDocumentId,
+    isCollabReferenceHref,
 } from "./documentLinkPaths";
+
+/**
+ * Class list for a reference chip. Shared/collaborative references (whose path
+ * is a collab-scheme target) get a `--shared` modifier so CSS can give them a
+ * distinct tint + icon from local file references.
+ */
+export function documentReferenceClassName(path: string): string {
+    return isCollabReferenceHref(path)
+        ? 'document-reference document-reference--shared'
+        : 'document-reference';
+}
 
 export type SerializedDocumentReferenceNode = Spread<
     {
@@ -103,7 +116,7 @@ export class DocumentReferenceNode extends TextNode {
     createDOM(config: EditorConfig): HTMLElement {
         const dom = super.createDOM(config);
         dom.spellcheck = false;
-        dom.className = 'document-reference';
+        dom.className = documentReferenceClassName(this.__path);
         dom.setAttribute('data-document-id', this.__documentId);
         dom.setAttribute('data-name', this.__name);
         dom.setAttribute('data-path', this.__path);
@@ -117,7 +130,7 @@ export class DocumentReferenceNode extends TextNode {
 
     exportDOM(): DOMExportOutput {
         const element = document.createElement('span');
-        element.className = 'document-reference'; // used for styling saved dom in prompt menu
+        element.className = documentReferenceClassName(this.__path); // used for styling saved dom in prompt menu
         element.setAttribute('data-lexical-document-reference', 'true');
         element.setAttribute('data-document-id', this.__documentId);
         element.setAttribute('data-name', this.__name);
@@ -240,6 +253,43 @@ export const DocumentReferenceTransformer: TextMatchTransformer = {
             importedReference.documentId,
             importedReference.name,
             importedReference.path,
+            undefined
+        );
+        textNode.replace(documentReferenceNode);
+        return documentReferenceNode;
+    },
+    trigger: ')',
+    type: 'text-match',
+};
+
+/**
+ * Transformer for collaborative-document references.
+ *
+ * Inside a collab document, an `@` reference targets a shared document rather
+ * than a local file. Its markdown link uses a collab scheme
+ * (`nimbalyst://doc/{id}?orgId={org}` deep link, or the internal
+ * `collab://org:{org}:doc:{id}` URI) instead of a file path.
+ *
+ * Export is handled by {@link DocumentReferenceTransformer} — a collab
+ * reference is still a `DocumentReferenceNode` whose `__path` already holds the
+ * collab target, so the shared export produces `[Title](nimbalyst://doc/...)`.
+ * This transformer is import-only: the main transformer's regex deliberately
+ * excludes `://` targets, so collab links need their own import path.
+ */
+export const CollabDocumentReferenceTransformer: TextMatchTransformer = {
+    dependencies: [DocumentReferenceNode],
+    export: () => null, // Export flows through DocumentReferenceTransformer.
+    // Match markdown links whose target is a collab scheme. Excludes images
+    // ((?<!!) / (?!!\[)) the same way the main transformer does.
+    importRegExp: /(?<!!)\[(?!!\[)([^\]]+)\]\((nimbalyst:\/\/doc\/[^)]+|collab:\/\/[^)]+)\)/,
+    regExp: /(?<!!)\[(?!!\[)([^\]]+)\]\((nimbalyst:\/\/doc\/[^)]+|collab:\/\/[^)]+)\)$/,
+    replace: (textNode, match) => {
+        const [, name, target] = match;
+        const documentId = parseCollabReferenceDocumentId(target) ?? '';
+        const documentReferenceNode = $createDocumentReferenceNode(
+            documentId,
+            name,
+            target,
             undefined
         );
         textNode.replace(documentReferenceNode);

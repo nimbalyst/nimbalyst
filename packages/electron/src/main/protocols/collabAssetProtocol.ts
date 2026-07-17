@@ -180,7 +180,10 @@ export function isCollabAssetDocumentRegisteredForSender(
  * via the registered scheme at all -- and it matches the existing
  * `nim-asset://` pattern.
  */
-export function isCollabAssetDocumentRegistered(orgId: string, documentId: string): boolean {
+export function isCollabAssetDocumentRegistered(
+  orgId: string,
+  documentId: string
+): boolean {
   for (const docs of senderRegistry.values()) {
     const entry = docs.get(documentId);
     if (entry && entry.orgId === orgId) return true;
@@ -269,7 +272,9 @@ async function decryptMetadata(
     key
   );
   try {
-    return JSON.parse(new TextDecoder().decode(plaintext)) as AssetMetadataPayload;
+    return JSON.parse(
+      new TextDecoder().decode(plaintext)
+    ) as AssetMetadataPayload;
   } catch {
     return null;
   }
@@ -286,14 +291,62 @@ interface AssetHandlerDeps {
   getOrgScopedJwt: (orgId: string) => Promise<string>;
   /** Resolves the collab server HTTP base URL (e.g. https://sync.nimbalyst.com). */
   getCollabHttpUrl: () => string;
+  /** Current unlocked local account. Cache access is refused without it. */
+  getAccountId?: () => string | null;
+  assetStore?: {
+    loadAsset(identity: {
+      accountId: string;
+      orgId: string;
+      documentId: string;
+      assetId: string;
+    }): Promise<{
+      bytes: Uint8Array;
+      mimeType: string;
+      fileName: string;
+    } | null>;
+    cacheAsset(input: {
+      identity: {
+        accountId: string;
+        orgId: string;
+        documentId: string;
+        assetId: string;
+      };
+      bytes: Uint8Array;
+      mimeType: string;
+      fileName: string;
+    }): Promise<void>;
+  };
+}
+
+function assetResponse(
+  bytes: Uint8Array,
+  mimeType: string,
+  fileName: string,
+  plaintextSize?: string | null
+): Response {
+  const headers = new Headers();
+  headers.set("Content-Type", mimeType || "application/octet-stream");
+  headers.set("Content-Length", String(bytes.byteLength));
+  if (plaintextSize) headers.set("X-Plaintext-Size", plaintextSize);
+  headers.set(
+    "Content-Disposition",
+    `inline; filename="${fileName.replace(/[\r\n"]/g, "")}"`
+  );
+  return new Response(bytes as BodyInit, { status: 200, headers });
 }
 
 /**
  * Wire up the actual handler. Dependencies are injected so tests can stub
  * fetch / key lookup. In production wiring see `registerCollabAssetProtocolHandler`.
  */
-export function installCollabAssetProtocolHandler(deps: AssetHandlerDeps): void {
-  protocol.handle(COLLAB_ASSET_SCHEME, async (request) => {
+export function installCollabAssetProtocolHandler(
+  deps: AssetHandlerDeps
+): void {
+  protocol.handle(COLLAB_ASSET_SCHEME, createCollabAssetRequestHandler(deps));
+}
+
+export function createCollabAssetRequestHandler(deps: AssetHandlerDeps) {
+  return async (request: Request): Promise<Response> => {
     try {
       const parsed = parseCollabAssetUrl(request.url);
       if (!parsed) {
@@ -305,6 +358,46 @@ export function installCollabAssetProtocolHandler(deps: AssetHandlerDeps): void 
         // Not registered = renderer hasn't opened this doc in this session,
         // or the tab was already torn down. Treat as forbidden.
         return new Response("Forbidden", { status: 403 });
+      }
+
+      const accountId = deps.getAccountId?.() ?? null;
+      const cacheIdentity = accountId
+        ? {
+            accountId,
+            orgId,
+            documentId: parsed.documentId,
+            assetId: parsed.assetId,
+          }
+        : null;
+      if (cacheIdentity && deps.assetStore) {
+        // const cacheStartedAt = Date.now(); // used by the commented-out cache metric below
+        try {
+          const cached = await deps.assetStore.loadAsset(cacheIdentity);
+          if (cached) {
+            // console.info("[CollabOfflineMetric]", {
+            //   metric: "asset_cache",
+            //   hit: true,
+            //   durationMs: Date.now() - cacheStartedAt,
+            //   bytes: cached.bytes.byteLength,
+            // });
+            return assetResponse(
+              cached.bytes,
+              cached.mimeType,
+              cached.fileName
+            );
+          }
+          // console.info("[CollabOfflineMetric]", {
+          //   metric: "asset_cache",
+          //   hit: false,
+          //   durationMs: Date.now() - cacheStartedAt,
+          //   bytes: 0,
+          // });
+        } catch (error) {
+          console.warn(
+            "[collab-asset] Cached asset unreadable; falling back to server",
+            error
+          );
+        }
       }
 
       const orgKey = await deps.getOrgKey(orgId);
@@ -323,17 +416,30 @@ export function installCollabAssetProtocolHandler(deps: AssetHandlerDeps): void 
 
       const assetUrl =
         `${deps.getCollabHttpUrl()}/api/collab/docs/` +
-        `${encodeURIComponent(parsed.documentId)}/assets/${encodeURIComponent(parsed.assetId)}`;
-      const upstream = await net.fetch(assetUrl, {
-        headers: { Authorization: `Bearer ${jwt}` },
-      });
+        `${encodeURIComponent(parsed.documentId)}/assets/${encodeURIComponent(
+          parsed.assetId
+        )}`;
+      let upstream: Response;
+      try {
+        upstream = await net.fetch(assetUrl, {
+          headers: { Authorization: `Bearer ${jwt}` },
+        });
+      } catch {
+        // A terminal response lets the editor render its broken-asset
+        // placeholder instead of leaving an image request spinning forever.
+        return new Response("Attachment unavailable offline", { status: 503 });
+      }
 
       if (upstream.status === 404) {
         return new Response("Not found", { status: 404 });
       }
       if (!upstream.ok) {
         const body = await upstream.text().catch(() => "");
-        console.warn("[collab-asset] Upstream fetch failed", upstream.status, body);
+        console.warn(
+          "[collab-asset] Upstream fetch failed",
+          upstream.status,
+          body
+        );
         return new Response("Upstream error", { status: 502 });
       }
 
@@ -342,7 +448,8 @@ export function installCollabAssetProtocolHandler(deps: AssetHandlerDeps): void 
         return new Response("Missing IV", { status: 502 });
       }
 
-      const mimeType = upstream.headers.get(HEADER_MIME) || "application/octet-stream";
+      const mimeType =
+        upstream.headers.get(HEADER_MIME) || "application/octet-stream";
       const encryptedMetadata = upstream.headers.get(HEADER_METADATA);
       const metadataIv = upstream.headers.get(HEADER_METADATA_IV);
       const plaintextSize = upstream.headers.get(HEADER_PLAINTEXT_SIZE);
@@ -361,28 +468,34 @@ export function installCollabAssetProtocolHandler(deps: AssetHandlerDeps): void 
       // the original filename.
       let filename = `${parsed.assetId}.bin`;
       try {
-        const meta = await decryptMetadata(encryptedMetadata, metadataIv, orgKey);
+        const meta = await decryptMetadata(
+          encryptedMetadata,
+          metadataIv,
+          orgKey
+        );
         if (meta?.name) filename = meta.name;
       } catch {
         // ignore -- decoration only
       }
 
-      const headers = new Headers();
-      headers.set("Content-Type", mimeType);
-      headers.set("Content-Length", String(plaintext.byteLength));
-      if (plaintextSize) headers.set("X-Plaintext-Size", plaintextSize);
-      // Inline so images render in <img> tags; the renderer can still trigger
-      // a download by setting <a download>. The filename hint helps Chromium's
-      // built-in download flow when the user opens the URL in a new tab.
-      headers.set(
-        "Content-Disposition",
-        `inline; filename="${filename.replace(/"/g, "")}"`
-      );
-
-      return new Response(plaintext as BodyInit, { status: 200, headers });
+      if (cacheIdentity && deps.assetStore) {
+        try {
+          await deps.assetStore.cacheAsset({
+            identity: cacheIdentity,
+            bytes: plaintext,
+            mimeType,
+            fileName: filename,
+          });
+        } catch (error) {
+          // Serving a successfully fetched asset is more important than cache
+          // admission; disk-full/retention failures are surfaced separately.
+          console.warn("[collab-asset] Failed to cache viewed asset", error);
+        }
+      }
+      return assetResponse(plaintext, mimeType, filename, plaintextSize);
     } catch (err) {
       console.error("[collab-asset] handler error:", err);
       return new Response("Internal error", { status: 500 });
     }
-  });
+  };
 }

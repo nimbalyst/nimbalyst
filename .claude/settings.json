@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__nimbalyst-mcp__developer_git_commit_proposal",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/agent-test-gate.mjs",
+            "timeout": 600,
+            "statusMessage": "Running typecheck + unit tests before commit..."
+          }
+        ]
+      }
+    ]
+  }
+}

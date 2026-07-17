@@ -24,7 +24,7 @@ import { PermissionMode, TrustChecker, PermissionPatternSaver, PermissionPattern
 import { CodexSdkModuleLike, loadCodexSdkModule } from './codex/codexSdkLoader';
 import { resolvePackagedCodexBinaryPath } from './codex/codexBinaryPath';
 import { McpConfigService } from '../services/McpConfigService';
-import { getMcpConfigService, isInternalMcpServerEnabled } from '../services/mcpServerConfig';
+import { getMcpConfigService, isInternalMcpServerEnabled, areTrackerToolsEnabled, resolveTrackersWorkspacePath } from '../services/mcpServerConfig';
 import { MCPServerConfig } from '../../../types/MCPServerConfig';
 import { safeJSONSerialize } from '../../../utils/serialization';
 import { AskUserQuestionPrompt, AskUserQuestionPromptOption } from './shared/askUserQuestionTypes';
@@ -36,7 +36,7 @@ import { reverseCodexPatch, type CodexPatchKind } from './codex/patchReverse';
  * Codex transport selection.
  *
  * - `sdk`: the original `@openai/codex-sdk`-driven `codex exec --experimental-json`
- *   flow. Stable, fully featured. Limitation: file_change events do not carry
+ *   flow. Legacy escape hatch only. Limitation: file_change events do not carry
  *   the patch diff text, so host-side pre-edit baselines race apply_patch.
  * - `app-server`: drives `codex app-server --listen stdio://` directly via
  *   JSON-RPC v2. Emits the full patch diff per file_change item, which lets us
@@ -96,22 +96,20 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     contextWindow: number;
     maxTokens: number;
   }> = [
+    { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', contextWindow: 372000, maxTokens: 128000 },
+    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', contextWindow: 372000, maxTokens: 128000 },
+    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', contextWindow: 372000, maxTokens: 128000 },
     { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 400000, maxTokens: 128000 },
     { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max', contextWindow: 400000, maxTokens: 128000 },
-    { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 128000, maxTokens: 128000 },
-    { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini', contextWindow: 400000, maxTokens: 128000 },
+    { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', contextWindow: 400000, maxTokens: 128000 },
   ];
   private static readonly MODEL_FALLBACK_PRIORITY: ReadonlyArray<string> = [
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
     'gpt-5.5',
     'gpt-5.4',
-    'gpt-5.3-codex',
-    'gpt-5.2-codex',
-    'gpt-5.1-codex-max',
-    'gpt-5.1-codex-mini',
-    'gpt-5.2',
+    'gpt-5.4-mini',
   ];
   private static readonly FALLBACK_MODELS_SET = new Set(
     OpenAICodexProvider.FALLBACK_MODELS.map((model) => model.id)
@@ -218,15 +216,16 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   // (Homebrew, nvm, volta, etc.) that are missing from Electron's minimal GUI PATH
   private static enhancedPathLoader: (() => string) | null = null;
 
-  // SDK module loader (injected from electron main process for packaged builds)
-  // In packaged builds, dynamic import('@openai/codex-sdk') fails because the
-  // package isn't resolvable from within app.asar. This loader provides an
-  // alternative resolution path using process.resourcesPath.
+  // Legacy SDK module loader (injected from electron main process for packaged builds)
+  // when `openaiCodex.transport = 'sdk'` is explicitly selected. In packaged
+  // builds, dynamic import('@openai/codex-sdk') fails because the package isn't
+  // resolvable from within app.asar. This loader provides an alternative
+  // resolution path using process.resourcesPath.
   private static sdkModuleLoader: (() => Promise<CodexSdkModuleLike>) | null = null;
 
   // Additional writable directories loader (injected from electron main process).
   // Returns paths like sibling worktrees and the parent project root that the
-  // Codex SDK should pass to the CLI as --add-dir entries so workspace-write
+  // Codex transport should pass to the CLI as --add-dir entries so workspace-write
   // sandbox does not block edits to those directories. Issue #37 problem 1.
   private static additionalDirectoriesLoader: ((workspacePath: string) => string[]) | null = null;
 
@@ -253,8 +252,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   // time. Each new session reads this anew, so a settings change between
   // sessions takes effect on the next session.
   //
-  // Defaults to `sdk` when no resolver is registered (back-compat for unit
-  // tests and pre-migration code paths).
+  // Defaults to `app-server` when no resolver is registered. Tests or legacy
+  // callers that need the old SDK transport should request `transport: 'sdk'`;
+  // SDK-specific injected deps still imply the legacy transport for old tests.
   private static codexTransportResolver: (() => CodexTransport) | null = null;
 
   public static setCodexTransportResolver(resolver: (() => CodexTransport) | null): void {
@@ -285,17 +285,18 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     super();
     const apiKey = config?.apiKey || '';
 
-    // Resolve transport: explicit dep > registered resolver > default 'sdk'.
+    // Resolve transport: explicit dep > registered resolver > SDK-specific test
+    // deps > default 'app-server'.
     // Captured at construct time; each new provider instance reads the
     // resolver anew so a settings change takes effect on the next session.
     //
-    // The in-code default is 'sdk' so unit tests (and any future library
-    // consumers) get the SDK transport without needing to spawn a codex
-    // binary at construction. The Electron host overrides this via
-    // `setCodexTransportResolver` to default to 'app-server' in production,
-    // honoring the `aiProviders.openai-codex.transport` setting when set.
+    // The in-code default matches production: app-server. SDK-specific injected
+    // deps still imply the legacy transport so existing low-level protocol tests
+    // can stay isolated from the app-server child process.
     this.transport =
-      deps?.transport ?? OpenAICodexProvider.codexTransportResolver?.() ?? 'sdk';
+      deps?.transport
+      ?? OpenAICodexProvider.codexTransportResolver?.()
+      ?? (deps?.loadSdkModule || deps?.resolveCodexPathOverride ? 'sdk' : 'app-server');
 
     // Initialize protocol (or use injected for testing)
     // Support legacy loadSdkModule and resolveCodexPathOverride for existing tests
@@ -425,17 +426,20 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     'cli',
   ]);
   private static readonly MODEL_REPLACEMENTS = new Map<string, string>([
-    ['gpt-5', 'gpt-5.2'],
+    // Codex (ChatGPT-account auth) rejects the bare `gpt-5.6` alias that the
+    // OpenAI API accepts; route it to the flagship Sol tier.
+    ['gpt-5.6', 'gpt-5.6-sol'],
+    ['gpt-5', 'gpt-5.6-terra'],
     ['gpt-5-codex', 'gpt-5.4'],
     ['gpt-5.4-codex', 'gpt-5.4'],
-    ['gpt-5-codex-mini', 'gpt-5.1-codex-mini'],
-    ['gpt-5.2-codex-mini', 'gpt-5.2-codex'],
-    ['gpt-5.2-codex-max', 'gpt-5.2-codex'],
-    ['gpt-5-codex-max', 'gpt-5.1-codex-max'],
-    ['gpt-5.1-codex', 'gpt-5.2-codex'],
-    ['gpt-5.3-codex-mini', 'gpt-5.3-codex'],
-    ['gpt-5.3-codex-max', 'gpt-5.3-codex'],
-    ['codex-mini-latest', 'gpt-5.1-codex-mini'],
+    ['gpt-5-codex-mini', 'gpt-5.4-mini'],
+    ['gpt-5.2-codex-mini', 'gpt-5.4-mini'],
+    ['gpt-5.2-codex-max', 'gpt-5.6-sol'],
+    ['gpt-5-codex-max', 'gpt-5.6-sol'],
+    ['gpt-5.1-codex', 'gpt-5.4'],
+    ['gpt-5.3-codex-mini', 'gpt-5.4-mini'],
+    ['gpt-5.3-codex-max', 'gpt-5.6-sol'],
+    ['codex-mini-latest', 'gpt-5.4-mini'],
   ]);
 
   /**
@@ -444,7 +448,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   static normalizeModelSelection(modelId: string): string {
     const normalized = modelId.trim().toLowerCase();
     if (OpenAICodexProvider.LEGACY_MODEL_ALIASES.has(normalized)) {
-      return 'openai-codex:gpt-5.5';
+      return 'openai-codex:gpt-5.6-sol';
     }
 
     const parsed = ModelIdentifier.tryParse(modelId);
@@ -1153,6 +1157,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         attachments,
         sessionId,
         mode: documentContext?.mode || 'agent',
+        // Per-turn signal: the session-level raw.abortSignal is stale on
+        // cached/resumed protocol sessions (NIM-1607).
+        abortSignal: abortController.signal,
       })) {
         if (abortController.signal.aborted) {
           throw new Error('Operation cancelled');
@@ -1385,10 +1392,20 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       respondedBy,
       timestamp: Date.now(),
     });
+    this.logAskUserQuestionResultBestEffort({
+      sessionId: sessionId ?? pending.sessionId,
+      questionId,
+      answers,
+      respondedBy,
+    });
     return true;
   }
 
-  public rejectAskUserQuestion(questionId: string, _error: Error): void {
+  public rejectAskUserQuestion(
+    questionId: string,
+    _error: Error,
+    respondedBy: 'desktop' | 'mobile' = 'desktop'
+  ): void {
     const pending = this.pendingAskUserQuestions.get(questionId);
     if (!pending) {
       return;
@@ -1401,8 +1418,44 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       questions: pending.questions,
       answers: {},
       cancelled: true,
+      respondedBy,
       timestamp: Date.now(),
     });
+    this.logAskUserQuestionResultBestEffort({
+      sessionId: pending.sessionId,
+      questionId,
+      answers: {},
+      cancelled: true,
+      respondedBy,
+    });
+  }
+
+  private logAskUserQuestionResultBestEffort(args: {
+    sessionId?: string;
+    questionId: string;
+    answers: Record<string, string>;
+    cancelled?: boolean;
+    respondedBy?: 'desktop' | 'mobile';
+  }): void {
+    if (!args.sessionId || args.sessionId === 'unknown') {
+      return;
+    }
+
+    void this.logAgentMessageBestEffort(
+      args.sessionId,
+      'output',
+      JSON.stringify({
+        type: 'nimbalyst_tool_result',
+        tool_use_id: args.questionId,
+        result: JSON.stringify({
+          answers: args.cancelled ? {} : args.answers,
+          cancelled: args.cancelled === true,
+          respondedAt: Date.now(),
+          ...(args.respondedBy ? { respondedBy: args.respondedBy } : {}),
+        }),
+        is_error: args.cancelled === true,
+      })
+    );
   }
 
   private handleAskUserQuestionToolCall(
@@ -1709,6 +1762,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       isVoiceMode,
       voiceModeCodingAgentPrompt,
       enableAgentTeams,
+      trackersEnabled: areTrackerToolsEnabled(resolveTrackersWorkspacePath(documentContext)),
     });
   }
 
@@ -1718,7 +1772,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     const resolved = parsed ? parsed.model : configured.replace(/^openai-codex:/, '');
     const normalized = resolved.toLowerCase();
     if (normalized === 'openai-codex-cli' || normalized === 'default' || normalized === 'cli') {
-      return 'gpt-5.5';
+      return 'gpt-5.6-sol';
     }
 
     // Pass the model directly to the Codex SDK without pre-validation.

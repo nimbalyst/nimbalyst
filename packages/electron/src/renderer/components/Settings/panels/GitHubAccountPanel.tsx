@@ -9,6 +9,7 @@
  * keyring per request and never persisted.
  */
 
+import type { JSX } from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import type { SettingsScope } from '../SettingsView';

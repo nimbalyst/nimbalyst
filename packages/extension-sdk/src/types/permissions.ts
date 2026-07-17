@@ -96,9 +96,11 @@ export interface BackendModuleEnablement {
  * do NOT enumerate raw Node capabilities the module already has via standard
  * `require()`. See the catalog docs at the top of this file.
  *
- * Only extensions on the host's backend-module allowlist may load a module.
- * Built-in extensions are allowed by default; marketplace extensions need an
- * explicit allowlist entry; dev-mode installs require an opt-in env flag.
+ * Any extension may declare a backend module. There is no provenance gate --
+ * installing an extension and approving its first-use consent prompt IS the
+ * decision to let it run native code. Built-in extensions ship inside the app
+ * bundle (same trust domain as the app), so the host auto-grants them and
+ * skips the prompt.
  *
  * `entry` is a path relative to the extension root pointing at a compiled JS
  * file. The file is loaded inside the chosen runtime, never in Electron main.

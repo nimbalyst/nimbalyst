@@ -47,6 +47,7 @@ const CURRENT_TIMESTAMP_RE = /\bCURRENT_TIMESTAMP\b/gi;
 const TO_JSONB_RE = /\bto_jsonb\s*\(/gi;
 const JSONB_BUILD_OBJECT_RE = /\bjsonb_build_object\s*\(/gi;
 const JSONB_SET_HEAD_RE = /\bjsonb_set\s*\(/gi;
+const OCTET_LENGTH_RE = /\bOCTET_LENGTH\s*\(/gi;
 const NOW_MINUS_INTERVAL_RE = /\bNOW\s*\(\s*\)\s*-\s*INTERVAL\s*'([^']+)'/gi;
 const NOW_PLUS_INTERVAL_RE = /\bNOW\s*\(\s*\)\s*\+\s*INTERVAL\s*'([^']+)'/gi;
 const EXTRACT_EPOCH_MS_RE = /EXTRACT\s*\(\s*EPOCH\s+FROM\s+([^)]+?)\s*\)\s*\*\s*1000/gi;
@@ -117,6 +118,10 @@ export function translateSql(sql: string): TranslateResult {
   out = rewriteJsonDeletes(out);
   out = rewriteJsonConcats(out);
   out = rewriteGreatestLeast(out);
+  // PostgreSQL counts binary payload bytes with OCTET_LENGTH. SQLite's
+  // LENGTH returns the byte count for BLOB values, so this is equivalent for
+  // the encrypted replica columns that use the function.
+  out = out.replace(OCTET_LENGTH_RE, 'LENGTH(');
 
   // Step 6: drop PG type casts (::text, ::jsonb, ::bigint, ::text[] etc).
   // Done after the ANY/cast handling so the array-cast inside ANY() has

@@ -36,9 +36,14 @@ import {Dispatch, useCallback, useEffect, useRef, useState} from 'react';
 import * as React from 'react';
 import {createPortal} from 'react-dom';
 
+import {useDocumentPath} from '../../../DocumentPathContext';
 import {getSelectedNode} from '../../utils/getSelectedNode';
 import {setFloatingElemPositionForLinkEditor} from '../../utils/setFloatingElemPositionForLinkEditor';
 import {sanitizeUrl} from '../../utils/url';
+import {
+  isWorkspaceFileHref,
+  openWorkspaceFileLink,
+} from '../../utils/workspaceLinkNavigation';
 
 function preventDefault(
   event: React.KeyboardEvent<HTMLInputElement> | React.MouseEvent<HTMLElement>,
@@ -63,6 +68,7 @@ function FloatingLinkEditor({
 }): JSX.Element {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const {documentPath} = useDocumentPath();
   const [linkUrl, setLinkUrl] = useState('');
   const [editedLinkUrl, setEditedLinkUrl] = useState('https://');
   const [lastSelection, setLastSelection] = useState<BaseSelection | null>(
@@ -316,7 +322,18 @@ function FloatingLinkEditor({
           <a
             href={sanitizeUrl(linkUrl)}
             target="_blank"
-            rel="noopener noreferrer">
+            rel="noopener noreferrer"
+            onClick={(event) => {
+              // File paths must open in a tab via the host's document
+              // service — the default navigation spawns a blank Electron
+              // child window (NIM-1487).
+              if (
+                isWorkspaceFileHref(linkUrl) &&
+                openWorkspaceFileLink(linkUrl, documentPath)
+              ) {
+                event.preventDefault();
+              }
+            }}>
             {linkUrl}
           </a>
           <div
@@ -353,6 +370,9 @@ function useFloatingLinkEditorToolbar(
 ): JSX.Element | null {
   const [activeEditor, setActiveEditor] = useState(editor);
   const [isLink, setIsLink] = useState(false);
+  const {documentPath} = useDocumentPath();
+  const documentPathRef = useRef<string | null>(documentPath ?? null);
+  documentPathRef.current = documentPath ?? null;
 
   useEffect(() => {
     function $updateToolbar() {
@@ -426,7 +446,14 @@ function useFloatingLinkEditorToolbar(
             const node = getSelectedNode(selection);
             const linkNode = $findMatchingParent(node, $isLinkNode);
             if ($isLinkNode(linkNode) && (payload.metaKey || payload.ctrlKey)) {
-              window.open(linkNode.getURL(), '_blank');
+              const url = linkNode.getURL();
+              if (
+                isWorkspaceFileHref(url) &&
+                openWorkspaceFileLink(url, documentPathRef.current)
+              ) {
+                return true;
+              }
+              window.open(url, '_blank');
               return true;
             }
           }

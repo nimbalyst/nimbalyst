@@ -36,11 +36,13 @@ public enum ModelLabel {
 
     /// Mirrors `CLAUDE_CODE_VARIANT_VERSIONS` in `modelConstants.ts`.
     private static let claudeCodeVariantVersions: [String: String] = [
+        "fable": "5",
         "opus": "4.8",
-        "sonnet": "4.6",
+        "sonnet": "5",
         "haiku": "4.5",
         "opus-4-7": "4.7",
         "opus-4-6": "4.6",
+        "sonnet-4-6": "4.6",
     ]
 
     private static func claudeCodeLabel(_ modelId: String?, providerFallback: String = "Claude Agent") -> String? {
@@ -54,7 +56,8 @@ public enum ModelLabel {
         // Family from substring — handles both canonical variants ("opus",
         // "sonnet-1m") and raw SDK IDs ("claude-opus-4-7").
         let family: String
-        if bare.contains("opus") { family = "Opus" }
+        if bare.contains("fable") { family = "Fable" }
+        else if bare.contains("opus") { family = "Opus" }
         else if bare.contains("sonnet") { family = "Sonnet" }
         else if bare.contains("haiku") { family = "Haiku" }
         else { return providerFallback }
@@ -80,8 +83,9 @@ public enum ModelLabel {
     /// intact, but strips context-window suffixes ("-1m").
     private static func canonicalVariantKey(_ variant: String) -> String {
         if claudeCodeVariantVersions[variant] != nil { return variant }
-        // Drop trailing "-1m" / "-200k" / other context suffixes.
-        let parts = variant.split(separator: "-").map(String.init)
+        // Drop a leading "claude-" (raw SDK IDs like "claude-fable-5") and
+        // trailing "-1m" / "-200k" / other context suffixes.
+        let parts = variant.split(separator: "-").map(String.init).filter { $0 != "claude" }
         if let first = parts.first { return first }
         return variant
     }
@@ -107,6 +111,8 @@ public enum ModelLabel {
 
     /// Mirrors `CLAUDE_MODELS[*].shortName` in `modelConstants.ts`.
     private static let claudeApiShortNames: [String: String] = [
+        "claude-fable-5": "Fable 5",
+        "claude-sonnet-5": "Sonnet 5",
         "claude-opus-4-8": "Opus 4.8",
         "claude-opus-4-7": "Opus 4.7",
         "claude-opus-4-6": "Opus 4.6",
@@ -125,7 +131,8 @@ public enum ModelLabel {
         if let exact = claudeApiShortNames[bare] { return exact }
         // Fallback: derive from family + embedded version if present.
         let family: String?
-        if bare.contains("opus") { family = "Opus" }
+        if bare.contains("fable") { family = "Fable" }
+        else if bare.contains("opus") { family = "Opus" }
         else if bare.contains("sonnet") { family = "Sonnet" }
         else if bare.contains("haiku") { family = "Haiku" }
         else { family = nil }
@@ -143,6 +150,9 @@ public enum ModelLabel {
     /// (e.g. "GPT-5.4" rather than just "5.4") so the badge reads cleanly
     /// without relying on a neighboring provider word.
     private static let openAIShortNames: [String: String] = [
+        "gpt-5.6-sol": "GPT-5.6 Sol",
+        "gpt-5.6-terra": "GPT-5.6 Terra",
+        "gpt-5.6-luna": "GPT-5.6 Luna",
         "gpt-5.5": "GPT-5.5",
         "gpt-5.4": "GPT-5.4",
         "gpt-5.3-chat-latest": "GPT-5.3",

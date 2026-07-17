@@ -19,6 +19,12 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Make npm resilient to transient registry socket drops (ECONNRESET) on the
+  # cache-miss path. On a cache hit npm ci is skipped entirely (see below).
+  npm_config_fetch_retries: '5'
+  npm_config_fetch_retry_mintimeout: '20000'
+  npm_config_fetch_retry_maxtimeout: '120000'
+  npm_config_fetch_timeout: '300000'
 
 jobs:
   ios-build-and-test:
@@ -30,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -38,15 +44,43 @@ jobs:
           xcode-version: '26.2'
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      # node_modules cache short-circuits `npm ci` when the lockfile is
+      # unchanged, so the common case makes ZERO registry calls and can't hit a
+      # transient network failure. Exact-key match only (no restore-keys) so we
+      # never run against a partially-stale tree -- on miss we just `npm ci`.
+      # Paths are relative to the repo root (github.workspace), NOT the job's
+      # packages/ios working-directory, which only applies to `run:` steps.
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v6
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+            packages/extensions/*/node_modules
+          key: node-modules-ios-${{ runner.os }}-node22-${{ hashFiles('**/package-lock.json') }}
 
       - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: |
           cd ../..
           npm ci --ignore-scripts
+
+      # The editor bundle (vite.config.editor.ts) aliases @nimbalyst/runtime to
+      # source, and that source imports @nimbalyst/extension-sdk from its built
+      # dist. `npm ci --ignore-scripts` skips that build, so build it explicitly
+      # here (as ci.yml does) or the "Build Editor Web Bundle" script phase fails
+      # with: Failed to resolve entry for package "@nimbalyst/extension-sdk".
+      - name: Build extension-sdk
+        run: |
+          cd ../..
+          npm run build --prefix packages/extension-sdk
 
       - name: Build transcript bundle
         run: npx vite build --config vite.config.transcript.ts

@@ -15,6 +15,7 @@ import React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { EditorHost } from '@nimbalyst/runtime';
 import { getExtensionLoader, getBaseThemeColors, hasExtensionEditorAPI, getExtensionEditorAPI, type ExtendedThemeColors } from '@nimbalyst/runtime';
+import { waitForEditorRegistration } from './waitForEditorRegistration';
 // Note: Window globals for mockup annotations are declared in @nimbalyst/runtime
 
 /**
@@ -172,8 +173,13 @@ class OffscreenEditorRendererImpl {
       throw new Error(`File has no extension: ${filePath}`);
     }
 
-    // Use the extension loader's built-in method to find the editor
-    const editorInfo = extensionLoader.findEditorForExtension(fileExtension);
+    // Use the extension loader's built-in method to find the editor. In the
+    // hidden capture window, mount requests can arrive before the extension
+    // system has registered its editors (main only waits a fixed 1s after
+    // load), so wait bounded for registration instead of failing the race.
+    const editorInfo = await waitForEditorRegistration(
+      () => extensionLoader.findEditorForExtension(fileExtension)
+    ).catch(() => null);
 
     if (!editorInfo) {
       throw new Error(`No custom editor registered for ${filePath} (extension: ${fileExtension})`);

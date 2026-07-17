@@ -106,6 +106,16 @@ export async function initTrackerPanelLayout(workspacePath: string): Promise<voi
         detailPanelWidth: savedModeLayout.detailPanelWidth ?? DEFAULT_MODE_LAYOUT.detailPanelWidth,
         typeColumnConfigs: savedModeLayout.typeColumnConfigs ?? DEFAULT_MODE_LAYOUT.typeColumnConfigs,
         groupBy: savedModeLayout.groupBy ?? DEFAULT_MODE_LAYOUT.groupBy,
+        sortBy: typeof savedModeLayout.sortBy === 'string' ? savedModeLayout.sortBy : DEFAULT_MODE_LAYOUT.sortBy,
+        sortDirection: savedModeLayout.sortDirection === 'asc' || savedModeLayout.sortDirection === 'desc'
+          ? savedModeLayout.sortDirection
+          : DEFAULT_MODE_LAYOUT.sortDirection,
+        recentlyViewedDays: savedModeLayout.recentlyViewedDays === null
+          || savedModeLayout.recentlyViewedDays === 7
+          || savedModeLayout.recentlyViewedDays === 30
+          || savedModeLayout.recentlyViewedDays === 90
+          ? savedModeLayout.recentlyViewedDays
+          : DEFAULT_MODE_LAYOUT.recentlyViewedDays,
         viewModeMigrated: true,
       };
 
@@ -121,7 +131,9 @@ export async function initTrackerPanelLayout(workspacePath: string): Promise<voi
     // (frequently re-persisted) layout blob stays small.
     const savedViews = workspaceState?.trackerSavedViews;
     if (Array.isArray(savedViews)) {
-      store.set(trackerSavedViewsAtom, savedViews as SavedView[]);
+      store.set(trackerSavedViewsAtom, savedViews
+        .filter((view): view is SavedView => !!view && typeof view === 'object' && typeof view.id === 'string' && typeof view.name === 'string')
+        .map((view) => ({ ...view, definition: normalizeViewDefinition(view.definition) })));
     }
   } catch (err) {
     console.error('[trackers] Failed to load layout:', err);
@@ -137,12 +149,14 @@ export async function initTrackerPanelLayout(workspacePath: string): Promise<voi
  * Persisted to workspace state so it survives app restarts.
  */
 /** Filter chips that can be toggled independently */
-export type TrackerFilterChip = 'mine' | 'unassigned' | 'high-priority' | 'recently-updated' | 'archived';
+export type TrackerFilterChip = 'mine' | 'unassigned' | 'high-priority' | 'recently-updated'
+  | 'favorites' | 'recently-viewed' | 'recently-edited-by-others' | 'archived';
 
 /** Per-type column configuration (re-exported from runtime) */
 export type { TypeColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
 import type { TypeColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
-import type { SavedView, TrackerGroupBy } from '../../components/TrackerMode/trackerSavedViews';
+import type { SortColumn, SortDirection } from '@nimbalyst/runtime/plugins/TrackerPlugin';
+import { normalizeViewDefinition, type SavedView, type TrackerGroupBy } from '../../components/TrackerMode/trackerSavedViews';
 
 export interface TrackerModeLayout {
   /** Selected type filter in sidebar ('all' or specific type) */
@@ -172,6 +186,9 @@ export interface TrackerModeLayout {
   typeColumnConfigs: Record<string, TypeColumnConfig>;
   /** Active grouping for grouped renderings (NIM-788). Defaults to 'none'. */
   groupBy: TrackerGroupBy;
+  sortBy: SortColumn;
+  sortDirection: SortDirection;
+  recentlyViewedDays: 7 | 30 | 90 | null;
   /**
    * Set to `true` once the one-shot `'table' -> 'list'` rewrite has run for
    * this workspace. Future loads pass `viewMode` through untouched so users
@@ -189,6 +206,9 @@ const DEFAULT_MODE_LAYOUT: TrackerModeLayout = {
   detailPanelWidth: 400,
   typeColumnConfigs: {},
   groupBy: 'none',
+  sortBy: 'lastIndexed',
+  sortDirection: 'desc',
+  recentlyViewedDays: 30,
   viewModeMigrated: true,
 };
 

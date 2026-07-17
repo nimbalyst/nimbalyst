@@ -202,8 +202,25 @@ export async function buildSdkOptions(
   }
 
   const enhancedPath = ClaudeCodeDeps.enhancedPathLoader?.() || undefined;
-  const resolvedBinaryPath = await resolveClaudeAgentCliPath(enhancedPath).catch(() => undefined);
   const customPath = ClaudeCodeDeps.customClaudeCodePathLoader?.(workspacePath) || '';
+  let resolvedBinaryPath: string | undefined;
+  try {
+    resolvedBinaryPath = await resolveClaudeAgentCliPath(enhancedPath);
+  } catch (err) {
+    // NIM-1573: In packaged builds there is no SDK self-resolve fallback --
+    // letting pathToClaudeCodeExecutable become undefined makes the native SDK
+    // emit a misleading "does not match this system's libc ... musl"
+    // ReferenceError (e.g. after an interrupted CLI self-update orphaned the
+    // bundled binary). Fail honestly with resolveClaudeAgentCliPath's
+    // "repair Nimbalyst" message instead, so the provider's catch surfaces it
+    // verbatim. In dev the SDK resolves its own native binary via
+    // require.resolve, so a failure here is non-fatal; a user-configured custom
+    // path also overrides.
+    if (app.isPackaged && !customPath) {
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+    resolvedBinaryPath = undefined;
+  }
   const effectivePath = customPath || resolvedBinaryPath;
   // console.log(`[CLAUDE-CODE] Binary path: custom=${customPath || '(none)'} resolved=${resolvedBinaryPath ?? '(none)'} effective=${effectivePath ?? '(none)'}`);
   const resolvedModel = resolveModelVariant();
@@ -219,6 +236,15 @@ export async function buildSdkOptions(
         },
     settingSources,
     mcpServers: await mcpConfigService.getMcpServersConfig({ sessionId, workspacePath: mcpConfigWorkspacePath || workspacePath }),
+    // NIM-843 (SDK path): use ONLY the mcpServers we pass above and ignore the
+    // SDK's own discovery (~/.claude.json, project .mcp.json, user settings,
+    // claude.ai connectors). settingSources includes 'user'/'project' to load
+    // slash commands/skills/hooks, but that also re-merges their mcpServers on
+    // top of our filtered list — leaking user-disabled third-party servers into
+    // sessions, ignoring the `disabled`/`enabledForProviders` toggle. strictMcpConfig
+    // gates MCP only, so commands/skills/hooks from settingSources still load.
+    // This mirrors the CLI path's `--strict-mcp-config` (claudeCliSpawnConfig.ts).
+    strictMcpConfig: true,
     cwd: workspacePath,
     abortController,
     model: resolvedModel,
@@ -318,12 +344,21 @@ export async function buildSdkOptions(
     ...sanitizedProcessEnv,
     ...sanitizedShellEnv,
     ...sanitizedSettingsEnv,
-    // `auto:N` defers MCP tools when their descriptions exceed N% of the
-    // context window. With Opus 4.7's 1M-context default, `auto:10` means
-    // ~100K tokens of tool descriptions are still loaded upfront — we saw
-    // ~112K baseline usage on new sessions. `auto:2` (20K on 1M, 4K on 200K)
-    // matches the previous lazy-loading behavior we had under Sonnet 4.6.
-    ENABLE_TOOL_SEARCH: 'auto:2',
+    // 'true' = unconditional tool-search deferral: every MCP tool defers
+    // regardless of the model's context window, except the core subset marked
+    // always-load via per-tool _meta (CORE_ALWAYS_LOAD_TOOLS). The CLI's `auto:N` mode is all-or-nothing against a
+    // threshold of N% of the context window (integer N only), so the previous
+    // `auto:2` default meant a 20K-token eager floor on 1M-context models —
+    // any tool corpus under that loaded entirely upfront on every session.
+    // Default only — a user-set ENABLE_TOOL_SEARCH (settings env vars, shell,
+    // or process env) must win, otherwise the `ENABLE_TOOL_SEARCH = false`
+    // remediation that buildBedrockToolErrorGuidance tells users to apply is
+    // silently clobbered. (NIM-1475)
+    ...(sanitizedProcessEnv.ENABLE_TOOL_SEARCH == null &&
+      sanitizedShellEnv.ENABLE_TOOL_SEARCH == null &&
+      sanitizedSettingsEnv.ENABLE_TOOL_SEARCH == null && {
+        ENABLE_TOOL_SEARCH: 'true',
+      }),
     // The bundled SDK at assistant.mjs sets CLAUDE_CODE_ENTRYPOINT to "sdk-ts"
     // when not already set in the environment. Anthropic's backend treats
     // `cli` traffic as first-party and `sdk-ts` traffic as third-party,
@@ -337,6 +372,37 @@ export async function buildSdkOptions(
     ...(config.effortLevel && config.effortLevel !== DEFAULT_EFFORT_LEVEL && {
       CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel
     }),
+    // The bundled claude binary runs a per-tool idle-timeout watchdog (default
+    // 300s) over MCP servers whose transport is http/sse/ws. ALL Nimbalyst
+    // in-app MCP servers use SSE, and the interactive input tools
+    // (PromptForUserInput, AskUserQuestion) block indefinitely waiting for the
+    // human — so the watchdog aborts them at 300s and the prompt collapses
+    // (#758). Our SSE servers are local in-process, so a "hung" tool is our own
+    // bug rather than a flaky network the watchdog guards against; disable it
+    // by default. A user-set value (settings/shell/process env) still wins.
+    ...(sanitizedProcessEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT == null &&
+      sanitizedShellEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT == null &&
+      sanitizedSettingsEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT == null && {
+        CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: '0',
+      }),
+    // NIM-1573: Pin the bundled native CLI's self-updater OFF. We ship a
+    // version-pinned binary and spawn it in place from app.asar.unpacked; the
+    // CLI's AutoUpdater does a non-atomic in-place `rename claude.exe ->
+    // claude.exe.old.<ts>` + re-download on version drift, and an interrupted
+    // update leaves an orphan with no `claude.exe`, permanently breaking Claude
+    // Code (surfacing a misleading libc/musl ReferenceError). The updater's gate
+    // honors DISABLE_UPDATES / DISABLE_AUTOUPDATER. Default only -- a user-set
+    // value (settings/shell/process env) still wins.
+    ...(sanitizedProcessEnv.DISABLE_AUTOUPDATER == null &&
+      sanitizedShellEnv.DISABLE_AUTOUPDATER == null &&
+      sanitizedSettingsEnv.DISABLE_AUTOUPDATER == null && {
+        DISABLE_AUTOUPDATER: '1',
+      }),
+    ...(sanitizedProcessEnv.DISABLE_UPDATES == null &&
+      sanitizedShellEnv.DISABLE_UPDATES == null &&
+      sanitizedSettingsEnv.DISABLE_UPDATES == null && {
+        DISABLE_UPDATES: '1',
+      }),
   };
 
   // NIM-376: Overlay enhanced PATH so the Claude Code SDK can find stdio MCP

@@ -1,8 +1,8 @@
 /**
  * CodexUsageIndicator - Circular progress indicator for Codex usage
  *
- * Displays the 5-hour session utilization as a circular progress ring
- * in the navigation gutter. Clicking opens a popover with full details.
+ * Displays the most constrained active Codex limit as a circular progress
+ * ring in the navigation gutter. Clicking opens a popover with full details.
  * Error states render as a blank ("--") indicator with hover details.
  */
 
@@ -11,7 +11,9 @@ import { useAtomValue } from 'jotai';
 import {
   codexUsageAtom,
   codexUsageAvailableAtom,
-  codexUsageSessionColorAtom,
+  codexUsageIndicatorColorAtom,
+  codexUsageMostConstrainedWindowAtom,
+  formatCodexWindowLabel,
   formatResetTime,
 } from '../../store/atoms/codexUsageAtoms';
 import { useSetting } from '../../hooks/useSetting';
@@ -29,7 +31,8 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
   const usage = useAtomValue(codexUsageAtom);
   const isAvailable = useAtomValue(codexUsageAvailableAtom);
   const isEnabled = useSetting('ai.showCodexUsageIndicator');
-  const sessionColor = useAtomValue(codexUsageSessionColorAtom);
+  const indicatorColor = useAtomValue(codexUsageIndicatorColorAtom);
+  const mostConstrained = useAtomValue(codexUsageMostConstrainedWindowAtom);
 
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -47,9 +50,9 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
   }
 
   const hasLoadError = Boolean(usage?.error);
-  const utilization = hasLoadError ? 0 : usage?.fiveHour?.utilization ?? 0;
+  const utilization = hasLoadError ? 0 : mostConstrained?.window.usedPercent ?? 0;
   const strokeDashoffset = RING_CIRCUMFERENCE * (1 - utilization / 100);
-  const limitsAvailable = !hasLoadError && (usage?.limitsAvailable ?? true);
+  const limitsAvailable = !hasLoadError && Boolean(mostConstrained);
 
   const colorClasses: Record<string, string> = {
     green: 'stroke-green-500',
@@ -58,14 +61,20 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
     muted: 'stroke-nim-muted',
   };
 
-  const effectiveSessionColor = limitsAvailable ? sessionColor : 'muted';
-  const strokeColor = colorClasses[effectiveSessionColor] || colorClasses.muted;
+  const effectiveIndicatorColor = limitsAvailable ? indicatorColor : 'muted';
+  const strokeColor = colorClasses[effectiveIndicatorColor] || colorClasses.muted;
+
+  const constrainedLabel = mostConstrained
+    ? [mostConstrained.limit.name, formatCodexWindowLabel(mostConstrained.window)]
+        .filter(Boolean)
+        .join(' · ')
+    : null;
 
   const tooltipContent = usage?.error
     ? `Codex usage unavailable: ${usage.error}`
     : usage
       ? limitsAvailable
-        ? `Codex: ${Math.round(utilization)}% (resets ${formatResetTime(usage.fiveHour.resetsAt)})`
+        ? `Codex ${constrainedLabel}: ${Math.round(utilization)}% (resets ${formatResetTime(mostConstrained?.window.resetsAt ?? null)})`
         : 'Codex usage (limits unavailable)'
       : 'Codex usage unavailable';
 

@@ -165,11 +165,14 @@ function generateCommonExports(externalKey: string): string {
       'PureComponent', 'StrictMode', 'Suspense', 'cloneElement', 'isValidElement',
       'version', 'useInsertionEffect', 'cache', 'use', 'act',
     ];
-  } else if (externalKey === 'react-dom' || externalKey === 'react-dom/client') {
+  } else if (externalKey === 'react-dom') {
     exports = [
-      'createRoot', 'hydrateRoot', 'render', 'hydrate', 'createPortal', 'flushSync',
-      'unmountComponentAtNode', 'findDOMNode', 'unstable_batchedUpdates',
+      'createPortal', 'flushSync', 'preconnect', 'prefetchDNS', 'preinit',
+      'preinitModule', 'preload', 'preloadModule', 'requestFormReset',
+      'unstable_batchedUpdates', 'useFormState', 'useFormStatus', 'version',
     ];
+  } else if (externalKey === 'react-dom/client') {
+    exports = ['createRoot', 'hydrateRoot', 'version'];
   } else if (externalKey === 'react/jsx-runtime' || externalKey === 'react/jsx-dev-runtime') {
     exports = ['jsx', 'jsxs', 'jsxDEV', 'Fragment'];
   } else if (externalKey === 'lexical') {
@@ -230,6 +233,15 @@ function generateCommonExports(externalKey: string): string {
     exports = ['useDocumentPath'];
   } else if (externalKey === '@nimbalyst/runtime/ui/icons/MaterialSymbol') {
     exports = ['MaterialSymbol'];
+  } else if (externalKey === '@nimbalyst/runtime') {
+    exports = [
+      'MaterialSymbol', 'useDocumentPath', 'useEditorLifecycle',
+      'useCollaborativeEditor', 'COLLAB_INIT_ORIGIN',
+      'setTranscriptMarkdownContributions', 'clearTranscriptMarkdownContributions',
+      'MarkdownEditor', 'MonacoEditor', 'MonacoCodeEditor',
+      'TrackerReferenceChip', 'TrackerReferencePicker',
+      'useResolvedTrackerReference', 'navigateToTrackerReference',
+    ];
   } else if (externalKey === '@nimbalyst/screenshot-service') {
     exports = ['screenshotService'];
   } else if (externalKey === '@nimbalyst/datamodel-platform-service') {

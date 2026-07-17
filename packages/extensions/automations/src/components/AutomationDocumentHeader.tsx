@@ -81,6 +81,11 @@ export function setRunNowCallback(cb: (filePath: string) => void): void {
   runNowCallback = cb;
 }
 
+let definitionChangedCallback: ((filePath: string, content: string) => void) | null = null;
+export function setDefinitionChangedCallback(cb: (filePath: string, content: string) => void): void {
+  definitionChangedCallback = cb;
+}
+
 export const AutomationDocumentHeader: React.FC<DocumentHeaderComponentProps> = ({
   filePath,
   getContent,
@@ -119,8 +124,11 @@ export const AutomationDocumentHeader: React.FC<DocumentHeaderComponentProps> = 
       const content = getContent();
       const updated = updateAutomationStatus(content, updates);
       onContentChange(updated);
+      // Nudge the scheduler to (re)arm from the new definition immediately,
+      // instead of waiting up to 30s for the disk poll to notice.
+      definitionChangedCallback?.(filePath, updated);
     },
-    [getContent, onContentChange],
+    [filePath, getContent, onContentChange],
   );
 
   const handleToggleEnabled = useCallback(() => {

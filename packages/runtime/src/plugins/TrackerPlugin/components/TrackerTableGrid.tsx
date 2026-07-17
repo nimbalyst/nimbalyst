@@ -10,6 +10,7 @@
  * shared with the list via the `useTrackerRows` hook.
  */
 
+import type { JSX } from 'react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FloatingPortal } from '@floating-ui/react';
 import { useAtomValue } from 'jotai';
@@ -32,6 +33,7 @@ import {
   getTypeColor,
   getTypeIcon,
   getCellValue,
+  getEffectiveUpdatedDate,
   type TrackerColumnDef,
   type TypeColumnConfig,
 } from './trackerColumns';
@@ -39,6 +41,7 @@ import { DisplayOptionsPanel } from './DisplayOptionsPanel';
 import { useTrackerRows } from './useTrackerRows';
 import { renderCell, ContextSubmenu } from './TrackerTable';
 import type { SortColumn, SortDirection } from './TrackerTable';
+import { TrackerFavoriteStar } from './TrackerFavoriteStar';
 
 interface TrackerTableGridProps {
   filterType?: TrackerItemType | 'all';
@@ -55,8 +58,13 @@ interface TrackerTableGridProps {
   onDeleteItems?: (itemIds: string[]) => void;
   onCopyDeepLink?: (itemId: string) => void;
   searchQuery?: string;
+  hasExternalFilters?: boolean;
+  onClearFilters?: () => void;
   columnConfig?: TypeColumnConfig;
   onColumnConfigChange?: (config: TypeColumnConfig) => void;
+  favoriteItemIds?: ReadonlySet<string>;
+  onToggleFavorite?: (itemId: string) => void;
+  preserveItemOrder?: boolean;
 }
 
 /** Default minimum width for a column without an explicit minWidth. */
@@ -78,8 +86,13 @@ export function TrackerTableGrid({
   onDeleteItems,
   onCopyDeepLink,
   searchQuery: externalSearchQuery,
+  hasExternalFilters = false,
+  onClearFilters,
   columnConfig: externalColumnConfig,
   onColumnConfigChange,
+  favoriteItemIds = new Set<string>(),
+  onToggleFavorite,
+  preserveItemOrder = false,
 }: TrackerTableGridProps): JSX.Element {
   const activeTypeFilter: TrackerItemType | 'all' = filterType;
   const [showDisplayOptions, setShowDisplayOptions] = useState(false);
@@ -109,12 +122,7 @@ export function TrackerTableGrid({
 
   const items = useMemo(() => {
     return sourceItems.map((item: TrackerRecord) => {
-      const dateSource = item.system.updatedAt || item.system.createdAt;
-      let actualDate: Date | null = null;
-      if (dateSource) {
-        const parsed = new Date(dateSource);
-        if (!isNaN(parsed.getTime())) actualDate = parsed;
-      }
+      const actualDate = getEffectiveUpdatedDate(item);
       const lastIndexed = actualDate ? actualDate.toISOString() : (item.system.lastIndexed || new Date(0).toISOString());
       return { ...item, system: { ...item.system, lastIndexed } };
     });
@@ -122,6 +130,7 @@ export function TrackerTableGrid({
 
   const loading = !dataLoaded && items.length === 0;
   const searchTerm = externalSearchQuery ?? '';
+  const hasAnyFilters = hasExternalFilters || Boolean(searchTerm.trim());
 
   // Filter
   const filteredItems = useMemo(() => {
@@ -144,6 +153,7 @@ export function TrackerTableGrid({
 
   // Sort
   const sortedItems = useMemo(() => {
+    if (preserveItemOrder) return filteredItems;
     const sorted = [...filteredItems].sort((a, b) => {
       let compareValue = 0;
       switch (currentSortBy) {
@@ -174,7 +184,7 @@ export function TrackerTableGrid({
       return currentSortDirection === 'asc' ? compareValue : -compareValue;
     });
     return sorted;
-  }, [filteredItems, currentSortBy, currentSortDirection]);
+  }, [filteredItems, currentSortBy, currentSortDirection, preserveItemOrder]);
 
   // Row interaction (shared with TrackerTable)
   const rows = useTrackerRows({
@@ -357,20 +367,32 @@ export function TrackerTableGrid({
         className="tracker-table-grid-scroll flex-1 overflow-auto outline-none"
       >
         {sortedItems.length === 0 ? (
-          <div className="tracker-table-grid-empty flex items-center justify-center gap-2 py-6 px-6">
-            <p className="text-sm text-[var(--nim-text-muted)] m-0">No tracker items found</p>
-            {activeTypeFilter !== 'all' && onNewItem && globalRegistry.get(activeTypeFilter)?.creatable !== false && (
-              <button
-                className="px-3 py-1.5 rounded-md text-xs font-medium text-white border-none cursor-pointer transition-all duration-150 hover:opacity-90"
-                style={{ backgroundColor: getTypeColor(activeTypeFilter) }}
-                onClick={() => onNewItem(activeTypeFilter as TrackerItemType)}
-              >
-                <span className="flex items-center gap-1">
-                  <span className="material-symbols-outlined text-sm">add</span>
-                  New {activeTypeFilter.charAt(0).toUpperCase() + activeTypeFilter.slice(1)}
-                </span>
-              </button>
-            )}
+          <div className="tracker-table-grid-empty flex flex-col items-center justify-center gap-2 py-6 px-6 text-center">
+            <p className="text-sm text-[var(--nim-text-muted)] m-0">
+              {hasAnyFilters ? 'No tracker items match your filters' : 'No tracker items found'}
+            </p>
+            <div className="flex items-center gap-2">
+              {hasAnyFilters && onClearFilters && (
+                <button
+                  className="px-3 py-1.5 rounded-md text-xs font-medium text-white bg-[var(--nim-primary)] border-none cursor-pointer transition-colors hover:bg-[var(--nim-primary-hover)]"
+                  onClick={onClearFilters}
+                >
+                  Clear filters
+                </button>
+              )}
+              {activeTypeFilter !== 'all' && onNewItem && globalRegistry.get(activeTypeFilter)?.creatable !== false && (
+                <button
+                  className="px-3 py-1.5 rounded-md text-xs font-medium text-white border-none cursor-pointer transition-all duration-150 hover:opacity-90"
+                  style={{ backgroundColor: getTypeColor(activeTypeFilter) }}
+                  onClick={() => onNewItem(activeTypeFilter as TrackerItemType)}
+                >
+                  <span className="flex items-center gap-1">
+                    <span className="material-symbols-outlined text-sm">add</span>
+                    New {activeTypeFilter.charAt(0).toUpperCase() + activeTypeFilter.slice(1)}
+                  </span>
+                </button>
+              )}
+            </div>
           </div>
         ) : (
           // min-width: max-content lets the grid overflow horizontally when the
@@ -432,6 +454,8 @@ export function TrackerTableGrid({
                 handleRowClick={handleRowClick}
                 handleContextMenu={handleContextMenu}
                 openItemInEditor={openItemInEditor}
+                favoriteItemIds={favoriteItemIds}
+                onToggleFavorite={onToggleFavorite}
               />
             ))}
           </div>
@@ -570,12 +594,14 @@ interface GridRowProps {
   setEditingCell: (cell: { itemId: string; field: 'status' | 'priority' | 'title' } | null) => void;
   editingTitle: string;
   setEditingTitle: (t: string) => void;
-  titleInputRef: React.RefObject<HTMLInputElement>;
+  titleInputRef: React.RefObject<HTMLInputElement | null>;
   handleFieldUpdate: (item: TrackerRecord, field: string, value: string) => Promise<void>;
   isItemEditable: (item: TrackerRecord) => boolean;
   handleRowClick: (item: TrackerRecord, index: number, e: React.MouseEvent) => void;
   handleContextMenu: (e: React.MouseEvent, item: TrackerRecord, index: number) => void;
   openItemInEditor: (item: TrackerRecord) => void;
+  favoriteItemIds: ReadonlySet<string>;
+  onToggleFavorite?: (itemId: string) => void;
 }
 
 function GridRow({
@@ -595,6 +621,8 @@ function GridRow({
   handleRowClick,
   handleContextMenu,
   openItemInEditor,
+  favoriteItemIds,
+  onToggleFavorite,
 }: GridRowProps): JSX.Element {
   const isSelected = selectedIds.has(item.id) || (!!selectedItemId && item.id === selectedItemId);
   const isFocused = focusedIndex === rowIndex;
@@ -627,6 +655,13 @@ function GridRow({
               {getTypeIcon(item.primaryType)}
             </span>
           </span>
+        ) : col.id === 'title' ? (
+          <div className="flex items-center gap-1 min-w-0">
+            <TrackerFavoriteStar itemId={item.id} isFavorite={favoriteItemIds.has(item.id)} onToggle={onToggleFavorite} />
+            <div className="min-w-0 flex-1 truncate">
+              {renderCell(col, item, value, editingCell, isItemEditable, setEditingCell, editingTitle, setEditingTitle, titleInputRef, handleFieldUpdate)}
+            </div>
+          </div>
         ) : (
           renderCell(col, item, value, editingCell, isItemEditable, setEditingCell, editingTitle, setEditingTitle, titleInputRef, handleFieldUpdate)
         );

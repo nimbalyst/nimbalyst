@@ -128,6 +128,13 @@ export interface ProtocolMessage {
 
   /** AI mode when message was sent ('planning' or 'agent' or 'auto') */
   mode?: 'planning' | 'agent' | 'auto';
+
+  /**
+   * Abort signal for THIS turn. Protocol sessions are cached across turns, so
+   * a signal passed at session creation goes stale after the first turn --
+   * per-message is the only correct place to carry it.
+   */
+  abortSignal?: AbortSignal;
 }
 
 /**

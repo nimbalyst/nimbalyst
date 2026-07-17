@@ -73,6 +73,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 ## Agent Mode
 
 - Full-screen AI session interface
+- Agent navigation badge with a grouped list of sessions awaiting input, running, or unread
 - Plan mode toggle (Shift+Tab)
 - Effort level selector (low/medium/high/max)
 - Model selector (per-session or per-workstream)
@@ -146,6 +147,17 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Git ref watcher (detects external git operations)
 - Gitignore-aware file watching
 
+### Pull Request Review Mode
+
+- Integrated GitHub PR view (Cmd+U, developer mode + GitHub remote): list, conversation, files-changed diffs, commits, checks
+- Approve and merge (squash/merge/rebase) from inside the app; `gh` CLI auth, no stored tokens
+- Open a PR in a git worktree with an agent session on its head branch
+- Tracker integration (reference-based, works with any tracker type): status badge + priority marker on list rows, editable status pill and tracker chips in the detail header, dynamic review-status filter chips
+- Jump PR ↔ tracker item ↔ review session in one click from any of the three surfaces
+- Link any tracker item to a PR from the PR detail; opening a worktree auto-links the session to referencing items
+- Merging transitions referencing tracker items via the opt-in `prMergedStatus` schema role (comment-only for types without it); externally merged PRs surface a one-click catch-up hint
+- Tracker kanban cards show an item's external identity (e.g. PR number) via the `externalKey` schema role
+
 ## File Management
 
 - File tree with expand/collapse and keyboard navigation
@@ -169,12 +181,15 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Reopen closed tab (Cmd+Shift+T)
 - Navigate between tabs (Cmd+Option+Left/Right)
 - Close tab (Cmd+W)
+- Double-click a tab to maximize the editor to the whole window (collapses surrounding panels); double-click again to restore — works in Files, Agent, and Shared Docs modes
 - Unified editor header bar
 - Extension-contributed document headers
 
 ## Voice Mode
 
-- Voice control via OpenAI Realtime API
+- Voice control via OpenAI Realtime API (gpt-realtime-2 by default, with automatic fallback to gpt-realtime)
+- Selectable model and reasoning effort in settings
+- Automatic reconnect with backoff on dropped connections (transient "reconnecting" state; voice/model preserved)
 - Live transcription streaming
 - Voice commands with countdown before submit
 - Interactive prompt answering (verbal AskUserQuestion, plan approval, git commit)
@@ -185,7 +200,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Backend-module voice/agent tools — an extension's utility-process can register MCP tools dispatched in-process (no renderer hop), enabling native engines to answer the voice and coding agents sub-second
 - Project-knowledge grounding (Nimbalyst Memory extension) — local hybrid search over your design docs, plans, CLAUDE.md, and notes, available to the voice and coding agents
 - Hands-free brainstorm loop — talk an idea through, kick off a plan (`/design`), have the agent read the written plan back to refine it by voice, then `/implement`; ask "is it done yet?" anytime for live task status
-- Voice agent tool calls (memory lookups, coding-agent questions, and more) are recorded in the voice session transcript and render as tool widgets
+- Voice agent tool calls (memory lookups, coding-agent questions, and more) are recorded in the voice session transcript and render as tool widgets, including a dedicated memory-recall widget showing the query and the returned source documents (title + snippet)
 - Available on both desktop and iOS
 
 ## Mobile (iOS)
@@ -206,16 +221,36 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Context usage display
 - Queued prompt management
 - Hierarchical session navigation (workstream/worktree aware)
-- Mobile voice mode
+- Mobile voice mode (soft chime + haptic cue when the session connects and it's your turn to talk)
+- Mobile voice: asking the voice agent to start a new session opens it automatically on the device that asked
+- Mobile voice: the floating mic shows a tool-call indicator (animated ring + tool-icon badge) while the agent runs a tool
+
+## Mobile (Android)
+
+Companion app; pairs with a desktop over encrypted sync. Voice mode is not included on Android.
+
+- Native Kotlin/Compose app with end-to-end encrypted sync
+- QR code pairing with desktop
+- Email magic link and Google OAuth login
+- Synced projects and sessions with unread state and desktop connection indicator
+- Session transcript viewing (WebView)
+- Start a desktop-backed session from Android
+- Submit prompts with image attachments
+- Answer interactive prompts (tool permissions, questions, plan approvals) from mobile
+- Queued prompt management
+- AI model picker (synced from desktop)
+- Push notifications for agent/session updates, with tap-to-open routing and an in-app toggle
+- In-app account deletion (permanently removes the account and all synced data)
 
 ## Collaboration
 
 > **Encryption posture.** Team collaboration data (trackers, documents, doc-index
 > titles) is **encrypted in transit and at rest, isolated per team, and operated
-> by Nimbalyst**. Two custody modes per team:
-> `legacy-e2e` (client-side zero-knowledge ECDH; the original default) and
-> `server-managed` (Epic H2 — the server holds a per-team KMS-wrapped key and
-> encrypts at rest, enabling web/CLI/cloud-agent access). **Server-managed team
+> by Nimbalyst**. New teams use server-managed custody (Epic H2 — the server
+> holds a per-team KMS-wrapped key and encrypts at rest, enabling
+> web/CLI/cloud-agent access). Existing `legacy-e2e` teams are transitional and
+> migrate silently, one-way, after an org-wide local plaintext recovery sweep.
+> **Server-managed team
 > data is not zero-knowledge.** **Personal sync** (your desktop ↔ phone: sessions,
 > prompts, drafts, settings, personal index) **stays zero-knowledge** — the server
 > never holds those keys. Customers who require true zero-knowledge for team data
@@ -229,14 +264,23 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Team invite / join / role management
 - Personal org + team org separation
 - Multiple projects per organization — add another workspace to an existing org as its own tracker space (sharing the org's roster and encryption)
-- Organization settings scope (User | Organization | Project) keyed off the org switcher — members & roles, projects & access, security & encryption in one org-admin surface
+- Three-scope Settings information architecture (Application | Account | Project) with typed deep links; organization administration lives in a dedicated organization window
+- Dedicated organization-management window (opened from the organization switcher or the account inspector) with read-only roster, teammate invitations, project sharing, workspace → organization → bound-account identity, an interim administration area, and a web-console deep-link
+- Global multi-account inspector in the navigation footer with per-account organization ownership, sync-account selection, add/sign-out/reconnect actions, and visible expired-session recovery
+- Per-personal-account mobile-sync profiles — project and document selections are retained when switching the active zero-knowledge sync account, independently of team organization selection
 - Move a project to another organization — relocates its trackers, documents, history, and schemas into the destination, transfers member access by email (auto-invite for members not yet in the destination, with a per-person opt-out and seat-delta preview), and redirects the old location (server-managed orgs only)
 - Merge one organization into another — consolidates every project, unions the rosters (higher role wins), and optionally deletes the drained org
 - Shared document list
+- First-class shared folders — real synced folder entities (not path-in-title) with a full right-click menu: New Document, New Folder, Rename, Copy Link, and recursive Delete (with a document/subfolder count confirmation). Folders move by drag-and-drop (in or out of other folders); renaming or moving a folder keeps every document's local-to-shared link intact because the folder id is stable. A folder deep link (`nimbalyst://folder/…`) opens Collab mode focused on the folder. AI agents can create, move, rename, and delete shared files and folders through MCP tools that use the same path a person does
+- Shared Docs discovery home — a center-pane hub (full-bleed empty state, or an overlay reachable via the sidebar Home button while docs are open) with title search, Favorites, Recently opened, and a New & Changed section that classifies unread docs as "New" (never opened) vs "Updated" (changed since you last viewed), plus a sortable full list
+- Favorite shared docs — star a doc from the hub or sidebar (local per-user); powers a Favorites hub section and a sidebar filter
+- Shared Docs sidebar filter — segmented All / Favorites / Updated view over the doc tree (persisted per workspace)
+- Unread indicators on shared docs — a dot on a doc's sidebar entry when it is new or its content/title changed (by someone else) since you last opened it; clears when you open it; the doc index carries the last writer so your own edits (including cross-device) are suppressed. The sidebar overflow menu can hide the dots or mark all docs read, and a doc's context menu can mark just that one read
 - Key envelope distribution for new members
 - Durable Objects per entity (session, document, tracker, team, index)
 - **Extension-provided collab editors** — SDK `useCollaborativeEditor` hook lets any extension (Excalidraw, CSV spreadsheet, DatamodelLM shipped; others can opt in via `collaboration.supported` manifest flag) share its file type to team with real-time multi-client editing, cursors, and selection
 - **Client-side snapshot compaction** — connected clients periodically send `docCompact` so initial sync stays fast as edit history grows (single-elector by lowest userId)
+- **Offline-first shared documents** — device-key-encrypted Yjs replicas, durable body and attachment outboxes, cache-first `collab-asset://` resolution, separate replica/asset LRU budgets, and honest unavailable-asset placeholders. Always on (no flag).
 
 ## Tracker System
 
@@ -247,6 +291,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Configurable tracker item types (bugs, tasks, architecture docs, decisions, etc.)
 - Tracker sidebar with type counts
 - Item detail panel
+- Unread indicators — a dot on tracker rows/cards (list, kanban, tag board) when an item is new or was changed by someone else since you last viewed it; clears when you open it; your own edits and views sync across your devices (personal channel), and AI-agent edits count as unread
 - Encrypted sync across team members (zero-knowledge in `legacy-e2e`; server-managed at-rest in H2)
 - Inline `#type` items in markdown (TrackerPlugin)
 - Live tracker reference links — `#` in a document references an existing tracker item, inserting a chip that shows the item's current status and title (resolved live, not a snapshot) and links to it; serialized as portable `[NIM-123](nimbalyst://NIM-123)` markdown; the same link renders as a live chip in the AI transcript; one-click "convert to tracked reference" turns a legacy inline embed into a real tracked item plus a reference chip
@@ -259,7 +304,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Share markdown files as E2E encrypted links
 - Share AI sessions as encrypted links
 - Expiration options: 1/7/30 days
-- Shared links management panel in settings
+- Account-attributed shared links management in Account settings, plus an explicit create-share account picker defaulted from the workspace binding
 
 ## Automations
 
@@ -332,13 +377,16 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Claude Code CLI sessions: raw-terminal drawer is vertically resizable and remembers its height and collapsed state per session
 - Claude Code CLI sessions: mid-session model switching from the model picker (drives the CLI's `/model` command; idle turns only)
 - Claude Fable 5 selectable across all Claude providers (chat, Claude Agent, Claude Code CLI)
+- Claude Sonnet 5 selectable across all Claude providers, with the previous Sonnet 4.6 still selectable as a pinned choice
 
 ## Settings
 
-- Global: theme, AI providers, MCP servers, notifications, sync/account, shared links, advanced, beta features
-- Per-workspace: AI provider override, agent permissions, team, tracker config, extensions
+- Application: theme, AI providers, MCP servers, notifications, advanced, beta features, and extensions
+- Account: signed-in accounts, sync-account selection, active zero-knowledge mobile-sync profile, paired devices, and account-attributed shared links
+- Project: sharing/organization attachment, project access, AI provider overrides, agent permissions, tracker config, GitHub, and extensions
+- Tools & Token Cost panel: per-tool-group estimated context-token cost and load policy (eager / on-demand / conditional) across built-in, extension, and user MCP servers; trackers toggle inline; reachable from the AI panel's token meter ("Manage tools")
 - Claude Code: custom executable path, environment variables, effort slider, plan mode, auto-commit, extended context
-- Multi-account support (add/remove accounts, per-project binding)
+- Multi-account support (add/remove/reconnect accounts, per-project binding, explicit share/team account defaults)
 - Release channel selection (stable / beta / alpha)
 - Document history retention
 - Auto-save interval
@@ -361,8 +409,10 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Prompt quick open (Cmd+Shift+L)
 - Content search (Cmd+Shift+F)
 - Global semantic search (Cmd+Shift+O) — a Quick Open "Search" tab that finds any tracker or document by meaning (hybrid semantic + keyword), powered by the Nimbalyst Memory extension; appears only when that extension is enabled. Optionally indexes AI sessions too (off by default)
+- Shared team document quick open (Cmd+Shift+D) — a team-gated Quick Open tab with name filtering, unread/favorite cues, and direct navigation into Shared Documents
 - Mouse back/forward button support
 - Breadcrumb navigation
+- Customizable navigation gutter — hide/show any gutter icon (modes, extension panels, indicators) and drag-to-reorder within a group via a "Customize Gutter" popover (right-click the gutter) or right-click any icon to hide it; preferences are global across projects, and the account/settings button always stays visible
 
 ## Window & Application
 

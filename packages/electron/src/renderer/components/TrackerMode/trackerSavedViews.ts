@@ -16,7 +16,9 @@ import {
   getRecordStatus,
   getFieldByRole,
   isMyRecord,
+  isSameIdentity,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
+import type { SortColumn, SortDirection } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import type { TrackerFilterChip } from '../../store/atoms/trackers';
 import type { ViewMode } from './TrackerMainView';
 import { getTrackerItemTags, filterTrackerItemsByTags } from './trackerTagFilterUtils';
@@ -35,6 +37,12 @@ export interface SavedViewDefinition {
   tagFilter: string[];
   /** Grouping for grouped renderings. */
   groupBy: TrackerGroupBy;
+  /** Flat list/table sort column. */
+  sortBy: SortColumn;
+  /** Flat list/table sort direction. */
+  sortDirection: SortDirection;
+  /** Genuine-open lookback in days; null means any time. */
+  recentlyViewedDays: 7 | 30 | 90 | null;
 }
 
 export interface SavedView {
@@ -50,6 +58,9 @@ export function createDefaultViewDefinition(): SavedViewDefinition {
     viewMode: 'list',
     tagFilter: [],
     groupBy: 'none',
+    sortBy: 'lastIndexed',
+    sortDirection: 'desc',
+    recentlyViewedDays: 30,
   };
 }
 
@@ -66,24 +77,50 @@ export function normalizeViewDefinition(raw: Partial<SavedViewDefinition> | unde
     viewMode: (raw.viewMode as ViewMode) ?? base.viewMode,
     tagFilter: Array.isArray(raw.tagFilter) ? raw.tagFilter.filter((t): t is string => typeof t === 'string') : base.tagFilter,
     groupBy: (raw.groupBy as TrackerGroupBy) ?? base.groupBy,
+    sortBy: typeof raw.sortBy === 'string' ? raw.sortBy : base.sortBy,
+    sortDirection: raw.sortDirection === 'asc' || raw.sortDirection === 'desc'
+      ? raw.sortDirection
+      : base.sortDirection,
+    recentlyViewedDays: raw.recentlyViewedDays === null || raw.recentlyViewedDays === 7
+      || raw.recentlyViewedDays === 30 || raw.recentlyViewedDays === 90
+      ? raw.recentlyViewedDays
+      : base.recentlyViewedDays,
   };
 }
 
 export interface FilterContext {
   /** Current user identity, required for the `mine` chip. */
   identity?: TrackerIdentity | null;
+  /** Personal favorite ids for this identity and workspace scope. */
+  favoriteItemIds?: ReadonlySet<string>;
+  /** Genuine last-opened timestamps by tracker item id. */
+  viewedAtByItemId?: ReadonlyMap<string, number>;
+  /** Injectable clock for deterministic lookback filtering. */
+  nowMs?: number;
+}
+
+export type TrackerItemFilterDefinition = Pick<SavedViewDefinition, 'activeFilters' | 'tagFilter'> & {
+  /** Selected provenance keys (`native` or an importer provider id). */
+  sourceFilter?: string[];
+  /** Genuine-open lookback in days; null means any time. */
+  recentlyViewedDays?: SavedViewDefinition['recentlyViewedDays'];
+};
+
+/** Provenance key for a record: the importer provider id, or `native`. */
+export function recordSourceKey(record: TrackerRecord): string {
+  const origin = record.system.origin;
+  return origin?.kind === 'external' ? origin.external.providerId : 'native';
 }
 
 /**
  * Apply the row-level predicates of a saved view to a set of items: the `mine`,
- * `unassigned`, and `high-priority` chips, plus the tag filter. This is the pure
- * core of TrackerMainView's filtering. Source-set chips that swap the input list
- * (`archived`) or re-sort/slice it (`recently-updated`) are handled by the
- * caller, since they operate on which items are passed in, not on a predicate.
+ * `unassigned`, `high-priority`, and `recently-updated` chips, plus tag and
+ * source filters. This is the pure core of TrackerMainView's filtering.
+ * `archived` is handled by the caller because it selects the input item set.
  */
 export function filterTrackerItems(
   items: TrackerRecord[],
-  def: Pick<SavedViewDefinition, 'activeFilters' | 'tagFilter'>,
+  def: TrackerItemFilterDefinition,
   ctx: FilterContext = {},
 ): TrackerRecord[] {
   let out = items;
@@ -104,9 +141,97 @@ export function filterTrackerItems(
     });
   }
 
+  if (def.activeFilters.includes('favorites')) {
+    const favorites = ctx.favoriteItemIds ?? new Set<string>();
+    out = out.filter((record) => favorites.has(record.id));
+  }
+
+  // Apply every row predicate before a recency order/cap so rows and sidebar
+  // counts share one deterministic pass.
   out = filterTrackerItemsByTags(out, def.tagFilter);
 
+  if (def.sourceFilter && def.sourceFilter.length > 0) {
+    const sources = new Set(def.sourceFilter);
+    out = out.filter((record) => sources.has(recordSourceKey(record)));
+  }
+
+  const recordRecencyTime = (record: TrackerRecord): number => {
+    const source = record.system.updatedAt || record.system.createdAt || record.system.lastIndexed;
+    const timestamp = source ? new Date(source).getTime() : 0;
+    return Number.isNaN(timestamp) ? 0 : timestamp;
+  };
+
+  if (def.activeFilters.includes('recently-updated')) {
+    out = [...out]
+      .sort((a, b) => recordRecencyTime(b) - recordRecencyTime(a))
+      .slice(0, 50);
+  } else if (def.activeFilters.includes('recently-viewed')) {
+    const viewed = ctx.viewedAtByItemId ?? new Map<string, number>();
+    const days = def.recentlyViewedDays === undefined ? 30 : def.recentlyViewedDays;
+    const cutoff = days === null
+      ? Number.NEGATIVE_INFINITY
+      : (ctx.nowMs ?? Date.now()) - days * 24 * 60 * 60 * 1000;
+    out = out
+      .filter((record) => {
+        const viewedAt = viewed.get(record.id);
+        return typeof viewedAt === 'number' && Number.isFinite(viewedAt) && viewedAt >= cutoff;
+      })
+      .sort((a, b) => (viewed.get(b.id) ?? 0) - (viewed.get(a.id) ?? 0));
+  } else if (def.activeFilters.includes('recently-edited-by-others')) {
+    const identity = ctx.identity;
+    if (!identity) return [];
+
+    const knownActor = (actor: TrackerIdentity | null | undefined): actor is TrackerIdentity => !!actor && [
+      actor.email,
+      actor.gitEmail,
+      actor.gitName,
+      actor.displayName,
+    ].some((value) => typeof value === 'string' && value.trim().length > 0);
+
+    const editByOther = (record: TrackerRecord): { actor: TrackerIdentity; time: number } | null => {
+      if (knownActor(record.system.lastModifiedBy)) {
+        return { actor: record.system.lastModifiedBy, time: recordRecencyTime(record) };
+      }
+      const activity = (record.system.activity ?? [])
+        .filter((entry) => knownActor(entry.authorIdentity))
+        .sort((a, b) => b.timestamp - a.timestamp)[0];
+      return activity ? { actor: activity.authorIdentity, time: activity.timestamp } : null;
+    };
+
+    const editTimes = new Map<string, number>();
+    out = out.filter((record) => {
+      const edit = editByOther(record);
+      if (!edit || isSameIdentity(edit.actor, identity)) return false;
+      editTimes.set(record.id, edit.time);
+      return true;
+    });
+    out = [...out]
+      .sort((a, b) => (editTimes.get(b.id) ?? 0) - (editTimes.get(a.id) ?? 0))
+      .slice(0, 50);
+  }
+
   return out;
+}
+
+/**
+ * Count filtered records within a sidebar type or folder scope. The type scope
+ * is applied before the row filters so `recently-updated` matches the selected
+ * type/folder view rather than a workspace-global top 50.
+ */
+export function countFilteredTrackerItemsByTypes(
+  items: TrackerRecord[],
+  types: readonly string[],
+  def: TrackerItemFilterDefinition,
+  ctx: FilterContext = {},
+): number {
+  const wantedTypes = new Set(types);
+  const showArchived = def.activeFilters.includes('archived');
+  const scopedItems = items.filter((record) => (
+    record.archived === showArchived
+    && (wantedTypes.has(record.primaryType) || record.typeTags.some((type) => wantedTypes.has(type)))
+  ));
+
+  return filterTrackerItems(scopedItems, def, ctx).length;
 }
 
 export interface TrackerGroup {

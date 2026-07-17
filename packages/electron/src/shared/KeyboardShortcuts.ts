@@ -83,6 +83,7 @@ export const KeyboardShortcuts = {
     promptQuickOpen: 'Cmd+Shift+L',
     contentSearch: 'Cmd+Shift+F',
     globalSearch: 'Cmd+Shift+O',
+    teamQuickOpen: 'Cmd+Shift+D',
     projectQuickOpen: 'Cmd+Shift+P',
     kanbanView: 'Cmd+Shift+K',
     newWorktree: 'Cmd+Alt+W',

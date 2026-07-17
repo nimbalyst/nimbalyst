@@ -224,10 +224,10 @@ export const CollabHistoryDialog: React.FC<CollabHistoryDialogProps> = ({
                     <div
                       key={rev.revisionId}
                       data-testid={`collab-revision-${rev.revisionId}`}
-                      className={`collab-history-item flex items-center gap-2 py-1.5 px-2 mb-0.5 rounded cursor-pointer ${isSelected ? 'bg-[var(--nim-primary)] text-white' : 'hover:bg-[var(--nim-bg-hover)]'}`}
+                      className={`collab-history-item flex items-center gap-2 py-1.5 px-2 mb-0.5 rounded cursor-pointer ${isSelected ? 'bg-[var(--nim-primary)] text-white' : 'text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]'}`}
                       onClick={() => setSelectedId(rev.revisionId)}
                     >
-                      <span className="material-symbols-outlined text-lg shrink-0">
+                      <span className={`material-symbols-outlined text-lg shrink-0 ${isSelected ? 'text-white' : 'text-[var(--nim-text-muted)]'}`}>
                         {REVISION_ICONS[rev.revisionKind] ?? 'description'}
                       </span>
                       <div className="flex-1 min-w-0">

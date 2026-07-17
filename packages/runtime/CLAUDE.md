@@ -15,7 +15,7 @@ Two categories — **agent providers** (Claude Agent, OpenAI Codex; full MCP, fi
 | `claude` | `src/ai/server/providers/ClaudeProvider.ts` | Anthropic SDK; standard models; streaming with tool use; model list in `src/ai/modelConstants.ts`. |
 | `claude-code` | `src/ai/server/providers/ClaudeCodeProvider.ts` | Dynamically loads `@anthropic-ai/claude-agent-sdk` from user's installation. **Manages its own model selection — do not pass model IDs.** See [/docs/INTERNAL_MCP_SERVERS.md](/docs/INTERNAL_MCP_SERVERS.md). |
 | `openai` | OpenAI API | GPT-4, GPT-3.5. |
-| `openai-codex` | `src/ai/server/providers/OpenAICodexProvider.ts` | `@openai/codex-sdk`; thread-based streaming; session resume via persisted provider session IDs. See [Codex Binary Path](#codex-binary-path-resolution). |
+| `openai-codex` | `src/ai/server/providers/OpenAICodexProvider.ts` | Codex app-server transport by default; thread-based streaming; session resume via persisted provider session IDs. The old `@openai/codex-sdk` transport is legacy-only. See [Codex Binary Path](#codex-binary-path-resolution). |
 | `lmstudio` | LM Studio HTTP | Local model support. |
 
 ### Provider Factory
@@ -25,16 +25,16 @@ Two categories — **agent providers** (Claude Agent, OpenAI Codex; full MCP, fi
 
 ### Codex Binary Path Resolution
 
-In Electron packaged apps, the Codex SDK binary cannot be executed from within the asar archive (virtual filesystem). `resolvePackagedCodexBinaryPath()`:
+In Electron packaged apps, the Codex binary cannot be executed from within the asar archive (virtual filesystem). `resolvePackagedCodexBinaryPath()`:
 
 1. Maps `process.platform` / `process.arch` to Codex target triples (`aarch64-apple-darwin` for ARM64 macOS, `x86_64-pc-windows-msvc` for x64 Windows, etc.)
 2. Checks `app.asar.unpacked/node_modules/@openai/codex-sdk` first (priority location)
 3. Falls back to `node_modules/@openai/codex-sdk`
-4. Passes the resolved path to the Codex SDK constructor via `codexPathOverride`
+4. Passes the resolved path to the app-server transport or legacy SDK constructor via `codexPathOverride`
 
 **Related files:**
 - `src/ai/server/providers/codex/codexBinaryPath.ts`
-- `packages/electron/package.json` — `asarUnpack` and `extraResources` include `codex-sdk`
+- `packages/electron/package.json` — `asarUnpack` and `extraResources` include Codex SDK/native packages for the app-server binary and the legacy SDK escape hatch
 
 ## AI Features
 

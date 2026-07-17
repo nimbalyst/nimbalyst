@@ -30,6 +30,7 @@ import {
   serializeRelationshipValue,
   computeInverseFieldDeltas,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { readStoredFieldValue } from './relationshipFieldStorage';
 
 export interface InverseWriteSource {
   id: string;
@@ -67,7 +68,10 @@ export async function propagateInverseRelationships(
     const deltas = computeInverseFieldDeltas(
       def,
       { itemId: source.id, issueKey: source.issueKey, title: source.title, trackerType: source.type },
-      oldData[def.name],
+      // Synced items nest relationship values under data.customFields; read the
+      // prior value tolerant of both shapes so an unchanged synced value doesn't
+      // look like a fresh add (NIM-1305).
+      readStoredFieldValue(oldData, def.name),
       changedFields[def.name],
     );
 
@@ -80,7 +84,10 @@ export async function propagateInverseRelationships(
       // as a relationship; otherwise the derived backlink view is the only surface.
       if (!invDef || !isRelationshipField(invDef)) continue;
 
-      const current = normalizeRelationshipValue(target.data[delta.inverseFieldId]);
+      // Read the target's existing inverse array tolerant of the nested
+      // customFields storage — reading top-level only would see it as empty and
+      // clobber the target's other links on write (NIM-1305).
+      const current = normalizeRelationshipValue(readStoredFieldValue(target.data, delta.inverseFieldId));
       const next = delta.op === 'add'
         ? addRelationshipValue(invDef, current, delta.value)
         : removeRelationshipValue(current, delta.value.itemId);

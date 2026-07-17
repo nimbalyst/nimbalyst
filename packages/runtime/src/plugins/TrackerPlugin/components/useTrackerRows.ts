@@ -46,14 +46,14 @@ export interface UseTrackerRowsResult {
   // Keyboard focus
   focusedIndex: number;
   setFocusedIndex: React.Dispatch<React.SetStateAction<number>>;
-  containerRef: React.RefObject<HTMLDivElement>;
+  containerRef: React.RefObject<HTMLDivElement | null>;
 
   // Inline edit
   editingCell: EditingCellRef | null;
   setEditingCell: (cell: EditingCellRef | null) => void;
   editingTitle: string;
   setEditingTitle: (t: string) => void;
-  titleInputRef: React.RefObject<HTMLInputElement>;
+  titleInputRef: React.RefObject<HTMLInputElement | null>;
   handleFieldUpdate: (item: TrackerRecord, field: string, value: string) => Promise<void>;
 
   // Row interaction
@@ -221,7 +221,9 @@ export function useTrackerRows({
     const itemsToUpdate = itemsRef.current.filter(i => selectedIds.has(i.id));
     for (const item of itemsToUpdate) {
       if (isItemEditable(item)) {
-        await handleFieldUpdate(item, 'status', newStatus);
+        // The bulk menu is driven by workflowStatus, so writes must use the record's resolved field.
+        const statusFieldName = resolveRoleFieldName(item.primaryType, 'workflowStatus');
+        await handleFieldUpdate(item, statusFieldName, newStatus);
       }
     }
   }, [selectedIds, closeContextMenu, isItemEditable, handleFieldUpdate]);
@@ -232,7 +234,9 @@ export function useTrackerRows({
     const itemsToUpdate = itemsRef.current.filter(i => selectedIds.has(i.id));
     for (const item of itemsToUpdate) {
       if (isItemEditable(item)) {
-        await handleFieldUpdate(item, 'priority', newPriority);
+        // Custom tracker types can map priority to a non-priority field.
+        const priorityFieldName = resolveRoleFieldName(item.primaryType, 'priority');
+        await handleFieldUpdate(item, priorityFieldName, newPriority);
       }
     }
   }, [selectedIds, closeContextMenu, isItemEditable, handleFieldUpdate]);

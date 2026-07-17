@@ -1,6 +1,17 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import {ClaudeForWindowsInstallation} from "../main/services/CLIManager.ts";
 import type { GhCliStatus } from '../main/services/GhCliDetector.ts';
+import type {
+  AppendLocalReplicaUpdateInput,
+  AppendRemoteReplicaUpdatesInput,
+  LoadedLocalReplica,
+  LocalReplicaIdentity,
+  LocalReplicaOutboxEntry,
+  LocalReplicaOutboxState,
+  LocalReplicaPendingOutbox,
+  LocalReplicaStorageUsage,
+  ReplaceLocalReplicaSnapshotInput,
+} from '@nimbalyst/runtime/sync';
 
 // Nimbalyst is an IDE-like application with many concurrent IPC listeners:
 // - File watching, git status, AI sessions, terminals, extensions, etc.
@@ -284,16 +295,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('export:sessionToClipboard', options) as Promise<{ success: boolean; error?: string }>,
 
   // Share operations
-  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number }) =>
-    ipcRenderer.invoke('share:sessionAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>,
+  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number; personalOrgId?: string }) =>
+    ipcRenderer.invoke('share:sessionAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>,
+  getShareAccountOptions: (options: { contentType: 'session' | 'file'; sessionId?: string; filePath?: string }) =>
+    ipcRenderer.invoke('share:get-account-options', options) as Promise<{ success: boolean; accounts?: Array<{ personalOrgId: string; email: string; isSyncAccount: boolean; sessionStatus: 'active' | 'expired' }>; defaultPersonalOrgId?: string; defaultSource?: 'workspace-binding' | 'sync-account' | 'only-account'; error?: string }>,
   listShares: () =>
-    ipcRenderer.invoke('share:list') as Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number }>; error?: string }>,
-  deleteShare: (options: { shareId: string; sessionId?: string }) =>
+    ipcRenderer.invoke('share:list') as Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number; owningPersonalOrgId: string }>; error?: string }>,
+  deleteShare: (options: { shareId: string; sessionId?: string; owningPersonalOrgId?: string }) =>
     ipcRenderer.invoke('share:delete', options) as Promise<{ success: boolean; error?: string }>,
   getShareKeys: () =>
     ipcRenderer.invoke('share:getKeys') as Promise<Record<string, string>>,
-  shareFileAsLink: (options: { filePath: string; expirationDays?: number }) =>
-    ipcRenderer.invoke('share:fileAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>,
+  shareFileAsLink: (options: { filePath: string; expirationDays?: number; personalOrgId?: string }) =>
+    ipcRenderer.invoke('share:fileAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>,
   getShareExpirationPreference: () =>
     ipcRenderer.invoke('share:getExpirationPreference') as Promise<number>,
   setShareExpirationPreference: (days: number) =>
@@ -634,6 +647,37 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendMcpReadCollabDocResult: (resultChannel: string, result: { success: boolean; content?: string; error?: string }) => {
     ipcRenderer.send(resultChannel, result);
   },
+  // Shared-index (first-class shared folders + documents) MCP operations.
+  onMcpCreateSharedDoc: (callback: (data: { title: string, documentType?: string, parentFolderId?: string | null, folderPath?: string, initialContent?: string, resultChannel: string }) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('mcp:createSharedDoc', handler);
+    return () => ipcRenderer.removeListener('mcp:createSharedDoc', handler);
+  },
+  onMcpCreateSharedFolder: (callback: (data: { name: string, parentFolderId?: string | null, folderPath?: string, resultChannel: string }) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('mcp:createSharedFolder', handler);
+    return () => ipcRenderer.removeListener('mcp:createSharedFolder', handler);
+  },
+  onMcpMoveSharedItem: (callback: (data: { itemId: string, kind: 'doc' | 'folder', newParentFolderId?: string | null, folderPath?: string, resultChannel: string }) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('mcp:moveSharedItem', handler);
+    return () => ipcRenderer.removeListener('mcp:moveSharedItem', handler);
+  },
+  onMcpRenameSharedItem: (callback: (data: { itemId: string, kind: 'doc' | 'folder', newName: string, resultChannel: string }) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('mcp:renameSharedItem', handler);
+    return () => ipcRenderer.removeListener('mcp:renameSharedItem', handler);
+  },
+  onMcpDeleteSharedItem: (callback: (data: { itemId: string, kind: 'doc' | 'folder', resultChannel: string }) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('mcp:deleteSharedItem', handler);
+    return () => ipcRenderer.removeListener('mcp:deleteSharedItem', handler);
+  },
+  // Generic reply for all shared-index tools; the result payload varies per tool
+  // (documentId / folderId / removedCount) but always carries { success, error? }.
+  sendMcpCollabIndexResult: (resultChannel: string, result: { success: boolean; error?: string; [key: string]: unknown }) => {
+    ipcRenderer.send(resultChannel, result);
+  },
   onMcpNavigateTo: (callback: (data: { line: number, column: number }) => void) => {
     const handler = (_event: any, data: any) => callback(data);
     ipcRenderer.on('mcp:navigateTo', handler);
@@ -866,6 +910,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  // Plaintext recovery copies for collaborative content
+  collabBackup: {
+    contentChanged: (payload: {
+      workspacePath: string;
+      documentId: string;
+      documentType: string;
+      title?: string;
+      plaintext: string;
+      kind?: 'document' | 'body';
+    }) => ipcRenderer.invoke('collab-backup:content-changed', payload) as Promise<{ success: boolean; scheduled?: boolean; error?: string }>,
+    backupAll: (workspacePath: string) => ipcRenderer.invoke('collab-backup:backup-all', { workspacePath }) as Promise<any>,
+    list: (workspacePath: string) => ipcRenderer.invoke('collab-backup:list', { workspacePath }) as Promise<any>,
+    restore: (workspacePath: string, documentId: string, force?: boolean) => ipcRenderer.invoke('collab-backup:restore', { workspacePath, documentId, force }) as Promise<{ success: boolean; error?: string }>,
+  },
+
   // Document Sync (collaborative editing)
   documentSync: {
     open: (
@@ -884,6 +943,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
           orgKeyBase64: string;
           orgKeyFingerprint?: string;
           serverUrl: string;
+          accountId: string;
           userId: string;
           userName?: string;
           userEmail?: string;
@@ -903,6 +963,90 @@ contextBridge.exposeInMainWorld('electronAPI', {
         documentId,
         pendingUpdateBase64,
       }) as Promise<{ success: boolean; error?: string }>,
+    replicaLoad: (workspacePath: string, identity: LocalReplicaIdentity) =>
+      ipcRenderer.invoke('document-sync:replica-load', { workspacePath, identity }) as Promise<LoadedLocalReplica | null>,
+    replicaAppendLocal: (workspacePath: string, input: AppendLocalReplicaUpdateInput) =>
+      ipcRenderer.invoke('document-sync:replica-append-local', { workspacePath, input }) as Promise<void>,
+    onReplicaLocalUpdate: (callback: (payload: {
+      identity: LocalReplicaIdentity;
+      updateId: string;
+      update: Uint8Array;
+    }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: {
+        identity: LocalReplicaIdentity;
+        updateId: string;
+        update: Uint8Array;
+      }) => callback(payload);
+      ipcRenderer.on('document-sync:replica-local-update', handler);
+      return () => ipcRenderer.removeListener('document-sync:replica-local-update', handler);
+    },
+    replicaAppendRemote: (workspacePath: string, input: AppendRemoteReplicaUpdatesInput) =>
+      ipcRenderer.invoke('document-sync:replica-append-remote', { workspacePath, input }) as Promise<void>,
+    replicaSetOutboxState: (
+      workspacePath: string,
+      identity: LocalReplicaIdentity,
+      batchIds: string[],
+      state: LocalReplicaOutboxState,
+      lastErrorCode?: string | null,
+    ) => ipcRenderer.invoke('document-sync:replica-set-outbox-state', {
+      workspacePath, identity, batchIds, state, lastErrorCode,
+    }) as Promise<void>,
+    replicaClaimOutbox: (
+      workspacePath: string,
+      identity: LocalReplicaIdentity,
+      batchIds: string[],
+    ) => ipcRenderer.invoke('document-sync:replica-claim-outbox', {
+      workspacePath, identity, batchIds,
+    }) as Promise<boolean>,
+    replicaLoadOutbox: (
+      workspacePath: string,
+      identity: LocalReplicaIdentity,
+    ) => ipcRenderer.invoke('document-sync:replica-load-outbox', {
+      workspacePath, identity,
+    }) as Promise<LocalReplicaOutboxEntry[]>,
+    replicaRecordOutboxError: (
+      workspacePath: string,
+      identity: LocalReplicaIdentity,
+      batchIds: string[],
+      errorCode: string,
+    ) => ipcRenderer.invoke('document-sync:replica-record-outbox-error', {
+      workspacePath, identity, batchIds, errorCode,
+    }) as Promise<void>,
+    replicaAckOutbox: (
+      workspacePath: string,
+      identity: LocalReplicaIdentity,
+      batchIds: string[],
+      serverSequence: number,
+    ) => ipcRenderer.invoke('document-sync:replica-ack-outbox', {
+      workspacePath, identity, batchIds, serverSequence,
+    }) as Promise<void>,
+    replicaReplaceSnapshot: (workspacePath: string, input: ReplaceLocalReplicaSnapshotInput) =>
+      ipcRenderer.invoke('document-sync:replica-replace-snapshot', { workspacePath, input }) as Promise<boolean>,
+    replicaMarkIncomplete: (workspacePath: string, identity: LocalReplicaIdentity) =>
+      ipcRenderer.invoke('document-sync:replica-mark-incomplete', { workspacePath, identity }) as Promise<void>,
+    replicaMarkComplete: (workspacePath: string, identity: LocalReplicaIdentity) =>
+      ipcRenderer.invoke('document-sync:replica-mark-complete', { workspacePath, identity }) as Promise<void>,
+    replicaQuarantine: (workspacePath: string, identity: LocalReplicaIdentity, reason: string) =>
+      ipcRenderer.invoke('document-sync:replica-quarantine', { workspacePath, identity, reason }) as Promise<void>,
+    replicaResetForCleanHydration: (workspacePath: string, identity: LocalReplicaIdentity) =>
+      ipcRenderer.invoke('document-sync:replica-reset-clean-hydration', { workspacePath, identity }) as Promise<void>,
+    replicaDiscard: (workspacePath: string, identity: LocalReplicaIdentity) =>
+      ipcRenderer.invoke('document-sync:replica-discard', { workspacePath, identity }) as Promise<void>,
+    replicaPurgeAccount: (workspacePath: string, accountId: string) =>
+      ipcRenderer.invoke('document-sync:replica-purge-account', { workspacePath, accountId }) as Promise<void>,
+    replicaPurgeOrg: (workspacePath: string, accountId: string, orgId: string) =>
+      ipcRenderer.invoke('document-sync:replica-purge-org', { workspacePath, accountId, orgId }) as Promise<void>,
+    replicaStorageUsage: (workspacePath: string, accountId: string) =>
+      ipcRenderer.invoke('document-sync:replica-storage-usage', { workspacePath, accountId }) as Promise<LocalReplicaStorageUsage>,
+    replicaListPendingOutboxes: (workspacePath: string, accountId?: string) =>
+      ipcRenderer.invoke('document-sync:replica-list-pending-outboxes', { workspacePath, accountId }) as Promise<LocalReplicaPendingOutbox[]>,
+    setReplicaProviderAttached: (
+      identity: LocalReplicaIdentity,
+      attachmentId: string,
+      attached: boolean,
+    ) => ipcRenderer.invoke('document-sync:replica-provider-attached', {
+      identity, attachmentId, attached,
+    }) as Promise<void>,
     seedSharedDocument: (
       workspacePath: string,
       documentId: string,
@@ -1165,6 +1309,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         success: boolean;
         assetId?: string;
         uri?: string;
+        queued?: boolean;
         error?: string;
       }>,
     migrateLocalAssets: (payload: {
@@ -1360,15 +1505,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stytch: {
     getAuthState: () => ipcRenderer.invoke('stytch:get-auth-state'),
     getAccounts: () => ipcRenderer.invoke('stytch:get-accounts'),
+    getSyncAccount: () => ipcRenderer.invoke('stytch:get-sync-account'),
+    setSyncAccount: (personalOrgId: string) =>
+      ipcRenderer.invoke('stytch:set-sync-account', personalOrgId),
     isAuthenticated: () => ipcRenderer.invoke('stytch:is-authenticated'),
     signInWithGoogle: () => ipcRenderer.invoke('stytch:sign-in-google'),
     sendMagicLink: (email: string) =>
       ipcRenderer.invoke('stytch:send-magic-link', email),
-    signOut: () => ipcRenderer.invoke('stytch:sign-out'),
+    signOut: (forceOfflinePurge = false) =>
+      ipcRenderer.invoke('stytch:sign-out', forceOfflinePurge),
     addAccount: () => ipcRenderer.invoke('stytch:add-account'),
-    removeAccount: (personalOrgId: string) =>
-      ipcRenderer.invoke('stytch:remove-account', personalOrgId),
-    deleteAccount: () => ipcRenderer.invoke('stytch:delete-account'),
+    removeAccount: (personalOrgId: string, forceOfflinePurge = false) =>
+      ipcRenderer.invoke('stytch:remove-account', personalOrgId, forceOfflinePurge),
+    deleteAccount: (personalOrgId?: string) => ipcRenderer.invoke('stytch:delete-account', personalOrgId),
     getSessionJwt: () => ipcRenderer.invoke('stytch:get-session-jwt'),
     refreshSession: () => ipcRenderer.invoke('stytch:refresh-session'),
     subscribeAuthState: () => ipcRenderer.invoke('stytch:subscribe-auth-state'),
@@ -1385,6 +1534,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Team Management (all member ops take explicit orgId -- per-workspace, not global)
   team: {
     list: () => ipcRenderer.invoke('team:list'),
+    /** Open (or focus + retarget) the dedicated org-management window. */
+    openManagementWindow: (target?: { orgId?: string; workspacePath?: string }) =>
+      ipcRenderer.invoke('team-window:open', target),
     findForWorkspace: (workspacePath: string) => ipcRenderer.invoke('team:find-for-workspace', workspacePath),
     get: (orgId: string) => ipcRenderer.invoke('team:get', orgId),
     create: (name: string, workspacePath?: string, accountOrgId?: string) => ipcRenderer.invoke('team:create', name, workspacePath, accountOrgId),
@@ -1412,6 +1564,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getOrgKeyStatus: (orgId: string) => ipcRenderer.invoke('team:get-org-key-status', orgId),
     // Epic H2: current key-custody mode for the team (legacy-e2e | server-managed).
     getKeyCustodyStatus: (orgId: string) => ipcRenderer.invoke('team:get-key-custody-status', orgId) as Promise<{ success: boolean; mode?: 'legacy-e2e' | 'server-managed'; dekFingerprint?: string | null; error?: string }>,
+    getEncryptionMigrationStatus: (orgId: string) => ipcRenderer.invoke('team:get-encryption-migration-status', orgId) as Promise<{
+      success: boolean;
+      migration?:
+        | { status: 'migrating'; startedAt: string }
+        | { status: 'complete'; finishedAt: string }
+        | { status: 'stuck'; failedAt: string; message: string }
+        | null;
+    }>,
     listKeyEnvelopes: (orgId: string) => ipcRenderer.invoke('team:list-key-envelopes', orgId),
     setProjectIdentity: (orgId: string, workspacePath: string) => ipcRenderer.invoke('team:set-project-identity', orgId, workspacePath),
     clearProjectIdentity: (orgId: string) => ipcRenderer.invoke('team:clear-project-identity', orgId),
@@ -1425,6 +1585,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     autoWrapNewMembers: (orgId: string) => ipcRenderer.invoke('team:auto-wrap-new-members', orgId),
     // NIM-913: admin repair — force re-wrap the current org key for all members.
     rewrapAllMemberKeys: (orgId: string) => ipcRenderer.invoke('team:rewrap-all-member-keys', orgId),
+  },
+
+  // Typed organization facade. The legacy `team` bridge remains as a
+  // compatibility adapter while settings and older extensions migrate.
+  organization: {
+    list: () => ipcRenderer.invoke('team:list'),
+    get: (orgId: string) => ipcRenderer.invoke('team:get', orgId),
+    create: (input: { name: string; workspacePath?: string; sourcePersonalOrgId?: string }) =>
+      ipcRenderer.invoke('team:create', input.name, input.workspacePath, input.sourcePersonalOrgId),
+    acceptInvitation: (orgId: string) => ipcRenderer.invoke('team:accept-invite', orgId),
+    listMembers: (orgId: string) => ipcRenderer.invoke('team:list-members', orgId),
+    inviteMember: (orgId: string, email: string) => ipcRenderer.invoke('team:invite', orgId, email),
+    removeMember: (orgId: string, memberId: string) => ipcRenderer.invoke('team:remove-member', orgId, memberId),
+    updateMemberRole: (orgId: string, memberId: string, role: string) => ipcRenderer.invoke('team:update-role', orgId, memberId, role),
+    listProjects: (orgId: string) => ipcRenderer.invoke('team:list-projects', orgId),
+    addProject: (input: { orgId: string; workspacePath?: string; name?: string }) =>
+      ipcRenderer.invoke('team:add-project', input.orgId, input.workspacePath, input.name),
+    moveProject: (input: { sourceOrgId: string; projectId: string; destinationOrgId: string; dropMemberEmails?: string[] }) =>
+      ipcRenderer.invoke('team:move-project', input.sourceOrgId, input.projectId, input.destinationOrgId, input.dropMemberEmails),
+    deleteOrganization: (orgId: string) => ipcRenderer.invoke('team:delete', orgId),
+    getEncryptionStatus: (orgId: string) => ipcRenderer.invoke('team:get-key-custody-status', orgId),
+    getEncryptionMigrationStatus: (orgId: string) => ipcRenderer.invoke('team:get-encryption-migration-status', orgId),
   },
 
   // Epic H1: org / project access model. `canAccess` is the single client-side
@@ -1578,9 +1760,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Claude Code API
   claudeCode: {
-    getSettings: () => ipcRenderer.invoke('claudeCode:get-settings') as Promise<{ projectCommandsEnabled: boolean; userCommandsEnabled: boolean }>,
+    getSettings: () => ipcRenderer.invoke('claudeCode:get-settings') as Promise<{ projectCommandsEnabled: boolean; userCommandsEnabled: boolean; apiUpstreamUrl?: string }>,
     setProjectCommandsEnabled: (enabled: boolean) => ipcRenderer.invoke('claudeCode:set-project-commands-enabled', enabled),
     setUserCommandsEnabled: (enabled: boolean) => ipcRenderer.invoke('claudeCode:set-user-commands-enabled', enabled),
+    setApiUpstreamUrl: (url: string) => ipcRenderer.invoke('claudeCode:set-api-upstream-url', url) as Promise<{ success: true } | { success: false; error: string }>,
     // User-level environment variables (~/.claude/settings.json)
     getEnv: () => ipcRenderer.invoke('claudeSettings:get-env') as Promise<Record<string, string>>,
     setEnv: (env: Record<string, string>) => ipcRenderer.invoke('claudeSettings:set-env', env) as Promise<{ success: boolean }>,

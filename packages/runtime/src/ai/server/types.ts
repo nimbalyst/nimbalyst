@@ -212,19 +212,20 @@ export function shouldBlockStartedSessionProviderSwitch(
  * Claude Code uses simplified variant names (opus, sonnet, haiku) instead of full model IDs.
  * These are ONLY valid for the claude-code provider.
  *
- * `opus-4-7` and `opus-4-6` are pinned-version variants retained after bumping
- * the canonical `opus` alias to 4.8, so users can still choose previous
- * generations. See CLAUDE_CODE_PINNED_SDK_MODELS in modelConstants.ts.
+ * `opus-4-7`, `opus-4-6`, and `sonnet-4-6` are pinned-version variants retained
+ * after bumping the canonical `opus`/`sonnet` aliases (to 4.8 / 5), so users can
+ * still choose previous generations. See CLAUDE_CODE_PINNED_SDK_MODELS in
+ * modelConstants.ts.
  *
  * `fable` is the Fable 5 tier above Opus — the CLI accepts it as a first-class
- * alias (`--model fable`, `/model fable`). The CLI gates the 1M window behind
- * the `fable[1m]` form just like opus/sonnet (plain `fable` is windowed at
- * 200k client-side; verified on CLI 2.1.175), so `fable` IS in
- * CLAUDE_CODE_VARIANTS_WITH_1M and gets a `fable-1m` picker row. Note it
- * requires usage credits on subscription plans (the CLI surfaces that itself
- * when unavailable).
+ * alias (`--model fable`, `/model fable`). On the current CLI plain `fable`
+ * already runs a 1M window at a flat price (the `[1m]` suffix is a no-op —
+ * GitHub #825), so it's a single row with no `-1m` duplicate (see
+ * `CLAUDE_CODE_NATIVE_1M_VARIANTS`). The earlier 200k client-side windowing was
+ * real on CLI 2.1.175 but is now stale. Note it requires usage credits on
+ * subscription plans (the CLI surfaces that itself when unavailable).
  */
-export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-7', 'opus-4-6', 'sonnet', 'haiku'] as const;
+export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-4-6', 'haiku'] as const;
 
 /**
  * Resolves a configured model string to the SDK model value.
@@ -436,7 +437,8 @@ export interface ProviderCapabilities {
 export interface ProviderSettings {
   enabled: boolean;
   apiKey?: string;
-  models?: string[];  // List of enabled model IDs for this provider
+  models?: string[];  // List of enabled model IDs for this provider (allow-list)
+  hiddenModels?: string[];  // Model IDs hidden from the picker (denylist; wins over the allow-list)
   defaultModel?: string;
   baseUrl?: string;  // For custom endpoints
 }

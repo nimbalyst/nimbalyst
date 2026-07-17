@@ -32,6 +32,7 @@ import {
   getReleaseChannel,
 } from '../utils/store';
 import { registerFileExtension, clearRegisteredExtensions } from '../extensions/RegisteredFileTypes';
+import { getBuiltinExtensionsDirectory } from '../extensions/builtinExtensionsDirectory';
 import {
   startExtensionBackendModules,
   stopExtensionBackendModules,
@@ -42,10 +43,7 @@ import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import type { ReleaseChannel } from '../utils/store';
 import { buildExtensionFindFilesPlan } from './extensionFindFilesPlan';
 import { database } from '../database/PGLiteDatabaseWorker';
-import {
-  isAllowedToContributeBackendModules,
-  type BackendModuleAllowResult,
-} from '../extensions/backendModuleAllowlist';
+import { isAllowedToContributeBackendModules } from '../extensions/backendModuleAllowlist';
 import { getAgentProviderRegistry } from '../extensions/AgentProviderRegistry';
 import type {
   AiAgentProviderContribution,
@@ -54,10 +52,11 @@ import type {
 } from '@nimbalyst/extension-sdk';
 
 /**
- * Validate `contributions.backendModules` on a parsed manifest, then apply
- * the backend-module allowlist policy. If either step refuses the manifest,
- * strips the field so downstream code never sees the declaration (the rest
- * of the extension's contributions still load).
+ * Validate the SHAPE of `contributions.backendModules` on a parsed manifest.
+ * A malformed declaration is stripped so downstream code never sees it (the
+ * rest of the extension's contributions still load). This is a correctness
+ * check only -- any extension may ship a backend module; whether its native
+ * code runs is decided by the user's first-use consent prompt, not here.
  *
  * Mutates the manifest in place. Returns true if backendModules survived;
  * false if it was stripped.
@@ -93,22 +92,18 @@ function validateAndScrubBackendModules(
     return false;
   }
 
-  // Step 2: allowlist policy. Backend modules can run arbitrary native code;
-  // restrict who is permitted to ship them.
-  const decision: BackendModuleAllowResult = isAllowedToContributeBackendModules({
+  // Step 2: classify provenance for the audit log. This is not a gate -- any
+  // extension may ship a backend module; the user's first-use consent prompt
+  // is the control. Built-in modules are auto-granted downstream.
+  const decision = isAllowedToContributeBackendModules({
     extensionId,
     isBuiltin: context.isBuiltin,
     isSymlink: context.isSymlink,
   });
-  if (!decision.allowed) {
-    logger.main.warn(
-      `[ExtensionHandlers] Extension ${extensionId} is not allowlisted to ship backend modules ` +
-        `(reason: ${decision.reason}). Dropping contributions.backendModules. ` +
-        (decision.detail ?? '')
-    );
-    delete contributions.backendModules;
-    return false;
-  }
+  logger.main.info(
+    `[ExtensionHandlers] Extension ${extensionId} ships backend modules (source: ${decision.reason}); ` +
+      `native-code consent is gated by the first-use prompt.`
+  );
 
   return true;
 }
@@ -253,41 +248,6 @@ export async function getUserExtensionsDirectory(): Promise<string> {
   }
 
   return extensionsPath;
-}
-
-/**
- * Get the path to the built-in extensions directory.
- * Returns null if the directory doesn't exist.
- */
-async function getBuiltinExtensionsDirectory(): Promise<string | null> {
-  // In production, built-in extensions are in resources/extensions
-  // In development, they're in packages/extensions relative to the electron package
-  const possiblePaths = app.isPackaged
-    ? [
-        path.join(process.resourcesPath, 'extensions'),
-        path.join(process.resourcesPath, 'app.asar.unpacked', 'extensions'),
-      ]
-    : [
-        // Development: relative to __dirname (out/main/chunks in vite build)
-        // Go up 4 levels to packages/, then into extensions/
-        path.join(__dirname, '..', '..', '..', '..', 'extensions'),
-        // Fallback: if __dirname is out/main (no chunks)
-        path.join(__dirname, '..', '..', '..', 'extensions'),
-        path.join(__dirname, '..', '..', 'resources', 'extensions'),
-      ];
-
-  for (const possiblePath of possiblePaths) {
-    try {
-      await fs.access(possiblePath);
-      logger.main.debug('[ExtensionHandlers] Built-in extensions directory:', possiblePath);
-      return possiblePath;
-    } catch {
-      // Path doesn't exist, try next
-    }
-  }
-
-  logger.main.debug('[ExtensionHandlers] No built-in extensions directory found');
-  return null;
 }
 
 /**
@@ -1108,9 +1068,9 @@ export function registerExtensionHandlers(): void {
               continue;
             }
 
-            // Validate privileged-capability contributions and enforce the
-            // backend-module allowlist. Invalid or disallowed declarations
-            // are stripped so the rest of the extension still loads.
+            // Shape-validate backend-module contributions. Malformed
+            // declarations are stripped so the rest of the extension still
+            // loads; native-code consent is the user's first-use prompt.
             validateAndScrubBackendModules(manifest, extensionId, {
               isBuiltin: isBuiltinDir,
               isSymlink,

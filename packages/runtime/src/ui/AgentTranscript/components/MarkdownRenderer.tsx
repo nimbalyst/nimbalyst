@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import type { PluggableList } from 'unified';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -7,10 +7,16 @@ import {
   useTranscriptMarkdownContributions,
   useTranscriptMarkdownStyles,
 } from '../contributions';
+import { useAtomValue } from 'jotai';
 import { escapeCurrencyDollars } from '../utils/escapeCurrencyDollars';
 import { rehypeAutolinkFilePaths } from '../markdown/rehypeAutolinkFilePaths';
+import { rehypeAutolinkTrackerRefs } from '../markdown/rehypeAutolinkTrackerRefs';
+import { rehypeAutolinkSessionRefs } from '../markdown/rehypeAutolinkSessionRefs';
 import { TrackerReferenceChip } from '../../../plugins/TrackerLinkPlugin';
 import { TRACKER_REFERENCE_URN_SCHEME } from '../../../plugins/TrackerLinkPlugin/TrackerReferenceNode';
+import { trackerIssueKeyPrefixesAtom } from '../../../plugins/TrackerPlugin/trackerDataAtoms';
+import { SessionReferenceChip } from '../session/SessionReferenceChip';
+import { sessionRefMapAtom } from '../session/sessionRefAtoms';
 
 // Inject MarkdownRenderer styles once (for syntax highlighting, scrollbar, and overflow wrapper)
 const injectMarkdownRendererStyles = () => {
@@ -251,7 +257,11 @@ interface MarkdownRendererProps {
   isSystemMessage?: boolean;
   /** Optional: Open local file links directly in the editor */
   onOpenFile?: (filePath: string) => void;
-  /** Optional: Navigate to a session by ID (for @@session reference links) */
+  /**
+   * @deprecated Session UUID references now render as a `SessionReferenceChip`
+   * that opens the session via the `open-ai-session` event. Still accepted so
+   * existing callers typecheck; no longer used for link handling.
+   */
   onOpenSession?: (sessionId: string) => void;
   /** Optional: Stable identifier (typically the message id) used to scope
    *  per-block UI preferences (e.g. the OverflowWrapper Wrap toggle) so
@@ -294,6 +304,35 @@ function isAbsoluteFilePath(filePath: string): boolean {
 }
 
 /**
+ * Matches a Windows drive-letter absolute path, tolerating a single spurious
+ * leading slash (`/D:/...`) that some link sources prepend. Capture group 1 is
+ * the normalized path without the leading slash (e.g. `D:/work/foo.pas`).
+ */
+const WINDOWS_DRIVE_PATH_RE = /^\/?([A-Za-z]:[\\/].*)$/;
+
+/**
+ * react-markdown's `defaultUrlTransform` treats a Windows drive letter (`D:`)
+ * as a URL scheme. Since `d:` isn't an allowed protocol it blanks the href to
+ * `''`, which made Windows file links render as `<a href="">` and open a blank
+ * window on click (GitHub #744). It likewise blanks our `nimbalyst://` tracker
+ * reference URNs, which made `[NIM-123](nimbalyst://NIM-123)` links fall through
+ * to a blank `<a>` (the tracker-chip check in the `a` renderer never saw the
+ * href) and open an empty window on click. Preserve Windows absolute paths and
+ * tracker reference URNs verbatim, and delegate everything else to the default
+ * so `javascript:`/`data:` links stay sanitized.
+ */
+export function transcriptUrlTransform(url: string): string {
+  if (
+    WINDOWS_DRIVE_PATH_RE.test(url) ||
+    url.startsWith('\\\\') ||
+    url.trim().startsWith(TRACKER_REFERENCE_URN_SCHEME)
+  ) {
+    return url;
+  }
+  return defaultUrlTransform(url);
+}
+
+/**
  * Returns the tracker reference key for a `nimbalyst://<key>` href, or null.
  */
 export function parseTrackerReferenceHref(href?: string): string | null {
@@ -330,11 +369,21 @@ export function resolveTranscriptFilePathFromHref(href?: string): string | null 
       return null;
     }
   } else {
-    // Keep web links (https:, mailto:, etc.) as external links.
-    if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(trimmedHref)) {
-      return null;
+    // A Windows drive-letter absolute path (`D:\...`, `D:/...`, or the
+    // leading-slash-mangled `/D:/...`) superficially looks like a URI with a
+    // `d:` scheme. Detect and normalize it (dropping the spurious leading
+    // slash) before the external-scheme rejection below, otherwise these
+    // links are treated as external URLs and open a blank window (#744).
+    const windowsDrive = trimmedHref.match(WINDOWS_DRIVE_PATH_RE);
+    if (windowsDrive) {
+      candidate = safeDecodeURIComponent(stripQueryAndHash(windowsDrive[1]));
+    } else {
+      // Keep web links (https:, mailto:, etc.) as external links.
+      if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(trimmedHref)) {
+        return null;
+      }
+      candidate = safeDecodeURIComponent(stripQueryAndHash(trimmedHref));
     }
-    candidate = safeDecodeURIComponent(stripQueryAndHash(trimmedHref));
   }
 
   let cleanedPath = stripLineAndColumnSuffix(candidate);
@@ -361,7 +410,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   isUser = false,
   isSystemMessage = false,
   onOpenFile,
-  onOpenSession,
   messageId
 }) => {
   // Stable per-block key for the OverflowWrapper wrap-preference cache.
@@ -391,14 +439,42 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     () => [remarkGfm, ...contributions.remarkPlugins] as PluggableList,
     [contributions.remarkPlugins],
   );
+  // Distinct issue-key prefixes actually used in this workspace (e.g. `NIM`),
+  // so bare tracker keys in prose auto-link without matching `UTF-8`-style
+  // tokens. Sorted+joined into a stable dep so the plugin memo only rebuilds
+  // when the set of prefixes changes, not on every tracker-store update.
+  const trackerPrefixSet = useAtomValue(trackerIssueKeyPrefixesAtom);
+  const trackerPrefixKey = useMemo(
+    () => Array.from(trackerPrefixSet).sort().join(','),
+    [trackerPrefixSet],
+  );
+  // Known session ids so bare UUIDs in prose/tool results auto-link to a chip
+  // without turning unrelated UUIDs into dead session links. Sorted+joined so
+  // the plugin memo only rebuilds when the set of ids changes, not on every
+  // session-store update (e.g. a processing bit flipping).
+  const sessionRefMap = useAtomValue(sessionRefMapAtom);
+  const sessionIdKey = useMemo(
+    () => Array.from(sessionRefMap.keys()).sort().join(','),
+    [sessionRefMap],
+  );
   const rehypePlugins = useMemo<PluggableList>(
     () => [
       // Autolink bare file paths into clickable file-open links. Only useful
       // when there is a file-open handler to route the click to.
       ...(onOpenFile ? [rehypeAutolinkFilePaths] : []),
+      // Autolink bare tracker keys (`NIM-123`) into live status chips, gated on
+      // the prefixes this workspace actually uses.
+      ...(trackerPrefixKey
+        ? [[rehypeAutolinkTrackerRefs, { prefixes: trackerPrefixKey.split(',') }]]
+        : []),
+      // Autolink bare session UUIDs into live session chips, gated on the set
+      // of known session ids.
+      ...(sessionIdKey
+        ? [[rehypeAutolinkSessionRefs, { sessionIds: sessionIdKey.split(',') }]]
+        : []),
       ...contributions.rehypePlugins,
     ] as PluggableList,
-    [contributions.rehypePlugins, onOpenFile],
+    [contributions.rehypePlugins, onOpenFile, trackerPrefixKey, sessionIdKey],
   );
 
   // Pre-escape currency-pattern dollar signs so `remark-math` does not
@@ -417,6 +493,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
+        urlTransform={transcriptUrlTransform}
         components={{
           // Code blocks with syntax highlighting
           code({ node, inline, className, children, ...props }: any) {
@@ -591,6 +668,15 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
             if (trackerKey) {
               return <TrackerReferenceChip referenceKey={trackerKey} />;
             }
+            // Session references (a bare session UUID href) render as a live
+            // session chip that resolves the title/phase and opens the session
+            // on click. Autolinked bare UUIDs and author-written UUID links both
+            // land here.
+            const sessionRefId =
+              href && SESSION_UUID_RE.test(href.trim()) ? href.trim() : null;
+            if (sessionRefId) {
+              return <SessionReferenceChip sessionId={sessionRefId} />;
+            }
             // Paths wrapped by `rehypeAutolinkFilePaths` carry a marker with the
             // raw match (possibly with a :line:col suffix). They may be
             // workspace-relative, which the markdown-href resolver rejects, so
@@ -601,18 +687,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
               onOpenFile && autolinkedPath ? stripLineAndColumnSuffix(autolinkedPath) : null;
             const filePath =
               resolvedAutolink ?? (onOpenFile ? resolveTranscriptFilePathFromHref(href) : null);
-            const isSessionLink = onOpenSession && href && SESSION_UUID_RE.test(href.trim());
-            const isInternalLink = filePath || isSessionLink;
+            const isInternalLink = Boolean(filePath);
             return (
               <a
                 href={href}
                 target={isInternalLink ? undefined : '_blank'}
                 rel={isInternalLink ? undefined : 'noopener noreferrer'}
                 onClick={(event) => {
-                  if (isSessionLink) {
-                    event.preventDefault();
-                    onOpenSession(href!.trim());
-                  } else if (filePath && onOpenFile) {
+                  if (filePath && onOpenFile) {
                     event.preventDefault();
                     onOpenFile(filePath);
                   }

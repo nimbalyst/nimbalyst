@@ -5,6 +5,7 @@
  * in `editor/extensions/builtin/KanbanBoardExtension.ts`.
  */
 
+import type { JSX } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { useEffect, useRef, useState } from 'react';
 import {

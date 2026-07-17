@@ -9,11 +9,45 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useAtomValue } from 'jotai';
 import { StatusBar } from '../components/StatusBar';
 import { ModelLoader } from '../models/ModelLoader';
 import type { TrackerDataModel } from '../models/TrackerDataModel';
+import type { TrackerRecord } from '../../../core/TrackerRecord';
+import { trackerItemsMapAtom } from '../trackerDataAtoms';
+import { getRecordTitle } from '../trackerRecordAccessors';
+import { navigateToTrackerReference } from '../../TrackerLinkPlugin/trackerReferenceData';
 import { detectTrackerFromFrontmatter, updateTrackerInFrontmatter } from './frontmatterUtils';
 import type { DocumentHeaderComponentProps } from './DocumentHeaderRegistry';
+
+function normalizeDocumentPath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/** Find the frontmatter tracker record projected from the open document. */
+export function findAssociatedTrackerItem(
+  items: Iterable<TrackerRecord>,
+  filePath: string,
+  trackerType: string,
+): TrackerRecord | null {
+  const normalizedFilePath = normalizeDocumentPath(filePath);
+
+  for (const item of items) {
+    if (item.source !== 'frontmatter' || item.primaryType !== trackerType) continue;
+    const documentPath = item.system.documentPath;
+    if (!documentPath) continue;
+
+    const normalizedDocumentPath = normalizeDocumentPath(documentPath);
+    if (normalizedDocumentPath === normalizedFilePath) return item;
+
+    const workspace = normalizeDocumentPath(item.system.workspace || '');
+    if (workspace && `${workspace}/${normalizedDocumentPath}` === normalizedFilePath) {
+      return item;
+    }
+  }
+
+  return null;
+}
 
 export const TrackerDocumentHeader: React.FC<DocumentHeaderComponentProps> = ({
   filePath,
@@ -25,6 +59,7 @@ export const TrackerDocumentHeader: React.FC<DocumentHeaderComponentProps> = ({
 }) => {
   const [dataModel, setDataModel] = useState<TrackerDataModel | null>(null);
   const [trackerType, setTrackerType] = useState<string | null>(null);
+  const trackerItems = useAtomValue(trackerItemsMapAtom);
 
   // Get fresh tracker data when contentVersion changes
   const trackerData = useMemo(() => {
@@ -68,6 +103,26 @@ export const TrackerDocumentHeader: React.FC<DocumentHeaderComponentProps> = ({
     onContentChange(updatedContent);
   }, [getContent, trackerData, onContentChange]);
 
+  const associatedItem = useMemo(() => {
+    if (!trackerData) return null;
+    return findAssociatedTrackerItem(trackerItems.values(), filePath, trackerData.type);
+  }, [filePath, trackerData, trackerItems]);
+
+  const trackerItemLink = useMemo(() => {
+    if (!associatedItem) return undefined;
+    const title = getRecordTitle(associatedItem) || associatedItem.issueKey || 'Tracker item';
+    return {
+      label: associatedItem.issueKey ?? 'Tracker item',
+      title,
+      onOpen: () => navigateToTrackerReference({
+        id: associatedItem.id,
+        issueKey: associatedItem.issueKey,
+        title,
+        type: associatedItem.primaryType,
+      }),
+    };
+  }, [associatedItem]);
+
   // Don't render if no tracker data or no data model
   if (!trackerData || !dataModel) {
     return null;
@@ -79,6 +134,7 @@ export const TrackerDocumentHeader: React.FC<DocumentHeaderComponentProps> = ({
         model={dataModel}
         data={trackerData.data}
         onChange={handleChange}
+        trackerItemLink={trackerItemLink}
       />
     </div>
   );

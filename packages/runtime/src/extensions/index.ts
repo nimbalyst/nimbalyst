@@ -122,6 +122,12 @@ export type {
   CollaboratorInfo,
   RevisionSnapshotAdapter,
   StandardAwarenessState,
+  ProjectFileSnapshot,
+  ProjectFileChange,
+  ProjectFileEdit,
+  ProjectFileWriteReceipt,
+  ProjectFileActor,
+  EditorHostFileSystem,
 } from './editorHost';
 
 // Editor Lifecycle Hook

@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import {
+  MaterialSymbol,
+  buildFileDirectoryTree,
+  getFileDirectoryPaths,
+  getWorkspaceRelativeFilePath,
+  type FileDirectoryNode,
+} from '@nimbalyst/runtime';
 import { getFileName } from '../../utils/pathUtils';
 import {
   diffTreeGroupByDirectoryAtom,
@@ -31,13 +37,7 @@ interface FileGitStatus {
   gitStatusCode?: string;
 }
 
-interface DirectoryNode {
-  path: string;
-  displayPath: string;
-  files: FileData[];
-  subdirectories: Map<string, DirectoryNode>;
-  fileCount: number;
-}
+type DirectoryNode = FileDirectoryNode<FileData>;
 
 export function FileGutter({ sessionId, workspacePath, type, onFileClick, pendingReviewFiles }: FileGutterProps) {
   const [files, setFiles] = useState<FileData[]>([]);
@@ -65,11 +65,7 @@ export function FileGutter({ sessionId, workspacePath, type, onFileClick, pendin
 
   // Convert absolute path to relative path from workspace root
   const getRelativePath = (filePath: string): string => {
-    if (!workspacePath || !filePath.startsWith(workspacePath)) {
-      return filePath;
-    }
-    const relativePath = filePath.slice(workspacePath.length);
-    return relativePath.startsWith('/') ? relativePath.slice(1) : relativePath;
+    return getWorkspaceRelativeFilePath(filePath, workspacePath);
   };
 
   // Group files by path and aggregate stats
@@ -111,70 +107,9 @@ export function FileGutter({ sessionId, workspacePath, type, onFileClick, pendin
   }, [files, pendingReviewFiles, type]);
 
   // Build directory tree from file list
-  const buildDirectoryTree = (fileList: FileData[]): DirectoryNode => {
-    const root: DirectoryNode = {
-      path: '',
-      displayPath: '',
-      files: [],
-      subdirectories: new Map(),
-      fileCount: 0
-    };
-
-    fileList.forEach(file => {
-      const relativePath = getRelativePath(file.filePath);
-      const parts = relativePath.split('/');
-
-      if (parts.length === 1) {
-        root.files.push(file);
-        root.fileCount++;
-        return;
-      }
-
-      let currentNode = root;
-      const dirParts = parts.slice(0, -1);
-
-      dirParts.forEach((part, index) => {
-        const pathSoFar = dirParts.slice(0, index + 1).join('/');
-
-        if (!currentNode.subdirectories.has(part)) {
-          currentNode.subdirectories.set(part, {
-            path: pathSoFar,
-            displayPath: part,
-            files: [],
-            subdirectories: new Map(),
-            fileCount: 0
-          });
-        }
-
-        currentNode = currentNode.subdirectories.get(part)!;
-      });
-
-      currentNode.files.push(file);
-      currentNode.fileCount++;
-    });
-
-    return collapseDirectoryTree(root);
-  };
-
-  const collapseDirectoryTree = (node: DirectoryNode): DirectoryNode => {
-    node.subdirectories.forEach((subdir, key) => {
-      node.subdirectories.set(key, collapseDirectoryTree(subdir));
-    });
-
-    if (node.subdirectories.size === 1 && node.files.length === 0) {
-      const [childKey, childNode] = Array.from(node.subdirectories.entries())[0];
-      const newDisplayPath = node.displayPath
-        ? `${node.displayPath}/${childNode.displayPath}`
-        : childNode.displayPath;
-
-      return {
-        ...childNode,
-        displayPath: newDisplayPath
-      };
-    }
-
-    return node;
-  };
+  const buildDirectoryTree = (fileList: FileData[]): DirectoryNode => (
+    buildFileDirectoryTree(fileList, file => file.filePath, workspacePath)
+  );
 
   const toggleFolder = (folderPath: string) => {
     setExpandedFolders(prev => {
@@ -188,20 +123,10 @@ export function FileGutter({ sessionId, workspacePath, type, onFileClick, pendin
     });
   };
 
-  const getAllFolderPaths = (node: DirectoryNode, paths: string[] = []): string[] => {
-    if (node.path) {
-      paths.push(node.path);
-    }
-    node.subdirectories.forEach(subdir => {
-      getAllFolderPaths(subdir, paths);
-    });
-    return paths;
-  };
-
   const expandAll = () => {
     if (groupedFiles.length > 0) {
       const tree = buildDirectoryTree(groupedFiles);
-      const allPaths = getAllFolderPaths(tree);
+      const allPaths = getFileDirectoryPaths(tree);
       setExpandedFolders(new Set(allPaths));
     }
   };
@@ -241,7 +166,7 @@ export function FileGutter({ sessionId, workspacePath, type, onFileClick, pendin
   useEffect(() => {
     if (groupByDirectory && groupedFiles.length > 0) {
       const tree = buildDirectoryTree(groupedFiles);
-      const allPaths = getAllFolderPaths(tree);
+      const allPaths = getFileDirectoryPaths(tree);
       setExpandedFolders(new Set(allPaths));
     }
   }, [groupByDirectory, groupedFiles]);

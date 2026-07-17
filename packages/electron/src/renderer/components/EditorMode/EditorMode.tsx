@@ -1,15 +1,18 @@
 import React, { useCallback, useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
 import { useSetAtom, useAtomValue, useAtom } from 'jotai';
 import type { ConfigTheme } from '@nimbalyst/runtime';
-import { useTabsActions, type TabData } from '../../contexts/TabsContext';
+import { useTabsActions, useTabNavigationShortcuts, type TabData } from '../../contexts/TabsContext';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { fileDeletedAtomFamily } from '../../store/atoms/fileWatch';
 import { pushNavigationEntryAtom, isRestoringNavigationAtom, historyDialogFileAtom } from '../../store';
 import { newBrowserTabRequestAtom, newMockupRequestAtom, toggleAIChatPanelRequestAtom } from '../../store/atoms/appCommands';
 import { useTabNavigation } from '../../hooks/useTabNavigation';
+import { useEditorMaximize } from '../../hooks/useEditorMaximize';
+import { useResizeDragShield } from '../../hooks/useResizeDragShield';
 import { handleWorkspaceFileSelect as handleWorkspaceFileSelectUtil } from '../../utils/workspaceFileOperations';
 import { createInitialFileContent, createMockupContent } from '../../utils/fileUtils';
 import { getFileName } from '../../utils/pathUtils';
+import { canPersistWorkspaceHydratedState } from '../../utils/workspaceHydration';
 import { isCollabUri } from '../../utils/collabUri';
 import { aiToolService } from '../../services/AIToolService';
 import { editorRegistry } from '@nimbalyst/runtime/ai/EditorRegistry';
@@ -106,8 +109,60 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
 
   // AI Chat panel state — per-workspace so the rail-switch keeps each
   // project's collapse and width preferences.
-  const [isAIChatCollapsed, setIsAIChatCollapsed] = useAtom(aiChatCollapsedAtomFamily(workspacePath));
-  const [aiChatWidth, setAIChatWidth] = useAtom(aiChatWidthAtomFamily(workspacePath));
+  const [isAIChatCollapsed, setIsAIChatCollapsedAtom] = useAtom(aiChatCollapsedAtomFamily(workspacePath));
+  const [aiChatWidth, setAIChatWidthAtom] = useAtom(aiChatWidthAtomFamily(workspacePath));
+  const [aiChatLayoutLoadedWorkspacePath, setAIChatLayoutLoadedWorkspacePath] = useState<string | null>(null);
+  const aiChatLayoutChangedBeforeLoadRef = useRef(false);
+  const setIsAIChatCollapsed = useCallback<React.Dispatch<React.SetStateAction<boolean>>>((update) => {
+    aiChatLayoutChangedBeforeLoadRef.current = true;
+    setIsAIChatCollapsedAtom(update);
+  }, [setIsAIChatCollapsedAtom]);
+  const setAIChatWidth = useCallback<React.Dispatch<React.SetStateAction<number>>>((update) => {
+    aiChatLayoutChangedBeforeLoadRef.current = true;
+    setAIChatWidthAtom(update);
+  }, [setAIChatWidthAtom]);
+
+  useEffect(() => {
+    let cancelled = false;
+    aiChatLayoutChangedBeforeLoadRef.current = false;
+    setAIChatLayoutLoadedWorkspacePath(null);
+
+    window.electronAPI.invoke('workspace:get-state', workspacePath)
+      .then((workspaceState) => {
+        if (cancelled) return;
+        if (!aiChatLayoutChangedBeforeLoadRef.current) {
+          setIsAIChatCollapsedAtom(workspaceState?.aiPanel?.collapsed ?? false);
+          setAIChatWidthAtom(workspaceState?.aiPanel?.width ?? 350);
+        }
+        setAIChatLayoutLoadedWorkspacePath(workspacePath);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error('[EditorMode] Failed to load AI chat layout:', error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setAIChatWidthAtom, setIsAIChatCollapsedAtom, workspacePath]);
+
+  useEffect(() => {
+    if (!canPersistWorkspaceHydratedState(
+      workspacePath,
+      aiChatLayoutLoadedWorkspacePath,
+      aiChatLayoutChangedBeforeLoadRef.current,
+    )) return;
+
+    window.electronAPI.invoke('workspace:update-state', workspacePath, {
+      aiPanel: {
+        collapsed: isAIChatCollapsed,
+        width: aiChatWidth,
+      },
+    }).catch((error) => {
+      console.error('[EditorMode] Failed to save AI chat layout:', error);
+    });
+  }, [aiChatLayoutLoadedWorkspacePath, aiChatWidth, isAIChatCollapsed, workspacePath]);
 
   // Track active tab for document context (AI needs to know current file)
   // Uses ref to avoid re-rendering EditorMode on every tab switch
@@ -118,12 +173,14 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
   const handleSaveRef = useRef<(() => Promise<void>) | null>(null);
   const getNavigationStateRef = useRef<(() => any) | null>(null);
   const isInitializedRef = useRef<boolean>(false);
-  const isResizingRef = useRef<boolean>(false);
+  const sidebarWidthRef = useRef(sidebarWidth);
+  sidebarWidthRef.current = sidebarWidth;
   const chatSidebarRef = useRef<ChatSidebarRef>(null);
   const saveTabByIdRef = useRef<((tabId: string) => Promise<void>) | null>(null);
 
   // Get tab actions from context (doesn't subscribe to state - no re-renders)
   const tabsActions = useTabsActions();
+  useTabNavigationShortcuts(isActive);
 
   // Refs for imperative DOM updates - NO re-renders for tab visibility
   const tabsContainerRef = useRef<HTMLDivElement>(null);
@@ -446,6 +503,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         documentType: params.documentType,
         documentKey,
         serverUrl: cfg.serverUrl,
+        accountId: cfg.accountId ?? cfg.userId,
         userId: cfg.userId,
         userName: cfg.userName ?? 'Test User',
         userEmail: cfg.userEmail ?? 'test@test.com',
@@ -459,9 +517,163 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       return tabId;
     };
 
+    // Playwright-only helper: resolve + register a collab config WITHOUT
+    // opening a tab, so the headless seed/export/re-upload paths (which look
+    // configs up by documentId) can run against the test wrangler room with
+    // no editor mounted. Same `document-sync:open-test` gate as above.
+    (window as any).__registerCollabConfigTest = async (params: {
+      documentId: string;
+      title?: string;
+      documentType?: string;
+      serverUrl: string;
+      orgId: string;
+      userId: string;
+      encryptionKeyBase64: string;
+      urlExtraQuery?: string;
+    }) => {
+      if (!workspacePath) {
+        throw new Error('[registerCollabConfigTest] No workspace path');
+      }
+      const testResult = await (window as any).electronAPI.invoke(
+        'document-sync:open-test',
+        {
+          serverUrl: params.serverUrl,
+          orgId: params.orgId,
+          userId: params.userId,
+          documentId: params.documentId,
+          title: params.title ?? params.documentId,
+          encryptionKeyBase64: params.encryptionKeyBase64,
+        },
+      );
+      if (!testResult?.success || !testResult.config) {
+        throw new Error(
+          `[registerCollabConfigTest] document-sync:open-test failed: ${testResult?.error ?? 'unknown'}`,
+        );
+      }
+      const cfg = testResult.config;
+      const binary = atob(cfg.orgKeyBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const documentKey = await crypto.subtle.importKey(
+        'raw',
+        bytes,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt'],
+      );
+      const { registerCollabConfig, createProxiedWebSocket } = await import(
+        '../../utils/collabDocumentOpener'
+      );
+      const hasWsProxy = !!(window as any).electronAPI?.documentSync?.wsConnect;
+      const createWebSocket = hasWsProxy
+        ? (url: string) => {
+            const target = params.urlExtraQuery
+              ? `${url}${url.includes('?') ? '&' : '?'}${params.urlExtraQuery}`
+              : url;
+            return createProxiedWebSocket(target);
+          }
+        : undefined;
+      return registerCollabConfig({
+        workspacePath,
+        orgId: cfg.orgId,
+        documentId: cfg.documentId,
+        title: cfg.title,
+        documentType: params.documentType,
+        documentKey,
+        serverUrl: cfg.serverUrl,
+        accountId: cfg.accountId ?? cfg.userId,
+        userId: cfg.userId,
+        userName: cfg.userName ?? 'Test User',
+        userEmail: cfg.userEmail ?? 'test@test.com',
+        urlExtraQuery: params.urlExtraQuery,
+        createWebSocket,
+        getJwt: async () => 'test-jwt',
+      });
+    };
+
+    // Playwright-only helper: headless room write via the renderer codec
+    // (documentSeedOrchestrator.reuploadSharedDocument). Used to seed a room
+    // and to simulate a teammate changing the shared doc.
+    (window as any).__writeCollabDocTest = async (params: {
+      documentId: string;
+      documentType: string;
+      content: string;
+    }) => {
+      if (!workspacePath) throw new Error('[writeCollabDocTest] No workspace path');
+      const { reuploadSharedDocument } = await import('../../utils/documentSeedOrchestrator');
+      return reuploadSharedDocument({
+        workspacePath,
+        documentId: params.documentId,
+        documentType: params.documentType,
+        content: params.content,
+      });
+    };
+
+    // Playwright-only helper: headless room read via the renderer codec.
+    (window as any).__exportCollabDocTest = async (params: {
+      documentId: string;
+      documentType: string;
+    }) => {
+      if (!workspacePath) throw new Error('[exportCollabDocTest] No workspace path');
+      const { exportSharedDocument } = await import('../../utils/documentSeedOrchestrator');
+      return exportSharedDocument({
+        workspacePath,
+        documentId: params.documentId,
+        documentType: params.documentType,
+      });
+    };
+
+    // Playwright-only helper: drive the renderer-headless re-upload exactly
+    // the way useCollabLocalOrigin routes external structured editors (main
+    // adapter reports 'unsupported'): baseline/noop/conflict checks, then
+    // wipe-and-reseed with flush-with-ack and a baseline refresh.
+    (window as any).__reuploadCollabDocTest = async (params: {
+      documentId: string;
+      documentType: string;
+      sourceFilePath: string;
+      force?: boolean;
+      /** Baseline overrides for harnesses with no team (no local-origin DB row). */
+      lastLocalContentHash?: string | null;
+      lastCollabContentHash?: string | null;
+    }) => {
+      if (!workspacePath) throw new Error('[reuploadCollabDocTest] No workspace path');
+      const { tryRendererHeadlessReupload } = await import('../../hooks/useCollabLocalOrigin');
+      const originRes = await (window as any).electronAPI.documentSync.getLocalOrigin(
+        workspacePath,
+        params.documentId,
+      );
+      const binding = originRes?.success ? originRes.binding ?? null : null;
+      const syntheticUnsupported = {
+        success: false,
+        status: 'unsupported',
+        binding: {
+          ...(binding ?? {}),
+          resolvedPath: binding?.resolvedPath ?? params.sourceFilePath,
+          documentType: binding?.documentType ?? params.documentType,
+          lastLocalContentHash: params.lastLocalContentHash ?? binding?.lastLocalContentHash ?? null,
+          lastCollabContentHash: params.lastCollabContentHash ?? binding?.lastCollabContentHash ?? null,
+        },
+      };
+      const result = await tryRendererHeadlessReupload(
+        workspacePath,
+        params.documentId,
+        syntheticUnsupported as any,
+        params.force === true,
+      );
+      // Strip non-serializable/noisy fields for the test bridge.
+      if (result.status === 'conflict') {
+        return { status: 'conflict', conflictKind: result.result.conflictKind };
+      }
+      return result;
+    };
+
     return () => {
       delete (window as any).__openCollabDoc;
       delete (window as any).__openCollabDocTest;
+      delete (window as any).__registerCollabConfigTest;
+      delete (window as any).__writeCollabDocTest;
+      delete (window as any).__exportCollabDocTest;
+      delete (window as any).__reuploadCollabDocTest;
     };
   }, [workspacePath, tabsActions]);
 
@@ -726,6 +938,30 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
     }
   }, [sidebarCollapsed, sidebarWidth, preCollapseWidth]);
 
+  // Double-click a tab to maximize the editor (collapse file tree + AI chat).
+  // Second double-click restores the exact prior collapse state.
+  const { isMaximized: isEditorMaximized, toggle: toggleEditorMaximized, clearMaximize: clearEditorMaximized } =
+    useEditorMaximize<{ sidebar: boolean; chat: boolean }>({
+      scopeKey: workspacePath,
+      snapshot: () => ({ sidebar: sidebarCollapsed, chat: isAIChatCollapsed }),
+      maximize: () => {
+        if (!sidebarCollapsed) toggleSidebarCollapsed();
+        if (!isAIChatCollapsed) setIsAIChatCollapsed(true);
+      },
+      restore: (snap) => {
+        if (sidebarCollapsed !== snap.sidebar) toggleSidebarCollapsed();
+        setIsAIChatCollapsed(snap.chat);
+      },
+    });
+
+  // If the user manually reopens a panel while maximized, drop the stale
+  // restore snapshot so the next double-click re-maximizes from scratch.
+  useEffect(() => {
+    if (isEditorMaximized && !(sidebarCollapsed && isAIChatCollapsed)) {
+      clearEditorMaximized();
+    }
+  }, [isEditorMaximized, sidebarCollapsed, isAIChatCollapsed, clearEditorMaximized]);
+
   // Expose methods to parent via ref
   // CRITICAL: Use tabsRef.current inside closures to avoid stale closure bugs
   // The useImperativeHandle re-runs when tabs changes, but the methods it creates
@@ -815,43 +1051,19 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
     }
   }), [handleOpen, handleSaveAs, handleWorkspaceFileSelect, handleTabClose, toggleSidebarCollapsed]);
 
-  // Handle sidebar resize
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    isResizingRef.current = true;
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  }, []);
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizingRef.current) return;
-
-      const newWidth = Math.min(Math.max(200, e.clientX), 500);
+  // Keep pointer input in the host document while dragging across iframe-backed editors.
+  const startSidebarResize = useResizeDragShield({
+    onMove: (event) => {
+      const newWidth = Math.min(Math.max(200, event.clientX), 500);
+      sidebarWidthRef.current = newWidth;
       setSidebarWidth(newWidth);
-    };
-
-    const handleMouseUp = () => {
-      if (!isResizingRef.current) return;
-
-      isResizingRef.current = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-
-      // Save the width
+    },
+    onEnd: () => {
       if (window.electronAPI && workspacePath) {
-        window.electronAPI.setSidebarWidth(workspacePath, sidebarWidth);
+        window.electronAPI.setSidebarWidth(workspacePath, sidebarWidthRef.current);
       }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [sidebarWidth, workspacePath]);
+    },
+  });
 
   // Load sidebar width from storage
   useEffect(() => {
@@ -1100,8 +1312,12 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
 
             {/* Resize handle */}
             <div
-              onMouseDown={handleMouseDown}
-              className="w-1 cursor-col-resize shrink-0 relative z-10 bg-nim-secondary"
+              onPointerDown={startSidebarResize}
+              className="editor-mode-sidebar-resize-handle w-1 cursor-col-resize shrink-0 relative z-10 bg-nim-secondary"
+              data-testid="editor-mode-sidebar-resize-handle"
+              role="separator"
+              aria-label="Resize file sidebar"
+              aria-orientation="vertical"
             >
               <div
                 className="w-0.5 h-full mx-auto bg-nim-border transition-colors duration-200 hover:bg-nim-accent"
@@ -1125,6 +1341,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
               isActive={isActive}
               onToggleAIChat={() => setIsAIChatCollapsed(prev => !prev)}
               isAIChatCollapsed={isAIChatCollapsed}
+              onTabDoubleClick={toggleEditorMaximized}
             >
               <TabContent
                 onManualSaveReady={(saveFn) => {

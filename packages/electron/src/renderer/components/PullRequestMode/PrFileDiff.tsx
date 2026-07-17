@@ -10,6 +10,7 @@
  * GitHub-style token palette in `prFileDiff.css`.
  */
 
+import type { JSX } from 'react';
 import { useMemo } from 'react';
 import { Diff, Hunk, parseDiff, tokenize, type HunkData } from 'react-diff-view';
 import refractor from 'refractor';

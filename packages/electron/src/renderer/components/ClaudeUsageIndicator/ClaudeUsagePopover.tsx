@@ -7,7 +7,7 @@
 
 import React, { useEffect, RefObject } from 'react';
 import { useAtomValue } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
 import {
   claudeUsageAtom,
   claudeUsageSessionColorAtom,
@@ -18,7 +18,7 @@ import { useSetSetting } from '../../hooks/useSetting';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
 
 interface ClaudeUsagePopoverProps {
-  anchorRef: RefObject<HTMLElement>;
+  anchorRef: RefObject<HTMLElement | null>;
   onClose: () => void;
   onRefresh: () => Promise<void>;
 }
@@ -149,16 +149,7 @@ export const ClaudeUsagePopover: React.FC<ClaudeUsagePopoverProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-nim">
           <div className="flex items-center gap-2">
-            {/* Anthropic-style icon */}
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              className="text-amber-500"
-            >
-              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-            </svg>
+            <ProviderIcon provider="claude-code" size={18} className="shrink-0 text-amber-500" />
             <span className="text-[14px] font-semibold text-nim">Claude Usage</span>
           </div>
           <div className="flex items-center gap-1">

@@ -7,6 +7,7 @@
  * regardless of which tab is currently active.
  */
 
+import type { JSX } from 'react';
 import { createContext, useContext, type ReactNode } from 'react';
 
 interface DocumentPathContextValue {

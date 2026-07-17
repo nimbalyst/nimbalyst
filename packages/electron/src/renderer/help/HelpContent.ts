@@ -134,6 +134,10 @@ export const HelpContent: Record<string, HelpEntry> = {
     body: 'Full AI coding agent with project-wide context, tool use, and multi-step tasks.',
     shortcut: KeyboardShortcuts.view.agentMode,
   },
+  'agent-sessions-bubble': {
+    title: 'Sessions Needing Attention',
+    body: 'Open sessions that are awaiting your input, currently running, or have unread output.',
+  },
 
   // ============================================================================
   // Agent Mode - Session Views

@@ -5,6 +5,7 @@
  * Shows "New Data Model" at top + list of existing .prisma files.
  */
 
+import type { JSX } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createCommand } from 'lexical';
 import type { LexicalCommand } from 'lexical';

@@ -5,8 +5,17 @@
  * This bridges the EditorHost interface (from runtime) to TabEditor's machinery.
  */
 
-import type { EditorHost, EditorContext, DiffConfig, DiffResult, ExtensionStorage, EditorMenuItem } from '@nimbalyst/runtime';
+import type {
+  EditorHost,
+  EditorContext,
+  DiffConfig,
+  DiffResult,
+  ExtensionStorage,
+  EditorMenuItem,
+  EditorHostFileSystem,
+} from '@nimbalyst/runtime';
 import { registerEditorAPI, unregisterEditorAPI } from '@nimbalyst/runtime';
+import { normalizeExternalHttpsUrl } from './externalUrl';
 
 export interface EditorHostOptions {
   /** Absolute path to the file being edited */
@@ -52,6 +61,12 @@ export interface EditorHostOptions {
 
   /** Open history dialog */
   openHistory: () => void;
+
+  /** Host-backed project filesystem (read / compare-and-swap write / change subscription). */
+  fs?: EditorHostFileSystem;
+
+  /** Open an already host-reviewed URL outside the renderer. */
+  openExternal?: (url: string) => Promise<void>;
 
   /** Optional: Subscribe to diff requests */
   subscribeToDiffRequests?: (
@@ -161,6 +176,14 @@ export function createEditorHost(options: EditorHostOptions): EditorHost {
     openHistory(): void {
       options.openHistory();
     },
+
+    fs: options.fs,
+
+    openExternal: options.openExternal
+      ? async (url: string): Promise<void> => {
+          await options.openExternal!(normalizeExternalHttpsUrl(url));
+        }
+      : undefined,
 
     // ============ DIFF MODE (OPTIONAL) ============
     onDiffRequested: options.subscribeToDiffRequests

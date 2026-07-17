@@ -12,6 +12,7 @@
  * in the renderer-side `EmbedFrame`.
  */
 
+import type { JSX } from 'react';
 import {
   $applyNodeReplacement,
   DecoratorNode,

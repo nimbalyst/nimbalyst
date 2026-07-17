@@ -124,4 +124,39 @@ describe('TrackerSyncEngine server-managed (in-memory)', () => {
     a.engine.destroy();
     b.engine.destroy();
   });
+
+  it('syncs tracker navigation as plaintext for keyless clients', async () => {
+    const a = buildServerManagedEngine({ room: server.room, serverConnect: server.connect });
+    const b = buildServerManagedEngine({ room: server.room, serverConnect: server.connect });
+    const folder = JSON.stringify({
+      entryId: 'folder:product', kind: 'folder', folderId: 'product', name: 'Product', sortKey: 'a0',
+    });
+    let pending = [{ entryId: 'folder:product', payload: folder, deleted: false }];
+    const appliedOnB: Array<{ entryId: string; payload: string | null }> = [];
+    a.config.navigationSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => pending,
+      applyRemote: async (def) => { pending = pending.filter((row) => row.entryId !== def.entryId); },
+    };
+    b.config.navigationSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => [],
+      applyRemote: async (def) => { appliedOnB.push(def); },
+    };
+
+    await b.engine.connect();
+    await waitUntil(() => b.engine.getStatus() === 'connected');
+    await a.engine.connect();
+    await waitUntil(() => a.engine.getStatus() === 'connected');
+    await waitUntil(() => appliedOnB.length === 1);
+
+    expect(JSON.parse(appliedOnB[0].payload!)).toMatchObject({ name: 'Product' });
+    const stored = server.room.getStoredNavigation()[0];
+    expect(stored.iv).toBeUndefined();
+    expect(stored.orgKeyFingerprint).toBeNull();
+    expect(stored.encryptedPayload).toBe(folder);
+
+    a.engine.destroy();
+    b.engine.destroy();
+  });
 });

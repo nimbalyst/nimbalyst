@@ -64,7 +64,7 @@ export function PromptQueueList({ queue, onCancel, onEdit, onSendNow }: PromptQu
       <div className="prompt-queue-header flex items-center mb-1.5">
         <span className="prompt-queue-count text-[11px] font-medium text-nim-muted uppercase tracking-wide">{queue.length} queued</span>
       </div>
-      <div className="prompt-queue-items flex flex-col gap-1">
+      <div className="prompt-queue-items flex flex-col gap-1 max-h-[30vh] overflow-y-auto">
         {queue.map((item, index) => (
           <div key={item.id} className="prompt-queue-item flex items-center gap-2 px-2 py-1.5 bg-nim-tertiary border border-nim rounded text-[13px]">
             <span className="prompt-queue-number shrink-0 w-[18px] h-[18px] flex items-center justify-center bg-nim-tertiary rounded-full text-[11px] font-medium text-nim-muted">{index + 1}</span>

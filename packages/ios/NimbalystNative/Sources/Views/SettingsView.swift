@@ -10,6 +10,7 @@ public struct SettingsView: View {
     @State private var showDeleteAccountConfirmation = false
     @State private var isDeletingAccount = false
     @State private var deleteAccountError: String?
+    @State private var accountSwitchError: String?
     @Environment(\.dismiss) private var dismiss
 
     // Voice mode settings
@@ -94,24 +95,46 @@ public struct SettingsView: View {
     // MARK: - Account
 
     private var accountSection: some View {
-        Section("Account") {
-            if let userId = KeychainManager.getUserId() {
-                HStack {
-                    Text("User ID")
-                    Spacer()
-                    Text(userId)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .font(.caption)
+        Section("Accounts") {
+            ForEach(appState.accounts) { account in
+                Button {
+                    do {
+                        try appState.switchAccount(to: account.id)
+                    } catch {
+                        accountSwitchError = error.localizedDescription
+                    }
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(account.email.isEmpty ? "Paired account" : account.email)
+                                .foregroundStyle(.primary)
+                            Text(account.personalOrgId)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer()
+                        if account.id == appState.activeAccountId {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(NimbalystColors.success)
+                        }
+                    }
                 }
+                .disabled(account.id == appState.activeAccountId)
             }
 
-            HStack {
-                Text("Paired")
-                Spacer()
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(NimbalystColors.success)
+            NavigationLink {
+                PairingView()
+                    .environmentObject(appState)
+            } label: {
+                Label("Add Account", systemImage: "person.badge.plus")
+            }
+
+            if let accountSwitchError {
+                Text(accountSwitchError)
+                    .font(.caption)
+                    .foregroundStyle(NimbalystColors.error)
             }
         }
     }
@@ -156,8 +179,11 @@ public struct SettingsView: View {
     // MARK: - Voice Mode
 
     #if os(iOS)
+    // Full GA Realtime voice list (desktop parity); marin and cedar are the
+    // gpt-realtime-2 flagship voices.
     private static let voiceOptions = [
         "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse",
+        "marin", "cedar",
     ]
 
     private var voiceModeSection: some View {

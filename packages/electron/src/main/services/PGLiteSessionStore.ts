@@ -4,7 +4,10 @@
 
 import { toMillis } from '../utils/timestampUtils';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
-import { computeSessionPhaseTransition } from './session/sessionPhaseTransition';
+import {
+  computeSessionPhaseTransition,
+  normalizeSessionPhaseMetadataUpdate,
+} from './session/sessionPhaseTransition';
 
 import type {
   SessionStore,
@@ -466,12 +469,13 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             `[PGLiteSessionStore] updateMetadata refused non-object metadata for session ${sessionId}: type=${typeof incoming}, isArray=${Array.isArray(incoming)}`,
           );
         } else {
+          const normalizedIncoming = normalizeSessionPhaseMetadataUpdate(incoming);
           const { rows } = await db.query<{ metadata: unknown }>(
             `SELECT metadata FROM ai_sessions WHERE id = $1`,
             [sessionId],
           );
           const existingMetadata = normalizeJsonObject(rows[0]?.metadata);
-          const merged: Record<string, any> = { ...existingMetadata, ...incoming };
+          const merged: Record<string, any> = { ...existingMetadata, ...normalizedIncoming };
           // Record workflow-phase transitions into metadata.activity[] so the
           // session's lifecycle history is self-contained and renderable on the
           // project-graph timeline (see session/sessionPhaseTransition.ts). This
@@ -479,7 +483,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           // update_session_meta MCP tool and the kanban UI both land here. Only
           // the workflow `phase` is tracked; operational status flips too often
           // for the bounded log.
-          const incomingPhase = (incoming as Record<string, unknown>).phase;
+          const incomingPhase = normalizedIncoming.phase;
           if (typeof incomingPhase === 'string') {
             const transition = computeSessionPhaseTransition(
               existingMetadata as Record<string, any>,

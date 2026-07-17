@@ -9,6 +9,7 @@ import {
   MCP_EXTENSION_DEV,
   MCP_EAGER_CONFIG_KEYS,
   MCP_RETIRED_SERVER_CONFIG_KEYS,
+  CORE_ALWAYS_LOAD_TOOLS,
   FIRST_PARTY_TOOL_TO_SERVER,
   extensionServerConfigKey,
   extensionServerEndpointPath,
@@ -33,6 +34,15 @@ describe('Topology descriptor', () => {
     expect(isEagerServer(MCP_SITUATIONAL)).toBe(false);
   });
 
+  it('always-loads the visual tools the prompt tells the model to use (NIM-1766)', () => {
+    // The system prompt actively instructs the model to call these for inline
+    // charts/screenshots, so their schemas must be in context. Deferring them
+    // made the model guess the args and hit schema-validation errors instead of
+    // rendering. Keep them eager.
+    expect(CORE_ALWAYS_LOAD_TOOLS).toContain('display_to_user');
+    expect(CORE_ALWAYS_LOAD_TOOLS).toContain('capture_editor_screenshot');
+  });
+
   it('gives every first-party server a unique config-key and endpoint path', () => {
     const keys = MCP_FIRST_PARTY_TOPOLOGY.map((e) => e.configKey);
     const paths = MCP_FIRST_PARTY_TOPOLOGY.map((e) => e.endpointPath);
@@ -53,6 +63,7 @@ describe('Topology descriptor', () => {
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('display_to_user')).toBe(MCP_CORE);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('settings_get_overview')).toBe(MCP_HOST);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('spawn_session')).toBe(MCP_HOST);
+    expect(FIRST_PARTY_TOOL_TO_SERVER.get('list_queued_prompts')).toBe(MCP_HOST);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('tracker_create')).toBe(MCP_TRACKERS);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('voice_agent_speak')).toBe(MCP_SITUATIONAL);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('renderer_eval')).toBe(MCP_EXTENSION_DEV);
@@ -109,7 +120,7 @@ describe('getMcpServersConfig consolidated topology', () => {
 
   // ---- Landed (Phases 2-3) ----
 
-  it('registers the eager core server as `nimbalyst` with alwaysLoad', async () => {
+  it('registers the core server as `nimbalyst` WITHOUT server-level alwaysLoad', async () => {
     const config = await new McpConfigService(baseDeps()).getMcpServersConfig({
       sessionId: 'session123',
       workspacePath: '/test/workspace',
@@ -117,7 +128,10 @@ describe('getMcpServersConfig consolidated topology', () => {
 
     expect(MCP_CORE).toBe('nimbalyst');
     expect(config[MCP_CORE]).toBeDefined();
-    expect(config[MCP_CORE].alwaysLoad).toBe(true);
+    // Eagerness is per-tool (`_meta['anthropic/alwaysLoad']` on the core
+    // ListTools subset — applyCoreAlwaysLoadMeta), not server-level, so the
+    // CORE_ALWAYS_LOAD_TOOLS subset (not every core tool) is charged eagerly.
+    expect(config[MCP_CORE].alwaysLoad).toBeUndefined();
     expect(config[MCP_CORE].url).toContain('/mcp/core');
     // Carries the long timeout (git_commit_proposal / AskUserQuestion block on input).
     expect(config[MCP_CORE].tool_timeout_sec).toBeGreaterThan(60);

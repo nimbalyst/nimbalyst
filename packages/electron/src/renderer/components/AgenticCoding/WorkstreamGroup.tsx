@@ -493,7 +493,11 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
     setShowContextMenu(false);
     if (type !== 'workstream' || !workstreamShareInfo) return;
     try {
-      const result = await (window as any).electronAPI?.deleteShare({ shareId: workstreamShareInfo.shareId, sessionId: id });
+      const result = await (window as any).electronAPI?.deleteShare({
+        shareId: workstreamShareInfo.shareId,
+        sessionId: id,
+        owningPersonalOrgId: workstreamShareInfo.owningPersonalOrgId,
+      });
       if (result?.success) {
         removeShare(id);
         errorNotificationService.showInfo('Session unshared', 'The share link has been removed.', { duration: 3000 });

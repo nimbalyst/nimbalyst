@@ -89,6 +89,11 @@ data class RegisterPushTokenMessage(
     val environment: String = "production",
 )
 
+data class UnregisterPushTokenMessage(
+    val type: String = "unregisterPushToken",
+    val deviceId: String,
+)
+
 data class SessionControlMessage(
     val type: String = "sessionControl",
     val message: SessionControlPayload,

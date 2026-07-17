@@ -25,17 +25,14 @@ doesn't actually happen. Listing them would mislead users.
 
 What the system actually controls:
 
-1. **Whether an extension may ship a backend module at all.** Built-in
-   extensions ship one freely. Marketplace extensions need explicit review
-   (the allowlist in `backendModuleAllowlist.ts`). Dev-installed extensions
-   require an env flag (`NIMBALYST_ALLOW_DEV_BACKEND_MODULES=1`) and a
-   non-packaged build.
+1. **Whether a backend module is allowed to run.** Any extension may declare
+   one; the control is the user's first-use consent prompt, which states
+   plainly that the module runs native code. Granting is workspace-trust +
+   user-consent gated, and the host tears the module down on revocation.
+   Built-in extensions ship inside the app bundle and are auto-granted (same
+   trust domain as the app), so they skip the prompt.
 
-2. **Whether a granted backend module is allowed to run.** Granting is
-   workspace-trust + user-consent gated. The host tears the module down on
-   revocation.
-
-3. **Whether the module may call host-brokered services.** The catalog
+2. **Whether the module may call host-brokered services.** The catalog
    permissions below all gate Nimbalyst-owned RPC -- the database, secrets,
    the workspace-file API, MCP registration. These are real per-call checks.
 
@@ -129,22 +126,18 @@ native code locally" -- but no brokered checkboxes are shown.
 - An extension may declare at most **8** backend modules. The cap keeps the
   consent prompt manageable. Consolidate if you exceed it.
 
-### Allowlist
+### Who may ship one
 
-Backend modules can run native code, so only allowlisted extensions may ship
-them. The loader silently drops `contributions.backendModules` for anything
-that doesn't qualify and logs a structured warning.
+Any extension may declare a backend module -- built-in, marketplace, or
+dev-installed, in dev or packaged builds. There is no provenance allowlist:
+installing the extension and approving its first-use consent prompt is the
+trust decision. The loader still drops `contributions.backendModules` when the
+declaration is **malformed** (fails shape validation) and logs a structured
+warning, but that is a correctness check, not a gate on where the extension
+came from.
 
-| Source | Allowed |
-| --- | --- |
-| Built-in extension (ships with the app) | Yes |
-| Marketplace extension on the curated allowlist | Yes |
-| Marketplace extension NOT on the allowlist | No -- contact core for review |
-| Dev-install (symlink) in a packaged build | No |
-| Dev-install in a dev build, `NIMBALYST_ALLOW_DEV_BACKEND_MODULES=1` | Yes |
-| Dev-install in a dev build, env flag missing | No |
-
-The allowlist lives in `packages/electron/src/main/extensions/backendModuleAllowlist.ts`.
+Built-in extensions ship inside the app bundle (same trust domain as the app),
+so the host auto-grants them and never raises the prompt.
 
 ### Migrating from the Old Catalog
 

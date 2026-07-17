@@ -1,14 +1,13 @@
 /**
  * UnifiedQuickOpen
  *
- * One dialog combining Files, In Files, Sessions, Prompts, and Projects search
- * behind a single shared search input + tab strip. Replaces the four separate
- * QuickOpen / SessionQuickOpen / PromptQuickOpen / ProjectQuickOpen dialogs.
+ * One dialog combining file, content, session, prompt, project, tracker,
+ * semantic, and shared-team navigation behind one search input + tab strip.
  *
  * Each pane owns its own data loading and keyboard handling (when active);
  * the shell owns the shared search query, the tab strip, and the global
- * shortcut routing that lets ⌘O/⌘L/⌘⇧F/⌘⇧L/⌘⇧P jump between tabs while the
- * dialog is open.
+ * shortcut routing that lets each dedicated shortcut jump between tabs while
+ * the dialog is open.
  */
 import React, {
   useState,
@@ -33,6 +32,20 @@ import {
 import { fileMentionOptionsAtom, searchFileMentionAtom } from '../store/atoms/fileMention';
 import { setWindowModeAtom } from '../store/atoms/windowMode';
 import { setTrackerModeLayoutAtom } from '../store/atoms/trackers';
+import {
+  pendingCollabDocumentAtom,
+  sharedDocumentsAtom,
+  sharedFoldersAtom,
+  workspaceHasTeamAtom,
+  type SharedDocument,
+} from '../store/atoms/collabDocuments';
+import {
+  changedDocIdsAtom,
+  collabFavoritesAtom,
+  recentSharedDocsAtom,
+} from '../store/atoms/collabDiscovery';
+import { getCollabParentPath, getSharedDocumentDisplayName } from './CollabMode/collabTree';
+import { searchSharedDocuments } from '../utils/sharedDocumentSearch';
 import type { TypeaheadOption } from './Typeahead/GenericTypeahead';
 import type { SessionMeta as SessionItem } from '../store';
 import { KeyboardShortcuts, getShortcutDisplay } from '../../shared/KeyboardShortcuts';
@@ -59,7 +72,8 @@ export type UnifiedQuickOpenTab =
   | 'sessions'
   | 'prompts'
   | 'projects'
-  | 'trackers';
+  | 'trackers'
+  | 'team';
 
 interface TabSpec {
   id: UnifiedQuickOpenTab;
@@ -80,6 +94,12 @@ const SEARCH_TAB_SPEC: TabSpec = {
   id: 'search',
   label: 'Search',
   shortcut: KeyboardShortcuts.window.globalSearch,
+};
+
+const TEAM_TAB_SPEC: TabSpec = {
+  id: 'team',
+  label: 'Team',
+  shortcut: KeyboardShortcuts.window.teamQuickOpen,
 };
 
 const TAB_SPECS: TabSpec[] = [
@@ -258,9 +278,14 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
   // until the async check resolves (so we don't bounce off the Search tab while
   // it's still being determined). When false, the Search tab is hidden entirely.
   const [searchAvailable, setSearchAvailable] = useState<boolean | null>(null);
+  const hasTeam = useAtomValue(workspaceHasTeamAtom);
   const visibleTabs = useMemo(
-    () => (searchAvailable === true ? [SEARCH_TAB_SPEC, ...TAB_SPECS] : TAB_SPECS),
-    [searchAvailable],
+    () => [
+      ...(searchAvailable === true ? [SEARCH_TAB_SPEC] : []),
+      ...TAB_SPECS,
+      ...(hasTeam ? [TEAM_TAB_SPEC] : []),
+    ],
+    [searchAvailable, hasTeam],
   );
 
   // Recent-history dropdowns (persisted to app-settings).
@@ -321,6 +346,14 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
       setActiveTab('files');
     }
   }, [activeTab, searchAvailable]);
+
+  // Team availability can disappear after sign-out or a project switch. Do
+  // not leave the shell pointing at a pane whose tab is no longer visible.
+  useEffect(() => {
+    if (activeTab === 'team' && !hasTeam) {
+      setActiveTab('files');
+    }
+  }, [activeTab, hasTeam]);
 
   // Switch tabs without losing focus on the input.
   const switchTab = useCallback((tab: UnifiedQuickOpenTab) => {
@@ -407,6 +440,13 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
         if (searchAvailable === true) switchTab('search');
         return;
       }
+      // Cmd+Shift+D → Team (only when this workspace has a team)
+      if (e.shiftKey && (e.key === 'D' || e.key === 'd') && hasTeam) {
+        e.preventDefault();
+        e.stopPropagation();
+        switchTab('team');
+        return;
+      }
       // Cmd+O → Files
       if (!e.shiftKey && e.key === 'o') {
         e.preventDefault();
@@ -425,7 +465,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isOpen, activeTab, switchTab, query, openTrackerTypeFilter, visibleTabs, searchAvailable]);
+  }, [isOpen, activeTab, switchTab, query, openTrackerTypeFilter, visibleTabs, searchAvailable, hasTeam]);
 
   if (!isOpen) return null;
 
@@ -437,6 +477,8 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
   const placeholder =
     activeTab === 'search'
       ? 'Search everything by meaning — trackers, docs, sessions...'
+      : activeTab === 'team'
+        ? 'Search shared team documents...'
       : activeTab === 'projects'
         ? 'Search projects...'
         : activeTab === 'in-files'
@@ -638,6 +680,16 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
               onClose={onClose}
             />
           </div>
+          {hasTeam && (
+            <div className={activeTab === 'team' ? 'contents' : 'hidden'}>
+              <SharedDocsPane
+                isOpen={isOpen}
+                isActive={activeTab === 'team'}
+                query={activeTab === 'team' ? query : ''}
+                onClose={onClose}
+              />
+            </div>
+          )}
           <div className={activeTab === 'sessions' ? 'contents' : 'hidden'}>
             <SessionsPane
               isOpen={isOpen}
@@ -703,10 +755,205 @@ const FooterHint: React.FC<{ kbd: string; label: string }> = ({ kbd, label }) =>
 );
 
 // =============================================================================
+// SharedDocsPane — live shared-document index for the active team workspace
+// =============================================================================
+
+interface SharedDocsPaneProps {
+  isOpen: boolean;
+  isActive: boolean;
+  query: string;
+  onClose: () => void;
+}
+
+const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
+  isOpen,
+  isActive,
+  query,
+  onClose,
+}) => {
+  const documents = useAtomValue(sharedDocumentsAtom);
+  const folders = useAtomValue(sharedFoldersAtom);
+  const favorites = useAtomValue(collabFavoritesAtom);
+  const changedDocIds = useAtomValue(changedDocIdsAtom);
+  const recentDocuments = useAtomValue(recentSharedDocsAtom);
+  const setPendingCollabDocument = useSetAtom(pendingCollabDocumentAtom);
+  const setWindowMode = useSetAtom(setWindowModeAtom);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [mouseHasMoved, setMouseHasMoved] = useState(false);
+  const listRef = useRef<HTMLUListElement>(null);
+
+  const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
+  const displayDocuments = useMemo(() => {
+    const openable = documents.filter((doc) => !doc.decryptFailed);
+    const normalizedQuery = query.trim().toLowerCase();
+
+    if (normalizedQuery) {
+      return searchSharedDocuments(documents, folders, query).map(({ document }) => document);
+    }
+
+    const favoriteRank = new Map(favorites.map((id, index) => [id, index]));
+    const recentRank = new Map(
+      recentDocuments.map((doc, index) => [doc.documentId, index]),
+    );
+    const category = (doc: SharedDocument): number => {
+      if (changedDocIds.has(doc.documentId)) return 0;
+      if (favoriteRank.has(doc.documentId)) return 1;
+      if (recentRank.has(doc.documentId)) return 2;
+      return 3;
+    };
+
+    return [...openable].sort((a, b) => {
+      const categoryDiff = category(a) - category(b);
+      if (categoryDiff !== 0) return categoryDiff;
+      if (category(a) === 1) {
+        return (favoriteRank.get(a.documentId) ?? 0) - (favoriteRank.get(b.documentId) ?? 0);
+      }
+      if (category(a) === 2) {
+        return (recentRank.get(a.documentId) ?? 0) - (recentRank.get(b.documentId) ?? 0);
+      }
+      return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    });
+  }, [documents, folders, query, favorites, changedDocIds, recentDocuments]);
+
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [query]);
+
+  useEffect(() => {
+    if (selectedIndex >= displayDocuments.length) setSelectedIndex(0);
+  }, [displayDocuments.length, selectedIndex]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onMove = () => setMouseHasMoved(true);
+    window.addEventListener('mousemove', onMove);
+    return () => window.removeEventListener('mousemove', onMove);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!listRef.current) return;
+    const items = listRef.current.querySelectorAll('.unified-quick-open-item');
+    const item = items[selectedIndex] as HTMLElement | undefined;
+    item?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [selectedIndex]);
+
+  const handleSelect = useCallback(
+    (doc: SharedDocument) => {
+      setPendingCollabDocument({
+        documentId: doc.documentId,
+        documentType: doc.documentType,
+      });
+      setWindowMode('collab');
+      onClose();
+    },
+    [setPendingCollabDocument, setWindowMode, onClose],
+  );
+
+  useEffect(() => {
+    if (!isOpen || !isActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault();
+          setSelectedIndex((index) =>
+            index < displayDocuments.length - 1 ? index + 1 : index,
+          );
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          setSelectedIndex((index) => (index > 0 ? index - 1 : index));
+          break;
+        case 'Enter':
+          e.preventDefault();
+          if (displayDocuments[selectedIndex]) {
+            handleSelect(displayDocuments[selectedIndex]);
+          }
+          break;
+        case 'Escape':
+          e.preventDefault();
+          onClose();
+          break;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, isActive, displayDocuments, selectedIndex, handleSelect, onClose]);
+
+  return (
+    <div
+      className="shared-docs-quick-open-pane flex-1 overflow-y-auto"
+      data-component="SharedDocsPane"
+    >
+      {displayDocuments.length === 0 ? (
+        <div className="p-10 text-center text-nim-faint">
+          {query ? 'No matching team documents' : 'No shared team documents yet'}
+        </div>
+      ) : (
+        <ul
+          ref={listRef}
+          className={`list-none m-0 p-0 ${mouseHasMoved ? '' : 'pointer-events-none'}`}
+        >
+          {displayDocuments.map((doc, index) => {
+            const isChanged = changedDocIds.has(doc.documentId);
+            const isFavorite = favoriteSet.has(doc.documentId);
+            return (
+              <li
+                key={doc.documentId}
+                className={`unified-quick-open-item flex items-center gap-3 py-2.5 px-4 cursor-pointer border-l-[3px] transition-all duration-100 ${
+                  index === selectedIndex
+                    ? 'selected bg-nim-selected border-l-nim-primary'
+                    : 'border-transparent hover:bg-nim-hover'
+                }`}
+                data-testid={`shared-doc-quick-open-${doc.documentId}`}
+                title={doc.title}
+                onClick={() => handleSelect(doc)}
+                onMouseEnter={() => {
+                  if (mouseHasMoved) setSelectedIndex(index);
+                }}
+              >
+                <span className="shrink-0 text-[var(--nim-primary)]">
+                  <MaterialSymbol icon="groups" size={17} />
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-nim truncate">
+                    {getSharedDocumentDisplayName(doc.title, doc.documentId)}
+                  </div>
+                  <div className="text-xs text-nim-faint mt-0.5">
+                    {getRelativeTimeString(doc.updatedAt ?? doc.createdAt ?? Date.now())}
+                  </div>
+                </div>
+                {isChanged && (
+                  <span
+                    className="shared-docs-quick-open-unread w-2 h-2 rounded-full bg-[var(--nim-primary)] shrink-0"
+                    aria-label="New or changed"
+                    title="New or changed"
+                  />
+                )}
+                {isFavorite && (
+                  <span
+                    className="shared-docs-quick-open-favorite shrink-0 text-[var(--nim-warning)]"
+                    aria-label="Favorite"
+                    title="Favorite"
+                  >
+                    <MaterialSymbol icon="star" size={16} fill />
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+});
+
+// =============================================================================
 // FilesPane — name search + recent files
 // =============================================================================
 
 interface FileItem {
+  source: 'local' | 'shared';
   path: string;
   name: string;
   type?: 'file' | 'directory';
@@ -714,6 +961,7 @@ interface FileItem {
   matches?: Array<{ line: number; text: string; start: number; end: number }>;
   isFileNameMatch?: boolean;
   isContentMatch?: boolean;
+  sharedDocument?: SharedDocument;
 }
 
 interface FilesPaneProps {
@@ -744,12 +992,16 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
 }) => {
   const posthog = usePostHog();
   const revealFolder = useSetAtom(revealFolderAtom);
+  const sharedDocuments = useAtomValue(sharedDocumentsAtom);
+  const sharedFolders = useAtomValue(sharedFoldersAtom);
+  const setPendingCollabDocument = useSetAtom(pendingCollabDocumentAtom);
+  const setWindowMode = useSetAtom(setWindowModeAtom);
   const [results, setResults] = useState<FileItem[]>([]);
   const [recentFiles, setRecentFiles] = useState<string[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [mouseHasMoved, setMouseHasMoved] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
-  const searchTimeoutRef = useRef<NodeJS.Timeout>();
+  const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const listRef = useRef<HTMLUListElement>(null);
 
   // Load recent files when dialog opens. We pass the explicit workspacePath
@@ -794,6 +1046,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
         );
         if (Array.isArray(fileNameResults)) {
           const processed: FileItem[] = fileNameResults.map((r: any) => ({
+            source: 'local',
             path: r.path,
             name: getFileName(r.path),
             type: r.type,
@@ -844,7 +1097,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
     () =>
       recentFiles
         .filter((p) => p !== currentFilePath)
-        .map((p) => ({ path: p, name: getFileName(p), isRecent: true })),
+        .map((p) => ({ source: 'local' as const, path: p, name: getFileName(p), isRecent: true })),
     [recentFiles, currentFilePath],
   );
 
@@ -855,13 +1108,28 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
     [extFilter],
   );
   const displayFiles = useMemo(() => {
-    const base = query ? results : recentItems;
-    if (maskPatterns.length === 0) return base;
-    return base.filter((f) => {
+    const localFiles = query ? results : recentItems;
+    const filteredLocalFiles = maskPatterns.length === 0 ? localFiles : localFiles.filter((f) => {
       if (f.type === 'directory') return false;
       return matchesFileMask(f.path, maskPatterns);
     });
-  }, [query, results, recentItems, maskPatterns]);
+
+    if (!query.trim()) return filteredLocalFiles;
+
+    const sharedFiles = searchSharedDocuments(sharedDocuments, sharedFolders, query)
+      .filter(({ displayPath }) => (
+        maskPatterns.length === 0 || matchesFileMask(displayPath, maskPatterns)
+      ))
+      .map<FileItem>(({ document, displayName, displayPath }) => ({
+        source: 'shared',
+        path: displayPath,
+        name: displayName,
+        type: 'file',
+        sharedDocument: document,
+      }));
+
+    return [...sharedFiles, ...filteredLocalFiles];
+  }, [query, results, recentItems, maskPatterns, sharedDocuments, sharedFolders]);
 
   // Track mouse movement
   useEffect(() => {
@@ -881,6 +1149,15 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
 
   const handleSelect = useCallback(
     (file: FileItem) => {
+      if (file.source === 'shared' && file.sharedDocument) {
+        setPendingCollabDocument({
+          documentId: file.sharedDocument.documentId,
+          documentType: file.sharedDocument.documentType,
+        });
+        setWindowMode('collab');
+        onClose();
+        return;
+      }
       if (file.type === 'directory') {
         onFolderSelect?.(file.path);
         revealFolder(file.path);
@@ -890,7 +1167,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
       onFileSelect(file.path);
       onClose();
     },
-    [onFileSelect, onFolderSelect, onClose, revealFolder],
+    [onFileSelect, onFolderSelect, onClose, revealFolder, setPendingCollabDocument, setWindowMode],
   );
 
   // Keyboard navigation — only when this pane is active
@@ -935,6 +1212,9 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
           {displayFiles.map((file, index) => (
             <li
               key={`${file.path}-${index}`}
+              data-testid={file.source === 'shared'
+                ? `shared-file-quick-open-${file.sharedDocument?.documentId}`
+                : undefined}
               className={`unified-quick-open-item relative group px-4 py-2.5 cursor-pointer border-l-[3px] transition-all duration-100 ${
                 index === selectedIndex
                   ? 'selected bg-nim-selected border-l-nim-primary'
@@ -945,7 +1225,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
                 if (mouseHasMoved) setSelectedIndex(index);
               }}
             >
-              {onShowFileSessions && file.type !== 'directory' && (
+              {onShowFileSessions && file.source === 'local' && file.type !== 'directory' && (
                 <button
                   className={`absolute right-3 top-2.5 p-1 rounded border-none cursor-pointer bg-transparent text-nim-faint hover:text-[var(--nim-primary)] hover:bg-[var(--nim-accent-subtle)] ${
                     index === selectedIndex ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
@@ -963,16 +1243,27 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
                 </button>
               )}
               <div className="text-sm font-medium flex items-center gap-2 text-nim">
-                {file.type === 'directory' && (
+                {file.source === 'shared' ? (
+                  <MaterialSymbol
+                    icon="groups"
+                    size={16}
+                    className="text-[var(--nim-primary)] shrink-0"
+                  />
+                ) : file.type === 'directory' && (
                   <MaterialSymbol icon="folder" size={16} className="text-nim-faint shrink-0" />
                 )}
                 {file.type === 'directory' ? file.name + '/' : file.name}
+                {file.source === 'shared' && (
+                  <span className="nim-badge-primary text-[10px]">Shared</span>
+                )}
                 {file.isRecent && !query && (
                   <span className="nim-badge-primary text-[10px]">Recent</span>
                 )}
               </div>
               <div className="text-xs mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap text-nim-faint">
-                {getRelativeDir(file.path, workspacePath)}
+                {file.source === 'shared'
+                  ? getCollabParentPath(file.path) || 'Team'
+                  : getRelativeDir(file.path, workspacePath)}
               </div>
             </li>
           ))}
@@ -1011,7 +1302,7 @@ const InFilesPane: React.FC<InFilesPaneProps> = memo(({
   const [isSearching, setIsSearching] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [mouseHasMoved, setMouseHasMoved] = useState(false);
-  const searchTimeoutRef = useRef<NodeJS.Timeout>();
+  const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const listRef = useRef<HTMLUListElement>(null);
   const lastQueryRef = useRef<string>('');
 
@@ -1044,6 +1335,7 @@ const InFilesPane: React.FC<InFilesPaneProps> = memo(({
         const contentResults = await api.searchWorkspaceFileContent(workspacePath, query);
         if (Array.isArray(contentResults)) {
           const processed: FileItem[] = contentResults.map((r: any) => ({
+            source: 'local',
             path: r.path,
             name: getFileName(r.path),
             matches: r.matches || [],
@@ -1300,7 +1592,7 @@ const SessionsPane: React.FC<SessionsPaneProps> = memo(({
   const [contentSearchedQuery, setContentSearchedQuery] = useState<string | null>(null);
   const [contentSearching, setContentSearching] = useState(false);
   const listRef = useRef<HTMLUListElement>(null);
-  const searchDebounceRef = useRef<NodeJS.Timeout>();
+  const searchDebounceRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const visibleQuery = isActive ? query : '';
 
   // @ typeahead — only active when query starts with @ and no file is selected yet

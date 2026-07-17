@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState, memo } from 'react';
-import { useSetAtom } from 'jotai';
+import { useSetAtom, useAtomValue } from 'jotai';
 import { Tab } from './TabManager';
 import {
   useTabDirty,
@@ -9,6 +9,35 @@ import {
 import { CommonFileActions } from '../CommonFileActions';
 import { historyDialogFileAtom } from '../../store';
 import { KeyboardShortcuts, getShortcutDisplay } from '../../../shared/KeyboardShortcuts';
+import { MaterialSymbol } from '@nimbalyst/runtime';
+import { trackerItemByIdAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
+import { getTypeIcon } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
+
+/**
+ * Label for a tracker resource tab. Subscribes to the canonical tracker atom so
+ * the tab shows the live title + type icon and updates when they change. Falls
+ * back to the item id (carried in the tab's fileName) before the item resolves.
+ */
+const TrackerTabLabel = memo<{ trackerItemId: string; fallback: string; isActive: boolean }>(
+  ({ trackerItemId, fallback, isActive }) => {
+    const item = useAtomValue(trackerItemByIdAtom(trackerItemId));
+    const icon = getTypeIcon(item?.primaryType ?? '');
+    const title = (item?.fields?.title as string | undefined) ?? '';
+    const label = item?.issueKey
+      ? `${item.issueKey} ${title}`.trim()
+      : (title || fallback);
+    return (
+      <>
+        <MaterialSymbol icon={icon} size={13} className="tab-tracker-icon mr-1 shrink-0 opacity-80" />
+        <span
+          className={`tab-title flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-[var(--nim-text-muted)] ${isActive ? 'text-[var(--nim-text)] font-medium' : ''}`}
+        >
+          {label}
+        </span>
+      </>
+    );
+  }
+);
 
 // Separate component for dirty indicator - subscribes to its own tab's dirty state
 // This allows only this component to re-render when dirty state changes
@@ -56,7 +85,7 @@ interface TabItemProps {
   dragOverIndex: number | null;
   editingTabId: string | null;
   editingValue: string;
-  editInputRef: React.RefObject<HTMLInputElement>;
+  editInputRef: React.RefObject<HTMLInputElement | null>;
   onTabClick: (e: React.MouseEvent, tabId: string) => void;
   onCloseClick: (e: React.MouseEvent, tabId: string) => void;
   onContextMenu: (e: React.MouseEvent, tabId: string) => void;
@@ -102,7 +131,7 @@ const TabItem: React.FC<TabItemProps> = ({
     <div
       ref={(el) => onTabRef(tab.id, el)}
       className={`tab group flex items-center h-[30px] px-3 mr-px cursor-pointer relative min-w-[120px] max-w-[200px] shrink-0 rounded-t-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] transition-all duration-200 hover:bg-[var(--nim-bg-tertiary)] ${tab.id === activeTabId ? 'active z-[1] border-b-0 bg-[var(--nim-bg)]' : ''} ${isDirty || hasCollabUnsyncedChanges ? 'dirty' : ''} ${tab.isPinned ? 'pinned min-w-[40px] max-w-[150px]' : ''} ${draggedIndex === index ? 'dragging opacity-50 cursor-grabbing' : ''} ${dragOverIndex === index ? 'drag-over border-l-2 border-l-[var(--nim-primary)]' : ''}`}
-      data-tab-type={tab.isVirtual ? 'session' : 'document'}
+      data-tab-type={tab.kind === 'tracker' ? 'tracker' : tab.isVirtual ? 'session' : 'document'}
       data-tab-id={tab.id}
       data-filename={tab.fileName}
       draggable={true}
@@ -159,6 +188,12 @@ const TabItem: React.FC<TabItemProps> = ({
           onClick={(e) => e.stopPropagation()}
           className="tab-rename-input flex-1 text-[13px] px-1 py-0.5 border border-[var(--nim-primary)] rounded-sm bg-[var(--nim-bg)] text-[var(--nim-text)] outline-none"
         />
+      ) : tab.kind === 'tracker' && tab.trackerItemId ? (
+        <TrackerTabLabel
+          trackerItemId={tab.trackerItemId}
+          fallback={tab.fileName}
+          isActive={tab.id === activeTabId}
+        />
       ) : (
         <>
           <span className={`tab-title flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-[var(--nim-text-muted)] ${tab.id === activeTabId ? 'text-[var(--nim-text)] font-medium' : ''}`}>
@@ -197,6 +232,7 @@ interface TabBarProps {
   isActive?: boolean; // Whether this TabBar should handle keyboard shortcuts
   onToggleAIChat?: () => void; // Toggle AI Chat panel
   isAIChatCollapsed?: boolean; // Whether AI Chat is collapsed
+  onTabDoubleClick?: (tabId: string) => void; // Double-click a tab (e.g. maximize editor)
 }
 
 export const TabBar: React.FC<TabBarProps> = ({
@@ -213,7 +249,8 @@ export const TabBar: React.FC<TabBarProps> = ({
   allowRename = false,
   isActive = true,
   onToggleAIChat,
-  isAIChatCollapsed = false
+  isAIChatCollapsed = false,
+  onTabDoubleClick
 }) => {
   const openHistoryDialog = useSetAtom(historyDialogFileAtom);
   const [contextMenuTab, setContextMenuTab] = useState<string | null>(null);
@@ -252,8 +289,11 @@ export const TabBar: React.FC<TabBarProps> = ({
 
     // Left click handling
     if (e.button === 0) {
-      // Only handle double-click for rename if allowRename is true and onTabRename exists
-      if (allowRename && onTabRename) {
+      // Detect double-click when either rename or a double-click action is wired.
+      // Rename takes precedence when enabled; otherwise the double-click fires
+      // onTabDoubleClick (used to maximize the editor).
+      const wantsDoubleClick = (allowRename && onTabRename) || !!onTabDoubleClick;
+      if (wantsDoubleClick) {
         const clickCount = (clickCountRef.current.get(tabId) || 0) + 1;
         clickCountRef.current.set(tabId, clickCount);
 
@@ -269,19 +309,24 @@ export const TabBar: React.FC<TabBarProps> = ({
         }, 300); // 300ms double-click window
         clickTimerRef.current.set(tabId, timer);
 
-        // Double-click detected - enter edit mode
+        // Double-click detected
         if (clickCount === 2) {
-          const tab = tabs.find(t => t.id === tabId);
-          if (tab) {
-            setEditingTabId(tabId);
-            setEditingValue(tab.fileName);
-            // Focus input on next tick
-            setTimeout(() => {
-              editInputRef.current?.focus();
-              editInputRef.current?.select();
-            }, 0);
-          }
           clickCountRef.current.set(tabId, 0);
+          if (allowRename && onTabRename) {
+            // Enter rename edit mode
+            const tab = tabs.find(t => t.id === tabId);
+            if (tab) {
+              setEditingTabId(tabId);
+              setEditingValue(tab.fileName);
+              // Focus input on next tick
+              setTimeout(() => {
+                editInputRef.current?.focus();
+                editInputRef.current?.select();
+              }, 0);
+            }
+          } else if (onTabDoubleClick) {
+            onTabDoubleClick(tabId);
+          }
           return;
         }
       }
@@ -291,7 +336,7 @@ export const TabBar: React.FC<TabBarProps> = ({
         onTabSelect(tabId);
       }
     }
-  }, [onTabSelect, onTabClose, activeTabId, editingTabId, allowRename, onTabRename, tabs]);
+  }, [onTabSelect, onTabClose, activeTabId, editingTabId, allowRename, onTabRename, onTabDoubleClick, tabs]);
 
   // Handle close button click
   const handleCloseClick = useCallback((e: React.MouseEvent, tabId: string) => {

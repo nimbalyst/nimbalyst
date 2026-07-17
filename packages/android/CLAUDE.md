@@ -78,6 +78,7 @@ npm run android:build:transcript    # build the transcript bundle
 npm run android:test:unit           # ./gradlew :app:testDebugUnitTest
 npm run android:assemble:debug      # ./gradlew :app:assembleDebug
 npm run android:assemble:release    # ./gradlew :app:assembleRelease
+npm run android:bundle:release      # ./gradlew :app:bundleRelease
 ```
 
 To invoke Gradle directly, point `JAVA_HOME` at a Temurin 17 install (no hard-coded user path):
@@ -91,8 +92,10 @@ JAVA_HOME=/path/to/temurin-17 ./gradlew :app:testDebugUnitTest
 ### Builds, signing, and CI
 
 - The `google-services` plugin is applied only when `app/google-services.json` is present, so a build without it succeeds and push stays inert until the file is added.
+- CI can inject Firebase config from the optional `ANDROID_GOOGLE_SERVICES_JSON_BASE64` GitHub secret by decoding it to `app/google-services.json` before the Gradle build.
 - The release `signingConfig` reads the keystore path and credentials from environment variables: `NIMBALYST_ANDROID_KEYSTORE`, `NIMBALYST_ANDROID_KEYSTORE_PASSWORD`, `NIMBALYST_ANDROID_KEY_ALIAS`, `NIMBALYST_ANDROID_KEY_PASSWORD`. When the keystore is absent the release build is simply unsigned. Minification stays off (signed is not the same as minified).
-- CI builds the APK via `.github/workflows/android-build.yml`, which supplies the keystore and signing secrets to produce a signed release artifact.
+- CI builds both the APK and Play-ready AAB via `.github/workflows/android-build.yml`, which supplies the keystore and signing secrets to produce signed release artifacts when secrets are present. CI also decodes `google-services.json` from the `ANDROID_GOOGLE_SERVICES_JSON_BASE64` secret and fails a signed build if that secret is missing, so a signed AAB never ships with push silently inert.
+- To build a signed release locally, run `npm run android:bundle:signed` (wraps `scripts/android-bundle-signed.sh`). It pulls all signing secrets from the 1Password item `Nimbalyst Android Signing` (Nimbalyst vault) at build time via `op read`: the upload keystore is fetched to a temp file deleted on exit, and passwords/alias are injected into the Gradle env only. Never commit a keystore — `*.jks`/`*.keystore` are gitignored.
 
 Open `packages/android/` in Android Studio, not the repo root.
 

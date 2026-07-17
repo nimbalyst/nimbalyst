@@ -3,9 +3,37 @@ import * as path from 'path';
 import { HistoryManager } from '../HistoryManager';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { getAppSetting } from '../utils/store';
+import { BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { getWindowId, windowStates } from '../window/WindowManager';
+import { dirtyEditorRegistry } from '../services/DirtyEditorRegistry';
+import { ProjectFileService } from '../services/ProjectFileService';
+import type { ProjectFileEdit, ProjectFileWriteReceipt } from '@nimbalyst/runtime';
 
 // Initialize history manager
 const historyManager = new HistoryManager();
+const projectFiles = new ProjectFileService(
+    historyManager,
+    (filePath) => dirtyEditorRegistry.isDirty(filePath),
+);
+
+function getAuthorizedWorkspaceRoot(event: IpcMainInvokeEvent): string {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) throw new Error('Project file access requires a workspace window.');
+    const windowId = getWindowId(window);
+    const workspaceRoot = windowId === null ? undefined : windowStates.get(windowId)?.workspacePath;
+    if (!workspaceRoot) throw new Error('Project file access is unavailable outside a workspace.');
+    return workspaceRoot;
+}
+
+function broadcastProjectFileWrite(workspaceRoot: string, receipt: ProjectFileWriteReceipt): void {
+    for (const window of BrowserWindow.getAllWindows()) {
+        const windowId = getWindowId(window);
+        const candidateRoot = windowId === null ? undefined : windowStates.get(windowId)?.workspacePath;
+        if (!window.isDestroyed() && candidateRoot && path.resolve(candidateRoot) === path.resolve(workspaceRoot)) {
+            window.webContents.send('project-fs:changed', receipt);
+        }
+    }
+}
 
 export async function registerHistoryHandlers() {
     // Configure history manager with user settings before initialization
@@ -15,6 +43,17 @@ export async function registerHistoryHandlers() {
 
     // Initialize history manager
     await historyManager.initialize();
+
+    safeHandle('project-fs:read', async (event, paths: string[]) => {
+        return projectFiles.read(getAuthorizedWorkspaceRoot(event), paths);
+    });
+
+    safeHandle('project-fs:write', async (event, edit: ProjectFileEdit) => {
+        const workspaceRoot = getAuthorizedWorkspaceRoot(event);
+        const receipt = await projectFiles.write(workspaceRoot, edit);
+        broadcastProjectFileWrite(workspaceRoot, receipt);
+        return receipt;
+    });
 
     // Create snapshot
     safeHandle('history:create-snapshot', async (event, filePath: string, state: string, type: string, description?: string) => {

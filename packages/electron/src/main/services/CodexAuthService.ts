@@ -24,6 +24,8 @@ import type {
   AccountKind,
   AccountLoginCompletedNotification,
   AccountLoginStartResponse,
+  AccountRateLimitsReadResponse,
+  AccountRateLimitsUpdatedNotification,
   AccountReadResponse,
   AccountUpdatedNotification,
   InitializeResponse,
@@ -50,6 +52,7 @@ class CodexAuthServiceImpl {
   private initializing: Promise<JsonRpcClient> | null = null;
   private currentLoginId: string | null = null;
   private cachedStatus: CodexAuthStatus | null = null;
+  private rateLimitsUpdatedListeners = new Set<() => void>();
 
   async getStatus(refreshToken = false): Promise<CodexAuthStatus> {
     const client = await this.ensureChild();
@@ -67,6 +70,16 @@ class CodexAuthServiceImpl {
     };
     this.cachedStatus = status;
     return status;
+  }
+
+  async getRateLimits(): Promise<AccountRateLimitsReadResponse> {
+    const client = await this.ensureChild();
+    return client.request<AccountRateLimitsReadResponse>('account/rateLimits/read', {});
+  }
+
+  onRateLimitsUpdated(listener: () => void): () => void {
+    this.rateLimitsUpdatedListeners.add(listener);
+    return () => this.rateLimitsUpdatedListeners.delete(listener);
   }
 
   /** Browser flow: returns the auth URL. Codex emits `account/login/completed` when done. */
@@ -216,6 +229,13 @@ class CodexAuthServiceImpl {
       // Always refresh after a completion so account email / planType are accurate.
       this.getStatus().catch((err) => logger.main.warn('[CodexAuth] refresh after login/completed failed:', err));
       return;
+    }
+    if (method === 'account/rateLimits/updated') {
+      const notification = params as AccountRateLimitsUpdatedNotification;
+      if (!notification.rateLimits) return;
+      for (const listener of this.rateLimitsUpdatedListeners) {
+        listener();
+      }
     }
   }
 

@@ -102,7 +102,9 @@ export const ClaudeCodeDeps = {
 
   // ---- Default Model ----
 
-  DEFAULT_MODEL: 'claude-code:opus-1m' as const,
+  // Plain `opus` (not `opus-1m`): the current CLI runs plain Opus at 1M natively
+  // at a flat price, so the `[1m]` suffix is a redundant no-op (GitHub #825).
+  DEFAULT_MODEL: 'claude-code:opus' as const,
 
   // ---- Setters ----
   // Called from electron main process at startup

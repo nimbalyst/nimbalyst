@@ -73,6 +73,16 @@ describe('runMigrations', () => {
     fs.writeFileSync(path.join(tmp, '0013_orgs_and_projects.sql'), '-- noop\n');
     fs.writeFileSync(path.join(tmp, '0014_tracker_relationship_index.sql'), '-- noop\n');
     fs.writeFileSync(path.join(tmp, '0015_collab_local_origins_project_id.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0016_read_receipts.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0017_tracker_type_navigation.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0018_history_preedit_session_index.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0019_collab_document_replicas.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0020_collab_replica_staged_snapshots.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0021_collab_replica_quarantine_observability.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0022_collab_document_assets.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0023_collab_asset_retry_schedule.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0024_tracker_personal_state.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0025_account_org_bindings.sql'), '-- noop\n');
 
     const db = new FakeDb();
     // Hack: inject our own migration list via reflection-equivalent. Re-using
@@ -86,13 +96,13 @@ describe('runMigrations', () => {
     // a stand-in implementation; for now, test the file-backed path with the
     // bundled migrations.
     const result = runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
-    expect(result.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(result.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
     expect(result.skipped).toEqual([]);
 
     // Second invocation: nothing to apply, all skipped.
     const result2 = runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
     expect(result2.applied).toEqual([]);
-    expect(result2.skipped).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(result2.skipped).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
 
     // Anti-flake: unused locals lint silencer.
     void customs;
@@ -159,6 +169,46 @@ describe('runMigrations', () => {
       path.join(tmp, '0015_collab_local_origins_project_id.sql'),
       '-- noop\n',
     );
+    fs.writeFileSync(
+      path.join(tmp, '0016_read_receipts.sql'),
+      '-- noop\n',
+    );
+    fs.writeFileSync(
+      path.join(tmp, '0017_tracker_type_navigation.sql'),
+      '-- noop\n',
+    );
+    fs.writeFileSync(
+      path.join(tmp, '0018_history_preedit_session_index.sql'),
+      '-- noop\n',
+    );
+    fs.writeFileSync(
+      path.join(tmp, '0019_collab_document_replicas.sql'),
+      '-- noop\n',
+    );
+    fs.writeFileSync(
+      path.join(tmp, '0020_collab_replica_staged_snapshots.sql'),
+      '-- noop\n',
+    );
+    fs.writeFileSync(
+      path.join(tmp, '0021_collab_replica_quarantine_observability.sql'),
+      '-- noop\n',
+    );
+    fs.writeFileSync(
+      path.join(tmp, '0022_collab_document_assets.sql'),
+      '-- noop\n',
+    );
+    fs.writeFileSync(
+      path.join(tmp, '0023_collab_asset_retry_schedule.sql'),
+      '-- noop\n',
+    );
+    fs.writeFileSync(
+      path.join(tmp, '0024_tracker_personal_state.sql'),
+      '-- noop\n',
+    );
+    fs.writeFileSync(
+      path.join(tmp, '0025_account_org_bindings.sql'),
+      '-- noop\n',
+    );
     const db = new FakeDb();
     runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
     expect(db.execs.some((s) => s.includes('CREATE TABLE foo'))).toBe(true);
@@ -196,6 +246,22 @@ describe('runMigrations against the real schema dir', () => {
       const mKind = cols.find((c) => c.name === 'message_kind');
       expect(sText?.type).toBe('TEXT');
       expect(mKind?.type).toBe('TEXT');
+
+      const replicaCols = handle
+        .prepare(`PRAGMA table_info(collab_document_replicas)`)
+        .all() as Array<{ name: string }>;
+      expect(replicaCols.map((column) => column.name)).toEqual(
+        expect.arrayContaining([
+          'staged_encrypted_snapshot',
+          'staged_snapshot_generation',
+          'staged_snapshot_checksum',
+          'staged_encoding_version',
+          'staged_snapshot_token',
+          'snapshot_commit_token',
+          'quarantine_reason',
+          'quarantined_at',
+        ]),
+      );
     } finally {
       await sqlite.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });

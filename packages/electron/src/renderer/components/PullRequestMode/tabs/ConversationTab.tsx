@@ -11,6 +11,7 @@
  *   - Conversation: PR-level issue comments + review summaries.
  */
 
+import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
 import { MaterialSymbol, MarkdownRenderer } from '@nimbalyst/runtime';
 import {

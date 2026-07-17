@@ -61,7 +61,7 @@ export interface GridOperations {
  * Create grid operations bound to a specific grid element
  */
 export function createGridOperations(
-  gridRef: React.RefObject<RevoGridElement>,
+  gridRef: React.RefObject<RevoGridElement | null>,
   options: GridOperationsOptions
 ): GridOperations {
   const {

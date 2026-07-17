@@ -13,6 +13,7 @@ import { NimbalystEditor, MaterialSymbol, ProviderIcon } from '@nimbalyst/runtim
 import type { EditorConfig } from '@nimbalyst/runtime/editor';
 import { $convertFromEnhancedMarkdownString, getEditorTransformers } from '@nimbalyst/runtime/editor';
 import { $getRoot } from 'lexical';
+import * as Y from 'yjs';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import type { FieldDefinition } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel';
@@ -21,13 +22,19 @@ import type { TrackerIdentity } from '@nimbalyst/runtime';
 import { TrackerFieldEditor, type TeamMemberOption } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
 import type { RelationshipCandidate } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/RelationshipFieldEditor';
 import { UserAvatar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/UserAvatar';
-import { trackerItemByIdAtom, trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
+import { trackerItemByIdAtom, trackerItemsMapAtom, trackerDataLoadedAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import { resolveRelationshipType, isRelationshipField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { refreshSessionListAtom, sessionRegistryAtom, type SessionMeta } from '../../store/atoms/sessions';
+import { resolveLinkedSessions } from '../../utils/resolveLinkedSessions';
+import { prRemoteAtom, navigateToPullRequest } from '../../store/atoms/pullRequests';
+import { getRecordPrReferences } from '@nimbalyst/runtime/plugins/TrackerPlugin/prReferences';
 import { buildTrackerDeepLink } from '../../store/atoms/collabDocuments';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { useTrackerContentCollab } from '../../hooks/useTrackerContentCollab';
+import { useColdPaintFallback } from '../../hooks/useColdPaintFallback';
+import { useMarkTrackerViewed } from '../../hooks/useTrackerUnread';
+import { useRecordTrackerOpened } from '../../hooks/useRecordTrackerOpened';
 import { reconcileExternalFieldChanges } from './trackerDetailFieldSync';
 
 interface TrackerItemDetailProps {
@@ -37,10 +44,21 @@ interface TrackerItemDetailProps {
   onSwitchToFilesMode?: () => void;
   onSwitchToAgentMode?: (sessionId: string) => void;
   onLaunchSession?: (trackerItemId: string) => void;
+  onLaunchWorktree?: (trackerItemId: string) => void;
   onArchive?: (itemId: string, archive: boolean) => void;
   onDelete?: (itemId: string) => void;
   /** Open another tracker item (relationship pill / backlink click). */
   onOpenItem?: (itemId: string) => void;
+  /**
+   * When true, show a content-focus toggle that expands the collaborative body
+   * to fill the surface (compact header, metadata sections hidden). Enabled by
+   * the workstream tab host for shared/collaborative bodies; off in Tracker Mode.
+   */
+  enableContentFocus?: boolean;
+  /** Controlled content-focus value (persisted per tab by the host). */
+  contentFocus?: boolean;
+  /** Called when the user toggles content focus (host persists it). */
+  onContentFocusChange?: (focus: boolean) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -183,19 +201,44 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   onSwitchToFilesMode,
   onSwitchToAgentMode,
   onLaunchSession,
+  onLaunchWorktree,
   onArchive,
   onDelete,
   onOpenItem,
+  enableContentFocus = false,
+  contentFocus: controlledContentFocus,
+  onContentFocusChange,
 }) => {
+  // Content-focus layout: collapse metadata sections and let the collaborative
+  // body fill the surface. Toggling this does NOT remount the editor (same
+  // NimbalystEditor key), so the Y.Doc/provider is preserved. Controlled by the
+  // host (persisted per tab) when props are supplied; otherwise local state.
+  const [internalContentFocus, setInternalContentFocus] = useState(false);
+  const contentFocus = controlledContentFocus ?? internalContentFocus;
+  const setContentFocus = useCallback(
+    (next: boolean) => {
+      if (onContentFocusChange) onContentFocusChange(next);
+      else setInternalContentFocus(next);
+    },
+    [onContentFocusChange]
+  );
   // Read directly from per-item atom -- only re-renders when THIS item changes,
   // not when any other item in the workspace updates.
   const item = useAtomValue(trackerItemByIdAtom(itemId));
+  // Whether the tracker store has finished its initial load — lets us show a
+  // loading state vs. an "unavailable" state when `item` is absent.
+  const trackerDataLoaded = useAtomValue(trackerDataLoadedAtom);
   // Loaded items, used to build relationship-field typeahead candidates.
   const itemsMap = useAtomValue(trackerItemsMapAtom);
   const sessionRegistry = useAtomValue(sessionRegistryAtom);
   const refreshSessionList = useSetAtom(refreshSessionListAtom);
 
   const model = useMemo(() => globalRegistry.get(item?.primaryType ?? ''), [item?.primaryType]);
+
+  // Mark this item read while it is open (debounced; refires when a newer
+  // version arrives). Clears its unread dot in the list/board views.
+  useMarkTrackerViewed(item, workspacePath);
+  useRecordTrackerOpened(item?.id, workspacePath);
 
   // Detect whether this workspace has a team. The team check feeds the
   // content editor mode (collab vs local); the member list feeds the
@@ -353,36 +396,21 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalOrigin?.providerId, workspacePath]);
 
-  // Resolve linked sessions from registry (silently filter deleted ones)
-  // Two sources: 1) tracker item's linkedSessions[] (forward link from DB items)
-  //              2) sessions whose linkedTrackerItemIds contains this item's ID or file path (reverse link)
-  const linkedSessions = useMemo(() => {
-    const sessionSet = new Set<string>();
+  // Resolve linked sessions from registry via the shared resolver so this view
+  // and the PR view surface identical results (see resolveLinkedSessions.ts).
+  const linkedSessions = useMemo(
+    () => resolveLinkedSessions(item, sessionRegistry),
+    [item, sessionRegistry]
+  );
 
-    // Forward: tracker record stores session IDs in system
-    const forwardIds: string[] = item?.system?.linkedSessions || [];
-    for (const id of forwardIds) sessionSet.add(id);
-
-    // Reverse: sessions that link to this item by ID or by file path
-    const trackerItemId = item?.id;
-    const filePath = item?.system?.documentPath;
-    const fileRef = filePath ? `file:${filePath}` : null;
-
-    // console.log('[TrackerItemDetail] reverse lookup:', { trackerItemId, filePath, fileRef });
-
-    sessionRegistry.forEach((session, sessionId) => {
-      const linked = session.linkedTrackerItemIds;
-      if (!linked) return;
-      if (trackerItemId && linked.includes(trackerItemId)) sessionSet.add(sessionId);
-      if (fileRef && linked.includes(fileRef)) sessionSet.add(sessionId);
-    });
-
-    if (sessionSet.size === 0) return [];
-    return Array.from(sessionSet)
-      .map(id => sessionRegistry.get(id))
-      .filter((s): s is SessionMeta => s != null)
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [item, sessionRegistry]);
+  // PR reference on the workspace's detected GitHub remote → "Open PR view"
+  // jump. Reference-based (url-field match or explicit link), any item type.
+  const prRemote = useAtomValue(prRemoteAtom);
+  const prReference = useMemo(() => {
+    if (!item || !prRemote || prRemote.workspacePath !== workspacePath) return null;
+    const wanted = prRemote.remote.toLowerCase();
+    return getRecordPrReferences(item).find((ref) => ref.remote === wanted) ?? null;
+  }, [item, prRemote, workspacePath]);
   const linkedSessionIds = useMemo(() => new Set(linkedSessions.map((session) => session.id)), [linkedSessions]);
   const canLinkExistingSession = Boolean(item && workspacePath);
   const [isLinkingExistingSession, setIsLinkingExistingSession] = useState(false);
@@ -670,6 +698,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     collaboration: collabConfig,
     loading: collabLoading,
     status: collabStatus,
+    syncProvider,
     reviewState,
     acceptRemoteChanges,
     rejectRemoteChanges,
@@ -677,6 +706,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     bodyCacheMarkdown,
   } = useTrackerContentCollab({
     itemId,
+    title: item?.issueKey || (item ? getRecordTitle(item) : itemId),
     workspacePath,
     syncMode,
     teamMemberCount: teamMembers.length,
@@ -713,26 +743,38 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // even when the room has never been seeded with real content), so
   // bootstrap is suppressed and the seed never gets a chance.
   //
-  // This effect: 600ms after status reaches `connected`, if we have
-  // cached body markdown AND the editor is visually empty, apply the
-  // cached markdown via `editor.update()`. Going through the editor
-  // (rather than `editor.parseEditorState`) means the change propagates
-  // through `@lexical/yjs` into the Y.Doc, so peers receive the body
-  // via the normal CRDT merge -- the empty server room finally gets
-  // populated.
+  // See NIM-1589 and useColdPaintFallback's own doc comment: a single
+  // point-in-time "empty" read races the async Yjs->Lexical reconciliation
+  // on a large/slow-to-render doc, so this fires paint only after two
+  // spaced-apart empty reads, and at most once per provider lifecycle.
   const collabEditorInstanceRef = useRef<any>(null);
-  useEffect(() => {
-    if (collabStatus !== 'connected') return;
-    if (!bodyCacheMarkdown || bodyCacheMarkdown.trim().length === 0) return;
-    const t = setTimeout(() => {
-      const editor = collabEditorInstanceRef.current;
+  useColdPaintFallback({
+    collabStatus,
+    bodyCacheMarkdown,
+    providerEpoch,
+    itemId,
+    isVisuallyEmpty: useCallback(() => {
+      // Authoritative check first: read the raw synced Y.Doc directly,
+      // bypassing Lexical's (possibly still-in-flight) reconciliation. By
+      // the time `collabStatus` reaches 'connected' the server's sync
+      // response has already been applied to the Y.Doc (see
+      // CollabLexicalProvider.handleStatusChange), so this is accurate
+      // immediately -- no render-lag race, unlike the Lexical text read
+      // below. A non-empty root here means the room genuinely has content,
+      // full stop; never paint over it regardless of what Lexical shows.
+      const ydoc = syncProvider?.getYDoc();
+      if (ydoc && ydoc.get('root', Y.XmlText).length > 0) return false;
+
       const getContent = getContentFnRef.current;
-      if (!editor || !getContent) return;
-      const current = getContent();
+      if (!getContent) return false;
       // The check must be `trim() === ''` -- a fresh Lexical doc renders
       // as a single empty paragraph that serializes to '' after trim, so
       // anything content-bearing returns a non-empty trimmed string.
-      if (current.trim() !== '') return;
+      return getContent().trim() === '';
+    }, [syncProvider]),
+    paint: useCallback(() => {
+      const editor = collabEditorInstanceRef.current;
+      if (!editor || !bodyCacheMarkdown) return;
       console.warn(
         '[TrackerItemDetail] Cold-paint fallback firing: editor is empty after sync(connected) but tracker_body_cache has bytes. Forcing paint.',
         { itemId, mdLen: bodyCacheMarkdown.length, providerEpoch },
@@ -742,9 +784,9 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         root.clear();
         $convertFromEnhancedMarkdownString(bodyCacheMarkdown, getEditorTransformers());
       });
-    }, 600);
-    return () => clearTimeout(t);
-  }, [collabStatus, bodyCacheMarkdown, providerEpoch, itemId]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [bodyCacheMarkdown, itemId, providerEpoch]),
+  });
 
   /** Save a field update -- routes to file-based save for file-backed items, DB for native */
   const saveField = useCallback(async (updates: Record<string, any>) => {
@@ -1087,14 +1129,23 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     };
   }, [contentMode, collabConfig, collabLoading, contentLoaded, contentMarkdown, saveContent]);
 
-  // Item deleted while panel was open (or not yet in atom — brief loading state)
+  // Content-focus is only offered for collaborative (shared) bodies in the
+  // workstream tab host. focusActive gates the layout, so if the mode changes
+  // away from collaborative the focus layout collapses automatically.
+  const showFocusToggle = enableContentFocus && contentMode === 'collaborative';
+  const focusActive = contentFocus && showFocusToggle;
+
+  // No item in the atom: distinguish "still loading" (tracker store not yet
+  // hydrated — e.g. a restored tab before sync completes) from "unavailable"
+  // (data loaded but this id is gone/inaccessible). Without this, a restored
+  // tracker tab briefly flashes "no longer available" during cold restore.
   if (!item) {
     return (
       <div
         className="tracker-item-detail flex flex-col h-full bg-nim overflow-hidden items-center justify-center text-nim-faint text-sm"
         data-testid="tracker-item-detail"
       >
-        Item no longer exists
+        {trackerDataLoaded ? 'This tracker item is no longer available' : 'Loading…'}
       </div>
     );
   }
@@ -1232,6 +1283,17 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           })()}
         </div>
         <div className="flex items-center gap-1 shrink-0">
+          {prReference && (
+            <button
+              className="flex items-center gap-1 px-2 py-1 rounded text-[12px] font-medium text-nim-muted hover:bg-nim-tertiary"
+              onClick={() => navigateToPullRequest(prReference.remote, prReference.number)}
+              title={`Open #${prReference.number} in the PRs view`}
+              data-testid="tracker-open-pr-view"
+            >
+              <MaterialSymbol icon="merge" size={16} />
+              <span>PR #{prReference.number}</span>
+            </button>
+          )}
           {canToggleShare && (
             <button
               className={`flex items-center gap-1 px-2 py-1 rounded text-[12px] font-medium ${
@@ -1291,6 +1353,17 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
               <MaterialSymbol icon="delete" size={18} />
             </button>
           )}
+          {showFocusToggle && (
+            <button
+              className={`p-1 rounded hover:bg-nim-tertiary ${focusActive ? 'text-[var(--nim-primary)]' : 'text-nim-muted'}`}
+              onClick={() => setContentFocus(!focusActive)}
+              title={focusActive ? 'Exit content focus' : 'Focus content'}
+              data-testid="tracker-content-focus-toggle"
+              aria-pressed={focusActive}
+            >
+              <MaterialSymbol icon={focusActive ? 'close_fullscreen' : 'open_in_full'} size={18} />
+            </button>
+          )}
           <button
             className="p-1 rounded hover:bg-nim-tertiary text-nim-muted"
             onClick={onClose}
@@ -1329,9 +1402,17 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       )}
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+      <div
+        className={
+          focusActive
+            ? 'flex-1 min-h-0 overflow-hidden px-4 py-3 flex flex-col'
+            : 'flex-1 overflow-y-auto px-4 py-3 space-y-4'
+        }
+      >
+        {!focusActive && (
+        <>
         {/* Linked Sessions -- kept at the top so they're visible without scrolling */}
-        {(linkedSessions.length > 0 || onLaunchSession || canLinkExistingSession || isLinkingExistingSession) && (
+        {(linkedSessions.length > 0 || onLaunchSession || onLaunchWorktree || canLinkExistingSession || isLinkingExistingSession) && (
           <div className="tracker-sessions-section">
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px]">
@@ -1361,6 +1442,16 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
                   >
                     <MaterialSymbol icon="add" size={14} />
                     Launch Session
+                  </button>
+                )}
+                {onLaunchWorktree && (
+                  <button
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
+                    onClick={() => onLaunchWorktree(item.id)}
+                    title="Launch a new isolated worktree session for this item"
+                  >
+                    <MaterialSymbol icon="account_tree" size={14} />
+                    Launch Worktree
                   </button>
                 )}
               </div>
@@ -1499,21 +1590,26 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           </div>
         )}
 
+        </>
+        )}
+
         {/* Rich Content Editor / Description */}
-        <div className="pt-1 border-t border-nim">
+        <div className={focusActive ? 'flex-1 min-h-0 flex flex-col' : 'pt-1 border-t border-nim'}>
+          {!focusActive && (
           <label className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px] block mb-1">
             Content
           </label>
+          )}
           {contentMode === 'local-pglite' && localEditorConfig ? (
             <div
-              className="tracker-content-editor border border-nim rounded bg-nim min-h-[200px] overflow-hidden"
+              className={`tracker-content-editor border border-nim rounded bg-nim overflow-hidden ${focusActive ? 'flex-1 min-h-0' : 'min-h-[200px]'}`}
               data-testid="tracker-detail-content-editor"
             >
               <NimbalystEditor key={`${item.id}-${externalContentEpoch}`} config={localEditorConfig} />
             </div>
           ) : contentMode === 'collaborative' && collabEditorConfig ? (
             <div
-              className="tracker-content-editor relative border border-nim rounded bg-nim min-h-[200px] overflow-hidden"
+              className={`tracker-content-editor relative border border-nim rounded bg-nim overflow-hidden ${focusActive ? 'flex-1 min-h-0 flex flex-col' : 'min-h-[200px]'}`}
               data-testid="tracker-detail-content-editor"
             >
               {!hasSyncedOnce && (
@@ -1575,7 +1671,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         </div>
 
         {/* Linked Commits */}
-        {item.system.linkedCommits && item.system.linkedCommits.length > 0 && (
+        {!focusActive && item.system.linkedCommits && item.system.linkedCommits.length > 0 && (
           <div className="pt-1 border-t border-nim">
             <label className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px] mb-1.5 block">
               Commits ({item.system.linkedCommits.length})
@@ -1617,10 +1713,10 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         )}
 
         {/* Linked From (incoming relationships, Epic C Phase 2) */}
-        <BacklinksSection itemId={item.id} onOpenItem={onOpenItem} />
+        {!focusActive && <BacklinksSection itemId={item.id} onOpenItem={onOpenItem} />}
 
         {/* Comments section */}
-        {item.source !== 'inline' && item.source !== 'frontmatter' && (
+        {!focusActive && item.source !== 'inline' && item.source !== 'frontmatter' && (
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <h4 className="text-xs font-medium text-nim-muted uppercase tracking-wide">Comments</h4>
@@ -1630,7 +1726,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         )}
 
         {/* Activity log */}
-        {item.system.activity && item.system.activity.length > 0 && (
+        {!focusActive && item.system.activity && item.system.activity.length > 0 && (
           <div className="space-y-2">
             <h4 className="text-xs font-medium text-nim-muted uppercase tracking-wide">Activity</h4>
             <div className="space-y-1">
@@ -1652,6 +1748,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         )}
 
         {/* Metadata footer */}
+        {!focusActive && (
         <div className="pt-1 border-t border-nim">
           <div className="grid grid-cols-2 gap-2 text-[11px]">
             {/* Author identity */}
@@ -1715,6 +1812,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

@@ -64,6 +64,60 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.git-operation-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 360px;
+  height: 24px;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--nim-primary) 45%, var(--nim-border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--nim-primary) 10%, var(--nim-bg-tertiary));
+  color: var(--nim-text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.git-operation-status-pill:hover {
+  border-color: var(--nim-primary);
+}
+
+.git-operation-status-pill--success {
+  border-color: color-mix(in srgb, var(--nim-success) 50%, var(--nim-border));
+}
+
+.git-operation-status-pill--success .git-operation-status-label {
+  color: var(--nim-success);
+}
+
+.git-operation-status-pill--error {
+  border-color: color-mix(in srgb, var(--nim-error) 55%, var(--nim-border));
+}
+
+.git-operation-status-pill--error .git-operation-status-label {
+  color: var(--nim-error);
+}
+
+.git-operation-status-label {
+  flex-shrink: 0;
+  color: var(--nim-primary);
+  font-weight: 600;
+}
+
+.git-operation-status-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--nim-text-muted);
+  font-family: var(--nim-font-mono, monospace);
 }
 
 .git-log-toolbar-filters {
@@ -135,6 +189,11 @@
 
 /* Action buttons */
 .git-log-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 24px;
   background: var(--nim-bg-tertiary);
   color: var(--nim-text);
   border: 1px solid var(--nim-border);
@@ -158,8 +217,79 @@
 }
 
 .git-log-action-btn--refresh {
-  padding: 3px 6px;
+  width: 28px;
+  padding: 0;
   font-size: 14px;
+  line-height: 1;
+}
+
+.git-log-hide-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.git-log-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--nim-border);
+  background: var(--nim-bg);
+  flex-shrink: 0;
+}
+
+.git-log-search-icon {
+  flex-shrink: 0;
+  color: var(--nim-text-muted);
+}
+
+.git-log-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 7px;
+  background: var(--nim-bg-tertiary);
+  color: var(--nim-text);
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  font: inherit;
+  outline: none;
+  user-select: text;
+}
+
+.git-log-search-input:focus {
+  border-color: var(--nim-primary);
+}
+
+.git-log-search-input::placeholder {
+  color: var(--nim-text-faint);
+}
+
+.git-log-search-count {
+  flex-shrink: 0;
+  color: var(--nim-text-muted);
+  font-size: 11px;
+}
+
+.git-log-search-clear {
+  flex-shrink: 0;
+  padding: 2px 4px;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--nim-text-faint);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.git-log-search-clear:hover {
+  color: var(--nim-text);
+  background: var(--nim-bg-active);
 }
 
 /* Split button (pull) */
@@ -177,9 +307,15 @@
 .git-log-split-btn-arrow {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
-  padding: 3px 4px;
-  font-size: 9px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+}
+
+.git-log-split-btn-chevron {
+  display: block;
 }
 
 .git-log-split-menu {
@@ -808,6 +944,16 @@
   background: var(--nim-error, #ef4444);
 }
 
+.git-tab-running {
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--nim-primary);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: git-spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
 /* Status bar "Show Details" link */
 .git-log-status-details-btn {
   background: none;
@@ -1306,6 +1452,10 @@
   border-left-color: var(--nim-primary);
 }
 
+.git-output-entry--interrupted {
+  border-left-color: var(--nim-warning, #fbbf24);
+}
+
 .git-output-entry-header {
   display: flex;
   align-items: baseline;
@@ -1495,6 +1645,10 @@
 
 .git-output-status--running {
   color: var(--nim-primary);
+}
+
+.git-output-status--interrupted {
+  color: var(--nim-warning, #fbbf24);
 }
 
 .git-output-spinner {

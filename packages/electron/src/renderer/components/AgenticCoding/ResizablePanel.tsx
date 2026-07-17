@@ -1,4 +1,5 @@
 import React, { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { useResizeDragShield } from '../../hooks/useResizeDragShield';
 
 interface ResizablePanelProps {
   leftPanel: ReactNode;
@@ -24,46 +25,35 @@ export const ResizablePanel: React.FC<ResizablePanelProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const startXRef = useRef<number>(0);
   const startWidthRef = useRef<number>(leftWidth);
+  const currentWidthRef = useRef(leftWidth);
 
   // Update current width when prop changes
   useEffect(() => {
     setCurrentWidth(leftWidth);
+    currentWidthRef.current = leftWidth;
   }, [leftWidth]);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-    startXRef.current = e.clientX;
-    startWidthRef.current = currentWidth;
-    document.body.style.cursor = 'ew-resize';
-    document.body.style.userSelect = 'none';
-  }, [currentWidth]);
-
-  useEffect(() => {
-    if (!isDragging) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const deltaX = e.clientX - startXRef.current;
+  const startResizeDrag = useResizeDragShield({
+    cursor: 'ew-resize',
+    onMove: (event) => {
+      const deltaX = event.clientX - startXRef.current;
       const newWidth = Math.max(minWidth, Math.min(maxWidth, startWidthRef.current + deltaX));
+      currentWidthRef.current = newWidth;
       setCurrentWidth(newWidth);
-    };
-
-    const handleMouseUp = () => {
+    },
+    onEnd: () => {
       setIsDragging(false);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      // Notify parent of the final width
-      onWidthChange(currentWidth);
-    };
+      onWidthChange(currentWidthRef.current);
+    },
+  });
 
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDragging, currentWidth, minWidth, maxWidth, onWidthChange]);
+  const handlePointerDown = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    setIsDragging(true);
+    startXRef.current = event.clientX;
+    startWidthRef.current = currentWidthRef.current;
+    startResizeDrag(event);
+  }, [startResizeDrag]);
 
   const displayWidth = collapsed ? 0 : currentWidth;
 
@@ -79,7 +69,8 @@ export const ResizablePanel: React.FC<ResizablePanelProps> = ({
           </div>
           <div
             className={`resizable-panel-divider relative w-0.5 cursor-ew-resize bg-nim-border shrink-0 transition-colors duration-150 hover:bg-nim-accent ${isDragging ? 'bg-nim-accent' : ''}`}
-            onMouseDown={handleMouseDown}
+            data-testid="agent-history-resize-handle"
+            onPointerDown={handlePointerDown}
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize session history panel"

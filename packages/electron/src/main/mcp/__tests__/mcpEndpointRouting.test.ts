@@ -5,6 +5,7 @@ import {
   extensionShortNameFromId,
   selectFirstPartyToolsForEndpoint,
   selectExtensionToolsForEndpoint,
+  applyCoreAlwaysLoadMeta,
 } from '../mcpEndpointRouting';
 import {
   MCP_CORE,
@@ -104,6 +105,44 @@ describe('mcpEndpointRouting', () => {
       ];
       const result = selectExtensionToolsForEndpoint(tools, 'excalidraw').map((t) => t.name);
       expect(result).toEqual(['excalidraw.add_rectangle', 'excalidraw.get_elements']);
+    });
+  });
+
+  describe('applyCoreAlwaysLoadMeta', () => {
+    const coreTools = [
+      { name: 'AskUserQuestion', description: 'ask', inputSchema: {} },
+      { name: 'PromptForUserInput', description: 'prompt', inputSchema: {} },
+      { name: 'developer_git_commit_proposal', description: 'commit', inputSchema: {} },
+      { name: 'get_session_edited_files', description: 'files', inputSchema: {} },
+      { name: 'update_session_meta', description: 'meta', inputSchema: {} },
+      { name: 'display_to_user', description: 'display', inputSchema: {} },
+      { name: 'capture_editor_screenshot', description: 'shot', inputSchema: {} },
+    ];
+
+    it('marks the always-load subset of core tools with anthropic/alwaysLoad', () => {
+      const result = applyCoreAlwaysLoadMeta(coreTools, MCP_CORE);
+      const metaByName = new Map(result.map((t) => [t.name, (t as { _meta?: Record<string, unknown> })._meta]));
+
+      // The visual-output tools are eager: the prompt tells the model to use
+      // them, so their schemas must be in context (NIM-1766).
+      for (const eager of [
+        'AskUserQuestion',
+        'PromptForUserInput',
+        'developer_git_commit_proposal',
+        'get_session_edited_files',
+        'update_session_meta',
+        'display_to_user',
+        'capture_editor_screenshot',
+      ]) {
+        expect(metaByName.get(eager)).toEqual({ 'anthropic/alwaysLoad': true });
+      }
+    });
+
+    it('leaves non-core endpoints untouched', () => {
+      const trackerTools = [{ name: 'tracker_list', description: 'list', inputSchema: {} }];
+      const result = applyCoreAlwaysLoadMeta(trackerTools, MCP_TRACKERS);
+      expect(result).toEqual(trackerTools);
+      expect((result[0] as { _meta?: unknown })._meta).toBeUndefined();
     });
   });
 });

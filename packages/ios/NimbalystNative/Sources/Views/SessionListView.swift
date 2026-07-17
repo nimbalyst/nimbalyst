@@ -161,6 +161,9 @@ public struct SessionListView: View {
     @State private var sessions: [Session] = []
     @State private var cancellable: AnyDatabaseCancellable?
     @State private var expandedWorkstreams: Set<String> = []
+    /// Meta-agent groups that are COLLAPSED. Stored as the inverse of expansion so the
+    /// default state is expanded, mirroring desktop (see `MetaAgentExpansion`).
+    @State private var collapsedMetaAgents: Set<String> = []
     @State private var selectedTab: ProjectTab = .sessions
 
     /// iPhone init: push navigation via NavigationLink.
@@ -232,18 +235,35 @@ public struct SessionListView: View {
 
     // MARK: - Hierarchy Computation
 
+    /// Meta-agent grouping (gated on the desktop alpha flag). When disabled, returns
+    /// empty so the list behaves exactly as before. Mirrors `SessionHistory.tsx`.
+    private var metaAgentGrouping: MetaAgentGrouping {
+        MetaAgentGrouper.group(sessions: filteredSessions, enabled: metaAgentEnabled)
+    }
+
+    /// Sessions excluding any that belong to a meta-agent group, so meta sessions and
+    /// their children don't ALSO render as flat / workstream / worktree rows.
+    private var sessionsForStandardGrouping: [Session] {
+        let metaIds = metaAgentGrouping.groupedSessionIds
+        guard !metaIds.isEmpty else { return filteredSessions }
+        return filteredSessions.filter { !metaIds.contains($0.id) }
+    }
+
     /// Workstream and worktree parent sessions with their children, sorted by most recent activity.
     private var workstreamGroups: [WorkstreamGroup] {
+        // Operate on sessions that aren't already claimed by a meta-agent group.
+        let base = sessionsForStandardGrouping
+
         // 1. Workstream groups (sessionType == "workstream" with parentSessionId children)
-        let parentIds = Set(filteredSessions.filter { $0.sessionType == "workstream" }.map(\.id))
-        let childrenByParent = Dictionary(grouping: filteredSessions.filter { session in
+        let parentIds = Set(base.filter { $0.sessionType == "workstream" }.map(\.id))
+        let childrenByParent = Dictionary(grouping: base.filter { session in
             if let pid = session.parentSessionId, parentIds.contains(pid) {
                 return true
             }
             return false
         }) { $0.parentSessionId! }
 
-        var groups = filteredSessions
+        var groups = base
             .filter { $0.sessionType == "workstream" }
             .map { parent in
                 let children = (childrenByParent[parent.id] ?? [])
@@ -254,7 +274,7 @@ public struct SessionListView: View {
         // 2. Worktree groups (sessions with a worktreeId, not already in a workstream)
         // Even a single session with a worktreeId forms a worktree group (matching desktop behavior)
         let workstreamMemberIds = Set(parentIds.union(childrenByParent.values.flatMap { $0.map(\.id) }))
-        let worktreeSessions = filteredSessions.filter { session in
+        let worktreeSessions = base.filter { session in
             session.worktreeId != nil && !workstreamMemberIds.contains(session.id)
         }
         let sessionsByWorktree = Dictionary(grouping: worktreeSessions) { $0.worktreeId! }
@@ -290,10 +310,12 @@ public struct SessionListView: View {
         return ids
     }
 
-    /// Sessions that are standalone: not in any workstream or worktree group.
+    /// Sessions that are standalone: not in any workstream, worktree, or meta-agent group.
     private var standaloneSessions: [Session] {
         let grouped = groupedSessionIds
-        return filteredSessions.filter { session in
+        // `sessionsForStandardGrouping` already drops meta-agent sessions and their
+        // children, so they never fall through to the flat/time-grouped list.
+        return sessionsForStandardGrouping.filter { session in
             // Exclude sessions in groups
             if grouped.contains(session.id) { return false }
             // Exclude workstream parents (shouldn't happen, but safety)
@@ -421,6 +443,8 @@ public struct SessionListView: View {
         .onAppear {
             startObserving()
             loadExpandedState()
+            loadMetaAgentExpansionState()
+            metaAgentEnabled = FeaturePreferences.metaAgentEnabled
             appState.configureVoiceAgent(forProject: project.id)
             resolveDefaultModel()
         }
@@ -431,9 +455,16 @@ public struct SessionListView: View {
             cancellable?.cancel()
             startObserving()
             loadExpandedState()
+            loadMetaAgentExpansionState()
         }
         .onDisappear {
             cancellable?.cancel()
+        }
+        // Refresh the meta-agent gate at the root so a desktop flip is caught even when the
+        // user is on a non-Sessions tab. The creation menu's listener is only mounted while
+        // `selectedTab == .sessions`, so it misses flips made on other tabs.
+        .onReceive(NotificationCenter.default.publisher(for: .init("MetaAgentEnabledSynced"))) { _ in
+            metaAgentEnabled = FeaturePreferences.metaAgentEnabled
         }
     }
 
@@ -453,6 +484,16 @@ public struct SessionListView: View {
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         }
 
+        // Meta-agent groups always render first, in their own section (mirrors desktop,
+        // which places the "Meta Agent" group at the very top). Gated on the alpha flag.
+        if metaAgentEnabled && !metaAgentGrouping.groups.isEmpty {
+            Section("Meta Agent") {
+                ForEach(metaAgentGrouping.groups) { group in
+                    metaAgentGroupView(group)
+                }
+            }
+        }
+
         // All items interleaved by time period
         ForEach(allItemsGroupedByPeriod) { periodGroup in
             Section(periodGroup.period.rawValue) {
@@ -460,6 +501,45 @@ public struct SessionListView: View {
                     sessionListItemView(item)
                 }
             }
+        }
+    }
+
+    // MARK: - Meta Agent Group View
+
+    @ViewBuilder
+    private func metaAgentGroupView(_ group: MetaAgentGroup) -> some View {
+        // The group context menu is passed INTO the view so it can be attached to the
+        // header row only. `MetaAgentGroupView` now emits the header and each child as
+        // separate List rows, so a call-site `.contextMenu` would leak onto the children.
+        MetaAgentGroupView(
+            group: group,
+            isExpanded: Binding(
+                get: { !collapsedMetaAgents.contains(group.id) },
+                set: { newValue in setMetaAgentExpanded(newValue, for: group.id) }
+            ),
+            voiceFocusedSessionId: voiceFocusedSessionId,
+            useSelectionTags: isIPadSidebar,
+            headerContextMenu: { metaAgentGroupContextMenu(for: group) }
+        )
+    }
+
+    // MARK: - Context Menu for Meta Agent Groups
+
+    @ViewBuilder
+    private func metaAgentGroupContextMenu(for group: MetaAgentGroup) -> some View {
+        Button {
+            archiveMetaAgentGroup(group, archive: !group.metaSession.isArchived)
+        } label: {
+            Label(
+                group.metaSession.isArchived ? "Unarchive Group" : "Archive Group",
+                systemImage: group.metaSession.isArchived ? "arrow.uturn.backward" : "archivebox"
+            )
+        }
+
+        Button(role: .destructive) {
+            deleteMetaAgentGroup(group)
+        } label: {
+            Label("Delete Group", systemImage: "trash")
         }
     }
 
@@ -755,6 +835,21 @@ public struct SessionListView: View {
         }
     }
 
+    /// Load persisted meta-agent collapsed state (default expanded, mirroring desktop).
+    private func loadMetaAgentExpansionState() {
+        collapsedMetaAgents = MetaAgentExpansion(projectId: project.id).collapsedIds()
+    }
+
+    /// Toggle and persist the expanded/collapsed state for a single meta-agent group.
+    private func setMetaAgentExpanded(_ expanded: Bool, for metaSessionId: String) {
+        if expanded {
+            collapsedMetaAgents.remove(metaSessionId)
+        } else {
+            collapsedMetaAgents.insert(metaSessionId)
+        }
+        MetaAgentExpansion(projectId: project.id).setCollapsedIds(collapsedMetaAgents)
+    }
+
     // MARK: - Actions
 
     private func deleteSession(_ session: Session) {
@@ -923,6 +1018,43 @@ public struct SessionListView: View {
             }
         } catch {
             print("Failed to \(archive ? "archive" : "unarchive") session: \(error)")
+        }
+    }
+
+    /// Archive (or unarchive) a whole meta-agent group: the meta session and all of
+    /// its sub-agents. Mirrors desktop `handleArchiveMetaAgentSession` /
+    /// `getMetaAgentGroupSessionIds`.
+    private func archiveMetaAgentGroup(_ group: MetaAgentGroup, archive: Bool) {
+        guard let sync = appState.syncManager else { return }
+        let sessionIds = [group.metaSession.id] + group.children.map(\.id)
+        do {
+            for sessionId in sessionIds {
+                try sync.setSessionArchived(sessionId: sessionId, isArchived: archive)
+                if archive && !showArchived && selectedSession?.wrappedValue?.id == sessionId {
+                    selectedSession?.wrappedValue = nil
+                }
+            }
+            AnalyticsManager.shared.capture(archive ? "mobile_session_archived" : "mobile_session_unarchived")
+        } catch {
+            print("Failed to \(archive ? "archive" : "unarchive") meta agent group: \(error)")
+        }
+    }
+
+    /// Delete a whole meta-agent group: the meta session and all of its sub-agents.
+    /// Mirrors desktop `handleDeleteMetaAgentSession` / `getMetaAgentGroupSessionIds`.
+    private func deleteMetaAgentGroup(_ group: MetaAgentGroup) {
+        guard let db = appState.databaseManager else { return }
+        let sessionIds = [group.metaSession.id] + group.children.map(\.id)
+        do {
+            for sessionId in sessionIds {
+                try db.deleteSession(sessionId)
+                if selectedSession?.wrappedValue?.id == sessionId {
+                    selectedSession?.wrappedValue = nil
+                }
+            }
+            try db.refreshSessionCount(forProject: project.id)
+        } catch {
+            print("Failed to delete meta agent group: \(error)")
         }
     }
 

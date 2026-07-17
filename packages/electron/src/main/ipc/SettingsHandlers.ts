@@ -35,6 +35,7 @@ import {
     isWorktreeOnboardingShown, setWorktreeOnboardingShown,
     getClaudeCodeSettings,
     setClaudeCodeProjectCommandsEnabled, setClaudeCodeUserCommandsEnabled,
+    setClaudeCodeApiUpstreamUrl,
     getAgentWorkflowSourceSettings, getAgentWorkflowExportSettings,
     setAgentWorkflowSourceSettings, setAgentWorkflowExportSettings,
 } from '../utils/store';
@@ -46,12 +47,25 @@ import { SoundNotificationService } from '../services/SoundNotificationService';
 import { autoUpdaterService } from '../services/autoUpdater';
 import type { OnboardingState } from '../utils/store';
 import { getCredentials, resetCredentials, generateQRPairingPayload, isUsingSecureStorage } from '../services/CredentialService';
-import { onSyncStatusChange, updateSleepPrevention } from '../services/SyncManager';
+import {
+    isSyncProviderReady,
+    onSyncStatusChange,
+    triggerIncrementalSync,
+    updateSleepPrevention,
+} from '../services/SyncManager';
+import { getDocSyncStatusForWorkspace } from '../file/WorkspaceWatcher';
 import * as StytchAuth from '../services/StytchAuthService';
 import { getRestartSignalPath } from '../utils/appPaths';
 import { TrayManager } from '../tray/TrayManager';
 import { STYTCH_CONFIG } from '@nimbalyst/runtime';
 import { type EffortLevel, parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { repositoryManager } from '../services/RepositoryManager';
+import {
+    migratePersonalSyncProfiles,
+    persistActivePersonalSyncProfile,
+    switchPersonalSyncProfile,
+} from '../services/PersonalSyncProfiles';
+import { purgeOfflineCollabAccounts } from '../services/CollabOfflineAccountLifecycle';
 
 // Track if we've subscribed to sync status changes
 let syncStatusListenerSetup = false;
@@ -706,6 +720,16 @@ export function registerSettingsHandlers() {
         logger.store.info(`[SettingsHandlers] Claude Code user commands ${enabled ? 'enabled' : 'disabled'}`);
     });
 
+    safeHandle('claudeCode:set-api-upstream-url', async (_event, url: string) => {
+        try {
+            setClaudeCodeApiUpstreamUrl(url ?? '');
+            logger.store.info(`[SettingsHandlers] Claude Code API upstream URL ${url?.trim() ? 'set' : 'cleared'}`);
+            return { success: true as const };
+        } catch (err) {
+            return { success: false as const, error: err instanceof Error ? err.message : String(err) };
+        }
+    });
+
     safeHandle('agentWorkflows:set-source-settings', async (_event, updates: {
         workspaceClaudeCompatibilityEnabled?: boolean;
         includeProjectClaudeSources?: boolean;
@@ -823,16 +847,19 @@ export function registerSettingsHandlers() {
 
     // Session sync settings
     safeHandle('sync:get-config', () => {
-        return getSessionSyncConfig();
+        const config = getSessionSyncConfig();
+        if (!config) return config;
+        const migrated = migratePersonalSyncProfiles(config);
+        if (migrated !== config) setSessionSyncConfig(migrated);
+        return migrated;
     });
 
     safeHandle('sync:set-config', async (_event, config: SessionSyncConfig | null) => {
-        setSessionSyncConfig(config ?? undefined);
+        setSessionSyncConfig(config ? persistActivePersonalSyncProfile(config) : undefined);
         logger.store.info(`[SettingsHandlers] Session sync ${config?.enabled ? 'enabled' : 'disabled'}`);
 
         // Reinitialize sync with the new configuration
         try {
-            const { repositoryManager } = await import('../services/RepositoryManager');
             await repositoryManager.reinitializeSyncWithNewConfig();
         } catch (error) {
             logger.store.error('[SettingsHandlers] Failed to reinitialize sync:', error);
@@ -848,6 +875,9 @@ export function registerSettingsHandlers() {
         if (!account) {
             return { success: false, error: 'Account not found' };
         }
+        if (!StytchAuth.setSyncAccount(personalOrgId)) {
+            return { success: false, error: 'Unable to select sync account' };
+        }
 
         const currentConfig = getSessionSyncConfig();
         if (!currentConfig) {
@@ -855,16 +885,14 @@ export function registerSettingsHandlers() {
         }
 
         // Update the persisted sync identity
-        setSessionSyncConfig({
-            ...currentConfig,
+        setSessionSyncConfig(switchPersonalSyncProfile(currentConfig, {
             personalOrgId: account.personalOrgId,
             personalUserId: account.personalUserId ?? undefined,
-        });
+        }));
         logger.store.info('[SettingsHandlers] Switched sync account to:', account.email, account.personalOrgId);
 
         // Reinitialize sync with the new identity
         try {
-            const { repositoryManager } = await import('../services/RepositoryManager');
             await repositoryManager.reinitializeSyncWithNewConfig();
         } catch (error) {
             logger.store.error('[SettingsHandlers] Failed to reinitialize sync after account switch:', error);
@@ -1064,6 +1092,22 @@ export function registerSettingsHandlers() {
         };
     });
 
+    // Per-project doc (.md file) sync status, for Docs-toggle feedback in the sync panel
+    safeHandle('sync:get-doc-sync-status', async (_event, workspacePath: string) => {
+        if (!workspacePath) {
+            return { success: false, error: 'workspacePath is required' };
+        }
+        try {
+            const config = getSessionSyncConfig();
+            const enabled = (config?.docSyncEnabledProjects ?? []).includes(workspacePath);
+            const status = getDocSyncStatusForWorkspace(workspacePath);
+            return { success: true, enabled, ...status };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to get doc sync status';
+            return { success: false, error: message };
+        }
+    });
+
     // Toggle sync for a specific project
     safeHandle('sync:toggle-project', async (_event, workspacePath: string, enabled: boolean) => {
         if (!workspacePath) {
@@ -1101,7 +1145,6 @@ export function registerSettingsHandlers() {
         // If a project was enabled, trigger sync to push its sessions immediately
         if (enabled) {
             try {
-                const { triggerIncrementalSync, isSyncProviderReady } = await import('../services/SyncManager');
                 if (isSyncProviderReady()) {
                     // Provider exists - trigger incremental sync directly
                     triggerIncrementalSync().catch(err => {
@@ -1110,7 +1153,6 @@ export function registerSettingsHandlers() {
                 } else {
                     // Provider not ready yet (e.g. sync was just enabled) - reinitialize
                     // which will create the provider and run initial sync including this project
-                    const { repositoryManager } = await import('../services/RepositoryManager');
                     repositoryManager.reinitializeSyncWithNewConfig().catch(err => {
                         logger.store.error('[sync:toggle-project] Failed to reinitialize sync:', err);
                     });
@@ -1225,6 +1267,16 @@ export function registerSettingsHandlers() {
         return StytchAuth.getAccounts();
     });
 
+    safeHandle('stytch:get-sync-account', () => {
+        ensureStytchInitialized();
+        return StytchAuth.getSyncAccount();
+    });
+
+    safeHandle('stytch:set-sync-account', (_event, personalOrgId: string) => {
+        ensureStytchInitialized();
+        return { success: StytchAuth.setSyncAccount(personalOrgId) };
+    });
+
     // Check if user is authenticated with Stytch
     safeHandle('stytch:is-authenticated', () => {
         ensureStytchInitialized();
@@ -1285,8 +1337,27 @@ export function registerSettingsHandlers() {
     });
 
     // Sign out (all accounts)
-    safeHandle('stytch:sign-out', async () => {
+    safeHandle('stytch:sign-out', async (_event, forceOfflinePurge = false) => {
         ensureStytchInitialized();
+        const accountIds = StytchAuth.getAccounts()
+            .map((account) => account.personalUserId)
+            .filter((accountId): accountId is string => !!accountId);
+        try {
+            const purge = await purgeOfflineCollabAccounts(accountIds, {
+                force: forceOfflinePurge,
+            });
+            if (!purge.purged) {
+                return {
+                    success: false,
+                    requiresOfflinePurgeConfirmation: true,
+                    pendingDocumentCount: purge.pendingDocumentCount,
+                };
+            }
+        } catch (error) {
+            // Authentication must remain usable even when the local database
+            // is unavailable. A failed purge preserves the local rows/key.
+            logger.main.warn('[stytch:sign-out] Offline collaboration purge failed; preserving local data', error);
+        }
         await StytchAuth.signOut();
         return { success: true };
     });
@@ -1309,14 +1380,37 @@ export function registerSettingsHandlers() {
     });
 
     // Remove a specific account by personalOrgId
-    safeHandle('stytch:remove-account', async (_event, personalOrgId: string) => {
+    safeHandle('stytch:remove-account', async (
+        _event,
+        personalOrgId: string,
+        forceOfflinePurge = false,
+    ) => {
         ensureStytchInitialized();
+        const accountId = StytchAuth.getAccounts()
+            .find((account) => account.personalOrgId === personalOrgId)
+            ?.personalUserId;
+        if (accountId) {
+            try {
+                const purge = await purgeOfflineCollabAccounts([accountId], {
+                    force: forceOfflinePurge,
+                });
+                if (!purge.purged) {
+                    return {
+                        success: false,
+                        requiresOfflinePurgeConfirmation: true,
+                        pendingDocumentCount: purge.pendingDocumentCount,
+                    };
+                }
+            } catch (error) {
+                logger.main.warn('[stytch:remove-account] Offline collaboration purge failed; preserving local data', error);
+            }
+        }
         await StytchAuth.removeAccount(personalOrgId);
         return { success: true };
     });
 
     // Delete account and all associated data
-    safeHandle('stytch:delete-account', async () => {
+    safeHandle('stytch:delete-account', async (_event, personalOrgId?: string) => {
         ensureStytchInitialized();
         // Derive server URL same as other Stytch handlers
         const syncConfig = getSessionSyncConfig();
@@ -1328,7 +1422,7 @@ export function registerSettingsHandlers() {
         } else {
             serverUrl = 'wss://sync.nimbalyst.com';
         }
-        return StytchAuth.deleteAccount(serverUrl);
+        return StytchAuth.deleteAccount(personalOrgId, serverUrl);
     });
 
     // Get session JWT for server authentication

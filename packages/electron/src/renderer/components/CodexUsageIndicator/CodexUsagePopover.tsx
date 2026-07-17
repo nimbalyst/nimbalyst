@@ -1,23 +1,25 @@
 /**
  * CodexUsagePopover - Detailed Codex usage information popover
  *
- * Shows both session (5-hour) and weekly usage with progress bars and reset times.
+ * Shows the account's current duration-labelled usage windows and reset times.
  */
 
 import React, { useEffect, RefObject } from 'react';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import {
+  codexUsageColor,
   codexUsageAtom,
-  codexUsageSessionColorAtom,
-  codexUsageWeeklyColorAtom,
+  formatCodexWindowLabel,
+  formatCodexWindowSubtitle,
   formatResetTime,
+  getCodexUsageWindows,
 } from '../../store/atoms/codexUsageAtoms';
 import { useSetSetting } from '../../hooks/useSetting';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
 
 interface CodexUsagePopoverProps {
-  anchorRef: RefObject<HTMLElement>;
+  anchorRef: RefObject<HTMLElement | null>;
   onClose: () => void;
   onRefresh: () => Promise<void>;
 }
@@ -28,11 +30,11 @@ interface UsageSectionProps {
   utilization: number;
   resetsAt: string | null;
   color: 'green' | 'yellow' | 'red' | 'muted';
-  windowDurationMs: number;
+  windowDurationMs: number | null;
 }
 
-function calculateTimeElapsedPercent(resetsAt: string | null, windowDurationMs: number): number {
-  if (!resetsAt) return 0;
+function calculateTimeElapsedPercent(resetsAt: string | null, windowDurationMs: number | null): number {
+  if (!resetsAt || !windowDurationMs) return 0;
 
   const resetTime = new Date(resetsAt).getTime();
   const now = Date.now();
@@ -78,15 +80,17 @@ const UsageSection: React.FC<UsageSectionProps> = ({
           className={`h-full rounded-full transition-all duration-300 ${colors.bar}`}
           style={{ width: `${Math.min(utilization, 100)}%` }}
         />
-        <div
-          className={`absolute top-0 h-full w-0.5 transition-all duration-300 ${isOverPacing ? 'bg-red-400' : 'bg-nim-text-muted'}`}
-          style={{ left: `${timeElapsedPercent}%` }}
-          title={`${Math.round(timeElapsedPercent)}% of window elapsed`}
-        />
+        {resetsAt && windowDurationMs && (
+          <div
+            className={`absolute top-0 h-full w-0.5 transition-all duration-300 ${isOverPacing ? 'bg-red-400' : 'bg-nim-text-muted'}`}
+            style={{ left: `${timeElapsedPercent}%` }}
+            title={`${Math.round(timeElapsedPercent)}% of window elapsed`}
+          />
+        )}
       </div>
       <div className="flex items-center gap-1 text-[11px] text-nim-muted">
         <MaterialSymbol icon="schedule" size={12} className="opacity-70" />
-        <span>Resets in {formatResetTime(resetsAt)}</span>
+        <span>{resetsAt ? `Resets in ${formatResetTime(resetsAt)}` : 'Reset time unavailable'}</span>
       </div>
     </div>
   );
@@ -98,8 +102,6 @@ export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
   onRefresh,
 }) => {
   const usage = useAtomValue(codexUsageAtom);
-  const sessionColor = useAtomValue(codexUsageSessionColorAtom);
-  const weeklyColor = useAtomValue(codexUsageWeeklyColorAtom);
   const setUsageIndicatorEnabled = useSetSetting('ai.showCodexUsageIndicator');
   const [isRefreshing, setIsRefreshing] = React.useState(false);
 
@@ -130,10 +132,7 @@ export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
   }
 
   const limitsAvailable = usage.limitsAvailable ?? true;
-
-  // Determine window durations from the data
-  const sessionWindowMs = 5 * 60 * 60 * 1000; // 5 hours
-  const weeklyWindowMs = 7 * 24 * 60 * 60 * 1000; // 7 days
+  const windowEntries = getCodexUsageWindows(usage);
 
   return (
     <FloatingPortal>
@@ -184,27 +183,36 @@ export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
             <div className="text-[13px] text-nim-error">{usage.error}</div>
           ) : (
             <>
-              {!limitsAvailable && (
+              {!limitsAvailable && windowEntries.length === 0 && (
                 <div className="mb-3 text-[12px] text-nim-muted">
                   Usage detected, but Codex limits are unavailable in recent session data.
                 </div>
               )}
-              <UsageSection
-                title="Session"
-                subtitle="5-hour window"
-                utilization={usage.fiveHour.utilization}
-                resetsAt={usage.fiveHour.resetsAt}
-                color={sessionColor as 'green' | 'yellow' | 'red' | 'muted'}
-                windowDurationMs={sessionWindowMs}
-              />
-              <UsageSection
-                title="Weekly"
-                subtitle="7-day window"
-                utilization={usage.sevenDay.utilization}
-                resetsAt={usage.sevenDay.resetsAt}
-                color={weeklyColor as 'green' | 'yellow' | 'red' | 'muted'}
-                windowDurationMs={weeklyWindowMs}
-              />
+              {windowEntries.map(({ limit, window }) => {
+                const durationLabel = formatCodexWindowLabel(window);
+                const title = limit.name ? `${limit.name} · ${durationLabel}` : durationLabel;
+                return (
+                  <UsageSection
+                    key={`${limit.id}:${window.slot}`}
+                    title={title}
+                    subtitle={formatCodexWindowSubtitle(window)}
+                    utilization={window.usedPercent}
+                    resetsAt={window.resetsAt}
+                    color={codexUsageColor(window.usedPercent)}
+                    windowDurationMs={window.windowDurationMins === null
+                      ? null
+                      : window.windowDurationMins * 60 * 1000}
+                  />
+                );
+              })}
+              {(usage.rateLimitResetCredits?.availableCount ?? 0) > 0 && (
+                <div className="mb-4 last:mb-0 rounded-md bg-nim-tertiary px-2.5 py-2 text-[11px] text-nim-muted">
+                  <span className="font-semibold text-nim">
+                    {usage.rateLimitResetCredits?.availableCount} full reset{usage.rateLimitResetCredits?.availableCount === 1 ? '' : 's'} available
+                  </span>
+                  <div className="mt-0.5">Redeem from Codex account usage when needed.</div>
+                </div>
+              )}
             </>
           )}
         </div>

@@ -231,8 +231,8 @@ interface ResizeStart {
 function useEmbedResize(
   editor: LexicalEditor,
   nodeKey: NodeKey,
-  frameRef: React.RefObject<HTMLDivElement>,
-  bodyRef: React.RefObject<HTMLDivElement>,
+  frameRef: React.RefObject<HTMLDivElement | null>,
+  bodyRef: React.RefObject<HTMLDivElement | null>,
 ): {
   isResizing: boolean;
   onResizeStart: (event: React.PointerEvent, direction: number) => void;

@@ -1,1 +1,0 @@
-export { BackgroundTaskIndicator } from './BackgroundTaskIndicator';

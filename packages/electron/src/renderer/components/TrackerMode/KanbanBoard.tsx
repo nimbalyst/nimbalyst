@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useCallback, useRef, useState } from 'react';
 import { useFloating, offset, flip, shift, FloatingPortal } from '@floating-ui/react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol, TrackerUnreadDot } from '@nimbalyst/runtime';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
-import type { TrackerItemType } from '@nimbalyst/runtime/plugins/TrackerPlugin';
-import { globalRegistry, getRoleField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
-import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordSortOrder, getFieldByRole, buildKanbanStatusColumns } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
+import { TrackerFavoriteStar, type TrackerItemType } from '@nimbalyst/runtime/plugins/TrackerPlugin';
+import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordSortOrder, getRecordExternalKey, getFieldByRole, buildKanbanStatusColumns, resolveRoleFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { generateKeyBetween } from '@nimbalyst/runtime/utils/fractionalIndex';
 import { UserAvatar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/UserAvatar';
 
@@ -79,6 +79,8 @@ interface KanbanBoardProps {
    *  exactly one item is selected. Callers omit this when the workspace
    *  has no team configured. */
   onCopyDeepLink?: (itemId: string) => void;
+  favoriteItemIds?: ReadonlySet<string>;
+  onToggleFavorite?: (itemId: string) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -117,6 +119,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   onArchiveItems,
   onDeleteItems,
   onCopyDeepLink,
+  favoriteItemIds = new Set<string>(),
+  onToggleFavorite,
 }) => {
   // Items always come from the caller (TrackerMainView passes atom-sourced items).
   // KanbanBoard no longer loads its own data -- single source of truth via Jotai atoms.
@@ -183,7 +187,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
 
   /** Convenience wrapper for status-only updates */
   const updateItemStatus = useCallback(async (record: TrackerRecord, newStatus: string) => {
-    return updateItemFields(record, { status: newStatus });
+    // Kanban columns are driven by workflowStatus, so writes must target the resolved field.
+    const statusFieldName = resolveRoleFieldName(record.primaryType, 'workflowStatus');
+    return updateItemFields(record, { [statusFieldName]: newStatus });
   }, [updateItemFields]);
 
   const handleDragStart = useCallback((e: React.DragEvent, item: TrackerRecord) => {
@@ -304,26 +310,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
     closeContextMenu();
     const items = allItemsRef.current.filter(i => selectedIds.has(i.id));
     for (const item of items) {
-      try {
-        if (item.source === 'frontmatter' || item.source === 'import' || item.source === 'inline') {
-          await window.electronAPI.documentService.updateTrackerItemInFile({
-            itemId: item.id,
-            updates: { priority: newPriority },
-          });
-        } else if (!item.system.documentPath || item.source === 'native') {
-          const tracker = globalRegistry.get(item.primaryType);
-          const syncMode = tracker?.sync?.mode || 'local';
-          await window.electronAPI.documentService.updateTrackerItem({
-            itemId: item.id,
-            updates: { priority: newPriority },
-            syncMode,
-          });
-        }
-      } catch (err) {
-        console.error('[KanbanBoard] Failed to update priority:', err);
-      }
+      // Custom tracker types can map priority to a non-priority field.
+      const priorityFieldName = resolveRoleFieldName(item.primaryType, 'priority');
+      await updateItemFields(item, { [priorityFieldName]: newPriority });
     }
-  }, [selectedIds, closeContextMenu]);
+  }, [selectedIds, closeContextMenu, updateItemFields]);
 
   // Sort mode for kanban columns
   type KanbanSortMode = 'manual' | 'priority' | 'created' | 'updated';
@@ -429,7 +420,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
     if (currentStatus === targetStatus) {
       updateItemFields(item, { kanbanSortOrder: newSortOrder });
     } else {
-      updateItemFields(item, { status: targetStatus, kanbanSortOrder: newSortOrder });
+      // Moving between columns is a workflowStatus update.
+      const statusFieldName = resolveRoleFieldName(item.primaryType, 'workflowStatus');
+      updateItemFields(item, { [statusFieldName]: targetStatus, kanbanSortOrder: newSortOrder });
     }
   }, [updateItemFields]);
 
@@ -528,7 +521,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
       if (currentStatus === targetStatus) {
         updateItemFields(item, { kanbanSortOrder: newSortOrder });
       } else {
-        updateItemFields(item, { status: targetStatus, kanbanSortOrder: newSortOrder });
+        // Keep the document-level drop path aligned with the component drop path.
+        const statusFieldName = resolveRoleFieldName(item.primaryType, 'workflowStatus');
+        updateItemFields(item, { [statusFieldName]: targetStatus, kanbanSortOrder: newSortOrder });
       }
     };
 
@@ -610,9 +605,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                   {dragOverColumn === col.value && dropIndex === cardIndex && dragItemId !== item.id && (
                     <div className="h-[2px] bg-[var(--nim-primary)] rounded-full mx-1 my-0.5" />
                   )}
-                <button
+                <div
                   data-testid="tracker-kanban-card"
                   data-item-id={item.id}
+                  role="button"
+                  tabIndex={0}
                   draggable
                   onDragStart={(e) => handleDragStart(e, item)}
                   onDragEnd={handleDragEnd}
@@ -624,6 +621,12 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                       : 'border-nim'
                   }`}
                   onClick={(e) => handleCardSelect(e, item)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      handleCardSelect(event as unknown as React.MouseEvent, item);
+                    }
+                  }}
                   onContextMenu={(e) => handleCardContextMenu(e, item)}
                 >
                   <div className="flex items-start gap-2">
@@ -632,12 +635,21 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                       className="w-2 h-2 rounded-full mt-1.5 shrink-0"
                       style={{ backgroundColor: PRIORITY_COLORS[getRecordPriority(item) || 'medium'] || '#6b7280' }}
                     />
+                    <TrackerUnreadDot itemId={item.id} className="mt-1" />
+                    <TrackerFavoriteStar itemId={item.id} isFavorite={favoriteItemIds.has(item.id)} onToggle={onToggleFavorite} />
                     <div className="flex-1 min-w-0">
-                      {item.issueKey && (
-                        <div className="text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-nim-faint mb-0.5">
-                          {item.issueKey}
-                        </div>
-                      )}
+                      {(() => {
+                        // externalKey role (e.g. a PR number) rides next to the
+                        // local issue key so imported/external items stay
+                        // recognizable on the board.
+                        const externalKey = getRecordExternalKey(item);
+                        const keyLine = [item.issueKey, externalKey].filter(Boolean).join(' · ');
+                        return keyLine ? (
+                          <div className="text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-nim-faint mb-0.5">
+                            {keyLine}
+                          </div>
+                        ) : null;
+                      })()}
                       <div className="text-sm text-nim leading-snug line-clamp-2">
                         {getRecordTitle(item)}
                       </div>
@@ -692,7 +704,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                       </div>
                     </div>
                   </div>
-                </button>
+                </div>
                 </React.Fragment>
               ))}
               {/* Drop indicator after last card */}

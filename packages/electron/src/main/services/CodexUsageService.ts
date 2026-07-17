@@ -2,14 +2,14 @@
  * CodexUsageService - Tracks OpenAI Codex usage limits
  *
  * This service:
- * - Reads Codex CLI session files from ~/.codex/sessions/
- * - Extracts rate_limits data from token_count events in JSONL files
+ * - Reads current limits through the Codex app-server account API
+ * - Falls back to Codex CLI session files for older binaries
  * - Implements activity-aware polling (active when using Codex, sleeps when idle)
  * - Broadcasts usage updates to renderer via IPC
  *
- * Subscription users provide rate_limits. If rate_limits are missing
- * (common for API key sessions), we fall back to token usage so the
- * indicator still appears with limits unavailable.
+ * Subscription users provide rate limits. If limits are missing (common for
+ * API key sessions), we fall back to token usage so the indicator still
+ * appears with limits unavailable.
  */
 
 import { readdir, readFile, stat } from 'fs/promises';
@@ -17,27 +17,56 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { BrowserWindow } from 'electron';
+import type {
+  AccountRateLimitSnapshot,
+  AccountRateLimitsReadResponse,
+} from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/types';
 import { logger } from '../utils/logger';
+import { codexAuthService } from './CodexAuthService';
 
-export interface CodexUsageData {
-  fiveHour: {
-    utilization: number; // 0-100 percentage
-    resetsAt: string | null; // ISO timestamp
-  };
-  sevenDay: {
-    utilization: number;
-    resetsAt: string | null;
-  };
-  credits?: {
+export interface CodexUsageWindow {
+  slot: 'primary' | 'secondary';
+  usedPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: string | null;
+}
+
+export interface CodexUsageLimit {
+  id: string;
+  name: string | null;
+  planType: string | null;
+  windows: CodexUsageWindow[];
+  credits: {
     hasCredits: boolean;
     unlimited: boolean;
-    balance: number | null;
-  };
+    balance: string | null;
+  } | null;
+  individualLimit: {
+    limit: string;
+    used: string;
+    remainingPercent: number;
+    resetsAt: string;
+  } | null;
+  rateLimitReachedType: string | null;
+}
+
+export interface CodexUsageData {
+  limits: CodexUsageLimit[];
+  rateLimitResetCredits?: {
+    availableCount: number;
+    credits: Array<{
+      id: string;
+      title: string | null;
+      description: string | null;
+      expiresAt: string | null;
+    }> | null;
+  } | null;
   tokenUsage?: {
     totalTokens: number;
     lastTokens: number | null;
   };
   limitsAvailable?: boolean;
+  source?: 'account' | 'session';
   lastUpdated: number; // Unix timestamp
   error?: string;
 }
@@ -82,8 +111,14 @@ class CodexUsageServiceImpl {
   private lastActivityTime: number = 0;
   private isPolling: boolean = false;
   private isSleeping: boolean = true;
+  private unsubscribeRateLimits: (() => void) | null = null;
 
   initialize(): void {
+    this.unsubscribeRateLimits ??= codexAuthService.onRateLimitsUpdated(() => {
+      void this.refresh().catch((error) => {
+        logger.main.warn('[CodexUsageService] Failed to refresh after rate-limit update:', error);
+      });
+    });
     logger.main.info('[CodexUsageService] Initialized (sleeping until activity detected)');
   }
 
@@ -94,8 +129,11 @@ class CodexUsageServiceImpl {
       // logger.main.info('[CodexUsageService] Waking up due to activity');
       this.isSleeping = false;
       this.startPolling();
-      await this.refresh();
     }
+
+    // ai:sendMessage resolves after the turn finishes, so refresh the canonical
+    // account snapshot now rather than waiting for the background poll.
+    await this.refresh();
   }
 
   getCachedUsage(): CodexUsageData | null {
@@ -104,6 +142,21 @@ class CodexUsageServiceImpl {
 
   async refresh(): Promise<CodexUsageData> {
     try {
+      try {
+        const accountRateLimits = await codexAuthService.getRateLimits();
+        if (hasAccountRateLimits(accountRateLimits)) {
+          const usageData = convertAccountRateLimitsResponse(accountRateLimits);
+          this.cachedUsage = usageData;
+          this.broadcastUpdate();
+          return usageData;
+        }
+      } catch (error) {
+        logger.main.debug(
+          '[CodexUsageService] account/rateLimits/read unavailable; falling back to session files:',
+          error
+        );
+      }
+
       const snapshot = await this.findLatestUsageSnapshot();
       logger.main.debug(
         '[CodexUsageService] findLatestUsageSnapshot result:',
@@ -111,8 +164,7 @@ class CodexUsageServiceImpl {
       );
       if (!snapshot.rateLimits && !snapshot.tokenUsage) {
         const noData: CodexUsageData = {
-          fiveHour: { utilization: 0, resetsAt: null },
-          sevenDay: { utilization: 0, resetsAt: null },
+          limits: [],
           lastUpdated: Date.now(),
           error: 'No Codex usage data found. Use Codex CLI with a ChatGPT subscription to see usage.',
         };
@@ -123,10 +175,10 @@ class CodexUsageServiceImpl {
 
       if (!snapshot.rateLimits && snapshot.tokenUsage) {
         const usageData: CodexUsageData = {
-          fiveHour: { utilization: 0, resetsAt: null },
-          sevenDay: { utilization: 0, resetsAt: null },
+          limits: [],
           tokenUsage: snapshot.tokenUsage,
           limitsAvailable: false,
+          source: 'session',
           lastUpdated: Date.now(),
         };
         this.cachedUsage = usageData;
@@ -136,6 +188,7 @@ class CodexUsageServiceImpl {
 
       const usageData = this.convertRateLimits(snapshot.rateLimits as CodexRateLimits);
       usageData.limitsAvailable = true;
+      usageData.source = 'session';
       if (snapshot.tokenUsage) {
         usageData.tokenUsage = snapshot.tokenUsage;
       }
@@ -145,8 +198,7 @@ class CodexUsageServiceImpl {
     } catch (error) {
       logger.main.error('[CodexUsageService] Error refreshing usage:', error);
       const errorData: CodexUsageData = {
-        fiveHour: { utilization: 0, resetsAt: null },
-        sevenDay: { utilization: 0, resetsAt: null },
+        limits: [],
         lastUpdated: Date.now(),
         error: error instanceof Error ? error.message : 'Unknown error reading Codex session files',
       };
@@ -158,6 +210,8 @@ class CodexUsageServiceImpl {
 
   stop(): void {
     this.stopPolling();
+    this.unsubscribeRateLimits?.();
+    this.unsubscribeRateLimits = null;
     logger.main.info('[CodexUsageService] Stopped');
   }
 
@@ -285,7 +339,7 @@ class CodexUsageServiceImpl {
   }
 
   /**
-   * Extract the latest token usage and rate_limits with non-null primary from a JSONL file.
+   * Extract the latest token usage and rate_limits with at least one active window from a JSONL file.
    * Reads the entire file and scans for token_count events.
    */
   private async extractUsageSnapshotFromFile(filePath: string): Promise<CodexUsageSnapshot> {
@@ -342,7 +396,7 @@ class CodexUsageServiceImpl {
 
   /**
    * Extract rate_limits from a single JSONL event if it's a token_count event
-   * with non-null primary data. Delegates to the pure `filterRateLimitsByExpiry`
+   * with primary or secondary window data. Delegates to the pure `filterRateLimitsByExpiry`
    * helper below so the expiry logic stays unit-testable. See #120.
    */
   private extractRateLimitsFromEvent(event: Record<string, unknown>): CodexRateLimits | null {
@@ -350,7 +404,7 @@ class CodexUsageServiceImpl {
     if (!tokenCountPayload) return null;
 
     const rateLimits = tokenCountPayload.rate_limits as CodexRateLimits | undefined;
-    if (!rateLimits?.primary) return null;
+    if (!rateLimits || (!rateLimits.primary && !rateLimits.secondary)) return null;
 
     return filterRateLimitsByExpiry(rateLimits, Date.now() / 1000);
   }
@@ -374,30 +428,30 @@ class CodexUsageServiceImpl {
   }
 
   private convertRateLimits(rateLimits: CodexRateLimits): CodexUsageData {
-    const data: CodexUsageData = {
-      fiveHour: {
-        utilization: rateLimits.primary?.used_percent ?? 0,
-        resetsAt: rateLimits.primary?.resets_at
-          ? new Date(rateLimits.primary.resets_at * 1000).toISOString()
-          : null,
-      },
-      sevenDay: {
-        utilization: rateLimits.secondary?.used_percent ?? 0,
-        resetsAt: rateLimits.secondary?.resets_at
-          ? new Date(rateLimits.secondary.resets_at * 1000).toISOString()
-          : null,
-      },
-      lastUpdated: Date.now(),
-    };
-
-    if (rateLimits.credits) {
-      data.credits = {
-        hasCredits: rateLimits.credits.has_credits,
-        unlimited: rateLimits.credits.unlimited,
-        balance: rateLimits.credits.balance,
-      };
+    const windows: CodexUsageWindow[] = [];
+    if (rateLimits.primary) {
+      windows.push(convertLegacyWindow('primary', rateLimits.primary));
+    }
+    if (rateLimits.secondary) {
+      windows.push(convertLegacyWindow('secondary', rateLimits.secondary));
     }
 
+    const data: CodexUsageData = {
+      limits: [{
+        id: rateLimits.limit_id ?? 'codex',
+        name: null,
+        planType: null,
+        windows,
+        credits: rateLimits.credits ? {
+          hasCredits: rateLimits.credits.has_credits,
+          unlimited: rateLimits.credits.unlimited,
+          balance: rateLimits.credits.balance === null ? null : String(rateLimits.credits.balance),
+        } : null,
+        individualLimit: null,
+        rateLimitReachedType: null,
+      }],
+      lastUpdated: Date.now(),
+    };
     return data;
   }
 
@@ -411,14 +465,110 @@ class CodexUsageServiceImpl {
   }
 }
 
+function hasAccountRateLimits(response: AccountRateLimitsReadResponse): boolean {
+  return response.rateLimits !== null
+    || Object.keys(response.rateLimitsByLimitId ?? {}).length > 0
+    || (response.rateLimitResetCredits?.availableCount ?? 0) > 0;
+}
+
+function convertAccountWindow(
+  slot: CodexUsageWindow['slot'],
+  window: NonNullable<AccountRateLimitSnapshot['primary']>
+): CodexUsageWindow {
+  return {
+    slot,
+    usedPercent: window.usedPercent,
+    windowDurationMins: window.windowDurationMins,
+    resetsAt: typeof window.resetsAt === 'number'
+      ? new Date(window.resetsAt * 1000).toISOString()
+      : null,
+  };
+}
+
+function convertAccountLimit(
+  snapshot: AccountRateLimitSnapshot,
+  fallbackId: string
+): CodexUsageLimit {
+  const windows: CodexUsageWindow[] = [];
+  if (snapshot.primary) windows.push(convertAccountWindow('primary', snapshot.primary));
+  if (snapshot.secondary) windows.push(convertAccountWindow('secondary', snapshot.secondary));
+
+  return {
+    id: snapshot.limitId ?? fallbackId,
+    name: snapshot.limitName ?? null,
+    planType: snapshot.planType ?? null,
+    windows,
+    credits: snapshot.credits,
+    individualLimit: snapshot.individualLimit ? {
+      limit: snapshot.individualLimit.limit,
+      used: snapshot.individualLimit.used,
+      remainingPercent: snapshot.individualLimit.remainingPercent,
+      resetsAt: new Date(snapshot.individualLimit.resetsAt * 1000).toISOString(),
+    } : null,
+    rateLimitReachedType: snapshot.rateLimitReachedType ?? null,
+  };
+}
+
+export function convertAccountRateLimitsResponse(
+  response: AccountRateLimitsReadResponse
+): CodexUsageData {
+  const limits: CodexUsageLimit[] = [];
+  const seenIds = new Set<string>();
+
+  if (response.rateLimits) {
+    const limit = convertAccountLimit(response.rateLimits, 'codex');
+    limits.push(limit);
+    seenIds.add(limit.id);
+  }
+
+  for (const [id, snapshot] of Object.entries(response.rateLimitsByLimitId ?? {})) {
+    const effectiveId = snapshot.limitId ?? id;
+    if (seenIds.has(effectiveId)) continue;
+    limits.push(convertAccountLimit(snapshot, id));
+    seenIds.add(effectiveId);
+  }
+
+  return {
+    limits,
+    rateLimitResetCredits: response.rateLimitResetCredits ? {
+      availableCount: response.rateLimitResetCredits.availableCount,
+      credits: response.rateLimitResetCredits.credits?.map((credit) => ({
+        id: credit.id,
+        title: credit.title,
+        description: credit.description,
+        expiresAt: typeof credit.expiresAt === 'number'
+          ? new Date(credit.expiresAt * 1000).toISOString()
+          : null,
+      })) ?? null,
+    } : null,
+    limitsAvailable: limits.some((limit) => limit.windows.length > 0),
+    source: 'account',
+    lastUpdated: Date.now(),
+  };
+}
+
+function convertLegacyWindow(
+  slot: CodexUsageWindow['slot'],
+  window: NonNullable<CodexRateLimits['primary']>
+): CodexUsageWindow {
+  return {
+    slot,
+    usedPercent: window.used_percent,
+    windowDurationMins: window.window_minutes,
+    resetsAt: window.resets_at
+      ? new Date(window.resets_at * 1000).toISOString()
+      : null,
+  };
+}
+
 // Singleton instance
 export const codexUsageService = new CodexUsageServiceImpl();
 
 /**
  * Drop expired buckets from a CodexRateLimits block.
  *
- * Each window (primary 5h, secondary 7d) carries its own `resets_at` Unix-seconds
- * timestamp. After that moment the window resets and the historical `used_percent`
+   * Each primary/secondary slot carries its own `resets_at` Unix-seconds timestamp.
+   * Slot position does not identify its duration. After the reset moment the historical `used_percent`
  * no longer matches reality - but the JSONL session file that produced the line is
  * never rewritten, so the same stale value keeps coming back from the
  * scan-backward loop in `extractUsageSnapshotFromFile`. That is the bug behind

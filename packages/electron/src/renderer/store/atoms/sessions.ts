@@ -176,6 +176,63 @@ export const sessionHasPendingInteractivePromptAtom = atomFamily((_sessionId: st
   atom(false)
 );
 
+export type AgentBubbleColor = 'orange' | 'green' | 'blue';
+
+export interface AgentSessionAttentionGroups {
+  awaitingInput: SessionMeta[];
+  running: SessionMeta[];
+  unread: SessionMeta[];
+}
+
+/**
+ * Active-workspace sessions that currently need attention, classified by
+ * their highest-priority state so a session appears in exactly one group.
+ */
+export const agentSessionAttentionAtom = atom<AgentSessionAttentionGroups>((get) => {
+  const registry = get(sessionRegistryAtom);
+  const workspacePath = get(sessionListWorkspaceAtom);
+  const sessions = Array.from(registry.values())
+    .filter((session) =>
+      !session.isArchived &&
+      session.phase !== 'complete' &&
+      (!workspacePath || session.workspaceId === workspacePath)
+    )
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+
+  const groups: AgentSessionAttentionGroups = {
+    awaitingInput: [],
+    running: [],
+    unread: [],
+  };
+
+  for (const session of sessions) {
+    if (get(sessionHasPendingInteractivePromptAtom(session.id))) {
+      groups.awaitingInput.push(session);
+    } else if (get(sessionProcessingAtom(session.id))) {
+      groups.running.push(session);
+    } else if (get(sessionUnreadAtom(session.id))) {
+      groups.unread.push(session);
+    }
+  }
+
+  return groups;
+});
+
+/** Highest-priority Agent gutter bubble state. The count matches its color. */
+export const agentBubbleStateAtom = atom<{ color: AgentBubbleColor | null; count: number }>((get) => {
+  const groups = get(agentSessionAttentionAtom);
+  if (groups.awaitingInput.length > 0) {
+    return { color: 'orange', count: groups.awaitingInput.length };
+  }
+  if (groups.running.length > 0) {
+    return { color: 'green', count: groups.running.length };
+  }
+  if (groups.unread.length > 0) {
+    return { color: 'blue', count: groups.unread.length };
+  }
+  return { color: null, count: 0 };
+});
+
 /**
  * Last read timestamp per session.
  * Used to calculate unread message count.
@@ -372,6 +429,20 @@ export const sessionDraftInputAtom = atomFamily((_sessionId: string) =>
 );
 
 /**
+ * Whether the initial persisted draft has been resolved for this session.
+ * The input persistence effect must not mirror the default empty atom before
+ * this flips true. Local edits are allowed to persist while hydration is in
+ * flight and are protected from being overwritten by the eventual response.
+ */
+export const sessionDraftHydratedAtom = atomFamily((_sessionId: string) =>
+  atom<boolean>(false)
+);
+
+export function canPersistSessionDraft(hydrated: boolean, localModifiedAt: number): boolean {
+  return hydrated || localModifiedAt > 0;
+}
+
+/**
  * Per-session draft attachments.
  * File attachments being composed before sending.
  */
@@ -429,6 +500,7 @@ export const setSessionDraftInputAtom = atom(
   }) => {
     // 1. Set the atom for immediate display
     set(sessionDraftInputAtom(sessionId), draftInput);
+    set(sessionDraftHydratedAtom(sessionId), true);
 
     // 2. Persist to database if requested and workspacePath is provided
     if (persist && workspacePath && window.electronAPI) {
@@ -1633,6 +1705,8 @@ export const loadSessionDataAtom = atom(
     }
 
     set(sessionLoadingAtom(sessionId), true);
+    const draftWasHydrated = get(sessionDraftHydratedAtom(sessionId));
+    const draftModifiedAtStart = get(sessionDraftLocalModifiedAtAtom(sessionId));
 
     const loadPromise = (async () => {
     try {
@@ -1647,10 +1721,15 @@ export const loadSessionDataAtom = atom(
         // Set sessionStoreAtom - derived atoms (mode, model, archived) will automatically sync
         set(sessionStoreAtom(sessionId), sessionData);
 
-        // Initialize draft input if session has saved draft
-        if (sessionData.draftInput) {
-          set(sessionDraftInputAtom(sessionId), sessionData.draftInput);
+        // Seed the persisted draft only if no authoritative local/programmatic
+        // value existed and the user did not type while the load was in flight.
+        if (
+          !draftWasHydrated &&
+          get(sessionDraftLocalModifiedAtAtom(sessionId)) === draftModifiedAtStart
+        ) {
+          set(sessionDraftInputAtom(sessionId), sessionData.draftInput ?? '');
         }
+        set(sessionDraftHydratedAtom(sessionId), true);
 
         // Initialize workstream state if this is a worktree session
         // This ensures type='worktree' is set even when loading from DB
@@ -1905,8 +1984,10 @@ export const cleanupSessionAtom = atom(null, (get, set, sessionId: string) => {
   sessionHasPendingInteractivePromptAtom.remove(sessionId);
   sessionLastReadAtom.remove(sessionId);
   sessionDraftInputAtom.remove(sessionId);
+  sessionDraftHydratedAtom.remove(sessionId);
   sessionDraftAttachmentsAtom.remove(sessionId);
   sessionLastSubmitAtAtom.remove(sessionId);
+  sessionDraftLocalModifiedAtAtom.remove(sessionId);
   aiInputHistoryAtom.remove(sessionId);
   // Hierarchical session atoms
   sessionChildrenAtom.remove(sessionId);

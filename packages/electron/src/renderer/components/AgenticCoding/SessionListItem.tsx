@@ -11,7 +11,7 @@ import { SessionContextMenu } from './SessionContextMenu';
  * Shows waiting for input, processing, pending prompt, or unread status (in priority order).
  * Only this component re-renders when the session's state changes.
  */
-const SessionStatusIndicator = memo<{ sessionId: string; messageCount?: number }>(({ sessionId, messageCount }) => {
+export const SessionStatusIndicator = memo<{ sessionId: string; messageCount?: number }>(({ sessionId, messageCount }) => {
   // Use aggregated atom that checks this session AND any children (for workstreams)
   const hasPendingInteractivePrompt = useAtomValue(sessionHasPendingInteractivePromptAtom(sessionId));
   const isProcessing = useAtomValue(sessionOrChildProcessingAtom(sessionId));

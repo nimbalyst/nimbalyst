@@ -40,6 +40,10 @@ import type {
   TrackerSchemaSyncResponseMessage,
   TrackerSchemaDeltaMessage,
   TrackerSchemaMutationAckMessage,
+  EncryptedTrackerNavigationEnvelope,
+  TrackerNavigationSyncResponseMessage,
+  TrackerNavigationDeltaMessage,
+  TrackerNavigationMutationAckMessage,
 } from '../trackerProtocol';
 
 // ============================================================================
@@ -173,6 +177,16 @@ interface StoredSchema {
   orgKeyFingerprint: string | null;
 }
 
+interface StoredNavigation {
+  entryId: string;
+  syncId: SyncId;
+  encryptedPayload: string | null;
+  iv: string | null;
+  updatedAt: number;
+  deletedAt: number | null;
+  orgKeyFingerprint: string | null;
+}
+
 export interface FakeTrackerRoomOptions {
   /** Initial config; defaults to issueKeyPrefix='NIM'. */
   config?: TrackerRoomConfig;
@@ -200,9 +214,11 @@ export interface FakeTrackerRoomOptions {
 export class FakeTrackerRoom {
   private readonly items = new Map<string, StoredItem>();
   private readonly schemas = new Map<string, StoredSchema>();
+  private readonly navigation = new Map<string, StoredNavigation>();
   private readonly connections = new Set<FakeWebSocket>();
   private syncId: SyncId = 0;
   private schemaSyncId: SyncId = 0;
+  private navigationSyncId: SyncId = 0;
   private nextIssueNumber = 1;
   private config: TrackerRoomConfig;
   private currentFingerprint: string | null;
@@ -211,6 +227,7 @@ export class FakeTrackerRoom {
   /** Mutation log for test assertions. */
   readonly receivedMutations: Array<{ itemId: string; clientMutationId: string }> = [];
   readonly receivedSchemaMutations: Array<{ schemaType: string; clientMutationId: string }> = [];
+  readonly receivedNavigationMutations: Array<{ entryId: string; clientMutationId: string }> = [];
 
   constructor(options: FakeTrackerRoomOptions = {}) {
     this.config = options.config ?? { issueKeyPrefix: 'NIM' };
@@ -297,6 +314,12 @@ export class FakeTrackerRoom {
         break;
       case 'trackerSchemaMutation':
         this.handleSchemaMutation(ws, msg);
+        break;
+      case 'trackerNavigationSync':
+        this.handleNavigationSync(ws, msg.sinceSyncId);
+        break;
+      case 'trackerNavigationMutation':
+        this.handleNavigationMutation(ws, msg);
         break;
       case 'trackerSetConfig':
         this.handleSetConfig(msg.key, msg.value);
@@ -474,6 +497,64 @@ export class FakeTrackerRoom {
     }
   }
 
+  private handleNavigationSync(ws: FakeWebSocket, sinceSyncId: SyncId): void {
+    const entries = [...this.navigation.values()]
+      .filter((row) => row.syncId > sinceSyncId)
+      .sort((a, b) => a.syncId - b.syncId)
+      .map(toNavigationEnvelope);
+    const response: TrackerNavigationSyncResponseMessage = {
+      type: 'trackerNavigationSyncResponse',
+      entries,
+      cursorSyncId: entries.at(-1)?.syncId ?? sinceSyncId,
+      hasMore: false,
+    };
+    this.deliver(ws, response);
+  }
+
+  private handleNavigationMutation(
+    ws: FakeWebSocket,
+    msg: Extract<TrackerClientMessage, { type: 'trackerNavigationMutation' }>,
+  ): void {
+    this.receivedNavigationMutations.push({
+      entryId: msg.entryId,
+      clientMutationId: msg.clientMutationId,
+    });
+    if (this.rejectAll) {
+      const reject: TrackerNavigationMutationAckMessage = {
+        type: 'trackerNavigationMutationAck',
+        clientMutationId: msg.clientMutationId,
+        accepted: false,
+        error: { code: 'forbidden', message: 'rejectAll=true' },
+      };
+      this.deliver(ws, reject);
+      return;
+    }
+    const isDelete = msg.encryptedPayload === null;
+    const stored: StoredNavigation = {
+      entryId: msg.entryId,
+      syncId: ++this.navigationSyncId,
+      encryptedPayload: msg.encryptedPayload,
+      iv: isDelete ? null : (msg.iv ?? null),
+      updatedAt: Date.now(),
+      deletedAt: isDelete ? Date.now() : null,
+      orgKeyFingerprint: isDelete ? null : msg.orgKeyFingerprint,
+    };
+    this.navigation.set(msg.entryId, stored);
+    const envelope = toNavigationEnvelope(stored);
+    const ack: TrackerNavigationMutationAckMessage = {
+      type: 'trackerNavigationMutationAck',
+      clientMutationId: msg.clientMutationId,
+      accepted: true,
+      syncId: stored.syncId,
+      entry: envelope,
+    };
+    this.deliver(ws, ack);
+    const delta: TrackerNavigationDeltaMessage = { type: 'trackerNavigationDelta', entry: envelope };
+    for (const peer of this.connections) {
+      if (peer !== ws) this.deliver(peer, delta);
+    }
+  }
+
   private handleSetConfig(key: 'issueKeyPrefix', value: string): void {
     if (key === 'issueKeyPrefix') {
       this.config = { ...this.config, issueKeyPrefix: value };
@@ -526,6 +607,10 @@ export class FakeTrackerRoom {
   getStoredSchemas(): EncryptedTrackerSchemaEnvelope[] {
     return [...this.schemas.values()].map(toSchemaEnvelope);
   }
+
+  getStoredNavigation(): EncryptedTrackerNavigationEnvelope[] {
+    return [...this.navigation.values()].map(toNavigationEnvelope);
+  }
 }
 
 function toEnvelope(stored: StoredItem): EncryptedTrackerItemEnvelope {
@@ -546,6 +631,19 @@ function toEnvelope(stored: StoredItem): EncryptedTrackerItemEnvelope {
 function toSchemaEnvelope(stored: StoredSchema): EncryptedTrackerSchemaEnvelope {
   const env: EncryptedTrackerSchemaEnvelope = {
     schemaType: stored.schemaType,
+    syncId: stored.syncId,
+    encryptedPayload: stored.encryptedPayload,
+    updatedAt: stored.updatedAt,
+    deletedAt: stored.deletedAt,
+    orgKeyFingerprint: stored.orgKeyFingerprint,
+  };
+  if (stored.iv !== null && stored.encryptedPayload !== null) env.iv = stored.iv;
+  return env;
+}
+
+function toNavigationEnvelope(stored: StoredNavigation): EncryptedTrackerNavigationEnvelope {
+  const env: EncryptedTrackerNavigationEnvelope = {
+    entryId: stored.entryId,
     syncId: stored.syncId,
     encryptedPayload: stored.encryptedPayload,
     updatedAt: stored.updatedAt,

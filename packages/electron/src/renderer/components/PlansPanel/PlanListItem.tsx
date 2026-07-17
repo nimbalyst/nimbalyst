@@ -2,6 +2,7 @@
  * PlanListItem - Individual plan item in the sidebar plans list
  */
 
+import type { JSX } from 'react';
 import React from 'react';
 
 export interface PlanData {

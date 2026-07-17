@@ -11,6 +11,7 @@ import type {
   MemberInfo as ProtocolMemberInfo,
   TeamState as ProtocolTeamState,
   EncryptedDocIndexEntry as ProtocolEncryptedDocIndexEntry,
+  EncryptedFolderNode as ProtocolEncryptedFolderNode,
 } from '@nimbalyst/collab-protocol';
 
 export type {
@@ -27,6 +28,9 @@ export type {
   TeamDocIndexSyncResponseMessage,
   TeamDocIndexBroadcastMessage,
   TeamDocIndexRemoveBroadcastMessage,
+  TeamFolderIndexSyncResponseMessage,
+  TeamFolderBroadcastMessage,
+  TeamFolderRemoveBroadcastMessage,
   TeamOrgKeyRotatedMessage,
   TeamProjectAccessChangedMessage,
   TeamErrorMessage,
@@ -35,6 +39,7 @@ export type {
 /** Re-export wire types under client-side names. */
 export type MemberInfo = ProtocolMemberInfo;
 export type EncryptedDocIndexEntry = ProtocolEncryptedDocIndexEntry;
+export type EncryptedFolderNode = ProtocolEncryptedFolderNode;
 /** Wire-format team state (encrypted document titles, sent by server). */
 export type ServerTeamState = ProtocolTeamState;
 
@@ -141,6 +146,18 @@ export interface TeamSyncConfig {
   /** Called when a document is removed */
   onDocumentRemoved?: (documentId: string) => void;
 
+  /** Called when the full folder list is loaded (from teamSync or folderIndexSync) */
+  onFoldersLoaded?: (folders: FolderNode[]) => void;
+
+  /** Called when a folder is registered, renamed, or moved */
+  onFolderChanged?: (folder: FolderNode) => void;
+
+  /**
+   * Called when a folder subtree is removed. Carries every folder id and
+   * document id that was deleted so the host can prune its tree and links.
+   */
+  onFoldersRemoved?: (folderIds: string[], documentIds: string[]) => void;
+
   /** Called when the org encryption key is rotated (fingerprint changed) */
   onOrgKeyRotated?: (fingerprint: string) => void;
 
@@ -192,6 +209,7 @@ export interface TeamState {
   } | null;
   members: MemberInfo[];
   documents: DocIndexEntry[];
+  folders: FolderNode[];
   keyEnvelope?: KeyEnvelopeData | null;
 }
 
@@ -206,14 +224,57 @@ export interface DocIndexEntry {
   documentId: string;
   title: string;
   documentType: string;
+  /** Optional V2 type metadata; absent on legacy rows. */
+  metadataVersion?: 2;
+  /** Exact normalized suffix, including the leading dot. */
+  fileExtension?: string;
+  /** Stable owning editor id (built-in or extension id). */
+  editorId?: string;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * User id of whoever most recently changed this document (title OR content).
+   * Lets the sidebar's unread indicator suppress the user's own edits without
+   * opening the doc. Null/undefined for legacy rows.
+   */
+  lastWriterUserId?: string | null;
+  /**
+   * First-class folders: the folder this document lives in. Null/undefined =
+   * root level (also legacy rows, whose path still lives in the title).
+   */
+  parentFolderId?: string | null;
+  /** Millisecond epoch when moved to Trash; null/undefined means active. */
+  trashedAt?: number | null;
   /**
    * True when the server returned a doc index entry whose encrypted title
    * could not be decrypted with the current org key. Preserved in the list
    * so the user can see something exists rather than the entry vanishing
    * silently; the UI should render it as locked / non-interactive.
    */
+  decryptFailed?: boolean;
+}
+
+/** Explicit type metadata written by V2 shared-document creators. */
+export interface SharedDocumentTypeMetadataV2 {
+  metadataVersion: 2;
+  /** Exact normalized suffix, including the leading dot. */
+  fileExtension: string;
+  /** Stable owning editor id (built-in or extension id). */
+  editorId: string;
+}
+
+/** Decrypted folder node for UI consumption (first-class folders). */
+export interface FolderNode {
+  folderId: string;
+  /** Null = root level. */
+  parentFolderId?: string | null;
+  name: string;
+  sortOrder: number;
+  projectId?: string | null;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+  /** True when the folder name could not be decrypted (render as locked). */
   decryptFailed?: boolean;
 }

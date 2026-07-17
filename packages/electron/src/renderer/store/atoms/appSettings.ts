@@ -25,9 +25,25 @@ import { BetaFeatureTag } from '../../../shared/betaFeatures';
 import { DeveloperFeatureTag, DEVELOPER_FEATURES, getDefaultDeveloperFeatures, enableAllDeveloperFeatures, disableAllDeveloperFeatures, areAllDeveloperFeaturesEnabled } from '../../../shared/developerFeatures';
 import { normalizeCodexProviderConfig, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
 import { onSettingChanged } from './settingAtomFamily';
+import {
+  type GutterCustomizationState,
+  type GutterSection,
+  DEFAULT_GUTTER_CUSTOMIZATION,
+  HIDDEN_GUTTER_ITEMS_KEY,
+  GUTTER_ITEM_ORDER_KEY,
+} from '../../components/NavigationGutter/navGutterItems';
 
 // Voice type - all available OpenAI Realtime voices
 export type VoiceId = 'alloy' | 'ash' | 'ballad' | 'coral' | 'echo' | 'sage' | 'shimmer' | 'verse' | 'marin' | 'cedar';
+
+// Selectable OpenAI Realtime speech-to-speech models. gpt-realtime-2 is the
+// default (GPT-5-class reasoning, 128K context, more consistent voice rendering);
+// gpt-realtime is the fallback for accounts/regions without gpt-realtime-2 access.
+export type RealtimeModel = 'gpt-realtime-2' | 'gpt-realtime';
+
+// Realtime reasoning-effort throttle (latency vs answer quality). Default 'low'
+// for a voice relay; higher = smarter but slower.
+export type RealtimeReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
 export interface TurnDetectionConfig {
   mode: 'server_vad' | 'push_to_talk';
@@ -44,6 +60,10 @@ export interface SystemPromptConfig {
 export interface VoiceModeSettings {
   enabled: boolean;
   voice: VoiceId;
+  /** OpenAI Realtime speech-to-speech model. Default 'gpt-realtime-2'. */
+  model: RealtimeModel;
+  /** Reasoning-effort throttle for the realtime model. Default 'low'. */
+  reasoningEffort: RealtimeReasoningEffort;
   turnDetection: TurnDetectionConfig;
   voiceAgentPrompt: SystemPromptConfig;
   codingAgentPrompt: SystemPromptConfig;
@@ -58,6 +78,8 @@ export interface VoiceModeSettings {
 const defaultVoiceModeSettings: VoiceModeSettings = {
   enabled: false,
   voice: 'alloy',
+  model: 'gpt-realtime-2',
+  reasoningEffort: 'low',
   turnDetection: {
     mode: 'server_vad',
     vadThreshold: 0.5,
@@ -188,6 +210,8 @@ export async function initVoiceModeSettings(): Promise<VoiceModeSettings> {
       return {
         enabled: settings.enabled || false,
         voice: settings.voice || 'alloy',
+        model: settings.model ?? defaultVoiceModeSettings.model,
+        reasoningEffort: settings.reasoningEffort ?? defaultVoiceModeSettings.reasoningEffort,
         turnDetection: settings.turnDetection || defaultVoiceModeSettings.turnDetection,
         voiceAgentPrompt: settings.voiceAgentPrompt || {},
         codingAgentPrompt: settings.codingAgentPrompt || {},
@@ -743,6 +767,11 @@ export interface SyncConfig {
   idleTimeoutMinutes?: number; // minutes before user is considered idle (default: 5)
   personalOrgId?: string; // persisted sync identity -- which org to use for sync room IDs
   personalUserId?: string;
+  personalSyncProfiles?: Record<string, {
+    enabledProjects: string[];
+    docSyncEnabledProjects: string[];
+    preventSleepMode?: 'off' | 'always' | 'pluggedIn';
+  }>;
   preventSleepWhenSyncing?: boolean; // DEPRECATED: migrated to preventSleepMode
   preventSleepMode?: 'off' | 'always' | 'pluggedIn'; // prevent system sleep while sync is active
 }
@@ -1104,6 +1133,8 @@ export interface ProviderConfig {
   apiKey?: string;
   baseUrl?: string;
   models?: string[];
+  /** Model IDs hidden from the session picker (denylist; wins over `models`). */
+  hiddenModels?: string[];
   testStatus?: 'idle' | 'testing' | 'success' | 'error';
   testMessage?: string;
   installed?: boolean;
@@ -1137,8 +1168,12 @@ export interface AIProviderSettings {
 const defaultProviders: Record<string, ProviderConfig> = {
   claude: { enabled: false, testStatus: 'idle' },
   'claude-code': { enabled: true, testStatus: 'idle', installStatus: 'not-installed' },
+  // Subscription CLI. Off by default; listed here so the renderer toggle renders
+  // in the correct state.
+  'claude-code-cli': { enabled: false, testStatus: 'idle' },
   openai: { enabled: false, testStatus: 'idle' },
-  'openai-codex': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
+  // Codex app server. On by default.
+  'openai-codex': { enabled: true, testStatus: 'idle', installStatus: 'not-installed' },
   'openai-codex-acp': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   opencode: { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   'copilot-cli': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
@@ -2229,3 +2264,105 @@ export const copyFilePathAtom = atom(
     }
   }
 );
+
+// ============================================================================
+// Navigation Gutter Customization (GLOBAL)
+//
+// Which gutter icons are hidden, and their per-section order. Stored as a
+// global app setting (not per-project) because it's a personal preference that
+// should apply across all projects. Capability gating (team/remote/terminal)
+// stays per-project and automatic; it filters which items exist before this
+// preference is applied. See components/NavigationGutter/navGutterItems.ts.
+// ============================================================================
+
+/**
+ * The main gutter customization atom. Initialized from IPC on app load via
+ * initGutterCustomization().
+ */
+export const gutterCustomizationAtom = atom<GutterCustomizationState>(DEFAULT_GUTTER_CUSTOMIZATION);
+
+/** Ids of gutter items the user has hidden (global). */
+export const hiddenGutterItemsAtom = atom((get) => get(gutterCustomizationAtom).hiddenItems);
+
+/** Per-section saved order of gutter items (global, sparse). */
+export const gutterItemOrderAtom = atom((get) => get(gutterCustomizationAtom).order);
+
+function persistGutterCustomization(state: GutterCustomizationState): void {
+  if (typeof window === 'undefined' || !window.electronAPI) return;
+  window.electronAPI
+    .invoke('app-settings:set', HIDDEN_GUTTER_ITEMS_KEY, state.hiddenItems)
+    .catch((err: unknown) => console.error('[appSettings] Failed to persist hiddenGutterItems:', err));
+  window.electronAPI
+    .invoke('app-settings:set', GUTTER_ITEM_ORDER_KEY, state.order)
+    .catch((err: unknown) => console.error('[appSettings] Failed to persist gutterItemOrder:', err));
+}
+
+/**
+ * Toggle (or explicitly set) the hidden state of a gutter item. Pass `hidden`
+ * to force a state; omit it to flip. Persists globally.
+ *
+ * The keep-one-mode / non-hideable guards live in the caller (which has the
+ * live registry); this setter only mutates the stored set.
+ */
+export const toggleGutterItemHiddenAtom = atom(
+  null,
+  (get, set, payload: { id: string; hidden?: boolean }) => {
+    const { id, hidden } = payload;
+    const state = get(gutterCustomizationAtom);
+    const isHidden = state.hiddenItems.includes(id);
+    const nextHidden = hidden ?? !isHidden;
+    if (nextHidden === isHidden) return;
+    const hiddenItems = nextHidden
+      ? [...state.hiddenItems, id]
+      : state.hiddenItems.filter((h) => h !== id);
+    const next = { ...state, hiddenItems };
+    set(gutterCustomizationAtom, next);
+    persistGutterCustomization(next);
+  },
+);
+
+/**
+ * Replace the saved order for one section. Persists globally.
+ */
+export const setGutterSectionOrderAtom = atom(
+  null,
+  (get, set, payload: { section: GutterSection; order: string[] }) => {
+    const { section, order } = payload;
+    const state = get(gutterCustomizationAtom);
+    const next = { ...state, order: { ...state.order, [section]: order } };
+    set(gutterCustomizationAtom, next);
+    persistGutterCustomization(next);
+  },
+);
+
+/**
+ * Reset all gutter customization (unhide everything, clear custom order).
+ */
+export const resetGutterCustomizationAtom = atom(null, (_get, set) => {
+  const next = { ...DEFAULT_GUTTER_CUSTOMIZATION };
+  set(gutterCustomizationAtom, next);
+  persistGutterCustomization(next);
+});
+
+/**
+ * Initialize gutter customization from the app-settings store.
+ * Call once at app startup.
+ */
+export async function initGutterCustomization(): Promise<GutterCustomizationState> {
+  if (typeof window === 'undefined' || !window.electronAPI) {
+    return DEFAULT_GUTTER_CUSTOMIZATION;
+  }
+  try {
+    const [hiddenItems, order] = await Promise.all([
+      window.electronAPI.invoke('app-settings:get', HIDDEN_GUTTER_ITEMS_KEY),
+      window.electronAPI.invoke('app-settings:get', GUTTER_ITEM_ORDER_KEY),
+    ]);
+    return {
+      hiddenItems: Array.isArray(hiddenItems) ? hiddenItems : [],
+      order: order && typeof order === 'object' ? order : {},
+    };
+  } catch (error) {
+    console.error('[appSettings] Failed to load gutter customization:', error);
+    return DEFAULT_GUTTER_CUSTOMIZATION;
+  }
+}

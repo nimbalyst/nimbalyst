@@ -1,3 +1,4 @@
+import type { JSX } from 'react';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { VList } from 'virtua';
 import { copyToClipboard } from '@nimbalyst/runtime';

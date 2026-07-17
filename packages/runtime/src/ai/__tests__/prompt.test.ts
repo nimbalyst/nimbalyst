@@ -24,6 +24,23 @@ describe('buildClaudeCodeSystemPrompt', () => {
     expect(prompt).toContain('`mcp__nimbalyst__PromptForUserInput`');
   });
 
+  it('includes tracker-references guidance by default', () => {
+    const prompt = buildClaudeCodeSystemPrompt({});
+
+    expect(prompt).toContain('## Tracker References');
+    expect(prompt).toContain('nimbalyst://NIM-123');
+  });
+
+  it('omits tracker-references guidance when trackers are disabled', () => {
+    const prompt = buildClaudeCodeSystemPrompt({ trackersEnabled: false });
+
+    expect(prompt).not.toContain('## Tracker References');
+    expect(prompt).not.toContain('nimbalyst://');
+    // Unrelated sections stay intact
+    expect(prompt).toContain('## File References');
+    expect(prompt).toContain('## Git Commits');
+  });
+
   it('keeps plan-only sessions in planning', () => {
     const prompt = buildClaudeCodeSystemPrompt({
       toolReferenceStyle: 'codex',

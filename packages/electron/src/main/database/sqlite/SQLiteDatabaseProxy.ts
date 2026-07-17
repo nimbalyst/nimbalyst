@@ -240,6 +240,10 @@ export class SQLiteDatabaseProxy {
     await this.send('exec', { sql });
   }
 
+  async runTransaction(statements: Array<{ sql: string; params?: unknown[] }>): Promise<void> {
+    await this.send('transaction', { statements });
+  }
+
   async getStats(): Promise<unknown> {
     return this.send('getStats');
   }

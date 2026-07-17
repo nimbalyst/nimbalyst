@@ -139,7 +139,20 @@ export type TrackerSchemaRole =
   | 'tags'
   | 'startDate'
   | 'dueDate'
-  | 'progress';
+  | 'progress'
+  /**
+   * Field carrying the item's external identity (e.g. a PR number or imported
+   * issue key). Shown next to the local issue key on compact surfaces like
+   * kanban cards. url-type fields contribute their display label.
+   */
+  | 'externalKey'
+  /**
+   * Unlike the other roles, this maps to a STATUS VALUE (not a field name):
+   * the workflow status to set when a pull request referenced by an item of
+   * this type is merged from the PR view. Types that omit it get an activity
+   * comment on merge instead of a status transition.
+   */
+  | 'prMergedStatus';
 
 export interface TrackerSyncPolicy {
   /** How items sync: local (never), shared (always), hybrid (per-item choice) */
@@ -188,6 +201,16 @@ export interface TrackerDataModel {
 export interface ValidationResult {
   valid: boolean;
   errors: Array<{
+    field: string;
+    message: string;
+  }>;
+  /**
+   * Non-fatal issues that must NOT block a write. An unknown select value (a
+   * status an override removed/renamed, or one a peer on a different schema set)
+   * lands here so the value is preserved rather than destroyed — the write path
+   * treats warnings as advisory. See configurable-builtin-tracker-types plan.
+   */
+  warnings?: Array<{
     field: string;
     message: string;
   }>;
@@ -285,6 +308,15 @@ export class TrackerDataModelRegistry {
     return this.builtinTypes.has(type);
   }
 
+  /**
+   * The original built-in model for a type, if any — the seed that a workspace
+   * or synced patch layers onto. Unaffected by workspace overrides currently in
+   * the `models` map, so patch resolution never double-applies.
+   */
+  getBuiltinModel(type: string): TrackerDataModel | undefined {
+    return this.builtinModels.get(type);
+  }
+
   validate(type: string, data: Record<string, any>): ValidationResult {
     const model = this.get(type);
     if (!model) {
@@ -295,6 +327,7 @@ export class TrackerDataModelRegistry {
     }
 
     const errors: Array<{ field: string; message: string }> = [];
+    const warnings: Array<{ field: string; message: string }> = [];
 
     for (const field of model.fields) {
       const value = data[field.name];
@@ -338,10 +371,14 @@ export class TrackerDataModelRegistry {
           break;
 
         case 'select':
+          // Unknown option values are a WARNING, not an error: an override may
+          // have removed/renamed the option, or a peer may be on a different
+          // schema set. Never destroy the stored value on a write — preserve it
+          // and let the UI render it neutrally. See the plan's back-compat net.
           if (field.options && !field.options.some(opt => opt.value === value)) {
-            errors.push({
+            warnings.push({
               field: field.name,
-              message: `Field '${field.name}' has invalid option: ${value}`,
+              message: `Field '${field.name}' has an unrecognized option: ${value}`,
             });
           }
           break;
@@ -394,6 +431,7 @@ export class TrackerDataModelRegistry {
     return {
       valid: errors.length === 0,
       errors,
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
 }

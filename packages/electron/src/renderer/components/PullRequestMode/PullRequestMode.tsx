@@ -6,6 +6,7 @@
  * cadence, and renders the sidebar + list + detail.
  */
 
+import type { JSX } from 'react';
 import { useCallback, useEffect } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
@@ -15,6 +16,7 @@ import {
   prModeLayoutAtom,
   setPrModeLayoutAtom,
   prListAtom,
+  prNavigateRequestAtom,
   initPrModeLayout,
   type PrFilterChip,
 } from '../../store/atoms/pullRequests';
@@ -25,6 +27,7 @@ import { GhOnboardingBanner } from './GhOnboardingBanner';
 import { PullRequestSidebar } from './PullRequestSidebar';
 import { PullRequestListView } from './PullRequestListView';
 import { PullRequestDetail } from './PullRequestDetail';
+import { usePrTrackerReferences } from './usePrTrackerContext';
 
 interface PullRequestModeProps {
   workspacePath: string;
@@ -43,9 +46,12 @@ export function PullRequestMode({
   const setLayout = useSetAtom(setPrModeLayoutAtom);
   const prList = useAtomValue(prListAtom);
   const setWindowMode = useSetAtom(setWindowModeAtom);
+  const navigateRequest = useAtomValue(prNavigateRequestAtom);
+  const setNavigateRequest = useSetAtom(prNavigateRequestAtom);
 
   const remoteForWorkspace =
     remote && remote.workspacePath === workspacePath ? remote.remote : null;
+  const trackerReferences = usePrTrackerReferences(remoteForWorkspace);
 
   // Load persisted layout when the workspace becomes known / changes.
   useEffect(() => {
@@ -61,6 +67,22 @@ export function PullRequestMode({
       void service.stopPolling(workspacePath);
     };
   }, [workspacePath, remoteForWorkspace]);
+
+  // Resolve pending navigate-to-PR requests (nimbalyst:navigate-pr) to a list
+  // selection. When the PR isn't in the cached list yet, trigger a poll and
+  // resolve on the next list update; the request stays pending until resolved
+  // or superseded.
+  useEffect(() => {
+    if (!navigateRequest || !remoteForWorkspace) return;
+    if (navigateRequest.remote.toLowerCase() !== remoteForWorkspace.toLowerCase()) return;
+    const match = prList.find((pr) => pr.number === navigateRequest.prNumber);
+    if (match) {
+      setLayout({ selectedItemId: match.id });
+      setNavigateRequest(null);
+    } else {
+      void getPullRequestService().pollNow(workspacePath);
+    }
+  }, [navigateRequest, prList, remoteForWorkspace, workspacePath, setLayout, setNavigateRequest]);
 
   // Drive the scheduler's foreground set + trigger an immediate poll on enter.
   useEffect(() => {
@@ -87,6 +109,17 @@ export function PullRequestMode({
       setLayout({ activeFilters: next });
     },
     [layout.activeFilters, setLayout],
+  );
+
+  const handleToggleTrackerStatusFilter = useCallback(
+    (status: string) => {
+      const current = layout.trackerStatusFilters;
+      const next = current.includes(status)
+        ? current.filter((s) => s !== status)
+        : [...current, status];
+      setLayout({ trackerStatusFilters: next });
+    },
+    [layout.trackerStatusFilters, setLayout],
   );
 
   const handleSidebarWidthChange = useCallback(
@@ -116,12 +149,25 @@ export function PullRequestMode({
       // Reuse the worktree's existing session or spawn one, then select it —
       // selecting by worktree id alone leaves the agent view empty because the
       // selection id must be a session id.
-      await dispatchOpenWorktreeSession(worktree.id);
+      const sessionId = await dispatchOpenWorktreeSession(worktree.id);
+      // Close the triangle: link the session to every tracker item already
+      // referencing this PR (no auto-create — item creation belongs to the
+      // user or their triage workflows).
+      if (sessionId) {
+        const referencingItems = trackerReferences.get(selectedPr.number) ?? [];
+        for (const item of referencingItems) {
+          void window.electronAPI
+            .invoke('tracker:link-session', { trackerId: item.id, sessionId })
+            .catch((err: unknown) =>
+              console.error('[PullRequestMode] Failed to link session to tracker item', err),
+            );
+        }
+      }
       setWindowMode('agent');
     } catch (err) {
       console.error('[PullRequestMode] Failed to open PR worktree', err);
     }
-  }, [selectedPr, remoteForWorkspace, workspacePath, setWindowMode]);
+  }, [selectedPr, remoteForWorkspace, workspacePath, setWindowMode, trackerReferences]);
 
   if (!remoteForWorkspace) {
     return (
@@ -140,6 +186,8 @@ export function PullRequestMode({
         remote={remoteForWorkspace}
         activeFilters={layout.activeFilters}
         onToggleFilter={handleToggleFilter}
+        activeTrackerStatusFilters={layout.trackerStatusFilters}
+        onToggleTrackerStatusFilter={handleToggleTrackerStatusFilter}
       />
       <div className="min-h-0 flex-1 border-t border-nim">
         <PullRequestListView

@@ -5,6 +5,7 @@ import type { RendererFileTreeItem } from '../store';
 import { InputModal } from './InputModal';
 import { NewFileDialog } from './NewFileDialog';
 import { PlansPanel } from './PlansPanel/PlansPanel';
+import { canPersistWorkspaceHydratedState } from '../utils/workspaceHydration';
 import { FileTreeFilterMenu, FileTreeFilter } from './FileTreeFilterMenu';
 import { NewFileMenu, NewFileType, ExtensionFileType, contributionToExtensionFileType } from './NewFileMenu';
 import { createInitialFileContent, createMockupContent } from '../utils/fileUtils';
@@ -172,6 +173,7 @@ export function WorkspaceSidebar({
   const filterButtonRef = useRef<HTMLButtonElement>(null);
   const newFileButtonRef = useRef<HTMLButtonElement>(null);
   const hasLoadedSettingsRef = useRef(false);
+  const loadedSettingsWorkspaceRef = useRef<string | null>(null);
   const [showNewFileMenu, setShowNewFileMenu] = useState(false);
   const [newFileMenuPosition, setNewFileMenuPosition] = useState({ x: 0, y: 0 });
   const [pendingFileType, setPendingFileType] = useState<NewFileType | null>(null);
@@ -226,41 +228,42 @@ export function WorkspaceSidebar({
 
     // Reset loaded flag when workspace changes
     hasLoadedSettingsRef.current = false;
+    loadedSettingsWorkspaceRef.current = null;
+    let cancelled = false;
 
     window.electronAPI.invoke('workspace:get-state', workspacePath)
       .then(state => {
-        // Set filter if it exists, otherwise keep default
-        if (state?.fileTreeFilter && isValidFileTreeFilter(state.fileTreeFilter)) {
-          setFileTreeFilter(state.fileTreeFilter);
-        }
+        if (cancelled) return;
 
-        // Set showFileIcons - handle both explicit false and undefined
-        if (state?.showFileIcons !== undefined) {
-          setShowFileIcons(state.showFileIcons);
-        }
-
-        // Set showGitStatus - handle both explicit false and undefined
-        if (state?.showGitStatus !== undefined) {
-          setShowGitStatus(state.showGitStatus);
-        }
-
-        // Set enableAutoScroll - handle both explicit false and undefined
-        if (state?.enableAutoScroll !== undefined) {
-          setEnableAutoScroll(state.enableAutoScroll);
-        }
+        // Always seed every field so settings omitted by the new workspace do
+        // not inherit local state from the previously visible workspace.
+        setFileTreeFilter(
+          state?.fileTreeFilter && isValidFileTreeFilter(state.fileTreeFilter)
+            ? state.fileTreeFilter
+            : 'all'
+        );
+        setShowFileIcons(state?.showFileIcons ?? true);
+        setShowGitStatus(state?.showGitStatus ?? true);
+        setEnableAutoScroll(state?.enableAutoScroll ?? true);
 
         hasLoadedSettingsRef.current = true;
+        loadedSettingsWorkspaceRef.current = workspacePath;
       })
       .catch(error => {
+        if (cancelled) return;
         console.error('Failed to load file tree settings:', error);
-        hasLoadedSettingsRef.current = true;
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [workspacePath]);
 
   // Save file tree settings to workspace state
   useEffect(() => {
     // Don't save until we've loaded the initial settings
     if (!hasLoadedSettingsRef.current) return;
+    if (!canPersistWorkspaceHydratedState(workspacePath, loadedSettingsWorkspaceRef.current)) return;
     if (!workspacePath || !window.electronAPI?.invoke) return;
 
     window.electronAPI.invoke('workspace:update-state', workspacePath, {

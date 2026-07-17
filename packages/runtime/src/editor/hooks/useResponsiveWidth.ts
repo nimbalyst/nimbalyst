@@ -39,7 +39,7 @@ function getWidthClass(width: number): EditorWidthClass {
 /**
  * Hook that measures the width of the editor container and returns appropriate CSS class
  */
-export function useResponsiveWidth(containerRef: React.RefObject<HTMLElement>): EditorWidthClass {
+export function useResponsiveWidth(containerRef: React.RefObject<HTMLElement | null>): EditorWidthClass {
   const [widthClass, setWidthClass] = useState<EditorWidthClass>('editor-width-wide');
 
   useEffect(() => {

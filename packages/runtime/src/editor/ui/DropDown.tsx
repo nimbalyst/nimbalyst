@@ -32,7 +32,7 @@ import {
 } from '@floating-ui/react';
 
 type DropDownContextType = {
-  registerItem: (ref: React.RefObject<HTMLButtonElement>) => void;
+  registerItem: (ref: React.RefObject<HTMLButtonElement | null>) => void;
 };
 
 const DropDownContext = React.createContext<DropDownContextType | null>(null);
@@ -94,12 +94,12 @@ function DropDownItems({
   onClick?: React.MouseEventHandler<HTMLDivElement>;
   floatingProps?: Record<string, unknown>;
 }) {
-  const [items, setItems] = useState<React.RefObject<HTMLButtonElement>[]>();
+  const [items, setItems] = useState<React.RefObject<HTMLButtonElement | null>[]>();
   const [highlightedItem, setHighlightedItem] =
-    useState<React.RefObject<HTMLButtonElement>>();
+    useState<React.RefObject<HTMLButtonElement | null>>();
 
   const registerItem = useCallback(
-    (itemRef: React.RefObject<HTMLButtonElement>) => {
+    (itemRef: React.RefObject<HTMLButtonElement | null>) => {
       setItems((prev) => (prev ? [...prev, itemRef] : [itemRef]));
     },
     [setItems],

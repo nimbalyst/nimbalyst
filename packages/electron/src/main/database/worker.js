@@ -396,6 +396,8 @@ class PGLiteWorker {
         return await this.queryReadOnly(message);
       case 'exec':
         return await this.exec(message);
+      case 'transaction':
+        return await this.transaction(message);
       case 'close':
         return await this.close(message);
       case 'getStats':
@@ -844,6 +846,14 @@ class PGLiteWorker {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_history_one_pending_per_file
         ON document_history(file_path)
         WHERE metadata->>'status' = 'pending-review';
+
+      -- Mirror of SQLite migration 0018_history_preedit_session_index.sql -- keep in sync.
+      -- Speeds up ToolCallMatcher.createSessionEnrichmentContext, which loads every
+      -- pre-edit snapshot for a session on ai:loadSession; without it the query
+      -- full-scanned document_history (1.7-4.7s on large sessions).
+      CREATE INDEX IF NOT EXISTS idx_history_preedit_session
+        ON document_history((metadata->>'sessionId'))
+        WHERE metadata->>'type' = 'pre-edit';
     `);
 
     // Session Files table
@@ -2448,6 +2458,38 @@ class PGLiteWorker {
       throw error;
     }
 
+    // Workstream A1: explicit personal-account -> team-member binding. The
+    // binding is projected from the org TeamRoom; the repair ledger ensures
+    // legacy email matching is attempted only once per account/team pair.
+    // Mirror of SQLite migration 0025_account_org_bindings.sql.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS account_org_bindings (
+          personal_org_id TEXT NOT NULL,
+          team_org_id     TEXT NOT NULL,
+          team_member_id  TEXT NOT NULL,
+          source          TEXT NOT NULL,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (personal_org_id, team_org_id)
+        );
+        CREATE TABLE IF NOT EXISTS account_org_binding_repairs (
+          personal_org_id TEXT NOT NULL,
+          team_org_id     TEXT NOT NULL,
+          attempted_at    TIMESTAMPTZ NOT NULL,
+          outcome         TEXT NOT NULL,
+          matched_count   INTEGER NOT NULL,
+          PRIMARY KEY (personal_org_id, team_org_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_account_org_bindings_team
+          ON account_org_bindings (team_org_id, team_member_id);
+      `);
+      console.log('[PGLite Worker] account/org binding tables created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create account/org binding tables:', error);
+      throw error;
+    }
+
     // Migration: derived relationship index (Epic C Phase 2, schema version 14).
     // LOCAL-ONLY projection of relationship FIELD values (which themselves sync
     // on the metadata socket like labels). Rebuildable from item JSON; never on
@@ -2718,6 +2760,203 @@ class PGLiteWorker {
       console.error('[PGLite Worker] Failed to add worktrees pr_* columns:', error);
       throw error;
     }
+
+    // Migration: read receipts for unread indicators (trackers + collab docs,
+    // schema version 16). Personal per-user state ABOUT team objects; NEVER
+    // stored on a tracker/document row and synced only on the PERSONAL channel.
+    // Mirror of SQLite migration 0016_read_receipts.sql -- keep the two in sync.
+    // BIGINT (not INTEGER) here because epoch-ms / sync_id overflow int4.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS read_receipts (
+          user_email        TEXT NOT NULL,
+          entity_kind       TEXT NOT NULL,
+          entity_id         TEXT NOT NULL,
+          scope             TEXT NOT NULL,
+          last_viewed_at    BIGINT NOT NULL,
+          last_seen_version BIGINT,
+          updated_at        BIGINT NOT NULL,
+          PRIMARY KEY (user_email, entity_kind, entity_id, scope)
+        );
+      `);
+      await this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_read_receipts_lookup
+          ON read_receipts (user_email, entity_kind, scope);
+      `);
+      console.log('[PGLite Worker] read_receipts table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create read_receipts table:', error);
+      throw error;
+    }
+
+    // Migration: identity-scoped tracker favorites and genuine-open recency
+    // (schema version 24). Mirror of SQLite 0024_tracker_personal_state.sql.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tracker_personal_state (
+          user_email          TEXT NOT NULL,
+          scope               TEXT NOT NULL,
+          item_id             TEXT NOT NULL,
+          is_favorite         BOOLEAN NOT NULL DEFAULT FALSE,
+          favorite_updated_at BIGINT NOT NULL DEFAULT 0,
+          last_opened_at      BIGINT,
+          updated_at          BIGINT NOT NULL,
+          PRIMARY KEY (user_email, scope, item_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tracker_personal_state_scope
+          ON tracker_personal_state (user_email, scope);
+      `);
+      console.log('[PGLite Worker] tracker_personal_state table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tracker_personal_state table:', error);
+      throw error;
+    }
+
+    // Migration: shared tracker-type folder navigation (schema version 17).
+    // JSONB is selected as a whole column and parsed defensively by consumers.
+    // Mirror of SQLite migration 0017_tracker_type_navigation.sql.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tracker_type_navigation (
+          workspace   TEXT NOT NULL,
+          entry_id    TEXT NOT NULL,
+          kind        TEXT NOT NULL,
+          payload     JSONB NOT NULL,
+          updated     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at  TIMESTAMPTZ,
+          sync_id     BIGINT,
+          sync_status TEXT NOT NULL DEFAULT 'local',
+          PRIMARY KEY (workspace, entry_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tracker_type_navigation_sync
+          ON tracker_type_navigation (workspace, sync_status);
+        CREATE INDEX IF NOT EXISTS idx_tracker_type_navigation_cursor
+          ON tracker_type_navigation (workspace, sync_id);
+      `);
+      console.log('[PGLite Worker] tracker_type_navigation table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tracker_type_navigation table:', error);
+      throw error;
+    }
+
+    // Migration: encrypted offline-first Yjs replicas (schema version 19).
+    // Mirror of SQLite migration 0019_collab_document_replicas.sql.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS collab_document_replicas (
+          account_id TEXT NOT NULL,
+          org_id TEXT NOT NULL,
+          document_id TEXT NOT NULL,
+          document_type TEXT NOT NULL,
+          encoding_version INTEGER NOT NULL DEFAULT 1,
+          encrypted_snapshot BYTEA,
+          snapshot_generation INTEGER NOT NULL DEFAULT 0,
+          last_server_seq BIGINT NOT NULL DEFAULT 0,
+          completeness TEXT NOT NULL DEFAULT 'complete'
+            CHECK (completeness IN ('complete', 'incomplete', 'corrupt')),
+          snapshot_checksum TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (account_id, org_id, document_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS collab_document_replica_updates (
+          update_id TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL,
+          org_id TEXT NOT NULL,
+          document_id TEXT NOT NULL,
+          encrypted_update BYTEA NOT NULL,
+          source TEXT NOT NULL CHECK (source IN ('local', 'remote', 'server-snapshot')),
+          server_sequence BIGINT,
+          snapshot_generation INTEGER NOT NULL DEFAULT 0,
+          encoding_version INTEGER NOT NULL DEFAULT 1,
+          update_checksum TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          FOREIGN KEY (account_id, org_id, document_id)
+            REFERENCES collab_document_replicas(account_id, org_id, document_id)
+            ON DELETE CASCADE
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_collab_replica_updates_server_seq
+          ON collab_document_replica_updates(account_id, org_id, document_id, server_sequence)
+          WHERE server_sequence IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_collab_replica_updates_tail
+          ON collab_document_replica_updates(account_id, org_id, document_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS collab_document_outbox (
+          batch_id TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL,
+          org_id TEXT NOT NULL,
+          document_id TEXT NOT NULL,
+          encrypted_update BYTEA NOT NULL,
+          encoding_version INTEGER NOT NULL DEFAULT 1,
+          update_checksum TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'queued'
+            CHECK (state IN ('queued', 'inflight', 'rejected')),
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          last_error_code TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          FOREIGN KEY (account_id, org_id, document_id)
+            REFERENCES collab_document_replicas(account_id, org_id, document_id)
+            ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_collab_document_outbox_drain
+          ON collab_document_outbox(account_id, state, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_collab_document_replicas_retention
+          ON collab_document_replicas(account_id, last_accessed_at);
+
+        ALTER TABLE collab_document_replicas
+          ADD COLUMN IF NOT EXISTS staged_encrypted_snapshot BYTEA;
+        ALTER TABLE collab_document_replicas
+          ADD COLUMN IF NOT EXISTS staged_snapshot_generation INTEGER;
+        ALTER TABLE collab_document_replicas
+          ADD COLUMN IF NOT EXISTS staged_snapshot_checksum TEXT;
+        ALTER TABLE collab_document_replicas
+          ADD COLUMN IF NOT EXISTS staged_encoding_version INTEGER;
+        ALTER TABLE collab_document_replicas
+          ADD COLUMN IF NOT EXISTS staged_snapshot_token TEXT;
+        ALTER TABLE collab_document_replicas
+          ADD COLUMN IF NOT EXISTS snapshot_commit_token TEXT;
+        ALTER TABLE collab_document_replicas
+          ADD COLUMN IF NOT EXISTS quarantine_reason TEXT;
+        ALTER TABLE collab_document_replicas
+          ADD COLUMN IF NOT EXISTS quarantined_at TIMESTAMPTZ;
+
+        CREATE TABLE IF NOT EXISTS collab_document_assets (
+          account_id TEXT NOT NULL,
+          org_id TEXT NOT NULL,
+          document_id TEXT NOT NULL,
+          asset_id TEXT NOT NULL,
+          encrypted_asset BYTEA NOT NULL,
+          encoding_version INTEGER NOT NULL DEFAULT 1,
+          asset_checksum TEXT NOT NULL,
+          plaintext_size BIGINT NOT NULL,
+          upload_state TEXT NOT NULL DEFAULT 'cached'
+            CHECK (upload_state IN ('cached', 'queued', 'inflight', 'rejected')),
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          last_error_code TEXT,
+          next_attempt_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (account_id, org_id, document_id, asset_id)
+        );
+        ALTER TABLE collab_document_assets
+          ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
+        DROP INDEX IF EXISTS idx_collab_document_assets_drain;
+        CREATE INDEX idx_collab_document_assets_drain
+          ON collab_document_assets(account_id, upload_state, next_attempt_at, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_collab_document_assets_retention
+          ON collab_document_assets(account_id, last_accessed_at);
+      `);
+      console.log('[PGLite Worker] collab document replica tables created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create collab document replica tables:', error);
+      throw error;
+    }
   }
 
   async query(message) {
@@ -2751,6 +2990,33 @@ class PGLiteWorker {
         id: message.id,
         success: true,
         execMs
+      };
+    } finally {
+      this.activeOps--;
+    }
+  }
+
+  async transaction(message) {
+    if (!this.db) throw new Error('Database not initialized');
+    const statements = message.payload?.statements;
+    if (!Array.isArray(statements) || statements.length === 0) {
+      throw new Error('transaction requires at least one statement');
+    }
+    this.activeOps++;
+    try {
+      const execStart = performance.now();
+      await this.db.transaction(async (tx) => {
+        for (const statement of statements) {
+          if (!statement || typeof statement.sql !== 'string') {
+            throw new Error('transaction statement sql must be a string');
+          }
+          await tx.query(statement.sql, statement.params);
+        }
+      });
+      return {
+        id: message.id,
+        success: true,
+        execMs: performance.now() - execStart,
       };
     } finally {
       this.activeOps--;

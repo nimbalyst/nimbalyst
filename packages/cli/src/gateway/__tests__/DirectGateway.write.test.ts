@@ -139,13 +139,13 @@ describe('DirectGateway offline writes', () => {
     });
     gw.close();
 
-    expect(rec.issueKey).toBe('NIM-1');
+    expect(rec.issueKey).toBe('FIX-1');
     expect(rec.primaryType).toBe('bug');
     expect(rec.fields.title).toBe('Login times out');
     expect(rec.fields.severity).toBe('critical');
 
     const row = rawRow(rec.id);
-    expect(row.issue_key).toBe('NIM-1');
+    expect(row.issue_key).toBe('FIX-1');
     expect(row.issue_number).toBe(1);
     expect(row.title).toBe('Login times out'); // generated column derived from data
     expect(row.status).toBe('to-do');

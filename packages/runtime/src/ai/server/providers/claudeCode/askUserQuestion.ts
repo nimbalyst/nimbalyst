@@ -154,7 +154,14 @@ export async function pollForAskUserQuestionResponse(
       for (const msg of messages) {
         try {
           const content = JSON.parse(msg.content);
-          if (content.type === 'ask_user_question_response' && content.questionId === questionId) {
+          // Alias-aware match: the mobile/voice writer persists the full alias
+          // list (Codex synthetic -> raw) as `waiterIds`, plus `rawQuestionId`.
+          // Fall back to the exact `questionId` match for older records.
+          const idMatches =
+            content.questionId === questionId ||
+            content.rawQuestionId === questionId ||
+            (Array.isArray(content.waiterIds) && content.waiterIds.includes(questionId));
+          if (content.type === 'ask_user_question_response' && idMatches) {
             const pending = deps.pendingAskUserQuestions.get(questionId);
             if (pending) {
               if (content.cancelled) {

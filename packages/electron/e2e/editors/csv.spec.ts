@@ -82,14 +82,16 @@ async function cellContainsText(page: Page, text: string): Promise<boolean> {
 // Helper to get all first-column values from the grid
 async function getFirstColumnValues(page: Page): Promise<string[]> {
   return page.evaluate(() => {
-    const cells = document.querySelectorAll('revogr-data [role="gridcell"]');
+    // RevoGrid virtualizes however many columns fit in the viewport, so DOM
+    // position is not a stable column identifier. Use its explicit column
+    // coordinate and exclude the row-header viewport.
+    const cells = document.querySelectorAll(
+      'revogr-data[col-type="rgCol"] [role="gridcell"][data-rgcol="0"]'
+    );
     const values: string[] = [];
-    // Assuming 3 columns per row for now - we read every 3rd cell starting at 0
-    cells.forEach((cell, idx) => {
-      if (idx % 3 === 0) {
-        const text = (cell as HTMLElement).textContent?.trim() || '';
-        if (text) values.push(text);
-      }
+    cells.forEach((cell) => {
+      const text = (cell as HTMLElement).textContent?.trim() || '';
+      if (text) values.push(text);
     });
     return values;
   });

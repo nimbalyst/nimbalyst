@@ -289,6 +289,7 @@ function schedulePersist(sessionId: string, state: SessionEditorState): void {
   if (!currentWorkspacePath) {
     throw new Error('[sessionEditors] Cannot persist - initSessionEditors not called');
   }
+  const workspacePath = currentWorkspacePath;
 
   // Clear any existing timer for this session
   const existingTimer = persistTimers.get(sessionId);
@@ -303,13 +304,13 @@ function schedulePersist(sessionId: string, state: SessionEditorState): void {
     try {
       const workspaceState = await window.electronAPI.invoke(
         'workspace:get-state',
-        currentWorkspacePath!
+        workspacePath
       );
 
       const existingStates = workspaceState?.sessionEditorStates ?? {};
       const tabKeys = store.get(sessionTabKeysAtom(sessionId));
 
-      await window.electronAPI.invoke('workspace:update-state', currentWorkspacePath!, {
+      await window.electronAPI.invoke('workspace:update-state', workspacePath, {
         sessionEditorStates: {
           ...existingStates,
           [sessionId]: {

@@ -15,7 +15,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { spawn } from 'child_process';
-import extractZip from 'extract-zip';
+import AdmZip from 'adm-zip';
 import { BrowserWindow, net } from 'electron';
 import { logger } from '../utils/logger';
 import { safeHandle } from '../utils/ipcRegistry';
@@ -290,12 +290,24 @@ async function verifyChecksum(filePath: string, expectedChecksum: string): Promi
 /**
  * Extract a .nimext (zip) file to a directory.
  *
- * Uses the pure-JS `extract-zip` package so this works on Windows (where there
- * is no system `unzip` binary) in addition to macOS and Linux.
+ * Uses the pure-JS `adm-zip` package so this works on Windows (where there is
+ * no system `unzip` binary) in addition to macOS and Linux. `extract-zip` is
+ * unusable here: its yauzl/fd-slicer stream stack deadlocks after the first
+ * entry on Node 24+ (Electron >= 41), leaving the install invoke pending
+ * forever ("reply was never sent") -- see GitHub issue #755 / NIM-1513.
  */
 async function extractNimext(nimextPath: string, destPath: string): Promise<void> {
   await fs.mkdir(destPath, { recursive: true });
-  await extractZip(nimextPath, { dir: destPath });
+  const zip = new AdmZip(nimextPath);
+  // Zip-slip guard: reject any entry that would resolve outside destPath.
+  const destRoot = path.resolve(destPath);
+  for (const entry of zip.getEntries()) {
+    const target = path.resolve(destRoot, entry.entryName);
+    if (target !== destRoot && !target.startsWith(destRoot + path.sep)) {
+      throw new Error(`Archive entry escapes destination directory: ${entry.entryName}`);
+    }
+  }
+  zip.extractAllTo(destPath, true);
 }
 
 interface InstallFromPackageUrlOptions {

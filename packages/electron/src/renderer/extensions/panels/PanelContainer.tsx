@@ -5,6 +5,7 @@
  * Handles error boundaries and loading states.
  */
 
+import type { JSX } from 'react';
 import React, { useMemo, useEffect, useState, useCallback, useRef } from 'react';
 import { useSetAtom } from 'jotai';
 import { useTheme } from '../../hooks/useTheme';

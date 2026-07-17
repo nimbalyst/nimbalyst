@@ -1,4 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  buildFileDirectoryTree,
+  getFilePathBasename,
+  type FileDirectoryNode,
+} from '@nimbalyst/extension-sdk/file-tree';
 import { DiffPeekPopover } from './DiffPeekPopover';
 
 const ipc = (window as unknown as {
@@ -29,42 +34,7 @@ interface CommitDetailContentProps {
 
 // --- Directory tree (matches FileEditsSidebar's collapsing algorithm) ---
 
-interface DirectoryNode {
-  path: string;
-  displayPath: string;
-  files: Array<CommitDetail['files'][number]>;
-  subdirectories: Map<string, DirectoryNode>;
-}
-
-function buildDirectoryTree(files: CommitDetail['files']): DirectoryNode {
-  const root: DirectoryNode = { path: '', displayPath: '', files: [], subdirectories: new Map() };
-
-  for (const file of files) {
-    const parts = file.path.split('/');
-    if (parts.length === 1) { root.files.push(file); continue; }
-    let current = root;
-    parts.slice(0, -1).forEach((part, index) => {
-      const pathSoFar = parts.slice(0, index + 1).join('/');
-      if (!current.subdirectories.has(part)) {
-        current.subdirectories.set(part, { path: pathSoFar, displayPath: part, files: [], subdirectories: new Map() });
-      }
-      current = current.subdirectories.get(part)!;
-    });
-    current.files.push(file);
-  }
-  return collapseDirectoryTree(root);
-}
-
-function collapseDirectoryTree(node: DirectoryNode): DirectoryNode {
-  node.subdirectories.forEach((subdir, key) => {
-    node.subdirectories.set(key, collapseDirectoryTree(subdir));
-  });
-  if (node.subdirectories.size === 1 && node.files.length === 0) {
-    const [, child] = Array.from(node.subdirectories.entries())[0];
-    return { ...child, displayPath: node.displayPath ? `${node.displayPath}/${child.displayPath}` : child.displayPath };
-  }
-  return node;
-}
+type DirectoryNode = FileDirectoryNode<CommitDetail['files'][number]>;
 
 const STATUS_CLASS: Record<string, string> = {
   M: 'git-hover-status--modified',
@@ -93,7 +63,7 @@ function renderDirNode(node: DirectoryNode, depth: number, opts?: FileRowRenderO
       )}
       {subdirs.map(sub => <React.Fragment key={sub.path}>{renderDirNode(sub, childDepth, opts)}</React.Fragment>)}
       {sortedFiles.map(file => {
-        const name = file.path.split('/').pop() ?? file.path;
+        const name = getFilePathBasename(file.path);
         const isPinned = opts?.pinnedPath === file.path;
         const rowClasses = [
           'git-hover-file-row',
@@ -336,7 +306,10 @@ export function CommitDetailContent({
     };
   }, []);
 
-  const tree = useMemo(() => detail ? buildDirectoryTree(detail.files) : null, [detail]);
+  const tree = useMemo(
+    () => detail ? buildFileDirectoryTree(detail.files, file => file.path) : null,
+    [detail],
+  );
   const flatPaths = useMemo(() => tree ? flattenTreePaths(tree) : [], [tree]);
 
   const peek = useCommitDiffPeek(workspacePath, commitHash, flatPaths);

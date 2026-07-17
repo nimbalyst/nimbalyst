@@ -21,14 +21,15 @@ import { TabEditor } from '../TabEditor/TabEditor';
 import { CollaborativeTabEditor } from '../TabEditor/CollaborativeTabEditor';
 import { TabEditorErrorBoundary } from '../TabEditorErrorBoundary';
 import { logger } from '../../utils/logger';
-import { useTabsActions, type TabData, notifyDirtyStateChange } from '../../contexts/TabsContext';
+import { useTabsActions, type TabData, notifyDirtyStateChange, isTrackerTabPath } from '../../contexts/TabsContext';
+import { TrackerResourceEditor } from '../AgentMode/TrackerResourceEditor';
 import { isCollabUri, parseCollabUri } from '../../utils/collabUri';
 import {
   getCollabConfig,
   removeCollabConfig,
   resolveCollabConfigForUri,
 } from '../../utils/collabDocumentOpener';
-import { getPersistedCollabDocType } from '../../utils/collabOpenDocsPersistence';
+import { getPersistedCollabDocMetadata } from '../../utils/collabOpenDocsPersistence';
 import { store, editorDirtyAtom, editorHasUnacceptedChangesAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { clearMockupAnnotationsForFile, getMockupFilePath } from '../UnifiedAI/MockupAnnotationIndicator';
 
@@ -48,6 +49,14 @@ interface TabContentProps {
 
   // Tab management
   onTabClose?: (tabId: string) => void;
+
+  // Tracker resource tabs: open another tracker item (relationship/backlink).
+  // Workstream-scoped; passed by the workstream host so TabContent stays
+  // workstream-agnostic.
+  onOpenTracker?: (trackerItemId: string) => void;
+  // Owning workstream id (when this TabContent hosts a workstream strip) — used
+  // to persist per-tracker-tab content-focus state.
+  workstreamId?: string;
 
   // Document metadata
   workspaceId?: string;
@@ -70,6 +79,8 @@ const TabContentComponent: React.FC<TabContentProps> = ({
   onSwitchToAgentMode,
   onOpenSessionInChat,
   onTabClose,
+  onOpenTracker,
+  workstreamId,
   workspaceId,
 }) => {
   // Debug: trace re-renders - THIS SHOULD ONLY LOG ONCE ON MOUNT
@@ -100,6 +111,8 @@ const TabContentComponent: React.FC<TabContentProps> = ({
     onSwitchToAgentMode,
     onOpenSessionInChat,
     onTabClose,
+    onOpenTracker,
+    workstreamId,
     workspaceId,
   });
   propsRef.current = {
@@ -111,11 +124,19 @@ const TabContentComponent: React.FC<TabContentProps> = ({
     onSwitchToAgentMode,
     onOpenSessionInChat,
     onTabClose,
+    onOpenTracker,
+    workstreamId,
     workspaceId,
   };
 
   // Load content for a file
   const loadContent = useCallback(async (filePath: string, title?: string): Promise<string> => {
+    // Tracker resources don't load from disk -- the tracker body is owned by
+    // TrackerItemDetail (PGLite or collaborative Y.Doc).
+    if (isTrackerTabPath(filePath)) {
+      return '';
+    }
+
     // Collaborative documents don't load from disk -- content comes via Y.Doc
     if (isCollabUri(filePath)) {
       if (!getCollabConfig(filePath)) {
@@ -130,7 +151,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
           // sharedDocumentsAtom hasn't synced yet. Without it, the open
           // routes a shared .excalidraw / .mockup.html Y.Doc through the
           // markdown editor and the canvas comes back blank.
-          const documentType = await getPersistedCollabDocType(
+          const persistedMetadata = await getPersistedCollabDocMetadata(
             propsRef.current.workspaceId,
             documentId,
           );
@@ -139,7 +160,18 @@ const TabContentComponent: React.FC<TabContentProps> = ({
             filePath,
             documentId,
             title,
-            documentType,
+            persistedMetadata?.documentType,
+            {
+              metadata: persistedMetadata?.metadataVersion === 2
+                && persistedMetadata.fileExtension
+                && persistedMetadata.editorId
+                ? {
+                    metadataVersion: 2,
+                    fileExtension: persistedMetadata.fileExtension,
+                    editorId: persistedMetadata.editorId,
+                  }
+                : undefined,
+            },
           );
         } catch (error) {
           logger.ui.error('[TabContent] Failed to resolve collab config:', error);
@@ -244,6 +276,43 @@ const TabContentComponent: React.FC<TabContentProps> = ({
     containerRef.current.appendChild(element);
 
     const root = createRoot(element);
+
+    // Tracker resource tabs render the tracker detail host, not a file editor.
+    // No save/dirty/getContent wiring — the tracker owns its own persistence
+    // (PGLite / collaborative Y.Doc via TrackerItemDetail).
+    if (tab.kind === 'tracker' || isTrackerTabPath(tab.filePath)) {
+      const trackerItemId = tab.trackerItemId ?? tab.filePath.replace(/^tracker:\/\//, '');
+      root.render(
+        <JotaiProvider store={store}>
+          <TabEditorErrorBoundary
+            filePath={tab.filePath}
+            fileName={tab.fileName}
+            onRetry={() => {
+              removeTabEditor(tab.id);
+              createTabEditor(tab, content);
+            }}
+            onClose={() => {
+              propsRef.current.onTabClose?.(tab.id);
+            }}
+          >
+            <TrackerResourceEditor
+              trackerItemId={trackerItemId}
+              workspacePath={propsRef.current.workspaceId}
+              workstreamId={propsRef.current.workstreamId}
+              onClose={() => propsRef.current.onTabClose?.(tab.id)}
+              onOpenTracker={propsRef.current.onOpenTracker}
+              onSwitchToAgentMode={
+                propsRef.current.onSwitchToAgentMode
+                  ? (sessionId: string) => propsRef.current.onSwitchToAgentMode?.(undefined, sessionId)
+                  : undefined
+              }
+            />
+          </TabEditorErrorBoundary>
+        </JotaiProvider>
+      );
+      tabInstancesRef.current.set(tab.id, { root, element, tabData: tab, content });
+      return;
+    }
 
     const handleManualSaveReady = (saveFn: () => Promise<void>) => {
       saveFunctionsRef.current.set(tab.id, saveFn);

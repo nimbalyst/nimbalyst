@@ -1,16 +1,14 @@
 /**
- * Selected-org state for the Organization settings scope (Epic H3 P3).
+ * Selected-org state for the in-app Team surface.
  *
- * The settings header has three scopes -- User | Organization | Project. The
- * Organization scope is keyed to the org the user picked in the `OrgSwitcher`
- * (above the project rail), NOT to the active workspace. This atom is the single
- * shared source of that selection so the switcher and the settings shell agree.
+ * The Team surface targets the org selected in `OrgSwitcher` when present and
+ * otherwise falls back to the active workspace's bound organization.
  *
- * `null` means "no team org selected" (personal-only); the Organization scope is
- * unavailable in that case.
+ * `null` means no organization is selected. It is unrelated to the selected
+ * personal/mobile sync account.
  */
 
 import { atom } from 'jotai';
 
-/** The org id currently selected for org-scoped settings, or null for none. */
+/** The org id explicitly selected for the Team surface, or null for workspace fallback. */
 export const selectedOrgIdAtom = atom<string | null>(null);

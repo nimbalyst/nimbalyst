@@ -88,6 +88,7 @@ function EntryRow({ entry }: { entry: OperationLogEntry }) {
   const borderClass =
     entry.status === 'error' ? 'git-output-entry--error' :
     entry.status === 'running' ? 'git-output-entry--running' :
+    entry.status === 'interrupted' ? 'git-output-entry--interrupted' :
     'git-output-entry--success';
 
   return (
@@ -105,7 +106,9 @@ function EntryRow({ entry }: { entry: OperationLogEntry }) {
         </div>
       )}
 
-      {entry.error && <ErrorBlock command={entry.command} error={entry.error} />}
+      {entry.error && !entry.output.includes(entry.error.trim()) && (
+        <ErrorBlock command={entry.command} error={entry.error} />
+      )}
 
       {entry.status === 'success' && (
         <div className="git-output-status git-output-status--success">
@@ -115,7 +118,14 @@ function EntryRow({ entry }: { entry: OperationLogEntry }) {
 
       {entry.status === 'error' && (
         <div className="git-output-status git-output-status--error">
-          &#10007; Failed{entry.durationMs != null ? ` after ${formatDuration(entry.durationMs)}` : ''}
+          &#10007; Failed{entry.exitCode != null ? ` (exit ${entry.exitCode})` : ''}
+          {entry.durationMs != null ? ` after ${formatDuration(entry.durationMs)}` : ''}
+        </div>
+      )}
+
+      {entry.status === 'interrupted' && (
+        <div className="git-output-status git-output-status--interrupted">
+          Interrupted{entry.durationMs != null ? ` after ${formatDuration(entry.durationMs)}` : ''}
         </div>
       )}
 
@@ -137,12 +147,12 @@ function EntryRow({ entry }: { entry: OperationLogEntry }) {
 export function OutputTab({ entries, onClear }: OutputTabProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom when new entries appear
+  // Auto-scroll while commands append output as well as when entries are added.
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [entries.length]);
+  }, [entries]);
 
   if (entries.length === 0) {
     return (

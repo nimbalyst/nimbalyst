@@ -52,8 +52,3 @@ vi.mock('electron', () => ({
     on: vi.fn()
   }
 }));
-
-// Set test timeout
-beforeAll(() => {
-  vi.setConfig({ testTimeout: 10000 });
-});

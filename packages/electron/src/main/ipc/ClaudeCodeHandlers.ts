@@ -4,7 +4,7 @@ import fs from 'fs';
 import { claudeCodeDetector } from '../services/ClaudeCodeDetector';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../utils/logger';
-import { setupClaudeCodeEnvironment, resolveClaudeCodeExecutablePath } from '@nimbalyst/runtime/electron/claudeCodeEnvironment';
+import { setupClaudeCodeEnvironment, resolveClaudeCodeExecutablePath, resolveNativeBinaryPath, findOrphanedClaudeUpdateFiles, describeMissingClaudeRuntime } from '@nimbalyst/runtime/electron/claudeCodeEnvironment';
 import { AnalyticsService } from "../services/analytics/AnalyticsService.ts";
 import { shouldShowClaudeCodeWindowsWarning, dismissClaudeCodeWindowsWarning } from '../utils/store';
 import os from "os";
@@ -18,6 +18,24 @@ const analytics = AnalyticsService.getInstance();
  * Register Claude Code related IPC handlers
  */
 export function registerClaudeCodeHandlers() {
+  // NIM-1573: Log the bundled-runtime integrity once at init so an already-broken
+  // install (interrupted CLI self-update that orphaned claude.exe) is recorded
+  // honestly up front, not only when a session first fails. We deliberately do
+  // NOT restore an orphaned .old file -- a truncated download must not be
+  // resurrected; the disabled self-updater (sdkOptionsBuilder / env) stops the
+  // bleeding going forward and the run/login paths surface the honest message.
+  try {
+    if (!resolveNativeBinaryPath()) {
+      const orphans = findOrphanedClaudeUpdateFiles();
+      log.error(
+        `[ClaudeCodeHandlers] Bundled Claude runtime unavailable at startup: ${describeMissingClaudeRuntime()}` +
+          (orphans.length > 0 ? ` Orphaned files: ${orphans.join(', ')}` : '')
+      );
+    }
+  } catch (err: any) {
+    log.error('[ClaudeCodeHandlers] Claude runtime integrity check failed:', err?.message);
+  }
+
   // Check if Claude Code is installed
   safeHandle('claude-code:check-installation', async () => {
     const status = await claudeCodeDetector.getStatus();
@@ -67,7 +85,7 @@ export function registerClaudeCodeHandlers() {
           isLoggedIn: false,
           hasOAuthToken: false,
           isExpired: false,
-          error: "Nimbalyst's bundled Claude runtime is missing or could not be found. A failed update can leave it in a broken state -- reinstall or repair Nimbalyst.",
+          error: describeMissingClaudeRuntime(),
         };
       }
 

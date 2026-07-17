@@ -7,6 +7,8 @@
  */
 
 import type { KeyEnvelopeMessage as ProtocolKeyEnvelopeMessage } from '@nimbalyst/collab-protocol';
+import type { Doc } from 'yjs';
+import type { LocalDocumentReplica } from './LocalDocumentReplica';
 
 export type {
   DocClientMessage,
@@ -35,6 +37,11 @@ export type DocKeyEnvelopeMessage = ProtocolKeyEnvelopeMessage;
 // ============================================================================
 
 export interface DocumentSyncConfig {
+  /** Existing durable replica to attach to. The provider never destroys it. */
+  replica?: LocalDocumentReplica;
+
+  /** Existing Y.Doc for transitional callers that do not yet use a replica. */
+  ydoc?: Doc;
   /** WebSocket server URL (e.g., wss://sync.nimbalyst.com) */
   serverUrl: string;
 
@@ -99,11 +106,24 @@ export interface DocumentSyncConfig {
   /** Called when a remote Yjs update is applied to the Y.Doc */
   onRemoteUpdate?: (origin: string) => void;
 
+  /**
+   * Called after the Y.Doc changes locally, remotely, or during initial sync.
+   * The host owns serialization and persistence; runtime only signals that the
+   * current decrypted document state is ready to inspect.
+   */
+  onContentChanged?: (yDoc: Doc) => void;
+
   /** Called when awareness state changes from remote users */
   onAwarenessUpdate?: (states: Map<string, AwarenessState>) => void;
 
   /** Called when connection status changes */
   onStatusChange?: (status: DocumentSyncStatus) => void;
+
+  /** Structured, content-free desktop observability sink. */
+  onOfflineMetric?: (event: {
+    metric: string;
+    [property: string]: string | number | boolean | null;
+  }) => void;
 
   /**
    * Previously persisted local updates that have not been acknowledged by the

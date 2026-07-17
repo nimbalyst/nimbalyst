@@ -13,8 +13,30 @@
 
 import { store } from '@nimbalyst/runtime/store';
 import { stytchAuthAtom, type StytchAuthSnapshot } from '../atoms/stytchAuth';
+import {
+  organizationDirectoryAtom,
+  personalAccountsAtom,
+  type OrganizationDirectoryEntry,
+  type PersonalAccountSummary,
+} from '../atoms/settingsDomains';
 
 let initialized = false;
+
+export async function refreshPersonalAccountsDirectory(): Promise<PersonalAccountSummary[]> {
+  const stytch = window.electronAPI?.stytch;
+  if (!stytch) {
+    store.set(personalAccountsAtom, []);
+    return [];
+  }
+  try {
+    const accounts = (await stytch.getAccounts() ?? []) as PersonalAccountSummary[];
+    store.set(personalAccountsAtom, accounts);
+    return accounts;
+  } catch {
+    store.set(personalAccountsAtom, []);
+    return [];
+  }
+}
 
 export function initStytchAuthListeners(): () => void {
   if (initialized) {
@@ -29,6 +51,21 @@ export function initStytchAuthListeners(): () => void {
     };
   }
 
+  const loadIdentityDirectory = async () => {
+    await refreshPersonalAccountsDirectory();
+    try {
+      const result = await window.electronAPI?.team?.list?.();
+      store.set(
+        organizationDirectoryAtom,
+        result?.success && Array.isArray(result.teams)
+          ? result.teams as OrganizationDirectoryEntry[]
+          : [],
+      );
+    } catch {
+      store.set(organizationDirectoryAtom, []);
+    }
+  };
+
   // Initial fetch -- atom stays null until this resolves so the UI can
   // distinguish "still loading" from "loaded and signed out".
   stytch.getAuthState()
@@ -37,6 +74,7 @@ export function initStytchAuthListeners(): () => void {
         isAuthenticated: !!state?.isAuthenticated,
         user: state?.user ?? null,
       } satisfies StytchAuthSnapshot);
+      void loadIdentityDirectory();
     })
     .catch(() => {
       // Treat fetch failure as signed-out rather than leaving the atom null
@@ -49,10 +87,16 @@ export function initStytchAuthListeners(): () => void {
       isAuthenticated: !!state?.isAuthenticated,
       user: state?.user ?? null,
     });
+    void loadIdentityDirectory();
   });
+
+  void stytch.subscribeAuthState?.();
+  const handleOrganizationsChanged = () => { void loadIdentityDirectory(); };
+  window.addEventListener('nimbalyst:organizations-changed', handleOrganizationsChanged);
 
   return () => {
     initialized = false;
     unsubscribe?.();
+    window.removeEventListener('nimbalyst:organizations-changed', handleOrganizationsChanged);
   };
 }

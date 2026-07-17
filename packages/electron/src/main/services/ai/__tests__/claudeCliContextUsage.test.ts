@@ -13,21 +13,27 @@ import {
  * `ai:tokenUsageUpdated` mechanism the SDK path uses.
  */
 describe('contextWindowForCliModel', () => {
-  it('returns 200k for the standard variants', () => {
-    expect(contextWindowForCliModel('claude-code-cli:opus')).toBe(200_000);
-    expect(contextWindowForCliModel('claude-code-cli:sonnet')).toBe(200_000);
-    expect(contextWindowForCliModel(undefined)).toBe(200_000);
+  it('returns 1M for current-gen base variants (opus/fable/sonnet run 1M natively)', () => {
+    // GitHub #825: on the current CLI plain opus/fable/sonnet report a 1M window
+    // at a flat price — the earlier 200k client-side windowing (CLI 2.1.175) is
+    // stale. Plain and -1m are identical for these.
+    expect(contextWindowForCliModel('claude-code-cli:opus')).toBe(1_000_000);
+    expect(contextWindowForCliModel('claude-code-cli:sonnet')).toBe(1_000_000);
+    expect(contextWindowForCliModel('claude-code-cli:fable')).toBe(1_000_000);
   });
   it('returns 1M for the -1m extended-context variants', () => {
     expect(contextWindowForCliModel('claude-code-cli:opus-1m')).toBe(1_000_000);
     expect(contextWindowForCliModel('claude-code-cli:sonnet-1M')).toBe(1_000_000);
-  });
-  it('windows plain fable at 200k and fable-1m at 1M, matching the CLI’s [1m] gating', () => {
-    // Claude Code windows plain `fable` at 200k client-side (observed: auto-
-    // compact at ~177k on CLI 2.1.175) even though the API serves Fable at 1M.
-    // The 1M window requires the fable[1m] model value — our fable-1m variant.
-    expect(contextWindowForCliModel('claude-code-cli:fable')).toBe(200_000);
     expect(contextWindowForCliModel('claude-code-cli:fable-1m')).toBe(1_000_000);
+  });
+  it('returns 1M for legacy pinned variants (single row, no -1m duplicate) and 200k for haiku', () => {
+    // opus-4-6/opus-4-7/sonnet-4-6 are 1M models too — matched by EXACT variant,
+    // not family, so the mapping is precise rather than an accidental collapse.
+    expect(contextWindowForCliModel('claude-code-cli:opus-4-6')).toBe(1_000_000);
+    expect(contextWindowForCliModel('claude-code-cli:opus-4-7')).toBe(1_000_000);
+    expect(contextWindowForCliModel('claude-code-cli:sonnet-4-6')).toBe(1_000_000);
+    expect(contextWindowForCliModel('claude-code-cli:haiku')).toBe(200_000);
+    expect(contextWindowForCliModel(undefined)).toBe(200_000);
   });
 });
 
@@ -92,7 +98,8 @@ describe('logClaudeCliContextUsage', () => {
     expect(h.updateTokenUsage).toHaveBeenCalledTimes(1);
     const [sid, tokenUsage] = h.updateTokenUsage.mock.calls[0];
     expect(sid).toBe('s1');
-    expect(tokenUsage.currentContext).toEqual({ tokens: 3 + 83066 + 239, contextWindow: 200_000 });
+    // Plain opus now runs 1M natively on the current CLI (GitHub #825).
+    expect(tokenUsage.currentContext).toEqual({ tokens: 3 + 83066 + 239, contextWindow: 1_000_000 });
     expect(tokenUsage.inputTokens).toBe(13); // cumulative 10 + 3 new input
     expect(tokenUsage.outputTokens).toBe(47); // cumulative 5 + 42 output
     expect(h.notifyTokenUsage).toHaveBeenCalledWith('s1', tokenUsage);

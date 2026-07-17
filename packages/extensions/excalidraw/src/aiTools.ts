@@ -4,10 +4,10 @@
  * Provides Claude with tools to view and edit Excalidraw diagrams.
  */
 
-import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
+import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
 import { convertToExcalidrawElements } from '@excalidraw/excalidraw';
 import { parseMermaidToExcalidraw } from '@excalidraw/mermaid-to-excalidraw';
-import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types/types';
+import type { BinaryFileData, ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 
 /**
  * Get the Excalidraw editor API from the tool context.
@@ -119,15 +119,90 @@ function calculateEdgePoint(
   return { x: edgeX, y: edgeY };
 }
 
+/** Collapse whitespace so labels Excalidraw re-wrapped with newlines/trailing spaces still match. */
+function normalizeLabelText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 /**
- * Helper to get an element by its label text
+ * Resolve an element reference to a scene element. Accepts an element id,
+ * exact label text, or whitespace-normalized label text. Excalidraw stores
+ * bound text re-wrapped to fit its container (inserting newlines and trailing
+ * spaces), so exact text matching alone is fragile; `originalText` holds the
+ * unwrapped label when available.
  */
-function getElementByLabel(elements: readonly ExcalidrawElement[], label: string): ExcalidrawElement | undefined {
-  return elements.find((el) => {
-    if ('text' in el && el.text === label) return true;
-    if ('label' in el && (el as any).label?.text === label) return true;
+function getElementByLabel(elements: readonly ExcalidrawElement[], ref: string): ExcalidrawElement | undefined {
+  const byId = elements.find((el) => el.id === ref);
+  if (byId) return byId;
+
+  const exact = elements.find((el) => {
+    if ('text' in el && el.text === ref) return true;
+    if ('label' in el && (el as any).label?.text === ref) return true;
     return false;
   });
+  if (exact) return exact;
+
+  const want = normalizeLabelText(ref);
+  if (!want) return undefined;
+  return elements.find((el) => {
+    const anyEl = el as any;
+    if (typeof anyEl.originalText === 'string' && normalizeLabelText(anyEl.originalText) === want) return true;
+    if ('text' in el && typeof anyEl.text === 'string' && normalizeLabelText(anyEl.text) === want) return true;
+    if (typeof anyEl.label?.text === 'string' && normalizeLabelText(anyEl.label.text) === want) return true;
+    return false;
+  });
+}
+
+/**
+ * Build a bound arrow (and its optional label text element) between two
+ * containers. Goes through convertToExcalidrawElements so a `label` becomes a
+ * properly measured text element bound to the arrow; the skeleton's explicit
+ * `points` are preserved by the conversion. Bindings to the pre-existing
+ * containers are patched on afterwards because the conversion can only bind
+ * to elements passed in the same call.
+ */
+function createBoundArrow(
+  fromContainer: ExcalidrawElement,
+  toContainer: ExcalidrawElement,
+  label?: string
+): { arrow: any; labelElements: any[] } {
+  const gap = 8;
+  const fromCenterX = fromContainer.x + (fromContainer.width || 0) / 2;
+  const fromCenterY = fromContainer.y + (fromContainer.height || 0) / 2;
+  const toCenterX = toContainer.x + (toContainer.width || 0) / 2;
+  const toCenterY = toContainer.y + (toContainer.height || 0) / 2;
+
+  const fromEdge = calculateEdgePoint(fromContainer, toCenterX, toCenterY, gap);
+  const toEdge = calculateEdgePoint(toContainer, fromCenterX, fromCenterY, gap);
+
+  const skeleton: any = {
+    type: 'arrow',
+    x: fromEdge.x,
+    y: fromEdge.y,
+    width: toEdge.x - fromEdge.x,
+    height: toEdge.y - fromEdge.y,
+    points: [
+      [0, 0],
+      [toEdge.x - fromEdge.x, toEdge.y - fromEdge.y],
+    ],
+    strokeColor: '#1e1e1e',
+    strokeWidth: 2,
+    endArrowhead: 'arrow',
+  };
+  if (label) {
+    skeleton.label = { text: label, fontSize: 16 };
+  }
+
+  const converted = convertToExcalidrawElements([skeleton]);
+  const convArrow = converted.find((el) => el.type === 'arrow') ?? converted[0];
+  const labelElements = converted.filter((el) => el !== convArrow);
+
+  const arrow = {
+    ...convArrow,
+    startBinding: { elementId: fromContainer.id, focus: 0, gap },
+    endBinding: { elementId: toContainer.id, focus: 0, gap },
+  };
+  return { arrow, labelElements };
 }
 
 /**
@@ -304,11 +379,11 @@ export const aiTools = [
       properties: {
         from: {
           type: 'string' as const,
-          description: 'Label of the source element',
+          description: 'Label or element id of the source element',
         },
         to: {
           type: 'string' as const,
-          description: 'Label of the target element',
+          description: 'Label or element id of the target element',
         },
         label: {
           type: 'string' as const,
@@ -356,65 +431,7 @@ export const aiTools = [
       const fromContainer = currentElements.find(el => el.id === fromContainerId) || fromEl;
       const toContainer = currentElements.find(el => el.id === toContainerId) || toEl;
 
-      // Calculate center points
-      const fromCenterX = fromContainer.x + (fromContainer.width || 0) / 2;
-      const fromCenterY = fromContainer.y + (fromContainer.height || 0) / 2;
-      const toCenterX = toContainer.x + (toContainer.width || 0) / 2;
-      const toCenterY = toContainer.y + (toContainer.height || 0) / 2;
-
-      // Calculate edge intersection points (where arrow should start/end)
-      const gap = 8;
-      const fromEdge = calculateEdgePoint(fromContainer, toCenterX, toCenterY, gap);
-      const toEdge = calculateEdgePoint(toContainer, fromCenterX, fromCenterY, gap);
-
-      // Generate arrow ID
-      const arrowId = `arrow-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-      // Create arrow element with edge-to-edge points
-      const arrow: any = {
-        id: arrowId,
-        type: 'arrow',
-        x: fromEdge.x,
-        y: fromEdge.y,
-        width: toEdge.x - fromEdge.x,
-        height: toEdge.y - fromEdge.y,
-        angle: 0,
-        strokeColor: '#1e1e1e',
-        backgroundColor: 'transparent',
-        fillStyle: 'solid',
-        strokeWidth: 2,
-        strokeStyle: 'solid',
-        roughness: 1,
-        opacity: 100,
-        groupIds: [],
-        frameId: null,
-        roundness: { type: 2 },
-        seed: Math.floor(Math.random() * 1000000),
-        version: 1,
-        versionNonce: Math.floor(Math.random() * 1000000),
-        isDeleted: false,
-        boundElements: null,
-        updated: Date.now(),
-        link: null,
-        locked: false,
-        points: [
-          [0, 0],
-          [toEdge.x - fromEdge.x, toEdge.y - fromEdge.y],
-        ],
-        lastCommittedPoint: null,
-        startBinding: {
-          elementId: fromContainerId,
-          focus: 0,
-          gap,
-        },
-        endBinding: {
-          elementId: toContainerId,
-          focus: 0,
-          gap,
-        },
-        startArrowhead: null,
-        endArrowhead: 'arrow',
-      };
+      const { arrow, labelElements } = createBoundArrow(fromContainer, toContainer, params.label);
 
       // Update the source and target elements to include arrow in boundElements
       const updatedElements = currentElements.map(el => {
@@ -422,17 +439,17 @@ export const aiTools = [
           const existingBound = (el as any).boundElements || [];
           return {
             ...el,
-            boundElements: [...existingBound, { id: arrowId, type: 'arrow' }],
+            boundElements: [...existingBound, { id: arrow.id, type: 'arrow' }],
           };
         }
         return el;
       });
 
       api.updateScene({
-        elements: [...updatedElements, arrow],
+        elements: [...updatedElements, arrow, ...labelElements],
       });
 
-      return { success: true, data: { id: arrowId } };
+      return { success: true, data: { id: arrow.id } };
     },
   },
 
@@ -706,8 +723,19 @@ export const aiTools = [
           themeVariables: { fontSize: '16px' },
         });
 
+        // Mermaid `<br/>` line breaks survive into skeleton label text as
+        // literal "<br>" strings. Rewrite them to newlines BEFORE conversion
+        // so text measurement accounts for the extra lines.
+        const rewriteBrTags = (text: string) => text.replace(/<br\s*\/?>/gi, '\n');
+        const sanitizedSkeletons = (elements as any[]).map((el) => {
+          const out = { ...el };
+          if (typeof out.text === 'string') out.text = rewriteBrTags(out.text);
+          if (typeof out.label?.text === 'string') out.label = { ...out.label, text: rewriteBrTags(out.label.text) };
+          return out;
+        });
+
         // Convert skeleton elements to proper Excalidraw elements
-        const excalidrawElements = convertToExcalidrawElements(elements);
+        const excalidrawElements = convertToExcalidrawElements(sanitizedSkeletons);
 
         console.log('[import_mermaid] Got', elements.length, 'skeleton elements');
         console.log('[import_mermaid] Converted to', excalidrawElements.length, 'excalidraw elements');
@@ -723,8 +751,11 @@ export const aiTools = [
         // that reference them. The rendered diagram is an image element whose
         // data lives in `files`; updateScene does not accept files, so without
         // addFiles the fileId resolves to nothing and the element renders as a
-        // broken thumbnail (#428).
-        const importedFiles = Object.values(files);
+        // broken thumbnail (#428). Natively-converted diagrams return
+        // `files: undefined` — Object.values(undefined) throws.
+        // mermaid-to-excalidraw ships types for a newer excalidraw than the
+        // 0.17.6 this extension pins, so cast at the boundary.
+        const importedFiles = files ? (Object.values(files) as BinaryFileData[]) : [];
         if (importedFiles.length > 0) {
           api.addFiles(importedFiles);
         }
@@ -735,14 +766,22 @@ export const aiTools = [
 
         console.log('[import_mermaid] After updateScene, scene has', api.getSceneElements().length, 'elements');
 
+        // mermaid-to-excalidraw renders diagram types it cannot convert
+        // natively as a single rasterized image element. Surface that so the
+        // caller knows the result is not editable shapes.
+        const isImageFallback = excalidrawElements.length > 0 &&
+          excalidrawElements.every((el: any) => el.type === 'image');
         return {
           success: true,
-          message: `Imported Mermaid diagram: ${elements.length} skeleton → ${excalidrawElements.length} elements`
+          message: isImageFallback
+            ? `Imported Mermaid diagram as a non-editable image (this diagram type is not supported for native shape conversion): ${importedFiles.length} image file(s) embedded`
+            : `Imported Mermaid diagram: ${elements.length} skeleton → ${excalidrawElements.length} elements`
         };
       } catch (error) {
+        console.error('[import_mermaid] failed:', error);
         return {
           success: false,
-          error: `Failed to parse Mermaid: ${error instanceof Error ? error.message : String(error)}`,
+          error: `Failed to import Mermaid: ${error instanceof Error ? error.message : String(error)}`,
         };
       }
     },
@@ -758,7 +797,7 @@ export const aiTools = [
       properties: {},
     },
     handler: async (
-      params: Record<string, never>,
+      _params: Record<string, never>,
       context: { activeFilePath?: string; editorAPI?: unknown }
     ) => {
       const api = getEditorAPI(context);
@@ -1144,9 +1183,6 @@ export const aiTools = [
           referenceValue = Math.max(...elementsToAlign.map(el => el.y + (el.height || 0)));
           break;
       }
-
-      // Build set of IDs to update (including bound text elements)
-      const idsToAlign = new Set(elementsToAlign.map(el => el.id));
 
       // Calculate position updates
       const updates = new Map<string, { x?: number; y?: number }>();
@@ -1659,11 +1695,11 @@ export const aiTools = [
             properties: {
               from: {
                 type: 'string' as const,
-                description: 'Label of the source element',
+                description: 'Label or element id of the source element',
               },
               to: {
                 type: 'string' as const,
-                description: 'Label of the target element',
+                description: 'Label or element id of the target element',
               },
               label: {
                 type: 'string' as const,
@@ -1718,66 +1754,10 @@ export const aiTools = [
         const fromContainer = currentElements.find(el => el.id === fromContainerId) || fromEl;
         const toContainer = currentElements.find(el => el.id === toContainerId) || toEl;
 
-        // Calculate edge intersection points
-        const fromCenterX = fromContainer.x + (fromContainer.width || 0) / 2;
-        const fromCenterY = fromContainer.y + (fromContainer.height || 0) / 2;
-        const toCenterX = toContainer.x + (toContainer.width || 0) / 2;
-        const toCenterY = toContainer.y + (toContainer.height || 0) / 2;
+        const { arrow, labelElements } = createBoundArrow(fromContainer, toContainer, arrowDef.label);
 
-        const gap = 8;
-        const fromEdge = calculateEdgePoint(fromContainer, toCenterX, toCenterY, gap);
-        const toEdge = calculateEdgePoint(toContainer, fromCenterX, fromCenterY, gap);
-
-        const arrowId = `arrow-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-        // Create arrow element
-        const arrow: any = {
-          id: arrowId,
-          type: 'arrow',
-          x: fromEdge.x,
-          y: fromEdge.y,
-          width: toEdge.x - fromEdge.x,
-          height: toEdge.y - fromEdge.y,
-          angle: 0,
-          strokeColor: '#1e1e1e',
-          backgroundColor: 'transparent',
-          fillStyle: 'solid',
-          strokeWidth: 2,
-          strokeStyle: 'solid',
-          roughness: 1,
-          opacity: 100,
-          groupIds: [],
-          frameId: null,
-          roundness: { type: 2 },
-          seed: Math.floor(Math.random() * 1000000),
-          version: 1,
-          versionNonce: Math.floor(Math.random() * 1000000),
-          isDeleted: false,
-          boundElements: null,
-          updated: Date.now(),
-          link: null,
-          locked: false,
-          points: [
-            [0, 0],
-            [toEdge.x - fromEdge.x, toEdge.y - fromEdge.y],
-          ],
-          lastCommittedPoint: null,
-          startBinding: {
-            elementId: fromContainerId,
-            focus: 0,
-            gap,
-          },
-          endBinding: {
-            elementId: toContainerId,
-            focus: 0,
-            gap,
-          },
-          startArrowhead: null,
-          endArrowhead: 'arrow',
-        };
-
-        newArrows.push(arrow);
-        createdIds.push(arrowId);
+        newArrows.push(arrow, ...labelElements);
+        createdIds.push(arrow.id);
 
         // Track bound element updates
         for (const containerId of [fromContainerId, toContainerId]) {
@@ -1792,7 +1772,7 @@ export const aiTools = [
           }
           const updated = elementUpdates.get(containerId);
           if (updated) {
-            updated.boundElements.push({ id: arrowId, type: 'arrow' });
+            updated.boundElements.push({ id: arrow.id, type: 'arrow' });
           }
         }
       }
@@ -1895,7 +1875,6 @@ export const aiTools = [
       engine.addElements(currentElements);
 
       const skeletons: any[] = [];
-      const createdIds: string[] = [];
 
       // Create all rectangles
       for (const elemDef of params.elements) {

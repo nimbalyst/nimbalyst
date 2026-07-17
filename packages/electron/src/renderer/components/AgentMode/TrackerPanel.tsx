@@ -14,6 +14,8 @@ import { sessionRegistryAtom, workstreamSessionsAtom } from '../../store/atoms/s
 import { trackerPanelCollapsedAtom, toggleTrackerPanelCollapsedAtom } from '../../store/atoms/agentMode';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
 import { setTrackerModeLayoutAtom } from '../../store/atoms/trackers';
+import { prRemoteAtom, navigateToPullRequest } from '../../store/atoms/pullRequests';
+import { getRecordPrReferences } from '@nimbalyst/runtime/plugins/TrackerPlugin/prReferences';
 
 interface TrackerPanelProps {
   /** The workstream ID - tracker items from all child sessions will be shown */
@@ -77,9 +79,14 @@ export const TrackerPanel: React.FC<TrackerPanelProps> = React.memo(({
   }, [toggleCollapsed]);
 
   const handleNavigate = useCallback((itemId: string) => {
-    setTrackerLayout({ selectedItemId: itemId });
-    setWindowMode('tracker');
-  }, [setTrackerLayout, setWindowMode]);
+    // Dispatch the platform-neutral navigation intent. The host (App) routes
+    // it: in Agent Mode it opens the tracker as a workstream resource tab; in
+    // other modes it falls back to Tracker Mode. This keeps TrackerPanel from
+    // owning a Tracker-Mode-only navigation path.
+    window.dispatchEvent(
+      new CustomEvent('nimbalyst:navigate-tracker-item', { detail: { itemId } })
+    );
+  }, []);
 
   // Don't render if no linked tracker items
   if (linkedItemIds.length === 0) {
@@ -139,10 +146,18 @@ interface TrackerItemRowProps {
 
 const TrackerItemRow: React.FC<TrackerItemRowProps> = React.memo(({ itemId, onNavigate }) => {
   const item = useAtomValue(trackerItemByIdAtom(itemId));
+  const prRemote = useAtomValue(prRemoteAtom);
 
   const handleClick = useCallback(() => {
     onNavigate(itemId);
   }, [onNavigate, itemId]);
+
+  // PR jump when the item references a PR on the workspace's GitHub remote.
+  const prReference = useMemo(() => {
+    if (!item || !prRemote) return null;
+    const wanted = prRemote.remote.toLowerCase();
+    return getRecordPrReferences(item).find((ref) => ref.remote === wanted) ?? null;
+  }, [item, prRemote]);
 
   if (!item) return null;
 
@@ -167,6 +182,21 @@ const TrackerItemRow: React.FC<TrackerItemRowProps> = React.memo(({ itemId, onNa
       <span className="flex-1 text-xs text-[var(--nim-text)] truncate">
         {title}
       </span>
+      {prReference && (
+        <span
+          role="button"
+          tabIndex={-1}
+          className="shrink-0 inline-flex items-center text-[var(--nim-text-muted)] hover:text-[var(--nim-text)]"
+          title={`Open #${prReference.number} in the PRs view`}
+          data-testid="tracker-item-open-pr"
+          onClick={(e) => {
+            e.stopPropagation();
+            navigateToPullRequest(prReference.remote, prReference.number);
+          }}
+        >
+          <MaterialSymbol icon="merge" size={14} />
+        </span>
+      )}
       {status && (
         <span
           className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"

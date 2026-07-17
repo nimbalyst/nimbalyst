@@ -1,8 +1,7 @@
 import { execSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
-import { isGitAvailable, logEbadfDiagnostic } from '../utils/gitUtils';
-import { getAllFilesInDirectory } from '../utils/fileUtils';
+import { getUntrackedFilesInDirectory, isGitAvailable, logEbadfDiagnostic } from '../utils/gitUtils';
 
 export interface FileGitStatus {
   filePath: string;
@@ -397,9 +396,12 @@ export class GitStatusService {
             try {
               const stats = statSync(absolutePath);
               if (stats.isDirectory()) {
-                // Expand directory to get all files inside (returns absolute paths)
-                const filesInDir = getAllFilesInDirectory(absolutePath);
-                for (const filePath of filesInDir) {
+                // Expand the untracked directory to individual files, honoring
+                // .gitignore so an installed node_modules/dist doesn't explode
+                // into tens of thousands of paths (NIM-1782).
+                const relFiles = getUntrackedFilesInDirectory(workspacePath, absolutePath);
+                for (const relFile of relFiles) {
+                  const filePath = resolve(workspacePath, relFile);
                   uncommittedFiles.push(filePath);
                   cacheResult[filePath] = {
                     filePath,
@@ -726,9 +728,12 @@ export class GitStatusService {
             try {
               const stats = statSync(absolutePath);
               if (stats.isDirectory()) {
-                // Expand directory to get all files inside (returns absolute paths)
-                const filesInDir = getAllFilesInDirectory(absolutePath);
-                for (const filePath of filesInDir) {
+                // Expand the untracked directory to individual files, honoring
+                // .gitignore so an installed node_modules/dist doesn't explode
+                // into tens of thousands of paths (NIM-1782).
+                const relFiles = getUntrackedFilesInDirectory(workspacePath, absolutePath);
+                for (const relFile of relFiles) {
+                  const filePath = resolve(workspacePath, relFile);
                   result[filePath] = {
                     filePath,
                     status: 'untracked',

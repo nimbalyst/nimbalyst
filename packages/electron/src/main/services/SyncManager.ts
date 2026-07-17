@@ -17,14 +17,14 @@ import type { SessionStore } from '@nimbalyst/runtime';
 import { asPersonalMemberId } from '@nimbalyst/runtime';
 import type { DeviceInfo } from '@nimbalyst/runtime/sync';
 import * as syncModule from '@nimbalyst/runtime/sync';
-import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, getAlphaFeatures, store, type SessionSyncConfig } from '../utils/store';
+import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, getAlphaFeatures, getPreferredAgentLanguage, store, type SessionSyncConfig } from '../utils/store';
 import { logger } from '../utils/logger';
 import { getCredentials } from './CredentialService';
 import { getStytchUserId, isAuthenticated, getPersonalOrgId, getPersonalUserId, resolvePersonalUserId, getPersonalSessionJwt, refreshPersonalSession } from './StytchAuthService';
 import { app } from 'electron';
 import * as os from 'os';
 import { getProjectFileSyncService } from './ProjectFileSyncService';
-import { startProjectFileSync } from '../file/WorkspaceWatcher';
+import { startProjectFileSync, stopAllProjectFileSync } from '../file/WorkspaceWatcher';
 import { windowStates } from '../window/WindowManager';
 import { getNormalizedGitRemote } from '../utils/gitUtils';
 import { resolveProjectPath } from '../utils/workspaceDetection';
@@ -790,10 +790,11 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         const aiStore = new Store({ name: 'ai-settings' });
         const apiKeys = aiStore.get('apiKeys', {}) as Record<string, string>;
         const openaiKey = apiKeys['openai'];
-        if (openaiKey) {
-          // logger.main.info('[SyncManager] Syncing existing OpenAI API key to mobile devices');
-          syncSettingsToMobile(openaiKey);
-        }
+        // Always sync so the mobile model picker gets the available-models list
+        // even for agent-only users with no OpenAI key (e.g. Codex). Mobile
+        // keeps its stored key when openaiKey is undefined (NIM-976).
+        // logger.main.info('[SyncManager] Syncing existing settings to mobile devices');
+        syncSettingsToMobile(openaiKey);
       } catch (error) {
         logger.main.warn('[SyncManager] Failed to sync initial settings:', error);
       }
@@ -821,11 +822,10 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
                 const aiStore = new Store({ name: 'ai-settings' });
                 const apiKeys = aiStore.get('apiKeys', {}) as Record<string, string>;
                 const openaiKey = apiKeys['openai'];
-                if (openaiKey) {
-                  syncSettingsToMobile(openaiKey);
-                } else {
-                  logger.main.debug('[SyncManager] No OpenAI API key to sync');
-                }
+                // Always sync the available-models list so agent-only users with
+                // no OpenAI key still get the model picker populated (NIM-976).
+                // Mobile retains its stored key when openaiKey is undefined.
+                syncSettingsToMobile(openaiKey);
               }).catch((err) => {
                 logger.main.warn('[SyncManager] Failed to sync settings to device:', err);
               });
@@ -964,8 +964,12 @@ export function shutdownSync(): void {
     clearInterval(state.sessionKeepAliveInterval);
     state.sessionKeepAliveInterval = null;
   }
-  // Shutdown ProjectFileSyncService
+  // Shutdown ProjectFileSyncService. Clear the watcher subscriptions first so
+  // a subsequent initializeSync re-subscribes and reconnects each project room
+  // (a stale subscription entry would make startProjectFileSync early-return
+  // and strand every later file save in a never-drained offline queue).
   try {
+    stopAllProjectFileSync();
     getProjectFileSyncService().shutdown();
   } catch {
     // Non-fatal
@@ -1214,7 +1218,9 @@ async function getAvailableModelsForMobile(): Promise<{ models: Array<{ id: stri
     const allModels = await ModelRegistry.getAllModels(modelsConfig, enabledSet as Set<any>);
     // Filter to enabled models (model-level filtering for specific model selection)
     const enabledModels = allModels.filter(model => {
-      const ps = providerSettings[model.provider] as { enabled?: boolean; models?: string[] } | undefined;
+      const ps = providerSettings[model.provider] as { enabled?: boolean; models?: string[]; hiddenModels?: string[] } | undefined;
+      // Denylist wins: a hidden model never syncs to mobile, even if allow-listed.
+      if (ps?.hiddenModels?.includes(model.id)) return false;
       // If specific models are selected for this provider, filter
       if (ps?.models && ps.models.length > 0) {
         return ps.models.includes(model.id);
@@ -1261,6 +1267,11 @@ export async function syncSettingsToMobile(openaiApiKey?: string): Promise<void>
   // Whether the desktop "meta-agent" alpha feature is enabled (gates the mobile Meta Agent UI)
   const metaAgentEnabled = getAlphaFeatures()['meta-agent'] ?? false;
 
+  // Desktop's preferred agent language. The mobile voice agent pins its spoken
+  // language to this so it never starts up in a different language than the
+  // desktop is configured for. Undefined (no preference) -> falls back to English.
+  const preferredAgentLanguage = getPreferredAgentLanguage();
+
   // logger.main.info(`[SyncManager] Syncing settings to mobile devices (version ${settingsVersion}, ${availableModels.length} models)`);
 
   try {
@@ -1273,6 +1284,7 @@ export async function syncSettingsToMobile(openaiApiKey?: string): Promise<void>
       availableModels,
       defaultModel,
       metaAgentEnabled,
+      preferredAgentLanguage,
       version: settingsVersion,
     });
     // logger.main.info('[SyncManager] Settings synced successfully');

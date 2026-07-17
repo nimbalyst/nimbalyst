@@ -26,29 +26,32 @@ export interface AlphaFeatureDefinition {
  */
 export const ALPHA_FEATURES: readonly AlphaFeatureDefinition[] = [
   {
-    tag: 'super-loops',
-    name: 'Super Loops',
-    description: 'Enable Super Loops for iterative agent workflows in dedicated worktrees.',
-    icon: 'sync',
+    tag: "super-loops",
+    name: "Super Loops",
+    description:
+      "Enable Super Loops for iterative agent workflows in dedicated worktrees.",
+    icon: "sync",
   },
   {
-    tag: 'blitz',
-    name: 'Blitz',
-    description: 'Run the same prompt on multiple isolated worktrees to make more than one attempt at a task.',
-    icon: 'bolt',
+    tag: "blitz",
+    name: "Blitz",
+    description:
+      "Run the same prompt on multiple isolated worktrees to make more than one attempt at a task.",
+    icon: "bolt",
   },
   {
-    tag: 'meta-agent',
-    name: 'Meta Agent',
-    description: 'Enable meta-agent sessions that orchestrate and delegate work to child sessions.',
-    icon: 'hub',
+    tag: "meta-agent",
+    name: "Meta Agent",
+    description:
+      "Enable meta-agent sessions that orchestrate and delegate work to child sessions.",
+    icon: "hub",
   },
 ] as const;
 
 /**
  * Type-safe feature tags derived from the registry.
  */
-export type AlphaFeatureTag = typeof ALPHA_FEATURES[number]['tag'];
+export type AlphaFeatureTag = (typeof ALPHA_FEATURES)[number]["tag"];
 
 /**
  * Get the default enabled state for all alpha features (all disabled).
@@ -64,17 +67,22 @@ export function getDefaultAlphaFeatures(): Record<AlphaFeatureTag, boolean> {
  * Get feature definition by tag.
  * Throws if tag is not found in registry (enforces explicit registration).
  */
-export function getAlphaFeatureDefinition(tag: string): AlphaFeatureDefinition | undefined {
-  return ALPHA_FEATURES.find(f => f.tag === tag);
+export function getAlphaFeatureDefinition(
+  tag: string
+): AlphaFeatureDefinition | undefined {
+  return ALPHA_FEATURES.find((f) => f.tag === tag);
 }
 
 /**
  * Validate that all provided feature tags are registered.
  * Useful for catching typos or unregistered features during development.
  */
-export function validateAlphaFeatureTags(tags: string[]): { valid: boolean; unknown: string[] } {
-  const knownTags = new Set(ALPHA_FEATURES.map(f => f.tag));
-  const unknown = tags.filter(tag => !knownTags.has(tag));
+export function validateAlphaFeatureTags(tags: string[]): {
+  valid: boolean;
+  unknown: string[];
+} {
+  const knownTags = new Set(ALPHA_FEATURES.map((f) => f.tag));
+  const unknown = tags.filter((tag) => !knownTags.has(tag));
   return {
     valid: unknown.length === 0,
     unknown,

@@ -169,6 +169,16 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | `content_shared` | `ShareHandlers.ts` | User shares a session or file as an encrypted link | `content_type` (session/file)<br/>`is_update` (boolean) | (pending release as of c28302ea) |  |
 | `share_deleted` | `ShareHandlers.ts` | User deletes (unshares) a shared session or file | None | (pending release as of c28302ea) |  |
 
+### Shared Folders (Collab)
+
+| Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
+| --- | --- | --- | --- | --- | --- |
+| `collab_folder_created` | `CollabSidebar.tsx` | User creates a first-class shared folder | `nested` (boolean) | (pending release) |  |
+| `collab_folder_renamed` | `CollabSidebar.tsx` | User renames a shared folder | None | (pending release) |  |
+| `collab_folder_moved` | `CollabSidebar.tsx` | User moves a shared folder (drag reparent) | `toRoot` (boolean) | (pending release) |  |
+| `collab_folder_deleted` | `CollabSidebar.tsx` | User deletes a shared folder (recursive) | `documentCount`<br/>`subfolderCount` | (pending release) |  |
+| `collab_folder_link_copied` | `CollabSidebar.tsx` | User copies a shared-folder deep link | None | (pending release) |  |
+
 ### Session Export
 
 | Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
@@ -363,6 +373,9 @@ The `known_error` event uses an `errorId` property to identify specific error co
 | `voice_mode_disabled` | `appSettings.ts:135` | User disables voice mode in settings | None | (pending release) |  |
 | `voice_session_started` | `VoiceModeService.ts:479` | User starts a voice session (clicks mic button) | None | (pending release) |  |
 | `voice_session_ended` | `VoiceModeService.ts:36` | Voice session ends | `reason` (user_stopped/timeout/error)<br/>`durationCategory` (short < 1min / medium 1-5min / long > 5min) | (pending release) |  |
+| `voice_prompt_submitted` | `RealtimeAPIClient.ts` | Voice agent calls submit_agent_prompt | None (no content for privacy) | (pending release) |  |
+| `voice_model_fallback` | `RealtimeAPIClient.ts` | gpt-realtime-2 unavailable; fell back to gpt-realtime | `from`, `to` | (pending release) |  |
+| `voice_voice_mismatch` | `RealtimeAPIClient.ts` | Server output voice diverged from requested voice (drift guardrail) | `requested`, `server`, `model` | (pending release) |  |
 
 ### Mobile App
 

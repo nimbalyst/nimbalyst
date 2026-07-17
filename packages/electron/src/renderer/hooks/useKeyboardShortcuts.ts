@@ -9,7 +9,6 @@ import {
 } from '../store/atoms/terminals';
 import { activeSessionIdAtom, sessionProviderAtom } from '../store/atoms/sessions';
 import { setViewModeAtom, viewModeAtom } from '../store/atoms/agentMode';
-import { historyDialogFileAtom } from '../store';
 import { store } from '@nimbalyst/runtime/store';
 import {
   multiProjectModeAtom,
@@ -44,6 +43,9 @@ interface KeyboardShortcutsOptions {
   // Agent mode toggle
   toggleAgentCollapsed: () => void;
 
+  // Opens history for the document focused in the current content mode.
+  openHistoryForCurrentDocument: () => void;
+
   // True when a fullscreen extension panel is covering the content modes.
   isFullscreenPanelActive: boolean;
 
@@ -74,6 +76,7 @@ export function useKeyboardShortcuts({
   editorModeRef,
   agentModeRef,
   toggleAgentCollapsed,
+  openHistoryForCurrentDocument,
   isFullscreenPanelActive,
   exitFullscreenPanel,
 }: KeyboardShortcutsOptions): void {
@@ -142,12 +145,7 @@ export function useKeyboardShortcuts({
       if (isAppModifier && e.key === 'y') {
         e.preventDefault();
         if (workspaceMode) {
-          // __currentDocumentPath is maintained by both EditorMode (FilesMode) and
-          // WorkstreamEditorTabs (AgentMode), so it tracks whichever file is active.
-          const activeFilePath = (window as unknown as { __currentDocumentPath?: string | null }).__currentDocumentPath;
-          if (activeFilePath) {
-            store.set(historyDialogFileAtom, activeFilePath);
-          }
+          openHistoryForCurrentDocument();
         }
       }
 
@@ -297,6 +295,7 @@ export function useKeyboardShortcuts({
     editorModeRef,
     agentModeRef,
     toggleAgentCollapsed,
+    openHistoryForCurrentDocument,
     toggleTerminalPanel,
     closeTerminalPanel,
     developerMode,

@@ -17,6 +17,8 @@ import {
   defaultAgentModelAtom,
   type VoiceModeSettings,
   type VoiceId,
+  type RealtimeModel,
+  type RealtimeReasoningEffort,
   type TurnDetectionConfig,
   type SystemPromptConfig,
 } from '../../store/atoms/appSettings';
@@ -94,6 +96,8 @@ export const VoiceModePanel: React.FC<VoiceModePanelProps> = ({
   const {
     enabled,
     voice,
+    model,
+    reasoningEffort,
     turnDetection,
     voiceAgentPrompt,
     codingAgentPrompt,
@@ -441,6 +445,49 @@ export const VoiceModePanel: React.FC<VoiceModePanelProps> = ({
 
       {enabled && hasOpenAIKey && (
         <>
+          <div className="provider-panel-section mb-6">
+            <h4 className="provider-panel-section-title text-base font-medium mb-4 text-[var(--nim-text)]">Model</h4>
+
+            <div className="setting-item py-3">
+              <div className="setting-text flex flex-col gap-0.5">
+                <span className="setting-name text-sm font-medium text-[var(--nim-text)]">Realtime Model</span>
+                <span className="setting-description text-xs text-[var(--nim-text-muted)]">
+                  gpt-realtime-2 is newer, with stronger reasoning, a larger context window, and more consistent voice rendering. gpt-realtime is the fallback for accounts without access (selected automatically if needed).
+                </span>
+              </div>
+              <select
+                value={model ?? 'gpt-realtime-2'}
+                onChange={(e) => handleSettingChange({ model: e.target.value as RealtimeModel })}
+                className="mt-2 px-3 py-1.5 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text)]"
+                data-testid="voice-mode-model-select"
+              >
+                <option value="gpt-realtime-2">gpt-realtime-2 (recommended)</option>
+                <option value="gpt-realtime">gpt-realtime</option>
+              </select>
+            </div>
+
+            <div className="setting-item py-3">
+              <div className="setting-text flex flex-col gap-0.5">
+                <span className="setting-name text-sm font-medium text-[var(--nim-text)]">Reasoning Effort</span>
+                <span className="setting-description text-xs text-[var(--nim-text-muted)]">
+                  Higher = smarter but slower and more expensive. Low is recommended for a responsive voice relay. Applies to gpt-realtime-2.
+                </span>
+              </div>
+              <select
+                value={reasoningEffort ?? 'low'}
+                onChange={(e) => handleSettingChange({ reasoningEffort: e.target.value as RealtimeReasoningEffort })}
+                className="mt-2 px-3 py-1.5 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text)]"
+                data-testid="voice-mode-reasoning-effort-select"
+              >
+                <option value="minimal">Minimal (fastest)</option>
+                <option value="low">Low (recommended)</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="xhigh">Extra high (slowest, smartest)</option>
+              </select>
+            </div>
+          </div>
+
           <div className="provider-panel-section mb-6">
             <h4 className="provider-panel-section-title text-base font-medium mb-4 text-[var(--nim-text)]">Voice Settings</h4>
 

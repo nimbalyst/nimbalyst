@@ -47,6 +47,11 @@ import {
 } from '../utils/store';
 import * as StytchAuth from './StytchAuthService';
 import { logger } from '../utils/logger';
+import {
+  startExtensionBackendModules,
+  stopExtensionBackendModules,
+  getDefaultBackendModuleLifecycleDeps,
+} from '../extensions/backendModuleLifecycle';
 import { FeatureUsageService, FEATURES } from './FeatureUsageService';
 import { SessionNamingService } from './SessionNamingService';
 import { updateNativeTheme, updateWindowTitleBars } from '../theme/ThemeManager';
@@ -509,6 +514,23 @@ export class SettingsControlService {
     };
     setAppSetting('extensionSettings', next);
     this.audit('extension_set_enabled', sessionId, { extensionId, before, after: enabled });
+
+    // Start/stop any backend modules the extension declares, mirroring the
+    // Settings UI's IPC path (see ExtensionHandlers.ts 'extensions:set-enabled').
+    // Without this, toggling via this MCP tool leaves a crashed or stale
+    // backend module untouched. Fire-and-forget so the tool call returns
+    // promptly (startModule awaits utility-process readiness, up to 15s).
+    const lifecycleDeps = getDefaultBackendModuleLifecycleDeps();
+    if (enabled) {
+      void startExtensionBackendModules(extensionId, lifecycleDeps).catch((err) =>
+        logger.main.error(`[SettingsControlService] backend-module start failed for ${extensionId}:`, err)
+      );
+    } else {
+      void stopExtensionBackendModules(extensionId, lifecycleDeps).catch((err) =>
+        logger.main.error(`[SettingsControlService] backend-module stop failed for ${extensionId}:`, err)
+      );
+    }
+
     return { ok: true, before, after: enabled };
   }
 

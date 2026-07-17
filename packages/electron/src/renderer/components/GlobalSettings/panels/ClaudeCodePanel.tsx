@@ -9,6 +9,16 @@ import { SettingsToggle, ToggleSwitch } from '../SettingsToggle';
 declare const __CLAUDE_AGENT_SDK_VERSION__: string;
 const BUNDLED_SDK_VERSION = typeof __CLAUDE_AGENT_SDK_VERSION__ !== 'undefined' ? __CLAUDE_AGENT_SDK_VERSION__ : 'unknown';
 
+/** Props for the sibling Claude Code CLI (subscription) subsection. */
+interface ClaudeCliBundle {
+  config: ProviderConfig;
+  availableModels: Model[];
+  loading: boolean;
+  onToggle: (enabled: boolean) => void;
+  onModelVisibilityToggle: (modelId: string, visible: boolean) => void;
+  onSetAllVisible: (visible: boolean) => void;
+}
+
 interface ClaudeCodePanelProps {
   config: ProviderConfig;
   apiKeys: Record<string, string>;
@@ -16,10 +26,13 @@ interface ClaudeCodePanelProps {
   loading: boolean;
   onToggle: (enabled: boolean) => void;
   onApiKeyChange: (key: string, value: string) => void;
-  onModelToggle: (modelId: string, enabled: boolean) => void;
-  onSelectAllModels: (selectAll: boolean) => void;
+  /** Hidden-set (denylist) handlers for the SDK provider. `visible` = not hidden. */
+  onModelVisibilityToggle: (modelId: string, visible: boolean) => void;
+  onSetAllVisible: (visible: boolean) => void;
   onTestConnection: () => Promise<void>;
   onConfigChange: (updates: Partial<ProviderConfig>) => void;
+  /** The subscription-CLI provider (`claude-code-cli`), toggled independently. */
+  cli: ClaudeCliBundle;
   /** Scope this panel is rendered for: 'user' edits global settings, 'project' edits the workspace override. */
   scope?: 'user' | 'project';
   /** Workspace path required when scope is 'project'. */
@@ -28,6 +41,74 @@ interface ClaudeCodePanelProps {
 
 type AuthMethod = 'login' | 'api-key';
 
+/**
+ * Checkbox list that trims which of a provider's models reach the session picker.
+ * A model is checked when it is visible (i.e. NOT in the provider's `hiddenModels`
+ * denylist). Unchecking hides it; future new variants appear checked by default.
+ */
+function AvailableModelsSection({
+  models,
+  hiddenModels,
+  loading,
+  onVisibilityToggle,
+  onSetAllVisible,
+}: {
+  models: Model[];
+  hiddenModels: string[];
+  loading: boolean;
+  onVisibilityToggle: (modelId: string, visible: boolean) => void;
+  onSetAllVisible: (visible: boolean) => void;
+}) {
+  return (
+    <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
+      <h4 className="provider-panel-section-title text-base font-semibold mb-3 text-[var(--nim-text)]">Available models</h4>
+      {loading && (
+        <div className="models-loading text-sm text-[var(--nim-text-muted)] py-2">Loading models...</div>
+      )}
+      {!loading && models.length > 0 && (
+        <div className="models-section">
+          <div className="models-header flex items-center justify-between mb-3">
+            <span className="text-sm text-[var(--nim-text-muted)]">Uncheck models to hide them from the picker:</span>
+            <div className="models-actions flex gap-2">
+              <button
+                className="models-action-btn text-xs py-1 px-2 rounded bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] text-[var(--nim-text-muted)] hover:text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] cursor-pointer transition-all"
+                onClick={() => onSetAllVisible(true)}
+              >
+                Show all
+              </button>
+              <button
+                className="models-action-btn text-xs py-1 px-2 rounded bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] text-[var(--nim-text-muted)] hover:text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] cursor-pointer transition-all"
+                onClick={() => onSetAllVisible(false)}
+              >
+                Hide all
+              </button>
+            </div>
+          </div>
+          <div className="models-grid flex flex-col gap-2">
+            {models.map(model => (
+              <label key={model.id} className="model-checkbox flex items-center gap-3 py-2 px-3 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer hover:bg-[var(--nim-bg-hover)]">
+                <input
+                  type="checkbox"
+                  checked={!hiddenModels.includes(model.id)}
+                  onChange={(e) => onVisibilityToggle(model.id, e.target.checked)}
+                  className="w-4 h-4 cursor-pointer accent-[var(--nim-primary)]"
+                />
+                <span className="text-sm text-[var(--nim-text)]">{model.name}</span>
+              </label>
+            ))}
+          </div>
+          <p className="text-[11px] text-[var(--nim-text-faint)] leading-relaxed mt-3">
+            Unchecked models are hidden from the session model picker. New models appear automatically.
+          </p>
+        </div>
+      )}
+      {!loading && models.length === 0 && (
+        <div className="models-loading text-sm text-[var(--nim-text-muted)] py-2">No models available.</div>
+      )}
+    </div>
+  );
+}
+
 export function ClaudeCodePanel({
   config,
   apiKeys,
@@ -35,10 +116,11 @@ export function ClaudeCodePanel({
   loading,
   onToggle,
   onApiKeyChange,
-  onModelToggle,
-  onSelectAllModels,
+  onModelVisibilityToggle,
+  onSetAllVisible,
   onTestConnection,
   onConfigChange,
+  cli,
   scope = 'user',
   workspacePath,
 }: ClaudeCodePanelProps) {
@@ -600,6 +682,14 @@ export function ClaudeCodePanel({
             </div>
           </div>
 
+          <AvailableModelsSection
+            models={availableModels}
+            hiddenModels={config.hiddenModels || []}
+            loading={loading}
+            onVisibilityToggle={onModelVisibilityToggle}
+            onSetAllVisible={onSetAllVisible}
+          />
+
           <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
             <h4 className="provider-panel-section-title text-base font-semibold mb-3 text-[var(--nim-text)]">Tool Permissions</h4>
             <p className="text-xs leading-relaxed text-[var(--nim-text-muted)] mb-2">
@@ -739,6 +829,33 @@ export function ClaudeCodePanel({
           )}
         </>
       )}
+
+      {/* Claude Code CLI (Subscription) — a separate provider (`claude-code-cli`)
+          that runs the genuine `claude` CLI on the user's Pro/Max plan. Enabled
+          and trimmed independently of the SDK above. */}
+      <div className="provider-panel-section py-4 mb-4 mt-2 border-t border-[var(--nim-border)] last:mb-0 last:pb-0">
+        <h4 className="provider-panel-section-title text-base font-semibold mb-1 text-[var(--nim-text)]">Claude Code CLI (Subscription)</h4>
+        <p className="text-xs leading-relaxed text-[var(--nim-text-muted)] mb-3">
+          Runs the genuine <code className="text-xs bg-[var(--nim-bg-tertiary)] px-1 py-0.5 rounded">claude</code> CLI on your Pro/Max subscription. No API metering. Enable or disable this set independently of the SDK.
+        </p>
+
+        <SettingsToggle
+          variant="enable"
+          name="Enable Claude Code CLI"
+          checked={cli.config.enabled ?? true}
+          onChange={(checked) => cli.onToggle(checked)}
+        />
+
+        {(cli.config.enabled ?? true) && (
+          <AvailableModelsSection
+            models={cli.availableModels}
+            hiddenModels={cli.config.hiddenModels || []}
+            loading={cli.loading}
+            onVisibilityToggle={cli.onModelVisibilityToggle}
+            onSetAllVisible={cli.onSetAllVisible}
+          />
+        )}
+      </div>
     </div>
   );
 }

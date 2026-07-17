@@ -33,6 +33,7 @@ import type {
 } from '@nimbalyst/runtime';
 import type { CollabDocumentConfig } from '../../utils/collabDocumentOpener';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
+import { errorNotificationService } from '../../services/ErrorNotificationService';
 
 /** Origin tag for awareness updates we inject from remote broadcasts. */
 const REMOTE_AWARENESS_ORIGIN = Symbol('nimbalyst:collab-remote-awareness');
@@ -185,6 +186,17 @@ export function createCollaborationContext(args: {
     onStatusChange: (cb) => statusFanout(syncProvider).subscribe(cb),
     loadInitialContent: async () => {
       return activeConfig.initialContent ?? '';
+    },
+    flushWithAck: (timeoutMs?: number) => syncProvider.flushWithAck(timeoutMs),
+    hasUndecodedContent: () => syncProvider.hasUndecodedContent(),
+    reportSeedOutcome: (outcome) => {
+      if (outcome.ok) return;
+      const detail = outcome.error instanceof Error ? outcome.error.message : String(outcome.error ?? '');
+      errorNotificationService.showWarning(
+        'Shared document seed not confirmed',
+        'The initial shared content was not confirmed by the server. Re-upload the local source before teammates rely on this document.',
+        { details: detail || undefined, duration: 10000 },
+      );
     },
     flushLocalState: async () => {
       await syncProvider.flushLocalState();

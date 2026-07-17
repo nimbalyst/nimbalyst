@@ -1,16 +1,23 @@
 # Relative to packages/marketplace/
 ../extensions/automations
+../extensions/browser
 ../extensions/calc-sheets
 ../extensions/csv-spreadsheet
 ../extensions/datamodellm
+../extensions/developer
 ../extensions/excalidraw
 ../extensions/git
+../extensions/github-issues-importer
 ../extensions/image-generation
+../extensions/ios-dev
 ../extensions/mockuplm
+../extensions/nimbalyst-memory
 ../extensions/pdf-viewer
 ../extensions/planning
+../extensions/playwright
 ../extensions/sqlite-browser
 ../../../nimbalyst-extension-astro|skip-build
+../../../nimbalyst-jupyter|skip-build
 ../../../nimbalyst-mindmap|skip-build
 ../../../nimbalyst-namenym|skip-build
 ../../../nimbalyst-slides|skip-build

@@ -120,6 +120,14 @@ class SyncProtocolTest {
     }
 
     @Test
+    fun `UnregisterPushTokenMessage round-trip and keys`() {
+        val msg = UnregisterPushTokenMessage(deviceId = "device-1")
+        val restored = assertRoundTrip(msg)
+        assertEquals("unregisterPushToken", restored.type)
+        assertKeys(msg, "type", "deviceId")
+    }
+
+    @Test
     fun `AppendMessageRequest round-trip and keys`() {
         val msg = AppendMessageRequest(message = sampleServerMessageEntry())
         val restored = assertRoundTrip(msg)

@@ -58,6 +58,7 @@ import { notificationService } from '../NotificationService';
 import { SoundNotificationService } from '../SoundNotificationService';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { AISessionsRepository } from '@nimbalyst/runtime';
+import { getClaudeCodeApiUpstreamUrl } from '../../utils/store';
 import type { AssembledAssistantMessage } from './claudeCliObservation/claudeApiMessageAssembler';
 
 /**
@@ -199,8 +200,16 @@ export async function startClaudeCliProxyObservation(opts: {
   // the first visible assistant output. See claudeCliErrorSurfacePolicy.ts.
   const errorSurfacePolicy = createClaudeCliErrorSurfacePolicy();
 
+  // Advanced opt-in: route the CLI's `/v1/messages` through a user-configured
+  // loopback upstream (token-compression / gateway / cache) before Anthropic.
+  // Undefined → direct to api.anthropic.com (unchanged default). Observation of
+  // the ORIGINAL request body / response SSE is unaffected — we only change where
+  // the bytes are forwarded.
+  const apiUpstreamUrl = getClaudeCodeApiUpstreamUrl();
+
   const observation = new ClaudeCliProxyObservation({
     sessionId,
+    upstreamUrl: apiUpstreamUrl,
     onAssistantMessage: (msg) => {
       // Is this turn a `Task` sub-agent's? (A Task was in flight BEFORE this
       // message.) The parent message that CARRIES the Task call is itself still

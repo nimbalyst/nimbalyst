@@ -1,9 +1,9 @@
-import React, { useRef, useEffect, KeyboardEvent, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import React, { useRef, useEffect, KeyboardEvent, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { GenericTypeahead, TypeaheadOption } from '../Typeahead/GenericTypeahead';
 import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type SlashTypeaheadScope, TriggerMatch } from '../Typeahead/typeaheadUtils';
 import { buildSlashCommandOptions, fetchSlashCommandEntries, type SlashCommandEntry } from '../Typeahead/slashCommandAutocomplete';
-import { readClipboard, type ChatAttachment } from '@nimbalyst/runtime';
+import { readClipboard, encodeMarkdownLinkPath, type ChatAttachment } from '@nimbalyst/runtime';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
 import type { EffortLevel, ThinkingMode } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
@@ -37,6 +37,11 @@ import {
 } from '../../store';
 import { useAIInputUndo } from '../../hooks/useAIInputUndo';
 import type { AIInputSnapshot } from '../../store/atoms/aiInputUndo';
+import { parseCommandTokens, type CommandToken } from './commandPills/parseCommandTokens';
+import { parseMentionTokens } from './commandPills/parseMentionTokens';
+import { HighlightOverlay, type OverlayToken } from './commandPills/HighlightOverlay';
+import { CommandPillPopover } from './commandPills/CommandPillPopover';
+import { canPersistWorkspaceHydratedState } from '../../utils/workspaceHydration';
 
 export interface AIInputRef {
   focus: () => void;
@@ -194,6 +199,11 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     const [dragActive, setDragActive] = useState(false);
     const [isFocused, setIsFocused] = useState(false);
 
+    // Command pills: caret position (to suppress the token being typed) and the
+    // inspect popover opened when a pill is clicked.
+    const [caretPos, setCaretPos] = useState<number | null>(null);
+    const [pillPopover, setPillPopover] = useState<{ command: SlashCommandEntry; rect: DOMRect } | null>(null);
+
     // Track attachments that are being processed (e.g., compressed)
     const [processingAttachments, setProcessingAttachments] = useState<Array<{ id: string; filename: string }>>([]);
 
@@ -321,6 +331,9 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     const [isLoadingHeight, setIsLoadingHeight] = useState(true);
     const [isResizing, setIsResizing] = useState(false);
     const isResizingRef = useRef(false);
+    const heightLoadGenerationRef = useRef(0);
+    const loadedHeightWorkspaceRef = useRef<string | null>(null);
+    const heightChangedBeforeLoadRef = useRef(false);
     const resizeStartY = useRef<number>(0);
     const resizeStartHeight = useRef<number>(DEFAULT_MAX_PROMPT_HEIGHT);
 
@@ -338,22 +351,34 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
 
     // Load prompt box height from workspace state on mount
     useEffect(() => {
+      const loadGeneration = ++heightLoadGenerationRef.current;
+      loadedHeightWorkspaceRef.current = null;
+      heightChangedBeforeLoadRef.current = false;
+
       if (!workspacePath) {
+        setUserSetHeight(null);
         setIsLoadingHeight(false);
         return;
       }
 
+      setIsLoadingHeight(true);
+
       const loadHeight = async () => {
         try {
           const workspaceState = await window.electronAPI.invoke('workspace:get-state', workspacePath);
+          if (heightLoadGenerationRef.current !== loadGeneration) return;
           const savedHeight = workspaceState?.aiPanel?.promptBoxHeight;
-          if (savedHeight !== undefined) {
-            setUserSetHeight(savedHeight);
+          if (!heightChangedBeforeLoadRef.current) {
+            setUserSetHeight(savedHeight ?? null);
           }
+          loadedHeightWorkspaceRef.current = workspacePath;
         } catch (err) {
+          if (heightLoadGenerationRef.current !== loadGeneration) return;
           console.error('[AIInput] Failed to load prompt box height:', err);
         } finally {
-          setIsLoadingHeight(false);
+          if (heightLoadGenerationRef.current === loadGeneration) {
+            setIsLoadingHeight(false);
+          }
         }
       };
       loadHeight();
@@ -361,7 +386,13 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
 
     // Save prompt box height to workspace state when it changes
     useEffect(() => {
-      if (!workspacePath || isLoadingHeight) return;
+      if (!workspacePath) return;
+      if (!canPersistWorkspaceHydratedState(
+        workspacePath,
+        loadedHeightWorkspaceRef.current,
+        heightChangedBeforeLoadRef.current,
+      )) return;
+      if (isLoadingHeight && !heightChangedBeforeLoadRef.current) return;
 
       const saveHeight = async () => {
         try {
@@ -401,6 +432,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
           MIN_PROMPT_HEIGHT,
           Math.min(MAX_PROMPT_HEIGHT, resizeStartHeight.current + deltaY)
         );
+        heightChangedBeforeLoadRef.current = true;
         setUserSetHeight(newHeight);
       };
 
@@ -483,6 +515,63 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     const filterSlashCommands = useCallback((query: string, scope: SlashTypeaheadScope) => {
       setSlashCommandOptions(buildSlashCommandOptions(allSlashCommands, query, scope));
     }, [allSlashCommands]);
+
+    // Known command names drive the inline pills (only known commands highlight).
+    const knownCommandNames = useMemo(
+      () => new Set(allSlashCommands.map((c) => c.name)),
+      [allSlashCommands]
+    );
+
+    // Tokens to render as pills. Suppress the token under the caret so a command
+    // the user is still typing doesn't pill mid-keystroke.
+    const commandTokens = useMemo(
+      () => (enableSlashCommands ? parseCommandTokens(value, knownCommandNames, caretPos) : []),
+      [enableSlashCommands, value, knownCommandNames, caretPos]
+    );
+
+    // `@` file refs and `@@[title](id)` session mentions tint in the same overlay.
+    // Gated on the overlay being active (enableSlashCommands) so we don't parse
+    // when nothing is painted.
+    const mentionTokens = useMemo(
+      () => (enableSlashCommands ? parseMentionTokens(value, caretPos) : []),
+      [enableSlashCommands, value, caretPos]
+    );
+
+    // Commands and mentions never overlap (different lead chars) but must be
+    // handed to the overlay sorted by start.
+    const overlayTokens = useMemo<OverlayToken[]>(
+      () =>
+        [
+          ...commandTokens.map((t): OverlayToken => ({ kind: 'command', ...t })),
+          ...mentionTokens,
+        ].sort((a, b) => a.start - b.start),
+      [commandTokens, mentionTokens]
+    );
+
+    const handlePillClick = useCallback(
+      (token: CommandToken, rect: DOMRect) => {
+        const command = allSlashCommands.find((c) => c.name === token.name);
+        if (command) setPillPopover({ command, rect });
+      },
+      [allSlashCommands]
+    );
+
+    // Track the caret so pill suppression follows the cursor; cleared on blur so
+    // an unfocused input shows every recognized command as a pill.
+    useEffect(() => {
+      const onSelectionChange = () => {
+        const ta = textareaRef.current;
+        if (ta && document.activeElement === ta) {
+          setCaretPos(ta.selectionStart);
+        }
+      };
+      document.addEventListener('selectionchange', onSelectionChange);
+      return () => document.removeEventListener('selectionchange', onSelectionChange);
+    }, []);
+
+    useEffect(() => {
+      if (!isFocused) setCaretPos(null);
+    }, [isFocused]);
 
     // Check for typeahead trigger when value changes (debounced for performance)
     // NOTE: cursorPosition and fileMentionOptions.length are intentionally excluded
@@ -1049,7 +1138,10 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         // Claude Code, etc.) can resolve it unambiguously on the first try.
         // Bare `@workspace-relative` paths caused Codex to guess sibling
         // directories before finding cwd-relative files.
-        const mention = `[${displayName}](${absolutePath})`;
+        // Encode the destination so paths with spaces/parens (e.g. Windows
+        // `My Project` or `Program Files (x86)`) don't truncate the markdown
+        // link at the first space (GH #693 / NIM-964).
+        const mention = `[${displayName}](${encodeMarkdownLinkPath(absolutePath)})`;
         // Insert at cursor position, or append with space separator
         const textarea = textareaRef.current;
         const cursorPos = textarea?.selectionStart ?? value.length;
@@ -1361,10 +1453,11 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
             padding: dragActive ? '4px' : '0'
           }}
         >
+          <div className="ai-chat-input-textarea-wrap relative flex flex-1 min-w-0">
           <textarea
             ref={textareaRef}
             data-testid={testId}
-            className="ai-chat-input-field nim-scrollbar-hidden flex-1 min-h-9 py-2 px-3 bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded-md text-[var(--nim-text)] text-[13px] font-[inherit] resize-none outline-none transition-colors duration-200 focus:border-[var(--nim-primary)] disabled:opacity-50 disabled:cursor-not-allowed placeholder:text-[var(--nim-text-faint)]"
+            className={`ai-chat-input-field nim-scrollbar-hidden flex-1 min-h-9 py-2 px-3 bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded-md ${enableSlashCommands ? 'text-transparent caret-[var(--nim-text)]' : 'text-[var(--nim-text)]'} text-[13px] font-[inherit] resize-none outline-none transition-colors duration-200 focus:border-[var(--nim-primary)] disabled:opacity-50 disabled:cursor-not-allowed placeholder:text-[var(--nim-text-faint)]`}
             value={value}
             onChange={(e) => {
               // textarea onChange only fires from real user input events
@@ -1402,6 +1495,15 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
               maxHeight: `${userSetHeight ?? DEFAULT_MAX_PROMPT_HEIGHT}px`,
             }}
           />
+          {enableSlashCommands && (
+            <HighlightOverlay
+              textareaRef={textareaRef}
+              value={value}
+              tokens={overlayTokens}
+              onPillClick={handlePillClick}
+            />
+          )}
+          </div>
           {isMemoryMode ? (
             // Memory mode: show save button
             <MemorySaveButton
@@ -1467,6 +1569,17 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
               ? ['Built-in Commands', 'Project Commands', 'User Commands', 'Extension Commands',
                  'Project Skills', 'User Skills', 'Plugin Skills']
               : undefined}
+          />
+        )}
+
+        {pillPopover && (
+          <CommandPillPopover
+            command={pillPopover.command}
+            rect={pillPopover.rect}
+            workspacePath={workspacePath}
+            sessionId={sessionId}
+            provider={currentProvider ?? provider ?? null}
+            onClose={() => setPillPopover(null)}
           />
         )}
 

@@ -1,7 +1,7 @@
 /**
  * NavigationDialogKeyboardHandler
  *
- * Wires the five global quick-open shortcuts to the unified dialog. Each
+ * Wires the global quick-open shortcuts to the unified dialog. Each
  * shortcut opens the dialog landing on its own tab. While the dialog is
  * already open, the UnifiedQuickOpen component handles re-firing the same
  * shortcut to jump tabs (so we don't need to intercept here).
@@ -11,6 +11,7 @@ import React, { useEffect, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useNavigationDialogs } from '../dialogs';
 import { openNavigationDialogRequestAtom } from '../store/atoms/appCommands';
+import { workspaceHasTeamAtom } from '../store/atoms/collabDocuments';
 import type { UnifiedQuickOpenData } from '../dialogs/navigation';
 import type { UnifiedQuickOpenTab } from './UnifiedQuickOpen';
 
@@ -39,6 +40,7 @@ export function NavigationDialogKeyboardHandler({
   documentContext: _documentContext,
 }: NavigationDialogKeyboardHandlerProps) {
   const { openUnifiedQuickOpen } = useNavigationDialogs();
+  const hasTeam = useAtomValue(workspaceHasTeamAtom);
 
   const propsRef = useRef({
     workspaceMode,
@@ -48,6 +50,7 @@ export function NavigationDialogKeyboardHandler({
     onFolderSelect,
     onSessionSelect,
     onPromptSelect,
+    hasTeam,
   });
   useEffect(() => {
     propsRef.current = {
@@ -58,6 +61,7 @@ export function NavigationDialogKeyboardHandler({
       onFolderSelect,
       onSessionSelect,
       onPromptSelect,
+      hasTeam,
     };
   });
 
@@ -97,6 +101,7 @@ export function NavigationDialogKeyboardHandler({
       else if (e.shiftKey && (e.key === 'F' || e.key === 'f')) initialTab = 'in-files';
       else if (e.shiftKey && (e.key === 'L' || e.key === 'l')) initialTab = 'prompts';
       else if (e.shiftKey && (e.key === 'O' || e.key === 'o')) initialTab = 'search';
+      else if (e.shiftKey && (e.key === 'D' || e.key === 'd') && propsRef.current.hasTeam) initialTab = 'team';
       else if (!e.shiftKey && e.key === 'o') initialTab = 'files';
       else if (!e.shiftKey && e.key === 'l') initialTab = 'sessions';
 
@@ -137,6 +142,10 @@ export function NavigationDialogKeyboardHandler({
         break;
       case 'global-search':
         initialTab = 'search';
+        break;
+      case 'team-quick-open':
+        if (!propsRef.current.hasTeam) return;
+        initialTab = 'team';
         break;
       case 'quick-open':
       default:

@@ -216,6 +216,11 @@ export const ExtensionPermissionPrompt: React.FC = () => {
           You can revoke this at any time from Settings &rarr; Extensions.
         </p>
 
+        {/* Consent to run native code is a per-module trust decision, not a
+            per-workspace one -- so there is a single "Enable" that grants
+            globally. Scoping this to one workspace would only mean the user
+            gets re-prompted the next time they open a different project, which
+            is noise, not safety. */}
         <div className="ext-permission-prompt-buttons flex gap-2 justify-end flex-wrap">
           <button
             className="ext-permission-prompt-button-decline nim-btn-secondary"
@@ -224,17 +229,10 @@ export const ExtensionPermissionPrompt: React.FC = () => {
             Not now
           </button>
           <button
-            className="ext-permission-prompt-button-global nim-btn-secondary"
+            className="ext-permission-prompt-button-enable nim-btn-primary"
             onClick={() => respond('enable-global')}
-            title="Grant for every workspace"
           >
-            Enable for all workspaces
-          </button>
-          <button
-            className="ext-permission-prompt-button-workspace nim-btn-primary"
-            onClick={() => respond('enable-workspace')}
-          >
-            Enable for this workspace
+            Enable
           </button>
         </div>
       </div>

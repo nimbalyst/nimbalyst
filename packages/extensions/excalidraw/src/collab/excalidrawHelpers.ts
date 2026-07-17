@@ -7,7 +7,7 @@
  * change-detection passes.
  */
 
-import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
+import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
 import * as Y from 'yjs';
 
 export const moveArrayItem = <T>(arr: T[], from: number, to: number, inPlace = true): T[] => {

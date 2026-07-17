@@ -16,6 +16,19 @@ import { DocumentModelRegistry } from '../services/document-model/DocumentModelR
 import { aiApi } from '../services/aiApi';
 import { getFileName } from '../utils/pathUtils';
 import { isCollabUri } from '../utils/collabUri';
+import {
+  updateSharedDocumentTitle,
+  removeSharedDocument,
+  moveSharedDocument,
+  createSharedFolder,
+  renameSharedFolder,
+  moveSharedFolder,
+  removeSharedFolder,
+  collectFolderSubtree,
+  sharedFoldersAtom,
+} from '../store/atoms/collabDocuments';
+import { getCollaborativeDocumentTypeCatalog } from '../services/CollaborativeDocumentTypeCatalog';
+import { createCollaborativeDocument } from '../services/collaborativeDocumentCreationOrchestrator';
 import type { ContentMode } from '../types/WindowModeTypes';
 import { dialogRef } from '../contexts/DialogContext';
 import { DIALOG_IDS } from '../dialogs';
@@ -27,6 +40,31 @@ import {
 
 // Tracker field updates now go through the generic trackerStatus frontmatter format.
 // No hardcoded plan-specific field list needed.
+
+/**
+ * Resolve a human folder path (e.g. "A/B") to a folderId, walking the shared
+ * folder tree by name and creating any missing segments via createSharedFolder
+ * (the same path a person uses). Empty/blank path resolves to the root (null).
+ * Used by the shared-index MCP tool listeners below.
+ */
+async function resolveSharedFolderPath(folderPath: string | undefined): Promise<string | null> {
+  const trimmed = (folderPath ?? '').trim();
+  if (!trimmed) return null;
+  const segments = trimmed.split('/').map((s) => s.trim()).filter(Boolean);
+  let parentId: string | null = null;
+  for (const segment of segments) {
+    const folders = store.get(sharedFoldersAtom);
+    const existing = folders.find(
+      (f) => (f.parentFolderId ?? null) === parentId && f.name === segment,
+    );
+    if (existing) {
+      parentId = existing.folderId;
+    } else {
+      parentId = await createSharedFolder(segment, parentId);
+    }
+  }
+  return parentId;
+}
 
 function mergeFrontmatterData(
   existing: FrontmatterData | undefined,
@@ -69,9 +107,6 @@ interface UseIPCHandlersProps {
   handleWorkspaceFileSelect: (filePath: string) => Promise<void>;
   openWelcomeTab: () => Promise<void>;
   openFeedback: () => void;
-  handleNextTab?: () => void;
-  handlePreviousTab?: () => void;
-
   // State setters
   setIsApiKeyDialogOpen: (open: boolean) => void;
   setWorkspaceMode: (mode: boolean) => void;
@@ -81,14 +116,10 @@ interface UseIPCHandlersProps {
   // NOTE: setCurrentFilePath/setCurrentFileName removed - now using refs to prevent re-renders
   // NOTE: setIsDirty removed - TabEditor owns dirty state and calls setDocumentEdited directly
   // NOTE: setIsNewFileDialogOpen removed - EditorMode manages dialogs
-  setIsAIChatCollapsed: (collapsed: boolean) => void;
-  setAIChatWidth: (width: number) => void;
-  setIsAIChatStateLoaded: (loaded: boolean) => void;
   setSessionToLoad: (session: { sessionId: string; workspacePath?: string } | null) => void;
   // NOTE: setIsHistoryDialogOpen removed - EditorMode manages dialogs
   setIsKeyboardShortcutsDialogOpen: (open: boolean) => void;
   setTheme: (theme: any) => void;
-  setAIPlanningMode?: (enabled: boolean) => void;
 
   // Refs
   // NOTE: initialContentRef removed - TabEditor tracks initialContent per-tab
@@ -135,20 +166,13 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     handleWorkspaceFileSelect,
     openWelcomeTab,
     openFeedback,
-    handleNextTab,
-    handlePreviousTab,
-
     // State setters
     setIsApiKeyDialogOpen,
     setWorkspaceMode,
     setWorkspacePath,
     setWorkspaceName,
-    setIsAIChatCollapsed,
-    setAIChatWidth,
-    setIsAIChatStateLoaded,
     setSessionToLoad,
     setIsKeyboardShortcutsDialogOpen,
-    setAIPlanningMode,
     setTheme,
 
     // Refs
@@ -186,20 +210,14 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     handleWorkspaceFileSelect,
     openWelcomeTab,
     openFeedback,
-    handleNextTab,
-    handlePreviousTab,
     setIsApiKeyDialogOpen,
     setWorkspaceMode,
     setWorkspacePath,
     setWorkspaceName,
     // NOTE: setCurrentFilePath/setCurrentFileName removed - using refs directly
     // NOTE: setIsDirty removed - dirty state is tracked via isDirtyRef to avoid re-renders
-    setIsAIChatCollapsed,
-    setAIChatWidth,
-    setIsAIChatStateLoaded,
     setSessionToLoad,
     setIsKeyboardShortcutsDialogOpen,
-    setAIPlanningMode,
     setTheme,
   });
 
@@ -219,18 +237,12 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     handleWorkspaceFileSelect,
     openWelcomeTab,
     openFeedback,
-    handleNextTab,
-    handlePreviousTab,
     setIsApiKeyDialogOpen,
     setWorkspaceMode,
     setWorkspacePath,
     setWorkspaceName,
-    setIsAIChatCollapsed,
-    setAIChatWidth,
-    setIsAIChatStateLoaded,
     setSessionToLoad,
     setIsKeyboardShortcutsDialogOpen,
-    setAIPlanningMode,
     setTheme,
   };
 
@@ -267,6 +279,7 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
 
     // Set up listeners and store cleanup functions
     const cleanupFns: Array<() => void> = [];
+    let workspaceOpenRequestVersion = 0;
 
     cleanupFns.push(window.electronAPI.onFileNew(handlersRef.current.handleNew));
 
@@ -276,6 +289,7 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     cleanupFns.push(window.electronAPI.onFileSave(handlersRef.current.handleSave));
     cleanupFns.push(window.electronAPI.onFileSaveAs(handlersRef.current.handleSaveAs));
     cleanupFns.push(window.electronAPI.onWorkspaceOpened(async (data) => {
+      const requestVersion = ++workspaceOpenRequestVersion;
       if (LOG_CONFIG.WORKSPACE_OPS) console.log('[WORKSPACE] Workspace opened:', data);
       handlersRef.current.setWorkspaceMode(true);
       handlersRef.current.setWorkspacePath(data.workspacePath);
@@ -288,25 +302,19 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
       // NOTE: contentVersion removed - EditorContainer handles remounting via destroy/create
       isInitializedRef.current = false;
 
-      // Restore AI Chat state when opening a workspace
+      // Restore the last AI chat session when opening a workspace. Layout is
+      // hydrated and persisted by EditorMode's workspace-keyed atoms.
       try {
         const workspaceState = await window.electronAPI.invoke('workspace:get-state', data.workspacePath);
+        if (requestVersion !== workspaceOpenRequestVersion) return;
         const aiChatState = workspaceState?.aiPanel;
         // console.log('Restoring AI Chat state for workspace:', aiChatState);
-        if (aiChatState) {
-          handlersRef.current.setIsAIChatCollapsed(aiChatState.collapsed);
-          handlersRef.current.setAIChatWidth(aiChatState.width);
-          if (handlersRef.current.setAIPlanningMode) {
-            handlersRef.current.setAIPlanningMode(aiChatState.planningModeEnabled ?? true);
-          }
-          if (aiChatState.currentSessionId) {
-            handlersRef.current.setSessionToLoad({ sessionId: aiChatState.currentSessionId, workspacePath: data.workspacePath });
-          }
+        if (aiChatState?.currentSessionId) {
+          handlersRef.current.setSessionToLoad({ sessionId: aiChatState.currentSessionId, workspacePath: data.workspacePath });
         }
-        handlersRef.current.setIsAIChatStateLoaded(true);
       } catch (error) {
+        if (requestVersion !== workspaceOpenRequestVersion) return;
         console.error('Failed to restore AI Chat state:', error);
-        handlersRef.current.setIsAIChatStateLoaded(true);
       }
 
       // Open welcome tab if no tabs are open
@@ -462,25 +470,10 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
         // Set the session to load - AIChat will pick this up
         handlersRef.current.setSessionToLoad(data);
 
-        // Make sure AI Chat is visible
-        handlersRef.current.setIsAIChatCollapsed(false);
       }));
     }
 
     // NOTE: view-history IPC event (Cmd+Y) is handled in App.tsx which gates it by active mode
-
-    // Tab navigation handlers - delegate to App.tsx for mode-aware routing
-    if (window.electronAPI.onNextTab && handlersRef.current.handleNextTab) {
-      cleanupFns.push(window.electronAPI.onNextTab(() => {
-        handlersRef.current.handleNextTab?.();
-      }));
-    }
-
-    if (window.electronAPI.onPreviousTab && handlersRef.current.handlePreviousTab) {
-      cleanupFns.push(window.electronAPI.onPreviousTab(() => {
-        handlersRef.current.handlePreviousTab?.();
-      }));
-    }
 
     // Approve/Reject action handlers
     if (window.electronAPI.onApproveAction) {
@@ -657,6 +650,121 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
           window.electronAPI.sendMcpReadCollabDocResult(resultChannel, {
             success: false,
             error: error instanceof Error ? error.message : 'Unknown error reading collab doc',
+          });
+        }
+      }));
+    }
+
+    // Shared-index (first-class shared folders + documents) MCP tools. Each
+    // routes through the SAME renderer functions a person uses so the AI's
+    // changes sync to the team identically.
+    if (window.electronAPI.onMcpCreateSharedDoc) {
+      cleanupFns.push(window.electronAPI.onMcpCreateSharedDoc(async ({ title, documentType, parentFolderId, folderPath, initialContent, resultChannel }) => {
+        try {
+          // folderPath (by name, creates missing folders) wins over an explicit
+          // parentFolderId when both are supplied.
+          const targetParentId = folderPath !== undefined
+            ? await resolveSharedFolderPath(folderPath)
+            : (parentFolderId ?? null);
+
+          const requestedDocumentType = documentType || 'markdown';
+          const catalog = getCollaborativeDocumentTypeCatalog();
+          const fileExtension = catalog.inferFileExtension(requestedDocumentType, title);
+          const resolution = catalog.resolveMetadata(requestedDocumentType, fileExtension);
+          if (resolution.state !== 'ready') throw new Error(resolution.reason);
+
+          const document = await createCollaborativeDocument({
+            descriptor: resolution.descriptor,
+            requestedName: title,
+            parentFolderId: targetParentId,
+            sourceContent: initialContent ?? '',
+          });
+
+          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
+            success: true,
+            documentId: document.documentId,
+          });
+        } catch (error) {
+          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error creating shared document',
+          });
+        }
+      }));
+    }
+
+    if (window.electronAPI.onMcpCreateSharedFolder) {
+      cleanupFns.push(window.electronAPI.onMcpCreateSharedFolder(async ({ name, parentFolderId, folderPath, resultChannel }) => {
+        try {
+          const targetParentId = folderPath !== undefined
+            ? await resolveSharedFolderPath(folderPath)
+            : (parentFolderId ?? null);
+          const folderId = await createSharedFolder(name, targetParentId);
+          window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true, folderId });
+        } catch (error) {
+          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error creating shared folder',
+          });
+        }
+      }));
+    }
+
+    if (window.electronAPI.onMcpMoveSharedItem) {
+      cleanupFns.push(window.electronAPI.onMcpMoveSharedItem(async ({ itemId, kind, newParentFolderId, folderPath, resultChannel }) => {
+        try {
+          const targetParentId = folderPath !== undefined
+            ? await resolveSharedFolderPath(folderPath)
+            : (newParentFolderId ?? null);
+          if (kind === 'doc') {
+            moveSharedDocument(itemId, targetParentId);
+          } else {
+            moveSharedFolder(itemId, targetParentId);
+          }
+          window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
+        } catch (error) {
+          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error moving shared item',
+          });
+        }
+      }));
+    }
+
+    if (window.electronAPI.onMcpRenameSharedItem) {
+      cleanupFns.push(window.electronAPI.onMcpRenameSharedItem(async ({ itemId, kind, newName, resultChannel }) => {
+        try {
+          if (kind === 'doc') {
+            await updateSharedDocumentTitle(itemId, newName);
+          } else {
+            await renameSharedFolder(itemId, newName);
+          }
+          window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
+        } catch (error) {
+          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error renaming shared item',
+          });
+        }
+      }));
+    }
+
+    if (window.electronAPI.onMcpDeleteSharedItem) {
+      cleanupFns.push(window.electronAPI.onMcpDeleteSharedItem(async ({ itemId, kind, resultChannel }) => {
+        try {
+          if (kind === 'doc') {
+            removeSharedDocument(itemId);
+            window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
+          } else {
+            // Count the subtree before removal so we can report what was pruned.
+            const removedCount = collectFolderSubtree(store.get(sharedFoldersAtom), itemId).length;
+            removeSharedFolder(itemId);
+            window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true, removedCount });
+          }
+        } catch (error) {
+          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error deleting shared item',
           });
         }
       }));

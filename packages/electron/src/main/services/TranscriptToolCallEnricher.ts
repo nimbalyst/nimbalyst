@@ -1,8 +1,7 @@
-import type { ToolCallDiffResult, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
+import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
 import { toolCallMatcher } from './ToolCallMatcher';
 
 const DIRECT_DIFF_TOOL_NAMES = new Set(['file_change']);
-const ENRICH_CONCURRENCY = 4;
 
 interface ToolCallMessageRef {
   message: TranscriptViewMessage;
@@ -39,23 +38,6 @@ function cloneTranscriptMessages(
   });
 }
 
-async function runWithConcurrency<T>(
-  items: T[],
-  limit: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  let index = 0;
-
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (index < items.length) {
-      const current = items[index++];
-      await worker(current);
-    }
-  });
-
-  await Promise.all(workers);
-}
-
 function shouldHydrateDiffs(
   message: TranscriptViewMessage,
   matchedToolCallIds: Set<string>,
@@ -65,6 +47,11 @@ function shouldHydrateDiffs(
   if (!tool || !toolCallItemId || tool.result == null) return false;
 
   return matchedToolCallIds.has(toolCallItemId) || DIRECT_DIFF_TOOL_NAMES.has(tool.toolName);
+}
+
+/** Stable key for the getDiffsForSession result map (ids have no spaces; ts is numeric). */
+function refKey(toolCallItemId: string, toolCallTimestamp?: number): string {
+  return `${toolCallItemId} ${toolCallTimestamp ?? ''}`;
 }
 
 export async function enrichTranscriptMessagesWithToolCallDiffs(
@@ -87,19 +74,25 @@ export async function enrichTranscriptMessagesWithToolCallDiffs(
   const candidates = clonedRefs.filter(({ message }) => shouldHydrateDiffs(message, matchedToolCallIds));
   if (candidates.length === 0) return clonedMessages;
 
-  const cache = new Map<string, ToolCallDiffResult[]>();
+  // Resolve all tool-call diffs in one batched pass. getDiffsForSession loads
+  // the session's invariant data (workspace, session_files, history snapshots)
+  // ONCE and reuses it across every tool call -- without this, a session with
+  // thousands of tool calls re-runs the same per-file queries per call (an N+1
+  // that made large sessions take 60s+ to load).
+  const uniqueRefs = new Map<string, { toolCallItemId: string; toolCallTimestamp?: number }>();
+  for (const { toolCallItemId, toolCallTimestamp } of candidates) {
+    const key = refKey(toolCallItemId, toolCallTimestamp);
+    if (!uniqueRefs.has(key)) uniqueRefs.set(key, { toolCallItemId, toolCallTimestamp });
+  }
 
-  await runWithConcurrency(candidates, ENRICH_CONCURRENCY, async ({ message, toolCallItemId, toolCallTimestamp }) => {
-    const cacheKey = `${toolCallItemId}\u0000${toolCallTimestamp ?? ''}`;
-    let diffs = cache.get(cacheKey);
-    if (!diffs) {
-      diffs = await toolCallMatcher.getDiffsForToolCall(sessionId, toolCallItemId, toolCallTimestamp);
-      cache.set(cacheKey, diffs);
-    }
-    if (diffs.length > 0 && message.toolCall) {
+  const diffsByKey = await toolCallMatcher.getDiffsForSession(sessionId, [...uniqueRefs.values()]);
+
+  for (const { message, toolCallItemId, toolCallTimestamp } of candidates) {
+    const diffs = diffsByKey.get(refKey(toolCallItemId, toolCallTimestamp));
+    if (diffs && diffs.length > 0 && message.toolCall) {
       message.toolCall.fileDiffs = diffs;
     }
-  });
+  }
 
   return clonedMessages;
 }

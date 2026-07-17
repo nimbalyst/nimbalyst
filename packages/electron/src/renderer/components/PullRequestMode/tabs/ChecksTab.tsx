@@ -4,6 +4,7 @@
  * Read-only. Each row links to the provider's run page in the system browser.
  */
 
+import type { JSX } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import {

@@ -25,6 +25,7 @@ import { useOnboarding } from './hooks/useOnboarding';
 // NOTE: useDocumentContext removed - we build documentContext manually now
 import { handleWorkspaceFileSelect as handleWorkspaceFileSelectUtil } from './utils/workspaceFileOperations';
 import { createInitialFileContent } from './utils/fileUtils';
+import { resolveHistoryDocumentPath } from './utils/historyDocumentResolver';
 import { aiToolService } from './services/AIToolService';
 import { editorRegistry } from '@nimbalyst/runtime/ai/EditorRegistry';
 import { WorkspaceWelcome } from './components/WorkspaceWelcome.tsx';
@@ -54,7 +55,9 @@ import { TabsProvider } from './contexts/TabsContext';
 import { DocumentModelRegistry } from './services/document-model/DocumentModelRegistry';
 import {
   addWorkstreamFileAtom,
+  addWorkstreamTrackerAtom,
   setWorkstreamLayoutModeAtom,
+  workstreamStateAtom,
 } from './store/atoms/workstreamState';
 import {
   addSessionFullAtom,
@@ -71,8 +74,11 @@ import {
   settingsInitialCategoryAtom,
   settingsInitialScopeAtom,
   settingsKeyAtom,
+  settingsDestinationAtom,
   setSettingsInitialCategoryAtom,
   setSettingsInitialScopeAtom,
+  setSettingsDestinationAtom,
+  navigateSettingsInPlaceAtom,
   incrementSettingsKeyAtom,
   clearSettingsNavigationAtom,
   openSettingsCommandAtom,
@@ -107,6 +113,7 @@ import { initFileChangeListeners } from './store/listeners/fileChangeListeners';
 import { initMcpListeners } from './store/listeners/mcpListeners';
 import { initMenuCommandListeners } from './store/listeners/menuCommandListeners';
 import { initNetworkAvailabilityListeners } from './store/listeners/networkAvailabilityListeners';
+import { initCollabReplicaListeners } from './store/listeners/collabReplicaListeners';
 import { initNotificationListeners } from './store/listeners/notificationListeners';
 import { initExtensionPermissionListeners } from './store/listeners/extensionPermissionListeners';
 import { initPermissionListeners } from './store/listeners/permissionListeners';
@@ -117,6 +124,7 @@ import { initThemeListener } from './store/listeners/themeListeners';
 import { initThemeFallbackListener } from './store/listeners/themeFallbackListeners';
 import { initTrackerSyncListeners } from './store/listeners/trackerSyncListeners';
 import { initPullRequestListeners } from './store/listeners/pullRequestListeners';
+import { initReadReceiptListeners } from './store/listeners/readReceiptListeners';
 import { initWorktreeListeners } from './store/listeners/worktreeListeners';
 import { initBlitzListeners } from './store/listeners/blitzListeners';
 import { initUpdateListeners } from './store/listeners/updateListeners';
@@ -125,8 +133,11 @@ import { initWakeupListeners } from './store/listeners/wakeupListener';
 import { TrackerMode } from './components/TrackerMode';
 import { PullRequestMode } from './components/PullRequestMode';
 import { CollabMode, type CollabModeRef } from './components/CollabMode';
+import { TeamManagementApp } from './components/TeamMode';
 import { TerminalBottomPanel } from './components/TerminalBottomPanel';
 import { ProjectRail } from './components/ProjectRail';
+import { AccountExpiryBanner } from './components/Accounts/AccountExpiryBanner';
+import { organizationDirectoryAtom, personalAccountsAtom } from './store/atoms/settingsDomains';
 import {
   activeWorkspacePathAtom,
   multiProjectModeAtom,
@@ -164,7 +175,7 @@ import {
 import { setStorageBackend, getExtensionEditorAPI } from '@nimbalyst/runtime';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { extensionPanelAIContextAtom } from './store/atoms/extensionPanels';
-import { setDiffTreeGroupByDirectoryAtom, setAgentFileScopeModeAtom, setHiddenGutterButtonsAtom, hydrateFileGutterCollapsedAtom } from './store/atoms/projectState';
+import { setDiffTreeGroupByDirectoryAtom, setAgentFileScopeModeAtom, hydrateFileGutterCollapsedAtom } from './store/atoms/projectState';
 import { toggleSessionHistoryCollapsedAtom, scrollToMessageAtom, initAgentModeLayout } from './store/atoms/agentMode';
 import {
   developerModeAtom,
@@ -195,6 +206,7 @@ import {
   initTrackerPanelLayout,
   trackerModeLayoutAtom,
 } from './store/atoms/trackers';
+import { prNavigateRequestAtom } from './store/atoms/pullRequests';
 import {
   terminalPanelVisibleAtom,
   terminalPanelHeightAtom,
@@ -324,11 +336,13 @@ export default function App() {
     const cleanupTrackerSync = initTrackerSyncListeners();
     const cleanupWorktree = initWorktreeListeners();
     const cleanupPullRequest = initPullRequestListeners();
+    const cleanupReadReceipts = initReadReceiptListeners();
     const cleanupBlitz = initBlitzListeners();
     const cleanupUpdate = initUpdateListeners();
     const cleanupWalkthrough = initWalkthroughListeners();
     const cleanupWakeup = initWakeupListeners();
     const cleanupNetworkAvailability = initNetworkAvailabilityListeners();
+    const cleanupCollabReplicas = initCollabReplicaListeners();
     return () => {
       cleanupActionPrompts?.();
       cleanupAiCommands?.();
@@ -352,11 +366,13 @@ export default function App() {
       cleanupTrackerSync?.();
       cleanupWorktree?.();
       cleanupPullRequest?.();
+      cleanupReadReceipts?.();
       cleanupBlitz?.();
       cleanupUpdate?.();
       cleanupWalkthrough?.();
       cleanupWakeup?.();
       cleanupNetworkAvailability?.();
+      cleanupCollabReplicas?.();
     };
   }, []);
 
@@ -443,6 +459,12 @@ export default function App() {
     return <DeveloperDashboard />;
   }
 
+  // Org management is a dedicated window, not a mode inside the project window
+  // (2026-07-17 decision-log correction). TeamManagementApp sets its own title.
+  if (windowMode === 'team-management') {
+    return <TeamManagementApp />;
+  }
+
   // IMPORTANT: These are refs, not state, to prevent re-renders when the active file changes.
   // Window title and other side effects are updated imperatively via editorModeRef.
   const currentFilePathRef = useRef<string | null>(null);
@@ -466,19 +488,11 @@ export default function App() {
   const setRailActivePath = useSetAtom(activeWorkspacePathAtom);
   // NOTE: fileTree, sidebarWidth, isNewFileDialogOpen, newFileDirectory, isHistoryDialogOpen moved to EditorMode
   // NOTE: Navigation dialogs (QuickOpen, SessionQuickOpen, PromptQuickOpen, ProjectQuickOpen) are now managed by DialogProvider
-  // NOTE: isAIChatCollapsed, aiChatWidth moved to EditorMode for workspace mode
-  // These are kept for potential single-file mode or agent mode use
-  const [isAIChatCollapsed, setIsAIChatCollapsed] = useState(false);
-  const [aiChatWidth, setAIChatWidth] = useState<number>(350);
   // NOTE: KeyboardShortcutsDialog, DiscordInvitation, FeedbackIntakeDialog, ApiKeyDialog are now managed by DialogProvider
   // NOTE: WindowsClaudeCodeWarning now managed by DialogProvider via useOnboarding hook
-  const [isAIChatStateLoaded, setIsAIChatStateLoaded] = useState(false);
-  // Planning mode for AI sidebar (Claude Code safety). Default ON
-  const [aiPlanningModeEnabled, setAIPlanningModeEnabled] = useState<boolean>(true);
   // Force show trust toast (when user wants to change permission mode)
   const [forceShowTrustToast, setForceShowTrustToast] = useState(false);
   const [sessionToLoad, setSessionToLoad] = useState<{ sessionId: string; workspacePath?: string } | null>(null);
-  const [currentAISessionId, setCurrentAISessionId] = useState<string | null>(null);
   // NOTE: diffError and projectSelection are now managed by DialogProvider
 
   // NOTE: UnifiedOnboarding state now managed by DialogProvider via useOnboarding hook
@@ -490,8 +504,11 @@ export default function App() {
   const settingsInitialCategory = useAtomValue(settingsInitialCategoryAtom);
   const settingsInitialScope = useAtomValue(settingsInitialScopeAtom);
   const settingsKey = useAtomValue(settingsKeyAtom);
+  const settingsDestination = useAtomValue(settingsDestinationAtom);
+  const navigateSettingsInPlace = useSetAtom(navigateSettingsInPlaceAtom);
   const setSettingsInitialCategory = useSetAtom(setSettingsInitialCategoryAtom);
   const setSettingsInitialScope = useSetAtom(setSettingsInitialScopeAtom);
+  const setSettingsDestination = useSetAtom(setSettingsDestinationAtom);
   const incrementSettingsKey = useSetAtom(incrementSettingsKeyAtom);
   const clearSettingsNavigation = useSetAtom(clearSettingsNavigationAtom);
   const [marketplaceInstallRequest, setMarketplaceInstallRequest] = useState<{
@@ -512,7 +529,6 @@ export default function App() {
   // Workspace state hydration setters
   const setDiffTreeGroupByDirectory = useSetAtom(setDiffTreeGroupByDirectoryAtom);
   const setAgentFileScopeMode = useSetAtom(setAgentFileScopeModeAtom);
-  const setHiddenGutterButtons = useSetAtom(setHiddenGutterButtonsAtom);
   const hydrateFileGutterCollapsed = useSetAtom(hydrateFileGutterCollapsedAtom);
 
   // Check if a fullscreen extension panel is active (hides other content modes)
@@ -522,6 +538,8 @@ export default function App() {
   // Window mode - which view is active (files, agent, settings)
   const activeMode = useAtomValue(windowModeAtom);
   const developerMode = useAtomValue(developerModeAtom);
+  const personalAccounts = useAtomValue(personalAccountsAtom);
+  const organizationDirectory = useAtomValue(organizationDirectoryAtom);
   const setActiveMode = useSetAtom(setWindowModeAtom);
   const toggleAgentCollapsed = useSetAtom(toggleSessionHistoryCollapsedAtom);
   const updateDeveloperSettings = useSetAtom(setDeveloperFeatureSettingsAtom);
@@ -589,15 +607,13 @@ export default function App() {
         },
         // Settings deep link helpers
         openAgentPermissions: () => {
-          setSettingsInitialCategory('agent-permissions');
-          setSettingsInitialScope('project');
-          incrementSettingsKey();
+          // In-place nav clears any stale deep-link destination so it can't
+          // override this scope/category (settings review finding).
+          navigateSettingsInPlace({ category: 'project-agent-permissions', scope: 'project' });
           setTimeout(() => setActiveMode('settings'), 0);
         },
-        openSettings: (category?: any, scope?: 'user' | 'project') => {
-          if (category) setSettingsInitialCategory(category);
-          if (scope) setSettingsInitialScope(scope);
-          incrementSettingsKey();
+        openSettings: (category?: any, scope?: 'application' | 'account' | 'project') => {
+          navigateSettingsInPlace({ category, scope });
           setTimeout(() => setActiveMode('settings'), 0);
         },
         // Expose DocumentModelRegistry for multi-editor coordination tests
@@ -695,10 +711,10 @@ export default function App() {
         if (state?.agentFileScopeMode !== undefined) {
           setAgentFileScopeMode({ fileScopeMode: state.agentFileScopeMode, workspacePath });
         }
-        // Hydrate hidden gutter buttons into Jotai atom
-        if (state?.hiddenGutterButtons?.length) {
-          setHiddenGutterButtons(state.hiddenGutterButtons);
-        }
+        // Gutter icon visibility is now a GLOBAL preference (see
+        // appSettings gutterCustomizationAtom, hydrated at startup); the
+        // legacy per-project hiddenGutterButtons is only read by the one-shot
+        // migration in main. Do not hydrate it here.
         // Hydrate FileGutter collapsed state per type into Jotai atom
         if (state?.fileGutterCollapsed) {
           hydrateFileGutterCollapsed(state.fileGutterCollapsed);
@@ -707,24 +723,7 @@ export default function App() {
       .catch(error => {
         console.error('[App] Failed to load workspace state:', error);
       });
-  }, [workspacePath, setDiffTreeGroupByDirectory, setAgentFileScopeMode, setHiddenGutterButtons, hydrateFileGutterCollapsed]);
-
-  // Save active mode when it changes
-  useEffect(() => {
-    // console.log('[App Layout] Active mode changed to:', activeMode, 'workspacePath:', workspacePath);
-
-    if (!workspacePath || !window.electronAPI?.invoke) return;
-
-    const updates = { activeMode };
-    // console.log('[App Layout] Saving updates:', JSON.stringify(updates));
-    window.electronAPI.invoke('workspace:update-state', workspacePath, updates)
-      .then((result) => {
-        // console.log('[App Layout] Successfully saved active mode:', activeMode, 'result:', result);
-      })
-      .catch(error => {
-        console.error('[ContentMode] Failed to save active mode:', error);
-      });
-  }, [activeMode, workspacePath]);
+  }, [workspacePath, setDiffTreeGroupByDirectory, setAgentFileScopeMode, hydrateFileGutterCollapsed]);
 
   // Initialize tracker panel state from workspace state
   useEffect(() => {
@@ -867,6 +866,21 @@ export default function App() {
   const editorModeRef = useRef<EditorModeRef>(null);
   const collabModeRef = useRef<CollabModeRef | null>(null);
 
+  const openHistoryForCurrentDocument = useCallback(() => {
+    const mode = activeModeStateRef.current;
+    const documentPath = resolveHistoryDocumentPath({
+      activeMode: mode,
+      localDocumentPath: (window as unknown as { __currentDocumentPath?: string | null }).__currentDocumentPath,
+      collabDocumentPath: mode === 'collab'
+        ? collabModeRef.current?.getActiveDocumentPath() ?? null
+        : null,
+    });
+
+    if (documentPath) {
+      store.set(historyDialogFileAtom, documentPath);
+    }
+  }, []);
+
   // NOTE: autoSaveIntervalRef and autoSaveCancellationRef removed - EditorContainer handles autosave now
   const activeSavesRef = useRef<Set<string>>(new Set());
   const lastSavePathRef = useRef<string | null>(null);
@@ -911,11 +925,6 @@ export default function App() {
   // NOTE: useHMRStateRestoration removed - no longer needed now that TabEditor
   // manages all editor state and useTabs persists tabs to localStorage. During HMR, tabs will
   // be restored from localStorage and editors recreated from tab content.
-
-  // Prepare AI chat state loading
-  useEffect(() => {
-    setIsAIChatStateLoaded(false);
-  }, []);
 
   // NOTE: Sidebar width loading moved to EditorMode
 
@@ -1118,10 +1127,16 @@ export default function App() {
         }));
       },
       restoreSettings: (state) => {
-        // Switch to settings mode and select the category
-        setSettingsInitialCategory(state.category as any);
-        setSettingsInitialScope(state.scope);
-        incrementSettingsKey();
+        // Switch to settings mode and select the category. In-place nav clears
+        // any stale deep-link destination so restored scope/category holds.
+        navigateSettingsInPlace({
+          category: state.category as any,
+          scope: state.scope === 'user' || state.scope === 'organization'
+            ? 'application'
+            : state.scope === 'personal'
+              ? 'account'
+              : state.scope,
+        });
       },
     });
   }, []);
@@ -1136,8 +1151,12 @@ export default function App() {
     if (!openSettingsCommand || openSettingsCommand.timestamp === openSettingsCommandProcessedRef.current) return;
     openSettingsCommandProcessedRef.current = openSettingsCommand.timestamp;
 
-    setSettingsInitialCategory(openSettingsCommand.category);
-    if (openSettingsCommand.scope) setSettingsInitialScope(openSettingsCommand.scope);
+    const destination = openSettingsCommand.destination;
+    setSettingsDestination(destination);
+    setSettingsInitialCategory(destination?.category ?? openSettingsCommand.category);
+    if (destination?.scope ?? openSettingsCommand.scope) {
+      setSettingsInitialScope(destination?.scope ?? openSettingsCommand.scope);
+    }
     incrementSettingsKey();
     setTimeout(() => setActiveMode('settings'), 0);
 
@@ -1154,7 +1173,7 @@ export default function App() {
       };
       setTimeout(tryScroll, 50);
     }
-  }, [openSettingsCommand, setSettingsInitialCategory, setSettingsInitialScope, incrementSettingsKey]);
+  }, [openSettingsCommand, setSettingsDestination, setSettingsInitialCategory, setSettingsInitialScope, incrementSettingsKey]);
 
   // Custom event dispatched by the runtime-side CodexAuthRequiredWidget. Lives
   // in renderer because the widget cannot reach the renderer's jotai store
@@ -1164,7 +1183,7 @@ export default function App() {
       const detail = (event as CustomEvent<{ anchor?: string }>).detail;
       store.set(openSettingsCommandAtom, {
         category: 'openai-codex',
-        scope: 'user',
+        scope: 'application',
         anchor: detail?.anchor ?? 'codex-auth-section',
         timestamp: Date.now(),
       });
@@ -1449,6 +1468,7 @@ export default function App() {
     editorModeRef,
     agentModeRef,
     toggleAgentCollapsed,
+    openHistoryForCurrentDocument,
     isFullscreenPanelActive,
     exitFullscreenPanel: () => setActiveExtensionPanel(null),
   });
@@ -1483,17 +1503,64 @@ export default function App() {
   useEffect(() => {
     const handleNavigateTrackerItem = (e: Event) => {
       const itemId = (e as CustomEvent).detail?.itemId;
-      if (typeof itemId === 'string') {
-        setActiveMode('tracker');
-        store.set(trackerModeLayoutAtom, (current) => ({
-          ...current,
-          selectedItemId: itemId,
-        }));
+      if (typeof itemId !== 'string') return;
+
+      // Contextual navigation: in Agent Mode with a workstream selected, open
+      // the tracker as a workstream resource tab (statefully attached to the
+      // workstream) instead of switching the whole window to Tracker Mode.
+      const currentMode = activeModeStateRef.current;
+      const selection = workspacePath
+        ? store.get(selectedWorkstreamAtom(workspacePath))
+        : null;
+      if (currentMode === 'agent' && selection?.id) {
+        const workstreamId = selection.id;
+        const layout = store.get(workstreamStateAtom(workstreamId)).layoutMode;
+        if (layout === 'transcript') {
+          // Editor strip not mounted: seed openResources so the mount-time
+          // restore projects the tracker tab, then reveal the strip.
+          store.set(addWorkstreamTrackerAtom, { workstreamId, trackerItemId: itemId });
+          store.set(setWorkstreamLayoutModeAtom, { workstreamId, mode: 'split' });
+        } else {
+          // Already mounted: open imperatively. TabsContext is authoritative
+          // once mounted; the persist effect mirrors the change to openResources.
+          window.dispatchEvent(
+            new CustomEvent('nimbalyst:workstream-open-tracker', {
+              detail: { workstreamId, trackerItemId: itemId },
+            })
+          );
+        }
+        return;
       }
+
+      // Default: switch to Tracker Mode and select the item.
+      setActiveMode('tracker');
+      store.set(trackerModeLayoutAtom, (current) => ({
+        ...current,
+        selectedItemId: itemId,
+      }));
     };
 
     window.addEventListener('nimbalyst:navigate-tracker-item', handleNavigateTrackerItem);
     return () => window.removeEventListener('nimbalyst:navigate-tracker-item', handleNavigateTrackerItem);
+  }, [setActiveMode, workspacePath]);
+
+  // Listen for PR navigation events (from tracker detail / session panels) —
+  // the PR-view leg of the PR ↔ tracker ↔ session navigation triangle.
+  useEffect(() => {
+    const handleNavigatePr = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (typeof detail?.remote === 'string' && typeof detail?.prNumber === 'number') {
+        setActiveMode('pr-review');
+        store.set(prNavigateRequestAtom, {
+          remote: detail.remote,
+          prNumber: detail.prNumber,
+          version: detail.version ?? Date.now(),
+        });
+      }
+    };
+
+    window.addEventListener('nimbalyst:navigate-pr', handleNavigatePr);
+    return () => window.removeEventListener('nimbalyst:navigate-pr', handleNavigatePr);
   }, [setActiveMode]);
 
   // Host hook for converting a legacy inline tracker embed into a real tracked
@@ -1571,30 +1638,9 @@ export default function App() {
     return () => window.removeEventListener('open-ai-session', handleOpenAiSession as unknown as EventListener);
   }, [activeMode]);
 
-  // Save AI Chat state when it changes (but only after initial load)
-  useEffect(() => {
-    if (!workspacePath || !workspaceMode || !isAIChatStateLoaded) return;
-    if (!window.electronAPI?.invoke) return;
-
-    const saveAIChatState = async () => {
-      try {
-        const aiPanelState = {
-          collapsed: isAIChatCollapsed,
-          width: aiChatWidth,
-          currentSessionId: currentAISessionId || undefined,
-          planningModeEnabled: aiPlanningModeEnabled,
-        };
-        if (LOG_CONFIG.AI_CHAT_STATE) console.log('[AI_CHAT] Saving AI Chat state:', aiPanelState);
-        await window.electronAPI.invoke('workspace:update-state', workspacePath, {
-          aiPanel: aiPanelState
-        });
-      } catch (error) {
-        console.error('[AI_CHAT] Failed to save AI Chat state:', error);
-      }
-    };
-
-    saveAIChatState();
-  }, [isAIChatCollapsed, aiChatWidth, currentAISessionId, aiPlanningModeEnabled, isAIChatStateLoaded, workspacePath, workspaceMode]);
+  // AI chat layout persistence is owned by EditorMode's workspace-keyed atoms.
+  // Do not mirror the legacy App-local values here: they are not reset on rail
+  // switches and can overwrite the newly active project's persisted layout.
 
   // Handle QuickOpen file selection - delegates to EditorMode and switches mode if needed
   const handleQuickOpenFileSelect = useCallback(async (filePath: string) => {
@@ -1739,23 +1785,6 @@ export default function App() {
   }, [isMultiProjectMode, railActivePath, workspacePath]);
 
 
-  // Mode-aware tab navigation handlers
-  const handleNextTab = () => {
-    if (activeMode === 'agent') {
-      agentModeRef.current?.nextTab?.();
-    } else {
-      editorModeRef.current?.tabs?.nextTab?.();
-    }
-  };
-
-  const handlePreviousTab = () => {
-    if (activeMode === 'agent') {
-      agentModeRef.current?.previousTab?.();
-    } else {
-      editorModeRef.current?.tabs?.previousTab?.();
-    }
-  };
-
   // Set up IPC listeners
   // IPC handlers hook - sets up all IPC communication with main process
   useIPCHandlers({
@@ -1772,9 +1801,6 @@ export default function App() {
     handleWorkspaceFileSelect,
     openWelcomeTab,
     openFeedback: handleOpenFeedback,
-    handleNextTab,
-    handlePreviousTab,
-
     // State
     activeMode,
 
@@ -1783,12 +1809,8 @@ export default function App() {
     setWorkspaceMode,
     setWorkspacePath,
     setWorkspaceName,
-    setIsAIChatCollapsed,
-    setAIChatWidth,
-    setIsAIChatStateLoaded,
     setSessionToLoad,
     setIsKeyboardShortcutsDialogOpen: () => {}, // Unused - KeyboardShortcutsDialog now managed by DialogProvider
-    setAIPlanningMode: setAIPlanningModeEnabled,
     setTheme,
 
     // Refs
@@ -1984,18 +2006,12 @@ export default function App() {
   // view-history IPC fires when the user picks Edit > View Local History (Cmd+Y).
   // On macOS, the menu accelerator preempts the renderer keydown event, so the
   // IPC path is the canonical one. Open the global history dialog for whichever
-  // file is currently active (FilesMode or AgentMode -- both modes maintain
-  // window.__currentDocumentPath as the active file).
-  const setHistoryDialogFile = useSetAtom(historyDialogFileAtom);
+  // document is currently active. Shared Documents resolves its active
+  // collab:// URI through CollabMode instead of the filesystem-path global.
   useEffect(() => {
     if (!window.electronAPI?.onViewHistory) return undefined;
-    return window.electronAPI.onViewHistory(() => {
-      const activeFilePath = (window as unknown as { __currentDocumentPath?: string | null }).__currentDocumentPath;
-      if (activeFilePath) {
-        setHistoryDialogFile(activeFilePath);
-      }
-    });
-  }, [setHistoryDialogFile]);
+    return window.electronAPI.onViewHistory(openHistoryForCurrentDocument);
+  }, [openHistoryForCurrentDocument]);
 
   // Intercept external link clicks and open in default browser
   useEffect(() => {
@@ -2105,16 +2121,14 @@ export default function App() {
           setActiveMode('settings');
         }}
         onNavigateSettings={(scope, category) => {
-          if (category) setSettingsInitialCategory(category);
-          setSettingsInitialScope(scope);
-          incrementSettingsKey();
+          // In-place nav clears any stale deep-link destination so it can't
+          // override this scope/category (settings review finding).
+          navigateSettingsInPlace({ category, scope });
           setTimeout(() => setActiveMode('settings'), 0);
         }}
         onOpenPermissions={() => {
           // Deep link to agent permissions settings
-          setSettingsInitialCategory('agent-permissions');
-          setSettingsInitialScope('project');
-          incrementSettingsKey(); // Force SettingsView remount
+          navigateSettingsInPlace({ category: 'project-agent-permissions', scope: 'project' });
           setTimeout(() => setActiveMode('settings'), 0);
         }}
         onOpenFeedback={handleOpenFeedback}
@@ -2145,6 +2159,11 @@ export default function App() {
 
       {/* Right: Main content area + Bottom Panel */}
       <div data-layout="main-column-container" className="flex-1 flex flex-col overflow-hidden">
+        <AccountExpiryBanner
+          accounts={personalAccounts}
+          organizations={organizationDirectory}
+          onReconnect={(account) => dialogRef.current?.open(DIALOG_IDS.ACCOUNT_LOGIN, { mode: 'reauth', account })}
+        />
         {/* Top: Main content (sidebar + editor/agent + AI chat) */}
         <div data-layout="top-content-row" className="flex-1 flex flex-row min-h-0">
           {/* Center: Editor/Agent/Settings area */}
@@ -2355,6 +2374,7 @@ export default function App() {
                   workspaceName={workspaceName}
                   initialCategory={settingsInitialCategory}
                   initialScope={settingsInitialScope}
+                  initialDestination={settingsDestination}
                   marketplaceInstallRequest={marketplaceInstallRequest}
                   onMarketplaceInstallRequestHandled={clearMarketplaceInstallRequest}
                   onClose={() => {
@@ -2424,7 +2444,7 @@ export default function App() {
       <ProjectTrustToast
         workspacePath={workspacePath}
         onOpenSettings={() => {
-          setSettingsInitialCategory('agent-permissions');
+          setSettingsInitialCategory('project-agent-permissions');
           setSettingsInitialScope('project');
           incrementSettingsKey();
           setTimeout(() => setActiveMode('settings'), 0);

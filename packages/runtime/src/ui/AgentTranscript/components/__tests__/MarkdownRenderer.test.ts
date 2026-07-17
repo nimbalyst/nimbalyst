@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { resolveTranscriptFilePathFromHref } from '../MarkdownRenderer';
+import {
+  resolveTranscriptFilePathFromHref,
+  transcriptUrlTransform,
+} from '../MarkdownRenderer';
 
 describe('resolveTranscriptFilePathFromHref', () => {
   it('resolves unix absolute file paths', () => {
@@ -18,6 +21,20 @@ describe('resolveTranscriptFilePathFromHref', () => {
     expect(resolveTranscriptFilePathFromHref('file:///Users/test/My%20Project/prompt.ts')).toBe(
       '/Users/test/My Project/prompt.ts'
     );
+  });
+
+  it('decodes percent-encoded spaces in a plain unix path (NIM-964)', () => {
+    // `encodeMarkdownLinkPath` produces this form; the href react-markdown
+    // hands back must decode to the real on-disk path with a space.
+    expect(resolveTranscriptFilePathFromHref('/Users/test/My%20Project/design.md')).toBe(
+      '/Users/test/My Project/design.md'
+    );
+  });
+
+  it('decodes percent-encoded spaces and parens in a Windows drive path (NIM-964)', () => {
+    expect(
+      resolveTranscriptFilePathFromHref('/D:/Program%20Files%20%28x86%29/App/notes%20file.md')
+    ).toBe('D:/Program Files (x86)/App/notes file.md');
   });
 
   it('returns null for external web links', () => {
@@ -71,5 +88,77 @@ describe('resolveTranscriptFilePathFromHref', () => {
     expect(
       resolveTranscriptFilePathFromHref('/Users/test/normal/file.ts')
     ).toBe('/Users/test/normal/file.ts');
+  });
+
+  // Windows bug (GitHub #744): drive-letter absolute paths were mishandled.
+  // `D:\...` / `D:/...` look like a `d:` URI scheme and were rejected as
+  // external links (opening a blank window); `/D:/...` passed through with a
+  // spurious leading slash and failed with "File does not exist".
+  it('resolves Windows drive-letter paths with backslashes', () => {
+    expect(
+      resolveTranscriptFilePathFromHref('D:\\work\\INCOMLibrary\\Source\\icThemes.pas')
+    ).toBe('D:\\work\\INCOMLibrary\\Source\\icThemes.pas');
+  });
+
+  it('resolves Windows drive-letter paths with forward slashes', () => {
+    expect(
+      resolveTranscriptFilePathFromHref('D:/work/INCOMLibrary/Source/icThemes.pas')
+    ).toBe('D:/work/INCOMLibrary/Source/icThemes.pas');
+  });
+
+  it('strips a spurious leading slash before a Windows drive letter', () => {
+    expect(
+      resolveTranscriptFilePathFromHref('/D:/work/INCOMLibrary/Source/icThemes.pas')
+    ).toBe('D:/work/INCOMLibrary/Source/icThemes.pas');
+  });
+
+  it('strips line:column suffixes from Windows drive-letter paths', () => {
+    expect(
+      resolveTranscriptFilePathFromHref('D:/work/Source/icThemes.pas:42:7')
+    ).toBe('D:/work/Source/icThemes.pas');
+  });
+});
+
+describe('transcriptUrlTransform', () => {
+  it('preserves Windows drive-letter paths that the default transform would blank', () => {
+    expect(transcriptUrlTransform('D:\\work\\Source\\icThemes.pas')).toBe(
+      'D:\\work\\Source\\icThemes.pas'
+    );
+    expect(transcriptUrlTransform('D:/work/Source/icThemes.pas')).toBe(
+      'D:/work/Source/icThemes.pas'
+    );
+  });
+
+  it('preserves leading-slash drive-letter and UNC paths', () => {
+    expect(transcriptUrlTransform('/D:/work/Source/icThemes.pas')).toBe(
+      '/D:/work/Source/icThemes.pas'
+    );
+    expect(transcriptUrlTransform('\\\\server\\share\\file.pas')).toBe(
+      '\\\\server\\share\\file.pas'
+    );
+  });
+
+  it('preserves POSIX absolute and relative paths', () => {
+    expect(transcriptUrlTransform('/Users/test/file.ts')).toBe('/Users/test/file.ts');
+    expect(transcriptUrlTransform('src/ai/prompt.ts')).toBe('src/ai/prompt.ts');
+  });
+
+  it('still allows safe external protocols', () => {
+    expect(transcriptUrlTransform('https://nimbalyst.com/docs')).toBe(
+      'https://nimbalyst.com/docs'
+    );
+  });
+
+  it('still sanitizes dangerous protocols', () => {
+    expect(transcriptUrlTransform('javascript:alert(1)')).toBe('');
+  });
+
+  // Tracker reference links (`nimbalyst://NIM-123`) were blanked by the default
+  // transform (unknown protocol), so the tracker-chip check in the `a` renderer
+  // never saw the href and the link opened a blank window on click.
+  it('preserves nimbalyst:// tracker reference URNs', () => {
+    expect(transcriptUrlTransform('nimbalyst://NIM-1315')).toBe(
+      'nimbalyst://NIM-1315'
+    );
   });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   isTerminalSessionEvent,
   clearStalePendingPromptOnTerminal,
+  findCompletedSessionsWithPendingPrompt,
 } from '../pendingPromptTerminalClear';
 
 describe('isTerminalSessionEvent', () => {
@@ -15,6 +16,16 @@ describe('isTerminalSessionEvent', () => {
     expect(isTerminalSessionEvent('session:started')).toBe(false);
     expect(isTerminalSessionEvent('session:streaming')).toBe(false);
     expect(isTerminalSessionEvent('session:waiting')).toBe(false);
+  });
+});
+
+describe('findCompletedSessionsWithPendingPrompt', () => {
+  it('selects only completed sessions whose prompt bit is still true', () => {
+    expect(findCompletedSessionsWithPendingPrompt([
+      { id: 'stale', metadata: { phase: 'complete', hasPendingPrompt: true } },
+      { id: 'valid-pending', metadata: { phase: 'validating', hasPendingPrompt: true } },
+      { id: 'complete-clean', metadata: { phase: 'complete', hasPendingPrompt: false } },
+    ])).toEqual(['stale']);
   });
 });
 
