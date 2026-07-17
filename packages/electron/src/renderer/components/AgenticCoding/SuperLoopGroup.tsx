@@ -19,14 +19,15 @@ import {
   setSuperProgressAtom,
   getSuperStatusInfo,
 } from '../../store/atoms/superLoop';
-import {
-  groupSessionStatusAtom,
-  sessionProcessingAtom,
-  sessionUnreadAtom,
-  sessionPendingPromptAtom,
-} from '../../store';
 import type { SuperLoop, SuperLoopStatus, SuperIteration, SuperLearning } from '../../../shared/types/superLoop';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
+import { groupIndicatorStateAtom, sessionIndicatorStateAtom } from '../../store';
+import type { SessionIndicatorState } from '@nimbalyst/runtime';
+import {
+  SessionOperationalIndicator,
+  SessionOperationalIndicatorView,
+  getSessionOperationalLabel,
+} from './SessionOperationalIndicator';
 
 interface SuperLoopGroupProps {
   loopId: string;
@@ -65,91 +66,43 @@ const SuperStatusBadge: React.FC<{ status: SuperLoopStatus }> = memo(({ status }
   );
 });
 
-/**
- * Aggregate status indicator for the Super Loop group header.
- * When iterations are loaded, uses groupSessionStatusAtom (same as BlitzGroupStatus).
- * When not loaded, derives a simple indicator from the loop status.
- */
-const SuperGroupStatus: React.FC<{ sessionIds: string[]; loopStatus: SuperLoopStatus }> = memo(({ sessionIds, loopStatus }) => {
-  // When iteration session IDs are available, use the standard group status atom
-  const sessionIdsKey = useMemo(() => JSON.stringify([...sessionIds].sort()), [sessionIds]);
-  const groupStatus = useAtomValue(groupSessionStatusAtom(sessionIdsKey));
+const OPERATIONAL_PRECEDENCE: Record<SessionIndicatorState['kind'], number> = {
+  'needs-input': 0,
+  error: 1,
+  'working-self': 2,
+  'working-child': 3,
+  queued: 4,
+  ready: 5,
+  'wakeup-attention': 6,
+  scheduled: 7,
+  idle: 8,
+};
 
-  if (sessionIds.length > 0) {
-    if (groupStatus.hasProcessing) {
-      return (
-        <div className="flex items-center justify-center text-[var(--nim-primary)]" title="Processing">
-          <MaterialSymbol icon="progress_activity" size={12} className="animate-spin" />
-        </div>
-      );
-    }
-    if (groupStatus.hasPendingPrompt) {
-      return (
-        <div className="flex items-center justify-center text-[var(--nim-warning)] animate-pulse" title="Waiting for your response">
-          <MaterialSymbol icon="help" size={12} />
-        </div>
-      );
-    }
-    if (groupStatus.hasUnread) {
-      return (
-        <div className="flex items-center justify-center text-[var(--nim-primary)]" title="Unread response">
-          <MaterialSymbol icon="circle" size={6} fill />
-        </div>
-      );
-    }
-    return null;
+function superLoopStatusState(status: SuperLoopStatus): SessionIndicatorState {
+  if (status === 'blocked') {
+    return {
+      kind: 'needs-input',
+      promptCount: 1,
+      promptTypes: ['super_loop_feedback_request'],
+    };
   }
+  if (status === 'failed') return { kind: 'error', message: 'Super Loop failed' };
+  if (status === 'running') {
+    return { kind: 'working-self', hasBackground: false, backgroundCount: 0 };
+  }
+  return { kind: 'idle' };
+}
 
-  // Fallback: derive from loop status when iterations not loaded
-  if (loopStatus === 'running') {
-    return (
-      <div className="flex items-center justify-center text-[var(--nim-primary)]" title="Running">
-        <MaterialSymbol icon="progress_activity" size={12} className="animate-spin" />
-      </div>
-    );
-  }
-  if (loopStatus === 'blocked') {
-    return (
-      <div className="flex items-center justify-center text-[var(--nim-warning)] animate-pulse" title="Blocked">
-        <MaterialSymbol icon="help" size={12} />
-      </div>
-    );
-  }
-  return null;
-});
-
-/**
- * Per-session status indicator for iteration rows.
- * Same pattern as BlitzSessionStatus.
- */
-const SuperIterationStatus: React.FC<{ sessionId: string }> = memo(({ sessionId }) => {
-  const isProcessing = useAtomValue(sessionProcessingAtom(sessionId));
-  const hasPendingPrompt = useAtomValue(sessionPendingPromptAtom(sessionId));
-  const hasUnread = useAtomValue(sessionUnreadAtom(sessionId));
-
-  if (isProcessing) {
-    return (
-      <div className="flex items-center justify-center text-[var(--nim-primary)] animate-spin" title="Processing...">
-        <MaterialSymbol icon="progress_activity" size={12} />
-      </div>
-    );
-  }
-  if (hasPendingPrompt) {
-    return (
-      <div className="flex items-center justify-center text-[var(--nim-warning)]" title="Waiting for your response">
-        <MaterialSymbol icon="help" size={12} />
-      </div>
-    );
-  }
-  if (hasUnread) {
-    return (
-      <div className="flex items-center justify-center text-[var(--nim-primary)]" title="Unread response">
-        <MaterialSymbol icon="circle" size={6} fill />
-      </div>
-    );
-  }
-  return null;
-});
+/** Preserve the loop-level fallback while applying the canonical precedence. */
+export function mergeSuperLoopIndicatorState(
+  sessionState: SessionIndicatorState,
+  loopStatus: SuperLoopStatus,
+): SessionIndicatorState {
+  const loopState = superLoopStatusState(loopStatus);
+  return OPERATIONAL_PRECEDENCE[loopState.kind] < OPERATIONAL_PRECEDENCE[sessionState.kind]
+    ? loopState
+    : sessionState;
+}
 
 /**
  * Iteration row matching BlitzSessionRow style.
@@ -159,36 +112,41 @@ const SuperIterationRow: React.FC<{
   learning?: SuperLearning;
   isActive: boolean;
   onSelect: (e: Pick<React.MouseEvent, 'metaKey' | 'ctrlKey' | 'shiftKey'>) => void;
-}> = memo(({ iteration, learning, isActive, onSelect }) => (
-  <div
-    className={`super-loop-iteration-item flex items-center gap-2 py-1.5 px-3 mr-2 mb-0.5 cursor-pointer rounded transition-colors duration-150 select-none ${
-      isActive ? 'bg-[var(--nim-bg-selected)]' : 'hover:bg-[var(--nim-bg-hover)]'
-    } focus:outline-2 focus:outline-[var(--nim-border-focus)] focus:outline-offset-[-2px]`}
-    onClick={onSelect}
-    role="button"
-    tabIndex={0}
-    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(e); } }}
-    aria-label={`Iteration ${iteration.iterationNumber}`}
-    aria-current={isActive ? 'page' : undefined}
-  >
-    <div className={`shrink-0 flex items-center justify-center ${
-      isActive ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-muted)]'
-    }`}>
-      <ProviderIcon provider="claude-code" size={14} />
+}> = memo(({ iteration, learning, isActive, onSelect }) => {
+  const indicatorState = useAtomValue(sessionIndicatorStateAtom(iteration.sessionId));
+  const operationalLabel = getSessionOperationalLabel(indicatorState);
+  const title = learning?.summary || iteration.exitReason || `Iteration ${iteration.iterationNumber}`;
+  return (
+    <div
+      className={`super-loop-iteration-item flex items-center gap-2 py-1.5 px-3 mr-2 mb-0.5 cursor-pointer rounded transition-colors duration-150 select-none ${
+        isActive ? 'bg-[var(--nim-bg-selected)]' : 'hover:bg-[var(--nim-bg-hover)]'
+      } focus:outline-2 focus:outline-[var(--nim-border-focus)] focus:outline-offset-[-2px]`}
+      onClick={onSelect}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(e); } }}
+      aria-label={`Iteration ${iteration.iterationNumber}: ${title}.${operationalLabel ? ` Status: ${operationalLabel}.` : ''} Created ${getRelativeTimeString(iteration.createdAt)}.`}
+      aria-current={isActive ? 'page' : undefined}
+    >
+      <div className={`shrink-0 flex items-center justify-center ${
+        isActive ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-muted)]'
+      }`}>
+        <ProviderIcon provider="claude-code" size={14} />
+      </div>
+      <span className={`flex-1 text-xs text-[var(--nim-text)] whitespace-nowrap overflow-hidden text-ellipsis ${
+        isActive ? 'font-medium' : ''
+      }`}>
+        {title}
+      </span>
+      <span className="shrink-0 text-[0.6875rem] text-[var(--nim-text-faint)] ml-2">
+        {getRelativeTimeString(iteration.createdAt)}
+      </span>
+      <div className="shrink-0 flex items-center">
+        <SessionOperationalIndicator sessionId={iteration.sessionId} variant="child" />
+      </div>
     </div>
-    <span className={`flex-1 text-xs text-[var(--nim-text)] whitespace-nowrap overflow-hidden text-ellipsis ${
-      isActive ? 'font-medium' : ''
-    }`}>
-      {learning?.summary || iteration.exitReason || `Iteration ${iteration.iterationNumber}`}
-    </span>
-    <span className="shrink-0 text-[0.6875rem] text-[var(--nim-text-faint)] ml-2">
-      {getRelativeTimeString(iteration.createdAt)}
-    </span>
-    <div className="shrink-0 flex items-center">
-      <SuperIterationStatus sessionId={iteration.sessionId} />
-    </div>
-  </div>
-));
+  );
+});
 
 /**
  * Blocked continue UI - textarea and button for providing feedback to overcome a blocker.
@@ -277,6 +235,13 @@ export const SuperLoopGroup: React.FC<SuperLoopGroupProps> = memo(({
     () => iterations.map(iter => iter.sessionId),
     [iterations]
   );
+  const groupKey = useMemo(
+    () => JSON.stringify({ parentId: null, childIds: [...iterationSessionIds].sort() }),
+    [iterationSessionIds],
+  );
+  const canonicalGroupState = useAtomValue(groupIndicatorStateAtom(groupKey));
+  const groupIndicatorState = mergeSuperLoopIndicatorState(canonicalGroupState, loop.status);
+  const groupOperationalLabel = getSessionOperationalLabel(groupIndicatorState);
 
   // Load iterations and progress when expanded
   useEffect(() => {
@@ -512,7 +477,7 @@ export const SuperLoopGroup: React.FC<SuperLoopGroupProps> = memo(({
               handleHeaderClick(e as unknown as React.MouseEvent);
             }
           }}
-          aria-label={`Super Loop: ${displayTitle}`}
+          aria-label={`Super Loop: ${displayTitle}.${groupOperationalLabel ? ` Status: ${groupOperationalLabel}.` : ''}`}
         >
           {/* Sync icon */}
           <div className={`shrink-0 w-[1.125rem] h-[1.125rem] mt-[0.0625rem] flex items-center justify-center ${
@@ -554,7 +519,13 @@ export const SuperLoopGroup: React.FC<SuperLoopGroupProps> = memo(({
                 </>
               )}
               {!isRenaming && <SuperStatusBadge status={loop.status} />}
-              {!isRenaming && <SuperGroupStatus sessionIds={iterationSessionIds} loopStatus={loop.status} />}
+              {!isRenaming && (
+                <SessionOperationalIndicatorView
+                  state={groupIndicatorState}
+                  variant="group"
+                  isGroup
+                />
+              )}
             </div>
             {/* Subtitle line */}
             <div className="flex items-center gap-1.5 flex-wrap">

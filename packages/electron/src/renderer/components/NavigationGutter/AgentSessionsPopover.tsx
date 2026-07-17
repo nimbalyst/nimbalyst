@@ -11,7 +11,7 @@ import { selectSessionActionAtom } from '../../store/actions/sessionHistoryActio
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
 import { HelpTooltip } from '../../help';
-import { SessionStatusIndicator } from '../AgenticCoding/SessionListItem';
+import { SessionOperationalIndicator } from '../AgenticCoding/SessionOperationalIndicator';
 
 interface AgentSessionsPopoverProps {
   onOpenAgentMode: () => void;
@@ -21,19 +21,19 @@ type AttentionState = 'awaiting' | 'running' | 'unread';
 
 const STATE_STYLES: Record<AttentionState, { label: string; colorClass: string; dotClass: string }> = {
   awaiting: {
-    label: 'Awaiting input',
+    label: 'Needs attention',
     colorClass: 'text-nim-warning',
     dotClass: 'bg-[var(--nim-warning)]',
   },
   running: {
     label: 'Running',
-    colorClass: 'text-nim-success',
-    dotClass: 'bg-[var(--nim-success)]',
+    colorClass: 'text-[var(--nim-session-status-working,#3b82f6)]',
+    dotClass: 'bg-[var(--nim-session-status-working,#3b82f6)]',
   },
   unread: {
-    label: 'Unread',
-    colorClass: 'text-nim-primary',
-    dotClass: 'bg-[var(--nim-primary)]',
+    label: 'Ready',
+    colorClass: 'text-nim-warning',
+    dotClass: 'bg-[var(--nim-warning)]',
   },
 };
 
@@ -74,7 +74,7 @@ function AgentSessionAttentionRow({
       <span className="shrink-0 text-[10px] text-nim-faint">
         {getRelativeTimeString(updatedAt)}
       </span>
-      <SessionStatusIndicator sessionId={session.id} />
+      <SessionOperationalIndicator sessionId={session.id} variant="gutter" />
     </button>
   );
 }
@@ -106,8 +106,8 @@ export function AgentSessionsPopover({ onOpenAgentMode }: AgentSessionsPopoverPr
 
   const bubbleClasses = {
     orange: 'bg-[var(--nim-warning)]',
-    green: 'bg-[var(--nim-success)]',
-    blue: 'bg-[var(--nim-primary)]',
+    blue: 'bg-[var(--nim-session-status-working,#3b82f6)]',
+    yellow: 'bg-[var(--nim-warning)]',
   }[bubble.color];
 
   const allSections: Array<{ state: AttentionState; sessions: SessionMeta[] }> = [
@@ -137,7 +137,7 @@ export function AgentSessionsPopover({ onOpenAgentMode }: AgentSessionsPopoverPr
             event.stopPropagation();
             menu.setIsOpen(!menu.isOpen);
           }}
-          aria-label={`${bubble.count} ${STATE_STYLES[bubble.color === 'orange' ? 'awaiting' : bubble.color === 'green' ? 'running' : 'unread'].label.toLowerCase()} session${bubble.count === 1 ? '' : 's'}`}
+          aria-label={`${bubble.count} ${STATE_STYLES[bubble.color === 'orange' ? 'awaiting' : bubble.color === 'blue' ? 'running' : 'unread'].label.toLowerCase()} session${bubble.count === 1 ? '' : 's'}`}
           aria-expanded={menu.isOpen}
           aria-haspopup="menu"
           data-state={bubble.color}

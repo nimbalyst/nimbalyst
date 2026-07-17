@@ -47,20 +47,20 @@ import {
   type KanbanCardType,
 } from '../../store/atoms/sessionKanban';
 import {
-  sessionProcessingAtom,
-  sessionHasPendingInteractivePromptAtom,
-  sessionUnreadAtom,
   updateSessionStoreAtom,
-  workstreamUnreadAtom,
   removeSessionFullAtom,
   sessionRegistryAtom,
   sessionListWorkspaceAtom,
+  sessionIndicatorStateAtom,
+  groupIndicatorStateAtom,
 } from '../../store/atoms/sessions';
 import { transcriptEventSignalAtom } from '../../store/atoms/sessionTranscript';
 import { SessionContextMenu } from '../AgenticCoding/SessionContextMenu';
 import { ArchiveWorktreeDialog } from '../AgentMode/ArchiveWorktreeDialog';
 import { useArchiveWorktreeDialog } from '../../hooks/useArchiveWorktreeDialog';
 import { useFloatingMenu, FloatingPortal, virtualElement } from '../../hooks/useFloatingMenu';
+import { GroupOperationalIndicator, SessionOperationalIndicator } from '../AgenticCoding/SessionOperationalIndicator';
+import type { SessionIndicatorState } from '@nimbalyst/runtime';
 
 // ============================================================
 // Keyboard Navigation Types
@@ -154,101 +154,20 @@ function CardTypeIcon({ type, provider }: { type: KanbanCardType; provider?: str
 // Card Visual State
 // ============================================================
 
-/** The visual state of a card, used for both background tint and status badge */
-type CardVisualState = 'running' | 'waiting' | 'unread' | 'idle';
-
-/** Background + border tints for each visual state */
-const CARD_STATE_STYLES: Record<CardVisualState, { bg: string; border: string }> = {
-  running:  { bg: 'rgba(96, 165, 250, 0.06)',  border: 'rgba(96, 165, 250, 0.25)' },
-  waiting:  { bg: 'rgba(249, 115, 22, 0.06)',  border: 'rgba(249, 115, 22, 0.25)' },
-  unread:   { bg: 'rgba(96, 165, 250, 0.04)',  border: 'rgba(96, 165, 250, 0.18)' },
-  idle:     { bg: 'transparent',                border: '' },
-};
-
-interface CardStateInfo {
-  state: CardVisualState;
-  badgeLabel: string | null;
-  badgeIcon: string | null;
-  badgeColor: string;
-  spinIcon: boolean;
-}
-
-function useCardState(sessionId: string, cardType: KanbanCardType): CardStateInfo {
-  const isProcessing = useAtomValue(sessionProcessingAtom(sessionId));
-  const hasPendingPrompt = useAtomValue(sessionHasPendingInteractivePromptAtom(sessionId));
-  const hasUnread = useAtomValue(sessionUnreadAtom(sessionId));
-  const childStates = useAtomValue(childRunStatesAtom(sessionId));
-  const hasChildUnread = useAtomValue(workstreamUnreadAtom(sessionId));
-
-  const isParent = cardType !== 'session';
-  const hasChildRunning = isParent && childStates.running > 0;
-  const hasChildWaiting = isParent && childStates.waiting > 0;
-
-  if (isProcessing || hasChildRunning) {
-    return {
-      state: 'running',
-      badgeLabel: hasChildRunning ? `${childStates.running} running` : 'running',
-      badgeIcon: 'progress_activity',
-      badgeColor: '#60a5fa',
-      spinIcon: true,
-    };
+function getCardStateStyle(kind: SessionIndicatorState['kind']): { bg: string; border: string } {
+  if (kind === 'working-self' || kind === 'working-child' || kind === 'queued') {
+    return { bg: 'rgba(59, 130, 246, 0.06)', border: 'rgba(59, 130, 246, 0.25)' };
   }
-  if (hasPendingPrompt || hasChildWaiting) {
-    return {
-      state: 'waiting',
-      badgeLabel: hasChildWaiting ? `${childStates.waiting} waiting` : 'needs input',
-      badgeIcon: 'help_outline',
-      badgeColor: '#f97316',
-      spinIcon: false,
-    };
+  if (kind === 'needs-input' || kind === 'wakeup-attention') {
+    return { bg: 'rgba(245, 158, 11, 0.06)', border: 'rgba(245, 158, 11, 0.25)' };
   }
-  if (hasUnread || (isParent && hasChildUnread)) {
-    return {
-      state: 'unread',
-      badgeLabel: null,
-      badgeIcon: null,
-      badgeColor: 'var(--nim-primary)',
-      spinIcon: false,
-    };
+  if (kind === 'error') {
+    return { bg: 'rgba(239, 68, 68, 0.05)', border: 'rgba(239, 68, 68, 0.25)' };
   }
-  return {
-    state: 'idle',
-    badgeLabel: null,
-    badgeIcon: null,
-    badgeColor: '',
-    spinIcon: false,
-  };
-}
-
-// ============================================================
-// Card Status Badge (renders inline badge from CardStateInfo)
-// ============================================================
-
-function CardStatusBadge({ info }: { info: CardStateInfo }) {
-  if (info.state === 'running') {
-    return (
-      <span className="flex items-center gap-0.5 text-[10px] px-1 py-px rounded bg-blue-400/10" style={{ color: info.badgeColor }}>
-        <span className={`material-symbols-outlined text-[12px] ${info.spinIcon ? 'animate-spin' : ''}`}>{info.badgeIcon}</span>
-        {info.badgeLabel}
-      </span>
-    );
+  if (kind === 'ready') {
+    return { bg: 'rgba(245, 158, 11, 0.04)', border: 'rgba(245, 158, 11, 0.18)' };
   }
-  if (info.state === 'waiting') {
-    return (
-      <span className="flex items-center gap-0.5 text-[10px] px-1 py-px rounded bg-orange-500/10" style={{ color: info.badgeColor }}>
-        <MaterialSymbol icon="help_outline" size={12} />
-        {info.badgeLabel}
-      </span>
-    );
-  }
-  if (info.state === 'unread') {
-    return (
-      <span className="flex items-center justify-center w-[8px] h-[8px] text-[var(--nim-primary)]" title="Unread response">
-        <MaterialSymbol icon="circle" size={8} fill />
-      </span>
-    );
-  }
-  return null;
+  return { bg: 'transparent', border: '' };
 }
 
 // ============================================================
@@ -435,8 +354,24 @@ interface SessionKanbanCardProps {
 
 function SessionKanbanCard({ session, onSelect, onArchive, onRename, phaseColor, isFocused, isSelected, selectedCount = 1, showPeekOverride, onPeekToggle }: SessionKanbanCardProps) {
   const cardType = useMemo(() => getCardType(session), [session]);
-  const cardState = useCardState(session.id, cardType);
-  const stateStyle = CARD_STATE_STYLES[cardState.state];
+  const registry = useAtomValue(sessionRegistryAtom);
+  const childIds = useMemo(
+    () => Array.from(registry.values())
+      .filter((candidate) => candidate.parentSessionId === session.id)
+      .map((candidate) => candidate.id)
+      .sort(),
+    [registry, session.id],
+  );
+  const groupKey = useMemo(
+    () => JSON.stringify({ parentId: session.id, childIds }),
+    [session.id, childIds],
+  );
+  const indicatorState = useAtomValue(
+    cardType === 'session'
+      ? sessionIndicatorStateAtom(session.id)
+      : groupIndicatorStateAtom(groupKey),
+  );
+  const stateStyle = getCardStateStyle(indicatorState.kind);
   const tags = session.tags || [];
   const cardRef = useRef<HTMLDivElement>(null);
   const [showPeekLocal, setShowPeekLocal] = useState(false);
@@ -576,7 +511,11 @@ function SessionKanbanCard({ session, onSelect, onArchive, onRename, phaseColor,
               </div>
             )}
           </div>
-          <CardStatusBadge info={cardState} />
+          {cardType === 'session' ? (
+            <SessionOperationalIndicator sessionId={session.id} variant="dropdown" />
+          ) : (
+            <GroupOperationalIndicator groupKey={groupKey} variant="dropdown" />
+          )}
         </div>
 
         {/* Child session count (workstream/worktree only) */}

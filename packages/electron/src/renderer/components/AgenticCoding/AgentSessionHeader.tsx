@@ -3,7 +3,6 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import { ProviderIcon, MaterialSymbol } from '@nimbalyst/runtime';
 import type { SessionData } from '@nimbalyst/runtime/ai/server/types';
 import {
-  sessionOrChildProcessingAtom,
   sessionEditorStateAtom,
   setSessionLayoutModeAtom,
   sessionHasTabsAtom,
@@ -13,6 +12,7 @@ import { worktreeDisplayNameUpdateAtom } from '../../store/atoms/worktrees';
 import { LayoutControls } from '../UnifiedAI/LayoutControls';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
 import type { ShareDialogData } from '../../dialogs';
+import { SessionOperationalIndicator } from './SessionOperationalIndicator';
 
 interface WorktreeMetadata {
   id: string;
@@ -40,10 +40,6 @@ export const AgentSessionHeader: React.FC<AgentSessionHeaderProps> = ({
 }) => {
   const sessionId = sessionData?.id ?? '';
   const worktreeId = sessionData?.worktreeId ?? '';
-
-  // Subscribe to processing atom - uses aggregated atom that includes child sessions
-  // This ensures the header shows processing when ANY child in a workstream is running
-  const isProcessing = useAtomValue(sessionOrChildProcessingAtom(sessionId));
 
   // Layout state for non-worktree sessions
   const sessionEditorState = useAtomValue(sessionEditorStateAtom(sessionId));
@@ -220,11 +216,7 @@ export const AgentSessionHeader: React.FC<AgentSessionHeaderProps> = ({
           </div>
         </div>
 
-        {isProcessing && (
-          <div className="agent-session-header-processing shrink-0 flex items-center justify-center">
-            <div className="agent-session-header-spinner w-4 h-4 border-2 border-[var(--nim-border)] border-t-[var(--nim-primary)] rounded-full animate-spin" />
-          </div>
-        )}
+        <SessionOperationalIndicator sessionId={sessionId} variant="standalone" />
 
         {/* Share button */}
         <button

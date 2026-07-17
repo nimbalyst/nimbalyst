@@ -1,9 +1,15 @@
 import React, { useState, useEffect, useRef, memo, useMemo, useCallback } from 'react';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
-import { groupSessionStatusAtom, sessionProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom } from '../../store';
+import { groupIndicatorStateAtom, sessionIndicatorStateAtom } from '../../store';
 import { SessionContextMenu } from './SessionContextMenu';
 import { SessionRelativeTime } from './SessionRelativeTime';
+import { getRelativeTimeString } from '../../utils/dateFormatting';
+import {
+  GroupOperationalIndicator,
+  SessionOperationalIndicator,
+  getSessionOperationalLabel,
+} from './SessionOperationalIndicator';
 
 import type { SessionMeta as SessionItem } from '../../store';
 
@@ -57,64 +63,11 @@ interface BlitzGroupProps {
  * Matches WorkstreamGroupStatusIndicator pattern.
  */
 const BlitzGroupStatus: React.FC<{ sessionIds: string[] }> = memo(({ sessionIds }) => {
-  const sessionIdsKey = useMemo(() => JSON.stringify([...sessionIds].sort()), [sessionIds]);
-  const { hasProcessing, hasPendingPrompt, hasUnread } = useAtomValue(groupSessionStatusAtom(sessionIdsKey));
-
-  if (hasProcessing) {
-    return (
-      <div className="flex items-center justify-center text-[var(--nim-primary)]" title="Processing">
-        <MaterialSymbol icon="progress_activity" size={12} className="animate-spin" />
-      </div>
-    );
-  }
-  if (hasPendingPrompt) {
-    return (
-      <div className="flex items-center justify-center text-[var(--nim-warning)] animate-pulse" title="Waiting for your response">
-        <MaterialSymbol icon="help" size={12} />
-      </div>
-    );
-  }
-  if (hasUnread) {
-    return (
-      <div className="flex items-center justify-center text-[var(--nim-primary)]" title="Unread response">
-        <MaterialSymbol icon="circle" size={6} fill />
-      </div>
-    );
-  }
-  return null;
-});
-
-/**
- * Individual session status indicator within the blitz group.
- * Matches WorkstreamSessionStatusIndicator pattern.
- */
-const BlitzSessionStatus: React.FC<{ sessionId: string }> = memo(({ sessionId }) => {
-  const isProcessing = useAtomValue(sessionProcessingAtom(sessionId));
-  const hasPendingPrompt = useAtomValue(sessionPendingPromptAtom(sessionId));
-  const hasUnread = useAtomValue(sessionUnreadAtom(sessionId));
-
-  if (isProcessing) {
-    return (
-      <div className="flex items-center justify-center text-[var(--nim-primary)] animate-spin" title="Processing...">
-        <MaterialSymbol icon="progress_activity" size={12} />
-      </div>
-    );
-  }
-  if (hasPendingPrompt) {
-    return (
-      <div className="flex items-center justify-center text-[var(--nim-warning)]" title="Waiting for your response">
-        <MaterialSymbol icon="help" size={12} />
-      </div>
-    );
-  }
-  if (hasUnread) {
-    return (
-      <div className="flex items-center justify-center text-[var(--nim-primary)]" title="Unread response">
-        <MaterialSymbol icon="circle" size={6} fill />
-      </div>
-    );
-  }
-  return null;
+  const groupKey = useMemo(
+    () => JSON.stringify({ parentId: null, childIds: [...sessionIds].sort() }),
+    [sessionIds],
+  );
+  return <GroupOperationalIndicator groupKey={groupKey} variant="group" />;
 });
 
 /**
@@ -134,7 +87,11 @@ const BlitzSessionRow: React.FC<{
   onRenameBlur: () => void;
   onSelect: (e: Pick<React.MouseEvent, 'metaKey' | 'ctrlKey' | 'shiftKey'>) => void;
   onContextMenu: (e: React.MouseEvent) => void;
-}> = memo(({ session, sessionTitle, isActive, isRenaming, isAnalysis, renameInputRef, renameValue, onRenameChange, onRenameKeyDown, onRenameBlur, onSelect, onContextMenu }) => (
+}> = memo(({ session, sessionTitle, isActive, isRenaming, isAnalysis, renameInputRef, renameValue, onRenameChange, onRenameKeyDown, onRenameBlur, onSelect, onContextMenu }) => {
+  const indicatorState = useAtomValue(sessionIndicatorStateAtom(session.id));
+  const operationalLabel = getSessionOperationalLabel(indicatorState);
+  const timestamp = session.updatedAt || session.createdAt;
+  return (
   <div
     className={`blitz-session-item flex items-center gap-2 py-1.5 px-3 mr-2 mb-0.5 cursor-pointer rounded transition-colors duration-150 select-none ${
       isActive ? 'bg-[var(--nim-bg-selected)]' : 'hover:bg-[var(--nim-bg-hover)]'
@@ -144,7 +101,7 @@ const BlitzSessionRow: React.FC<{
     role="button"
     tabIndex={0}
     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(e); } }}
-    aria-label={`Session: ${sessionTitle}`}
+    aria-label={`Session: ${sessionTitle}.${operationalLabel ? ` Status: ${operationalLabel}.` : ''} Updated ${getRelativeTimeString(timestamp)}.`}
     aria-current={isActive ? 'page' : undefined}
   >
     <div className={`shrink-0 flex items-center justify-center ${
@@ -184,10 +141,11 @@ const BlitzSessionRow: React.FC<{
       </>
     )}
     <div className="shrink-0 flex items-center">
-      <BlitzSessionStatus sessionId={session.id} />
+      <SessionOperationalIndicator sessionId={session.id} variant="child" />
     </div>
   </div>
-));
+  );
+});
 
 /**
  * BlitzGroup renders a collapsible group of worktrees created as part of a blitz.
@@ -222,6 +180,12 @@ export const BlitzGroup: React.FC<BlitzGroupProps> = memo(({
     () => worktrees.flatMap(w => w.sessions.map(s => s.id)),
     [worktrees]
   );
+  const allSessionsGroupKey = useMemo(
+    () => JSON.stringify({ parentId: null, childIds: [...allSessionIds].sort() }),
+    [allSessionIds],
+  );
+  const groupIndicatorState = useAtomValue(groupIndicatorStateAtom(allSessionsGroupKey));
+  const groupOperationalLabel = getSessionOperationalLabel(groupIndicatorState);
 
   const worktreeCount = worktrees.length;
 
@@ -509,7 +473,7 @@ export const BlitzGroup: React.FC<BlitzGroupProps> = memo(({
               handleHeaderClick(e as unknown as React.MouseEvent);
             }
           }}
-          aria-label={`Blitz: ${title}, ${worktreeCount} worktree${worktreeCount !== 1 ? 's' : ''}`}
+          aria-label={`Blitz: ${title}. ${worktreeCount} worktree${worktreeCount !== 1 ? 's' : ''}.${groupOperationalLabel ? ` Status: ${groupOperationalLabel}.` : ''}`}
         >
           {/* Lightning bolt icon */}
           <div className={`shrink-0 w-[1.125rem] h-[1.125rem] mt-[0.0625rem] flex items-center justify-center ${

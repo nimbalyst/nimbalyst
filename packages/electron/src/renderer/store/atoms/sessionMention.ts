@@ -12,6 +12,7 @@
 import React from 'react';
 import { atom } from 'jotai';
 import { ProviderIcon } from '@nimbalyst/runtime';
+import { getPhasePresentation } from '@nimbalyst/runtime';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 import type { TypeaheadOption } from '../../components/Typeahead/GenericTypeahead';
 import { sessionRegistryAtom } from './sessions';
@@ -68,18 +69,6 @@ const WORKTREE_ICON = React.createElement(
   React.createElement('path', { d: 'M11.5 5v5', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' })
 );
 
-/**
- * Phase styles matching SessionListItem.tsx so the typeahead is visually
- * consistent with the main session list.
- */
-const PHASE_STYLES: Record<string, { label: string; color: string; bg: string }> = {
-  backlog: { label: 'Backlog', color: 'var(--nim-text-faint)', bg: 'rgba(128,128,128,0.12)' },
-  planning: { label: 'Planning', color: 'var(--nim-primary)', bg: 'rgba(96,165,250,0.12)' },
-  implementing: { label: 'Implementing', color: 'var(--nim-warning)', bg: 'rgba(251,191,36,0.12)' },
-  validating: { label: 'Validating', color: '#a78bfa', bg: 'rgba(167,139,250,0.12)' },
-  complete: { label: 'Complete', color: 'var(--nim-success)', bg: 'rgba(74,222,128,0.12)' },
-};
-
 function buildDescription(updatedAt: number, phase?: string): React.ReactElement {
   const time = React.createElement(
     'span',
@@ -87,15 +76,15 @@ function buildDescription(updatedAt: number, phase?: string): React.ReactElement
     relativeTime(updatedAt)
   );
 
-  const style = phase ? PHASE_STYLES[phase] : undefined;
-  const badge = style
+  const pres = phase ? getPhasePresentation(phase) : null;
+  const badge = pres
     ? React.createElement(
         'span',
         {
           className: 'text-[0.5625rem] leading-tight px-1 py-px rounded font-medium whitespace-nowrap',
-          style: { color: style.color, backgroundColor: style.bg },
+          style: { color: `var(${pres.cssVar}, ${pres.color})`, backgroundColor: `color-mix(in srgb, ${pres.color} 12%, transparent)` },
         },
-        style.label
+        pres.label
       )
     : null;
 

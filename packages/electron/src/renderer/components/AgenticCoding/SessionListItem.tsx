@@ -2,95 +2,38 @@ import React, { useState, useCallback, useEffect, useRef, useMemo, memo } from '
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
-import { sessionOrChildProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom, sessionHasPendingInteractivePromptAtom, reparentSessionAtom, refreshSessionListAtom, sessionShareAtom, sessionWakeupAtom, sessionLastActivityAtom } from '../../store';
+import { reparentSessionAtom, refreshSessionListAtom, sessionShareAtom, sessionLastActivityAtom, sessionIndicatorStateAtom } from '../../store';
 import { convertToWorkstreamAtom } from '../../store/atoms/sessions';
 import { SessionContextMenu } from './SessionContextMenu';
+import { SessionOperationalIndicator, getSessionOperationalLabel } from './SessionOperationalIndicator';
+import { getPhasePresentation } from '@nimbalyst/runtime';
 
 /**
- * Combined status indicator that subscribes to this session's state atoms.
- * Shows waiting for input, processing, pending prompt, or unread status (in priority order).
- * Only this component re-renders when the session's state changes.
+ * Re-export: backward-compatible SessionStatusIndicator that delegates to
+ * the canonical SessionOperationalIndicator.
+ * @deprecated Use SessionOperationalIndicator directly.
  */
-export const SessionStatusIndicator = memo<{ sessionId: string; messageCount?: number }>(({ sessionId, messageCount }) => {
-  // Use aggregated atom that checks this session AND any children (for workstreams)
-  const hasPendingInteractivePrompt = useAtomValue(sessionHasPendingInteractivePromptAtom(sessionId));
-  const isProcessing = useAtomValue(sessionOrChildProcessingAtom(sessionId));
-  const hasPendingPrompt = useAtomValue(sessionPendingPromptAtom(sessionId));
-  const hasUnread = useAtomValue(sessionUnreadAtom(sessionId));
-  const wakeup = useAtomValue(sessionWakeupAtom(sessionId));
+export { SessionOperationalIndicator as SessionStatusIndicator };
 
-  // Priority: waiting for input > processing > pending prompt > scheduled wakeup > unread > message count
-  // All interactive prompts (AskUserQuestion, ExitPlanMode, ToolPermission, etc.) show same indicator
-  if (hasPendingInteractivePrompt) {
-    return (
-      <div className="session-list-item-status waiting-for-input flex items-center justify-center w-5 h-5 text-[var(--nim-warning)] animate-pulse" title="Waiting for your response">
-        <MaterialSymbol icon="contact_support" size={14} />
-      </div>
-    );
-  }
-
-  if (isProcessing) {
-    return (
-      <div className="session-list-item-status processing flex items-center justify-center w-5 h-5 text-[var(--nim-primary)] opacity-80" title="Processing...">
-        <MaterialSymbol icon="progress_activity" size={14} className="animate-spin" />
-      </div>
-    );
-  }
-
-  if (hasPendingPrompt) {
-    return (
-      <div className="session-list-item-status pending-prompt flex items-center justify-center w-5 h-5 text-[var(--nim-warning)] animate-pulse" title="Waiting for your response">
-        <MaterialSymbol icon="help" size={14} />
-      </div>
-    );
-  }
-
-  if (wakeup) {
-    const isOverdue = wakeup.status === 'overdue';
-    const colorClass = isOverdue ? 'text-[var(--nim-warning)]' : 'text-[var(--nim-primary)]';
-    const tooltip = isOverdue
-      ? `Overdue wakeup${wakeup.reason ? ` — ${wakeup.reason}` : ''}`
-      : `Scheduled wakeup at ${new Date(wakeup.fireAt).toLocaleString()}${wakeup.reason ? ` — ${wakeup.reason}` : ''}`;
-    return (
-      <div className={`session-list-item-status wakeup flex items-center justify-center w-5 h-5 ${colorClass} opacity-80`} title={tooltip}>
-        <MaterialSymbol icon="schedule" size={14} />
-      </div>
-    );
-  }
-
-  if (hasUnread) {
-    return (
-      <div className="session-list-item-status unread flex items-center justify-center w-5 h-5 text-[var(--nim-primary)]" title="Unread response">
-        <MaterialSymbol icon="circle" size={8} fill />
-      </div>
-    );
-  }
-
-  // if (messageCount !== undefined) {
-  //   return <span className="session-list-item-message-count">{messageCount}</span>;
-  // }
-
-  return null;
-});
-
-const PHASE_STYLES: Record<string, { label: string; color: string; bg: string }> = {
-  backlog: { label: 'Backlog', color: 'var(--nim-text-faint)', bg: 'rgba(128,128,128,0.12)' },
-  planning: { label: 'Planning', color: 'var(--nim-primary)', bg: 'rgba(96,165,250,0.12)' },
-  implementing: { label: 'Implementing', color: 'var(--nim-warning)', bg: 'rgba(251,191,36,0.12)' },
-  validating: { label: 'Validating', color: '#a78bfa', bg: 'rgba(167,139,250,0.12)' },
-  complete: { label: 'Complete', color: 'var(--nim-success)', bg: 'rgba(74,222,128,0.12)' },
-};
-
-const SessionPhaseBadge = memo<{ phase: string }>(({ phase }) => {
-  const style = PHASE_STYLES[phase];
-  if (!style) return null;
+/**
+ * Phase square marker — 7x7 px with ~1 px corner radius.
+ * Renders nothing for unknown/null phases (never silently means backlog).
+ */
+const PhaseSquare: React.FC<{ phase: string | undefined }> = memo(({ phase }) => {
+  const pres = phase ? getPhasePresentation(phase) : null;
+  if (!pres) return null;
   return (
     <span
-      className="session-list-item-phase text-[0.5625rem] leading-tight px-1 py-px rounded font-medium whitespace-nowrap"
-      style={{ color: style.color, backgroundColor: style.bg }}
-    >
-      {style.label}
-    </span>
+      className="session-list-item-phase-square shrink-0"
+      style={{
+        width: '7px',
+        height: '7px',
+        borderRadius: '1px',
+        backgroundColor: `var(${pres.cssVar}, ${pres.color})`,
+      }}
+      aria-label={`Phase: ${pres.label}`}
+      title={`Phase: ${pres.label}`}
+    />
   );
 });
 
@@ -183,10 +126,10 @@ export const SessionListItem = memo<SessionListItemProps>(({
   // Share state (for the share icon indicator in the list item)
   const shareInfo = useAtomValue(sessionShareAtom(id));
 
-  // Awaiting input state (interactive prompt or pending prompt)
-  const hasInteractivePrompt = useAtomValue(sessionHasPendingInteractivePromptAtom(id));
-  const hasPendingPromptAtom = useAtomValue(sessionPendingPromptAtom(id));
-  const isAwaitingInput = hasInteractivePrompt || hasPendingPromptAtom;
+  const indicatorState = useAtomValue(sessionIndicatorStateAtom(id));
+  const isAwaitingInput = indicatorState.kind === 'needs-input';
+  const operationalLabel = getSessionOperationalLabel(indicatorState);
+  const phasePresentation = getPhasePresentation(phase);
 
   // Determine if this session can be dragged
   // Can drag if: (1) Has a parent (is a child session), OR (2) Is an orphan (no parent, no children)
@@ -453,7 +396,7 @@ export const SessionListItem = memo<SessionListItemProps>(({
           onClick(e as unknown as React.MouseEvent);
         }
       }}
-      aria-label={`Session: ${displayTitle}, ${timestampLabel} ${relativeTime}${isLoaded ? ' (loaded in tab)' : ''}${isArchived ? ' (archived)' : ''}`}
+      aria-label={`Session: ${displayTitle}. ${phasePresentation ? `Phase: ${phasePresentation.label}. ` : ''}${operationalLabel ? `Status: ${operationalLabel}. ` : ''}${timestampLabel === 'updated' ? 'Updated' : 'Created'} ${relativeTime}.${isLoaded ? ' Loaded in tab.' : ''}${isArchived ? ' Archived.' : ''}`}
       aria-current={isActive ? 'page' : undefined}
     >
       <div className={`session-list-item-icon shrink-0 mt-0.5 text-[var(--nim-text-muted)] flex items-center relative ${isActive ? '[&]:text-[var(--nim-primary)] [&_svg]:text-[var(--nim-primary)]' : '[&_svg]:text-[var(--nim-text-muted)]'} ${isWorkstream ? 'workstream-icon' : ''} ${isWorktreeSession ? 'worktree-icon' : ''}`}>
@@ -512,11 +455,13 @@ export const SessionListItem = memo<SessionListItemProps>(({
           />
         ) : (
           <>
-            <div title={displayTitle} className={`session-list-item-title text-[0.8125rem] text-[var(--nim-text)] font-medium overflow-hidden text-ellipsis whitespace-nowrap mb-0.5 transition-colors duration-150 ${isActive ? 'font-semibold' : ''} ${isArchived ? 'text-[var(--nim-text-faint)]' : ''}`}>{truncatedTitle}</div>
+            <div className="session-list-item-title-row flex items-center gap-1.5 min-w-0 mb-0.5">
+              <div title={displayTitle} className={`session-list-item-title flex-1 min-w-0 text-[0.8125rem] text-[var(--nim-text)] font-medium overflow-hidden text-ellipsis whitespace-nowrap transition-colors duration-150 ${isActive ? 'font-semibold' : ''} ${isArchived ? 'text-[var(--nim-text-faint)]' : ''}`}>{truncatedTitle}</div>
+              <PhaseSquare phase={phase} />
+            </div>
             <div className="session-list-item-meta flex gap-1.5 text-[0.6875rem] text-[var(--nim-text-faint)] items-center mt-0.5">
               <span className="session-list-item-datetime text-[0.6875rem] text-[var(--nim-text-faint)] whitespace-nowrap transition-colors duration-150" title={fullDateTime}>{relativeTime}</span>
               {displayModel && <span className="session-list-item-model overflow-hidden text-ellipsis whitespace-nowrap">{displayModel}</span>}
-              {phase && <SessionPhaseBadge phase={phase} />}
             </div>
           </>
         )}
@@ -527,7 +472,7 @@ export const SessionListItem = memo<SessionListItemProps>(({
             {uncommittedCount}
           </span>
         )}
-        <SessionStatusIndicator sessionId={id} messageCount={messageCount} />
+        <SessionOperationalIndicator sessionId={id} />
         {/*{(onArchive || onUnarchive) && (*/}
         {/*  <button*/}
         {/*    className={`session-list-item-archive shrink-0 flex items-center justify-center w-5 h-5 p-0 bg-transparent border-none rounded text-[var(--nim-text-faint)] cursor-pointer transition-all duration-150 focus:outline-2 focus:outline-[var(--nim-border-focus)] focus:outline-offset-1*/}

@@ -11,11 +11,14 @@
 
 import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
-import type { SessionMeta } from '@nimbalyst/runtime';
+import {
+  SESSION_PHASE_COLUMNS as CANONICAL_SESSION_PHASE_COLUMNS,
+  type SessionMeta,
+  type SessionPhase,
+} from '@nimbalyst/runtime';
 import {
   sessionRegistryAtom,
-  sessionProcessingAtom,
-  sessionHasPendingInteractivePromptAtom,
+  sessionIndicatorStateAtom,
 } from './sessions';
 
 // ============================================================
@@ -23,7 +26,7 @@ import {
 // ============================================================
 
 /** Phase columns on the kanban board */
-export type SessionPhase = 'backlog' | 'planning' | 'implementing' | 'validating' | 'complete';
+export type { SessionPhase } from '@nimbalyst/runtime';
 
 /** Card type determines visual treatment and whether child run states are shown */
 export type KanbanCardType = 'session' | 'workstream' | 'worktree';
@@ -42,13 +45,8 @@ export interface ChildRunStateSummary {
 // Phase Column Definitions
 // ============================================================
 
-export const SESSION_PHASE_COLUMNS: { value: SessionPhase; label: string; color: string }[] = [
-  { value: 'backlog', label: 'Backlog', color: '#6b7280' },
-  { value: 'planning', label: 'Planning', color: '#60a5fa' },
-  { value: 'implementing', label: 'Implementing', color: '#eab308' },
-  { value: 'validating', label: 'Validating', color: '#a78bfa' },
-  { value: 'complete', label: 'Complete', color: '#4ade80' },
-];
+export const SESSION_PHASE_COLUMNS: { value: SessionPhase; label: string; color: string }[] =
+  CANONICAL_SESSION_PHASE_COLUMNS.map(({ value, label, color }) => ({ value, label, color }));
 
 const VALID_PHASES = new Set<string>(SESSION_PHASE_COLUMNS.map(c => c.value));
 
@@ -217,16 +215,22 @@ export const childRunStatesAtom = atomFamily((sessionId: string) =>
       if (meta.parentSessionId !== sessionId) continue;
       summary.total++;
 
-      const isProcessing = get(sessionProcessingAtom(meta.id));
-      const hasPendingPrompt = get(sessionHasPendingInteractivePromptAtom(meta.id));
+      const indicator = get(sessionIndicatorStateAtom(meta.id));
 
-      if (isProcessing) {
+      if (
+        indicator.kind === 'working-self'
+        || indicator.kind === 'working-child'
+        || indicator.kind === 'queued'
+      ) {
         summary.running++;
-      } else if (hasPendingPrompt) {
+      } else if (
+        indicator.kind === 'needs-input'
+        || indicator.kind === 'wakeup-attention'
+      ) {
         summary.waiting++;
       } else if (meta.isArchived) {
         summary.done++;
-      } else if (meta.uncommittedCount > 0) {
+      } else if (indicator.kind === 'error' || indicator.kind === 'ready' || meta.uncommittedCount > 0) {
         summary.review++;
       } else {
         summary.idle++;

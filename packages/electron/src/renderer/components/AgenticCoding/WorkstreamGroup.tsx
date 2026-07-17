@@ -1,24 +1,28 @@
 import React, { useState, useCallback, useEffect, useRef, memo, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol, ProviderIcon, copyToClipboard } from '@nimbalyst/runtime';
+import { getRelativeTimeCompact, getRelativeTimeString } from '../../utils/dateFormatting';
+import { getPhasePresentation } from '@nimbalyst/runtime';
 import {
-  sessionProcessingAtom,
-  sessionUnreadAtom,
-  sessionPendingPromptAtom,
-  sessionHasPendingInteractivePromptAtom,
-  groupSessionStatusAtom,
   reparentSessionAtom,
   refreshSessionListAtom,
   sessionShareAtom,
   removeSessionShareAtom,
   shareKeysAtom,
   buildShareUrl,
+  groupIndicatorStateAtom,
+  sessionIndicatorStateAtom,
+  sessionLastActivityAtom,
 } from '../../store';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
 import type { ShareDialogData } from '../../dialogs';
 import { SessionContextMenu } from './SessionContextMenu';
-import { SessionRelativeTime } from './SessionRelativeTime';
+import {
+  SessionOperationalIndicator,
+  GroupOperationalIndicator,
+  getSessionOperationalLabel,
+} from './SessionOperationalIndicator';
 
 /**
  * Unified component for rendering expandable session groups in the session history.
@@ -27,50 +31,12 @@ import { SessionRelativeTime } from './SessionRelativeTime';
 
 /**
  * Status indicator for workstream/worktree group headers.
- * Shows processing/pending/unread status aggregated across all child sessions.
- * Displays when the tree is collapsed so users can see status at a glance.
+ * Delegates to GroupOperationalIndicator with the canonical resolver.
  */
-const WorkstreamGroupStatusIndicator: React.FC<{ sessionIds: string[] }> = memo(({ sessionIds }) => {
-  // Create a stable key for the atom family by sorting and serializing session IDs
-  const sessionIdsKey = useMemo(() => JSON.stringify([...sessionIds].sort()), [sessionIds]);
-
-  // Subscribe to the aggregated status atom - this properly reacts to state changes
-  const { hasPendingInteractivePrompt, hasProcessing, hasPendingPrompt, hasUnread } = useAtomValue(groupSessionStatusAtom(sessionIdsKey));
-
-  // Priority: interactive prompt > processing > pending prompt > unread
-  if (hasPendingInteractivePrompt) {
-    return (
-      <div className="workstream-group-status-indicator waiting-for-input flex items-center justify-center text-[var(--nim-warning)] animate-pulse" title="Waiting for your response">
-        <MaterialSymbol icon="contact_support" size={12} />
-      </div>
-    );
-  }
-
-  if (hasProcessing) {
-    return (
-      <div className="workstream-group-status-indicator processing flex items-center justify-center text-[var(--nim-primary)]" title="Processing">
-        <MaterialSymbol icon="progress_activity" size={12} className="animate-spin" />
-      </div>
-    );
-  }
-
-  if (hasPendingPrompt) {
-    return (
-      <div className="workstream-group-status-indicator pending flex items-center justify-center text-[var(--nim-warning)] animate-pulse" title="Waiting for your response">
-        <MaterialSymbol icon="help" size={12} />
-      </div>
-    );
-  }
-
-  if (hasUnread) {
-    return (
-      <div className="workstream-group-status-indicator unread flex items-center justify-center text-[var(--nim-primary)]" title="Unread response">
-        <MaterialSymbol icon="circle" size={6} fill />
-      </div>
-    );
-  }
-
-  return null;
+const WorkstreamGroupStatusIndicator: React.FC<{ groupKey: string }> = memo(({ groupKey }) => {
+  return (
+    <GroupOperationalIndicator groupKey={groupKey} variant="group" />
+  );
 });
 
 import type { SessionMeta as SessionItem } from '../../store';
@@ -557,6 +523,15 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
   const displayIsPinned = type === 'worktree' ? worktree?.isPinned : isPinned;
   const displayIsArchived = type === 'worktree' ? worktree?.isArchived : isArchived;
   const sessionCount = sessions.length || childCount || 0;
+  const groupKey = useMemo(
+    () => JSON.stringify({
+      parentId: type === 'workstream' ? id : null,
+      childIds: sessions.map((session) => session.id).sort(),
+    }),
+    [id, sessions, type],
+  );
+  const groupIndicatorState = useAtomValue(groupIndicatorStateAtom(groupKey));
+  const groupOperationalLabel = getSessionOperationalLabel(groupIndicatorState);
 
   return (
     <div
@@ -600,7 +575,7 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
               onSelect();
             }
           }}
-          aria-label={`${type === 'worktree' ? 'Worktree' : 'Workstream'}: ${displayTitle}, ${sessionCount} session${sessionCount !== 1 ? 's' : ''}`}
+          aria-label={`${type === 'worktree' ? 'Worktree' : 'Workstream'}: ${displayTitle}. ${sessionCount} session${sessionCount !== 1 ? 's' : ''}.${groupOperationalLabel ? ` Status: ${groupOperationalLabel}.` : ''}`}
         >
           {/* Icon */}
           <div className={`workstream-group-icon shrink-0 w-[1.125rem] h-[1.125rem] mt-[0.0625rem] flex items-center justify-center ${
@@ -661,7 +636,7 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
               )}
               {/* Status indicator for child sessions (processing/pending/unread) */}
               {!isRenamingWorktree && (
-                <WorkstreamGroupStatusIndicator sessionIds={sessions.map(s => s.id)} />
+                <WorkstreamGroupStatusIndicator groupKey={groupKey} />
               )}
             </div>
             <div className="workstream-group-row-secondary flex items-center gap-1.5 flex-wrap">
@@ -973,60 +948,24 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
 };
 
 /**
- * Status indicator for workstream child sessions.
- * Subscribes to Jotai atoms for real-time processing/unread/pending state.
+ * Phase square for workstream child rows — 7x7 px, ~1 px corner radius.
  */
-const WorkstreamSessionStatusIndicator = memo<{ sessionId: string; uncommittedCount?: number }>(({ sessionId, uncommittedCount }) => {
-  const hasPendingInteractivePrompt = useAtomValue(sessionHasPendingInteractivePromptAtom(sessionId));
-  const isProcessing = useAtomValue(sessionProcessingAtom(sessionId));
-  const hasPendingPrompt = useAtomValue(sessionPendingPromptAtom(sessionId));
-  const hasUnread = useAtomValue(sessionUnreadAtom(sessionId));
-
-  // Priority: interactive prompt > processing > pending prompt > unread > uncommitted count
-  if (hasPendingInteractivePrompt) {
-    return (
-      <div className="workstream-session-item-status waiting-for-input flex items-center justify-center text-[var(--nim-warning)] animate-pulse" title="Waiting for your response">
-        <MaterialSymbol icon="contact_support" size={12} />
-      </div>
-    );
-  }
-
-  if (isProcessing) {
-    return (
-      <div className="workstream-session-item-status processing flex items-center justify-center text-[var(--nim-primary)] animate-spin" title="Processing...">
-        <MaterialSymbol icon="progress_activity" size={12} />
-      </div>
-    );
-  }
-
-  if (hasPendingPrompt) {
-    return (
-      <div className="workstream-session-item-status pending-prompt flex items-center justify-center text-[var(--nim-warning)]" title="Waiting for your response">
-        <MaterialSymbol icon="help" size={12} />
-      </div>
-    );
-  }
-
-  if (hasUnread) {
-    return (
-      <div className="workstream-session-item-status unread flex items-center justify-center text-[var(--nim-primary)]" title="Unread response">
-        <MaterialSymbol icon="circle" size={6} fill />
-      </div>
-    );
-  }
-
-  if (uncommittedCount && uncommittedCount > 0) {
-    return (
-      <span
-        className="workstream-session-item-badge uncommitted text-[0.625rem] py-[0.0625rem] px-1 rounded-lg font-medium text-[var(--nim-warning)] bg-[color-mix(in_srgb,var(--nim-warning)_15%,transparent)]"
-        title={`${uncommittedCount} uncommitted change${uncommittedCount !== 1 ? 's' : ''}`}
-      >
-        {uncommittedCount}
-      </span>
-    );
-  }
-
-  return null;
+const ChildPhaseSquare: React.FC<{ phase: string | undefined }> = memo(({ phase }) => {
+  const pres = phase ? getPhasePresentation(phase) : null;
+  if (!pres) return null;
+  return (
+    <span
+      className="workstream-session-item-phase-square shrink-0"
+      style={{
+        width: '7px',
+        height: '7px',
+        borderRadius: '1px',
+        backgroundColor: `var(${pres.cssVar}, ${pres.color})`,
+      }}
+      aria-label={`Phase: ${pres.label}`}
+      title={`Phase: ${pres.label}`}
+    />
+  );
 });
 
 // Child session item within a workstream group
@@ -1063,6 +1002,16 @@ const WorkstreamSessionItem: React.FC<WorkstreamSessionItemProps> = ({
   const shareInfo = useAtomValue(sessionShareAtom(session.id));
 
   const displayTitle = session.title || 'Untitled Session';
+  const phasePresentation = getPhasePresentation(session.phase);
+  const indicatorState = useAtomValue(sessionIndicatorStateAtom(session.id));
+  const operationalLabel = getSessionOperationalLabel(indicatorState);
+  const liveActivity = useAtomValue(sessionLastActivityAtom(session.id));
+  const timestamp = liveActivity > 0
+    ? liveActivity
+    : (session.updatedAt || session.createdAt);
+  const compactRelativeTime = getRelativeTimeCompact(timestamp);
+  const fullRelativeTime = getRelativeTimeString(timestamp);
+  const fullDateTime = new Date(timestamp).toLocaleString();
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1144,7 +1093,7 @@ const WorkstreamSessionItem: React.FC<WorkstreamSessionItemProps> = ({
           onClick(e);
         }
       }}
-      aria-label={`Session: ${displayTitle}`}
+      aria-label={`Session: ${displayTitle}. ${phasePresentation ? `Phase: ${phasePresentation.label}. ` : ''}${operationalLabel ? `Status: ${operationalLabel}. ` : ''}Updated ${fullRelativeTime}.`}
       aria-current={isActive ? 'page' : undefined}
     >
       <div className={`workstream-session-item-icon shrink-0 flex items-center justify-center ${
@@ -1178,13 +1127,26 @@ const WorkstreamSessionItem: React.FC<WorkstreamSessionItemProps> = ({
           <span className={`workstream-session-item-title flex-1 text-xs text-[var(--nim-text)] whitespace-nowrap overflow-hidden text-ellipsis ${
             isActive ? 'font-medium' : ''
           }`}>{displayTitle}</span>
-          <span className="workstream-session-item-timestamp shrink-0 text-[0.6875rem] text-[var(--nim-text-faint)] ml-2">
-            <SessionRelativeTime sessionId={session.id} fallbackTimestamp={session.updatedAt || session.createdAt} />
+          <ChildPhaseSquare phase={session.phase} />
+          <span
+            className="workstream-session-item-timestamp shrink-0 text-[0.6875rem] text-[var(--nim-text-faint)]"
+            title={fullDateTime}
+            aria-hidden="true"
+          >
+            {compactRelativeTime}
           </span>
         </>
       )}
       <div className="workstream-session-item-right flex items-center gap-1 shrink-0">
-        <WorkstreamSessionStatusIndicator sessionId={session.id} uncommittedCount={session.uncommittedCount} />
+        {session.uncommittedCount && session.uncommittedCount > 0 ? (
+          <span
+            className="workstream-session-item-badge uncommitted text-[0.625rem] py-[0.0625rem] px-1 rounded-lg font-medium text-[var(--nim-warning)] bg-[color-mix(in_srgb,var(--nim-warning)_15%,transparent)]"
+            title={`${session.uncommittedCount} uncommitted change${session.uncommittedCount !== 1 ? 's' : ''}`}
+          >
+            {session.uncommittedCount}
+          </span>
+        ) : null}
+        <SessionOperationalIndicator sessionId={session.id} variant="child" />
       </div>
 
       {/* Context Menu */}

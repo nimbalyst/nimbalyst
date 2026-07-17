@@ -57,6 +57,7 @@ import {
 import type { TranscriptEvent } from '@nimbalyst/runtime/ai/server/transcript/types';
 import { TranscriptStreamAccumulator } from './transcriptStreamAccumulator';
 import { resolveOwnedWorkspacePath } from '../../shared/sessionWorkspaceRouting';
+import { sessionErrorAtom } from './atoms/sessionTranscript';
 
 /**
  * Per-session accumulator of canonical events received via IPC.
@@ -196,11 +197,6 @@ export function initSessionStateListeners(): () => void {
     return () => {};
   }
 
-  // Debounced trigger for the processing-state reconcile (assigned once the
-  // reconcile function is defined below). Fired on terminal session events so a
-  // stuck spinner clears within ~1s instead of waiting for the slow interval.
-  let scheduleProcessingReconcile: (() => void) | undefined;
-
   // Wire reconciliation against multi-project rail state so subscriptions
   // include every warm project, not just the visible one.
   ensureMultiProjectSubscribers();
@@ -287,6 +283,7 @@ export function initSessionStateListeners(): () => void {
     if (isTerminalEvent) {
       store.set(sessionProcessingAtom(sessionId), false);
       store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+      store.set(sessionPendingPromptsAtom(sessionId), []);
       // Also clear the workspace-scoped streaming flag. The atom looks up
       // workspacePath from `sessionActivityIndexAtom` when not provided, so
       // cross-workspace rail activity for this session gets cleared even
@@ -298,10 +295,10 @@ export function initSessionStateListeners(): () => void {
       // A session reached a terminal state, so it left the backend's active set.
       // Re-derive the processing atoms against that authoritative set now (debounced
       // ~600ms) instead of waiting up to 15s for the interval. A meta-agent header
-      // reflects child processing too (sessionOrChildProcessingAtom), so when a
+      // includes child processing too, so when a
       // child finishes this clears the parent's spinner within ~1s rather than
       // leaving it stuck until the user clicks the child.
-      scheduleProcessingReconcile?.();
+      scheduleProcessingReconcile();
     }
 
     if (!ownedWorkspacePath) {
@@ -314,6 +311,9 @@ export function initSessionStateListeners(): () => void {
     switch (type) {
       // Session is actively running
       case 'session:started':
+        // A new turn is an explicit retry. Retire the previous turn's error;
+        // acknowledgment without retry remains owned by clearSessionError().
+        store.set(sessionErrorAtom(sessionId), null);
         store.set(sessionProcessingAtom(sessionId), true);
         store.set(markSessionStreamingAtom, { sessionId, workspacePath: resolvedWorkspacePath });
         store.set(markSessionTurnActivityAtom, {
@@ -506,6 +506,22 @@ export function initSessionStateListeners(): () => void {
         // Unknown event type - ignore
         break;
     }
+  };
+
+  const removePendingPromptIdentity = (sessionId: string, promptId?: string) => {
+    const current = store.get(sessionPendingPromptsAtom(sessionId));
+    const remaining = promptId
+      ? current.filter((prompt) => prompt.promptId !== promptId)
+      : [];
+    store.set(sessionPendingPromptsAtom(sessionId), remaining);
+    store.set(sessionHasPendingInteractivePromptAtom(sessionId), remaining.length > 0);
+  };
+
+  const upsertPendingPromptIdentity = (prompt: PendingPrompt) => {
+    const current = store.get(sessionPendingPromptsAtom(prompt.sessionId));
+    const withoutDuplicate = current.filter((entry) => entry.promptId !== prompt.promptId);
+    store.set(sessionPendingPromptsAtom(prompt.sessionId), [...withoutDuplicate, prompt]);
+    store.set(sessionHasPendingInteractivePromptAtom(prompt.sessionId), true);
   };
 
   /**
@@ -722,8 +738,6 @@ export function initSessionStateListeners(): () => void {
   const handleAskUserQuestion = (data: { sessionId: string; questionId: string; questions?: any[] }) => {
     const { sessionId, questionId } = data;
     if (!sessionId) return;
-    store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
-
     // Push prompt data directly into the prompts atom so voice mode
     // can read it immediately. The DB may not have persisted it yet.
     const prompt: PendingPrompt = {
@@ -734,8 +748,7 @@ export function initSessionStateListeners(): () => void {
       data: { type: 'ask_user_question_request', questionId, questions: data.questions || [] },
       createdAt: Date.now(),
     };
-    const current = store.get(sessionPendingPromptsAtom(sessionId));
-    store.set(sessionPendingPromptsAtom(sessionId), [...current, prompt]);
+    upsertPendingPromptIdentity(prompt);
   };
 
   /**
@@ -745,14 +758,7 @@ export function initSessionStateListeners(): () => void {
   const handleAskUserQuestionResolved = (data: { sessionId: string; questionId?: string }) => {
     const { sessionId } = data;
     if (!sessionId) return;
-    store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
-    // Remove the resolved prompt from the array
-    if (data.questionId) {
-      const current = store.get(sessionPendingPromptsAtom(sessionId));
-      store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== data.questionId));
-    } else {
-      store.set(sessionPendingPromptsAtom(sessionId), []);
-    }
+    removePendingPromptIdentity(sessionId, data.questionId);
   };
 
   /**
@@ -762,7 +768,6 @@ export function initSessionStateListeners(): () => void {
   const handleExitPlanModeConfirm = (data: { sessionId: string; requestId: string }) => {
     const { sessionId, requestId } = data;
     if (!sessionId) return;
-    store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
     const prompt: PendingPrompt = {
       id: requestId,
       sessionId,
@@ -771,8 +776,7 @@ export function initSessionStateListeners(): () => void {
       data: { type: 'exit_plan_mode_request', requestId },
       createdAt: Date.now(),
     };
-    const current = store.get(sessionPendingPromptsAtom(sessionId));
-    store.set(sessionPendingPromptsAtom(sessionId), [...current, prompt]);
+    upsertPendingPromptIdentity(prompt);
   };
 
   /**
@@ -782,13 +786,7 @@ export function initSessionStateListeners(): () => void {
   const handleExitPlanModeResolved = (data: { sessionId: string; approved?: boolean; requestId?: string }) => {
     const { sessionId, approved } = data;
     if (!sessionId) return;
-    store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
-    if (data.requestId) {
-      const current = store.get(sessionPendingPromptsAtom(sessionId));
-      store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== data.requestId));
-    } else {
-      store.set(sessionPendingPromptsAtom(sessionId), []);
-    }
+    removePendingPromptIdentity(sessionId, data.requestId);
 
     // If approved, update the session mode atom to 'agent' to sync with database
     if (approved) {
@@ -806,7 +804,6 @@ export function initSessionStateListeners(): () => void {
   const handleToolPermission = (data: { sessionId: string; requestId: string; toolName?: string; description?: string }) => {
     const { sessionId, requestId } = data;
     if (!sessionId) return;
-    store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
     const prompt: PendingPrompt = {
       id: requestId,
       sessionId,
@@ -815,8 +812,7 @@ export function initSessionStateListeners(): () => void {
       data: { type: 'permission_request', requestId, toolName: data.toolName, description: data.description },
       createdAt: Date.now(),
     };
-    const current = store.get(sessionPendingPromptsAtom(sessionId));
-    store.set(sessionPendingPromptsAtom(sessionId), [...current, prompt]);
+    upsertPendingPromptIdentity(prompt);
   };
 
   /**
@@ -826,9 +822,7 @@ export function initSessionStateListeners(): () => void {
   const handleToolPermissionResolved = (data: { sessionId: string; requestId: string }) => {
     const { sessionId, requestId } = data;
     if (!sessionId) return;
-    store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
-    const current = store.get(sessionPendingPromptsAtom(sessionId));
-    store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== requestId));
+    removePendingPromptIdentity(sessionId, requestId);
   };
 
   /**
@@ -844,7 +838,6 @@ export function initSessionStateListeners(): () => void {
   }) => {
     const { sessionId, proposalId } = data;
     if (!sessionId) return;
-    store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
     const prompt: PendingPrompt = {
       id: proposalId,
       sessionId,
@@ -859,8 +852,7 @@ export function initSessionStateListeners(): () => void {
       },
       createdAt: Date.now(),
     };
-    const current = store.get(sessionPendingPromptsAtom(sessionId));
-    store.set(sessionPendingPromptsAtom(sessionId), [...current, prompt]);
+    upsertPendingPromptIdentity(prompt);
   };
 
   /**
@@ -870,9 +862,7 @@ export function initSessionStateListeners(): () => void {
   const handleGitCommitProposalResolved = (data: { sessionId: string; proposalId: string }) => {
     const { sessionId, proposalId } = data;
     if (!sessionId) return;
-    store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
-    const current = store.get(sessionPendingPromptsAtom(sessionId));
-    store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== proposalId));
+    removePendingPromptIdentity(sessionId, proposalId);
   };
 
   /**
@@ -884,7 +874,6 @@ export function initSessionStateListeners(): () => void {
   const handleRequestUserInput = (data: { sessionId: string; promptId: string; args: any }) => {
     const { sessionId, promptId, args } = data;
     if (!sessionId || !promptId) return;
-    store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
     const prompt: PendingPrompt = {
       id: promptId,
       sessionId,
@@ -893,8 +882,7 @@ export function initSessionStateListeners(): () => void {
       data: { type: 'request_user_input_request', promptId, args },
       createdAt: Date.now(),
     };
-    const current = store.get(sessionPendingPromptsAtom(sessionId));
-    store.set(sessionPendingPromptsAtom(sessionId), [...current, prompt]);
+    upsertPendingPromptIdentity(prompt);
   };
 
   /**
@@ -904,9 +892,7 @@ export function initSessionStateListeners(): () => void {
   const handleRequestUserInputResolved = (data: { sessionId: string; promptId: string }) => {
     const { sessionId, promptId } = data;
     if (!sessionId) return;
-    store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
-    const current = store.get(sessionPendingPromptsAtom(sessionId));
-    store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== promptId));
+    removePendingPromptIdentity(sessionId, promptId);
   };
 
   /**
@@ -1021,7 +1007,7 @@ export function initSessionStateListeners(): () => void {
   //
   // Runs once on init, on a slow interval, AND - debounced - on every terminal
   // session event (via scheduleProcessingReconcile), so a parent meta-agent header
-  // (which reflects child processing through sessionOrChildProcessingAtom) clears
+  // (which reflects child processing through the canonical indicator inputs) clears
   // within ~1s when a child finishes instead of staying stuck until the user clicks
   // the child.
   const reconcileProcessingState = async () => {
@@ -1035,7 +1021,7 @@ export function initSessionStateListeners(): () => void {
         store.set(sessionProcessingAtom(sessionId), true);
       }
       // Heal strays across the SAME superset the meta-agent header aggregates
-      // over (sessionOrChildProcessingAtom = self OR any child). The header reads
+      // over the parent plus its child-processing inputs. The header reads
       // children from sessionChildrenAtom too, and a meta-agent child can sit in
       // sessionChildrenAtom while NOT being a sessionRegistryAtom key (child-added
       // patches the former; archived / worktree-archived children are dropped from
@@ -1072,7 +1058,7 @@ export function initSessionStateListeners(): () => void {
   // the terminal-event branch of handleStateChange. Coalesces a burst of
   // completions (several children finishing) into one re-sync.
   let reconcileDebounceTimer: ReturnType<typeof setTimeout> | undefined;
-  scheduleProcessingReconcile = () => {
+  const scheduleProcessingReconcile = () => {
     if (reconcileDebounceTimer) clearTimeout(reconcileDebounceTimer);
     reconcileDebounceTimer = setTimeout(() => void reconcileProcessingState(), 600);
   };

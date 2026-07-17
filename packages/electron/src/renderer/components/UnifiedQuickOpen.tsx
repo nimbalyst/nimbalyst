@@ -24,11 +24,7 @@ import { MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
 import { getFileName, getRelativeDir } from '../utils/pathUtils';
 import { getRelativeTimeString } from '../utils/dateFormatting';
 import { revealFolderAtom } from '../store';
-import {
-  sessionOrChildProcessingAtom,
-  sessionUnreadAtom,
-  sessionPendingPromptAtom,
-} from '../store';
+import { SessionOperationalIndicator } from './AgenticCoding/SessionOperationalIndicator';
 import { fileMentionOptionsAtom, searchFileMentionAtom } from '../store/atoms/fileMention';
 import { setWindowModeAtom } from '../store/atoms/windowMode';
 import { setTrackerModeLayoutAtom } from '../store/atoms/trackers';
@@ -1523,35 +1519,6 @@ const InFilesPane: React.FC<InFilesPaneProps> = memo(({
 // SessionsPane
 // =============================================================================
 
-const SessionStatusIndicator = memo<{ sessionId: string }>(({ sessionId }) => {
-  const isProcessing = useAtomValue(sessionOrChildProcessingAtom(sessionId));
-  const hasPendingPrompt = useAtomValue(sessionPendingPromptAtom(sessionId));
-  const hasUnread = useAtomValue(sessionUnreadAtom(sessionId));
-
-  if (isProcessing) {
-    return (
-      <div className="flex items-center justify-center w-5 h-5 text-[var(--nim-primary)] opacity-80" title="Processing...">
-        <MaterialSymbol icon="progress_activity" size={14} className="animate-spin" />
-      </div>
-    );
-  }
-  if (hasPendingPrompt) {
-    return (
-      <div className="flex items-center justify-center w-5 h-5 text-[var(--nim-warning)] animate-pulse" title="Waiting for your response">
-        <MaterialSymbol icon="help" size={14} />
-      </div>
-    );
-  }
-  if (hasUnread) {
-    return (
-      <div className="flex items-center justify-center w-5 h-5 text-[var(--nim-primary)]" title="Unread response">
-        <MaterialSymbol icon="circle" size={8} fill />
-      </div>
-    );
-  }
-  return null;
-});
-
 interface SessionsPaneProps {
   isOpen: boolean;
   isActive: boolean;
@@ -1955,7 +1922,7 @@ const SessionsPane: React.FC<SessionsPaneProps> = memo(({
                       {session.uncommittedCount}
                     </span>
                   )}
-                  <SessionStatusIndicator sessionId={session.id} />
+                  <SessionOperationalIndicator sessionId={session.id} variant="dropdown" />
                 </div>
               </li>
             ))}

@@ -63,7 +63,7 @@ describe('agentBubbleStateAtom', () => {
     store.set(sessionProcessingAtom('running-2'), true);
     store.set(sessionUnreadAtom('unread'), true);
 
-    expect(store.get(agentBubbleStateAtom)).toEqual({ color: 'green', count: 2 });
+    expect(store.get(agentBubbleStateAtom)).toEqual({ color: 'blue', count: 2 });
   });
 
   it('shows the unread count when no higher-priority state exists', () => {
@@ -71,7 +71,7 @@ describe('agentBubbleStateAtom', () => {
     store.set(sessionUnreadAtom('unread-1'), true);
     store.set(sessionUnreadAtom('unread-2'), true);
 
-    expect(store.get(agentBubbleStateAtom)).toEqual({ color: 'blue', count: 2 });
+    expect(store.get(agentBubbleStateAtom)).toEqual({ color: 'yellow', count: 2 });
   });
 });
 
@@ -88,7 +88,7 @@ describe('agentSessionAttentionAtom', () => {
     expect(groups.unread).toEqual([]);
   });
 
-  it('ignores completed, archived, and other-workspace sessions', () => {
+  it('keeps runtime attention visible in complete phase but ignores archived and other-workspace sessions', () => {
     const store = setup(
       session('current'),
       session('completed', { phase: 'complete' }),
@@ -101,6 +101,6 @@ describe('agentSessionAttentionAtom', () => {
     store.set(sessionUnreadAtom('other-workspace'), true);
 
     expect(store.get(agentSessionAttentionAtom).unread.map((item) => item.id)).toEqual(['current']);
-    expect(store.get(agentSessionAttentionAtom).awaitingInput).toEqual([]);
+    expect(store.get(agentSessionAttentionAtom).awaitingInput.map((item) => item.id)).toEqual(['completed']);
   });
 });

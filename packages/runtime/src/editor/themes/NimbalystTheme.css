@@ -63,6 +63,18 @@
   --nim-info: #3b82f6;
   --nim-purple: #7c3aed;
 
+  /* Workflow phase presentation (not runtime status). */
+  --nim-session-phase-backlog: #6b7280;
+  --nim-session-phase-planning: #60a5fa;
+  --nim-session-phase-implementing: #eab308;
+  --nim-session-phase-validating: #a78bfa;
+  --nim-session-phase-complete: #4ade80;
+
+  /* Current session operation/attention, kept separate from brand and phase. */
+  --nim-session-status-working: #3b82f6;
+  --nim-session-status-attention: color-mix(in srgb, var(--nim-warning) 65%, var(--nim-text));
+  --nim-session-status-scheduled: #64748b;
+
   /* Code blocks */
   --nim-code-bg: rgb(240, 242, 245);
   --nim-code-text: #111827;
@@ -113,4 +125,20 @@
   --nim-file-edited: #4a7ab8;
   --nim-file-deleted: #b85c5c;
   --nim-file-committed: var(--nim-text-muted);
+}
+
+/* Canonical phase fills stay exact; a theme-adaptive edge supplies the required
+   non-text contrast when a light phase color sits on a light row. */
+.session-list-item-phase-square,
+.workstream-session-item-phase-square {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--nim-text) 55%, transparent);
+}
+
+@media (forced-colors: active) {
+  /* Preserve the essential phase marker when system colors replace its fill. */
+  .session-list-item-phase-square,
+  .workstream-session-item-phase-square {
+    background-color: CanvasText !important;
+    box-shadow: none;
+  }
 }
