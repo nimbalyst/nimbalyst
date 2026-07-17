@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Claude Agent sessions now expose an `Extended: On` / `Extended: Off` selector next to the effort selector for supported Opus/Sonnet variants, letting you turn off extended thinking per session to reduce latency and token use. Extended thinking stays on by default.
 - Star tracker items and filter the list by Favorites, Recently Viewed, and Edited by Others.
 - Launch an isolated worktree session directly from a tracker item.
 - Text and code files such as TypeScript, HTML, Swift, and Python can now be shared and co-edited with live cursors.

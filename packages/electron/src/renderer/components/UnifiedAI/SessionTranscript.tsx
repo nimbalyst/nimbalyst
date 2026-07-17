@@ -60,6 +60,7 @@ import {
   sessionWorktreePathAtom,
   sessionDocumentContextAtom,
   sessionEffortLevelRawAtom,
+  sessionThinkingModeRawAtom,
   sessionLoadingAtom,
   sessionModeAtom,
   sessionModelAtom,
@@ -105,7 +106,7 @@ import {
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
 import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom } from '../../store/atoms/appSettings';
-import { supportsEffortLevel, parseEffortLevel, type EffortLevel } from '../../utils/modelUtils';
+import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, parseThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
@@ -466,6 +467,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionWorktreePath = useAtomValue(sessionWorktreePathAtom(sessionId));
   const sessionDocumentContext = useAtomValue(sessionDocumentContextAtom(sessionId));
   const rawEffortLevel = useAtomValue(sessionEffortLevelRawAtom(sessionId));
+  const rawThinkingMode = useAtomValue(sessionThinkingModeRawAtom(sessionId));
   const loadSessionData = useSetAtom(loadSessionDataAtom);
   const reloadSessionData = useSetAtom(reloadSessionDataAtom);
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
@@ -509,6 +511,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       metadata: {
         ...safeMetadata,
         effortLevel: rawEffortLevel ?? (safeMetadata as Record<string, unknown> | undefined)?.effortLevel ?? null,
+        thinkingMode: rawThinkingMode ?? (safeMetadata as Record<string, unknown> | undefined)?.thinkingMode ?? null,
         sessionStatus,
         currentTeammates: metadataTeammates,
         currentTodos,
@@ -524,6 +527,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     sessionDocumentContext,
     sessionWorktreePath,
     rawEffortLevel,
+    rawThinkingMode,
     sessionStatus,
     metadataTeammates,
     currentTodos,
@@ -534,6 +538,8 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const effortLevel = useMemo(() => {
     return rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel;
   }, [rawEffortLevel, defaultEffortLevel]);
+  const showThinkingToggle = useMemo(() => supportsThinkingToggle(currentModel), [currentModel]);
+  const thinkingMode = useMemo(() => parseThinkingMode(rawThinkingMode), [rawThinkingMode]);
 
   // Memoize the teammate list passed to AgentTranscriptPanel so its memo
   // comparison doesn't see a new array reference on every keystroke. Without
@@ -1549,6 +1555,16 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       previous_level: previousLevel,
     });
   }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog]);
+
+  const handleThinkingModeChange = useCallback(async (mode: ThinkingMode) => {
+    const previousMode = thinkingMode;
+    await updateSessionMetadataField(sessionId, 'thinkingMode', mode, null, updateSessionStore);
+    posthog?.capture('ai_thinking_mode_changed', {
+      thinking_mode: mode,
+      previous_mode: previousMode,
+      model: currentModel,
+    });
+  }, [sessionId, updateSessionStore, thinkingMode, currentModel, posthog]);
 
   const handleCommandSelect = useCallback((command: string) => {
     setDraftInput(command);
@@ -2600,6 +2616,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         effortLevel={effortLevel}
         onEffortLevelChange={handleEffortLevelChange}
         showEffortLevel={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showEffortLevel}
+        thinkingMode={thinkingMode}
+        onThinkingModeChange={handleThinkingModeChange}
+        showThinkingToggle={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showThinkingToggle}
         tokenUsage={tokenUsage}
         provider={provider}
         onQueue={handleQueue}
