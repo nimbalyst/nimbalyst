@@ -5,6 +5,7 @@ import { safeHandle } from '../utils/ipcRegistry';
 import { SessionManager } from '@nimbalyst/runtime/ai/server';
 import type { AIProviderType } from '@nimbalyst/runtime/ai/server/types';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
+import { EFFORT_LEVELS, type EffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
 import { AISessionsRepository, AgentMessagesRepository, SessionFilesRepository } from '@nimbalyst/runtime';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { getDefaultAIModel } from '../utils/store';
@@ -54,6 +55,8 @@ interface SessionResultData {
   /** Capability scope the child was granted (read|write|full). The objective
    *  record of what the child COULD do; null/full means all tools. */
   toolScope?: string | null;
+  /** Explicit per-child request. This is not a claim about effective effort. */
+  requestedEffortLevel?: EffortLevel;
 }
 
 interface CreateChildSessionArgs {
@@ -64,6 +67,51 @@ interface CreateChildSessionArgs {
   useWorktree?: boolean;
   worktreeId?: string;
   toolScope?: string;
+  effortLevel?: EffortLevel;
+}
+
+const CHILD_EFFORT_LEVELS: EffortLevel[] = EFFORT_LEVELS.map(({ key }) => key);
+const VALID_CHILD_EFFORT_LEVELS = new Set<string>(CHILD_EFFORT_LEVELS);
+
+function parseRequestedChildEffortLevel(value: unknown): EffortLevel | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string' || !VALID_CHILD_EFFORT_LEVELS.has(value)) {
+    throw new Error(
+      `Invalid effortLevel ${JSON.stringify(value)}. Expected one of: ${CHILD_EFFORT_LEVELS.join(', ')}`
+    );
+  }
+  return value as EffortLevel;
+}
+
+function assertRequestedChildEffortProvider(
+  requestedEffortLevel: EffortLevel | undefined,
+  provider: AIProviderType
+): void {
+  if (requestedEffortLevel && provider !== 'openai-codex') {
+    throw new Error(
+      `effortLevel is supported only for openai-codex child sessions; resolved provider was ${provider}`
+    );
+  }
+}
+
+function readRequestedChildEffortLevel(metadata: unknown): EffortLevel | undefined {
+  let parsedMetadata = metadata;
+  if (typeof parsedMetadata === 'string') {
+    try {
+      parsedMetadata = JSON.parse(parsedMetadata);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!parsedMetadata || typeof parsedMetadata !== 'object' || Array.isArray(parsedMetadata)) {
+    return undefined;
+  }
+  const value = (parsedMetadata as Record<string, unknown>).effortLevel;
+  return typeof value === 'string' && VALID_CHILD_EFFORT_LEVELS.has(value)
+    ? value as EffortLevel
+    : undefined;
 }
 
 function normalizeStoredChildModelIdentifier(
@@ -85,11 +133,71 @@ function normalizeStoredChildModelIdentifier(
   return model;
 }
 
+async function resolveChildSessionModelAndProvider(
+  parentSessionId: string,
+  args: Pick<CreateChildSessionArgs, 'provider' | 'model'>
+): Promise<{ provider: AIProviderType; normalizedModel: string }> {
+  // Inherit the calling session's provider+model as the primary fallback so a
+  // non-Claude parent (Gemini, OpenAI-Codex, LM Studio, etc.) spawning a child
+  // via the meta-agent tools without an explicit model does NOT silently land
+  // on the hardcoded Opus default and bill the user's Anthropic pool. Only fall
+  // through to getDefaultAIModel() / the last-resort default when the parent
+  // session cannot be loaded (orphan call) or carries no usable provider+model.
+  // An explicit args.provider/args.model still wins; that is what they are for.
+  let parentProvider: string | null = null;
+  let parentModel: string | null = null;
+  try {
+    const parentSession = await AISessionsRepository.get(parentSessionId);
+    if (parentSession) {
+      parentProvider = parentSession.provider ?? null;
+      parentModel = normalizeStoredChildModelIdentifier(parentProvider, parentSession.model ?? null);
+    }
+  } catch {
+    // Best-effort lookup; fall through to the hardcoded default below.
+  }
+
+  const defaultModel =
+    parentModel
+    || normalizeStoredChildModelIdentifier(null, getDefaultAIModel())
+    || 'claude-code:opus';
+  // For an explicit model, the model's own "provider:" prefix is
+  // authoritative (e.g. a claude-code parent launching an
+  // "openai-codex:gpt-5.5" action). Only fall back to the parent's provider
+  // for a bare, prefix-less variant; passing the parent provider for a
+  // self-describing identifier wrongly trips the claude-code mismatch guard.
+  const explicitModelProvider =
+    args.provider
+    ?? (args.model?.includes(':') ? ModelIdentifier.tryParse(args.model)?.provider ?? null : null)
+    ?? parentProvider;
+  const explicitModel = normalizeStoredChildModelIdentifier(explicitModelProvider, args.model ?? null);
+  const model = explicitModel || defaultModel;
+  const parsed = ModelIdentifier.tryParse(model);
+  const provider = (args.provider ||
+    parsed?.provider ||
+    parentProvider ||
+    'claude-code') as AIProviderType;
+  // Provider and model MUST agree. Otherwise a child is persisted with, e.g.,
+  // provider=claude-code + an antigravity-gemini model, gets routed to the
+  // Claude Code provider, is rejected ("requires a claude-code:* identifier"),
+  // and dies with no output. Only reuse the parent model when it actually
+  // belongs to the resolved provider; otherwise use that provider default.
+  const parentModelProvider = parentModel
+    ? (ModelIdentifier.tryParse(parentModel)?.provider ?? parentProvider)
+    : null;
+  const normalizedModel =
+    explicitModel
+    || (parentModel && parentModelProvider === provider ? parentModel : null)
+    || ModelIdentifier.getDefaultModelId(provider);
+
+  return { provider, normalizedModel };
+}
+
 interface SpawnSessionArgs {
   title?: string;
   prompt: string;
   useWorktree?: boolean;
   model?: string;
+  effortLevel?: EffortLevel;
   /**
    * When true and `model` is not explicitly set, the new session uses the
    * caller's model instead of the global app default. Ignored if `model` is
@@ -367,6 +475,7 @@ export class MetaAgentService {
     createdBySessionId: string;
     queuedInitialPrompt: boolean;
     parentSessionId: string | null;
+    requestedEffortLevel?: EffortLevel;
   }> {
     if (!this.aiService) {
       throw new Error('AI service not initialized');
@@ -391,57 +500,9 @@ export class MetaAgentService {
       );
     }
 
-    // Inherit the calling session's provider+model as the primary fallback so a
-    // non-Claude parent (Gemini, OpenAI-Codex, LM Studio, etc.) spawning a child
-    // via the meta-agent tools without an explicit model does NOT silently land
-    // on the hardcoded Opus default and bill the user's Anthropic pool. Only fall
-    // through to getDefaultAIModel() / the last-resort default when the parent
-    // session cannot be loaded (orphan call) or carries no usable provider+model.
-    // An explicit args.provider/args.model still wins; that is what they are for.
-    let parentProvider: string | null = null;
-    let parentModel: string | null = null;
-    try {
-      const parentSession = await AISessionsRepository.get(metaSessionId);
-      if (parentSession) {
-        parentProvider = parentSession.provider ?? null;
-        parentModel = normalizeStoredChildModelIdentifier(parentProvider, parentSession.model ?? null);
-      }
-    } catch {
-      // Best-effort lookup; fall through to the hardcoded default below.
-    }
-
-    const defaultModel =
-      parentModel
-      || normalizeStoredChildModelIdentifier(null, getDefaultAIModel())
-      || 'claude-code:opus';
-    // For an explicit model, the model's own "provider:" prefix is
-    // authoritative (e.g. a claude-code parent launching an
-    // "openai-codex:gpt-5.5" action). Only fall back to the parent's provider
-    // for a bare, prefix-less variant; passing the parent provider for a
-    // self-describing identifier wrongly trips the claude-code mismatch guard.
-    const explicitModelProvider =
-      args.provider
-      ?? (args.model?.includes(':') ? ModelIdentifier.tryParse(args.model)?.provider ?? null : null)
-      ?? parentProvider;
-    const explicitModel = normalizeStoredChildModelIdentifier(explicitModelProvider, args.model ?? null);
-    const model = explicitModel || defaultModel;
-    const parsed = ModelIdentifier.tryParse(model);
-    const provider = (args.provider ||
-      parsed?.provider ||
-      parentProvider ||
-      'claude-code') as AIProviderType;
-    // Provider and model MUST agree. Otherwise a child is persisted with, e.g.,
-    // provider=claude-code + an antigravity-gemini model, gets routed to the
-    // Claude Code provider, is rejected ("requires a claude-code:* identifier"),
-    // and dies with no output. Only reuse the parent model when it actually
-    // belongs to the resolved provider; otherwise use that provider default.
-    const parentModelProvider = parentModel
-      ? (ModelIdentifier.tryParse(parentModel)?.provider ?? parentProvider)
-      : null;
-    const normalizedModel =
-      explicitModel
-      || (parentModel && parentModelProvider === provider ? parentModel : null)
-      || ModelIdentifier.getDefaultModelId(provider);
+    const { provider, normalizedModel } = await resolveChildSessionModelAndProvider(metaSessionId, args);
+    const requestedEffortLevel = parseRequestedChildEffortLevel(args.effortLevel);
+    assertRequestedChildEffortProvider(requestedEffortLevel, provider);
 
     const callerProvidedTitle = !!args.title?.trim();
     const title = (args.title || this.deriveTitleFromPrompt(args.prompt) || 'Meta Task').trim();
@@ -580,8 +641,13 @@ export class MetaAgentService {
     // child physically cannot run_command, so it cannot build or claim to).
     const childToolScope =
       args.toolScope === 'read' || args.toolScope === 'write' ? args.toolScope : undefined;
-    if (childToolScope) {
-      await AISessionsRepository.updateMetadata(sessionId, { metadata: { toolScope: childToolScope } });
+    if (childToolScope || requestedEffortLevel) {
+      await AISessionsRepository.updateMetadata(sessionId, {
+        metadata: {
+          ...(childToolScope ? { toolScope: childToolScope } : {}),
+          ...(requestedEffortLevel ? { effortLevel: requestedEffortLevel } : {}),
+        },
+      });
     }
 
     const initialPrompt = args.prompt?.trim();
@@ -635,6 +701,7 @@ export class MetaAgentService {
       createdBySessionId: metaSessionId,
       queuedInitialPrompt: !!initialPrompt,
       parentSessionId: args.parentSessionIdOverride ?? null,
+      ...(requestedEffortLevel ? { requestedEffortLevel } : {}),
     };
   }
 
@@ -650,6 +717,19 @@ export class MetaAgentService {
     const parent = await AISessionsRepository.get(parentSessionId);
     if (!parent || parent.workspacePath !== workspaceId) {
       throw new Error(`Parent session ${parentSessionId} not found in this workspace`);
+    }
+
+    // Validate before resolveOrCreateWorkstream can create a grouping row or
+    // reparent the caller. createChildSessionInternal repeats the same checks as
+    // defense in depth for its other entry points.
+    const effectiveModel =
+      args.model ?? (args.inheritModel ? parent.model ?? undefined : undefined);
+    const requestedEffortLevel = parseRequestedChildEffortLevel(args.effortLevel);
+    if (requestedEffortLevel) {
+      const { provider } = await resolveChildSessionModelAndProvider(parentSessionId, {
+        model: effectiveModel,
+      });
+      assertRequestedChildEffortProvider(requestedEffortLevel, provider);
     }
 
     const isolated = args.isolated === true;
@@ -675,19 +755,13 @@ export class MetaAgentService {
     const inheritedWorktreeId =
       !args.useWorktree && parent.worktreeId ? parent.worktreeId : undefined;
 
-    // Resolve effective model: explicit `model` wins; otherwise `inheritModel`
-    // copies the caller's model so the new session keeps the same provider/model
-    // (e.g. opus stays on opus). Falling through to undefined lets
-    // createChildSessionInternal use the global default.
-    const effectiveModel =
-      args.model ?? (args.inheritModel ? parent.model ?? undefined : undefined);
-
     const childResult = await this.createChildSessionInternal(parentSessionId, workspaceId, {
       title: args.title,
       prompt: args.prompt,
       useWorktree: !!args.useWorktree,
       worktreeId: inheritedWorktreeId,
       model: effectiveModel,
+      effortLevel: args.effortLevel,
       parentSessionIdOverride: workstreamId,
     });
 
@@ -823,6 +897,10 @@ export class MetaAgentService {
       agentRole: row.agent_role || 'standard',
       waitingForInput: status === 'waiting_for_input',
     };
+    const requestedEffortLevel = readRequestedChildEffortLevel(row.metadata);
+    if (requestedEffortLevel) {
+      result.requestedEffortLevel = requestedEffortLevel;
+    }
 
     return JSON.stringify(result, null, 2);
   }
@@ -1185,6 +1263,7 @@ export class MetaAgentService {
     let sessionUpdatedAt: number;
     let sessionWorktreeId: string | null;
     let sessionToolScope: string | null = null;
+    let requestedEffortLevel: EffortLevel | undefined;
 
     if (prefetchedSession) {
       sessionTitle = prefetchedSession.title;
@@ -1211,6 +1290,7 @@ export class MetaAgentService {
       sessionWorktreeId = session.worktreeId || null;
       sessionToolScope =
         ((session.metadata as Record<string, unknown> | undefined)?.toolScope as string | undefined) ?? null;
+      requestedEffortLevel = readRequestedChildEffortLevel(session.metadata);
     }
 
     const messages = await AgentMessagesRepository.list(sessionId, { limit: 500 });
@@ -1245,6 +1325,7 @@ export class MetaAgentService {
       updatedAt: sessionUpdatedAt,
       worktreeId: sessionWorktreeId,
       toolScope: sessionToolScope,
+      ...(requestedEffortLevel ? { requestedEffortLevel } : {}),
     };
   }
 
@@ -1378,7 +1459,7 @@ export class MetaAgentService {
 
   private async getSessionStatusRow(sessionId: string, workspaceId: string): Promise<any | null> {
     const { rows } = await databaseWorker.query<any>(
-      `SELECT id, title, provider, model, status, last_activity, updated_at, created_by_session_id, agent_role
+      `SELECT id, title, provider, model, status, last_activity, updated_at, created_by_session_id, agent_role, metadata
        FROM ai_sessions
        WHERE id = $1 AND workspace_id = $2
        LIMIT 1`,

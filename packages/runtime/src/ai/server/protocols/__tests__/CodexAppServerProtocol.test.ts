@@ -158,6 +158,45 @@ describe('CodexAppServerProtocol', () => {
     protocol.cleanupSession(session);
   });
 
+  it('normalizes requested max effort to xhigh in Codex thread config', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({
+      workspacePath: '/tmp/ws',
+      raw: { effortLevel: 'max' },
+    } as never);
+
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    expect((startReq.params as { config: { model_reasoning_effort: string } }).config.model_reasoning_effort).toBe('xhigh');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 'thread-max-effort' } } });
+
+    const session = await sessionPromise;
+    protocol.cleanupSession(session);
+  });
+
+  it('forwards a suffixed model string without inferring effort from it', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({
+      workspacePath: '/tmp/ws',
+      model: 'gpt-5.6-sol-xhigh',
+    });
+
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    const params = startReq.params as {
+      model: string;
+      config: { model_reasoning_effort: string };
+    };
+    expect(params.model).toBe('gpt-5.6-sol-xhigh');
+    expect(params.config.model_reasoning_effort).toBe('high');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 'thread-suffixed-model' } } });
+
+    const session = await sessionPromise;
+    protocol.cleanupSession(session);
+  });
+
   it('streams agentMessage deltas as text events and emits complete on turn/completed', async () => {
     const protocol = new CodexAppServerProtocol();
     const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });

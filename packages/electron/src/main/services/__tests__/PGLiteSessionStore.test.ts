@@ -208,6 +208,33 @@ describe('PGLiteSessionStore JSON-column read normalization', () => {
 });
 
 describe('PGLiteSessionStore.updateMetadata defense-in-depth', () => {
+  it('shallow-merges sequential effort and notification metadata writes', async () => {
+    let storedMetadata: Record<string, unknown> = {};
+    const persistedWrites: Record<string, unknown>[] = [];
+    const db = {
+      query: vi.fn(async (sql: string, values: unknown[] = []) => {
+        if (/SELECT metadata FROM ai_sessions/i.test(sql)) {
+          return { rows: [{ metadata: JSON.stringify(storedMetadata) }] };
+        }
+        if (/UPDATE ai_sessions SET metadata =/i.test(sql)) {
+          storedMetadata = JSON.parse(values[1] as string) as Record<string, unknown>;
+          persistedWrites.push({ ...storedMetadata });
+        }
+        return { rows: [] };
+      }),
+    };
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('s1', { metadata: { effortLevel: 'xhigh' } });
+    await store.updateMetadata('s1', { metadata: { notifyParent: false } });
+
+    expect(persistedWrites).toEqual([
+      { effortLevel: 'xhigh' },
+      { effortLevel: 'xhigh', notifyParent: false },
+    ]);
+    expect(storedMetadata).toEqual({ effortLevel: 'xhigh', notifyParent: false });
+  });
+
   it('refuses to merge when metadata.metadata is a string and warns', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const db = {

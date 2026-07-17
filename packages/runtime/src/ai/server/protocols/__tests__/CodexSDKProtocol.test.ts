@@ -172,6 +172,58 @@ describe('CodexSDKProtocol', () => {
     expect('additionalDirectories' in passedOptions).toBe(false);
   });
 
+  it('normalizes requested max effort to xhigh in legacy SDK thread options', async () => {
+    const startThread = vi.fn((_options?: Record<string, unknown>) => ({
+      id: 'thread-max-effort',
+      runStreamed: vi.fn(),
+    }));
+    const protocol = new CodexSDKProtocol(
+      'test-key',
+      async () =>
+        ({
+          Codex: class {
+            startThread = startThread;
+            resumeThread = vi.fn();
+          },
+        }) as any
+    );
+
+    await protocol.createSession({
+      workspacePath: '/projects/main',
+      raw: { effortLevel: 'max' },
+    } as any);
+
+    const passedOptions = startThread.mock.calls[0]![0] as Record<string, unknown>;
+    expect(passedOptions.modelReasoningEffort).toBe('xhigh');
+    expect(passedOptions).not.toHaveProperty('effortLevel');
+  });
+
+  it('forwards a suffixed model string without inferring effort from it', async () => {
+    const startThread = vi.fn((_options?: Record<string, unknown>) => ({
+      id: 'thread-suffixed-model',
+      runStreamed: vi.fn(),
+    }));
+    const protocol = new CodexSDKProtocol(
+      'test-key',
+      async () =>
+        ({
+          Codex: class {
+            startThread = startThread;
+            resumeThread = vi.fn();
+          },
+        }) as any
+    );
+
+    await protocol.createSession({
+      workspacePath: '/projects/main',
+      model: 'gpt-5.6-sol-xhigh',
+    });
+
+    const passedOptions = startThread.mock.calls[0]![0] as Record<string, unknown>;
+    expect(passedOptions.model).toBe('gpt-5.6-sol-xhigh');
+    expect(passedOptions.modelReasoningEffort).toBe('high');
+  });
+
   it('passes image attachments as structured local_image inputs', async () => {
     const runStreamed = vi.fn(async () => ({
       events: createAsyncEventStream([

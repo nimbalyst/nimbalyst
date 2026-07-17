@@ -13,6 +13,9 @@
  */
 
 import { resolveProjectPath } from "../utils/workspaceDetection";
+import { EFFORT_LEVELS, type EffortLevel } from "@nimbalyst/runtime/ai/server/effortLevels";
+
+const CHILD_EFFORT_LEVELS: EffortLevel[] = EFFORT_LEVELS.map(({ key }) => key);
 
 type CreateSessionArgs = {
   title?: string;
@@ -22,6 +25,7 @@ type CreateSessionArgs = {
   useWorktree?: boolean;
   worktreeId?: string;
   toolScope?: string;
+  effortLevel?: EffortLevel;
 };
 
 type SpawnSessionArgs = {
@@ -29,6 +33,7 @@ type SpawnSessionArgs = {
   prompt: string;
   useWorktree?: boolean;
   model?: string;
+  effortLevel?: EffortLevel;
   notifyOnComplete?: boolean;
   /**
    * When true, the new session is created at the top level — no parent,
@@ -193,6 +198,12 @@ export const META_AGENT_TOOL_DEFS: Array<{
           description:
             "Capability scope for the child. \"read\" = read_file/list_files/search_files only (pure investigation). \"write\" = those plus write_file but NO run_command, so the child can save a file deliverable (e.g. a report) yet cannot build/test/run anything. \"full\" (default) = all tools including run_command. Use read or write for analyze/research tasks so the child physically cannot run a build, and reserve full for tasks that must build/test.",
         },
+        effortLevel: {
+          type: "string",
+          enum: [...CHILD_EFFORT_LEVELS],
+          description:
+            "Optional requested reasoning effort for this child only. Supported only when the resolved provider is openai-codex. Omit to preserve the app-default effort behavior; do not append effort to the model identifier.",
+        },
       },
     },
   },
@@ -226,6 +237,12 @@ export const META_AGENT_TOOL_DEFS: Array<{
           type: "string",
           description:
             "Optional explicit model identifier (e.g. 'claude-code:opus'). When omitted, the new session uses the global default model unless inheritModel=true. Wins over inheritModel when both are set.",
+        },
+        effortLevel: {
+          type: "string",
+          enum: [...CHILD_EFFORT_LEVELS],
+          description:
+            "Optional requested reasoning effort for this child only. Supported only when the resolved provider is openai-codex. Omit to preserve the app-default effort behavior; do not append effort to the model identifier.",
         },
         inheritModel: {
           type: "boolean",
