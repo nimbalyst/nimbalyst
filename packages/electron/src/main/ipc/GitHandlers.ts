@@ -292,7 +292,7 @@ export function registerGitHandlers(): void {
       const gitRoot = gitRootFor(workspacePath);
       if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:push', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:push', async () => {
         try {
           const git: SimpleGit = simpleGitWithHookEnv(gitRoot);
           const status = await git.status();
@@ -335,7 +335,7 @@ export function registerGitHandlers(): void {
       const gitRoot = gitRootFor(workspacePath);
       if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:pull', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:pull', async () => {
         try {
           const git: SimpleGit = simpleGitWithHookEnv(gitRoot);
           const status = await git.status();
@@ -411,7 +411,7 @@ export function registerGitHandlers(): void {
       const gitRoot = gitRootFor(workspacePath);
       if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:rebase', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:rebase', async () => {
         const args = options.action
           ? ['rebase', `--${options.action}`]
           : options.target
@@ -509,7 +509,7 @@ export function registerGitHandlers(): void {
       const gitRoot = gitRootFor(workspacePath);
       if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:checkout', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:checkout', async () => {
         const result = await runGitCommandStreaming(operationLog, workspacePath, ['checkout', ref]);
         return result.success ? { success: true } : { success: false, error: result.error };
       });
@@ -528,7 +528,7 @@ export function registerGitHandlers(): void {
       const gitRoot = gitRootFor(workspacePath);
       if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:cherry-pick', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:cherry-pick', async () => {
         const result = await runGitCommandStreaming(operationLog, workspacePath, ['cherry-pick', hash]);
         if (result.success) return { success: true };
         const status = await simpleGit(gitRoot).status();
@@ -549,7 +549,7 @@ export function registerGitHandlers(): void {
       const gitRoot = gitRootFor(workspacePath);
       if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:create-branch', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:create-branch', async () => {
         const result = await runGitCommandStreaming(
           operationLog,
           workspacePath,
@@ -705,7 +705,7 @@ export function registerGitHandlers(): void {
       const gitRoot = gitRootFor(workspacePath);
       if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:stage', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:stage', async () => {
         const result = await runGitCommandStreaming(operationLog, workspacePath, ['add', '--', ...files]);
         return result.success ? { success: true } : { success: false, error: result.error };
       });
@@ -723,7 +723,7 @@ export function registerGitHandlers(): void {
       const gitRoot = gitRootFor(workspacePath);
       if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:unstage', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:unstage', async () => {
         const git: SimpleGit = simpleGit(gitRoot);
         const args = await hasCommits(git)
           ? ['reset', 'HEAD', '--', ...files]
@@ -745,7 +745,7 @@ export function registerGitHandlers(): void {
       const gitRoot = gitRootFor(workspacePath);
       if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:discard-changes', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:discard-changes', async () => {
         const result = await runGitCommandStreaming(operationLog, workspacePath, ['checkout', '--', ...files]);
         return result.success ? { success: true } : { success: false, error: result.error };
       });

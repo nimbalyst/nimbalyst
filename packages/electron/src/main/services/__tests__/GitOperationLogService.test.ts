@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execFile } from "child_process";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
 
 vi.mock("electron", () => ({
   app: { getPath: () => os.tmpdir() },
@@ -189,5 +193,29 @@ describe("GitOperationLogService", () => {
       events.some((event) => event.startsWith("running:git version "))
     ).toBe(true);
     expect(events.at(-1)).toMatch(/^success:git version /);
+  });
+
+  it("spawns streamed commands at the resolved repo root, not the workspace subfolder", async () => {
+    const repoDir = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "nim-git-operation-log-repo-"))
+    );
+    await execFileAsync("git", ["init", "-q"], { cwd: repoDir });
+    const subDir = path.join(repoDir, "nested", "sub");
+    await fs.mkdir(subDir, { recursive: true });
+
+    try {
+      const service = new GitOperationLogService({ rootDir: tmpRoot });
+      const result = await runGitCommandStreaming(service, subDir, [
+        "rev-parse",
+        "--show-toplevel",
+      ]);
+      const [entry] = await service.list(subDir);
+
+      expect(result.success).toBe(true);
+      expect(result.stdout.trim()).toBe(repoDir);
+      expect(entry.cwd).toBe(repoDir);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
   });
 });
