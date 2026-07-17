@@ -4,6 +4,7 @@ import simpleGit, { SimpleGit } from 'simple-git';
 import { BrowserWindow } from 'electron';
 import { logger } from '../utils/logger';
 import { clearGitStatusCache } from '../ipc/GitStatusHandlers';
+import { resolveGitContext } from '../services/GitContextService';
 
 type NativeFileWatchListener = (curr: fs.Stats, prev: fs.Stats) => void;
 
@@ -18,6 +19,7 @@ interface WatcherEntry {
   lastCommitHash: string;
   currentBranch: string;
   git: SimpleGit;
+  gitRoot: string;
 }
 
 /**
@@ -95,7 +97,11 @@ function unwatchGitFile(watcher: NativeFileWatcher): void {
  * @returns GitDirInfo with both directories, or null if not a git repo
  */
 async function resolveGitDirs(workspacePath: string): Promise<GitDirInfo | null> {
-  const gitPath = path.join(workspacePath, '.git');
+  const { gitRoot } = resolveGitContext(workspacePath);
+  if (!gitRoot) {
+    return null;
+  }
+  const gitPath = path.join(gitRoot, '.git');
 
   try {
     const stat = await fs.promises.stat(gitPath);
@@ -113,7 +119,7 @@ async function resolveGitDirs(workspacePath: string): Promise<GitDirInfo | null>
         let gitDir = match[1].trim();
         // The gitdir path may be relative or absolute
         if (!path.isAbsolute(gitDir)) {
-          gitDir = path.resolve(workspacePath, gitDir);
+          gitDir = path.resolve(gitRoot, gitDir);
         }
 
         // For worktrees, the commondir is in the gitDir/commondir file
@@ -196,8 +202,9 @@ export class GitRefWatcher {
       }
 
       const { gitDir, commonDir } = gitDirs;
+      const { gitRoot } = resolveGitContext(workspacePath);
 
-      const git: SimpleGit = simpleGit(workspacePath);
+      const git: SimpleGit = simpleGit(gitRoot ?? workspacePath);
 
       // Pre-flight: get current branch + HEAD hash. Both can fail on a
       // fresh-init repo with zero commits ("fatal: your current branch X
@@ -269,6 +276,7 @@ export class GitRefWatcher {
         lastCommitHash,
         currentBranch,
         git,
+        gitRoot: gitRoot ?? workspacePath,
       });
 
       logger.main.info('[GitRefWatcher] Started watching:', {
@@ -354,14 +362,14 @@ export class GitRefWatcher {
         const diffRef = oldCommitHash ? `${oldCommitHash}..${newCommitHash}` : newCommitHash;
         const diffSummary = await entry.git.diffSummary([diffRef]);
         committedFiles = diffSummary.files.map((file) =>
-          path.join(workspacePath, file.file)
+          path.join(entry.gitRoot, file.file)
         );
       } catch (diffError) {
         // Fallback: just get the files from the latest commit
         try {
           const diffSummary = await entry.git.diffSummary([`${newCommitHash}~1`, newCommitHash]);
           committedFiles = diffSummary.files.map((file) =>
-            path.join(workspacePath, file.file)
+            path.join(entry.gitRoot, file.file)
           );
         } catch {
           // Initial commit or other edge case - get files from show

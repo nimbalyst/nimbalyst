@@ -8,28 +8,43 @@ import * as path from 'path';
 const {
   mockStatus,
   mockLog,
+  mockDiffSummary,
   loggerInfo,
   loggerError,
   loggerWarn,
   loggerDebug,
   mockWatchFile,
   mockUnwatchFile,
+  mockResolveGitContext,
 } = vi.hoisted(() => ({
   mockStatus: vi.fn(),
   mockLog: vi.fn(),
+  mockDiffSummary: vi.fn(),
   loggerInfo: vi.fn(),
   loggerError: vi.fn(),
   loggerWarn: vi.fn(),
   loggerDebug: vi.fn(),
   mockWatchFile: vi.fn(),
   mockUnwatchFile: vi.fn(),
+  // Pass-through by default (workspace == root, byte-for-byte no-op) so the
+  // existing fake-path tests below are unaffected. The subfolder test
+  // overrides this to return a distinct repo root.
+  mockResolveGitContext: vi.fn((workspacePath: string) => ({
+    isRepo: true,
+    gitRoot: workspacePath,
+  })),
 }));
 
 vi.mock('simple-git', () => ({
   default: () => ({
     status: mockStatus,
     log: mockLog,
+    diffSummary: mockDiffSummary,
   }),
+}));
+
+vi.mock('../../services/GitContextService', () => ({
+  resolveGitContext: mockResolveGitContext,
 }));
 
 // Pretend `<workspace>/.git` is a regular directory.
@@ -69,7 +84,7 @@ vi.mock('../../ipc/GitStatusHandlers', () => ({
   clearGitStatusCache: vi.fn(),
 }));
 
-import { GitRefWatcher } from '../GitRefWatcher';
+import { GitRefWatcher, type CommitDetectedEvent } from '../GitRefWatcher';
 
 describe('GitRefWatcher.start - empty repo handling', () => {
   beforeEach(() => {
@@ -142,5 +157,50 @@ describe('GitRefWatcher.start - empty repo handling', () => {
     expect(mockUnwatchFile.mock.calls[0]?.[0]).toBe(path.join('/fake/workspace', '.git', 'refs', 'heads', 'master'));
     expect(mockUnwatchFile.mock.calls[1]?.[0]).toBe(path.join('/fake/workspace', '.git', 'index'));
     expect(watcher.getStats().activeWatchers).toBe(0);
+  });
+});
+
+describe('GitRefWatcher - subfolder workspace (#124)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('detects commits when the workspace is a subfolder of the repo (#124)', async () => {
+    // The repo root differs from the watched workspace (issue #124): the
+    // user opened `home/`, a subfolder of the repo rooted at `gitRoot`.
+    const gitRoot = '/fake/repo-root';
+    const workspacePath = path.join(gitRoot, 'home');
+
+    // Unlike the fake-path tests above (where gitRoot === workspacePath is
+    // a no-op), here git itself would resolve the toplevel to gitRoot.
+    mockResolveGitContext.mockReturnValue({ isRepo: true, gitRoot });
+
+    mockStatus.mockResolvedValue({ current: 'master' });
+    mockLog
+      .mockResolvedValueOnce({ latest: { hash: 'abc123', message: 'Initial commit' } })
+      .mockResolvedValueOnce({ latest: { hash: 'def456', message: 'Second commit' } });
+    mockDiffSummary.mockResolvedValue({ files: [{ file: 'home/file.txt' }] });
+
+    const watcher = new GitRefWatcher();
+    await watcher.start(workspacePath);
+    expect(watcher.getStats().activeWatchers).toBe(1);
+
+    const commitEventPromise = new Promise<CommitDetectedEvent>((resolve) => {
+      watcher.onCommitDetected((event) => resolve(event));
+    });
+
+    // Simulate the ref file changing, the same way the native fs.watchFile
+    // callback would fire on a real commit.
+    const refListener = mockWatchFile.mock.calls[0]?.[2];
+    expect(refListener).toBeTypeOf('function');
+    const prevStats = { mtimeMs: 0, ctimeMs: 0, size: 0, ino: 0, nlink: 0 };
+    const currStats = { mtimeMs: 1, ctimeMs: 1, size: 1, ino: 1, nlink: 1 };
+    refListener(currStats, prevStats);
+
+    const event = await commitEventPromise;
+
+    // The committed file's absolute path must be joined against the repo
+    // root, not the (sub-folder) workspace path.
+    expect(event.committedFiles).toEqual([path.join(gitRoot, 'home', 'file.txt')]);
   });
 });
